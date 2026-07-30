@@ -71,7 +71,7 @@ pub use spec::{
 };
 pub use token::{LeaseCallbackClaims, LeaseCallbackToken, NonceWatermark, TokenError};
 pub use vocab::{
-    Artifact, EnvValue, EnvVar, EnvVisibility, MountAccess, MountLifetime, MountRequirement,
-    MountSource, NetworkPolicy, PackageRequirements, RESERVED_ENV_KEYS, Realization, RealizedMount,
-    ResourceLimits,
+    Artifact, EnvValue, EnvVar, EnvVisibility, MemoryWriteConsistency, MountAccess, MountLifetime,
+    MountRequirement, MountSource, NetworkPolicy, PackageRequirements, RESERVED_ENV_KEYS,
+    Realization, RealizedMount, ResourceLimits,
 };

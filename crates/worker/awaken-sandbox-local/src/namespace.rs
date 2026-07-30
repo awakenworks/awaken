@@ -476,7 +476,11 @@ impl NamespaceProvider {
             // materialized files on the copy fallback) which then binds into the namespace
             // — live write-through FUSE-in-bwrap works (ADR-0053 item 2); copy harvests on
             // dispose.
-            if let pc::MountSource::MemoryStore { store_id } = &req.source {
+            if let pc::MountSource::MemoryStore {
+                store_id,
+                write_consistency,
+            } = &req.source
+            {
                 let Some(mounter) = self
                     .memory_mounter
                     .read()
@@ -489,6 +493,15 @@ impl NamespaceProvider {
                     )));
                 };
                 let guard = mounter.mount(store_id, &host, req.access).await?;
+                if *write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
+                    && guard.realization() != pc::Realization::Fuse
+                {
+                    guard.teardown().await;
+                    return Err(err(format!(
+                        "mount {:?}: memory_store requires write-through FUSE realization",
+                        req.mount_id
+                    )));
+                }
                 layout.push(RenderMount {
                     host: host.clone(),
                     dest: req.mount_path.clone(),
@@ -1274,6 +1287,7 @@ mod tests {
                 mount_id: "mem".into(),
                 source: pc::MountSource::MemoryStore {
                     store_id: "s1".into(),
+                    write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
                 },
                 mount_path: "/workspace/mem".into(),
                 access: pc::MountAccess::ReadWrite,

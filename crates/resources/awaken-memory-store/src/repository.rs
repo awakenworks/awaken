@@ -172,6 +172,20 @@ impl VolatileMemoryRepository {
 
 #[async_trait]
 impl MemoryRepository for VolatileMemoryRepository {
+    async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
+        let guard = self.inner.lock().unwrap();
+        Ok(guard
+            .records
+            .get(store)
+            .map(|records| {
+                records
+                    .values()
+                    .map(|record| record.to_memory(true))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
         let guard = self.inner.lock().unwrap();
         Ok(guard
@@ -882,6 +896,35 @@ mod tests {
         assert_eq!(fs.list_versions(store).await.unwrap().len(), versions.len());
     }
 
+    /// Snapshot cause/effect design:
+    /// C1 multiple path heads exist -> E1 one path-ordered, content-bearing image;
+    /// C2 a later head mutation occurs -> E2 the previously returned value stays
+    /// frozen while a new snapshot observes the mutation. These are the two rules
+    /// that prevent a consolidation input from becoming a mixed `list`/`get` view.
+    async fn snapshot_heads_conformance(fs: &dyn MemoryRepository) {
+        fs.create("snapshot", "/z.md", "old-z").await.unwrap();
+        let a = fs.create("snapshot", "/a.md", "old-a").await.unwrap();
+        let frozen = fs.snapshot_heads("snapshot").await.unwrap();
+        assert_eq!(
+            frozen
+                .iter()
+                .map(|memory| memory.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/a.md", "/z.md"]
+        );
+        assert_eq!(frozen[0].content.as_deref(), Some("old-a"));
+        fs.update("snapshot", &a.id, "new-a", &a.content_sha256)
+            .await
+            .unwrap();
+        assert_eq!(frozen[0].content.as_deref(), Some("old-a"));
+        assert_eq!(
+            fs.snapshot_heads("snapshot").await.unwrap()[0]
+                .content
+                .as_deref(),
+            Some("new-a")
+        );
+    }
+
     #[tokio::test]
     async fn in_memory_extended_conformance() {
         extended_conformance(&VolatileMemoryRepository::new()).await;
@@ -900,6 +943,11 @@ mod tests {
     #[tokio::test]
     async fn in_memory_atomic_head_update_conformance() {
         atomic_head_update_conformance(&VolatileMemoryRepository::new()).await;
+    }
+
+    #[tokio::test]
+    async fn in_memory_snapshot_heads_conformance() {
+        snapshot_heads_conformance(&VolatileMemoryRepository::new()).await;
     }
 
     /// The `NotFound` paths of `update`/`rename`, over any backend.

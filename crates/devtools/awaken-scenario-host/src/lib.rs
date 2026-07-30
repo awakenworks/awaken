@@ -852,7 +852,19 @@ pub async fn build_acp_container_router() -> Router {
 
 /// Build the server router backed by the kernel with the given model.
 pub fn build_router(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Router {
-    mount(Arc::new(resource_host(llm, model_ref)))
+    build_router_and_host(llm, model_ref).0
+}
+
+/// The same single scenario assembly as [`build_router`], with the shared Host
+/// returned for cross-module tests that must replace a neutral infrastructure
+/// port (for example, a deterministic write-through Memory mounter). This is not
+/// a second router path: [`build_router`] delegates here.
+pub fn build_router_and_host(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+) -> (Router, Arc<SharedHost>) {
+    let host = Arc::new(resource_host(llm, model_ref));
+    (mount(host.clone()), host)
 }
 
 /// Test/embedder composition with one explicitly resolved deployment snapshot.

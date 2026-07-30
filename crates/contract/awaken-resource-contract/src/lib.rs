@@ -431,6 +431,12 @@ pub fn validate_path_len(path: &str) -> Result<(), MemErr> {
 /// versions, runtime recall/extraction, and mounted content on one source of truth.
 #[async_trait]
 pub trait MemoryRepository: Send + Sync {
+    /// Atomically read every current file head, including content, from one
+    /// store. The returned vector is path-ordered. This is the canonical frozen
+    /// input primitive for operations such as memory consolidation; callers must
+    /// not emulate it with `list` followed by per-path reads because concurrent
+    /// writes could create a mixed-generation snapshot.
+    async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr>;
     /// Memories whose path is at or under `prefix` (`"/"` or `""` = all).
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr>;
     /// The memory at `path`, or `None`.

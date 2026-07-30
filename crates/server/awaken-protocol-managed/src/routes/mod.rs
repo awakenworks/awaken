@@ -12,6 +12,7 @@
 
 pub mod agents_registry;
 pub mod deployments;
+pub mod dreams;
 pub mod environments;
 pub mod sessions;
 pub mod user_profiles;
@@ -19,5 +20,6 @@ pub mod vaults;
 
 // The session surface defines the shared error-envelope conventions; re-export the
 // plumbing so sibling resource routers answer bad bodies and domain errors alike.
+pub use dreams::{DREAMING_BETA, dreams_router};
 pub use sessions::{MEMORY_BETA, SKILLS_BETA, WorkspaceScope, enforce_managed_beta, router};
 pub(crate) use sessions::{ManagedJson, error_response};

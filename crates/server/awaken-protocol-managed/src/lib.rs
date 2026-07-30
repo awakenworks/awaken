@@ -40,6 +40,7 @@ pub mod types;
 /// The self-hosted environment registry as a port ([`env_registry::EnvRegistry`]),
 /// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
 pub mod cron;
+mod dream;
 pub mod env_registry;
 mod preview;
 mod state;
@@ -47,6 +48,11 @@ mod state;
 /// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
 pub mod work_queue;
 
+pub use dream::{
+    BUILT_IN_MEMORY_CONSOLIDATOR_AGENT_ID, DreamState, MemoryConsolidationAgentSelection,
+    MemoryConsolidationApiError, MemoryConsolidationCancellation, MemoryConsolidationFailure,
+    MemoryConsolidationPreparation, MemoryConsolidationRequest, MemoryConsolidationWorker,
+};
 pub use env_registry::{EnvItem, EnvRegistry, EnvUpdate, InMemoryEnvRegistry};
 pub use rate_limit::{ManagedRateLimiter, ManagedRateLimits, enforce_managed_rate_limit};
 pub use routes::agents_registry::{
@@ -60,13 +66,16 @@ pub use routes::deployments::{
 pub use routes::environments::{EnvironmentState, environments_router};
 pub use routes::user_profiles::{UserProfileState, user_profiles_router};
 pub use routes::vaults::{McpProbe, McpProbeStatus, VaultState, vault_router};
+pub use routes::{DREAMING_BETA, dreams_router};
 pub use routes::{MEMORY_BETA, SKILLS_BETA, WorkspaceScope, enforce_managed_beta, router};
 // The session-repository port family now lives in `awaken-session-contract`;
 // re-exported so existing `awaken_protocol_managed::…` paths keep resolving.
 pub use awaken_ext_memory::{
-    MemoryExtractionError, MemoryExtractionIntent, MemoryExtractionMutation,
-    MemoryExtractionReceipt, MemoryExtractionRepository, MemoryExtractionStatus,
-    MemoryExtractorSnapshot, MemoryMutationReceipt, PutMemoryExtractionOutcome,
+    MemoryConsolidationJobRecord, MemoryConsolidationRepository,
+    MemoryConsolidationRepositoryError, MemoryExtractionError, MemoryExtractionIntent,
+    MemoryExtractionMutation, MemoryExtractionReceipt, MemoryExtractionRepository,
+    MemoryExtractionStatus, MemoryExtractorSnapshot, MemoryMutationReceipt,
+    PutMemoryExtractionOutcome,
 };
 pub use awaken_resource_contract::ResourceCatalog;
 pub use awaken_session_contract::env_registry::{EnvironmentPackages, EnvironmentRevision};

@@ -235,6 +235,7 @@ async fn build(
             mount_id: "mem".into(),
             source: pc::MountSource::MemoryStore {
                 store_id: "s".into(),
+                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
             },
             mount_path: mem_path.into(),
             access: pc::MountAccess::ReadWrite,

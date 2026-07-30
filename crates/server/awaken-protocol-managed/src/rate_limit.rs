@@ -230,6 +230,7 @@ fn is_managed_family(segments: &[&str]) -> bool {
                     | "memory_stores"
                     | "skills"
                     | "user_profiles"
+                    | "dreams"
             )
         )
 }
@@ -245,6 +246,7 @@ fn is_create_endpoint(segments: &[&str]) -> bool {
             | ["v1", "memory_stores"]
             | ["v1", "skills"]
             | ["v1", "user_profiles"]
+            | ["v1", "dreams"]
             | ["v1", "sessions", _, "resources"]
             | ["v1", "vaults", _, "credentials"]
             | ["v1", "memory_stores", _, "memories"]
@@ -278,7 +280,7 @@ mod tests {
         // | C1 | Managed | GET/HEAD retrieve/list/stream | Read |
         // | C2 | Managed | POST exact collection/nested Create | Create |
         // | C3 | Managed | update/archive/action/delete | pass through |
-        // | C4 | Files, Dreams, extension or non-Managed | any | pass through |
+        // | C4 | Files, extension or non-Managed | any | pass through |
         for path in [
             "/v1/agents",
             "/v1/sessions",
@@ -288,6 +290,7 @@ mod tests {
             "/v1/memory_stores",
             "/v1/skills",
             "/v1/user_profiles",
+            "/v1/dreams",
             "/v1/sessions/ses_1/resources",
             "/v1/vaults/vlt_1/credentials",
             "/v1/memory_stores/mem_1/memories",
@@ -315,7 +318,7 @@ mod tests {
         ] {
             assert_eq!(classify(&Method::POST, path), None, "C3 {path}");
         }
-        for path in ["/v1/files", "/v1/dreams", "/v1/models", "/healthz"] {
+        for path in ["/v1/files", "/v1/models", "/healthz"] {
             assert_eq!(classify(&Method::GET, path), None, "C4 {path}");
         }
     }

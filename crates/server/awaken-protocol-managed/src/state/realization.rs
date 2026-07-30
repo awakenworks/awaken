@@ -650,7 +650,7 @@ impl ManagedState {
     /// Sole in-process topology adapter for the Control-owned realization
     /// protocol. Create, hot replacement, and recovery all call this driver;
     /// it owns Runtime I/O but never mutates Session desired state directly.
-    pub(super) async fn realize_session_locally(
+    pub async fn realize_application_session(
         &self,
         session_id: &str,
     ) -> Result<PersistedSession, StateError> {
@@ -674,6 +674,13 @@ impl ManagedState {
             .get(session_id)
             .await
             .ok_or(StateError::NotFound)
+    }
+
+    pub(super) async fn realize_session_locally(
+        &self,
+        session_id: &str,
+    ) -> Result<PersistedSession, StateError> {
+        self.realize_application_session(session_id).await
     }
 
     async fn drive_local_realization(

@@ -100,6 +100,49 @@ pub(super) fn stage_mcp_request(
 }
 
 impl ManagedState {
+    pub fn validate_memory_consolidator_agent(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Result<(), StateError> {
+        if agent_id == crate::dream::BUILT_IN_MEMORY_CONSOLIDATOR_AGENT_ID {
+            return Ok(());
+        }
+        let Some(source) = &self.config_source else {
+            return Err(StateError::Run(RunError::bad_request(format!(
+                "memory consolidator Agent `{agent_id}` is unavailable"
+            ))));
+        };
+        if source.agent_view_in(workspace_id, agent_id).is_none()
+            || source.agent_unavailable_in(workspace_id, agent_id)
+        {
+            return Err(StateError::Run(RunError::bad_request(format!(
+                "memory consolidator Agent `{agent_id}` is unavailable"
+            ))));
+        }
+        Ok(())
+    }
+
+    /// Frozen committed Session input used by the memory-consolidation
+    /// application. Workspace ownership is checked before the Runtime transcript
+    /// is read; the returned messages preserve tool calls and tool results exactly
+    /// as committed by the ordinary Session authority.
+    pub async fn memory_consolidation_transcript(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+    ) -> Result<Vec<awaken_agent_contract::agent::message::Message>, StateError> {
+        self.ensure_session(session_id).await?;
+        let owner = self
+            .resolve_owner(session_id)
+            .await
+            .ok_or(StateError::NotFound)?;
+        if owner != workspace_id {
+            return Err(StateError::NotFound);
+        }
+        Ok(self.runtime.committed_messages(session_id).await)
+    }
+
     pub async fn prepare_protocol_session(
         &self,
         workspace_id: &str,
@@ -511,11 +554,18 @@ impl ManagedState {
             .config_source
             .as_ref()
             .and_then(|source| source.agent_view_in(&owner_scope, &agent_id));
+        let is_built_in_memory_consolidator = agent_id
+            == crate::dream::BUILT_IN_MEMORY_CONSOLIDATOR_AGENT_ID
+            && req
+                .metadata
+                .get("awaken.session.origin")
+                .is_some_and(|origin| origin == "memory_consolidation");
         if config_view.is_none()
             && self
                 .config_source
                 .as_ref()
                 .is_some_and(|source| source.agent_unavailable_in(&owner_scope, &agent_id))
+            && !is_built_in_memory_consolidator
         {
             return Err(StateError::Run(RunError::bad_request(format!(
                 "agent_unavailable: agent `{agent_id}` cannot start a new session"

@@ -421,6 +421,31 @@ impl SharedHost {
         .await
     }
 
+    /// Persist one platform-generated, downloadable file through the same
+    /// catalog/blob/reference transaction as uploaded files and harvested
+    /// Session artifacts. `generation_key` makes retries return the original
+    /// logical file instead of creating duplicate artifacts.
+    pub async fn create_generated_file(
+        &self,
+        workspace: &str,
+        filename: String,
+        mime_type: String,
+        bytes: &[u8],
+        generation_key: String,
+    ) -> Result<FileRecord, ResourcePurgeError> {
+        self.create_file_record(
+            workspace,
+            filename,
+            mime_type,
+            bytes,
+            true,
+            None,
+            None,
+            Some(generation_key),
+        )
+        .await
+    }
+
     pub async fn file_bytes(
         &self,
         workspace: &str,

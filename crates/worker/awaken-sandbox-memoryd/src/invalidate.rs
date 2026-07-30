@@ -74,6 +74,10 @@ impl InvalidatingMemoryRepository {
 
 #[async_trait::async_trait]
 impl MemoryRepository for InvalidatingMemoryRepository {
+    async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
+        self.inner.snapshot_heads(store).await
+    }
+
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
         self.inner.list(store, prefix).await
     }

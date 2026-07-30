@@ -38,6 +38,7 @@ pub mod workspace_path;
 use std::sync::Arc;
 
 mod a2a_security;
+mod dream;
 
 use awaken_protocol_managed::{ManagedState, router};
 use awaken_protocol_transport::ProtocolRuntime;
@@ -94,13 +95,13 @@ pub type ResourceBindingValidatorPort =
 /// Authorization has already selected workspace/store/access before this adapter
 /// sees an opaque store id; no IAM vocabulary crosses this seam.
 pub fn install_platform_memory_data_plane(host: &SharedHost) {
-    // A Session may be replaced across Workdir/Namespace/Container workers. Use
-    // the portable copy projection at this shared composition seam so the binding
-    // remains realizable on every tier; the mounter still performs CAS-aware
-    // harvest on teardown through the same governed MemoryRepository.
-    host.install_memory_mounter(Arc::new(
-        awaken_sandbox_memoryd::MemoryStoreMounter::copy_only(host.memory_repository()),
-    ));
+    // Prefer the canonical write-through FUSE projection and retain the existing
+    // portable copy/harvest fallback for ordinary Session bindings. A mount that
+    // explicitly requires write-through (Memory Consolidation output) observes
+    // the realized kind and fails closed before launch when only copy is possible.
+    host.install_memory_mounter(Arc::new(awaken_sandbox_memoryd::MemoryStoreMounter::new(
+        host.memory_repository(),
+    )));
 }
 
 /// Open one embedded resource persistence family for a durable local composition.
@@ -494,7 +495,32 @@ fn mount_with_managed_over_and_models(
     if host.runs_local_dispatch_pool() {
         host.ensure_dispatch_pool();
     }
-    let managed = router(managed_state.clone());
+    let consolidation_worker = Arc::new(dream::BuiltInMemoryConsolidatorAgent::new(
+        managed_state.clone(),
+        host.clone(),
+        host.memory_repository(),
+        resource_catalog.clone(),
+    ));
+    let dream_state = match host.storage_dir() {
+        Some(root) => Arc::new(
+            awaken_protocol_managed::DreamState::with_repository(
+                consolidation_worker,
+                Arc::new(
+                    awaken_runtime_host::SqliteManagedSessionRepository::open(
+                        &root.join("sessions.db").to_string_lossy(),
+                    )
+                    .expect("open durable Memory Consolidation repository"),
+                ),
+            )
+            .expect("load durable Memory Consolidation jobs"),
+        ),
+        None => Arc::new(awaken_protocol_managed::DreamState::new(
+            consolidation_worker,
+        )),
+    };
+    dream_state.resume_incomplete();
+    let dreams = awaken_protocol_managed::dreams_router(dream_state);
+    let managed = router(managed_state.clone()).merge(dreams);
     // One neutral port impl behind the three wire adapters (each `router` takes
     // `Arc<dyn ProtocolRuntime>`), so they share the host with no per-protocol twin.
     struct ManagedSessionDefaults(Arc<ManagedState>);

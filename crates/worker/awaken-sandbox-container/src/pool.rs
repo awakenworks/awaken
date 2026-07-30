@@ -451,6 +451,7 @@ mod tests {
             },
             pc::MountSource::MemoryStore {
                 store_id: "s".into(),
+                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
             },
             pc::MountSource::Inline {
                 contents: "x".into(),

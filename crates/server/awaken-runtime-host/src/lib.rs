@@ -186,6 +186,12 @@ pub use awaken_run_ingress::{
     WorkerRequestAuthorizer,
 };
 pub use awaken_session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
+// Neutral sandbox vocabulary surfaced to the outer composition root. Runtime Host
+// remains the only server-layer owner that depends on the provisioning contract.
+pub use awaken_provisioning_contract::{
+    MemoryMount, MemoryMounter, MemoryWriteConsistency, MountAccess, MountLifetime,
+    MountRequirement, MountSource, Realization, SandboxError,
+};
 
 /// Select the local Managed Session repository from the runtime durability root.
 /// Session configuration and its owner fence must survive whenever committed Run
@@ -635,15 +641,17 @@ impl ManagedHost {
                 staged
                     .mounts
                     .push(awaken_provisioning_contract::MountRequirement {
-                        mount_id: input.binding_id.to_string(),
-                        source: awaken_provisioning_contract::MountSource::MemoryStore {
-                            store_id: memory_store_id.to_string(),
-                        },
-                        mount_path: format!(".mnt/{logical}"),
-                        access: mount_access,
-                        lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
-                        required: true,
-                    });
+                    mount_id: input.binding_id.to_string(),
+                    source: awaken_provisioning_contract::MountSource::MemoryStore {
+                        store_id: memory_store_id.to_string(),
+                        write_consistency:
+                            awaken_provisioning_contract::MemoryWriteConsistency::ProviderDefault,
+                    },
+                    mount_path: format!(".mnt/{logical}"),
+                    access: mount_access,
+                    lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
+                    required: true,
+                });
             }
             ResolvedInputSource::Repository {
                 repository_id,
@@ -1247,7 +1255,7 @@ impl SessionRuntime for ManagedHost {
             .mounts
             .iter()
             .filter_map(|mount| match &mount.source {
-                awaken_provisioning_contract::MountSource::MemoryStore { store_id } => Some((
+                awaken_provisioning_contract::MountSource::MemoryStore { store_id, .. } => Some((
                     mount.mount_id.clone(),
                     store_id.clone(),
                     mount.mount_path.clone(),
