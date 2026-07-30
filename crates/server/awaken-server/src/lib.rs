@@ -131,14 +131,7 @@ pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_session_executo
         files.clone(),
         files,
         Arc::new(memory),
-        Arc::new({
-            let skills = awaken_skill_store::FsSkillStore::open(root.join("skills"))
-                .expect("open resource skill filesystem store");
-            skills
-                .migrate_legacy_files()
-                .expect("migrate legacy Skill files");
-            skills
-        }),
+        embedded_skill_store(root),
         Arc::new({
             let lifecycle = awaken_resource_store::SqliteResourceStore::open(
                 root.join("resource-lifecycle.db"),
@@ -152,44 +145,18 @@ pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_session_executo
     )
 }
 
-/// Open a remote Worker's shared Resource plane from an explicitly resolved
-/// backend URL. `None` means that Worker is resource-ineligible.
-pub async fn shared_worker_resource_plane(
-    url: Option<&str>,
-) -> Result<Option<awaken_session_executor::ResourcePlane>, String> {
-    let Some(url) = url else {
-        return Ok(None);
-    };
-    if !(url.starts_with("postgres://") || url.starts_with("postgresql://")) {
-        return Err(
-            "a remote worker requires AWAKEN_RESOURCE_DATABASE_URL to be a shared postgres URL"
-                .to_string(),
-        );
-    }
-    let files = Arc::new(
-        awaken_file_store::postgres::PgFileStore::connect(url)
-            .await
-            .map_err(|error| format!("connect shared FileStore: {error}"))?,
-    );
-    Ok(Some(awaken_session_executor::ResourcePlane::new(
-        files.clone(),
-        files,
-        Arc::new(
-            awaken_memory_store::PostgresMemoryRepository::connect(url)
-                .await
-                .map_err(|error| format!("connect shared MemoryRepository: {error}"))?,
-        ),
-        Arc::new(
-            awaken_skill_store::PgSkillStore::connect(url)
-                .await
-                .map_err(|error| format!("connect shared SkillStore: {error}"))?,
-        ),
-        Arc::new(
-            awaken_resource_store::PostgresResourceStore::connect(url)
-                .await
-                .map_err(|error| format!("connect shared resource lifecycle store: {error}"))?,
-        ),
-    )))
+/// Open only the Skill data adapter needed by the transitional Worker
+/// composition. File and Memory content use claim-fenced network adapters and
+/// therefore are not opened here.
+pub fn embedded_skill_store(
+    root: &std::path::Path,
+) -> Arc<dyn awaken_resource_contract::SkillStore> {
+    let skills = awaken_skill_store::FsSkillStore::open(root.join("skills"))
+        .expect("open resource skill filesystem store");
+    skills
+        .migrate_legacy_files()
+        .expect("migrate legacy Skill files");
+    Arc::new(skills)
 }
 
 struct PinnedA2aTransportResolver {
@@ -600,6 +567,7 @@ fn mount_with_managed_over_and_models(
         worker_registry::shared(),
         dynamic_placement::shared_worker_placement_policy(),
         managed_state,
+        resource_catalog.clone(),
     );
     // The Files API (`/v1/files`) over the host's blob store — file resources + artifacts.
     let files = files_router(host.clone());

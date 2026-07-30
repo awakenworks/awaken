@@ -263,6 +263,10 @@ pub struct SharedHost {
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
     /// collected artifacts. In-memory by default (one server process).
     pub(crate) file_store: Arc<dyn FileStore>,
+    /// Sole per-kind File materialization port. Embedded composition points it at
+    /// the local catalog/store pair; a database-less Worker replaces it with the
+    /// claim-fenced HTTP adapter before accepting work.
+    pub(crate) file_content_source: Arc<dyn crate::FileContentSource>,
     /// Logical Files-API truth: public identity, metadata, Workspace visibility,
     /// Session scope, and harvest idempotency. Bytes remain in `file_store` only.
     pub(crate) file_catalog: Arc<dyn FileCatalog>,

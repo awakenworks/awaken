@@ -387,6 +387,31 @@ impl SkillStore for InMemorySkillStore {
             .unwrap_or_default())
     }
 
+    async fn snapshot_latest_versions(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<SkillVersion>, SkillStoreError> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .get(workspace_id)
+            .map(|workspace| {
+                workspace
+                    .values()
+                    .filter(|aggregate| !aggregate.deleted)
+                    .map(|aggregate| {
+                        aggregate
+                            .versions
+                            .get(&aggregate.definition.latest_version)
+                            .cloned()
+                            .expect("validated Skill aggregate has its latest version")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     async fn version(
         &self,
         workspace_id: &str,
@@ -553,6 +578,44 @@ impl FsSkillStore {
         std::fs::rename(&temp, &path).map_err(|error| SkillStoreError::Io(error.to_string()))
     }
 
+    fn visible_aggregates(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<SkillAggregate>, SkillStoreError> {
+        let dir = self.ws_dir(workspace_id);
+        let read_dir = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(SkillStoreError::Io(error.to_string())),
+        };
+        let mut out = Vec::new();
+        for entry in read_dir {
+            let path = entry
+                .map_err(|error| SkillStoreError::Io(error.to_string()))?
+                .path();
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "json")
+            {
+                let bytes =
+                    std::fs::read(&path).map_err(|error| SkillStoreError::Io(error.to_string()))?;
+                let aggregate: SkillAggregate = serde_json::from_slice(&bytes)
+                    .map_err(|error| corrupt(format!("malformed JSON: {error}")))?;
+                let aggregate =
+                    decode_aggregate(&bytes, workspace_id, aggregate.definition.id.as_str())?;
+                if path != self.aggregate_path(workspace_id, aggregate.definition.id.as_str()) {
+                    return Err(corrupt("stored identity does not match its filesystem key"));
+                }
+                if aggregate.definition.workspace_id.as_str() == workspace_id && !aggregate.deleted
+                {
+                    out.push(aggregate);
+                }
+            }
+        }
+        out.sort_by(|a, b| a.definition.id.cmp(&b.definition.id));
+        Ok(out)
+    }
+
     /// Explicit one-time import for the removed `<workspace>/<skill>.md` layout.
     ///
     /// Repository construction is deliberately side-effect free beyond opening
@@ -640,38 +703,30 @@ impl SkillStore for FsSkillStore {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<SkillDefinition>, SkillStoreError> {
-        let dir = self.ws_dir(workspace_id);
-        let read_dir = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(SkillStoreError::Io(error.to_string())),
-        };
-        let mut out = Vec::new();
-        for entry in read_dir {
-            let path = entry
-                .map_err(|error| SkillStoreError::Io(error.to_string()))?
-                .path();
-            if path
-                .extension()
-                .is_some_and(|extension| extension == "json")
-            {
-                let bytes =
-                    std::fs::read(&path).map_err(|error| SkillStoreError::Io(error.to_string()))?;
-                let aggregate: SkillAggregate = serde_json::from_slice(&bytes)
-                    .map_err(|error| corrupt(format!("malformed JSON: {error}")))?;
-                let aggregate =
-                    decode_aggregate(&bytes, workspace_id, aggregate.definition.id.as_str())?;
-                if path != self.aggregate_path(workspace_id, aggregate.definition.id.as_str()) {
-                    return Err(corrupt("stored identity does not match its filesystem key"));
-                }
-                if aggregate.definition.workspace_id.as_str() == workspace_id && !aggregate.deleted
-                {
-                    out.push(aggregate.definition);
-                }
-            }
-        }
-        out.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(out)
+        Ok(self
+            .visible_aggregates(workspace_id)?
+            .into_iter()
+            .map(|aggregate| aggregate.definition)
+            .collect())
+    }
+
+    async fn snapshot_latest_versions(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<SkillVersion>, SkillStoreError> {
+        let _guard = self.gate.lock().unwrap();
+        self.visible_aggregates(workspace_id)?
+            .into_iter()
+            .map(|aggregate| {
+                aggregate
+                    .versions
+                    .get(&aggregate.definition.latest_version)
+                    .cloned()
+                    .ok_or_else(|| {
+                        SkillStoreError::Storage("Skill latest version is missing".into())
+                    })
+            })
+            .collect()
     }
 
     async fn version(

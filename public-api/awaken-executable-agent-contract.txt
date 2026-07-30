@@ -1,0 +1,32 @@
+pub mod awaken_executable_agent_contract
+pub enum awaken_executable_agent_contract::ExecutableAgentRegistrationError
+pub awaken_executable_agent_contract::ExecutableAgentRegistrationError::Conflict(alloc::string::String)
+pub awaken_executable_agent_contract::ExecutableAgentRegistrationError::Invalid(alloc::string::String)
+pub awaken_executable_agent_contract::ExecutableAgentRegistrationError::Storage(alloc::string::String)
+pub awaken_executable_agent_contract::ExecutableAgentRegistrationError::Unavailable(alloc::string::String)
+pub enum awaken_executable_agent_contract::ExecutableAgentRegistrationOutcome
+pub awaken_executable_agent_contract::ExecutableAgentRegistrationOutcome::AlreadyRegistered
+pub awaken_executable_agent_contract::ExecutableAgentRegistrationOutcome::RegisteredCurrent
+pub awaken_executable_agent_contract::ExecutableAgentRegistrationOutcome::RegisteredHistorical
+pub enum awaken_executable_agent_contract::ExecutableAgentWithdrawalOutcome
+pub awaken_executable_agent_contract::ExecutableAgentWithdrawalOutcome::AlreadyWithdrawn
+pub awaken_executable_agent_contract::ExecutableAgentWithdrawalOutcome::HistoricalNoop
+pub awaken_executable_agent_contract::ExecutableAgentWithdrawalOutcome::WithdrawnCurrent
+pub struct awaken_executable_agent_contract::ExecutableAgentRegistration
+pub awaken_executable_agent_contract::ExecutableAgentRegistration::agent_id: alloc::string::String
+pub awaken_executable_agent_contract::ExecutableAgentRegistration::agent_view: awaken_session_contract::agent_config::AgentConfigView
+pub awaken_executable_agent_contract::ExecutableAgentRegistration::declared_hand: core::option::Option<alloc::string::String>
+pub awaken_executable_agent_contract::ExecutableAgentRegistration::snapshot: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
+pub awaken_executable_agent_contract::ExecutableAgentRegistration::source_revision: u64
+pub awaken_executable_agent_contract::ExecutableAgentRegistration::workspace_id: alloc::string::String
+impl awaken_executable_agent_contract::ExecutableAgentRegistration
+pub fn awaken_executable_agent_contract::ExecutableAgentRegistration::validate(&self) -> core::result::Result<(), awaken_executable_agent_contract::ExecutableAgentRegistrationError>
+pub struct awaken_executable_agent_contract::ExecutableAgentWithdrawal
+pub awaken_executable_agent_contract::ExecutableAgentWithdrawal::agent_id: alloc::string::String
+pub awaken_executable_agent_contract::ExecutableAgentWithdrawal::lifecycle_revision: u64
+pub awaken_executable_agent_contract::ExecutableAgentWithdrawal::workspace_id: alloc::string::String
+impl awaken_executable_agent_contract::ExecutableAgentWithdrawal
+pub fn awaken_executable_agent_contract::ExecutableAgentWithdrawal::validate(&self) -> core::result::Result<(), awaken_executable_agent_contract::ExecutableAgentRegistrationError>
+pub trait awaken_executable_agent_contract::ExecutableAgentRegistrar: core::marker::Send + core::marker::Sync
+pub fn awaken_executable_agent_contract::ExecutableAgentRegistrar::register<'life0, 'async_trait>(&'life0 self, awaken_executable_agent_contract::ExecutableAgentRegistration) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_executable_agent_contract::ExecutableAgentRegistrationOutcome, awaken_executable_agent_contract::ExecutableAgentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_executable_agent_contract::ExecutableAgentRegistrar::withdraw<'life0, 'async_trait>(&'life0 self, awaken_executable_agent_contract::ExecutableAgentWithdrawal) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_executable_agent_contract::ExecutableAgentWithdrawalOutcome, awaken_executable_agent_contract::ExecutableAgentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

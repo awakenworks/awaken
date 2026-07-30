@@ -223,6 +223,7 @@ fn mount_ref_covers_every_source_kind() {
     assert_eq!(
         s(pc::MountSource::MemoryStore {
             store_id: "m".into(),
+            materialization_reference: None,
             write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
         })
         .source_ref,
@@ -249,6 +250,7 @@ fn memory_store_mounts_are_pulled_out_of_binds_into_memory_mounts() {
         mount_id: "notes".into(),
         source: pc::MountSource::MemoryStore {
             store_id: "store-42".into(),
+            materialization_reference: None,
             write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
         },
         mount_path: "/workspace/.mnt/notes".into(),
@@ -274,6 +276,7 @@ async fn memory_store_realizes_as_copy_on_the_container_tier() {
         mount_id: "notes".into(),
         source: pc::MountSource::MemoryStore {
             store_id: "store-7".into(),
+            materialization_reference: None,
             write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
         },
         mount_path: "/workspace/.mnt/notes".into(),

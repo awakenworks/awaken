@@ -628,6 +628,7 @@ async fn memory_store_realizes_as_copy_and_harvests_on_dispose() {
         mount_id: "mem".into(),
         source: pc::MountSource::MemoryStore {
             store_id: "s".into(),
+            materialization_reference: None,
             write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
         },
         mount_path: "/workspace/memory".into(),
@@ -690,6 +691,7 @@ async fn bwrap_splices_a_live_fuse_memory_mount_into_the_namespace() {
         mount_id: "mem".into(),
         source: pc::MountSource::MemoryStore {
             store_id: "s".into(),
+            materialization_reference: None,
             write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
         },
         mount_path: "/mnt/memory".into(),

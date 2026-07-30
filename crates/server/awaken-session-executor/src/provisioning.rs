@@ -196,9 +196,6 @@ pub(crate) struct StagedResources {
 
 #[derive(Clone)]
 pub(crate) enum ResourceBindingCheck {
-    File {
-        file_id: String,
-    },
     MemoryStore {
         memory_store_id: String,
         config_version: awaken_resource_contract::ConfigVersion,
@@ -206,6 +203,7 @@ pub(crate) enum ResourceBindingCheck {
     Repository {
         repository_id: String,
         config_version: awaken_resource_contract::ConfigVersion,
+        claim: Option<awaken_dispatch::RunClaim>,
     },
 }
 
