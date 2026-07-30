@@ -66,6 +66,22 @@ with the per-store URL fields. Seal keys and Cloud workload credentials likewise
 use their existing file-backed settings. Environment variables never select
 these deployment facts.
 
+Split Control and Coordinator processes additionally use one explicit private
+registration boundary:
+
+```toml
+# Control: destination of immutable executable Agent registrations.
+coordinator_internal_url = "http://awaken-coordinator:8080"
+
+# Control and Coordinator: the same operator-projected, least-scope token file.
+executable_agent_registration_token_file = "/var/run/secrets/awaken/agent-registration-token"
+```
+
+The token value is loaded from the file and never appears in `awaken config`.
+Workers reject this registration credential and every authority database field.
+`awaken database migrate` also prepares the Coordinator-owned executable Agent
+command log when `runtime_database_url` is configured.
+
 ## License
 
 Apache License, Version 2.0. See [LICENSE](LICENSE).

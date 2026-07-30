@@ -361,6 +361,7 @@ dependencies = [
  "awaken-control",
  "awaken-credential-vault",
  "awaken-executable-agent-catalog",
+ "awaken-executable-agent-contract",
  "awaken-ext-mcp",
  "awaken-file-store",
  "awaken-iam-client",

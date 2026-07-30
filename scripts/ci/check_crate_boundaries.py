@@ -1567,6 +1567,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-resource-reclaimer",
         "awaken-file-store", "awaken-memory-store", "awaken-resource-contract",
         "awaken-session-contract", "awaken-session-store",
+        "awaken-executable-agent-contract",
         "awaken-executable-agent-catalog",
         "awaken-sandbox-memoryd",
         # The ACP executor: the composition root wires an `acp:*` backend into the Serve
