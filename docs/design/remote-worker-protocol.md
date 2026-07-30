@@ -387,12 +387,20 @@ realization, commit, or settlement.
 
 Assembly fails closed for:
 
-- remote upstream plus a Worker-local/shared Control database commit path;
+- remote upstream plus any Worker-local/shared Control, Coordinator, or Resource
+  authority database path;
 - a remote commit client without a recovery source;
 - a manifest capability that no registered executor can implement;
 - SQLite configured with more than one physical committed-truth writer;
 - active-active PostgreSQL while authoritative recovery still depends on a
   process-local projection.
+
+The CLI composition additionally removes the Worker's durable Host storage root,
+so constructing `SharedHost` cannot implicitly open Session/File/Memory SQLite.
+It installs `WorkerCredentialFileResolver` for exact `WorkerReference` material
+and advertises Resource capabilities only when the corresponding per-kind
+network adapters exist. A missing adapter is a placement incompatibility, not a
+fallback to a shared store.
 
 ### 4.7 P0 acceptance
 

@@ -56,6 +56,24 @@ run_local_pool = true
 no_browser = false
 ```
 
+A split Worker has a database-free execution configuration. Credential material
+is projected into its own trust domain by Kubernetes Secret, Vault CSI, or an
+equivalent secret-volume provider; Awaken reads only the exact publication pin:
+
+```toml
+role = "worker"
+mode = "server"
+worker_server = "http://awaken-coordinator:8080"
+worker_credential_material_root = "/run/awaken/credentials"
+worker_credential_trust_domain = "awaken.worker"
+```
+
+The Worker rejects Control/Coordinator/Resource database URLs, Control seal-key
+settings, and private Control-to-Coordinator tokens. It does not require a
+Control seal key. Until per-kind Resource network adapters are configured, it
+does not advertise Session Resource capability and Resource-bearing runs are not
+placed there.
+
 The file also accepts `runtime_database_url`, `resource_database_url`, and
 `catalog_db` / `credential_db` / `config_db` / `admin_db` / `sessions_db` for
 server deployments. A deployment that uses one PostgreSQL authority for the

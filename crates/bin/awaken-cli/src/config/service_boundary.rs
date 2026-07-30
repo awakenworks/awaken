@@ -303,9 +303,9 @@ mod tests {
     #[test]
     fn worker_rejects_every_authority_database_binding() {
         // Causes: Worker with no authority database versus one or several
-        // Control/Coordinator/Resource database settings. Effects: the first is
-        // accepted; every configured authority field is named in one fail-closed
-        // error before a connection can be opened.
+        // Control/Coordinator/Resource database or Control seal-key settings.
+        // Effects: the first is accepted; every configured authority field is
+        // named in one fail-closed error before a connection or key read.
         assert!(enforce_worker_database_isolation(Role::Worker, &[]).is_ok());
         let error = enforce_worker_database_isolation(
             Role::Worker,
@@ -315,6 +315,22 @@ mod tests {
         assert!(error.contains("runtime_database_url"));
         assert!(error.contains("credential_db"));
         assert!(enforce_worker_database_isolation(Role::Control, &[("config_db", true)]).is_ok());
+
+        let key_error = ResolvedDeployment::resolve_file(
+            ConfigOverrides {
+                role: Some(Role::Worker),
+                worker_server: Some("http://coordinator".into()),
+                ..Default::default()
+            },
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            FileConfig {
+                control_seal_key_file: Some(PathBuf::from("/run/secrets/control-seal-key")),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(key_error.contains("control_seal_key_file"));
 
         let error = ResolvedDeployment::resolve_file(
             ConfigOverrides {
