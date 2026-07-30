@@ -33,6 +33,7 @@ fn memory_mount(store_id: &str, access: pc::MountAccess) -> pc::MountRequirement
         mount_id: "mem".into(),
         source: pc::MountSource::MemoryStore {
             store_id: store_id.into(),
+            materialization_reference: None,
             write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
         },
         mount_path: "/mnt/memory".into(),

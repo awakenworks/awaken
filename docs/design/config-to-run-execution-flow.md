@@ -50,8 +50,11 @@ Distributed:  application port -> network adapter -> same authority
 | Git repository contents | external Git provider | `RepositoryRealizer` with an ephemeral credential |
 | mounts, working trees, processes, and plaintext | Worker / Sandbox, ephemeral | local only |
 
-`WorkerResourcePlane` remains a composition value. It is not a Resource aggregate
-or proof of process-level store isolation.
+`WorkerSessionResourceAdapters` is a transitional composition value containing
+only the exact Session Resource ports that are currently installed. It is not a
+Resource aggregate or a data-plane owner. File and Memory execution use their
+claim-fenced network adapters; only immutable Skill access remains store-backed
+until its boundary slice lands.
 
 ## Flow One: Configuration To Application
 
@@ -171,7 +174,7 @@ flowchart TD
     J["Existing: enqueue RunDispatch with snapshot and secret-free envelopes"]
 
     K["Existing: authenticated Worker claim with lease epoch"]
-    L["Modified/New: per-kind Resource realization (File complete; Memory/Skill pending)"]
+    L["Modified/New: per-kind Resource realization (File/Memory complete; Skill pending)"]
     M["Added: exact Worker-private credential materialization"]
     N["Existing: Sandbox creation and repository realization"]
     O["Existing: Runtime model, tool, child Run, and HITL execution"]
@@ -243,6 +246,16 @@ checks the dispatch execution scope and frozen manifest, and then delegates to
 that same store adapter. The returned digest is verified again on the Worker
 before the existing binary-safe read-only mount is staged. The private blob key
 is never accepted as caller authority.
+
+For Memory inputs, copy materialization, crash recovery, and Recall use the
+canonical atomic `snapshot_heads` operation. A distributed Worker carries a
+process-local `materialization_reference` beside—not instead of—the logical
+`MemoryStoreId`. `HttpMemorySnapshotSource` and `HttpMemoryWritebackClient`
+decode that reference only inside the Worker boundary. The server holds the live
+claim guard while proving the frozen Workspace, config version, access ceiling,
+and current Resource lifecycle before delegating to `MemoryRepository`. Writable
+copy teardown uses the existing CAS update and delete-if-match algorithm; a
+read-only binding cannot issue a mutation.
 
 ### Commit and response authority
 

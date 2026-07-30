@@ -1,124 +1,18 @@
 //! File Resource boundary tests over real HTTP.
 
+mod support;
+
 use std::sync::Arc;
 
 use awaken_file_store::FileStore as _;
 use awaken_resource_contract::FileCatalog as _;
 use awaken_run_ingress::{
-    DispatchQueue as _, MemoryDispatchStore, RegisteredWorker, RegistryError, RegistryMutation,
-    RunClaim, RunDispatch, WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
-    WorkerRegistration, WorkerSnapshot, WorkerState,
-};
-use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
-use awaken_runtime_contract::snapshot::{
-    AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+    DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };
 use awaken_runtime_host::{
     FileContentSource as _, HeaderWorkerAuthenticator, HttpFileContentSource,
     StoreFileContentSource, WorkerFileContentService, WorkerUpstream, worker_file_content_router,
 };
-
-async fn serve(app: axum::Router) -> std::net::SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    address
-}
-
-struct CurrentWorkerDirectory(RegisteredWorker);
-
-#[async_trait::async_trait]
-impl WorkerDirectory for CurrentWorkerDirectory {
-    async fn register(
-        &self,
-        _registration: WorkerRegistration,
-        _now_ms: u64,
-        _ttl_ms: u64,
-    ) -> Result<RegisteredWorker, RegistryError> {
-        Ok(self.0.clone())
-    }
-
-    async fn heartbeat(
-        &self,
-        _identity: &WorkerIdentity,
-        _heartbeat: WorkerHeartbeat,
-        _now_ms: u64,
-        _ttl_ms: u64,
-    ) -> Result<RegistryMutation, RegistryError> {
-        Ok(RegistryMutation::NotFound)
-    }
-
-    async fn begin_drain(
-        &self,
-        _identity: &WorkerIdentity,
-        _deadline_ms: u64,
-    ) -> Result<RegistryMutation, RegistryError> {
-        Ok(RegistryMutation::NotFound)
-    }
-
-    async fn mark_quiesced(
-        &self,
-        _identity: &WorkerIdentity,
-    ) -> Result<RegistryMutation, RegistryError> {
-        Ok(RegistryMutation::NotFound)
-    }
-
-    async fn deregister(
-        &self,
-        _identity: &WorkerIdentity,
-    ) -> Result<RegistryMutation, RegistryError> {
-        Ok(RegistryMutation::NotFound)
-    }
-
-    async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
-        Ok((worker_id == self.0.snapshot.identity.worker_id).then(|| self.0.clone()))
-    }
-
-    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
-        Ok(vec![self.0.clone()])
-    }
-
-    async fn expire(&self, _now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {
-        Ok(Vec::new())
-    }
-}
-
-fn unix_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
-}
-
-fn activation() -> RunActivation {
-    RunActivation::new(
-        awaken_agent_contract::agent::run::Id("run-file".into()),
-        awaken_agent_contract::agent::thread::Id("thread-file".into()),
-        ExecutableAgentSnapshot {
-            id: ExecutableAgentSnapshotId("snapshot-file".into()),
-            metadata: Default::default(),
-            root_agent_id: AgentId("agent-file".into()),
-            resolved_spec: ResolvedSpec {
-                model_candidates: Vec::new(),
-                catalog_fingerprint: CatalogFingerprint("catalog-file".into()),
-                instructions: "read the File".into(),
-                max_steps: 1,
-                delegation_limits: Default::default(),
-                model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                    ModelBinding::new("test", "model", "native"),
-                ),
-                tool_descriptors: Vec::new(),
-                plugin_ids: Vec::new(),
-                plugin_config: Default::default(),
-                context_policy: Default::default(),
-                tool_presentation: Default::default(),
-            },
-            fingerprint: CatalogFingerprint("snapshot-file-fingerprint".into()),
-        },
-        Vec::new(),
-    )
-}
 
 fn resources(file_id: &str) -> awaken_session_contract::ResolvedSessionResources {
     awaken_session_contract::ResolvedSessionResources {
@@ -140,7 +34,7 @@ async fn claimed_dispatch(
     file_id: &str,
     owner: &str,
 ) -> RunClaim {
-    let request = RunDispatch::new(activation())
+    let request = RunDispatch::new(support::activation("file"))
         .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
             awaken_tenancy::ScopeId::from("workspace-file"),
         ))
@@ -150,7 +44,7 @@ async fn claimed_dispatch(
         ));
     dispatch.enqueue(request).await.unwrap();
     let claimed = dispatch
-        .claim(owner, 60_000, unix_now_ms(), &Default::default())
+        .claim(owner, 60_000, support::unix_now_ms(), &Default::default())
         .await
         .unwrap()
         .unwrap();
@@ -187,24 +81,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
         })
         .await
         .unwrap();
-    let identity = WorkerIdentity::new("worker-file", "worker-file-boot", 1);
-    let manifest = WorkerManifest::default();
-    let directory = Arc::new(CurrentWorkerDirectory(RegisteredWorker {
-        snapshot: WorkerSnapshot {
-            identity: identity.clone(),
-            state: WorkerState::Ready,
-            capability_fingerprint: manifest.fingerprint().unwrap(),
-            manifest,
-            in_flight: 0,
-            credential_observations: Default::default(),
-            acp_capability_observations: Default::default(),
-            expires_at_ms: u64::MAX,
-        },
-        heartbeat_sequence: 0,
-        registered_at_ms: 0,
-        heartbeat_at_ms: 0,
-        drain_deadline_ms: None,
-    }));
+    let (directory, identity) = support::ready_worker("worker-file").await;
     let dispatch = Arc::new(MemoryDispatchStore::new());
     let claim = claimed_dispatch(&dispatch, "file-public", &identity.lease_owner()).await;
     let source = Arc::new(StoreFileContentSource::new(store.clone(), store));
@@ -216,7 +93,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
         )
         .with_worker_directory(directory),
     );
-    let address = serve(worker_file_content_router(service)).await;
+    let address = support::serve(worker_file_content_router(service)).await;
     let source = HttpFileContentSource::new(
         WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone()),
     );
@@ -277,7 +154,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
             )
         }),
     );
-    let substituted_address = serve(substituted).await;
+    let substituted_address = support::serve(substituted).await;
     let substituted_source = HttpFileContentSource::new(
         WorkerUpstream::new(format!("http://{substituted_address}")).with_worker_id("worker-file"),
     );

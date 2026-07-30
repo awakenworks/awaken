@@ -218,6 +218,7 @@ impl BuiltInDreamAgent {
                 mount_id: format!("{}-input-memory", request.job_id),
                 source: MountSource::MemoryStore {
                     store_id: snapshot_store_id.into(),
+                    materialization_reference: None,
                     write_consistency: MemoryWriteConsistency::ProviderDefault,
                 },
                 mount_path: "/mnt/dream/input-memory".into(),
@@ -229,6 +230,7 @@ impl BuiltInDreamAgent {
                 mount_id: format!("{}-output-memory", request.job_id),
                 source: MountSource::MemoryStore {
                     store_id: result_store_id.into(),
+                    materialization_reference: None,
                     write_consistency: MemoryWriteConsistency::WriteThroughRequired,
                 },
                 mount_path: "/mnt/dream/output-memory".into(),

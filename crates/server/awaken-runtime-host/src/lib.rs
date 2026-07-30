@@ -45,6 +45,7 @@ mod mcp;
 mod mcp_relay;
 mod memory;
 mod memory_stores;
+mod memory_transport;
 mod no_model;
 mod outcome_controller;
 mod provisioning;
@@ -114,6 +115,10 @@ pub use crate::file_content_transport::{
 pub use crate::host::{
     AttemptExecutorDecorator, HostResume, RemoteAttemptInstallation, ResourcePlane, SharedHost,
     remote_worker_placement, self_hosted_inference_holder,
+};
+pub use crate::memory_transport::{
+    HttpMemoryRepository, HttpMemorySnapshotSource, HttpMemoryWritebackClient, WorkerMemoryService,
+    memory_materialization_reference, worker_memory_router,
 };
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
 pub use crate::postgres_migration_lock::PostgresMigrationLock;
@@ -546,19 +551,37 @@ impl ManagedHost {
                 }
                 memory_seen = true;
                 let writable = input.access == awaken_resource_contract::ResourceAccess::ReadWrite;
-                let handle = self
-                    .host
-                    .platform_memory_handle(memory_store_id.to_string(), writable);
-                let resource_validator = self.resource_validator.as_ref().ok_or_else(|| {
-                    RunError::bad_request(
-                        "Memory extraction requires a configured resource binding validator",
-                    )
-                })?;
+                let materialization_reference =
+                    all.mounts.iter().find_map(|mount| match &mount.source {
+                        awaken_provisioning_contract::MountSource::MemoryStore {
+                            store_id,
+                            materialization_reference,
+                            ..
+                        } if store_id == memory_store_id.as_str() => {
+                            materialization_reference.clone()
+                        }
+                        _ => None,
+                    });
+                let handle = self.host.platform_memory_handle(
+                    materialization_reference
+                        .clone()
+                        .unwrap_or_else(|| memory_store_id.to_string()),
+                    writable,
+                );
+                let resource_validator = if materialization_reference.is_some() {
+                    None
+                } else {
+                    Some(self.resource_validator.as_ref().ok_or_else(|| {
+                        RunError::bad_request(
+                            "Memory extraction requires a configured resource binding validator",
+                        )
+                    })?.clone())
+                };
                 bound_memory = Some(Arc::new(self.host.memory.bind(
                     thread,
                     workspace,
                     handle,
-                    resource_validator.clone(),
+                    resource_validator,
                     config,
                     writable,
                 )));

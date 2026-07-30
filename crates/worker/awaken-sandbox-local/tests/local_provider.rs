@@ -496,6 +496,7 @@ async fn memory_store_mount_fails_loud_not_a_silent_empty_file() {
         mount_id: "mem".into(),
         source: pc::MountSource::MemoryStore {
             store_id: "memstore-7".into(),
+            materialization_reference: None,
             write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
         },
         mount_path: "/mnt/memory/prefs".into(),

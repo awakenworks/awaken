@@ -24,7 +24,7 @@ mod credential_files;
 mod credential_liveness;
 mod lifecycle;
 mod manifest;
-mod resource_plane;
+mod session_resource_adapters;
 
 use credential_liveness::WorkerObservationCache;
 use lifecycle::{
@@ -42,7 +42,18 @@ pub use application::{
 pub use credential_files::WorkerCredentialFileResolver;
 pub use lifecycle::WorkerShutdown;
 pub use manifest::StandardManifestConfig;
-pub use resource_plane::WorkerResourcePlane;
+pub use session_resource_adapters::WorkerSessionResourceAdapters;
+
+/// Registration-bound construction of the exact Memory projection adapter.
+/// The assigned Worker identity is required to authenticate every claim-fenced
+/// snapshot and CAS request.
+pub type RegisteredMemoryMounterFactory = Arc<
+    dyn Fn(
+            &RegisteredWorkerContext,
+        ) -> Result<Arc<dyn awaken_provisioning_contract::MemoryMounter>, String>
+        + Send
+        + Sync,
+>;
 
 use awaken_runtime_host::{InferenceExecutorMaterializer, SharedHost};
 use awaken_runtime_host::{WorkerControlClient, WorkerUpstream};
@@ -102,7 +113,8 @@ pub struct WorkerNodeBuilder {
     session_container_provider: Option<InstalledSessionContainerProvider>,
     mcp_attachment_realizer: Option<Arc<dyn awaken_runtime_host::McpAttachmentRealizer>>,
     web_search_providers: awaken_runtime_host::WebSearchProviderRegistry,
-    resources: Option<WorkerResourcePlane>,
+    resources: Option<WorkerSessionResourceAdapters>,
+    memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
     admin_listen: Option<String>,
     graceful_drain: std::time::Duration,
     credential_probe_interval: std::time::Duration,
@@ -130,6 +142,7 @@ impl WorkerNodeBuilder {
             mcp_attachment_realizer: None,
             web_search_providers: awaken_runtime_host::WebSearchProviderRegistry::builtins(),
             resources: None,
+            memory_mounter_factory: None,
             admin_listen: Some("0.0.0.0:9090".to_string()),
             graceful_drain: std::time::Duration::from_secs(20),
             credential_probe_interval: std::time::Duration::from_secs(10),
@@ -251,8 +264,22 @@ impl WorkerNodeBuilder {
     }
 
     #[must_use]
-    pub fn with_resource_plane(mut self, resources: WorkerResourcePlane) -> Self {
+    pub fn with_session_resource_adapters(
+        mut self,
+        resources: WorkerSessionResourceAdapters,
+    ) -> Self {
         self.resources = Some(resources);
+        self
+    }
+
+    /// Install the Memory-specific adapter factory evaluated only after the
+    /// Coordinator has assigned this Worker incarnation its transport identity.
+    #[must_use]
+    pub fn with_registered_memory_mounter_factory(
+        mut self,
+        factory: RegisteredMemoryMounterFactory,
+    ) -> Self {
+        self.memory_mounter_factory = Some(factory);
         self
     }
 
@@ -418,6 +445,11 @@ impl WorkerNodeBuilder {
                 "container execution requires an installed hand executor factory".to_string(),
             ));
         }
+        if self.resources.is_some() && self.memory_mounter_factory.is_none() {
+            return Err(WorkerNodeBuildError(
+                "Resource-capable Worker requires a registered Memory mounter factory".to_string(),
+            ));
+        }
         let credential_observation_resolver = self.worker_local_credential_resolver.clone();
         // `disable_local_pool` names the Serve process's co-located executor pool.
         // A WorkerNode instead owns one mandatory registered remote claim pool, so
@@ -498,6 +530,7 @@ impl WorkerNodeBuilder {
             mcp_attachment_realizer: self.mcp_attachment_realizer,
             web_search_providers: self.web_search_providers,
             resources: self.resources,
+            memory_mounter_factory: self.memory_mounter_factory,
             admin_listen: self.admin_listen,
             graceful_drain: self.graceful_drain,
             credential_probe_interval: self.credential_probe_interval,
@@ -546,7 +579,8 @@ pub struct WorkerNode {
     session_container_provider: Option<InstalledSessionContainerProvider>,
     mcp_attachment_realizer: Option<Arc<dyn awaken_runtime_host::McpAttachmentRealizer>>,
     web_search_providers: awaken_runtime_host::WebSearchProviderRegistry,
-    resources: Option<WorkerResourcePlane>,
+    resources: Option<WorkerSessionResourceAdapters>,
+    memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
     admin_listen: Option<String>,
     graceful_drain: std::time::Duration,
     credential_probe_interval: std::time::Duration,
@@ -644,7 +678,7 @@ async fn build_secretless_worker(
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     material_resolver: Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
     local_resolver: Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
-    resources: Option<WorkerResourcePlane>,
+    resources: Option<WorkerSessionResourceAdapters>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let mut builder = WorkerNodeBuilder::new(upstream).with_process_config(process);
     if let Some(resolver) = material_resolver {
@@ -659,7 +693,7 @@ async fn build_secretless_worker(
         .with_inference_materializer(materializer)
         .with_standard_manifest(Default::default());
     if let Some(resources) = resources {
-        builder = builder.with_resource_plane(resources);
+        builder = builder.with_session_resource_adapters(resources);
     }
     Ok(builder.build()?)
 }
@@ -727,16 +761,28 @@ impl WorkerNode {
             .map_err(std::io::Error::other)?;
         let upstream = upstream.with_worker_identity(registration.snapshot.identity.clone());
         let control = WorkerControlClient::new(upstream.clone());
+        let registered_context =
+            RegisteredWorkerContext::new(registration.clone(), upstream.clone());
         let application = match self.application_factory {
-            Some(factory) => match factory(&RegisteredWorkerContext::new(
-                registration.clone(),
-                upstream.clone(),
-            )) {
+            Some(factory) => match factory(&registered_context) {
                 Ok(application) => Some(application),
                 Err(error) => {
                     let _ = control.deregister(&registration.snapshot.identity).await;
                     return Err(std::io::Error::other(format!(
                         "registered application factory failed: {error}"
+                    ))
+                    .into());
+                }
+            },
+            None => None,
+        };
+        let memory_mounter = match self.memory_mounter_factory {
+            Some(factory) => match factory(&registered_context) {
+                Ok(mounter) => Some(mounter),
+                Err(error) => {
+                    let _ = control.deregister(&registration.snapshot.identity).await;
+                    return Err(std::io::Error::other(format!(
+                        "registered Memory mounter factory failed: {error}"
                     ))
                     .into());
                 }
@@ -758,31 +804,26 @@ impl WorkerNode {
             .resources
             .as_ref()
             .map(|resources| resources.validator.clone());
-        let memory_mounter = self
-            .resources
-            .as_ref()
-            .and_then(|resources| resources.memory_mounter.clone());
         let managed_credential_materializer = self.credential_materializer.clone();
-        let host = match self.resources {
-            Some(resources) => SharedHost::new_with_resource_plane_and_deployment(
-                Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
-                "worker",
-                resources.plane,
-                self.deployment,
-            ),
-            None => SharedHost::new_with_deployment(
-                Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
-                "worker",
-                self.deployment,
-            ),
-        };
-        let mut host = host
-            .with_file_content_source(Arc::new(awaken_runtime_host::HttpFileContentSource::new(
-                upstream.clone(),
-            )))
-            .with_worker_upstream(upstream)
-            .with_dispatch_store(dispatch_store)
-            .with_web_search_provider_registry(self.web_search_providers);
+        let remote_memory = Arc::new(awaken_runtime_host::HttpMemoryRepository::new(
+            upstream.clone(),
+        ));
+        let remote_files = Arc::new(awaken_runtime_host::HttpFileContentSource::new(
+            upstream.clone(),
+        ));
+        let mut host = SharedHost::new_worker_with_deployment(
+            Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
+            "worker",
+            remote_files,
+            remote_memory,
+            self.deployment,
+        )
+        .with_worker_upstream(upstream)
+        .with_dispatch_store(dispatch_store)
+        .with_web_search_provider_registry(self.web_search_providers);
+        if let Some(resources) = self.resources {
+            host = host.with_skill_store_backend(resources.skill_store);
+        }
         if let Some(remote_attempt) = self.remote_attempt {
             host = host.with_remote_attempt_executor(remote_attempt);
         }
@@ -808,8 +849,8 @@ impl WorkerNode {
         if let Some(gate) = self.application_gate {
             host = host.with_gate_override(gate);
         }
-        if let Some(mounter) = memory_mounter {
-            host.install_memory_mounter(mounter);
+        if let Some(memory_mounter) = memory_mounter {
+            host.install_memory_mounter(memory_mounter);
         }
 
         if let Some(installed) = self.session_container_provider {

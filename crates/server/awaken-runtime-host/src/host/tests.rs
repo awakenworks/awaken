@@ -261,7 +261,7 @@ fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, writable: b
             thread,
             "default",
             handle,
-            Arc::new(TestResourceBindingValidator),
+            Some(Arc::new(TestResourceBindingValidator)),
             &config,
             writable,
         ))),

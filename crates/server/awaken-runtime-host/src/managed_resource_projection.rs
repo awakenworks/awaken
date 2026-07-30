@@ -118,20 +118,44 @@ impl crate::ManagedHost {
                 memory_store_id,
                 config,
             } => {
-                let validator = self.resource_validator.as_ref().ok_or_else(|| {
-                    RunError::bad_request(
-                        "memory resources require a configured resource binding validator",
-                    )
-                })?;
-                validator
-                    .validate_memory_binding(workspace, memory_store_id.as_str(), config.version)
-                    .map_err(|error| RunError::bad_request(error.to_string()))?;
-                staged.binding_checks.push(
-                    crate::provisioning::ResourceBindingCheck::MemoryStore {
-                        memory_store_id: memory_store_id.to_string(),
-                        config_version: config.version,
-                    },
-                );
+                let materialization_reference = match (&self.host.upstream, claim) {
+                    (Some(_), Some(claim)) => Some(
+                        crate::memory_transport::memory_materialization_reference(
+                            workspace,
+                            memory_store_id.as_str(),
+                            config.version,
+                            input.access,
+                            claim,
+                        )
+                        .map_err(|error| RunError::internal(error.to_string()))?,
+                    ),
+                    (Some(_), None) => {
+                        return Err(RunError::bad_request(
+                            "remote Memory materialization requires a dispatch claim",
+                        ));
+                    }
+                    (None, _) => None,
+                };
+                if materialization_reference.is_none() {
+                    let validator = self.resource_validator.as_ref().ok_or_else(|| {
+                        RunError::bad_request(
+                            "memory resources require a configured resource binding validator",
+                        )
+                    })?;
+                    validator
+                        .validate_memory_binding(
+                            workspace,
+                            memory_store_id.as_str(),
+                            config.version,
+                        )
+                        .map_err(|error| RunError::bad_request(error.to_string()))?;
+                    staged.binding_checks.push(
+                        crate::provisioning::ResourceBindingCheck::MemoryStore {
+                            memory_store_id: memory_store_id.to_string(),
+                            config_version: config.version,
+                        },
+                    );
+                }
                 // The worker realizes one governed store directory through its
                 // MemoryMounter. The resource plane never receives a principal,
                 // role, API key, or policy: the outer authorization/ACL seam has
@@ -142,6 +166,7 @@ impl crate::ManagedHost {
                     mount_id: input.binding_id.to_string(),
                     source: awaken_provisioning_contract::MountSource::MemoryStore {
                         store_id: memory_store_id.to_string(),
+                        materialization_reference,
                         write_consistency:
                             awaken_provisioning_contract::MemoryWriteConsistency::ProviderDefault,
                     },

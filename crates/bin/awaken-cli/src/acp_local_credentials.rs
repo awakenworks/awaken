@@ -21,7 +21,7 @@ use awaken_runtime_contract::CredentialObservationState;
 pub struct PreparedLocalAcp {
     resolver: Arc<AcpLocalCredentialResolver>,
     stores: awaken_control::InferenceMaterializationStores,
-    resources: Option<awaken_worker::WorkerResourcePlane>,
+    resources: Option<awaken_worker::WorkerSessionResourceAdapters>,
 }
 
 fn uses_trusted_local_identity(deployment: &crate::config::ResolvedDeployment) -> bool {
@@ -68,7 +68,7 @@ pub async fn prepare_local_acp(
 
 async fn local_worker_resources(
     deployment: &crate::config::ResolvedDeployment,
-) -> Result<awaken_worker::WorkerResourcePlane, String> {
+) -> Result<awaken_worker::WorkerSessionResourceAdapters, String> {
     let validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator> =
         match &deployment.control.admin {
             awaken_control::StoreBackend::Sqlite(path) => Arc::new(
@@ -81,23 +81,31 @@ async fn local_worker_resources(
                     .expect("Postgres admin backend produces a validator")
             }
         };
-    let resource_plane = match &deployment.resources {
+    let skill_store = match &deployment.resources {
         crate::config::ResourcePlaneStoreBackend::Embedded(root) => {
-            awaken_server::embedded_resource_plane(root)
+            awaken_server::embedded_skill_store(root)
         }
         crate::config::ResourcePlaneStoreBackend::Postgres(url) => {
-            awaken_server::shared_worker_resource_plane(Some(url))
-                .await?
-                .ok_or_else(|| "Postgres Resource plane is unavailable to the Worker".to_string())?
+            awaken_server::shared_skill_store(url).await?
         }
     };
-    let mounter = Arc::new(awaken_sandbox_memoryd::MemoryStoreMounter::new(
-        resource_plane.memory_repository(),
-    ));
-    Ok(
-        awaken_worker::WorkerResourcePlane::new(resource_plane, validator)
-            .with_memory_mounter(mounter),
-    )
+    Ok(awaken_worker::WorkerSessionResourceAdapters::new(
+        skill_store,
+        validator,
+    ))
+}
+
+/// Compose the one registration-bound Memory adapter at the executable edge.
+/// The Worker crate receives only the neutral factory and mounter ports.
+pub fn registered_memory_mounter_factory() -> awaken_worker::RegisteredMemoryMounterFactory {
+    Arc::new(|context| {
+        let repository = Arc::new(awaken_runtime_host::HttpMemoryRepository::new(
+            context.upstream().clone(),
+        ));
+        Ok(Arc::new(
+            awaken_sandbox_memoryd::MemoryStoreMounter::copy_only(repository),
+        ))
+    })
 }
 
 fn configured_worker_builder(
@@ -139,6 +147,7 @@ fn configured_worker_builder(
         std::time::Duration::from_secs(worker.credential_probe_interval_secs),
         std::time::Duration::from_secs(worker.credential_observation_ttl_secs),
     )
+    .with_registered_memory_mounter_factory(registered_memory_mounter_factory())
     .with_standard_manifest(Default::default());
     builder = match &worker.admin_listen {
         Some(address) => builder.with_admin_listen(address),
@@ -169,7 +178,7 @@ async fn prepare_local_acp_with(
     installer: Arc<dyn AcpWrapperInstaller>,
     negotiator: Arc<dyn AcpCapabilityNegotiator>,
     stores: awaken_control::InferenceMaterializationStores,
-    resources: Option<awaken_worker::WorkerResourcePlane>,
+    resources: Option<awaken_worker::WorkerSessionResourceAdapters>,
 ) -> Result<Option<PreparedLocalAcp>, String> {
     let wrapper_root = deployment.data_dir.join("acp-wrappers");
     let selected_cli_ids = deployment.runtime.acp.as_ref().map(|profile| {
@@ -235,7 +244,7 @@ impl PreparedLocalAcp {
             .with_acp_capability_observation_source(resolver)
             .without_admin_surface();
         if let Some(resources) = self.resources {
-            builder = builder.with_resource_plane(resources);
+            builder = builder.with_session_resource_adapters(resources);
         }
         builder.build().map_err(|error| error.to_string())
     }

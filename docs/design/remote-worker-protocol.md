@@ -317,7 +317,11 @@ WorkerNodeBuilder::new(upstream)
     .with_session_container_provider("provider-id", provider)
     .with_application_factory(factory)
     .with_application_gate(gate)
-    .with_resource_plane(WorkerResourcePlane::new(resources, validator))
+    .with_session_resource_adapters(WorkerSessionResourceAdapters::new(
+        skill_store,
+        validator,
+    ))
+    .with_registered_memory_mounter_factory(memory_mounter_factory)
     .with_standard_manifest(application_capabilities)
     .build()?
     .run_until_shutdown()
@@ -340,10 +344,13 @@ environment-driven deployment and manifest metadata once before installing
 their typed values on the Builder.
 
 `awaken-worker` depends only on these neutral ports and the typed Worker
-transport. `awaken-cli` is the product composition root that opens Control and
-Resource stores and injects the concrete inference, A2A, relay and Memory-mount
-adapters. The boundary check rejects any direct `awaken-worker` dependency on
-`awaken-server` or `awaken-control`.
+transport. `awaken-cli` is the product composition root that injects the
+concrete inference, A2A, relay, and Memory-mount adapters. The Memory factory is
+evaluated after registration because its HTTP client must carry the assigned
+Worker incarnation. The transitional `WorkerSessionResourceAdapters` opens only
+Skill access plus the live binding validator; it does not open File or Memory
+stores. The boundary check rejects any direct `awaken-worker` dependency on
+`awaken-server`, `awaken-control`, or `awaken-sandbox-memoryd`.
 
 `build()` is synchronous and side-effect free: it derives or accepts one
 manifest and runs the same contract validation before registration.
@@ -395,12 +402,14 @@ Assembly fails closed for:
 - active-active PostgreSQL while authoritative recovery still depends on a
   process-local projection.
 
-The CLI composition additionally removes the Worker's durable Host storage root,
-so constructing `SharedHost` cannot implicitly open Session/File/Memory SQLite.
-It installs `WorkerCredentialFileResolver` for exact `WorkerReference` material
-and advertises Resource capabilities only when the corresponding per-kind
-network adapters exist. A missing adapter is a placement incompatibility, not a
-fallback to a shared store.
+The CLI composition additionally removes the Worker's durable Host storage root.
+`SharedHost::new_worker_with_deployment` installs File and Memory clients before
+store selection, so Worker startup cannot briefly open and then replace local
+File/Memory SQLite authorities. It installs `WorkerCredentialFileResolver` for
+exact `WorkerReference` material and advertises Resource capabilities only when
+the corresponding per-kind network adapters exist. A Resource-capable Worker
+without the registration-bound Memory mounter factory fails during `build()`;
+there is no shared-store fallback.
 
 ### 4.7 P0 acceptance
 

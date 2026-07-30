@@ -205,19 +205,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
             deployment.durable = true;
             deployment.storage_dir = Some(storage_dir.into());
-            let resource_plane = awaken_server::shared_worker_resource_plane(Some(&resource_url))
-                .await?
-                .ok_or("resource database URL did not produce a Worker Resource plane")?;
+            let skill_store = awaken_server::shared_skill_store(&resource_url).await?;
             let validator = awaken_control::open_shared_resource_validator(Some(
                 &awaken_control::StoreBackend::Postgres(admin_url),
             ))
             .await?
             .ok_or("admin database URL did not produce a Resource validator")?;
-            let mounter = Arc::new(awaken_sandbox_memoryd::MemoryStoreMounter::new(
-                resource_plane.memory_repository(),
-            ));
-            let resources = awaken_worker::WorkerResourcePlane::new(resource_plane, validator)
-                .with_memory_mounter(mounter);
+            let resources =
+                awaken_worker::WorkerSessionResourceAdapters::new(skill_store, validator);
             let credentials = awaken_runtime_host::PinnedCredentialMaterializer::external_only(
                 materializer.clone(),
             );
@@ -225,10 +220,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 upstream,
             ))
             .with_deployment_config(deployment)
+            .with_registered_memory_mounter_factory(awaken_cli::registered_memory_mounter_factory())
             .with_inference_materializer(materializer.clone())
             .with_credential_materializer(credentials)
             .with_worker_local_credential_resolver(materializer)
-            .with_resource_plane(resources)
+            .with_session_resource_adapters(resources)
             .with_standard_manifest(Default::default())
             .build()?
             .run_until_shutdown()

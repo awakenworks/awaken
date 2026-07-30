@@ -328,7 +328,7 @@ pub struct BoundMemory {
     session_id: String,
     store: Arc<dyn MemoryStoreHandle>,
     platform: Arc<PlatformMemoryHandle>,
-    resource_validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
+    resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
     workspace_id: String,
     memory_store_id: String,
     memory_config_version: u64,
@@ -494,7 +494,7 @@ impl MemoryRuntime {
         session_id: impl Into<String>,
         workspace_id: impl Into<String>,
         platform: Arc<PlatformMemoryHandle>,
-        resource_validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
+        resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
         config: &awaken_resource_contract::MemoryStoreConfigVersion,
         writable: bool,
     ) -> BoundMemory {
@@ -641,12 +641,16 @@ impl BoundMemory {
 
     fn validate_live_resource(&self) -> Result<(), String> {
         self.resource_validator
-            .validate_memory_binding(
-                &self.workspace_id,
-                &self.memory_store_id,
-                awaken_resource_contract::ConfigVersion(self.memory_config_version),
-            )
-            .map_err(|error| error.to_string())
+            .as_ref()
+            .map_or(Ok(()), |validator| {
+                validator
+                    .validate_memory_binding(
+                        &self.workspace_id,
+                        &self.memory_store_id,
+                        awaken_resource_contract::ConfigVersion(self.memory_config_version),
+                    )
+                    .map_err(|error| error.to_string())
+            })
     }
 
     /// Durably enqueue one extraction keyed by the terminal commit, then drive it
@@ -985,7 +989,7 @@ impl crate::host::SharedHost {
             thread,
             workspace_id,
             handle,
-            resource_validator,
+            Some(resource_validator),
             config,
             writable,
         );
@@ -1155,7 +1159,7 @@ mod tests {
             session_id,
             "ws-test",
             platform,
-            Arc::new(TestResourceBindingValidator),
+            Some(Arc::new(TestResourceBindingValidator)),
             &config,
             true,
         );

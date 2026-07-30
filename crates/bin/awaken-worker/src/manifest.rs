@@ -10,7 +10,7 @@ use awaken_worker_contract::{
     WorkerCapacity, WorkerManifest,
 };
 
-use crate::WorkerResourcePlane;
+use crate::WorkerSessionResourceAdapters;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManifestKind {
@@ -132,13 +132,13 @@ pub(crate) enum ResourceManifestSupport {
 
 impl
     From<(
-        Option<&WorkerResourcePlane>,
+        Option<&WorkerSessionResourceAdapters>,
         Option<&awaken_runtime_host::PinnedCredentialMaterializer>,
     )> for ResourceManifestSupport
 {
     fn from(
         (resources, credentials): (
-            Option<&WorkerResourcePlane>,
+            Option<&WorkerSessionResourceAdapters>,
             Option<&awaken_runtime_host::PinnedCredentialMaterializer>,
         ),
     ) -> Self {

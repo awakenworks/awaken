@@ -243,6 +243,7 @@ pub fn registered_worker_transport_router(
     directory: Arc<dyn WorkerDirectory>,
     policy: Arc<dyn PlacementPolicy>,
     application_session_control: Arc<dyn awaken_session_contract::ApplicationSessionControl>,
+    resource_validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
 ) -> Router {
     let dispatch = host
         .dispatch_store()
@@ -261,6 +262,13 @@ pub fn registered_worker_transport_router(
         )
         .with_worker_directory(directory.clone()),
     ));
+    let memory = crate::worker_memory_router(Arc::new(crate::WorkerMemoryService::new(
+        host.memory_repository(),
+        resource_validator,
+        dispatch.clone() as Arc<dyn DispatchQueue>,
+        Arc::new(HeaderWorkerAuthenticator),
+        directory.clone(),
+    )));
     let commit_service = Arc::new(crate::commit_ingest::ClaimedCommitService::for_host(
         dispatch as Arc<dyn DispatchQueue>,
         host,
@@ -268,7 +276,7 @@ pub fn registered_worker_transport_router(
         Arc::new(HeaderWorkerAuthenticator),
     ));
     registered_worker_transport_router_with_services(
-        dispatch_router.merge(file_content),
+        dispatch_router.merge(file_content).merge(memory),
         commit_service,
     )
 }

@@ -1259,7 +1259,9 @@ impl SharedHost {
                 })?;
                 for mount in self.thread_resources_snapshot(thread).mounts {
                     if let awaken_provisioning_contract::MountSource::MemoryStore {
-                        store_id, ..
+                        store_id,
+                        materialization_reference,
+                        ..
                     } = &mount.source
                     {
                         let files = env
@@ -1267,7 +1269,11 @@ impl SharedHost {
                             .await
                             .map_err(|error| HostError::internal(error.to_string()))?;
                         mounter
-                            .reconcile_recovered_copy(store_id, &files, mount.access)
+                            .reconcile_recovered_copy(
+                                materialization_reference.as_deref().unwrap_or(store_id),
+                                &files,
+                                mount.access,
+                            )
                             .await
                             .map_err(|error| HostError::internal(error.to_string()))?;
                     }

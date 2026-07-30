@@ -205,9 +205,35 @@ The immutable File boundary is complete:
   accepting work; missing/stale claims, cross-Workspace/File requests, missing
   content, and substituted responses fail closed.
 
-Memory snapshot/CAS write-back, immutable Skill bundle access, and the remaining
-Coordinator/Resource store-ownership separation remain subsequent ADR-0071
-slices.
+The mutable Memory boundary is complete:
+
+- copy materialization, recovery, and Recall now share the repository's one
+  atomic `snapshot_heads` primitive; the former list-plus-read reconstructions
+  were removed so no local or remote path can observe a mixed generation;
+- `HttpMemorySnapshotSource` and `HttpMemoryWritebackClient` compose the existing
+  `MemoryRepository` port for a Worker without exposing authoring, history
+  redaction, retention, or lifecycle purge;
+- a process-local `materialization_reference` keeps the public `MemoryStoreId`
+  distinct from the exact Workspace, config version, access ceiling, and dispatch
+  claim used by the adapters; it is never persisted in the Session manifest;
+- the handler authenticates the current Worker incarnation, holds the claim epoch
+  guard, checks the frozen Workspace/store/config/access binding, validates live
+  Resource ownership, and denies every write through a read-only binding;
+- the existing copy/harvest mounter performs snapshot plus CAS create/update/
+  delete-if-match through the adapters, preserving concurrent durable heads and
+  returning typed conflicts; the Worker opens no Memory database;
+- `awaken-cli` owns the concrete registration-bound mounter factory, while
+  `awaken-worker` depends only on the neutral factory and `MemoryMounter` ports;
+  `SharedHost::new_worker_with_deployment` installs File/Memory clients before
+  store selection instead of opening and later replacing local databases;
+- the former full `WorkerResourcePlane` composition was reduced to
+  `WorkerSessionResourceAdapters` (transitional Skill access plus binding
+  validation), and the unused shared full-plane Worker factory was removed;
+- Memory timestamps use a transport-only decimal representation because JSON
+  cannot portably decode Rust `u128`; the existing domain type remains unchanged.
+
+Immutable Skill bundle access and the remaining Coordinator/Resource
+store-ownership separation remain subsequent ADR-0071 slices.
 
 ## Consequences
 

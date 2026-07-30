@@ -278,7 +278,7 @@ process-local handle.
 | `StoreFileContentSource` | Implemented local adapter | File data plane | reuse `FileCatalog` then `FileStore` as the sole logical-to-content resolution path | Worker identity, dispatch ownership, HTTP, a second catalog |
 | `HttpFileContentSource` / Worker File handler | Implemented network adapters | Worker/File boundary | carry Workspace, File, and exact claim; authenticate, prove the File belongs to the frozen dispatch manifest, hold the claim guard through the read, and verify the response digest again on Worker | authoring/list/delete, generic Resource dispatch, Worker database access |
 | `MemoryRepository` | Existing canonical port | Memory data plane | scoped entries, one atomic `snapshot_heads` primitive shared by copy materialization, recovery, and Recall, CAS, atomic history, redaction, retention hooks | Agent/Session binding and IAM policy; callers must not reconstruct a snapshot with list-plus-read |
-| `MemorySnapshotSource` / `MemoryWritebackClient` | New boundary adapters | Worker/Memory boundary | obtain exact mutable content and apply claim-fenced CAS write-back | config selection, silent overwrite, Memory database access |
+| `HttpMemorySnapshotSource` / `HttpMemoryWritebackClient` | Implemented network adapters | Worker/Memory boundary | obtain one atomic snapshot and apply claim-fenced CAS create/update/delete-if-match under the frozen Workspace/store/config/access binding | config selection, silent overwrite, authoring/history/purge, Worker database access |
 | `MemoryRuntime` | Existing, moving to extension ownership | `awaken-ext-memory` | recall Plugin, terminal extraction observer, selector/extractor capability, stable intent/receipt | resource identity, default store, IAM policy, Host lifecycle |
 | `BoundMemory` | Existing | Session Runtime | one resolved store handle + pinned policy + maximum access shared by recall/extraction | workspace lookup, current-config resolution, authorization |
 | `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct working tree, publish Agent-authored commits with ephemeral transport credentials | remote repository ownership, authorization policy, or commit pinning |
@@ -321,6 +321,19 @@ maintaining local and remote materialization algorithms. It also removes the
 old post-staging direct catalog lookup: immutable File existence and integrity
 are decided once by the per-kind materialization port, while mutable/configured
 Resource kinds retain their operation-time binding checks.
+
+The Memory branch is implemented without a second content model. Copy
+materialization, recovered-copy reconciliation, and Recall all call the existing
+atomic `MemoryRepository::snapshot_heads`; list-plus-read snapshot emulation has
+been removed. Distributed staging adds a process-local
+`materialization_reference` to the provisioning requirement while preserving the
+logical `MemoryStoreId`. The reference binds Workspace, exact config version,
+maximum access, and `RunClaim`, but is not persisted in the Session manifest.
+`HttpMemorySnapshotSource` and `HttpMemoryWritebackClient` project only snapshot
+and runtime mutations. The handler authenticates the current Worker, holds the
+claim epoch guard, matches the frozen manifest, validates live Resource state,
+and rejects write-back for read-only input. The existing copy/harvest algorithm
+then supplies CAS conflict and delete-if-match behavior across the network.
 
 `ResourcePlane` selects local or remote implementations at the composition root;
 it does not own a Resource aggregate. A separately deployed provider retains its
