@@ -90,7 +90,6 @@ async function main() {
         `A2: session/new carried the anonymous route without auth, got ${JSON.stringify(texts)}`,
       );
       assert.ok(!reply.includes(CALC_TOKEN), 'the raw vault token never reached the CLI');
-
       const search = { name: 'search', type: 'url', url: replacementFixture.url };
       const replaced = await client.beta.sessions.update(anonymous.id, {
         agent: { mcp_servers: [search] },

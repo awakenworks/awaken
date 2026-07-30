@@ -1,4 +1,5 @@
 pub mod awaken_provisioning_contract
+pub use awaken_provisioning_contract::SandboxProvisioning
 pub enum awaken_provisioning_contract::AdmissionError
 pub awaken_provisioning_contract::AdmissionError::EmptySummary
 pub awaken_provisioning_contract::AdmissionError::MissingRequiredField
@@ -57,6 +58,9 @@ pub fn awaken_provisioning_contract::MaterializedEnvValue::expose(&self) -> &str
 pub fn awaken_provisioning_contract::MaterializedEnvValue::is_secret(&self) -> bool
 impl core::fmt::Debug for awaken_provisioning_contract::MaterializedEnvValue
 pub fn awaken_provisioning_contract::MaterializedEnvValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum awaken_provisioning_contract::MemoryWriteConsistency
+pub awaken_provisioning_contract::MemoryWriteConsistency::ProviderDefault
+pub awaken_provisioning_contract::MemoryWriteConsistency::WriteThroughRequired
 pub enum awaken_provisioning_contract::MountAccess
 pub awaken_provisioning_contract::MountAccess::ReadOnly
 pub awaken_provisioning_contract::MountAccess::ReadWrite
@@ -78,6 +82,7 @@ pub awaken_provisioning_contract::MountSource::InlineBytes::content_hash: core::
 pub awaken_provisioning_contract::MountSource::InlineBytes::contents: alloc::vec::Vec<u8>
 pub awaken_provisioning_contract::MountSource::MemoryStore
 pub awaken_provisioning_contract::MountSource::MemoryStore::store_id: alloc::string::String
+pub awaken_provisioning_contract::MountSource::MemoryStore::write_consistency: awaken_provisioning_contract::MemoryWriteConsistency
 pub awaken_provisioning_contract::MountSource::Other(serde_json::value::Value)
 pub awaken_provisioning_contract::MountSource::Resource
 pub awaken_provisioning_contract::MountSource::Resource::content_hash: core::option::Option<alloc::string::String>
@@ -305,6 +310,7 @@ pub struct awaken_provisioning_contract::SandboxExecutionPolicy
 pub awaken_provisioning_contract::SandboxExecutionPolicy::config: awaken_provisioning_contract::SandboxOverride
 pub awaken_provisioning_contract::SandboxExecutionPolicy::disabled: bool
 pub awaken_provisioning_contract::SandboxExecutionPolicy::id: awaken_provisioning_contract::SandboxExecutionPolicyId
+pub awaken_provisioning_contract::SandboxExecutionPolicy::provisioning: awaken_session_contract::baseline::SandboxProvisioning
 pub awaken_provisioning_contract::SandboxExecutionPolicy::version: awaken_provisioning_contract::SandboxExecutionPolicyVersion
 pub struct awaken_provisioning_contract::SandboxExecutionPolicyId(pub alloc::string::String)
 pub struct awaken_provisioning_contract::SandboxExecutionPolicyRef
@@ -400,3 +406,4 @@ pub fn awaken_provisioning_contract::resolve_inflight(bool) -> awaken_provisioni
 pub async fn awaken_provisioning_contract::select_provider<'a>(&'a [alloc::boxed::Box<dyn awaken_provisioning_contract::SandboxProvider>], &awaken_provisioning_contract::SandboxSpec) -> core::result::Result<&'a dyn awaken_provisioning_contract::SandboxProvider, awaken_provisioning_contract::SelectionError>
 pub async fn awaken_provisioning_contract::select_provider_with_policy<'a>(&'a [alloc::boxed::Box<dyn awaken_provisioning_contract::SandboxProvider>], &awaken_provisioning_contract::SandboxSpec, &awaken_provisioning_contract::IsolationPolicy) -> core::result::Result<awaken_provisioning_contract::PolicySelection<'a>, awaken_provisioning_contract::SelectionError>
 pub fn awaken_provisioning_contract::should_redispatch(awaken_provisioning_contract::PoisonVerdict) -> bool
+pub fn awaken_provisioning_contract::validate_mount_requirements(&[awaken_provisioning_contract::MountRequirement], &awaken_provisioning_contract::SandboxCapabilities) -> core::result::Result<(), awaken_provisioning_contract::PrepareError>

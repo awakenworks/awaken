@@ -22,6 +22,7 @@ pub fn awaken_sandbox_local::IsolatedRoot::root(&self) -> &std::path::Path
 pub struct awaken_sandbox_local::LocalProvider
 impl awaken_sandbox_local::LocalProvider
 pub async fn awaken_sandbox_local::LocalProvider::adopt_sandbox(&self, &awaken_provisioning_contract::sandbox::SandboxHandle) -> core::result::Result<awaken_sandbox_local::LocalSandbox, awaken_provisioning_contract::sandbox::SandboxError>
+pub fn awaken_sandbox_local::LocalProvider::capabilities() -> awaken_provisioning_contract::sandbox::SandboxCapabilities
 pub async fn awaken_sandbox_local::LocalProvider::create_sandbox(&self, &awaken_provisioning_contract::spec::SandboxSpec) -> core::result::Result<awaken_sandbox_local::LocalSandbox, awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::LocalProvider::inherits_agent_stderr(&self) -> bool
 pub fn awaken_sandbox_local::LocalProvider::install_memory_mounter(&self, alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::MemoryMounter>)
@@ -41,7 +42,7 @@ impl awaken_sandbox_local::LocalSandbox
 pub fn awaken_sandbox_local::LocalSandbox::clear_resource_projection(&self) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::LocalSandbox::list_files(&self, &str) -> alloc::vec::Vec<(alloc::string::String, alloc::vec::Vec<u8>)>
 pub fn awaken_sandbox_local::LocalSandbox::materialize_inline(&self, &str, &[u8]) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
-pub fn awaken_sandbox_local::LocalSandbox::materialize_read_only_tree(&self, &str, &[(alloc::string::String, alloc::vec::Vec<u8>)]) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
+pub fn awaken_sandbox_local::LocalSandbox::materialize_read_only_tree(&self, &str, &[(alloc::string::String, alloc::vec::Vec<u8>, bool)]) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
 pub async fn awaken_sandbox_local::LocalSandbox::release_memory_mounts(&self)
 pub fn awaken_sandbox_local::LocalSandbox::remove_inline(&self, &str) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::LocalSandbox::rooted_tools(&self) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
@@ -68,6 +69,7 @@ impl awaken_sandbox_local::NamespaceProvider
 pub async fn awaken_sandbox_local::NamespaceProvider::adopt_sandbox(&self, &awaken_provisioning_contract::sandbox::SandboxHandle) -> core::result::Result<awaken_sandbox_local::NamespaceSandbox, awaken_provisioning_contract::sandbox::SandboxError>
 pub async fn awaken_sandbox_local::NamespaceProvider::create_sandbox(&self, &awaken_provisioning_contract::spec::SandboxSpec) -> core::result::Result<awaken_sandbox_local::NamespaceSandbox, awaken_provisioning_contract::sandbox::SandboxError>
 impl awaken_sandbox_local::NamespaceProvider
+pub fn awaken_sandbox_local::NamespaceProvider::capabilities() -> awaken_provisioning_contract::sandbox::SandboxCapabilities
 pub fn awaken_sandbox_local::NamespaceProvider::inherits_agent_stderr(&self) -> bool
 pub fn awaken_sandbox_local::NamespaceProvider::install_memory_mounter(&self, alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::MemoryMounter>)
 pub fn awaken_sandbox_local::NamespaceProvider::install_secret_broker(&self, alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::SecretBroker>)
@@ -87,11 +89,12 @@ impl awaken_sandbox_local::NamespaceSandbox
 pub fn awaken_sandbox_local::NamespaceSandbox::clear_resource_projection(&self) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::NamespaceSandbox::list_files(&self, &str) -> alloc::vec::Vec<(alloc::string::String, alloc::vec::Vec<u8>)>
 pub fn awaken_sandbox_local::NamespaceSandbox::materialize_inline(&self, &str, &[u8]) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
-pub fn awaken_sandbox_local::NamespaceSandbox::materialize_read_only_tree(&self, &str, &[(alloc::string::String, alloc::vec::Vec<u8>)]) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
+pub fn awaken_sandbox_local::NamespaceSandbox::materialize_read_only_tree(&self, &str, &[(alloc::string::String, alloc::vec::Vec<u8>, bool)]) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::NamespaceSandbox::provision_repo(&self, &str, &str, core::option::Option<&str>, core::option::Option<&str>, core::option::Option<&awaken_provisioning_contract::sandbox::RepositoryHttpBasicCredential>) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::NamespaceSandbox::push_repo(&self, &str, core::option::Option<&awaken_provisioning_contract::sandbox::RepositoryHttpBasicCredential>) -> core::result::Result<bool, awaken_provisioning_contract::sandbox::SandboxError>
 pub async fn awaken_sandbox_local::NamespaceSandbox::release_memory_mounts(&self)
 pub fn awaken_sandbox_local::NamespaceSandbox::remove_inline(&self, &str) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
+pub fn awaken_sandbox_local::NamespaceSandbox::remove_mount(&self, &str) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::NamespaceSandbox::rooted_tools(&self) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
 pub fn awaken_sandbox_local::NamespaceSandbox::scan_skill_dir(&self, &str) -> alloc::vec::Vec<awaken_sandbox_local::DiscoveredSkillFile>
 pub async fn awaken_sandbox_local::NamespaceSandbox::spawn_agent(&self, awaken_provisioning_contract::spec::Command) -> core::result::Result<(alloc::boxed::Box<dyn awaken_provisioning_contract::sandbox::ProcessHandle>, alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>), awaken_provisioning_contract::sandbox::SandboxError>

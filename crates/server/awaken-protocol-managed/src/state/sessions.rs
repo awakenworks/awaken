@@ -2,6 +2,7 @@
 //! update, delete, and archive.
 
 use super::application::{ManagedMcpCandidate, initial_mcp_candidates};
+use super::sandbox_provisioning::validate_sandbox_provisioning_runtime;
 use super::*;
 
 pub(super) fn typed_mcp_servers(
@@ -57,21 +58,6 @@ fn validate_session_skill_total(
             ));
         }
         pending.extend(view.delegate_ids);
-    }
-    Ok(())
-}
-
-fn validate_sandbox_provisioning_runtime(
-    provisioning: awaken_provisioning_contract::SandboxProvisioning,
-    runtime: Option<&str>,
-) -> Result<(), RunError> {
-    if provisioning == awaken_provisioning_contract::SandboxProvisioning::OnToolUse
-        && !matches!(runtime, None | Some("awaken"))
-    {
-        return Err(RunError::bad_request(format!(
-            "sandbox_provisioning_unsupported: `on_tool_use` requires the native awaken runtime, got `{}`",
-            runtime.unwrap_or_default()
-        )));
     }
     Ok(())
 }
@@ -1986,29 +1972,5 @@ impl ManagedState {
             .await;
         }
         Ok(session)
-    }
-}
-
-#[cfg(test)]
-mod sandbox_provisioning_runtime_tests {
-    use super::*;
-    use awaken_provisioning_contract::SandboxProvisioning::{Eager, OnToolUse};
-
-    #[test]
-    fn native_only_lazy_provisioning_decision_table() {
-        for (case, provisioning, runtime, accepted) in [
-            ("C1 eager native", Eager, None, true),
-            ("C2 eager ACP", Eager, Some("acp:claude"), true),
-            ("C3 lazy implicit native", OnToolUse, None, true),
-            ("C4 lazy explicit native", OnToolUse, Some("awaken"), true),
-            ("C5 lazy ACP", OnToolUse, Some("acp:claude"), false),
-            ("C6 lazy unknown runtime", OnToolUse, Some("remote"), false),
-        ] {
-            assert_eq!(
-                validate_sandbox_provisioning_runtime(provisioning, runtime).is_ok(),
-                accepted,
-                "{case}"
-            );
-        }
     }
 }

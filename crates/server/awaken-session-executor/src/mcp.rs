@@ -34,6 +34,8 @@ use base64::Engine as _;
 
 use crate::host::HostError;
 
+mod prompt_skills;
+
 /// Private Worker-side material for one exact MCP generation. It is never an
 /// authoring or desired-state value and cannot cross the Runtime Host boundary.
 #[derive(Clone)]
@@ -611,7 +613,7 @@ pub(crate) async fn connect_materialized(
                 .await
                 .map_err(|e| HostError::internal(format!("mcp server `{}`: {e}", server.name)))?;
         if server.prompts_as_skills {
-            match awaken_ext_skills::McpPromptSkillRegistry::discover(
+            match prompt_skills::McpPromptSkillRegistry::discover(
                 &server.name,
                 Arc::clone(&transport),
             )
@@ -748,6 +750,12 @@ mod acp_projection_tests {
 mod prompt_skill_projection_tests {
     use super::*;
 
+    // MCP Prompt Skill cause/effect table:
+    // T1 opt-out -> tools only and no prompts/list; T2 opt-in + Native +
+    // capability -> metadata catalog now, prompts/get only at activation;
+    // T3 missing capability -> fail closed. Parameter/get failures are owned by
+    // the MCP registry tests, ACP rejection by host H19, and durable/wire switch
+    // behavior by the Session contract tests. Discovery is never activation.
     fn material(url: String, prompts_as_skills: bool) -> McpTransportMaterial {
         McpTransportMaterial {
             name: "docs".into(),

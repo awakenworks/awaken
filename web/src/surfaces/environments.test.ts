@@ -21,6 +21,10 @@ describe("buildEnvironmentConfig", () => {
 });
 
 describe("buildDeferredSandboxPolicy", () => {
+  // UI decision table:
+  // U1 cloud/eager and U3 self-hosted/eager -> Environment only, no policy.
+  // U2 cloud/on_tool_use -> fail closed before writing a policy.
+  // U4 self-hosted/on_tool_use -> exact active v1 policy for later binding.
   it.each([
     ["cloud", "eager"],
     ["self_hosted", "eager"],

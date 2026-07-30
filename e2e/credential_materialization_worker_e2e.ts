@@ -114,7 +114,7 @@ async function main() {
   const management = spawnServer(
     'management',
     CONFIG_PORT,
-    deploymentEnv(storage, { controlSealKey: SEAL_KEY }),
+    deploymentEnv(storage, { identityMode: 'no-login', controlSealKey: SEAL_KEY }),
   ).server;
   const cell = spawnServer('echo', PORT, {
     SESSION_DEPLOYMENT_INGRESS: 'durable',

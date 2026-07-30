@@ -55,7 +55,7 @@ pub(crate) struct FrozenEnvironmentRuntimeProjection {
     pub network: awaken_provisioning_contract::NetworkPolicy,
     pub packages: awaken_provisioning_contract::PackageRequirements,
     pub sandbox: Option<awaken_provisioning_contract::SandboxOverride>,
-    pub provisioning: awaken_provisioning_contract::SandboxProvisioning,
+    pub provisioning: awaken_protocol_managed::SandboxProvisioning,
     pub credential_realization: awaken_runtime_contract::CredentialRealizationProfile,
 }
 

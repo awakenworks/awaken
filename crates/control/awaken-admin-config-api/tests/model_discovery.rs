@@ -846,26 +846,12 @@ async fn failed_connection_test_leaves_no_executable_catalog_facts() {
 }
 
 #[tokio::test]
-async fn unsupported_provider_and_empty_key_fail_before_discovery() {
+async fn empty_key_fails_before_discovery() {
+    // Credential-validation rule: C1 the selected API-key value is empty.
+    // E1 return 422; E2 do not invoke discovery; E3 persist no Provider fact.
+    // Provider identity/template behavior is owned by the service-local
+    // decision table, so this adapter case deliberately varies only C1.
     let harness = harness();
-    let secret = "must-not-echo"; // awaken-allow: secret -- inert non-echo fixture
-    let (status, problem) = call(
-        &harness.app,
-        "POST",
-        "/v1/config/provider-connections",
-        json!({
-            "idempotency_key":"test-unknown-provider-command",
-            "workspace_id":"workspace-a",
-            "provider_id":"unknown-provider",
-            "display_name":"Unknown",
-            "dialect":"open_ai_chat",
-            "secret":secret
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{problem}");
-    assert!(!problem.to_string().contains(secret));
-
     let (status, _) = call(
         &harness.app,
         "POST",

@@ -5,6 +5,7 @@
 
 use awaken_config_store::ScopedConfigRegistry;
 use awaken_tenancy::ScopeId;
+use std::collections::BTreeSet;
 
 use crate::ConfigService;
 
@@ -28,11 +29,16 @@ impl ConfigService {
         configuration_scope: &ScopeId,
         execution_workspace: &str,
     ) -> usize {
-        if let Ok(configs) = registry.list_configs_scoped(configuration_scope).await {
-            for config in configs {
-                if config.lifecycle() != awaken_config_store::AgentLifecycle::Published {
-                    self.installed.uninstall(execution_workspace, &config.id);
-                }
+        let current_configs = match registry.list_configs_scoped(configuration_scope).await {
+            Ok(configs) => configs,
+            Err(_) => return 0,
+        };
+        let mut executable_agents = BTreeSet::new();
+        for config in current_configs {
+            if config.lifecycle() == awaken_config_store::AgentLifecycle::Published {
+                executable_agents.insert(config.id);
+            } else {
+                self.installed.uninstall(execution_workspace, &config.id);
             }
         }
         let publications = match registry.list_published_scoped(configuration_scope).await {
@@ -41,6 +47,9 @@ impl ConfigService {
         };
         let mut installed = 0;
         for publication in publications {
+            if !executable_agents.contains(&publication.agent_id) {
+                continue;
+            }
             let config = registry
                 .list_config_revisions_scoped(configuration_scope, &publication.agent_id)
                 .await

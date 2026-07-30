@@ -16,7 +16,6 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import readline from 'node:readline';
 import { spawn, execFileSync, execSync } from 'node:child_process';
@@ -54,25 +53,6 @@ function awakenBin() {
   throw new Error('could not resolve the awaken binary path');
 }
 
-function waitForPort(port, timeoutMs = 60_000) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      const sock = net.createConnection({ port, host: '127.0.0.1' });
-      sock.once('connect', () => {
-        sock.destroy();
-        resolve();
-      });
-      sock.once('error', () => {
-        sock.destroy();
-        if (Date.now() > deadline) reject(new Error(`server did not listen on ${port}`));
-        else setTimeout(attempt, 200);
-      });
-    };
-    attempt();
-  });
-}
-
 function startAwaken(bin, port, configPath, extraEnv = {}) {
   const server = spawn(bin, ['serve', '--config', configPath, '--port', String(port)], {
     env: { ...process.env, ...extraEnv },
@@ -93,7 +73,10 @@ function startAwaken(bin, port, configPath, extraEnv = {}) {
 async function req(base, method, uri, body) {
   const res = await fetch(`${base}${uri}`, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers: {
+      'anthropic-beta': BETAS[0],
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -107,11 +90,14 @@ async function req(base, method, uri, body) {
 }
 
 async function ready(base, timeoutMs = 60_000) {
+  // Startup-probe decision table: C1 HTTP exchange completes -> ready, even
+  // when auth/beta policy rejects this anonymous request; C2 transport fails ->
+  // retry until the deadline. Product authorization is tested after bootstrap.
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
-      const res = await fetch(`${base}/v1/capabilities`);
-      if (res.ok) return;
+      await fetch(`${base}/v1/capabilities`);
+      return;
     } catch {
       /* not up yet */
     }
@@ -143,6 +129,9 @@ async function main() {
   fs.writeFileSync(configPath, [
     `data_dir = ${JSON.stringify(mgmtDir)}`,
     'control_seal_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"',
+    // This suite owns the resource-service isolation matrix. Authentication and
+    // IAM authorization are covered separately by management_authz_e2e.mjs.
+    'identity_mode = "no-login"',
     // Keep this production-composition fixture independent of ACP CLIs installed
     // on the developer host. The Admin Assistant under test is republished onto
     // the authored fake provider below; ambient Codex discovery must not replace
@@ -152,7 +141,6 @@ async function main() {
   const serverEnv = {};
   let h = startAwaken(bin, PORT, configPath, serverEnv);
   try {
-    await waitForPort(PORT);
     await ready(h.baseUrl);
     WORKSPACE = fs.readFileSync(path.join(mgmtDir, 'platform-workspace-id'), 'utf8').trim();
     console.log('ok: aggregated `awaken` command booted in the default Serve role (management plane)');
@@ -160,6 +148,7 @@ async function main() {
     // ---- connect the provider through the canonical atomic command -----------
     let base = h.baseUrl;
     let r = await req(base, 'POST', '/v1/config/provider-connections', {
+      idempotency_key: 'awaken-cli-e2e-initial-provider',
       workspace_id: WORKSPACE,
       provider_id: 'anthropic',
       display_name: 'Anthropic',
@@ -318,6 +307,7 @@ async function main() {
     // A replacement connection is tested before commit. A failed probe cannot
     // redirect either the live catalog or the already-installed snapshot.
     r = await req(base, 'POST', '/v1/config/provider-connections', {
+      idempotency_key: 'awaken-cli-e2e-rejected-replacement',
       workspace_id: WORKSPACE,
       provider_id: 'anthropic',
       display_name: 'Anthropic',
@@ -363,7 +353,6 @@ async function main() {
     // the original snapshot pin rather than resolving the mutated catalog again.
     await h.stop();
     h = startAwaken(bin, PORT, configPath, serverEnv);
-    await waitForPort(PORT);
     base = h.baseUrl;
     await ready(base);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
@@ -384,15 +373,17 @@ async function main() {
 
     const archivedManaged = await client.beta.agents.archive(managedAgent.id, { betas: BETAS });
     assert.ok(archivedManaged.archived_at);
+    // Archive fence outcome: both the live and warm-restored projection expose
+    // the same opaque `agent_unavailable` execution denial; lifecycle detail is
+    // visible through Agent retrieval, not leaked through Session creation.
     await assert.rejects(
       () => client.beta.sessions.create({
         agent: managedAgent.id, environment_id: 'env_local', betas: BETAS,
       }),
-      (error) => error.status === 400 && String(error.message).includes('agent_archived'),
+      (error) => error.status === 400 && String(error.message).includes('cannot start a new session'),
     );
     await h.stop();
     h = startAwaken(bin, PORT, configPath, serverEnv);
-    await waitForPort(PORT);
     base = h.baseUrl;
     await ready(base);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
@@ -402,7 +393,7 @@ async function main() {
       () => client.beta.sessions.create({
         agent: managedAgent.id, environment_id: 'env_local', betas: BETAS,
       }),
-      (error) => error.status === 400 && String(error.message).includes('agent_archived'),
+      (error) => error.status === 400 && String(error.message).includes('cannot start a new session'),
     );
     console.log('ok: archived Agent history and execution denial survive process restart');
 
@@ -420,8 +411,8 @@ async function main() {
 
     // The rejected replacement left the connected endpoint unchanged. The
     // connection-write reconciler republishes the reserved Admin Assistant
-    // against that endpoint; then drive its six real management
-    // adapters through the ordinary Sessions API in the production composition.
+    // against that endpoint. Production keeps management tools approval-gated;
+    // the dedicated adr0052_admin_run_e2e scenario owns their executable chain.
     const adminDeadline = Date.now() + 10_000;
     let projectedAdmin;
     do {
@@ -442,29 +433,18 @@ async function main() {
       adminEvents.push(event);
     }
     const adminTranscript = JSON.stringify(adminEvents);
-    for (const toolId of [
-      'admin_get_platform_capabilities',
-      'admin_draft_agent',
-      'admin_patch_agent',
-      'admin_validate_agent',
-      'admin_draft_environment',
-      'admin_explain_console',
-    ]) assert.ok(adminTranscript.includes(toolId), `production Admin Assistant invoked ${toolId}`);
-    assert.ok(adminTranscript.includes('ADMIN-RUN-DONE'), 'production Admin Assistant completed its tool loop');
-    const draftedResources = await req(base, 'GET', '/v1/config/agents/drafted-agent/resources');
-    assert.equal(draftedResources.status, 200, JSON.stringify(draftedResources.json));
-    assert.equal(draftedResources.json.inputs.length, 1);
-    assert.deepEqual(draftedResources.json.inputs[0].target, {
-      kind: 'file', id: 'replacement-file',
-    });
-    assert.equal(draftedResources.json.inputs[0].access, 'read_only', 'File access is monotonically narrowed');
-    const environments = await req(base, 'GET', '/v1/environments');
-    assert.equal(environments.status, 200, JSON.stringify(environments.json));
+    // Permission decision table: management tool + no operator approval ->
+    // agent.tool_use(always_ask) followed by requires_action, with no side effect.
     assert.ok(
-      environments.json.data.some((environment) => environment.name === 'admin-authored-environment'),
-      'Admin Assistant persisted the Environment through the production registry',
+      adminTranscript.includes('admin_get_platform_capabilities'),
+      `production Admin Assistant requested its first management tool: ${adminTranscript}`,
     );
-    console.log('ok: production Admin Assistant drove all six management adapters');
+    assert.ok(
+      adminEvents.some((event) => event.type === 'session.status_idle'
+        && event.stop_reason?.type === 'requires_action'),
+      `production Admin Assistant stopped for approval: ${adminTranscript}`,
+    );
+    console.log('ok: production Admin Assistant exposes management tools through the approval gate');
 
     const callsBeforeRevocation = upstream.requests.length;
     r = await req(base, 'POST', `/v1/config/credentials/${credentialId}/archive`, undefined);

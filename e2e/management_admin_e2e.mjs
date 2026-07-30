@@ -111,19 +111,18 @@ async function main() {
       assert.equal(catalogBefore.json.offerings.length, 0, 'E1 env cannot author catalog truth');
 
       // Provider Connections cause graph:
-      // C1 installed descriptor; C2 dialect supported; C3 non-empty secret;
-      // C4 live discovery succeeds; C5 discovery returns models.
+      // C1 dialect supported by the provider template; C2 non-empty secret;
+      // C3 live discovery succeeds; C4 discovery returns models.
       // E1 reject before persistence; E2 atomically persist provider, endpoint,
       // credential, and offerings; E3 expose only a secret-free Ready summary.
       //
       // Decision table:
-      // | Rule | C1 | C2 | C3 | C4 | C5 | Expected |
-      // | R1   | N  | -  | -  | -  | -  | 422 provider_unsupported, E1 |
-      // | R2   | Y  | N  | -  | -  | -  | 422 dialect_unsupported, E1  |
-      // | R3   | Y  | Y  | N  | -  | -  | 422 invalid credential, E1  |
-      // | R4   | Y  | Y  | Y  | N  | -  | upstream error, E1           |
-      // | R5   | Y  | Y  | Y  | Y  | N  | 422 no_models_discovered, E1|
-      // | R6   | Y  | Y  | Y  | Y  | Y  | 201, E2 + E3                 |
+      // | Rule | C1 | C2 | C3 | C4 | Expected |
+      // | R1   | N  | -  | -  | -  | 422 dialect_unsupported, E1  |
+      // | R2   | Y  | N  | -  | -  | 422 invalid credential, E1  |
+      // | R3   | Y  | Y  | N  | -  | upstream error, E1           |
+      // | R4   | Y  | Y  | Y  | N  | 422 no_models_discovered, E1|
+      // | R5   | Y  | Y  | Y  | Y  | 201, E2 + E3                 |
       r = await req(base, 'GET', '/v1/config/provider-descriptors');
       assert.equal(r.status, 200, JSON.stringify(r.json));
       const anthropicDescriptor = r.json.find((item) => item.provider_kind === 'anthropic');
@@ -150,12 +149,6 @@ async function main() {
         timeout_secs: 30,
         secret: 'sk-admin-e2e', // awaken-allow: secret
       };
-      r = await req(base, 'POST', '/v1/config/provider-connections', {
-        ...connection,
-        provider_id: 'not-installed',
-      });
-      assert.equal(r.status, 422);
-      assert.equal(r.json.code, 'provider_unsupported');
       r = await req(base, 'POST', '/v1/config/provider-connections', {
         ...connection,
         dialect: 'open_ai_responses',

@@ -1,8 +1,11 @@
 pub mod awaken_ext_mcp
 pub use awaken_ext_mcp::AuthChallenge
+pub use awaken_ext_mcp::CallToolResult
 pub use awaken_ext_mcp::Credential
 pub use awaken_ext_mcp::CredentialRefresher
 pub use awaken_ext_mcp::McpProgressUpdate
+pub use awaken_ext_mcp::McpToolDefinition
+pub use awaken_ext_mcp::McpTransportError
 pub use awaken_ext_mcp::jsonrpc
 pub use awaken_ext_mcp::normalize_progress
 pub use awaken_ext_mcp::progress

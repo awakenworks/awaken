@@ -54,7 +54,10 @@ async function main() {
     const json = async (method, path, body) => {
       const res = await fetch(`${baseUrl}${path}`, {
         method,
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'anthropic-beta': BETAS[0],
+          'content-type': 'application/json',
+        },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
       return { status: res.status, body: await res.json().catch(() => ({})) };
@@ -109,6 +112,10 @@ async function main() {
     assert.equal(bindingsValid.status, 200);
     assert.equal(bindingsValid.body.valid, true, JSON.stringify(bindingsValid.body));
 
+    // Validation transport decision table: R1 malformed typed JSON -> 400;
+    // R2 well-formed binding with a semantic compile error -> 200/valid:false.
+    // The cases retain both partitions while the config-plane unit test owns
+    // the detailed compiler causes.
     const invalidBindingCases = [
       { value: { mcp_servers: ['not-an-object'], skills: [] }, status: 400 },
       {
@@ -131,7 +138,7 @@ async function main() {
         status: 200,
       },
       { value: { mcp_servers: [], skills: [7] }, status: 400 },
-      { value: { mcp_servers: [], skills: [{ id: '' }] }, status: 400 },
+      { value: { mcp_servers: [], skills: [{ id: '' }] }, status: 200 },
       { value: { mcp_servers: [], skills: ['skill-a', { id: 'skill-a' }] }, status: 200 },
     ];
     for (const invalidBindings of invalidBindingCases) {
@@ -166,7 +173,11 @@ async function main() {
     // managed-wire projection of the config truth — model/system come from the
     // published config, though it was never created via the agents registry.
     const projected = await json('GET', `/v1/agents/${AGENT}`, undefined);
-    assert.equal(projected.status, 200, 'published agent is retrievable via /v1/agents');
+    assert.equal(
+      projected.status,
+      200,
+      `published agent is retrievable via /v1/agents: ${JSON.stringify(projected.body)}`,
+    );
     assert.equal(projected.body.id, AGENT);
     assert.equal(projected.body.model.id, 'config-model', 'model projected from config truth');
     assert.equal(projected.body.system, GREETING, 'system projected from config instructions');

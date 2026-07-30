@@ -38,7 +38,7 @@ fn on_tool_use_environment() -> awaken_protocol_managed::EnvironmentSnapshot {
         awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
         serde_json::json!({}),
     );
-    environment.sandbox_provisioning = awaken_provisioning_contract::SandboxProvisioning::OnToolUse;
+    environment.sandbox_provisioning = awaken_protocol_managed::SandboxProvisioning::OnToolUse;
     environment
 }
 
@@ -2467,6 +2467,11 @@ impl awaken_protocol_managed::SessionEnvironmentBindingSink for BindingOrderSink
     }
 }
 
+// Immediate binding decision table:
+// resident/adopted -> reuse without a write; absent + concurrent callers -> one
+// lifecycle owner; successful CAS -> persist before publish; failed CAS ->
+// dispose and publish nothing. Repository tests own conflict retry/exhaustion
+// and already-equal idempotence at the durable aggregate boundary.
 #[tokio::test]
 async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use_it() {
     use awaken_protocol_managed::SessionRuntime;
@@ -3264,6 +3269,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     acp_host.register_thread_backend_projection("mcp-acp-forbidden", "acp:test");
     acp_host.register_thread_backend_projection("mcp-acp-protected", "acp:test");
     acp_host.register_thread_backend_projection("mcp-acp-anonymous", "acp:test");
+    acp_host.register_thread_backend_projection("mcp-acp-prompt-skill", "acp:test");
     // Deliberately install no credential resolver: the no-bypass failure must mask
     // material-source availability and prove no secret lookup was attempted.
     let acp_managed = crate::ManagedHost::new(acp_host.clone());
