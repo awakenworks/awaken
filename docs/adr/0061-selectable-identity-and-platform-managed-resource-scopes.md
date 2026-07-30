@@ -228,7 +228,7 @@ subject + exact Workspace + action -> IAM decision
 
 Server mode rejects an inline service token, a missing token file, and dual
 inline/file configuration before serving. Management never mounts a Flow token
-or an IAM signing key. The `awaken management` process mounts only the existing
+or an IAM signing key. The `awaken control` process mounts only the existing
 authoring/control router; it does not mount Session, protocol, Run ingress,
 Worker transport, or local dispatch routes and therefore cannot become a second
 Runtime authority beside a hosted Coordinator. Runtime/resource stores remain
@@ -236,8 +236,8 @@ unaware of the deployment credential.
 
 Managed PostgreSQL schema changes have one operational writer. The explicit
 `awaken database migrate` command applies the existing scoped bundles; a
-server-mode `awaken management` process opens the same bundle-specific stores
-in verification mode and performs no DDL. Local SQLite `awaken start` continues
+server-mode `awaken control` process opens the same bundle-specific stores
+in verification mode and performs no DDL. Local SQLite `awaken all-in-one` continues
 to migrate on open so a new local install stays zero-configuration.
 
 ```text
@@ -274,21 +274,21 @@ The Management bounded context is the sole owner of the
 role-grant contracts. Their existing embedded-IAM constructions are exposed as
 deterministic, side-effect-free `management_authorization_profile()` and
 `management_resource_authorization_profile()` functions. Embedded IAM consumes
-those functions directly; the `awaken management iam profile` commands only
+those functions directly; the `awaken control iam profile` commands only
 serialize the same values for a deployment-owned PAP.
 
 ```text
 Management action/scope/role definitions
   -> management_authorization_profile()
        |-> embedded IAM activation
-       \-> awaken management iam profile
+       \-> awaken control iam profile
             -> immutable release JSON
             -> hosted PAP validation/CAS activation
 
 Management resource action/scope/role definitions
   -> management_resource_authorization_profile()
        |-> embedded IAM activation
-       \-> awaken management iam profile resources
+       \-> awaken control iam profile resources
             -> immutable release JSON
             -> hosted PAP validation/CAS activation
 ```
@@ -318,7 +318,7 @@ administration merely because both capabilities use the Management API.
 The `run.create`, `run.read`, `run.resume`, and `run.cancel` vocabulary belongs
 to Awaken even when a closed platform hosts the Coordinator. Awaken therefore
 exports one deterministic `hosted_runtime_authorization_profile()` and projects
-it through `awaken management iam profile runtime`.
+it through `awaken control iam profile runtime`.
 
 ```text
 Awaken Hosted lifecycle vocabulary

@@ -694,7 +694,7 @@ pub async fn build_acp_managed_mcp_router() -> Router {
         Arc::new(FixedAcpModel),
     ));
     let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-    awaken_cli::build_management_router_with_host_customizer(
+    awaken_cli::build_all_in_one_router_with_host_customizer(
         Arc::new(McpToolModel),
         ModelBinding::new("scenario", "acp-managed-mcp", "acp:fake-mcp"),
         move |host| host.with_acp(executor),
@@ -725,7 +725,7 @@ pub async fn build_acp_real_mcp_router() -> Router {
         .ok()
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "acp-real-mcp".to_string());
-    awaken_cli::build_management_router_with_host_customizer(
+    awaken_cli::build_all_in_one_router_with_host_customizer(
         Arc::new(McpToolModel),
         ModelBinding::new("scenario", model_ref, format!("acp:{cli_id}")),
         move |host| {

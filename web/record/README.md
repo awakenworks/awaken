@@ -93,7 +93,7 @@ Release gates are intentionally strict:
   UI routes are gated. A diagnostic failure artifact is not a release video.
 
 The `awaken` binary embeds the production Vite console at compile time.
-`awaken start` serves the aggregated API/control/runtime server and the console from
+`awaken all-in-one` serves the aggregated API/control/runtime server and the console from
 one process and one port, without a web directory, Node.js, or a separate Vite process
 at runtime. An installation video may claim one-binary startup when its checkpoint
 runs a release binary from a clean directory and opens the console successfully.

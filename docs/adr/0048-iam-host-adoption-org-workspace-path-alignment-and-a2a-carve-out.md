@@ -236,8 +236,8 @@ driving a `SubscriptionSource` port whose config-plane adapter lives in
   secret-free. Handlers **self-fence** on the row's `workspace_id`, as MCP/profile
   handlers do. Ownership lives on each aggregate rather than in a second
   management-plane owner index.
-- The webhook plane moves from the plain `mount()` to the management path
-  (`management_router_over`), where the admin store + vault exist. A deployment
+- The webhook plane moves from the plain `mount()` to the all-in-one process
+  assembly, where the admin store + vault exist. A deployment
   without the config plane has no durable webhooks.
 - **Standalone** (open, no `admin-config-api`) wires the plane over open
   in-memory stores (`InMemoryWebhookStore` + `InMemorySecretStore`): webhooks

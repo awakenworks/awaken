@@ -22,7 +22,7 @@ async function main() {
   const env = deploymentEnv(directory, {
     fields: { mode: 'server', bind: `127.0.0.1:${PORT}` },
   });
-  const server = spawn(ensureProductionBuilt(), ['serve', '--config', path.join(env.HOME, '.awaken', 'config.toml')], {
+  const server = spawn(ensureProductionBuilt(), ['all-in-one', '--config', path.join(env.HOME, '.awaken', 'config.toml')], {
     env: {
       ...process.env,
       ...env,

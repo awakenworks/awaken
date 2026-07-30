@@ -1,4 +1,4 @@
-//! Last-mile management composition for authority-change reconciliation and
+//! Last-mile process composition for authority-change reconciliation and
 //! workspace-addressed routing.
 
 use std::sync::Arc;
