@@ -109,44 +109,15 @@ async fn run(command: console::Command) -> Result<(), String> {
             warn_deprecations(&deployment);
             deployment.ensure_data_layout()?;
             let key = deployment.seal_key.load_or_create()?;
-            let resource_url = match deployment.resources {
-                awaken_cli::config::ResourcePlaneStoreBackend::Postgres(url) => Some(url),
-                awaken_cli::config::ResourcePlaneStoreBackend::Embedded(_) => None,
-            };
-            let worker = deployment.worker;
-            let mut manifest = worker
-                .build_digest
-                .map(awaken_worker::StandardManifestConfig::new)
-                .unwrap_or_default()
-                .with_extra_capabilities(worker.capabilities);
-            if let Some(zone) = worker.zone {
-                manifest = manifest.with_zone(zone);
-            }
-            if let Some(max_concurrent) = worker.max_concurrent {
-                manifest = manifest.with_max_concurrent(max_concurrent);
-            }
             awaken_observability::init(&deployment.observability);
-            let result = awaken_worker::run_with_config(
-                &server,
-                deployment.runtime,
-                deployment.control,
-                resource_url,
-                key,
-                awaken_worker::WorkerRunOptions {
-                    worker_id: worker.worker_id,
-                    admin_listen: worker.admin_listen,
-                    drain_grace: std::time::Duration::from_secs(worker.drain_grace_secs),
-                    credential_probe_interval: std::time::Duration::from_secs(
-                        worker.credential_probe_interval_secs,
-                    ),
-                    credential_observation_ttl: std::time::Duration::from_secs(
-                        worker.credential_observation_ttl_secs,
-                    ),
-                    manifest,
-                },
-            )
-            .await
-            .map_err(|error| error.to_string());
+            let result = match awaken_cli::build_configured_worker(&server, &deployment, &key).await
+            {
+                Ok(worker) => worker
+                    .run_until_shutdown()
+                    .await
+                    .map_err(|error| error.to_string()),
+                Err(error) => Err(error),
+            };
             awaken_observability::shutdown();
             result
         }

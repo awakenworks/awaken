@@ -45,6 +45,7 @@ mod mcp_relay;
 mod memory;
 mod memory_store_api;
 mod memory_stores;
+mod no_model;
 mod outcome_controller;
 mod provisioning;
 mod redact;
@@ -114,6 +115,7 @@ pub use crate::host::{
     AttemptExecutorDecorator, HostResume, RemoteAttemptInstallation, ResourcePlanePorts,
     SharedHost, remote_worker_placement, self_hosted_inference_holder,
 };
+pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
 pub use crate::postgres_migration_lock::PostgresMigrationLock;
 pub use crate::web_search::WebSearchPublicationResolver;
 pub use crate::worker_control_client::WorkerControlClient;

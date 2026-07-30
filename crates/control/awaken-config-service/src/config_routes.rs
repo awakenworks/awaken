@@ -344,8 +344,8 @@ mod publication_projection_tests {
 
     /// Cause/effect decision table for online export:
     /// R1 owned native publication => exact canonical snapshot; R2 cross-scope
-    /// fingerprint => 404; R3 repository fault => 500. Backend rejection is
-    /// covered at the snapshot contract boundary where ACP and A2A are exhaustive.
+    /// fingerprint => 404; R3 repository fault => 500; R4 blank fingerprint =>
+    /// 400; R5 a non-native publication => 422 before any snapshot is returned.
     #[tokio::test]
     async fn export_is_scoped_and_returns_the_existing_snapshot_contract() {
         let plane = ConfigPlane::new(
@@ -372,7 +372,7 @@ mod publication_projection_tests {
 
         assert_eq!(
             export_publication(
-                State(plane),
+                State(plane.clone()),
                 Path(published.fingerprint),
                 Some(Extension(awaken_tenancy::WorkspaceScope("intruder".into()))),
             )
@@ -385,6 +385,32 @@ mod publication_projection_tests {
                 .await
                 .0,
             StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            export_publication(State(plane.clone()), Path("   ".into()), None)
+                .await
+                .0,
+            StatusCode::BAD_REQUEST,
+            "R4"
+        );
+
+        let mut non_native = agent_config("agent-acp");
+        non_native.model_binding =
+            awaken_config_store::ModelSelection::pinned("p", "m", "acp:claude");
+        plane.put(&owner, &non_native).await.unwrap();
+        let non_native = plane.publish(&owner, "agent-acp").await.unwrap();
+        assert_eq!(
+            export_publication(
+                State(plane),
+                Path(non_native.fingerprint),
+                Some(Extension(awaken_tenancy::WorkspaceScope(
+                    owner.as_str().to_owned(),
+                ))),
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "R5"
         );
     }
 }
