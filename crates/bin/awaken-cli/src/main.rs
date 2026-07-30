@@ -58,11 +58,7 @@ async fn run(command: console::Command) -> Result<(), String> {
             Ok(())
         }
         console::Command::DatabaseMigrate { config_path } => {
-            let deployment = ResolvedDeployment::load(ConfigOverrides {
-                config_path,
-                role: Some(Role::AllInOne),
-                ..Default::default()
-            })?;
+            let deployment = load_migration_deployment(config_path)?;
             warn_deprecations(&deployment);
             deployment.ensure_data_layout()?;
             let seal_key = deployment.seal_key.load_or_create()?;
@@ -129,6 +125,18 @@ async fn run(command: console::Command) -> Result<(), String> {
             run_service(args, Presentation::Headless, Role::Coordinator).await
         }
     }
+}
+
+fn load_migration_deployment(
+    config_path: Option<std::path::PathBuf>,
+) -> Result<ResolvedDeployment, String> {
+    // Migration selects storage adapters from the deployment's authored role.
+    // Overriding it to AllInOne changes private-boundary validation and makes a
+    // valid split Coordinator configuration impossible to migrate.
+    ResolvedDeployment::load(ConfigOverrides {
+        config_path,
+        ..Default::default()
+    })
 }
 
 async fn run_service(
@@ -428,6 +436,57 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migration_preserves_the_typed_service_role() {
+        // Cause/effect decision table: M1 Coordinator config with token-only
+        // server credentials -> resolves as Coordinator; M2 config without a
+        // role -> retains the canonical AllInOne default. Neither case invents
+        // a migration-only role or a second configuration path.
+        let dir = tempfile::tempdir().unwrap();
+        let token = dir.path().join("token");
+        std::fs::write(&token, "test-token\n").unwrap();
+        let coordinator = dir.path().join("coordinator.toml");
+        std::fs::write(
+            &coordinator,
+            format!(
+                r#"
+data_dir = {data:?}
+mode = "server"
+role = "coordinator"
+runtime_database_url = "postgres://127.0.0.1/runtime"
+resource_database_url = "postgres://127.0.0.1/resources"
+admin_db = "postgres://127.0.0.1/control"
+executable_agent_registration_token_file = {token:?}
+deployment_session_launch_token_file = {token:?}
+control_seal_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+"#,
+                data = dir.path().join("coordinator-data"),
+                token = token,
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            load_migration_deployment(Some(coordinator)).unwrap().role,
+            Role::Coordinator,
+            "M1"
+        );
+
+        let all_in_one = dir.path().join("all-in-one.toml");
+        std::fs::write(
+            &all_in_one,
+            format!(
+                "data_dir = {:?}\nidentity_mode = \"no-login\"\n",
+                dir.path().join("all-in-one-data")
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            load_migration_deployment(Some(all_in_one)).unwrap().role,
+            Role::AllInOne,
+            "M2"
+        );
+    }
 
     #[test]
     fn unspecified_bind_opens_the_loopback_console() {
