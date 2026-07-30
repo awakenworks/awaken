@@ -87,7 +87,7 @@ flowchart TD
     V{"Manual or scheduled trigger"}
     W["Existing: persist stable DeploymentRun"]
     X["Modified: DeploymentSessionLauncher carries deployment_run_id"]
-    Y["New boundary: CoordinatorDeploymentSessionClient"]
+    Y["New boundary: HttpDeploymentSessionLauncher"]
     Z["New boundary: idempotent Deployment Session launch handler"]
     AA["Existing: create_session_with_initial_events"]
     AB["Existing: SessionDefaultsCompiler and SessionInputResolver"]

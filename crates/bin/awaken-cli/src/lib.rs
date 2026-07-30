@@ -1441,7 +1441,7 @@ async fn assemble_process_router(
     }
     let _ = managed_state.spawn_realization_lease_supervisor();
     deployment_state.bind_launcher(Arc::new(
-        awaken_protocol_managed::ManagedDeploymentSessionLauncher::new(managed_state.clone()),
+        awaken_protocol_managed::LocalDeploymentSessionLauncher::new(managed_state.clone()),
     ));
     // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat

@@ -61,7 +61,7 @@ pub use routes::agents_registry::{
 };
 pub use routes::deployments::{
     DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher, DeploymentState,
-    ManagedDeploymentSessionLauncher, deployments_router,
+    LocalDeploymentSessionLauncher, deployments_router,
 };
 pub use routes::environments::{EnvironmentState, environments_router};
 pub use routes::user_profiles::{UserProfileState, user_profiles_router};

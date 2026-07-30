@@ -395,7 +395,7 @@ impl DeploymentState {
                 .filter_map(|run_id| {
                     let deployment_id = runs.get(&run_id)?.deployment_id.clone();
                     let deployment = deployments.get(&deployment_id)?.clone();
-                    let launch = deployment.launch(&deployment_id);
+                    let launch = deployment.launch(&deployment_id, &run_id);
                     Some((
                         run_id.clone(),
                         launch,

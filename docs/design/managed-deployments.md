@@ -36,7 +36,7 @@ modified, or genuinely new before describing the dependency graph.
 |---|---|---|
 | POSIX cron and IANA timezone calculation | `awaken-protocol-managed::cron` | exact wall-clock occurrences, including DST behavior |
 | Agent authoring/version truth | `ManagedAgentRepository` | validates and freezes the requested latest or pinned Agent version |
-| Session creation and initial Event admission | `ManagedState::create_session_with_initial_events` | the only Deployment-to-execution path |
+| Session creation and initial Event admission | `ManagedState::create_deployment_session_with_initial_events` over the canonical Session create/event commands | the only Deployment-to-execution path, idempotent by DeploymentRun |
 | organization create admission | `ManagedRateLimiter` | shares the ordinary Session-create bucket |
 | webhook delivery and retry | `WebhookLifecycleSink` | drains the sole Managed lifecycle outbox |
 
@@ -57,8 +57,8 @@ modified, or genuinely new before describing the dependency graph.
 |---|---|---|
 | `DeploymentRepository` | `awaken-deployment-contract` | opaque durable records plus atomic scheduled-occurrence claim |
 | `DeploymentRecord` / `DeploymentRunRecord` store adapters | `awaken-session-store` | SQLite/Postgres persistence without protocol DTO dependency |
-| `CoordinatorDeploymentSessionClient` | Deployment adapter | invoke the same Session launch port across a process boundary |
-| `DeploymentSessionLaunchHandler` | Coordinator adapter | idempotently lower one DeploymentRun into the canonical Session command |
+| `HttpDeploymentSessionLauncher` | Deployment adapter | invoke the same Session launch port across a process boundary |
+| `deployment_session_launch_router` | Coordinator adapter | authenticate and lower one DeploymentRun into the canonical Session command |
 
 There is no second cron parser, Session launcher, Agent registry, Deployment
 cache authority, webhook outbox, scheduler loop, or remote-only Session domain
@@ -73,9 +73,9 @@ HTTP adapter (official DTOs)
        |- DeploymentRepository (durability + occurrence claim + lifecycle fact)
        |- ManagedRateLimiter (create admission)
        `- DeploymentSessionLauncher
-            |- LocalManagedDeploymentSessionLauncher (AllInOne)
-            `- CoordinatorDeploymentSessionClient
-                 `- DeploymentSessionLaunchHandler
+            |- LocalDeploymentSessionLauncher (AllInOne)
+            `- HttpDeploymentSessionLauncher
+                 `- deployment_session_launch_router
                       `- ManagedState (ordinary Session/Event authority)
 
 ManagedLifecycleFact outbox

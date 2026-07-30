@@ -6,9 +6,9 @@ use std::sync::Arc;
 use super::{DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher};
 use crate::types::deployment::RunError;
 
-pub struct ManagedDeploymentSessionLauncher(Arc<crate::ManagedState>);
+pub struct LocalDeploymentSessionLauncher(Arc<crate::ManagedState>);
 
-impl ManagedDeploymentSessionLauncher {
+impl LocalDeploymentSessionLauncher {
     #[must_use]
     pub fn new(state: Arc<crate::ManagedState>) -> Self {
         Self(state)
@@ -16,8 +16,15 @@ impl ManagedDeploymentSessionLauncher {
 }
 
 #[async_trait::async_trait]
-impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
+impl DeploymentSessionLauncher for LocalDeploymentSessionLauncher {
     async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome {
+        if request.deployment_run_id.trim().is_empty() {
+            return DeploymentLaunchOutcome::Failed {
+                error: RunError::SessionCreationRejectedError {
+                    message: "deployment_run_id is required for Session launch".into(),
+                },
+            };
+        }
         if request.environment_id != "env_local"
             && let Some(environment) = self.0.deployment_environment(&request.environment_id).await
         {
@@ -69,11 +76,16 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
         // into the ordinary Session create command so validation, persistence and
         // initial execution have one authority. A Deployment must never create an
         // empty Session and then drive a second best-effort send-events path.
+        let launch_fingerprint = awaken_session_contract::stable_fingerprint(&request);
         let initial_events = request.initial_events.into_iter().map(Into::into).collect();
         let mut metadata = request.metadata;
         metadata.insert(
             "awaken.deployment_id".to_string(),
             request.deployment_id.clone(),
+        );
+        metadata.insert(
+            "awaken.deployment_run_id".to_string(),
+            request.deployment_run_id.clone(),
         );
         let create = crate::types::SessionCreateParams {
             agent: crate::types::AgentRef::Object(crate::types::AgentRefObject {
@@ -97,7 +109,12 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
         };
         let session = match self
             .0
-            .create_session_with_initial_events(create, Some(request.workspace_id))
+            .create_deployment_session_with_initial_events(
+                &request.deployment_run_id,
+                &launch_fingerprint,
+                create,
+                request.workspace_id,
+            )
             .await
         {
             Ok(session) => session,

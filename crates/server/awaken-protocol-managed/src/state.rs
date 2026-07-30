@@ -42,6 +42,7 @@ const MEMORY_CREATE_ONLY: &str = "memory stores can only be attached at session 
      adding or removing one from a running session is not supported";
 
 mod application;
+mod deployment_sessions;
 mod environment;
 mod events;
 mod helpers;

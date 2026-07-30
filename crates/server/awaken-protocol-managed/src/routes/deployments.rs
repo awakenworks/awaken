@@ -163,9 +163,10 @@ impl DeploymentRecord {
         parsed_schedule(self.schedule.as_ref()?)
     }
 
-    fn launch(&self, deployment_id: &str) -> DeploymentLaunch {
+    fn launch(&self, deployment_id: &str, deployment_run_id: &str) -> DeploymentLaunch {
         DeploymentLaunch {
             deployment_id: deployment_id.to_string(),
+            deployment_run_id: deployment_run_id.to_string(),
             workspace_id: self.workspace_id.clone(),
             agent: self.agent.clone(),
             environment_id: self.environment_id.clone(),
@@ -233,9 +234,12 @@ impl Default for DeploymentState {
 }
 
 /// Input passed from the deployment application service to the Session boundary.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeploymentLaunch {
     pub deployment_id: String,
+    /// Stable idempotency identity allocated and persisted by Deployment before
+    /// the Session boundary is called.
+    pub deployment_run_id: String,
     pub workspace_id: String,
     pub agent: AgentReference,
     pub environment_id: String,
@@ -248,7 +252,7 @@ pub struct DeploymentLaunch {
 /// Exact terminal outcome of Session creation. The enum makes the SDK invariant
 /// structural: exactly one of `session_id` and `error` is non-null. Failures after
 /// a Session was created are Session lifecycle, not deployment-run truth.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DeploymentLaunchOutcome {
     Created { session_id: String },
     Failed { error: RunError },
@@ -261,7 +265,7 @@ pub trait DeploymentSessionLauncher: Send + Sync {
 
 #[path = "deployments/launcher.rs"]
 mod launcher;
-pub use launcher::ManagedDeploymentSessionLauncher;
+pub use launcher::LocalDeploymentSessionLauncher;
 #[path = "deployments/scheduling.rs"]
 mod scheduling;
 #[cfg(test)]
@@ -800,7 +804,7 @@ async fn run_deployment(
     scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<DeploymentRun>, WireError> {
     let scope = request_scope(&scope);
-    let launch = {
+    let deployment = {
         let store = state.deployments.lock().unwrap();
         let record = store
             .get(&id)
@@ -809,10 +813,11 @@ async fn run_deployment(
         if record.archived_at.is_some() {
             return Err(terminal());
         }
-        record.launch(&id)
+        record.clone()
     };
     let n = state.run_seq.fetch_add(1, Ordering::SeqCst);
     let run_id = format!("drun_{n:016}");
+    let launch = deployment.launch(&id, &run_id);
     let record = RunRecord {
         created_at: crate::cron::to_rfc3339(now_ms()),
         deployment_id: id,
@@ -1739,7 +1744,7 @@ mod tests {
                 .unwrap()
                 .get("deploy_failure")
                 .unwrap()
-                .launch("deploy_failure");
+                .launch("deploy_failure", "deprun_failure");
             let run = state.launch_run("deprun_failure", launch).await.unwrap();
             let deployment = state
                 .deployments
@@ -1825,7 +1830,7 @@ mod tests {
         state.bind_rate_limiter(limiter);
         state.bind_launcher(Arc::new(CountingLauncher(launches.clone())));
         let record = deployment(Some(cron_schedule("*/15 * * * *")));
-        let launch = record.launch("deploy_rate");
+        let launch = record.launch("deploy_rate", "run_rate");
         state
             .deployments
             .lock()
