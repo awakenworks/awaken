@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::resolution::ResolutionManifest;
+use crate::resolved::Backend;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ExecutableAgentSnapshotId(pub String);
@@ -75,6 +76,48 @@ pub struct ExecutableAgentSnapshot {
     pub fingerprint: crate::resolved::CatalogFingerprint,
 }
 
+impl ExecutableAgentSnapshot {
+    /// The embedded SDK executes the same snapshot contract as the server, but
+    /// only through the native Awaken loop. Validate every published fallback so
+    /// an edit cannot accidentally retain an ACP/A2A execution branch.
+    pub fn validate_embedded_native(&self) -> Result<(), String> {
+        for candidate in std::iter::once(&self.resolved_spec.model_binding)
+            .chain(self.resolved_spec.model_candidates.iter())
+        {
+            if !matches!(
+                Backend::from_ref(&candidate.binding.backend_ref),
+                Backend::Native
+            ) {
+                return Err(format!(
+                    "embedded Awaken Runtime does not support backend `{}`",
+                    candidate.binding.backend_ref
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Re-derive local content identity after an exported snapshot is edited.
+    /// Cloud provenance remains in `source`/`publication_version`, while all
+    /// executable-fingerprint fields move together to one local identity.
+    pub fn recompute_fingerprint(&mut self) -> Result<(), serde_json::Error> {
+        let mut content = self.clone();
+        content.fingerprint.0.clear();
+        content.resolved_spec.catalog_fingerprint.0.clear();
+        content.metadata.fingerprint.0.clear();
+        let fingerprint = crate::resolution::content_fingerprint(&content)?;
+        self.fingerprint.0.clone_from(&fingerprint);
+        self.resolved_spec
+            .catalog_fingerprint
+            .0
+            .clone_from(&fingerprint);
+        if !self.metadata.is_legacy_default() {
+            self.metadata.fingerprint.0 = fingerprint;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AgentId(pub String);
 
@@ -115,6 +158,37 @@ mod metadata_tests {
         assert_eq!(
             wire["resolution"]["inputs"][0]["version"]["type"],
             "revision"
+        );
+    }
+
+    /// Cause/effect rules: R1 all-native candidates => embedded-compatible;
+    /// R2 any ACP/A2A candidate => reject the entire snapshot; R3 model edit =>
+    /// recompute one matching envelope/spec/metadata fingerprint.
+    #[test]
+    fn embedded_compatibility_and_local_identity_are_single_snapshot_operations() {
+        let mut snapshot = ExecutableAgentSnapshot::builder("agent-1")
+            .model(crate::resolved::ModelBinding {
+                provider_identity_ref: "local".into(),
+                model_ref: "model-a".into(),
+                backend_ref: "genai".into(),
+            })
+            .build();
+        snapshot.validate_embedded_native().unwrap();
+        let before = snapshot.fingerprint.clone();
+        snapshot.resolved_spec.model_binding.binding.model_ref = "model-b".into();
+        snapshot.recompute_fingerprint().unwrap();
+        assert_ne!(snapshot.fingerprint, before);
+        assert_eq!(
+            snapshot.fingerprint,
+            snapshot.resolved_spec.catalog_fingerprint
+        );
+
+        snapshot.resolved_spec.model_binding.binding.backend_ref = "acp:claude".into();
+        assert!(
+            snapshot
+                .validate_embedded_native()
+                .unwrap_err()
+                .contains("acp:claude")
         );
     }
 }

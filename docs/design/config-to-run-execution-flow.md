@@ -247,35 +247,36 @@ does not execute runs and does not hold live runtime registries. Runtime stays o
 the right side of the boundary: install a complete catalog, resolve executable
 snapshots, run, and commit.
 
-## Implemented Run Input: RunnableConfig (ADR-0032)
+## Implemented Run Input: ExecutableAgentSnapshot
 
-The names above (`RegistryPublication`, `RegistryCompiler`,
-`ConfigPublicationCoordinator`) are design-level. The implemented seam bundles the
-runtime-facing data into one value object: **`RunnableConfig`**
-(`awaken-runtime-contract`), pairing the `ExecutableAgentSnapshot` with its
-`RuntimeCatalogInstall` under one fingerprint. The runtime consumes a
-`RunnableConfig`; it does not juggle the two parts. This is the owning description
-of the implemented run input — other docs link here rather than restate it.
+The implemented seam has one value: `ExecutableAgentSnapshot`. Configuration
+publication stores it in `StoredPublication.snapshot`; direct SDK callers build it
+with `ExecutableAgentSnapshot::builder`; hosted dispatch carries it; and
+`Runtime::run` consumes it. No second catalog bundle or SDK-specific snapshot is
+maintained beside it.
 
-`RunnableConfig` has two producers and one consumer:
+It has three producers/entry paths and one execution consumer:
 
-- **`RunnableConfig::builder`** — the single assembly path. A direct caller builds
-  one by hand (no config store), stamping the agent id as the consistency token.
-- **`compile()`** (`awaken-config-store`) — a thin wrapper over the builder that
-  resolves tool ids and stamps the content hash (`sha256`); the config side of the
-  boundary, and optional.
-- **`Runtime::run`** (or `install_catalog` + `execute` for the durable path) — the
-  runtime installs the config's catalog (idempotent) and resolves the snapshot
-  against it, fail-closed (G4/G28). The runtime never computes the fingerprint.
+- **`ExecutableAgentSnapshot::builder`** — direct in-process construction without
+  a config store.
+- **config publication** — resolves authoring inputs once and stores the immutable,
+  fingerprinted snapshot in `StoredPublication`.
+- **`Runtime::load_snapshot_file`** — reads the same serialized snapshot for
+  embedded use, rejects ACP/A2A candidates, and re-derives identity after an
+  allowed local edit to existing model fields.
+- **`Runtime::run`** — the only embedded execution consumer. Worker/host paths
+  ultimately execute the same snapshot and runtime loop.
 
-The earlier in-memory `Publication` value is removed — `RunnableConfig` subsumes
-it. The durable `StoredPublication` and the publication lifecycle
-([config-publication-lifecycle.md](config-publication-lifecycle.md)) are unchanged.
+Online export is a scoped projection of `StoredPublication.snapshot` at
+`GET /v1/config/publications/{fingerprint}/export`. It introduces no export DTO,
+portable wrapper, model-profile type, or alternate agent spec. Credential
+plaintext remains external; an embedding application supplies it when constructing
+its existing `LlmExecutor` adapter.
 
-**Driving a run (ADR-0033).** The runtime consumes a `RunnableConfig` through two
-in-process entries over the `execute`/`resume` primitives: `run` (single-shot) and
-`run_to_completion(config, thread, input, ctx, decide)`, which owns the
-`execute → (await → decide → resume)* → end` loop. A aawaiting run is a question
+**Driving a run (ADR-0033).** The runtime consumes an `ExecutableAgentSnapshot`
+through two in-process entries over the `execute`/`resume` primitives: `run`
+(single-shot) and `run_to_completion(snapshot, thread, input, ctx, decide)`, which owns the
+`execute → (await → decide → resume)* → end` loop. An awaiting run is a question
 (`ResumeTicket`); the answer is a `ResumeResult`, supplied in-process by the
 `decide` closure or across a boundary by the durable dispatch queue — the same
 protocol, two drivers.

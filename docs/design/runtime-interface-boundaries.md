@@ -9,12 +9,58 @@ The goal is not to add a new abstraction layer. The goal is to name the existing
 axes, the few places where they intentionally meet, and the checks that keep the
 runtime small.
 
-> **Implemented run input (ADR-0032).** The `ExecutableAgentSnapshot` and its
-> `RuntimeCatalogInstall` are bundled into one consumed value, `RunnableConfig`
-> (snapshot + install under one fingerprint), built directly via
-> `RunnableConfig::builder` or by `compile()`. `Runtime::run` installs and executes
-> in one call. See
-> [config-to-run-execution-flow.md](config-to-run-execution-flow.md#implemented-run-input-runnableconfig-adr-0032).
+> **Implemented run input.** `ExecutableAgentSnapshot` is the single executable
+> value for hosted, Worker, and embedded SDK execution. `Runtime::run` consumes it
+> directly. Online export returns this same value, while
+> `Runtime::load_snapshot_file` reads it from JSON, rejects ACP/A2A backends for
+> embedded use, and re-derives its fingerprint after local model edits. There is
+> no bundle, portable wrapper, SDK-specific Agent spec, or second execution path.
+
+## Embedded Runtime SDK Boundary
+
+The SDK boundary is the existing `awaken-runtime` crate. It has no dependency on
+Server, Control, Axum, SQLx, or a durable store implementation. Its static
+dependency and ownership view is:
+
+```text
+application / Worker
+  -> awaken-runtime
+       -> awaken-runtime-contract::ExecutableAgentSnapshot
+       -> injected LlmExecutor / Tool / Plugin / CommitCoordinator ports
+
+Control
+  -> StoredPublication.snapshot: ExecutableAgentSnapshot
+  -> GET /v1/config/publications/{fingerprint}/export
+```
+
+`ExecutableAgentSnapshot`, `ResolvedSpec`, `ResolvedModelCandidate`,
+`ModelProvisioning`, and `InferenceEndpoint` remain the only model/configuration
+vocabulary. A local user edits those existing fields; no `PortableAgent`,
+`LocalModelProfile`, or parallel contract exists. `awaken-provider-genai` can
+construct its executor directly from a snapshot candidate and caller-supplied
+credential material.
+
+The dynamic behavior is:
+
+```text
+Control reads one scoped immutable StoredPublication
+  -> validates every candidate is native
+  -> returns publication.snapshot as JSON
+  -> application edits existing model binding/endpoint fields
+  -> Runtime::load_snapshot_file
+       -> deserialize ExecutableAgentSnapshot
+       -> reject any ACP/A2A candidate
+       -> recompute one matching snapshot/spec fingerprint
+  -> application injects model/tool/commit ports
+  -> Runtime::run(&snapshot, input, context)
+  -> unchanged execution and terminal behavior
+```
+
+Failures are terminal at their owning boundary: cross-scope export is `404`, a
+repository fault is `500`, a non-native publication is `422`, and malformed or
+non-native local JSON is `std::io::ErrorKind::InvalidData`. Loading never starts a
+server, contacts Control, resolves a cloud credential, or selects a fallback
+execution backend.
 
 ## Contract Boundary Overlay
 

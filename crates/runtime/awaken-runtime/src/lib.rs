@@ -12,6 +12,7 @@ mod resolve;
 mod retry;
 mod run;
 mod runtime;
+mod snapshot_file;
 
 pub use circuit_breaker::CircuitBreakerConfig;
 pub use ingress::{DirectRunIngress, RunIngress, RunService};

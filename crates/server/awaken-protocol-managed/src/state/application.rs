@@ -653,6 +653,7 @@ mod tests {
         let view = awaken_session_contract::AgentConfigView {
             environment: None,
             model: None,
+            execution_model_ref: None,
             backend_ref: "genai".into(),
             system: None,
             tool_ids: Vec::new(),

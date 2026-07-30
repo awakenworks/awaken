@@ -18,12 +18,19 @@
 //! `ScopedRepo` fence in their own crates' unit tests. This file is the
 //! management-plane system-integration slice.
 
-use awaken_cli::build_ephemeral_management_router as build_management_router;
+use std::sync::Arc;
+
+use awaken_cli::build_management_router_with_model;
+use awaken_scenario_host::EchoModel;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+async fn build_management_router() -> axum::Router {
+    build_management_router_with_model(Arc::new(EchoModel), "kimi").await
+}
 
 async fn call(
     app: &axum::Router,
@@ -53,7 +60,7 @@ async fn author_agent(app: &axum::Router, ws: &str, name: &str) -> String {
         app,
         "POST",
         &format!("/v1/workspaces/{ws}/agents"),
-        Some(json!({ "name": name, "model": "kimi" })),
+        Some(json!({ "name": name, "model": "default/kimi" })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "author under {ws}: {agent:?}");
@@ -148,7 +155,7 @@ async fn angle_d3_path_routes_to_the_flat_handler() {
         &app,
         "POST",
         "/v1/agents",
-        Some(json!({"name":"f","model":"kimi"})),
+        Some(json!({"name":"f","model":"default/kimi"})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{agent:?}");

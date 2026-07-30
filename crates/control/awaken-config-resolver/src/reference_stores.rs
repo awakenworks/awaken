@@ -10,7 +10,7 @@ use std::sync::Mutex;
 
 use crate::stores::{
     AgentInputBindingRepository, AgentInputRepositoryError, ConfigRepositoryError,
-    InferenceProfileStore, WebhookOutboxEvent, WebhookStore, validate_agent_input_revision,
+    InferenceProfileStore, WebhookStore, validate_agent_input_revision,
 };
 use crate::{AgentInputConfig, InferenceProfile, WebhookEndpointDef};
 
@@ -48,7 +48,6 @@ impl InferenceProfileStore for InMemoryProfileStore {
 #[derive(Default)]
 pub struct InMemoryWebhookStore {
     endpoints: Mutex<HashMap<String, WebhookEndpointDef>>,
-    outbox: Mutex<HashMap<String, WebhookOutboxEvent>>,
 }
 
 impl InMemoryWebhookStore {
@@ -95,39 +94,6 @@ impl WebhookStore for InMemoryWebhookStore {
             .lock()
             .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?
             .remove(id)
-            .is_some())
-    }
-
-    fn enqueue_outbox(&self, event: WebhookOutboxEvent) -> Result<bool, ConfigRepositoryError> {
-        let mut rows = self
-            .outbox
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("webhook outbox mutex poisoned".into()))?;
-        if rows.contains_key(&event.id) {
-            return Ok(false);
-        }
-        rows.insert(event.id.clone(), event);
-        Ok(true)
-    }
-
-    fn pending_outbox(&self) -> Result<Vec<WebhookOutboxEvent>, ConfigRepositoryError> {
-        let mut rows: Vec<_> = self
-            .outbox
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("webhook outbox mutex poisoned".into()))?
-            .values()
-            .cloned()
-            .collect();
-        rows.sort_by(|left, right| left.id.cmp(&right.id));
-        Ok(rows)
-    }
-
-    fn complete_outbox(&self, event_id: &str) -> Result<bool, ConfigRepositoryError> {
-        Ok(self
-            .outbox
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("webhook outbox mutex poisoned".into()))?
-            .remove(event_id)
             .is_some())
     }
 }

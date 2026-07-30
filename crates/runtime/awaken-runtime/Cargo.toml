@@ -27,6 +27,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
+tempfile = "3"
 
 [lints]
 workspace = true
