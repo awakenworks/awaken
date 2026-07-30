@@ -32,15 +32,15 @@ const AGENT = 'durable-agent';
 const MODEL = 'fake-haiku';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function ready(base, timeoutMs = 60_000) {
-  const deadline = Date.now() + timeoutMs;
+async function ready(base, timeoutMs = 180_000) {
+  const deadline = performance.now() + timeoutMs;
   for (;;) {
     try {
       if ((await fetch(`${base}/v1/capabilities`)).ok) return;
     } catch {
       /* not up */
     }
-    if (Date.now() > deadline) throw new Error('management plane not ready');
+    if (performance.now() > deadline) throw new Error('management plane not ready');
     await sleep(200);
   }
 }
@@ -117,7 +117,7 @@ async function main() {
   // ── Boot 1: author the model, run one turn, and stream one turn ───────────────
   const first = startAwaken(BASE_PORT, dataDir);
   try {
-    await waitForPort(BASE_PORT, 60_000, first.server);
+    await waitForPort(BASE_PORT, 180_000, first.server);
     await ready(first.baseUrl);
     await authorModel(first.baseUrl, upstream);
     console.log('ok: awaken booted (durable) + authored the DB-configured model');
@@ -157,7 +157,7 @@ async function main() {
   // configured model across the restart (the config-durability fix).
   const second = startAwaken(BASE_PORT + 1, dataDir);
   try {
-    await waitForPort(BASE_PORT + 1, 60_000, second.server);
+    await waitForPort(BASE_PORT + 1, 180_000, second.server);
     await ready(second.baseUrl);
     const sdk = client(second.baseUrl);
     // (a) Config durability: a NEW session for the same agent resolves the
