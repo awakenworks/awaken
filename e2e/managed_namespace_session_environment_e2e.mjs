@@ -73,16 +73,19 @@ const mutateExisting = (path) => {
   } catch { return false; }
 };
 process.stdin.once('data', () => {
-  fs.mkdirSync('outputs', { recursive: true });
-  fs.writeFileSync('outputs/result.txt', 'NAMESPACE-ARTIFACT-OK');
+  // The reserved path is the sole output boundary across Workdir/Namespace/
+  // Container; a cwd-relative directory is ordinary workspace state.
+  const outputs = process.env.AWAKEN_OUTPUTS_DIR;
+  fs.mkdirSync(outputs, { recursive: true });
+  fs.writeFileSync(outputs + '/result.txt', 'NAMESPACE-ARTIFACT-OK');
   const observations = [
     ['skill', read('.skills/delivered-namespace/SKILL.md')],
     ['memory', read('.mnt/notes/seed.txt')],
     ['memory_writable', writable('.mnt/notes/seed.txt')],
-    ['live_file', read('.mnt/workspace/live.txt')],
-    ['live_file_mutated', mutateExisting('.mnt/workspace/live.txt')],
-    ['renamed_file', read('.mnt/workspace/renamed.txt')],
-    ['renamed_file_mutated', mutateExisting('.mnt/workspace/renamed.txt')],
+    ['live_file', read('/mnt/session/uploads/workspace/live.txt')],
+    ['live_file_mutated', mutateExisting('/mnt/session/uploads/workspace/live.txt')],
+    ['renamed_file', read('/mnt/session/uploads/workspace/renamed.txt')],
+    ['renamed_file_mutated', mutateExisting('/mnt/session/uploads/workspace/renamed.txt')],
     ['live_repo', readAny('live-repo/README.md', 'workspace/live-repo/README.md')],
     ['renamed_repo', readAny('renamed-repo/README.md', 'workspace/renamed-repo/README.md')],
   ];
@@ -212,50 +215,64 @@ async function main() {
       file: await toFile(Buffer.from('NAMESPACE-FILE-OK'), 'live.txt'),
       betas: BETAS,
     });
-    const fileResource = await client.beta.sessions.resources.add(session.id, {
-      type: 'file',
-      file_id: uploaded.id,
-      mount_path: '/workspace/live.txt',
-      betas: BETAS,
-    });
     const repoResource = session.resources.find((resource) =>
       resource.type === 'github_repository' && resource.mount_path === '/workspace/live-repo');
     assert.ok(repoResource?.id);
-    reply = await lastReply(client, session.id, 'observe live attachments');
-    assert.match(reply, /NAMESPACE-FILE-OK/, 'a live file attach changed the resident workspace');
-    assert.match(reply, /live_file_mutated",true/, 'the Agent may edit its disposable File copy');
-    assert.equal(
-      await (await client.beta.files.download(uploaded.id, { betas: BETAS })).text(),
-      'NAMESPACE-FILE-OK',
-      'editing the Session copy cannot mutate the immutable FileStore object',
-    );
-    assert.match(reply, /NAMESPACE-REPOSITORY-OK/, 'a live repository attach changed the resident workspace');
+    // Live File admission decision table:
+    // read-only mount + namespace enforcement -> attach at the official
+    // /mnt/session/uploads path; read-only mount + local Workdir -> reject before
+    // changing the resident projection. Every admitted copy rejects mutation.
+    if (TIER === 'local') {
+      await assert.rejects(
+        client.beta.sessions.resources.add(session.id, {
+          type: 'file',
+          file_id: uploaded.id,
+          mount_path: '/workspace/live.txt',
+          betas: BETAS,
+        }),
+        (error) => error?.status === 400 && /does not enforce read-only/.test(error.message),
+      );
+      reply = await lastReply(client, session.id, 'observe rejected live attachment');
+      assert.match(reply, /live_file","ABSENT/, 'a rejected attach leaves no live path');
+      assert.match(reply, /live_repo","NAMESPACE-REPOSITORY-OK/, 'the existing repository remains pinned');
+    } else {
+      const fileResource = await client.beta.sessions.resources.add(session.id, {
+        type: 'file',
+        file_id: uploaded.id,
+        mount_path: '/workspace/live.txt',
+        betas: BETAS,
+      });
+      reply = await lastReply(client, session.id, 'observe live attachments');
+      assert.match(reply, /NAMESPACE-FILE-OK/, 'a live file attach changed the resident workspace');
+      assert.match(reply, /live_file_mutated",false/, 'the mounted File copy is read-only');
+      assert.match(reply, /NAMESPACE-REPOSITORY-OK/, 'the create-time repository remains pinned');
 
-    await client.beta.sessions.resources.delete(fileResource.id, {
-      session_id: session.id,
-      betas: BETAS,
-    });
-    const renamedFileResource = await client.beta.sessions.resources.add(session.id, {
-      type: 'file',
-      file_id: uploaded.id,
-      mount_path: '/workspace/renamed.txt',
-      betas: BETAS,
-    });
-    reply = await lastReply(client, session.id, 'observe renamed attachments');
-    assert.match(reply, /live_file","ABSENT/, 'the old live-file path was revoked');
-    assert.match(reply, /renamed_file","NAMESPACE-FILE-OK/, 'the file appeared only at its replacement path');
-    assert.match(reply, /renamed_file_mutated",true/, 'the replacement is another disposable copy');
-    assert.equal(
-      await (await client.beta.files.download(uploaded.id, { betas: BETAS })).text(),
-      'NAMESPACE-FILE-OK',
-      'repeated copy mutation still leaves the content-addressed File unchanged',
-    );
-    assert.match(reply, /live_repo","NAMESPACE-REPOSITORY-OK/, 'create-time repository remains pinned');
+      await client.beta.sessions.resources.delete(fileResource.id, {
+        session_id: session.id,
+        betas: BETAS,
+      });
+      const renamedFileResource = await client.beta.sessions.resources.add(session.id, {
+        type: 'file',
+        file_id: uploaded.id,
+        mount_path: '/workspace/renamed.txt',
+        betas: BETAS,
+      });
+      reply = await lastReply(client, session.id, 'observe renamed attachments');
+      assert.match(reply, /live_file","ABSENT/, 'the old live-file path was revoked');
+      assert.match(reply, /renamed_file","NAMESPACE-FILE-OK/, 'the file appeared only at its replacement path');
+      assert.match(reply, /renamed_file_mutated",false/, 'the replacement copy is also read-only');
+      assert.equal(
+        (await client.beta.files.retrieveMetadata(uploaded.id, { betas: BETAS })).id,
+        uploaded.id,
+        'the read-only Session projection leaves the logical input File live',
+      );
+      assert.match(reply, /live_repo","NAMESPACE-REPOSITORY-OK/, 'create-time repository remains pinned');
 
-    await client.beta.sessions.resources.delete(renamedFileResource.id, {
-      session_id: session.id,
-      betas: BETAS,
-    });
+      await client.beta.sessions.resources.delete(renamedFileResource.id, {
+        session_id: session.id,
+        betas: BETAS,
+      });
+    }
     await client.beta.sessions.resources.delete(repoResource.id, {
       session_id: session.id,
       betas: BETAS,
