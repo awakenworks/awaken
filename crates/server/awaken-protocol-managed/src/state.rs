@@ -271,6 +271,13 @@ impl ManagedState {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or_default();
+        let sessions_repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+            SqliteManagedSessionRepository::open_in_memory()
+                .expect("open ephemeral managed Session repository"),
+        );
+        runtime.install_environment_binding_sink(Arc::new(
+            crate::state::environment::RepositoryEnvironmentBindingSink::new(sessions_repo.clone()),
+        ));
         Self {
             runtime,
             mcp_realizer,
@@ -281,10 +288,7 @@ impl ManagedState {
             resource_purge_scheduler: None,
             sessions: Mutex::new(HashMap::new()),
             owners: Mutex::new(HashMap::new()),
-            sessions_repo: Arc::new(
-                SqliteManagedSessionRepository::open_in_memory()
-                    .expect("open ephemeral managed Session repository"),
-            ),
+            sessions_repo,
             lifecycle_sink: None,
             runtime_incarnation: format!("managed:{}:{started_at}", std::process::id()),
             session_seq: AtomicU64::new(0),
@@ -319,6 +323,9 @@ impl ManagedState {
     /// by another process. The default is in-memory (single-process behavior).
     #[must_use]
     pub fn with_session_repo(mut self, repo: Arc<dyn ManagedSessionRepository>) -> Self {
+        self.runtime.install_environment_binding_sink(Arc::new(
+            crate::state::environment::RepositoryEnvironmentBindingSink::new(repo.clone()),
+        ));
         self.sessions_repo = repo;
         self
     }
@@ -1190,6 +1197,130 @@ mod tests {
             realization: None,
             status: "idle".into(),
             archived_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn immediate_environment_binding_sink_is_durable_and_idempotent() {
+        use awaken_session_contract::SessionEnvironmentBindingSink;
+
+        let repo = Arc::new(ephemeral_session_repo());
+        create_session_fixture(
+            repo.as_ref(),
+            DEFAULT_SCOPE,
+            sample_persisted("binding-now"),
+        )
+        .await;
+        let sink = crate::state::environment::RepositoryEnvironmentBindingSink::new(repo.clone());
+
+        sink.persist("binding-now", "opaque-handle").await.unwrap();
+        let first = repo.get("binding-now").await.unwrap();
+        assert_eq!(first.environment_binding.as_deref(), Some("opaque-handle"));
+        sink.persist("binding-now", "opaque-handle").await.unwrap();
+        let replay = repo.get("binding-now").await.unwrap();
+        assert_eq!(replay.revision, first.revision);
+        assert_eq!(replay.environment_binding, first.environment_binding);
+    }
+
+    struct ConflictInjectingRepo {
+        inner: Arc<SqliteManagedSessionRepository>,
+        conflicts: AtomicU64,
+    }
+
+    #[async_trait]
+    impl ManagedSessionRepository for ConflictInjectingRepo {
+        async fn create(
+            &self,
+            owner_scope: &str,
+            session: PersistedSession,
+            idempotency: awaken_session_contract::IdempotencyRecord,
+            facts: Vec<awaken_session_contract::SessionLifecycleFact>,
+        ) -> Result<
+            awaken_session_contract::SessionRevision,
+            awaken_session_contract::SessionRepositoryError,
+        > {
+            self.inner
+                .create(owner_scope, session, idempotency, facts)
+                .await
+        }
+
+        async fn commit_mutation(
+            &self,
+            owner_scope: &str,
+            mutation: awaken_session_contract::SessionMutation,
+        ) -> Result<
+            awaken_session_contract::SessionMutationResult,
+            awaken_session_contract::SessionRepositoryError,
+        > {
+            if self
+                .conflicts
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                    count.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Ok(awaken_session_contract::SessionMutationResult::Conflict {
+                    current_revision: mutation.expected_revision,
+                });
+            }
+            self.inner.commit_mutation(owner_scope, mutation).await
+        }
+
+        async fn append_lifecycle(&self, fact: awaken_session_contract::SessionLifecycleFact) {
+            self.inner.append_lifecycle(fact).await;
+        }
+
+        async fn pending_lifecycle(&self) -> Vec<awaken_session_contract::SessionLifecycleFact> {
+            self.inner.pending_lifecycle().await
+        }
+
+        async fn complete_lifecycle(&self, fact_id: &str) {
+            self.inner.complete_lifecycle(fact_id).await;
+        }
+
+        async fn get(&self, session_id: &str) -> Option<PersistedSession> {
+            self.inner.get(session_id).await
+        }
+
+        async fn owner(&self, session_id: &str) -> Option<String> {
+            self.inner.owner(session_id).await
+        }
+    }
+
+    #[tokio::test]
+    async fn immediate_binding_cas_retries_once_then_fails_closed_at_the_bound() {
+        use awaken_session_contract::SessionEnvironmentBindingSink;
+
+        for (case, conflicts, accepted) in [
+            ("one conflict then success", 1, true),
+            ("three conflicts exhaust bound", 3, false),
+        ] {
+            let inner = Arc::new(ephemeral_session_repo());
+            create_session_fixture(
+                inner.as_ref(),
+                DEFAULT_SCOPE,
+                sample_persisted(&format!("binding-{conflicts}")),
+            )
+            .await;
+            let repo = Arc::new(ConflictInjectingRepo {
+                inner: inner.clone(),
+                conflicts: AtomicU64::new(conflicts),
+            });
+            let sink = crate::state::environment::RepositoryEnvironmentBindingSink::new(repo);
+            let result = sink
+                .persist(&format!("binding-{conflicts}"), "opaque")
+                .await;
+            assert_eq!(result.is_ok(), accepted, "{case}");
+            assert_eq!(
+                inner
+                    .get(&format!("binding-{conflicts}"))
+                    .await
+                    .unwrap()
+                    .environment_binding
+                    .as_deref(),
+                accepted.then_some("opaque"),
+                "{case}"
+            );
         }
     }
 

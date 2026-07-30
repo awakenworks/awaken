@@ -928,6 +928,7 @@ fn decode_environment_projection(
         network,
         packages,
         sandbox,
+        provisioning: environment.sandbox_provisioning,
         credential_realization: environment.credential_realization.clone(),
     }
 }

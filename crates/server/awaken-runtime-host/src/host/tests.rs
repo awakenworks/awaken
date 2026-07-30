@@ -33,6 +33,15 @@ fn session_environment(
     }
 }
 
+fn on_tool_use_environment() -> awaken_protocol_managed::EnvironmentSnapshot {
+    let mut environment = session_environment(
+        awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+        serde_json::json!({}),
+    );
+    environment.sandbox_provisioning = awaken_provisioning_contract::SandboxProvisioning::OnToolUse;
+    environment
+}
+
 fn resource_catalog() -> Arc<awaken_admin_config_api::SqliteAdminStore> {
     Arc::new(
         awaken_admin_config_api::SqliteAdminStore::open_in_memory()
@@ -2178,9 +2187,8 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
     assert!(!host.sandbox_spec("t-bare").limits.is_set());
 }
 
-/// Session creation freezes configuration but does not synchronously provision a
-/// Hand/Sandbox. The first execution joins the per-Session lifecycle mutex and
-/// blocks until the one environment is ready.
+/// Eager Session creation freezes configuration first; its first context build
+/// joins the per-Session lifecycle mutex and waits until the environment is ready.
 #[tokio::test]
 async fn prepare_session_is_lazy_and_first_turn_materializes_the_environment() {
     use awaken_protocol_managed::{SessionInit, SessionRuntime};
@@ -2222,6 +2230,385 @@ async fn prepare_session_is_lazy_and_first_turn_materializes_the_environment() {
     .await
     .expect("first turn waits for environment readiness");
     assert!(host.session_environment("lazy-environment").await.is_some());
+}
+
+/// L1: `on_tool_use` means inference alone must not allocate a Sandbox.
+#[tokio::test]
+async fn on_tool_use_text_only_turn_keeps_the_environment_absent() {
+    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    crate::ManagedHost::new(host.clone())
+        .prepare_session(
+            "deferred-text",
+            SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "assistant".into(),
+                delegate_ids: Vec::new(),
+                toolsets: None,
+                resources: Default::default(),
+                model: None,
+                runtime: None,
+                environment: on_tool_use_environment(),
+            },
+        )
+        .await
+        .unwrap();
+
+    host.run(
+        Some("assistant"),
+        "deferred-text",
+        vec![Message::text(MessageId("u1".into()), Role::User, "hello")],
+    )
+    .await
+    .unwrap();
+    assert!(host.session_environment("deferred-text").await.is_none());
+}
+
+struct BrainSkillModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for BrainSkillModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let output = if request
+            .messages
+            .iter()
+            .any(|message| message.role == Role::Tool)
+        {
+            AssistantOutput::text("done")
+        } else {
+            AssistantOutput::from_tool_calls(vec![awaken_runtime_contract::llm::ToolCall {
+                call_id: "skills-1".into(),
+                tool_id: awaken_ext_skills::SKILL_LIST_TOOL_ID.into(),
+                arguments: serde_json::json!({}),
+            }])
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+struct HandReadModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for HandReadModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let output = if request
+            .messages
+            .iter()
+            .any(|message| message.role == Role::Tool)
+        {
+            AssistantOutput::text("done")
+        } else {
+            AssistantOutput::from_tool_calls(vec![awaken_runtime_contract::llm::ToolCall {
+                call_id: "read-1".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({"path": "missing.txt"}),
+            }])
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+/// L2: instruction-only Skill tools execute in the Brain and do not awaken Hand.
+#[tokio::test]
+async fn on_tool_use_brain_skill_call_keeps_the_environment_absent() {
+    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    let host = Arc::new(
+        SharedHost::new(Arc::new(BrainSkillModel), "stub").with_skills(vec![
+            awaken_ext_skills::SkillSpec::new("think", "Think", "reason", "Think carefully."),
+        ]),
+    );
+    crate::ManagedHost::new(host.clone())
+        .prepare_session(
+            "deferred-brain",
+            SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "assistant".into(),
+                delegate_ids: Vec::new(),
+                toolsets: None,
+                resources: Default::default(),
+                model: None,
+                runtime: None,
+                environment: on_tool_use_environment(),
+            },
+        )
+        .await
+        .unwrap();
+
+    host.run(
+        Some("assistant"),
+        "deferred-brain",
+        vec![Message::text(MessageId("u2".into()), Role::User, "skills")],
+    )
+    .await
+    .unwrap();
+    assert!(host.session_environment("deferred-brain").await.is_none());
+}
+
+/// L3: the Runtime's per-tool target routing sends a Sandbox tool through the
+/// deferred Hand; the invoking turn blocks until materialization completes.
+#[tokio::test]
+async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
+    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    let host = Arc::new(SharedHost::new(Arc::new(HandReadModel), "stub"));
+    crate::ManagedHost::new(host.clone())
+        .prepare_session(
+            "deferred-runtime-hand",
+            SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "assistant".into(),
+                delegate_ids: Vec::new(),
+                toolsets: None,
+                resources: Default::default(),
+                model: None,
+                runtime: None,
+                environment: on_tool_use_environment(),
+            },
+        )
+        .await
+        .unwrap();
+
+    host.run(
+        Some("assistant"),
+        "deferred-runtime-hand",
+        vec![Message::text(MessageId("u3".into()), Role::User, "read")],
+    )
+    .await
+    .unwrap();
+    assert!(
+        host.session_environment("deferred-runtime-hand")
+            .await
+            .is_some()
+    );
+}
+
+/// L7: a capability that needs filesystem state defeats `on_tool_use`; context
+/// construction must eagerly provide the real Environment rather than expose a
+/// broken `${SKILL_DIR}`.
+#[tokio::test]
+async fn on_tool_use_filesystem_skill_forces_an_eager_environment() {
+    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    let filesystem_skill = awaken_ext_skills::SkillSpec {
+        environment: awaken_ext_skills::SkillEnvironment::Filesystem,
+        dir: Some("skills/files".into()),
+        ..awaken_ext_skills::SkillSpec::new("files", "Files", "inspect files", "Read files.")
+    };
+    let host =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_skills(vec![filesystem_skill]));
+    crate::ManagedHost::new(host.clone())
+        .prepare_session(
+            "deferred-filesystem-skill",
+            SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "assistant".into(),
+                delegate_ids: Vec::new(),
+                toolsets: None,
+                resources: Default::default(),
+                model: None,
+                runtime: None,
+                environment: on_tool_use_environment(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let ctx = host
+        .ctx_for("deferred-filesystem-skill", Some("assistant"))
+        .await
+        .unwrap();
+    assert!(ctx.env.is_some());
+    assert!(
+        host.session_environment("deferred-filesystem-skill")
+            .await
+            .is_some()
+    );
+}
+
+struct BindingOrderSink {
+    host: std::sync::Weak<SharedHost>,
+    calls: AtomicUsize,
+    observed_before_publish: std::sync::atomic::AtomicBool,
+    fail: bool,
+}
+
+#[async_trait::async_trait]
+impl awaken_protocol_managed::SessionEnvironmentBindingSink for BindingOrderSink {
+    async fn persist(
+        &self,
+        session_id: &str,
+        _binding: &str,
+    ) -> Result<(), awaken_protocol_managed::RunError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let host = self.host.upgrade().expect("host remains live");
+        self.observed_before_publish.store(
+            host.session_environment(session_id).await.is_none(),
+            Ordering::SeqCst,
+        );
+        if self.fail {
+            Err(awaken_protocol_managed::RunError::internal(
+                "binding store unavailable",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[tokio::test]
+async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use_it() {
+    use awaken_protocol_managed::SessionRuntime;
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let sink = Arc::new(BindingOrderSink {
+        host: Arc::downgrade(&host),
+        calls: AtomicUsize::new(0),
+        observed_before_publish: std::sync::atomic::AtomicBool::new(false),
+        fail: false,
+    });
+    crate::ManagedHost::new(host.clone()).install_environment_binding_sink(sink.clone());
+
+    let (left, right) = tokio::join!(
+        host.ctx_for("binding-order", None),
+        host.ctx_for("binding-order", None)
+    );
+    left.unwrap();
+    right.unwrap();
+    assert_eq!(sink.calls.load(Ordering::SeqCst), 1);
+    assert!(sink.observed_before_publish.load(Ordering::SeqCst));
+    assert!(host.session_environment("binding-order").await.is_some());
+}
+
+#[tokio::test]
+async fn binding_commit_failure_disposes_and_never_publishes_the_environment() {
+    use awaken_protocol_managed::SessionRuntime;
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let sink = Arc::new(BindingOrderSink {
+        host: Arc::downgrade(&host),
+        calls: AtomicUsize::new(0),
+        observed_before_publish: std::sync::atomic::AtomicBool::new(false),
+        fail: true,
+    });
+    crate::ManagedHost::new(host.clone()).install_environment_binding_sink(sink.clone());
+
+    let error = match host.ctx_for("binding-failure", None).await {
+        Ok(_) => panic!("binding failure must not publish a context"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("binding store unavailable"));
+    assert_eq!(sink.calls.load(Ordering::SeqCst), 1);
+    assert!(host.session_environment("binding-failure").await.is_none());
+}
+
+/// L3/L4: concurrent first Hand calls join one creator and only observe the
+/// environment after its durable binding has succeeded.
+#[tokio::test]
+async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() {
+    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let sink = Arc::new(BindingOrderSink {
+        host: Arc::downgrade(&host),
+        calls: AtomicUsize::new(0),
+        observed_before_publish: std::sync::atomic::AtomicBool::new(false),
+        fail: false,
+    });
+    let managed = crate::ManagedHost::new(host.clone());
+    managed.install_environment_binding_sink(sink.clone());
+    managed
+        .prepare_session(
+            "deferred-hand",
+            SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "assistant".into(),
+                delegate_ids: Vec::new(),
+                toolsets: None,
+                resources: Default::default(),
+                model: None,
+                runtime: None,
+                environment: on_tool_use_environment(),
+            },
+        )
+        .await
+        .unwrap();
+    let ctx = host.ctx_for("deferred-hand", None).await.unwrap();
+    assert!(ctx.env.is_none());
+    let hand = ctx
+        .hand_placement
+        .session_hand()
+        .expect("deferred hand")
+        .clone();
+    let left = awaken_runtime_contract::tool::ToolCall {
+        call_id: "read-left".into(),
+        tool_id: "read".into(),
+        arguments: serde_json::json!({"path": "missing-left"}),
+    };
+    let right = awaken_runtime_contract::tool::ToolCall {
+        call_id: "read-right".into(),
+        tool_id: "read".into(),
+        arguments: serde_json::json!({"path": "missing-right"}),
+    };
+
+    let (_left, _right) = tokio::join!(hand.invoke(&left), hand.invoke(&right));
+    assert_eq!(sink.calls.load(Ordering::SeqCst), 1);
+    assert!(sink.observed_before_publish.load(Ordering::SeqCst));
+    assert!(host.session_environment("deferred-hand").await.is_some());
+}
+
+/// L5: persistence failure fails closed; no deferred environment becomes visible.
+#[tokio::test]
+async fn on_tool_use_binding_failure_never_publishes_the_environment() {
+    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let sink = Arc::new(BindingOrderSink {
+        host: Arc::downgrade(&host),
+        calls: AtomicUsize::new(0),
+        observed_before_publish: std::sync::atomic::AtomicBool::new(false),
+        fail: true,
+    });
+    let managed = crate::ManagedHost::new(host.clone());
+    managed.install_environment_binding_sink(sink.clone());
+    managed
+        .prepare_session(
+            "deferred-failure",
+            SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "assistant".into(),
+                delegate_ids: Vec::new(),
+                toolsets: None,
+                resources: Default::default(),
+                model: None,
+                runtime: None,
+                environment: on_tool_use_environment(),
+            },
+        )
+        .await
+        .unwrap();
+    let ctx = host.ctx_for("deferred-failure", None).await.unwrap();
+    let hand = ctx
+        .hand_placement
+        .session_hand()
+        .expect("deferred hand")
+        .clone();
+    let call = awaken_runtime_contract::tool::ToolCall {
+        call_id: "read-failure".into(),
+        tool_id: "read".into(),
+        arguments: serde_json::json!({"path": "missing"}),
+    };
+    let error = hand.invoke(&call).await.expect_err("binding failure");
+    assert!(error.to_string().contains("binding store unavailable"));
+    assert_eq!(sink.calls.load(Ordering::SeqCst), 1);
+    assert!(host.session_environment("deferred-failure").await.is_none());
 }
 
 /// Runtime stages the effective resources supplied by the Session control plane. It
@@ -4426,7 +4813,7 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
 
     let first = SharedHost::new(Arc::new(OkModel), "stub").with_store_dir(storage.path());
     let first_ctx = first.ctx_for(thread, None).await.expect("first session");
-    let handle = first_ctx.env.handle();
+    let handle = first_ctx.env.as_ref().expect("eager environment").handle();
     let marker = storage
         .path()
         .join("sandboxes")
@@ -4451,7 +4838,14 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
         .await
         .expect("replacement session");
 
-    assert_eq!(replacement_ctx.env.handle(), handle);
+    assert_eq!(
+        replacement_ctx
+            .env
+            .as_ref()
+            .expect("eager environment")
+            .handle(),
+        handle
+    );
     assert_eq!(std::fs::read(marker).unwrap(), b"survived");
 }
 
@@ -4463,7 +4857,7 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .ctx_for("t-resident-adoption", None)
         .await
         .expect("resident session");
-    let resident_handle = resident.env.handle();
+    let resident_handle = resident.env.as_ref().expect("eager environment").handle();
 
     let same = host
         .session_provider
@@ -4493,7 +4887,10 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         error.message,
         "thread t-resident-adoption is already bound to a different sandbox"
     );
-    assert_eq!(resident.env.handle(), resident_handle);
+    assert_eq!(
+        resident.env.as_ref().expect("eager environment").handle(),
+        resident_handle
+    );
 }
 
 #[tokio::test]
@@ -4504,7 +4901,7 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .ctx_for("t-retained-adoption", None)
         .await
         .expect("initial session");
-    let retained_handle = original.env.handle();
+    let retained_handle = original.env.as_ref().expect("eager environment").handle();
     assert!(
         host.session_slots
             .modify("t-retained-adoption", |slot| slot.runtime.take())
@@ -4541,7 +4938,10 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .ctx_for_with_sandbox("t-retained-adoption", None, Some(same))
         .await
         .expect("the exact retained sandbox rebuilds the runtime context");
-    assert_eq!(rebuilt.env.handle(), retained_handle);
+    assert_eq!(
+        rebuilt.env.as_ref().expect("eager environment").handle(),
+        retained_handle
+    );
     assert_eq!(
         host.session_environment_handle("t-retained-adoption").await,
         Some(retained_handle)

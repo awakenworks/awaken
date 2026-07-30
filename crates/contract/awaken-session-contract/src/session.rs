@@ -286,6 +286,8 @@ pub trait McpAttachmentRealizer: Send + Sync {
 /// [`McpAttachmentRealizer`] because it has a distinct hot-attachment lifecycle.
 #[async_trait]
 pub trait SessionRuntime: Send + Sync {
+    /// Install the durable callback used at the exact sandbox creation boundary.
+    fn install_environment_binding_sink(&self, _sink: Arc<dyn SessionEnvironmentBindingSink>) {}
     /// Read the runtime-owned, durable child-Run relationships for `thread`.
     /// Protocol adapters use this only to rebuild disposable projections after a
     /// restart; the runtime relationship registry remains the sole authority.
@@ -561,6 +563,13 @@ pub trait SessionRuntime: Send + Sync {
     fn capabilities_for(&self, _thread: &str) -> AgentCapabilities {
         self.capabilities()
     }
+}
+
+/// Immediate durability boundary for a newly materialized Session environment.
+/// The binding must commit before the runtime exposes that environment to work.
+#[async_trait]
+pub trait SessionEnvironmentBindingSink: Send + Sync {
+    async fn persist(&self, session_id: &str, binding: &str) -> Result<(), RunError>;
 }
 
 /// A runtime failure. `kind` classifies who is at fault so the router can map it

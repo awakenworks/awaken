@@ -73,13 +73,27 @@ struct SnapshotSkillSource {
     files: Vec<SkillFile>,
 }
 
-fn requires_filesystem(version: &SkillVersion, content: &str) -> bool {
+pub(crate) fn requires_filesystem(version: &SkillVersion, content: &str) -> bool {
     let declared = awaken_ext_skills::parse_skill_md(version.skill_id.to_string(), content);
     declared.environment == SkillEnvironment::Filesystem
         || version
             .files
             .iter()
             .any(|file| file.path != "SKILL.md" && !file.path.ends_with("/SKILL.md"))
+}
+
+pub(crate) fn version_requires_environment(version: &SkillVersion) -> bool {
+    let Some(content) = version
+        .files
+        .iter()
+        .find(|file| file.path == "SKILL.md")
+        .and_then(|file| String::from_utf8(file.content.clone()).ok())
+    else {
+        return true;
+    };
+    let spec = awaken_ext_skills::parse_skill_md(version.skill_id.to_string(), &content);
+    requires_filesystem(version, &content)
+        || spec.context != awaken_ext_skills::SkillContext::Inline
 }
 
 impl SkillSource for SnapshotSkillSource {
@@ -164,7 +178,7 @@ pub(crate) async fn wire_skills(
     configured: &[SkillSpec],
     external_registries: Vec<Arc<dyn SkillRegistry>>,
     delivered: Option<Vec<SkillVersion>>,
-    env: Arc<crate::session_environment::SessionEnvironment>,
+    env: Option<Arc<crate::session_environment::SessionEnvironment>>,
     llm: Arc<dyn LlmExecutor>,
     model_ref: &str,
     session_id: &str,
@@ -189,9 +203,11 @@ pub(crate) async fn wire_skills(
             skill.id
         ));
     }
-    env.register_skill_dir(skills_subdir);
-    if let Err(error) = env.refresh_skills().await {
-        tracing::warn!(error = %error, "failed to seed container skill catalog");
+    if let Some(env) = &env {
+        env.register_skill_dir(skills_subdir);
+        if let Err(error) = env.refresh_skills().await {
+            tracing::warn!(error = %error, "failed to seed container skill catalog");
+        }
     }
     // Delivered skills come from two trusted sources: the static configured set and —
     // when wired — the durable `/v1/skills` catalog snapshot (both `Delivered`
@@ -208,9 +224,11 @@ pub(crate) async fn wire_skills(
         // `.skills` is a complete runtime-owned projection, not an append-only
         // cache. Clear it before every rebuild so a retired Skill or a file removed
         // by a newer immutable version cannot remain reachable through read/bash.
-        env.remove_workspace_path(DELIVERED_SKILLS_SUBDIR)
-            .await
-            .map_err(|error| error.to_string())?;
+        if let Some(env) = &env {
+            env.remove_workspace_path(DELIVERED_SKILLS_SUBDIR)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         let mut files = Vec::with_capacity(delivered.len());
         for version in delivered {
             if awaken_skill_store::bundle_sha256(&version.files) != version.bundle_sha256 {
@@ -241,6 +259,12 @@ pub(crate) async fn wire_skills(
                 )
             });
             if let Some(directory) = &directory {
+                let env = env.as_ref().ok_or_else(|| {
+                    format!(
+                        "filesystem Skill `{}` requires a materialized Session environment",
+                        version.skill_id
+                    )
+                })?;
                 let materialized = version
                     .files
                     .iter()
@@ -262,13 +286,15 @@ pub(crate) async fn wire_skills(
         )));
     }
     registries.extend(external_registries);
-    registries.push(Arc::new(SourceSkillRegistry::new(
-        Arc::new(EnvSkillSource {
-            env: env.clone(),
-            subdir: skills_subdir.to_string(),
-        }),
-        SkillProvenance::AgentCreated,
-    )));
+    if let Some(env) = &env {
+        registries.push(Arc::new(SourceSkillRegistry::new(
+            Arc::new(EnvSkillSource {
+                env: env.clone(),
+                subdir: skills_subdir.to_string(),
+            }),
+            SkillProvenance::AgentCreated,
+        )));
+    }
     let registry: Arc<dyn SkillRegistry> = Arc::new(CompositeSkillRegistry::new(registries));
 
     let activations = PathActivations::new();
@@ -279,19 +305,20 @@ pub(crate) async fn wire_skills(
         Arc::new(SkillAllowedToolsGate::new(recording, active_tools.clone()));
     let list: Arc<dyn RawTool> =
         Arc::new(ListSkillsTool::new(registry.clone()).with_path_activations(activations));
-    let agent_tool: Arc<dyn RawTool> = Arc::new(ForkAgentTool {
-        llm,
-        model_ref: model_ref.to_string(),
-        provider: LocalProvider::new(fork_base),
-        sandbox: env,
-        placement,
-    });
-    let activate: Arc<dyn RawTool> = Arc::new(
-        SkillTool::new(registry.clone())
-            .with_session_id(session_id)
-            .with_agent_tool(agent_tool)
-            .with_active_tools(active_tools),
-    );
+    let mut activate = SkillTool::new(registry.clone())
+        .with_session_id(session_id)
+        .with_active_tools(active_tools);
+    if let Some(env) = env {
+        let agent_tool: Arc<dyn RawTool> = Arc::new(ForkAgentTool {
+            llm,
+            model_ref: model_ref.to_string(),
+            provider: LocalProvider::new(fork_base),
+            sandbox: env,
+            placement,
+        });
+        activate = activate.with_agent_tool(agent_tool);
+    }
+    let activate: Arc<dyn RawTool> = Arc::new(activate);
 
     Ok(Some(SkillWiring {
         descriptors: vec![list_skills_descriptor(), skill_descriptor()],

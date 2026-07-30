@@ -1156,7 +1156,7 @@ mod tests {
         let thread = "thread-adoption";
         let first = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
         let first_ctx = first.ctx_for(thread, None).await.expect("first session");
-        let handle = first_ctx.env.handle();
+        let handle = first_ctx.env.as_ref().expect("eager environment").handle();
         let encoded = serde_json::to_string(&handle).unwrap();
         drop(first_ctx);
         drop(first);
@@ -1213,7 +1213,7 @@ mod tests {
         let thread = "thread-resident-adoption";
         let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
         let ctx = host.ctx_for(thread, None).await.expect("resident session");
-        let handle = ctx.env.handle();
+        let handle = ctx.env.as_ref().expect("eager environment").handle();
         let encoded = serde_json::to_string(&handle).unwrap();
 
         let (adopted, rebuild) = adopt_bound_sandbox(
@@ -1237,7 +1237,7 @@ mod tests {
         let thread = "thread-dead-resident";
         let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
         let ctx = host.ctx_for(thread, None).await.expect("resident session");
-        let handle = ctx.env.handle();
+        let handle = ctx.env.as_ref().expect("eager environment").handle();
         let encoded = serde_json::to_string(&handle).unwrap();
         std::fs::remove_dir_all(storage.path().join("sandboxes").join(thread))
             .expect("terminate local sandbox out of band");
@@ -1287,7 +1287,7 @@ mod tests {
         let thread = "thread-binding-fence";
         let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
         let ctx = host.ctx_for(thread, None).await.expect("resident session");
-        let resident = ctx.env.handle();
+        let resident = ctx.env.as_ref().expect("eager environment").handle();
         let mut stale = resident.clone();
         stale.extra = Some(serde_json::json!({"generation": "stale"}));
         let encoded = serde_json::to_string(&stale).unwrap();

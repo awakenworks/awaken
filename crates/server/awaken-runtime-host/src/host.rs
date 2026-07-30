@@ -300,6 +300,8 @@ pub struct SharedHost {
     /// their precedence (provider placement overrides the hand). Cloned into each
     /// `SessionCtx`. See [`crate::hand_placement`].
     pub(crate) hand_placement: crate::hand_placement::HandPlacement,
+    pub(crate) environment_binding_sink:
+        std::sync::RwLock<Option<Arc<dyn awaken_protocol_managed::SessionEnvironmentBindingSink>>>,
     /// The one Host-owned subject-tagged captured-content sink (ADR-0050).
     /// Composition may install it after the shared Host is assembled; sessions
     /// snapshot the current sink when they are created. `None` = spans only.

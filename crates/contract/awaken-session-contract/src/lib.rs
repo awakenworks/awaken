@@ -74,7 +74,8 @@ pub use resource_activation::{
 pub use session::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, McpAttachmentRealizer, OutcomeIteration, OutcomeReport, Pending, RunError,
-    RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
+    RunErrorKind, SessionEnvironmentBindingSink, SessionInit, SessionRuntime, SessionUsage,
+    StepOutcome, ToolPermissionDecision,
 };
 pub use session_realization::{
     AcknowledgeSessionRealization, ActivateSessionRealization, ApplicationSessionControl,
