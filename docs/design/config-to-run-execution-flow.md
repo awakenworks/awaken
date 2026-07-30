@@ -51,10 +51,9 @@ Distributed:  application port -> network adapter -> same authority
 | mounts, working trees, processes, and plaintext | Worker / Sandbox, ephemeral | local only |
 
 `WorkerSessionResourceAdapters` is a transitional composition value containing
-only the exact Session Resource ports that are currently installed. It is not a
-Resource aggregate or a data-plane owner. File and Memory execution use their
-claim-fenced network adapters; only immutable Skill access remains store-backed
-until its boundary slice lands.
+only the remaining live binding validator. It is not a Resource aggregate or a
+data-plane owner. File, Memory, and custom-Skill execution use dedicated
+claim-fenced network adapters; the Worker opens none of their databases.
 
 ## Flow One: Configuration To Application
 
@@ -174,7 +173,7 @@ flowchart TD
     J["Existing: enqueue RunDispatch with snapshot and secret-free envelopes"]
 
     K["Existing: authenticated Worker claim with lease epoch"]
-    L["Modified/New: per-kind Resource realization (File/Memory complete; Skill pending)"]
+    L["Modified/New: per-kind Resource realization (File/Memory/Skill complete; Repository pending)"]
     M["Added: exact Worker-private credential materialization"]
     N["Existing: Sandbox creation and repository realization"]
     O["Existing: Runtime model, tool, child Run, and HITL execution"]
@@ -256,6 +255,14 @@ claim guard while proving the frozen Workspace, config version, access ceiling,
 and current Resource lifecycle before delegating to `MemoryRepository`. Writable
 copy teardown uses the existing CAS update and delete-if-match algorithm; a
 read-only binding cannot issue a mutation.
+
+For custom Skills, publication freezes kind, id, version, and bundle hash in the
+Session manifest. Local realization uses `StoreSkillBundleSource`; a distributed
+Worker uses `HttpSkillBundleSource`. The Coordinator authenticates the current
+Worker incarnation, holds the claim epoch, and proves the exact binding and
+Workspace are frozen before reading `SkillStore`. Both sides recompute and
+verify the bundle digest. Built-in Anthropic Skills remain immutable runtime
+content and do not use the Resource network boundary.
 
 ### Commit and response authority
 

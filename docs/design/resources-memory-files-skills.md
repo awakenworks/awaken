@@ -284,7 +284,9 @@ process-local handle.
 | `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct working tree, publish Agent-authored commits with ephemeral transport credentials | remote repository ownership, authorization policy, or commit pinning |
 | Repository credential pin compiler | Existing in Managed Session application service | Session application/Vault ACL | compile a Repository config binding once into exact active source revision, canonical usage, `Forbidden` exposure, and selected Resource holder before persistence | material opening, Runtime lookup, generic Service state |
 | `CredentialMaterialResolver` | Existing canonical port | Credential execution boundary | validate and open one exact access/holder/Workspace/target-use binding for an installed adapter; shared by Model, MCP, and Repository | source enumeration, revision/holder/target selection, Agent prompt, persisted plaintext |
-| `SkillBundleSource` | New boundary adapter | Worker/Skill boundary | retrieve and verify one exact immutable capability bundle | generic Resource lifecycle, Skill policy selection, database access |
+| `SkillBundleSource` | Implemented boundary port | Worker/Skill boundary | retrieve and verify one exact immutable custom capability bundle under a live claim | generic Resource lifecycle, Skill policy selection, database access |
+| `StoreSkillBundleSource` | Implemented local adapter | Skill data plane | load the exact frozen version from the authoritative `SkillStore` and validate its identity and digest | Worker identity, dispatch ownership, HTTP, a second Skill catalog |
+| `HttpSkillBundleSource` / Worker Skill handler | Implemented network adapters | Worker/Skill boundary | authenticate the current Worker, prove the exact custom binding belongs to the frozen dispatch manifest, hold the claim guard through the read, and verify the returned bundle again on Worker | authoring/list/delete/purge, built-in Skill transport, Worker database access |
 | `SandboxProvider` | Existing | Environment provisioning | realize validated mounts/working trees and dispose them | product resource authoring and policy |
 | `ResourceReclaimer` | Existing, durable and per-resource | Product/session operations | reconcile crashed activations and purge intents; retention, reference checks, fenced claims, per-kind receipts | authorization decisions, remote Git deletion |
 | `ResourceReclamationFence` | Existing resource lifecycle port | Resource consistency | atomically prove zero physical references, fence `(kind, resource_id)`, and reject racing reference writes | principal, role, policy, API key, Org/Project/WorkUnit |
@@ -338,8 +340,11 @@ then supplies CAS conflict and delete-if-match behavior across the network.
 The Skill store's latest-version view is likewise one backend-owned atomic
 operation. `SkillCatalog` calls `snapshot_latest_versions`; it no longer rebuilds
 that view by listing definitions and fetching each mutable latest pointer in a
-separate operation. Exact pinned bundle loading remains the subsequent network
-boundary.
+separate operation. Exact custom bundles use the same `SkillBundleSource` port
+locally and remotely. The HTTP handler proves the current Worker incarnation,
+live claim, Workspace, and frozen kind/id/version/hash before it reads the store;
+the Worker recomputes the digest before activation. Built-in Anthropic Skills
+remain runtime-owned and never cross the Resource boundary.
 
 `ResourcePlane` selects local or remote implementations at the composition root;
 it does not own a Resource aggregate. A separately deployed provider retains its

@@ -108,13 +108,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     }
     // Environment-managed Sessions always carry a (possibly empty) frozen
-    // resource envelope. Install the real Resource plane and validator so
-    // the standard manifest may honestly advertise session-resources/v1; the
-    // coordinator will otherwise reject this Worker before it can claim.
-    let resources = awaken_worker::WorkerSessionResourceAdapters::new(
-        awaken_server::embedded_skill_store(&std::path::Path::new(&storage).join("resources")),
-        Arc::new(awaken_admin_config_api::SqliteAdminStore::open_in_memory()?),
-    );
+    // resource envelope. Install the validator so the standard manifest may
+    // honestly advertise session-resources/v1; exact File, Memory, and Skill
+    // bytes cross registration-bound network adapters.
+    let resources = awaken_worker::WorkerSessionResourceAdapters::new(Arc::new(
+        awaken_admin_config_api::SqliteAdminStore::open_in_memory()?,
+    ));
     awaken_worker::WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new(upstream))
         .with_inference_materializer(Arc::new(HostMaterializer))
         .with_deployment_config(deployment)

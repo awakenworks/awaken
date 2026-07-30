@@ -14,6 +14,8 @@ use awaken_ext_skills::SkillSpec;
 use awaken_session_contract::ResolvedSkillBinding;
 use awaken_skill_store::{SkillDefinition, SkillStore, SkillStoreError, SkillVersion};
 
+use crate::skill_bundle_transport::{SkillBundleSource, StoreSkillBundleSource};
+
 fn anthropic_skill(id: &str) -> Option<SkillVersion> {
     let description = match id {
         "pptx" => "Create, inspect, and modify PowerPoint presentations",
@@ -55,6 +57,10 @@ pub(crate) struct SkillCatalog {
     /// the bytes and feeds them to the extension's `SkillSource`, so the runtime stays
     /// store-unaware.
     store: Option<Arc<dyn SkillStore>>,
+    /// Exact immutable custom-Skill bytes used during Session realization. A
+    /// Coordinator installs the local store adapter; an execution Worker installs
+    /// the claim-fenced HTTP adapter and never opens the authoring store.
+    bundle_source: Option<Arc<dyn SkillBundleSource>>,
     /// In-memory snapshot of the latest delivered versions, read
     /// *synchronously* by the capability advertisement (`ids`) and the run-loop
     /// `SkillSource` scan — refreshed from the async `store` on a write and at each
@@ -70,6 +76,7 @@ impl SkillCatalog {
         Self {
             specs: Vec::new(),
             store: None,
+            bundle_source: None,
             cache: Mutex::new(std::collections::BTreeMap::new()),
         }
     }
@@ -81,7 +88,13 @@ impl SkillCatalog {
 
     /// Builder: wire the durable delivered-skill catalog.
     pub(crate) fn set_store(&mut self, store: Arc<dyn SkillStore>) {
+        self.bundle_source = Some(Arc::new(StoreSkillBundleSource::new(store.clone())));
         self.store = Some(store);
+    }
+
+    /// Builder: wire only exact custom-Skill bundle reads for an execution Worker.
+    pub(crate) fn set_bundle_source(&mut self, source: Arc<dyn SkillBundleSource>) {
+        self.bundle_source = Some(source);
     }
 
     /// The configured static skills offered on every thread.
@@ -280,6 +293,7 @@ impl SkillCatalog {
         &self,
         workspace: &str,
         bindings: &[ResolvedSkillBinding],
+        claim: Option<&awaken_run_ingress::RunClaim>,
     ) -> Result<Vec<SkillVersion>, SkillStoreError> {
         if bindings.is_empty() {
             return Ok(Vec::new());
@@ -291,11 +305,12 @@ impl SkillCatalog {
                     .filter(|version| version.version == binding.version)
                     .ok_or_else(|| SkillStoreError::NotFound(binding.skill_id.clone()))?,
                 AgentSkillKind::Custom => self
-                    .store
+                    .bundle_source
                     .as_ref()
-                    .ok_or_else(|| SkillStoreError::Storage("no durable Skill repository".into()))?
-                    .version(workspace, &binding.skill_id, binding.version)
-                    .await?
+                    .ok_or_else(|| SkillStoreError::Storage("no Skill bundle source".into()))?
+                    .load(workspace, binding, claim)
+                    .await
+                    .map_err(|error| SkillStoreError::Storage(error.to_string()))?
                     .ok_or_else(|| SkillStoreError::NotFound(binding.skill_id.clone()))?,
             };
             if version.bundle_sha256 != binding.bundle_sha256 {
@@ -400,7 +415,13 @@ mod tests {
     #[tokio::test]
     async fn empty_pinned_skill_set_needs_no_repository_but_real_references_fail_closed() {
         let catalog = SkillCatalog::new();
-        assert!(catalog.load_pinned("ws-a", &[]).await.unwrap().is_empty());
+        assert!(
+            catalog
+                .load_pinned("ws-a", &[], None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert!(
             catalog
                 .resolve("ws-a", &[AgentSkillBinding::custom("missing")])
@@ -417,6 +438,7 @@ mod tests {
                         version: 1,
                         bundle_sha256: "sha256".into(),
                     }],
+                    None,
                 )
                 .await
                 .is_err()
@@ -457,10 +479,10 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let loaded = catalog.load_pinned("ws-a", &frozen).await.unwrap();
+        let loaded = catalog.load_pinned("ws-a", &frozen, None).await.unwrap();
         assert_eq!(loaded[0].version, 1);
         assert!(loaded[0].skill_md().unwrap().ends_with(b"ONE"));
-        assert!(catalog.load_pinned("ws-b", &frozen).await.is_err());
+        assert!(catalog.load_pinned("ws-b", &frozen, None).await.is_err());
     }
 
     #[tokio::test]
@@ -481,7 +503,7 @@ mod tests {
             let frozen = catalog.resolve("ws-a", &[selection]).await.unwrap();
             assert_eq!(frozen[0].kind, AgentSkillKind::Anthropic, "S8");
             assert_eq!(
-                catalog.load_pinned("ws-a", &frozen).await.unwrap()[0].version,
+                catalog.load_pinned("ws-a", &frozen, None).await.unwrap()[0].version,
                 1
             );
         }

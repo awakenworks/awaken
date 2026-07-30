@@ -159,22 +159,6 @@ pub fn embedded_skill_store(
     Arc::new(skills)
 }
 
-/// Connect only the current Skill data adapter for a transitional distributed
-/// Worker. The immutable Skill bundle transport replaces this direct store in
-/// the next ADR-0071 slice.
-pub async fn shared_skill_store(
-    url: &str,
-) -> Result<Arc<dyn awaken_resource_contract::SkillStore>, String> {
-    if !(url.starts_with("postgres://") || url.starts_with("postgresql://")) {
-        return Err("a remote Worker Skill store requires a shared postgres URL".to_string());
-    }
-    Ok(Arc::new(
-        awaken_skill_store::PgSkillStore::connect(url)
-            .await
-            .map_err(|error| format!("connect shared SkillStore: {error}"))?,
-    ))
-}
-
 struct PinnedA2aTransportResolver {
     credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
 }

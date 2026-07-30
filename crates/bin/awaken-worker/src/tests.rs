@@ -8,111 +8,6 @@ use super::{
     WorkerSessionResourceAdapters, derive_standard_manifest, grace_window,
 };
 
-struct UnavailableSkillStore;
-
-#[async_trait::async_trait]
-impl awaken_resource_contract::SkillStore for UnavailableSkillStore {
-    async fn create(
-        &self,
-        _definition: awaken_resource_contract::SkillDefinition,
-        _initial_version: awaken_resource_contract::SkillVersion,
-    ) -> Result<(), awaken_resource_contract::SkillStoreError> {
-        Err(awaken_resource_contract::SkillStoreError::Storage(
-            "unused".into(),
-        ))
-    }
-
-    async fn append_version(
-        &self,
-        _workspace_id: &str,
-        _skill_id: &str,
-        _version: awaken_resource_contract::SkillVersion,
-    ) -> Result<(), awaken_resource_contract::SkillStoreError> {
-        Err(awaken_resource_contract::SkillStoreError::Storage(
-            "unused".into(),
-        ))
-    }
-
-    async fn definition(
-        &self,
-        _workspace_id: &str,
-        _skill_id: &str,
-    ) -> Result<
-        Option<awaken_resource_contract::SkillDefinition>,
-        awaken_resource_contract::SkillStoreError,
-    > {
-        Ok(None)
-    }
-
-    async fn list_definitions(
-        &self,
-        _workspace_id: &str,
-    ) -> Result<
-        Vec<awaken_resource_contract::SkillDefinition>,
-        awaken_resource_contract::SkillStoreError,
-    > {
-        Ok(Vec::new())
-    }
-
-    async fn snapshot_latest_versions(
-        &self,
-        _workspace_id: &str,
-    ) -> Result<
-        Vec<awaken_resource_contract::SkillVersion>,
-        awaken_resource_contract::SkillStoreError,
-    > {
-        Ok(Vec::new())
-    }
-
-    async fn version(
-        &self,
-        _workspace_id: &str,
-        _skill_id: &str,
-        _version: u64,
-    ) -> Result<
-        Option<awaken_resource_contract::SkillVersion>,
-        awaken_resource_contract::SkillStoreError,
-    > {
-        Ok(None)
-    }
-
-    async fn list_versions(
-        &self,
-        _workspace_id: &str,
-        _skill_id: &str,
-    ) -> Result<
-        Vec<awaken_resource_contract::SkillVersion>,
-        awaken_resource_contract::SkillStoreError,
-    > {
-        Ok(Vec::new())
-    }
-
-    async fn delete_version(
-        &self,
-        _workspace_id: &str,
-        _skill_id: &str,
-        _version: u64,
-    ) -> Result<bool, awaken_resource_contract::SkillStoreError> {
-        Ok(false)
-    }
-
-    async fn delete_skill(
-        &self,
-        _workspace_id: &str,
-        _skill_id: &str,
-    ) -> Result<bool, awaken_resource_contract::SkillStoreError> {
-        Ok(false)
-    }
-
-    async fn purge_skill(
-        &self,
-        _workspace_id: &str,
-        _skill_id: &str,
-    ) -> Result<u64, awaken_resource_contract::SkillStoreError> {
-        Ok(0)
-    }
-}
-
 struct AcceptBindings;
 
 impl awaken_resource_contract::ResourceBindingValidator for AcceptBindings {
@@ -933,10 +828,7 @@ fn a_configured_zero_grace_exits_immediately_even_on_sigterm() {
 /// cannot realize, so construction fails before registration.
 #[test]
 fn resource_capable_worker_requires_registered_memory_projection() {
-    let resources = WorkerSessionResourceAdapters::new(
-        Arc::new(UnavailableSkillStore),
-        Arc::new(AcceptBindings),
-    );
+    let resources = WorkerSessionResourceAdapters::new(Arc::new(AcceptBindings));
     let error =
         match WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new("http://control"))
             .with_session_resource_adapters(resources)

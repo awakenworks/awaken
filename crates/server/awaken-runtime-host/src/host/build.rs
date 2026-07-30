@@ -754,6 +754,13 @@ impl SharedHost {
         self
     }
 
+    /// Install only the exact immutable custom-Skill read port used by an
+    /// execution Worker. This does not grant authoring or catalog access.
+    pub fn with_skill_bundle_source(mut self, source: Arc<dyn crate::SkillBundleSource>) -> Self {
+        self.skills.set_bundle_source(source);
+        self
+    }
+
     /// Override the default tool-free Outcome Judge with the named Agent. The
     /// Judge runs through the same Run boundary in its own fresh context.
     pub fn with_judge(mut self, judge_agent_id: impl Into<String>) -> Self {

@@ -81,18 +81,7 @@ async fn local_worker_resources(
                     .expect("Postgres admin backend produces a validator")
             }
         };
-    let skill_store = match &deployment.resources {
-        crate::config::ResourcePlaneStoreBackend::Embedded(root) => {
-            awaken_server::embedded_skill_store(root)
-        }
-        crate::config::ResourcePlaneStoreBackend::Postgres(url) => {
-            awaken_server::shared_skill_store(url).await?
-        }
-    };
-    Ok(awaken_worker::WorkerSessionResourceAdapters::new(
-        skill_store,
-        validator,
-    ))
+    Ok(awaken_worker::WorkerSessionResourceAdapters::new(validator))
 }
 
 /// Compose the one registration-bound Memory adapter at the executable edge.

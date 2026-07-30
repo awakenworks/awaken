@@ -269,16 +269,28 @@ pub fn registered_worker_transport_router(
         Arc::new(HeaderWorkerAuthenticator),
         directory.clone(),
     )));
+    let skills = host.skill_store().map(|store| {
+        crate::worker_skill_bundle_router(Arc::new(
+            crate::WorkerSkillBundleService::new(
+                Arc::new(crate::StoreSkillBundleSource::new(store)),
+                dispatch.clone() as Arc<dyn DispatchQueue>,
+                Arc::new(HeaderWorkerAuthenticator),
+            )
+            .with_worker_directory(directory.clone()),
+        ))
+    });
     let commit_service = Arc::new(crate::commit_ingest::ClaimedCommitService::for_host(
         dispatch as Arc<dyn DispatchQueue>,
         host,
         directory,
         Arc::new(HeaderWorkerAuthenticator),
     ));
-    registered_worker_transport_router_with_services(
-        dispatch_router.merge(file_content).merge(memory),
-        commit_service,
-    )
+    let worker_resources = dispatch_router.merge(file_content).merge(memory);
+    let worker_resources = match skills {
+        Some(skills) => worker_resources.merge(skills),
+        None => worker_resources,
+    };
+    registered_worker_transport_router_with_services(worker_resources, commit_service)
 }
 
 /// Compose the complete registered-Worker transport from already-configured

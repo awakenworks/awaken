@@ -811,6 +811,9 @@ impl WorkerNode {
         let remote_files = Arc::new(awaken_runtime_host::HttpFileContentSource::new(
             upstream.clone(),
         ));
+        let remote_skills = Arc::new(awaken_runtime_host::HttpSkillBundleSource::new(
+            upstream.clone(),
+        ));
         let mut host = SharedHost::new_worker_with_deployment(
             Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
             "worker",
@@ -820,10 +823,8 @@ impl WorkerNode {
         )
         .with_worker_upstream(upstream)
         .with_dispatch_store(dispatch_store)
+        .with_skill_bundle_source(remote_skills)
         .with_web_search_provider_registry(self.web_search_providers);
-        if let Some(resources) = self.resources {
-            host = host.with_skill_store_backend(resources.skill_store);
-        }
         if let Some(remote_attempt) = self.remote_attempt {
             host = host.with_remote_attempt_executor(remote_attempt);
         }

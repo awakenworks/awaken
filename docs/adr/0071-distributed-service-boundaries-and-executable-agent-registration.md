@@ -227,20 +227,33 @@ The mutable Memory boundary is complete:
   `SharedHost::new_worker_with_deployment` installs File/Memory clients before
   store selection instead of opening and later replacing local databases;
 - the former full `WorkerResourcePlane` composition was reduced to
-  `WorkerSessionResourceAdapters` (transitional Skill access plus binding
-  validation), and the unused shared full-plane Worker factory was removed;
+  `WorkerSessionResourceAdapters` (binding validation only), and the unused
+  shared full-plane Worker factory was removed;
 - Memory timestamps use a transport-only decimal representation because JSON
   cannot portably decode Rust `u128`; the existing domain type remains unchanged.
 
-Immutable Skill bundle access and the remaining Coordinator/Resource
-store-ownership separation remain subsequent ADR-0071 slices.
+The immutable Skill boundary is complete:
 
-Before adding the Skill transport, delivered-catalog refresh was consolidated
-onto `SkillStore::snapshot_latest_versions`. The former
-`list_definitions`-then-`version(latest)` reconstruction could mix concurrent
-publication generations and is no longer an execution path. Every backend now
-owns one Skill-id-ordered snapshot operation; this extends the existing port and
-adds no second Skill model.
+- delivered-catalog refresh uses `SkillStore::snapshot_latest_versions`; the
+  former `list_definitions`-then-`version(latest)` reconstruction could mix
+  publication generations and is no longer an execution path;
+- `SkillBundleSource` is the sole exact custom-Skill realization port.
+  `StoreSkillBundleSource` reuses the authoritative `SkillStore`, while
+  `HttpSkillBundleSource` gives a Worker no authoring or catalog operations;
+- the Coordinator handler authenticates the current Worker incarnation, holds
+  the dispatch claim epoch, proves the Workspace and exact custom binding are in
+  the frozen Session manifest, and then reads the pinned version;
+- both local and HTTP adapters validate Skill id, version, frozen bundle hash,
+  and the digest recomputed from returned files. Built-in Anthropic Skills remain
+  runtime-owned and never cross this boundary;
+- Worker composition installs the HTTP adapter after registration and no longer
+  opens a filesystem or PostgreSQL Skill database. The redundant transitional
+  shared-Skill-store helper and test double were removed.
+
+The remaining ADR-0071 Resource slice is Repository realization and the removal
+of the Worker's direct `ResourceBindingValidator` database access. Until then,
+`WorkerSessionResourceAdapters` contains only that validator and placement fails
+closed when it is absent.
 
 ## Consequences
 

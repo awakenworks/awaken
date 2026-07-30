@@ -288,19 +288,15 @@ async fn memory_operation(
     let Ok(reference) = parse_reference(&request.reference) else {
         return StatusCode::FORBIDDEN.into_response();
     };
-    let Some(identity) = request.identity.as_ref() else {
-        return StatusCode::FORBIDDEN.into_response();
-    };
-    if crate::worker_security::verify_current_worker_identity(
-        service.directory.as_ref(),
+    if crate::worker_security::verify_claim_owner(
+        Some(service.directory.as_ref()),
         &worker,
-        identity,
+        request.identity.as_ref(),
+        &reference.claim,
         unix_now_ms(),
-        false,
     )
     .await
     .is_err()
-        || reference.claim.owner != identity.lease_owner()
     {
         return StatusCode::FORBIDDEN.into_response();
     }

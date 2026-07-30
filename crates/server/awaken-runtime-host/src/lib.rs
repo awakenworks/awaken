@@ -57,6 +57,7 @@ mod sandbox_source;
 mod session_environment;
 mod session_slot;
 pub use session_environment::HandExecutorFactory;
+mod skill_bundle_transport;
 mod skill_catalog;
 mod skills;
 mod store;
@@ -122,6 +123,10 @@ pub use crate::memory_transport::{
 };
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
 pub use crate::postgres_migration_lock::PostgresMigrationLock;
+pub use crate::skill_bundle_transport::{
+    HttpSkillBundleSource, SkillBundleSource, SkillBundleSourceError, StoreSkillBundleSource,
+    WorkerSkillBundleService, worker_skill_bundle_router,
+};
 pub use crate::web_search::WebSearchPublicationResolver;
 pub use crate::worker_control_client::WorkerControlClient;
 pub use awaken_config_service::PluginPublicationResolver;
@@ -661,7 +666,7 @@ impl ManagedHost {
                 let versions = self
                     .host
                     .skills
-                    .load_pinned(workspace, bindings)
+                    .load_pinned(workspace, bindings, claim)
                     .await
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
                 self.host
@@ -1134,7 +1139,7 @@ impl SessionRuntime for ManagedHost {
             Some(bindings) => Some(
                 self.host
                     .skills
-                    .load_pinned(workspace_id, bindings)
+                    .load_pinned(workspace_id, bindings, None)
                     .await
                     .map_err(|error| RunError::bad_request(error.to_string()))?,
             ),

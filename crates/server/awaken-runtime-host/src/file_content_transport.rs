@@ -162,36 +162,6 @@ fn unix_now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-async fn authenticated_claim_owner(
-    service: &WorkerFileContentService,
-    worker: &VerifiedWorkerContext,
-    identity: Option<&WorkerIdentity>,
-    claim: &RunClaim,
-) -> bool {
-    if let Some(directory) = &service.directory {
-        let Some(identity) = identity else {
-            return false;
-        };
-        return crate::worker_security::verify_current_worker_identity(
-            directory.as_ref(),
-            worker,
-            identity,
-            unix_now_ms(),
-            false,
-        )
-        .await
-        .is_ok()
-            && claim.owner == identity.lease_owner();
-    }
-    match identity {
-        Some(identity) => {
-            crate::worker_security::verify_worker_identity(worker, identity).is_ok()
-                && claim.owner == identity.lease_owner()
-        }
-        None => claim.owner == worker.worker_id(),
-    }
-}
-
 async fn read_file_content(
     State(service): State<Arc<WorkerFileContentService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
@@ -199,13 +169,15 @@ async fn read_file_content(
 ) -> Response<Body> {
     if request.workspace_id.trim().is_empty()
         || request.file_id.trim().is_empty()
-        || !authenticated_claim_owner(
-            service.as_ref(),
+        || crate::worker_security::verify_claim_owner(
+            service.directory.as_deref(),
             &worker,
             request.identity.as_ref(),
             &request.claim,
+            unix_now_ms(),
         )
         .await
+        .is_err()
     {
         return StatusCode::FORBIDDEN.into_response();
     }

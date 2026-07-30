@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use awaken_run_ingress::{
-    WorkerDirectory, WorkerIdentity, WorkerRequestAuthorizer, WorkerSnapshot, WorkerState,
+    RunClaim, WorkerDirectory, WorkerIdentity, WorkerRequestAuthorizer, WorkerSnapshot, WorkerState,
 };
 use axum::Json;
 use axum::extract::{Request, State};
@@ -97,6 +97,37 @@ pub(crate) async fn verify_current_worker_identity(
         return Err("worker is not ready or its registry lease expired".into());
     }
     Ok(record.snapshot)
+}
+
+/// Verify that one authenticated Worker is the exact current incarnation that
+/// owns a dispatch claim. Local compatibility routers may omit a directory;
+/// registered production Resource routers always provide one.
+pub(crate) async fn verify_claim_owner(
+    directory: Option<&dyn WorkerDirectory>,
+    worker: &VerifiedWorkerContext,
+    identity: Option<&WorkerIdentity>,
+    claim: &RunClaim,
+    now_ms: u64,
+) -> Result<(), String> {
+    if let Some(directory) = directory {
+        let identity =
+            identity.ok_or_else(|| "registered Worker identity is required".to_string())?;
+        verify_current_worker_identity(directory, worker, identity, now_ms, false).await?;
+        return (claim.owner == identity.lease_owner())
+            .then_some(())
+            .ok_or_else(|| "dispatch claim owner does not match Worker incarnation".to_string());
+    }
+    match identity {
+        Some(identity) => {
+            verify_worker_identity(worker, identity)?;
+            (claim.owner == identity.lease_owner())
+                .then_some(())
+                .ok_or_else(|| "dispatch claim owner does not match Worker incarnation".to_string())
+        }
+        None => (claim.owner == worker.worker_id())
+            .then_some(())
+            .ok_or_else(|| "dispatch claim owner does not match Worker".to_string()),
+    }
 }
 
 type HmacSha256 = Hmac<Sha256>;
