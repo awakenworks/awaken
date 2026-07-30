@@ -1222,7 +1222,7 @@ impl DispatchQueue for SqliteDispatchStore {
         self.with_conn(move |conn, p| {
             let mut stmt = conn
                 .prepare(&format!(
-                    "SELECT run_id, thread_id, status, attempt_count, cancel_requested FROM {p}_dispatch \
+                    "SELECT run_id, thread_id, status, attempt_count, cancel_requested, sandbox FROM {p}_dispatch \
                      ORDER BY created_at"
                 ))
                 .map_err(reject)?;
@@ -1234,12 +1234,13 @@ impl DispatchQueue for SqliteDispatchStore {
                         r.get::<_, String>(2)?,
                         r.get::<_, i64>(3)?,
                         r.get::<_, i64>(4)? != 0,
+                        r.get::<_, Option<String>>(5)?.is_some(),
                     ))
                 })
                 .map_err(reject)?;
             let mut out = Vec::new();
             for row in rows {
-                let (run_id, thread_id, status, attempt_count, cancellation_requested) =
+                let (run_id, thread_id, status, attempt_count, cancellation_requested, sandbox_bound) =
                     row.map_err(reject)?;
                 let state = DispatchState::from_db(&status).ok_or_else(|| {
                     DispatchError::Rejected(format!("unknown persisted dispatch state {status}"))
@@ -1250,6 +1251,7 @@ impl DispatchQueue for SqliteDispatchStore {
                     state,
                     cancellation_requested,
                     attempt_count: attempt_count as u64,
+                    sandbox_bound,
                 });
             }
             Ok(out)

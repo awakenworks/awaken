@@ -1117,6 +1117,7 @@ impl DispatchQueue for MemoryDispatchStore {
                     state: row.state.public(),
                     cancellation_requested: row.cancellation_requested,
                     attempt_count: row.attempt_count,
+                    sandbox_bound: row.sandbox.is_some(),
                 })
             })
             .collect())

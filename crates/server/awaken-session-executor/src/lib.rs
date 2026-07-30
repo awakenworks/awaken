@@ -1217,9 +1217,12 @@ impl SessionRuntime for ManagedHost {
                     Arc::downgrade(&self.host),
                     thread,
                 ));
-            self.host
-                .session_slots
-                .update(thread, |slot| slot.deferred_executor = Some(executor));
+            self.host.session_slots.update(thread, |slot| {
+                slot.deferred_executor = Some(executor);
+                // Session creation may have opened a durable ingress context
+                // before its frozen Environment projection was prepared.
+                slot.runtime = None;
+            });
         }
         self.host
             .register_thread_delegates(thread, init.delegate_ids.clone());

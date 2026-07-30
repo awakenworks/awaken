@@ -1094,7 +1094,7 @@ impl DispatchQueue for PostgresDispatchStore {
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
         let p = NS;
         let rows = sqlx::query(&format!(
-            "SELECT run_id, thread_id, status, attempt_count, cancel_requested FROM {p}_dispatch \
+            "SELECT run_id, thread_id, status, attempt_count, cancel_requested, sandbox FROM {p}_dispatch \
              ORDER BY created_at"
         ))
         .fetch_all(&self.pool)
@@ -1118,6 +1118,10 @@ impl DispatchQueue for PostgresDispatchStore {
                         .map_err(reject)?
                         != 0,
                     attempt_count: row.try_get::<i64, _>("attempt_count").map_err(reject)? as u64,
+                    sandbox_bound: row
+                        .try_get::<Option<String>, _>("sandbox")
+                        .map_err(reject)?
+                        .is_some(),
                 })
             })
             .collect()

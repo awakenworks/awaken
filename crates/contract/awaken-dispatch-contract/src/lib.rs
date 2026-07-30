@@ -38,6 +38,7 @@ pub use operational::{
 };
 pub use run_dispatch::{
     ExecutionScopeRef, PlacementRequirements, RunDispatch, SessionResourceEnvelope,
+    SessionRuntimeEnvelope,
 };
 pub use transport::{
     BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest,

@@ -172,13 +172,17 @@ impl crate::host::SharedHost {
     /// capability without a credential materializer or on a misconfigured tier.
     pub async fn with_acp_from_deployment(
         self,
+        hand_factory: Arc<dyn crate::HandExecutorFactory>,
         credentials: Option<crate::PinnedCredentialMaterializer>,
     ) -> Self {
-        let deployment = self.deployment.clone();
+        let self_ = self
+            .with_session_environment_from_deployment(hand_factory.clone())
+            .await;
+        let deployment = self_.deployment.clone();
         let Some(profile) = deployment.acp.as_ref() else {
             return match credentials {
-                Some(credentials) => self.with_session_secret_broker(Arc::new(credentials)),
-                None => self,
+                Some(credentials) => self_.with_session_secret_broker(Arc::new(credentials)),
+                None => self_,
             };
         };
         let base = acp_sandbox_base(&deployment);
@@ -210,7 +214,9 @@ impl crate::host::SharedHost {
         // The same exact, claim-fenced materializer owns both sides of the
         // last-mile seam: the resolver issues an opaque one-shot reference and
         // the selected sandbox asks it for bytes immediately before spawn.
-        self.with_bound_acp(source, None)
+        self_
+            .with_acp_launch_source(hand_factory, source)
+            .await
             .with_session_secret_broker(Arc::new(credentials))
     }
 
@@ -373,6 +379,37 @@ mod tests {
                 acp: None,
             })
         }
+    }
+
+    struct NoHandFactory;
+
+    impl crate::HandExecutorFactory for NoHandFactory {
+        fn bind(
+            &self,
+            _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
+            _operation_scope: &str,
+        ) -> Arc<dyn awaken_runtime_contract::tool::ToolExecutor> {
+            panic!("the native-only composition test never opens a container")
+        }
+    }
+
+    /// P1: Sandbox tier selection is caused by Deployment, not by ACP presence.
+    /// A Native-only Worker must install the selected provider before serving.
+    #[tokio::test]
+    async fn native_only_deployment_selects_the_session_provider() {
+        let mut deployment = crate::DeploymentConfig::ephemeral();
+        deployment.sandbox_tier = crate::SandboxTier::Local;
+        deployment.sandbox_tier_explicit = true;
+        deployment.acp = None;
+        let expected = deployment.sandbox_support().0;
+
+        let host = SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment)
+            .with_acp_from_deployment(Arc::new(NoHandFactory), None)
+            .await;
+
+        assert!(host.session_provider_explicit);
+        assert_eq!(host.session_provider.capabilities(), expected);
+        assert!(host.acp.is_none());
     }
 
     #[test]

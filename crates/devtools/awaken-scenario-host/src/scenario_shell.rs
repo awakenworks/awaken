@@ -41,12 +41,17 @@ pub(super) fn scenario_host_acp_cli(
 ) -> awaken_run_executor_acp::AcpCli {
     // AcpCli catalog fields are process-lifetime static configuration. The
     // scenario process creates at most one copy per selected router.
-    let awaken_run_executor_acp::AcpAcquisition::Direct { args, .. } = cli.acquisition else {
-        panic!("scenario ACP fixtures must use direct acquisition");
-    };
-    cli.acquisition = awaken_run_executor_acp::AcpAcquisition::Direct {
-        executable: Box::leak(scenario_shell().into_boxed_str()),
-        args,
+    let shell = Box::leak(scenario_shell().into_boxed_str());
+    cli.acquisition = match cli.acquisition {
+        awaken_run_executor_acp::AcpAcquisition::Direct { args, .. } => {
+            awaken_run_executor_acp::AcpAcquisition::Direct {
+                executable: shell,
+                args,
+            }
+        }
+        awaken_run_executor_acp::AcpAcquisition::PinnedNpmWrapper { .. } => {
+            panic!("scenario ACP fixture must use direct acquisition")
+        }
     };
     cli
 }

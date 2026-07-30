@@ -740,6 +740,7 @@ impl crate::SharedHost {
             }
             self.session_slots.update(thread, |slot| {
                 slot.has_mcp_projection = has_mcp_projection;
+                slot.toolsets = Some(projection.toolsets.clone());
             });
             return Ok(());
         }
@@ -770,6 +771,7 @@ impl crate::SharedHost {
         self.session_slots.update(thread, |slot| {
             slot.baseline = Some(baseline);
             slot.has_mcp_projection = has_mcp_projection;
+            slot.toolsets = Some(projection.toolsets);
         });
         self.install_environment_projection(thread, &projection.baseline.environment)?;
         self.register_thread_workspace(thread, &projection.workspace_id);
@@ -792,16 +794,19 @@ impl crate::SharedHost {
             .read(thread, |slot| slot.environment_projection.clone())
             .flatten()
         {
-            return if existing.fingerprint == projection.fingerprint {
-                Ok(())
-            } else {
-                Err(crate::HostError::internal(format!(
+            if existing.fingerprint != projection.fingerprint {
+                return Err(crate::HostError::internal(format!(
                     "thread {thread} is already bound to a different frozen Environment"
-                )))
-            };
+                )));
+            }
+            self.session_slots.update(thread, |slot| {
+                slot.environment_snapshot = Some(environment.clone())
+            });
+            return Ok(());
         }
         self.session_slots.update(thread, |slot| {
-            slot.environment_projection = Some(projection)
+            slot.environment_projection = Some(projection);
+            slot.environment_snapshot = Some(environment.clone());
         });
         Ok(())
     }
