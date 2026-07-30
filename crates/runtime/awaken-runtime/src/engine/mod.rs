@@ -51,7 +51,8 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resu
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId;
 use awaken_runtime_contract::tool::{
-    ToolError, ToolExecutor, ToolOperationContext, ToolOutput, with_tool_operation_context,
+    ToolError, ToolExecutionTarget, ToolExecutor, ToolOperationContext, ToolOutput,
+    with_tool_operation_context,
 };
 use awaken_runtime_contract::tool::{ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy};
 use awaken_runtime_contract::tool_batch::{
@@ -1887,16 +1888,16 @@ async fn execute_tool(
     operation_id: String,
 ) -> ToolOutput {
     let span = tracing::Span::current();
-    // ADR-0044 D1: the kernel calls a `ToolExecutor`; where the call runs is the
-    // executor's concern. Absent a wired executor, the degenerate in-process
-    // `LocalToolExecutor` reproduces the historical behavior exactly.
-    let local;
-    let executor: &dyn ToolExecutor = match context.tool_executor.as_deref() {
-        Some(executor) => executor,
-        None => {
-            local = LocalToolExecutor { runtime, env };
-            &local
+    // Resolve placement per tool. A placed Hand must never capture Brain tools
+    // such as MCP or Skills, while a Sandbox tool must never silently execute in
+    // the Brain when placement is unavailable.
+    let local = LocalToolExecutor { runtime, env };
+    let missing_sandbox = MissingSandboxExecutor;
+    let executor: &dyn ToolExecutor = match local.execution_target(&call.tool_id) {
+        Some(ToolExecutionTarget::Sandbox) => {
+            context.tool_executor.as_deref().unwrap_or(&missing_sandbox)
         }
+        Some(ToolExecutionTarget::Brain) | None => &local,
     };
     let started = std::time::Instant::now();
     // Fault isolation at the port boundary: a `RawTool` (MCP / plugin / skill — often
@@ -1948,26 +1949,48 @@ struct LocalToolExecutor<'a> {
     env: Option<&'a ResolvedExecutionEnv>,
 }
 
-#[async_trait::async_trait]
-impl ToolExecutor for LocalToolExecutor<'_> {
-    fn recovery_capability(&self, tool_id: &str) -> ToolRecoveryCapability {
+impl LocalToolExecutor<'_> {
+    fn tool(
+        &self,
+        tool_id: &str,
+    ) -> Option<std::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>> {
         self.env
             .and_then(|env| env.dynamic_tool(tool_id))
             .or_else(|| self.runtime.tool(tool_id).cloned())
+    }
+
+    fn execution_target(&self, tool_id: &str) -> Option<ToolExecutionTarget> {
+        self.tool(tool_id).map(|tool| tool.execution_target())
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolExecutor for LocalToolExecutor<'_> {
+    fn recovery_capability(&self, tool_id: &str) -> ToolRecoveryCapability {
+        self.tool(tool_id)
             .map_or(ToolRecoveryCapability::NonRecoverable, |tool| {
                 tool.recovery_capability()
             })
     }
 
     async fn invoke(&self, call: &ToolCall) -> std::result::Result<ToolOutput, ToolError> {
-        let tool = self
-            .env
-            .and_then(|env| env.dynamic_tool(&call.tool_id))
-            .or_else(|| self.runtime.tool(&call.tool_id).cloned());
+        let tool = self.tool(&call.tool_id);
         match tool {
             Some(tool) => tool.invoke(call.clone()).await,
             None => Err(ToolError::Unknown(call.tool_id.clone())),
         }
+    }
+}
+
+struct MissingSandboxExecutor;
+
+#[async_trait::async_trait]
+impl ToolExecutor for MissingSandboxExecutor {
+    async fn invoke(&self, call: &ToolCall) -> std::result::Result<ToolOutput, ToolError> {
+        Err(ToolError::Execution(format!(
+            "sandbox executor unavailable for tool `{}`",
+            call.tool_id
+        )))
     }
 }
 

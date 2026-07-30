@@ -319,6 +319,7 @@ impl SharedHost {
             dispatch_store_override: None,
             completion: Arc::new(CompletionRegistry::default()),
             hand_placement: crate::hand_placement::HandPlacement::new(),
+            environment_binding_sink: std::sync::RwLock::new(None),
             capture_sink: std::sync::RwLock::new(None),
             capture_decision,
             admin_tools: Vec::new(),

@@ -4,6 +4,7 @@
 use awaken_ext_builtin_tools::{
     BuiltinTool, Toolset, builtin_tools, executable_hand_tools, web_hand_tools,
 };
+use awaken_runtime_contract::tool::ToolExecutionTarget;
 use std::collections::BTreeSet;
 
 /// The `hand` toolset's model-visible descriptors and the registered
@@ -40,6 +41,18 @@ fn hand_descriptors_exactly_cover_the_erased_hand_tool_implementations() {
     // Search has one configurable plugin owner; the static split is 8 local + fetch.
     assert_eq!(executable_hand_tools().len(), 8);
     assert_eq!(web_hand_tools().len(), 1);
+}
+
+#[test]
+fn hand_tool_execution_targets_follow_the_placement_decision_table() {
+    for tool in executable_hand_tools().into_iter().chain(web_hand_tools()) {
+        assert_eq!(
+            tool.execution_target(),
+            ToolExecutionTarget::Sandbox,
+            "{} must execute in the sandbox",
+            tool.id()
+        );
+    }
 }
 
 #[test]

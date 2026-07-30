@@ -37,6 +37,7 @@ mod host;
 mod hub;
 mod inference_routing;
 mod judge;
+mod lazy_sandbox;
 mod live_inbox;
 mod managed_model_capability;
 mod managed_resource_projection;
@@ -746,6 +747,17 @@ impl ManagedHost {
 
 #[async_trait::async_trait]
 impl SessionRuntime for ManagedHost {
+    fn install_environment_binding_sink(
+        &self,
+        sink: Arc<dyn awaken_protocol_managed::SessionEnvironmentBindingSink>,
+    ) {
+        *self
+            .host
+            .environment_binding_sink
+            .write()
+            .expect("environment binding sink lock poisoned") = Some(sink);
+    }
+
     async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
         self.host.delegated_runs(thread).await.map_err(to_run_error)
     }
@@ -1197,6 +1209,18 @@ impl SessionRuntime for ManagedHost {
         self.host
             .install_environment_projection(thread, &init.environment)
             .map_err(to_run_error)?;
+        if init.environment.sandbox_provisioning
+            == awaken_provisioning_contract::SandboxProvisioning::OnToolUse
+        {
+            let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> =
+                Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
+                    Arc::downgrade(&self.host),
+                    thread,
+                ));
+            self.host
+                .session_slots
+                .update(thread, |slot| slot.deferred_executor = Some(executor));
+        }
         self.host
             .register_thread_delegates(thread, init.delegate_ids.clone());
         self.host

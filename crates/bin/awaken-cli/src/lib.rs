@@ -1670,6 +1670,7 @@ mod runtime_session_store_tests {
                     revision: EnvironmentRevision(1),
                     config_fingerprint: EnvironmentFingerprint("env-local".into()),
                     sandbox: serde_json::json!({}),
+                    sandbox_provisioning: Default::default(),
                     packages: Default::default(),
                     network: SessionNetworkPolicy::Unrestricted,
                     credential_realization: awaken_runtime_contract::CredentialRealizationProfile {

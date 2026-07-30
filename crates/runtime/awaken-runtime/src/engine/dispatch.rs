@@ -913,14 +913,35 @@ fn recovery_capability(
     if call.tool_id == awaken_runtime_contract::resolved::TOOL_OPEN_ID {
         return ToolRecoveryCapability::ReplaySafe;
     }
-    if let Some(executor) = context.tool_executor.as_deref() {
-        return executor.recovery_capability(&call.tool_id);
-    }
-    env.dynamic_tool(&call.tool_id)
+    let tool = env
+        .dynamic_tool(&call.tool_id)
         .or_else(|| runtime.tool(&call.tool_id).cloned())
-        .map_or(ToolRecoveryCapability::NonRecoverable, |tool| {
+        .map(|tool| (tool.execution_target(), tool));
+    let target = tool.as_ref().map(|(target, _)| *target);
+    let tool_capability = tool
+        .as_ref()
+        .map_or(ToolRecoveryCapability::NonRecoverable, |(_, tool)| {
             tool.recovery_capability()
-        })
+        });
+    let executor_capability = context
+        .tool_executor
+        .as_deref()
+        .map(|executor| executor.recovery_capability(&call.tool_id));
+    routed_recovery_capability(target, tool_capability, executor_capability)
+}
+
+fn routed_recovery_capability(
+    target: Option<awaken_runtime_contract::tool::ToolExecutionTarget>,
+    tool: ToolRecoveryCapability,
+    sandbox_executor: Option<ToolRecoveryCapability>,
+) -> ToolRecoveryCapability {
+    match target {
+        Some(awaken_runtime_contract::tool::ToolExecutionTarget::Brain) => tool,
+        Some(awaken_runtime_contract::tool::ToolExecutionTarget::Sandbox) => {
+            sandbox_executor.unwrap_or(ToolRecoveryCapability::NonRecoverable)
+        }
+        None => ToolRecoveryCapability::NonRecoverable,
+    }
 }
 
 fn stage_batch(batch: &ToolBatch, ledger: &mut StepLedger, store: &mut Store) {
@@ -968,4 +989,50 @@ async fn persist_batch(
         ledger.commit_delta(context, thread_id, run_id).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod execution_target_recovery_tests {
+    use super::*;
+    use awaken_runtime_contract::tool::ToolExecutionTarget::{Brain, Sandbox};
+
+    #[test]
+    fn recovery_capability_follows_the_execution_target_decision_table() {
+        for (case, target, tool, executor, expected) in [
+            (
+                "unknown",
+                None,
+                ToolRecoveryCapability::ReplaySafe,
+                Some(ToolRecoveryCapability::DurableRequest),
+                ToolRecoveryCapability::NonRecoverable,
+            ),
+            (
+                "brain ignores sandbox executor",
+                Some(Brain),
+                ToolRecoveryCapability::ReplaySafe,
+                Some(ToolRecoveryCapability::DurableRequest),
+                ToolRecoveryCapability::ReplaySafe,
+            ),
+            (
+                "sandbox uses executor",
+                Some(Sandbox),
+                ToolRecoveryCapability::ReplaySafe,
+                Some(ToolRecoveryCapability::DurableRequest),
+                ToolRecoveryCapability::DurableRequest,
+            ),
+            (
+                "sandbox without executor fails closed",
+                Some(Sandbox),
+                ToolRecoveryCapability::ReplaySafe,
+                None,
+                ToolRecoveryCapability::NonRecoverable,
+            ),
+        ] {
+            assert_eq!(
+                routed_recovery_capability(target, tool, executor),
+                expected,
+                "{case}"
+            );
+        }
+    }
 }

@@ -92,6 +92,10 @@ pub struct EnvironmentSnapshot {
     /// Canonicalized, network-free sandbox requirement. `network` is the only
     /// reachability authority in this snapshot.
     pub sandbox: serde_json::Value,
+    /// Frozen creation timing from the exact Environment-bound execution policy.
+    /// Absence in older persisted rows preserves the historical eager behavior.
+    #[serde(default)]
+    pub sandbox_provisioning: awaken_provisioning_contract::SandboxProvisioning,
     /// Exact package inputs frozen with this Environment revision. Providers
     /// provision them before workload launch or reject the spec fail-closed.
     #[serde(default)]
@@ -485,6 +489,7 @@ mod tests {
             revision: EnvironmentRevision(revision),
             config_fingerprint: EnvironmentFingerprint(format!("config-{revision}")),
             sandbox: serde_json::json!({}),
+            sandbox_provisioning: Default::default(),
             packages: Default::default(),
             network,
             credential_realization: CredentialRealizationProfile {

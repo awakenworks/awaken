@@ -1171,6 +1171,7 @@ mod tests {
                         revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
                         config_fingerprint: EnvironmentFingerprint("env-fingerprint".into()),
                         sandbox: serde_json::json!({}),
+                        sandbox_provisioning: Default::default(),
                         packages: Default::default(),
                         network: SessionNetworkPolicy::Unrestricted,
                         credential_realization: CredentialRealizationProfile {
