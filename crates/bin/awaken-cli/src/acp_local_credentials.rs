@@ -17,7 +17,7 @@ use awaken_runtime_contract::CredentialObservationState;
 
 /// One startup composition result for a trusted local ACP Worker. The durable
 /// sources remain in the credential repository; this value carries only the
-/// already-composed ports needed to build the existing WorkerNode.
+/// already-composed dependencies needed to build the existing WorkerNode.
 pub struct PreparedLocalAcp {
     resolver: Arc<AcpLocalCredentialResolver>,
     stores: awaken_control::InferenceMaterializationStores,
@@ -81,20 +81,23 @@ async fn local_worker_resources(
                     .expect("Postgres admin backend produces a validator")
             }
         };
-    let ports = match &deployment.resources {
+    let resource_plane = match &deployment.resources {
         crate::config::ResourcePlaneStoreBackend::Embedded(root) => {
             awaken_server::embedded_resource_plane(root)
         }
         crate::config::ResourcePlaneStoreBackend::Postgres(url) => {
             awaken_server::shared_worker_resource_plane(Some(url))
                 .await?
-                .ok_or_else(|| "Postgres resource plane did not produce Worker ports".to_string())?
+                .ok_or_else(|| "Postgres Resource plane is unavailable to the Worker".to_string())?
         }
     };
     let mounter = Arc::new(awaken_sandbox_memoryd::MemoryStoreMounter::new(
-        ports.memory_repository(),
+        resource_plane.memory_repository(),
     ));
-    Ok(awaken_worker::WorkerResourcePlane::new(ports, validator).with_memory_mounter(mounter))
+    Ok(
+        awaken_worker::WorkerResourcePlane::new(resource_plane, validator)
+            .with_memory_mounter(mounter),
+    )
 }
 
 fn configured_worker_builder(
@@ -320,10 +323,14 @@ mod tests {
 
     use super::*;
 
-    /// Cause/effect rule C1: resolved CLI deployment + opened credential and
-    /// Resource stores installs the existing inference, A2A, relay, validator
-    /// and mounter adapters once; the built Worker advertises Native, A2A and
-    /// Resource support with one decodable merged credential evidence value.
+    /// Cause/effect graph: a resolved CLI deployment installs inference, A2A,
+    /// Resource and credential implementations once. Independent credential
+    /// implementations remain alternatives rather than a synthetic union.
+    ///
+    /// | Rule | Installed implementations | Effect |
+    /// |---|---|---|
+    /// | C1 | inference + A2A + Resource | capabilities advertise all three |
+    /// | C2 | multiple credential implementations | one decodable value with exact alternatives |
     #[tokio::test]
     async fn configured_worker_projects_only_the_cli_installed_adapters() {
         let directory = tempfile::tempdir().unwrap();
@@ -341,11 +348,15 @@ mod tests {
                 capabilities,
             )
             .expect("C1 one merged credential evidence capability");
-        assert!(
+        fn includes_control_reference(
+            evidence: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        ) -> bool {
             evidence
                 .material_sources
                 .contains(&CredentialMaterialSource::ControlPlaneReference)
-        );
+                || evidence.alternatives.iter().any(includes_control_reference)
+        }
+        assert!(includes_control_reference(&evidence), "C2: {evidence:?}");
     }
 
     struct FixedDiscovery {

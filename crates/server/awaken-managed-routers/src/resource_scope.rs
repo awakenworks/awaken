@@ -44,6 +44,15 @@ mod tests {
 
     #[tokio::test]
     async fn requires_a_non_empty_preselected_workspace() {
+        // Cause/effect graph: the trusted edge either supplies no Workspace,
+        // an empty Workspace, or a non-empty Workspace. Missing/empty values
+        // must fail indistinguishably; only the selected value reaches handlers.
+        //
+        // | Rule | Edge stamp | Effect |
+        // |---|---|---|
+        // | W1 | missing | 404 |
+        // | W2 | empty | 404 |
+        // | W3 | non-empty | exact Workspace extracted |
         let (mut missing, mut empty, mut selected) = (
             Request::new(Body::empty()).into_parts().0,
             Request::new(Body::empty()).into_parts().0,

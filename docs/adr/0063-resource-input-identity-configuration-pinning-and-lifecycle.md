@@ -280,7 +280,7 @@ same fields are denied in resource SQL migrations. The check intentionally
 permits Workspace because it is the resource partition/ownership coordinate
 stamped by the PEP, not evidence that authorization was granted.
 
-`ResourcePlanePorts` injects the four neutral ports atomically when the Host is
+`ResourcePlane` injects the four neutral SPIs atomically when the Host is
 constructed. A shared deployment therefore never opens an unused local
 File/Memory/Skill/lifecycle store before replacing it. A shared Runtime also
 requires the Resource Catalog/Agent-binding store (`AWAKEN_ADMIN_DB`) to be

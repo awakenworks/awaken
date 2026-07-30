@@ -70,7 +70,7 @@ impl McpRelay {
     #[cfg(test)]
     pub(crate) fn set_route(
         &self,
-        generation: &awaken_protocol_managed::McpGenerationRef,
+        generation: &awaken_session_contract::McpGenerationRef,
         server: &McpTransportMaterial,
     ) {
         if !self.stage_route(generation, server) {
@@ -83,7 +83,7 @@ impl McpRelay {
     /// request's material.
     pub(crate) fn stage_route(
         &self,
-        generation: &awaken_protocol_managed::McpGenerationRef,
+        generation: &awaken_session_contract::McpGenerationRef,
         server: &McpTransportMaterial,
     ) -> bool {
         let mut routes = self.routes.lock().unwrap();
@@ -108,7 +108,7 @@ impl McpRelay {
     /// not create the route through the canonical realizer path.
     pub(crate) fn update_staged_route(
         &self,
-        generation: &awaken_protocol_managed::McpGenerationRef,
+        generation: &awaken_session_contract::McpGenerationRef,
         server: &McpTransportMaterial,
     ) -> bool {
         let mut routes = self.routes.lock().unwrap();
@@ -121,7 +121,7 @@ impl McpRelay {
         true
     }
 
-    pub(crate) fn remove_route(&self, generation: &awaken_protocol_managed::McpGenerationRef) {
+    pub(crate) fn remove_route(&self, generation: &awaken_session_contract::McpGenerationRef) {
         self.routes.lock().unwrap().remove(&route_key(generation));
     }
 
@@ -137,7 +137,7 @@ impl McpRelay {
     /// the sandboxed MCP config in place of the real url.
     pub(crate) fn route_url(
         &self,
-        generation: &awaken_protocol_managed::McpGenerationRef,
+        generation: &awaken_session_contract::McpGenerationRef,
     ) -> Option<String> {
         let capability = self
             .routes
@@ -157,7 +157,7 @@ impl McpRelay {
     }
 }
 
-fn route_key(generation: &awaken_protocol_managed::McpGenerationRef) -> RouteKey {
+fn route_key(generation: &awaken_session_contract::McpGenerationRef) -> RouteKey {
     (
         generation.session_id.clone(),
         generation.attachment_id.0.clone(),
@@ -186,7 +186,7 @@ async fn forward(
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or_default();
     if route.capability != capability
-        || !awaken_protocol_managed::realization_lease_is_live_at(
+        || !awaken_session_contract::realization_lease_is_live_at(
             route.lease_expires_at_unix_ms,
             now_unix_ms,
         )
@@ -250,11 +250,11 @@ mod tests {
         session: &str,
         attachment: &str,
         generation: u64,
-    ) -> awaken_protocol_managed::McpGenerationRef {
-        awaken_protocol_managed::McpGenerationRef {
+    ) -> awaken_session_contract::McpGenerationRef {
+        awaken_session_contract::McpGenerationRef {
             session_id: session.into(),
-            attachment_id: awaken_protocol_managed::McpAttachmentId(attachment.into()),
-            generation: awaken_protocol_managed::McpGeneration(generation),
+            attachment_id: awaken_session_contract::McpAttachmentId(attachment.into()),
+            generation: awaken_session_contract::McpGeneration(generation),
             runtime_incarnation: "runtime-1".into(),
             lease_epoch: 4,
             lease_expires_at_unix_ms: u64::MAX,

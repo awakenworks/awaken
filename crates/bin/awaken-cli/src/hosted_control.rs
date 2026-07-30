@@ -66,7 +66,7 @@ pub async fn build_control_router_with_publication_resolver(
 
 /// Hosted control assembly with deployment-owned model and WebSearch
 /// publication adapters. This remains the same canonical Management assembly;
-/// the closed composition supplies only existing open ports and provider facts.
+/// the closed composition supplies only existing open SPIs and provider facts.
 pub async fn build_control_router_with_publication_resolver_and_web_search(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
@@ -102,10 +102,10 @@ async fn build_control_assembly_with_model_composition(
     )?;
     let stores = open_management_stores(
         deployment.control.clone(),
-        // Hosted Management exposes no File/Memory/Skill routes. These ports
-        // satisfy shared control-plane collaborators without acquiring a second
-        // durable resource-plane authority.
-        ResourcePlaneStores::ephemeral(),
+        // Hosted Management exposes no File/Memory/Skill routes. This volatile
+        // resource plane satisfies shared control-plane collaborators without
+        // acquiring a second durable resource-plane authority.
+        ephemeral_resource_plane(),
         deployment.data_dir.clone(),
         key,
         PostgresSchemaMode::Verify,

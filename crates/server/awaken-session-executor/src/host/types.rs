@@ -27,7 +27,7 @@ pub struct RunResult {
     /// `true` when the runtime transparently retried a transient inference failure
     /// during this turn (auto-recovery), read from the run's reschedule counter.
     pub rescheduled: bool,
-    pub delegated_runs: Vec<awaken_protocol_managed::DelegatedRun>,
+    pub delegated_runs: Vec<awaken_session_contract::DelegatedRun>,
 }
 
 /// The neutral resume command: answer a built-in tool's permission gate, or

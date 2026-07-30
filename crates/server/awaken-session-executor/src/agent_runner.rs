@@ -88,7 +88,7 @@ pub(crate) struct RunScheduler {
     /// Parent Session resource authority inherited by a child dispatch. The child
     /// keeps its own Run/thread lifecycle while executing in the parent's Session
     /// environment, so a replacement worker must install the same frozen manifest.
-    pub(crate) session_resources: Option<awaken_protocol_managed::SessionResourceManifest>,
+    pub(crate) session_resources: Option<awaken_session_contract::SessionResourceManifest>,
 }
 
 /// Execution-edge adapters already installed by the host composition root.
@@ -238,7 +238,7 @@ static LOCAL_CHILD_ATTEMPT_EPOCH: std::sync::atomic::AtomicU64 =
 fn child_dispatch_request(
     activation: RunActivation,
     parent_thread_id: ThreadId,
-    session_resources: Option<awaken_protocol_managed::SessionResourceManifest>,
+    session_resources: Option<awaken_session_contract::SessionResourceManifest>,
 ) -> Result<RunDispatch, AgentRunError> {
     let placement = crate::host::remote_worker_placement(
         &activation.snapshot.resolved_spec,
@@ -1123,11 +1123,11 @@ mod tests {
             RunInput::from(vec![user("go")]),
         );
 
-        let manifest = awaken_protocol_managed::SessionResourceManifest::new(
+        let manifest = awaken_session_contract::SessionResourceManifest::new(
             "workspace-a",
-            awaken_protocol_managed::ResolvedSessionResources {
+            awaken_session_contract::ResolvedSessionResources {
                 inputs: Vec::new(),
-                skills: Some(vec![awaken_protocol_managed::ResolvedSkillBinding {
+                skills: Some(vec![awaken_session_contract::ResolvedSkillBinding {
                     kind: awaken_agent_contract::AgentSkillKind::Custom,
                     skill_id: "skill-a".into(),
                     version: 3,

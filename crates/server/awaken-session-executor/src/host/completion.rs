@@ -155,7 +155,7 @@ pub fn self_hosted_inference_holder(
 #[must_use]
 pub fn remote_worker_placement(
     models: &awaken_runtime_contract::resolved::ResolvedSpec,
-    resources: Option<&awaken_protocol_managed::SessionResourceManifest>,
+    resources: Option<&awaken_session_contract::SessionResourceManifest>,
     remote_required: bool,
 ) -> PlacementRequirements {
     let required_credentials = worker_local_credentials(models);
@@ -185,7 +185,7 @@ pub fn remote_worker_placement(
         let credentialed_repository = resources.resources.inputs.iter().any(|input| {
             matches!(
                 &input.source,
-                awaken_protocol_managed::ResolvedInputSource::Repository { config, .. }
+                awaken_session_contract::ResolvedInputSource::Repository { config, .. }
                     if config.credential_binding.is_some()
             )
         });
@@ -666,11 +666,11 @@ mod completion_tests {
 
     #[test]
     fn resource_placement_requires_resource_and_repository_credential_capabilities() {
-        use awaken_protocol_managed::resource_plane::{
+        use awaken_resource_contract::{
             BindingId, ClonePolicy, ConfigVersion, RepositoryConfigVersion, RepositoryId,
             ResourceAccess,
         };
-        use awaken_protocol_managed::{
+        use awaken_session_contract::{
             ResolvedInput, ResolvedInputSource, ResolvedSessionResources, SessionResourceManifest,
         };
 
@@ -714,9 +714,9 @@ mod completion_tests {
 
     #[test]
     fn explicit_empty_manifest_still_requires_the_revocation_capability() {
-        let resources = awaken_protocol_managed::SessionResourceManifest::new(
+        let resources = awaken_session_contract::SessionResourceManifest::new(
             "workspace-a",
-            awaken_protocol_managed::ResolvedSessionResources {
+            awaken_session_contract::ResolvedSessionResources {
                 inputs: Vec::new(),
                 skills: Some(Vec::new()),
             },

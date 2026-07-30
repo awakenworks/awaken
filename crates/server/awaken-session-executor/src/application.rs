@@ -15,122 +15,6 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{ExecutorCapabilities, RunAttemptExecutor};
 use awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier;
 
-/// Frozen application additions for one claimed Session.
-///
-/// `fingerprint` is the application's stable identity for the complete plan.
-/// Re-delivery of the same plan is idempotent; a different plan cannot mutate an
-/// already-bound Session and fails closed.
-#[derive(Clone)]
-pub struct ApplicationSessionPlan {
-    pub fingerprint: String,
-    pub mounts: Vec<awaken_provisioning_contract::MountRequirement>,
-    pub env: Vec<awaken_provisioning_contract::EnvVar>,
-    pub prompts: Vec<String>,
-    pub mcp_inputs: Vec<serde_json::Value>,
-    pub network_restriction: Option<awaken_protocol_managed::SessionNetworkPolicy>,
-}
-
-impl ApplicationSessionPlan {
-    #[must_use]
-    pub fn empty(fingerprint: impl Into<String>) -> Self {
-        Self {
-            fingerprint: fingerprint.into(),
-            mounts: Vec::new(),
-            env: Vec::new(),
-            prompts: Vec::new(),
-            mcp_inputs: Vec::new(),
-            network_restriction: None,
-        }
-    }
-
-    /// Author one URL-based MCP input without requiring the embedding Worker
-    /// application to depend on Managed wire or JSON crates. This is only a
-    /// boundary value constructor: the Managed application compiler remains the
-    /// sole owner of URL canonicalization, precedence, credential selection, and
-    /// attachment generation allocation.
-    #[must_use]
-    pub fn with_mcp_url(mut self, name: impl Into<String>, url: impl Into<String>) -> Self {
-        self.mcp_inputs.push(serde_json::json!({
-            "name": name.into(),
-            "type": "url",
-            "url": url.into(),
-        }));
-        self
-    }
-
-    /// Author one URL-based MCP input pinned to an exact credential revision.
-    /// The contribution remains secret-free: Control resolves the reference
-    /// through the existing Session MCP credential path and freezes the selected
-    /// plaintext holder before Runtime realization.
-    #[must_use]
-    pub fn with_mcp_url_credential(
-        mut self,
-        name: impl Into<String>,
-        url: impl Into<String>,
-        credential: awaken_runtime_contract::CredentialRef,
-    ) -> Self {
-        self.mcp_inputs.push(serde_json::json!({
-            "name": name.into(),
-            "type": "url",
-            "url": url.into(),
-            "credential_source_id": credential.id,
-            "credential_revision": credential.revision,
-        }));
-        self
-    }
-
-    /// Restrict the Session network policy using the existing neutral
-    /// provisioning vocabulary. The Managed anti-corruption boundary converts
-    /// it into a frozen Session fact and remains the sole owner of safe
-    /// intersection with the Control-authored Environment policy.
-    #[must_use]
-    pub fn with_network_restriction(
-        mut self,
-        restriction: awaken_provisioning_contract::NetworkPolicy,
-    ) -> Self {
-        self.network_restriction = Some(match restriction {
-            awaken_provisioning_contract::NetworkPolicy::Unrestricted => {
-                awaken_protocol_managed::SessionNetworkPolicy::Unrestricted
-            }
-            awaken_provisioning_contract::NetworkPolicy::Allowlist { hosts } => {
-                awaken_protocol_managed::SessionNetworkPolicy::Allowlist { hosts }
-            }
-            awaken_provisioning_contract::NetworkPolicy::None => {
-                awaken_protocol_managed::SessionNetworkPolicy::None
-            }
-        });
-        self
-    }
-
-    fn into_contribution(
-        self,
-        session_id: String,
-    ) -> Result<awaken_protocol_managed::ApplicationSessionContribution, ApplicationSessionError>
-    {
-        let mounts = self
-            .mounts
-            .into_iter()
-            .map(|mount| serde_json::to_value(mount).map_err(ApplicationSessionError::from_error))
-            .collect::<Result<Vec<_>, _>>()?;
-        let env = self
-            .env
-            .into_iter()
-            .map(|value| serde_json::to_value(value).map_err(ApplicationSessionError::from_error))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(awaken_protocol_managed::ApplicationSessionContribution {
-            session_id,
-            application_fingerprint: self.fingerprint,
-            input: awaken_protocol_managed::ApplicationSessionInput {
-                mounts,
-                env,
-                prompts: self.prompts,
-                mcp_inputs: self.mcp_inputs,
-                network_restriction: self.network_restriction,
-            },
-        })
-    }
-}
-
 /// Failure while an application projects a claimed Run into Session additions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplicationSessionError(String);
@@ -139,10 +23,6 @@ impl ApplicationSessionError {
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
         Self(message.into())
-    }
-
-    fn from_error(error: impl std::fmt::Display) -> Self {
-        Self(error.to_string())
     }
 }
 
@@ -164,43 +44,16 @@ pub trait ApplicationSessionProvisioner: Send + Sync {
     async fn prepare(
         &self,
         activation: &RunActivation,
+        session_id: &str,
         ownership: Arc<dyn AttemptOwnershipVerifier>,
-    ) -> Result<ApplicationSessionPlan, ApplicationSessionError>;
-}
-
-#[cfg(test)]
-mod application_plan_tests {
-    use super::*;
-
-    #[test]
-    fn exact_application_mcp_credential_is_secret_free() {
-        let plan = ApplicationSessionPlan::empty("flow-plan").with_mcp_url_credential(
-            "flow",
-            "http://flow.invalid/mcp",
-            awaken_runtime_contract::CredentialRef {
-                id: "run-credential".into(),
-                revision: 3,
-            },
-        );
-        assert_eq!(
-            plan.mcp_inputs,
-            [serde_json::json!({
-                "name": "flow",
-                "type": "url",
-                "url": "http://flow.invalid/mcp",
-                "credential_source_id": "run-credential",
-                "credential_revision": 3,
-            })]
-        );
-        assert!(!plan.mcp_inputs[0].to_string().contains("Bearer"));
-    }
+    ) -> Result<awaken_session_contract::ApplicationSessionContribution, ApplicationSessionError>;
 }
 
 /// Result of the claim-fenced contribution and initial realization assignment.
 #[derive(Clone)]
 pub struct ApplicationSessionControlReceipt {
-    pub contribution: awaken_protocol_managed::ApplicationSessionContributionReceipt,
-    pub realization: awaken_protocol_managed::SessionRealizationDirective,
+    pub contribution: awaken_session_contract::ApplicationSessionContributionReceipt,
+    pub realization: awaken_session_contract::SessionRealizationDirective,
 }
 
 /// Worker-side outbound port to the authenticated Coordinator-owned Session
@@ -208,13 +61,12 @@ pub struct ApplicationSessionControlReceipt {
 /// different authorities.
 #[async_trait::async_trait]
 pub trait ApplicationSessionControlClient:
-    awaken_protocol_managed::SessionRealizationControl + Send + Sync
+    awaken_session_contract::SessionRealizationControl + Send + Sync
 {
     async fn contribute(
         &self,
-        session_id: &str,
         claim: &RunClaim,
-        plan: ApplicationSessionPlan,
+        contribution: awaken_session_contract::ApplicationSessionContribution,
     ) -> Result<ApplicationSessionControlReceipt, ApplicationSessionError>;
 }
 
@@ -236,11 +88,9 @@ impl WorkerControlApplicationSessionClient {
 impl ApplicationSessionControlClient for WorkerControlApplicationSessionClient {
     async fn contribute(
         &self,
-        session_id: &str,
         claim: &RunClaim,
-        plan: ApplicationSessionPlan,
+        contribution: awaken_session_contract::ApplicationSessionContribution,
     ) -> Result<ApplicationSessionControlReceipt, ApplicationSessionError> {
-        let contribution = plan.into_contribution(session_id.to_string())?;
         self.control
             .contribute_application(&self.identity, claim, contribution)
             .await
@@ -249,54 +99,54 @@ impl ApplicationSessionControlClient for WorkerControlApplicationSessionClient {
 }
 
 #[async_trait::async_trait]
-impl awaken_protocol_managed::SessionRealizationControl for WorkerControlApplicationSessionClient {
+impl awaken_session_contract::SessionRealizationControl for WorkerControlApplicationSessionClient {
     async fn begin_session_realization(
         &self,
-        command: awaken_protocol_managed::BeginSessionRealization,
+        command: awaken_session_contract::BeginSessionRealization,
     ) -> Result<
-        awaken_protocol_managed::SessionRealizationDirective,
-        awaken_protocol_managed::SessionRealizationControlFailure,
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
     > {
         self.control
             .begin_session_realization(&self.identity, command)
             .await
-            .map_err(awaken_protocol_managed::SessionRealizationControlFailure::Unavailable)
+            .map_err(awaken_session_contract::SessionRealizationControlFailure::Unavailable)
     }
 
     async fn activate_session_realization(
         &self,
-        command: awaken_protocol_managed::ActivateSessionRealization,
+        command: awaken_session_contract::ActivateSessionRealization,
     ) -> Result<
-        awaken_protocol_managed::SessionRealizationDirective,
-        awaken_protocol_managed::SessionRealizationControlFailure,
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
     > {
         self.control
             .activate_session_realization(&self.identity, command)
             .await
-            .map_err(awaken_protocol_managed::SessionRealizationControlFailure::Unavailable)
+            .map_err(awaken_session_contract::SessionRealizationControlFailure::Unavailable)
     }
 
     async fn acknowledge_session_realization(
         &self,
-        command: awaken_protocol_managed::AcknowledgeSessionRealization,
+        command: awaken_session_contract::AcknowledgeSessionRealization,
     ) -> Result<
-        awaken_protocol_managed::SessionRealizationDirective,
-        awaken_protocol_managed::SessionRealizationControlFailure,
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
     > {
         self.control
             .acknowledge_session_realization(&self.identity, command)
             .await
-            .map_err(awaken_protocol_managed::SessionRealizationControlFailure::Unavailable)
+            .map_err(awaken_session_contract::SessionRealizationControlFailure::Unavailable)
     }
 
     async fn fail_session_realization(
         &self,
-        command: awaken_protocol_managed::FailSessionRealization,
-    ) -> Result<(), awaken_protocol_managed::SessionRealizationControlFailure> {
+        command: awaken_session_contract::FailSessionRealization,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
         self.control
             .fail_session_realization(&self.identity, command)
             .await
-            .map_err(awaken_protocol_managed::SessionRealizationControlFailure::Unavailable)
+            .map_err(awaken_session_contract::SessionRealizationControlFailure::Unavailable)
     }
 }
 
@@ -632,7 +482,7 @@ impl crate::SharedHost {
     pub(crate) fn install_session_realization_lease(
         &self,
         session_id: &str,
-        lease: awaken_protocol_managed::SessionRealizationLease,
+        lease: awaken_session_contract::SessionRealizationLease,
     ) {
         self.session_slots
             .update(session_id, |slot| slot.realization_lease = Some(lease));
@@ -663,9 +513,9 @@ impl crate::SharedHost {
         })?;
         for (session_id, lease) in &due {
             let directive = control
-                .begin_session_realization(awaken_protocol_managed::BeginSessionRealization {
+                .begin_session_realization(awaken_session_contract::BeginSessionRealization {
                     session_id: session_id.clone(),
-                    target: awaken_protocol_managed::SessionRealizationTarget {
+                    target: awaken_session_contract::SessionRealizationTarget {
                         owner: lease.owner.clone(),
                         runtime_incarnation: lease.runtime_incarnation.clone(),
                         lease_expires_at_unix_ms: requested_expiry_unix_ms,
@@ -707,7 +557,7 @@ impl crate::SharedHost {
     pub(crate) async fn install_frozen_session_projection(
         &self,
         thread: &str,
-        projection: awaken_protocol_managed::FrozenSessionProjection,
+        projection: awaken_session_contract::FrozenSessionProjection,
     ) -> Result<(), crate::HostError> {
         if projection.baseline.fingerprint.0.trim().is_empty() {
             return Err(crate::HostError::internal(
@@ -722,8 +572,8 @@ impl crate::SharedHost {
         let has_mcp_projection = projection.mcp.iter().any(|attachment| {
             !matches!(
                 attachment.state,
-                awaken_protocol_managed::McpAttachmentState::Removed
-                    | awaken_protocol_managed::McpAttachmentState::Failed
+                awaken_session_contract::McpAttachmentState::Removed
+                    | awaken_session_contract::McpAttachmentState::Failed
             )
         });
         let baseline = decode_baseline_projection(&projection.baseline)?;
@@ -759,8 +609,8 @@ impl crate::SharedHost {
         }
 
         validate_baseline_projection(&baseline, &built_in_mounts)?;
-        if projection.resources != awaken_protocol_managed::ResolvedSessionResources::default() {
-            let manifest = awaken_protocol_managed::SessionResourceManifest::new(
+        if projection.resources != awaken_session_contract::ResolvedSessionResources::default() {
+            let manifest = awaken_session_contract::SessionResourceManifest::new(
                 projection.workspace_id.clone(),
                 projection.resources,
             );
@@ -786,7 +636,7 @@ impl crate::SharedHost {
     pub(crate) fn install_environment_projection(
         &self,
         thread: &str,
-        environment: &awaken_protocol_managed::EnvironmentSnapshot,
+        environment: &awaken_session_contract::EnvironmentSnapshot,
     ) -> Result<(), crate::HostError> {
         let projection = decode_environment_projection(environment);
         if let Some(existing) = self
@@ -854,7 +704,7 @@ impl crate::SharedHost {
 }
 
 fn decode_baseline_projection(
-    baseline: &awaken_protocol_managed::SessionBaseline,
+    baseline: &awaken_session_contract::SessionBaseline,
 ) -> Result<crate::session_slot::FrozenBaselineRuntimeProjection, crate::HostError> {
     let mounts = baseline
         .mounts
@@ -889,18 +739,18 @@ fn decode_baseline_projection(
 }
 
 fn decode_environment_projection(
-    environment: &awaken_protocol_managed::EnvironmentSnapshot,
+    environment: &awaken_session_contract::EnvironmentSnapshot,
 ) -> crate::session_slot::FrozenEnvironmentRuntimeProjection {
     let network = match &environment.network {
-        awaken_protocol_managed::SessionNetworkPolicy::Unrestricted => {
+        awaken_session_contract::SessionNetworkPolicy::Unrestricted => {
             awaken_provisioning_contract::NetworkPolicy::Unrestricted
         }
-        awaken_protocol_managed::SessionNetworkPolicy::Allowlist { hosts } => {
+        awaken_session_contract::SessionNetworkPolicy::Allowlist { hosts } => {
             awaken_provisioning_contract::NetworkPolicy::Allowlist {
                 hosts: hosts.clone(),
             }
         }
-        awaken_protocol_managed::SessionNetworkPolicy::None => {
+        awaken_session_contract::SessionNetworkPolicy::None => {
             awaken_provisioning_contract::NetworkPolicy::None
         }
     };
@@ -978,42 +828,46 @@ fn validate_baseline_projection(
 mod network_policy_tests {
     use super::*;
 
-    /// Cause graph: each neutral provisioning policy has exactly one Session
-    /// representation; no value is widened or interpreted by the Worker
-    /// application. The Managed baseline compiler remains the next authority.
+    /// Cause/effect graph: a Worker authors the canonical Session input directly;
+    /// an exact credential reference is retained, no plaintext secret is added,
+    /// and the network restriction is not translated by Runtime Host.
     ///
-    /// | Rule | Provisioning input | Session contribution fact |
-    /// | N1 | Unrestricted | Unrestricted |
-    /// | N2 | Allowlist(a,b) | Allowlist(a,b), byte-faithful |
-    /// | N3 | None | None |
+    /// | Rule | Credential ref | Network input | Effect |
+    /// |---|---|---|---|
+    /// | C1 | exact id/revision | allowlist | byte-faithful, secret-free input |
     #[test]
-    fn application_network_policy_mapping_is_total_and_lossless() {
-        let cases = [
-            (
-                awaken_provisioning_contract::NetworkPolicy::Unrestricted,
-                awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
-            ),
-            (
-                awaken_provisioning_contract::NetworkPolicy::Allowlist {
-                    hosts: vec!["A.example".into(), "b.example".into()],
-                },
-                awaken_protocol_managed::SessionNetworkPolicy::Allowlist {
-                    hosts: vec!["A.example".into(), "b.example".into()],
-                },
-            ),
-            (
-                awaken_provisioning_contract::NetworkPolicy::None,
-                awaken_protocol_managed::SessionNetworkPolicy::None,
-            ),
-        ];
-        for (input, expected) in cases {
-            assert_eq!(
-                ApplicationSessionPlan::empty("network-policy")
-                    .with_network_restriction(input)
-                    .network_restriction,
-                Some(expected),
-            );
-        }
+    fn canonical_application_contribution_is_secret_free_and_lossless() {
+        let contribution = awaken_session_contract::ApplicationSessionContribution {
+            session_id: "session".into(),
+            application_fingerprint: "flow-plan".into(),
+            input: awaken_session_contract::ApplicationSessionInput {
+                mcp_inputs: vec![serde_json::json!({
+                    "name": "flow",
+                    "type": "url",
+                    "url": "http://flow.invalid/mcp",
+                    "credential_source_id": "run-credential",
+                    "credential_revision": 3,
+                })],
+                network_restriction: Some(
+                    awaken_session_contract::SessionNetworkPolicy::Allowlist {
+                        hosts: vec!["A.example".into(), "b.example".into()],
+                    },
+                ),
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            contribution.input.network_restriction,
+            Some(awaken_session_contract::SessionNetworkPolicy::Allowlist {
+                hosts: vec!["A.example".into(), "b.example".into()],
+            })
+        );
+        assert_eq!(contribution.input.mcp_inputs[0]["credential_revision"], 3);
+        assert!(
+            !contribution.input.mcp_inputs[0]
+                .to_string()
+                .contains("Bearer")
+        );
     }
 
     /// Package projection cause graph: the exact frozen Environment package
@@ -1021,18 +875,18 @@ mod network_policy_tests {
     /// and ordering remain exact, and no protocol DTO reaches provisioning.
     #[test]
     fn environment_packages_project_losslessly_to_the_provisioning_contract() {
-        let environment = awaken_protocol_managed::EnvironmentSnapshot {
+        let environment = awaken_session_contract::EnvironmentSnapshot {
             environment_id: "env_packages".into(),
-            revision: awaken_protocol_managed::EnvironmentRevision(3),
-            config_fingerprint: awaken_protocol_managed::EnvironmentFingerprint("fp".into()),
+            revision: awaken_session_contract::env_registry::EnvironmentRevision(3),
+            config_fingerprint: awaken_session_contract::EnvironmentFingerprint("fp".into()),
             sandbox: serde_json::json!({}),
             sandbox_provisioning: Default::default(),
-            packages: awaken_protocol_managed::EnvironmentPackages {
+            packages: awaken_session_contract::env_registry::EnvironmentPackages {
                 npm: vec!["tsx@4".into()],
                 pip: vec!["httpx==0.28".into()],
                 ..Default::default()
             },
-            network: awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+            network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
             credential_realization:
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
         };

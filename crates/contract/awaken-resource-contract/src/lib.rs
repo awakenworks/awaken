@@ -1,6 +1,6 @@
-//! Port-only contract for the resources plane (files, memory, repositories, skills).
+//! Contract-only vocabulary for the Resource plane (files, memory, repositories, skills).
 //!
-//! The mountable-resource **ports** — [`FileStore`] + [`FileCatalog`] as the two
+//! The mountable-resource **SPIs** — [`FileStore`] + [`FileCatalog`] as the two
 //! capabilities of one File aggregate, [`MemoryRepository`], and [`SkillStore`]
 //! — plus the value/error types in their signatures,
 //! and **nothing else**: no backend, no SQL driver, no filesystem. It mirrors
@@ -10,7 +10,7 @@
 //! any concrete store.
 //!
 //! The backend crates (`awaken-file-store`, `awaken-memory-store`,
-//! `awaken-skill-store`) implement these ports and **re-export** every item here,
+//! `awaken-skill-store`) implement these SPIs and **re-export** every item here,
 //! so existing paths like `awaken_file_store::FileStore` keep resolving unchanged.
 //!
 //! Note there is deliberately **no `SecretSource` port**: a secret is resolved by

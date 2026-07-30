@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_protocol_managed::resource_plane::{
+use awaken_resource_contract::{
     ResourceCatalog, ResourceKind, ResourcePhysicalReclaimer, ResourcePurgeError,
     ResourcePurgeEvidence, ResourcePurgeGuard, ResourceReference, ResourceReferenceKind,
     ResourceState, ResourceTarget,
@@ -82,7 +82,7 @@ impl ResourcePurgeGuard for HostResourceReclamation {
                 .await?
                 .into_iter()
                 .map(
-                    |reference| awaken_protocol_managed::resource_plane::ResourceReferenceRecord {
+                    |reference| awaken_resource_contract::ResourceReferenceRecord {
                         target: target.clone(),
                         reference,
                     },

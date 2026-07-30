@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use awaken_protocol_managed::resource_plane::{
+use awaken_resource_contract::{
     AcquireResourceReclamationOutcome, PutResourcePurgeOutcome, ResourceKind,
     ResourceLifecycleRepository, ResourcePurgeError, ResourcePurgeIntent, ResourcePurgeRepository,
     ResourceReclamationFence, ResourceReference, ResourceReferenceIndex, ResourceReferenceKind,

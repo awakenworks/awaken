@@ -2,7 +2,6 @@ use super::*;
 use crate::config::block_text;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
-use awaken_protocol_managed::resource_plane as awaken_resource_contract;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
@@ -15,15 +14,15 @@ fn native_credential_profile() -> awaken_runtime_contract::CredentialRealization
 }
 
 fn session_environment(
-    network: awaken_protocol_managed::SessionNetworkPolicy,
+    network: awaken_session_contract::SessionNetworkPolicy,
     sandbox: serde_json::Value,
-) -> awaken_protocol_managed::EnvironmentSnapshot {
-    let config_fingerprint = awaken_protocol_managed::EnvironmentFingerprint(
-        awaken_protocol_managed::stable_fingerprint(&(network.clone(), sandbox.clone())),
+) -> awaken_session_contract::EnvironmentSnapshot {
+    let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
+        awaken_agent_contract::stable_fingerprint(&(network.clone(), sandbox.clone())),
     );
-    awaken_protocol_managed::EnvironmentSnapshot {
+    awaken_session_contract::EnvironmentSnapshot {
         environment_id: "test-environment".into(),
-        revision: awaken_protocol_managed::EnvironmentRevision(1),
+        revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
         config_fingerprint,
         sandbox,
         sandbox_provisioning: Default::default(),
@@ -33,12 +32,12 @@ fn session_environment(
     }
 }
 
-fn on_tool_use_environment() -> awaken_protocol_managed::EnvironmentSnapshot {
+fn on_tool_use_environment() -> awaken_session_contract::EnvironmentSnapshot {
     let mut environment = session_environment(
-        awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+        awaken_session_contract::SessionNetworkPolicy::Unrestricted,
         serde_json::json!({}),
     );
-    environment.sandbox_provisioning = awaken_protocol_managed::SandboxProvisioning::OnToolUse;
+    environment.sandbox_provisioning = awaken_session_contract::SandboxProvisioning::OnToolUse;
     environment
 }
 
@@ -315,13 +314,13 @@ fn http_basic_material(username: &str, password: &str) -> awaken_agent_contract:
 
 fn effective_resources(
     resources: Vec<TestInput>,
-) -> awaken_protocol_managed::ResolvedSessionResources {
-    use awaken_protocol_managed::{ResolvedInput, ResolvedInputSource};
+) -> awaken_session_contract::ResolvedSessionResources {
     use awaken_resource_contract::{
         BindingId, FileId, MemoryStoreId, RepositoryId, ResourceAccess,
     };
+    use awaken_session_contract::{ResolvedInput, ResolvedInputSource};
 
-    awaken_protocol_managed::ResolvedSessionResources {
+    awaken_session_contract::ResolvedSessionResources {
         inputs: resources
             .into_iter()
             .enumerate()
@@ -376,18 +375,18 @@ fn effective_repository(
     url: &str,
     mount_path: &str,
     credential_binding: Option<String>,
-) -> awaken_protocol_managed::ResolvedSessionResources {
+) -> awaken_session_contract::ResolvedSessionResources {
     let holder =
         awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native().resource_holder;
     let credential = credential_binding.as_ref().map(|binding| {
-        Box::new(awaken_protocol_managed::ResolvedRepositoryCredential {
+        Box::new(awaken_session_contract::ResolvedRepositoryCredential {
             access: awaken_runtime_contract::CredentialAccess::new(
                 awaken_runtime_contract::CredentialRef {
                     id: binding.clone(),
                     revision: 1,
                 },
                 awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                awaken_protocol_managed::repository_transport_credential_usage(),
+                awaken_session_contract::repository_transport_credential_usage(),
                 awaken_runtime_contract::CredentialExecutionPolicy::exact(
                     holder.clone(),
                     awaken_runtime_contract::ModelExposurePolicy::Forbidden,
@@ -396,10 +395,10 @@ fn effective_repository(
             selected_plaintext_holder: holder,
         })
     });
-    awaken_protocol_managed::ResolvedSessionResources {
-        inputs: vec![awaken_protocol_managed::ResolvedInput {
+    awaken_session_contract::ResolvedSessionResources {
+        inputs: vec![awaken_session_contract::ResolvedInput {
             binding_id: awaken_resource_contract::BindingId::from("test-repository"),
-            source: awaken_protocol_managed::ResolvedInputSource::Repository {
+            source: awaken_session_contract::ResolvedInputSource::Repository {
                 repository_id: awaken_resource_contract::RepositoryId::from(id),
                 config: awaken_resource_contract::RepositoryConfigVersion {
                     repository_id: id.into(),
@@ -695,7 +694,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
     fn projection(
         prompt: &str,
         with_environment_inputs: bool,
-    ) -> awaken_protocol_managed::FrozenSessionProjection {
+    ) -> awaken_session_contract::FrozenSessionProjection {
         let mount = MountRequirement {
             mount_id: "flow-workspace".into(),
             source: MountSource::Inline {
@@ -717,7 +716,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
             awaken_runtime_contract::PlaintextBoundary::Worker,
             "test.worker",
         );
-        let input = awaken_protocol_managed::ApplicationSessionInput {
+        let input = awaken_session_contract::ApplicationSessionInput {
             mounts: with_environment_inputs
                 .then(|| serde_json::to_value(&mount).unwrap())
                 .into_iter()
@@ -729,23 +728,23 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
             prompts: vec![prompt.into()],
             mcp_inputs: Vec::new(),
             network_restriction: with_environment_inputs
-                .then_some(awaken_protocol_managed::SessionNetworkPolicy::None),
+                .then_some(awaken_session_contract::SessionNetworkPolicy::None),
         };
-        let baseline = awaken_protocol_managed::SessionBaseline::compile(
-            awaken_protocol_managed::SessionBaselineInputs {
-                environment: awaken_protocol_managed::EnvironmentSnapshot {
+        let baseline = awaken_session_contract::SessionBaseline::compile(
+            awaken_session_contract::SessionBaselineInputs {
+                environment: awaken_session_contract::EnvironmentSnapshot {
                     environment_id: "env".into(),
-                    revision: awaken_protocol_managed::EnvironmentRevision(1),
-                    config_fingerprint: awaken_protocol_managed::EnvironmentFingerprint(
+                    revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+                    config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                         "env-fingerprint".into(),
                     ),
                     sandbox: serde_json::json!({}),
                     sandbox_provisioning: Default::default(),
                     packages: Default::default(),
                     network: if with_environment_inputs {
-                        awaken_protocol_managed::SessionNetworkPolicy::None
+                        awaken_session_contract::SessionNetworkPolicy::None
                     } else {
-                        awaken_protocol_managed::SessionNetworkPolicy::Unrestricted
+                        awaken_session_contract::SessionNetworkPolicy::Unrestricted
                     },
                     credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
                         inference_holder: holder.clone(),
@@ -758,7 +757,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
                 model: "model".into(),
                 runtime: None,
                 application: Some(
-                    awaken_protocol_managed::ApplicationContributionReceipt::from_input(
+                    awaken_session_contract::ApplicationContributionReceipt::from_input(
                         "plan".into(),
                         &input,
                     ),
@@ -770,9 +769,9 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
                 prompts: input.prompts,
             },
         );
-        awaken_protocol_managed::FrozenSessionProjection {
+        awaken_session_contract::FrozenSessionProjection {
             workspace_id: "workspace".into(),
-            revision: awaken_protocol_managed::SessionRevision(2),
+            revision: awaken_session_contract::SessionRevision(2),
             baseline,
             resources: Default::default(),
             mcp: Vec::new(),
@@ -1245,7 +1244,7 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
 
 #[tokio::test]
 async fn reopening_a_terminal_thread_recovers_a_missing_extraction_outbox_intent() {
-    use awaken_protocol_managed::MemoryExtractionRepository as _;
+    use awaken_ext_memory::MemoryExtractionRepository as _;
 
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1293,7 +1292,7 @@ async fn reopening_a_terminal_thread_recovers_a_missing_extraction_outbox_intent
         .expect("recovered extraction intent");
     assert_eq!(
         intent.status,
-        awaken_protocol_managed::MemoryExtractionStatus::Completed
+        awaken_ext_memory::MemoryExtractionStatus::Completed
     );
     assert!(
         second
@@ -1314,7 +1313,7 @@ async fn reopening_a_terminal_thread_recovers_a_missing_extraction_outbox_intent
 /// serves extraction + recall and an unbound Session sees no store.
 #[tokio::test]
 async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memory() {
-    use awaken_protocol_managed::{ResolvedInputSource, SessionInit, SessionRuntime};
+    use awaken_session_contract::{ResolvedInputSource, SessionInit, SessionRuntime};
 
     let host = Arc::new(SharedHost::new(Arc::new(MemLoopModel), "stub"));
     let unbound_store = test_memory_store_id();
@@ -1353,7 +1352,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
             model: None,
             runtime: None,
             environment: session_environment(
-                awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+                awaken_session_contract::SessionNetworkPolicy::Unrestricted,
                 serde_json::json!({}),
             ),
         };
@@ -1397,7 +1396,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
         "a different store remains untouched"
     );
 
-    let reply = |outcome: &awaken_protocol_managed::StepOutcome| {
+    let reply = |outcome: &awaken_session_contract::StepOutcome| {
         outcome
             .messages
             .iter()
@@ -1455,7 +1454,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
 
 #[tokio::test]
 async fn pinned_memory_policy_can_disable_recall_and_extraction() {
-    use awaken_protocol_managed::{ResolvedInputSource, SessionRuntime};
+    use awaken_session_contract::{ResolvedInputSource, SessionRuntime};
 
     let host = Arc::new(SharedHost::new(Arc::new(MemLoopModel), "stub"));
     install_test_memory_mounter(&host);
@@ -1763,7 +1762,7 @@ impl LlmExecutor for OkModel {
 /// same Session-owned environment.
 #[tokio::test]
 async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_sandbox() {
-    use awaken_protocol_managed::SessionRuntime;
+    use awaken_session_contract::SessionRuntime;
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
     raw_host.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
@@ -1868,7 +1867,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .apply_session_inputs(
             "t-attach",
             host.local_workspace(),
-            &awaken_protocol_managed::ResolvedSessionResources::default(),
+            &awaken_session_contract::ResolvedSessionResources::default(),
         )
         .await
         .expect("detach");
@@ -1904,7 +1903,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
 /// commit failure into a permanently missing mount on that retry.
 #[tokio::test]
 async fn live_mount_realization_precedes_logical_commit_and_retry_converges() {
-    use awaken_protocol_managed::SessionRuntime;
+    use awaken_session_contract::SessionRuntime;
 
     let lifecycle = Arc::new(TestResourceLifecycle::default());
     let mut raw_host =
@@ -1975,7 +1974,7 @@ async fn live_mount_realization_precedes_logical_commit_and_retry_converges() {
 /// manifest, resident files, or cached context.
 #[tokio::test]
 async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_projection() {
-    use awaken_protocol_managed::SessionRuntime;
+    use awaken_session_contract::SessionRuntime;
 
     let mut deployment = crate::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = crate::SandboxTier::Local;
@@ -2053,7 +2052,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
 /// | N3 | None | conflicting Unrestricted | None | T |
 #[tokio::test]
 async fn frozen_environment_network_follows_the_decision_table() {
-    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let managed = managed_with_resource_source(host.clone());
     let denies = |spec: awaken_provisioning_contract::SandboxSpec| {
@@ -2066,14 +2065,14 @@ async fn frozen_environment_network_follows_the_decision_table() {
     let rules = [
         (
             "N1",
-            awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+            awaken_session_contract::SessionNetworkPolicy::Unrestricted,
             serde_json::json!({}),
             awaken_provisioning_contract::NetworkPolicy::Unrestricted,
             false,
         ),
         (
             "N2",
-            awaken_protocol_managed::SessionNetworkPolicy::Allowlist {
+            awaken_session_contract::SessionNetworkPolicy::Allowlist {
                 hosts: vec!["api.example".into()],
             },
             serde_json::json!({"network": {"mode": "none"}}),
@@ -2082,7 +2081,7 @@ async fn frozen_environment_network_follows_the_decision_table() {
         ),
         (
             "N3",
-            awaken_protocol_managed::SessionNetworkPolicy::None,
+            awaken_session_contract::SessionNetworkPolicy::None,
             serde_json::json!({"network": {"mode": "unrestricted"}}),
             awaken_provisioning_contract::NetworkPolicy::Unrestricted,
             true,
@@ -2117,8 +2116,8 @@ async fn frozen_environment_network_follows_the_decision_table() {
 /// remains authoritative even if a retained blob contains a conflicting legacy field.
 #[tokio::test]
 async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
-    use awaken_protocol_managed::{SessionInit, SessionRuntime};
     use awaken_provisioning_contract::{IsolationClass, NetworkPolicy};
+    use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let managed = crate::ManagedHost::new(host.clone());
 
@@ -2131,7 +2130,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         model: None,
         runtime: None,
         environment: session_environment(
-            awaken_protocol_managed::SessionNetworkPolicy::Allowlist {
+            awaken_session_contract::SessionNetworkPolicy::Allowlist {
                 hosts: vec!["api.github.com".into()],
             },
             serde_json::json!({
@@ -2175,7 +2174,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         model: None,
         runtime: None,
         environment: session_environment(
-            awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+            awaken_session_contract::SessionNetworkPolicy::Unrestricted,
             serde_json::json!({}),
         ),
     };
@@ -2191,7 +2190,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
 /// joins the per-Session lifecycle mutex and waits until the environment is ready.
 #[tokio::test]
 async fn prepare_session_is_lazy_and_first_turn_materializes_the_environment() {
-    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let managed = crate::ManagedHost::new(host.clone());
     managed
@@ -2206,7 +2205,7 @@ async fn prepare_session_is_lazy_and_first_turn_materializes_the_environment() {
                 model: None,
                 runtime: None,
                 environment: session_environment(
-                    awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+                    awaken_session_contract::SessionNetworkPolicy::Unrestricted,
                     serde_json::json!({}),
                 ),
             },
@@ -2235,7 +2234,7 @@ async fn prepare_session_is_lazy_and_first_turn_materializes_the_environment() {
 /// L1: `on_tool_use` means inference alone must not allocate a Sandbox.
 #[tokio::test]
 async fn on_tool_use_text_only_turn_keeps_the_environment_absent() {
-    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     crate::ManagedHost::new(host.clone())
         .prepare_session(
@@ -2325,7 +2324,7 @@ impl LlmExecutor for HandReadModel {
 /// L2: instruction-only Skill tools execute in the Brain and do not awaken Hand.
 #[tokio::test]
 async fn on_tool_use_brain_skill_call_keeps_the_environment_absent() {
-    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(
         SharedHost::new(Arc::new(BrainSkillModel), "stub").with_skills(vec![
             awaken_ext_skills::SkillSpec::new("think", "Think", "reason", "Think carefully."),
@@ -2362,7 +2361,7 @@ async fn on_tool_use_brain_skill_call_keeps_the_environment_absent() {
 /// deferred Hand; the invoking turn blocks until materialization completes.
 #[tokio::test]
 async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
-    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(HandReadModel), "stub"));
     crate::ManagedHost::new(host.clone())
         .prepare_session(
@@ -2400,7 +2399,7 @@ async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
 /// broken `${SKILL_DIR}`.
 #[tokio::test]
 async fn on_tool_use_filesystem_skill_forces_an_eager_environment() {
-    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    use awaken_session_contract::{SessionInit, SessionRuntime};
     let filesystem_skill = awaken_ext_skills::SkillSpec {
         environment: awaken_ext_skills::SkillEnvironment::Filesystem,
         dir: Some("skills/files".into()),
@@ -2445,12 +2444,12 @@ struct BindingOrderSink {
 }
 
 #[async_trait::async_trait]
-impl awaken_protocol_managed::SessionEnvironmentBindingSink for BindingOrderSink {
+impl awaken_session_contract::SessionEnvironmentBindingSink for BindingOrderSink {
     async fn persist(
         &self,
         session_id: &str,
         _binding: &str,
-    ) -> Result<(), awaken_protocol_managed::RunError> {
+    ) -> Result<(), awaken_session_contract::RunError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let host = self.host.upgrade().expect("host remains live");
         self.observed_before_publish.store(
@@ -2458,7 +2457,7 @@ impl awaken_protocol_managed::SessionEnvironmentBindingSink for BindingOrderSink
             Ordering::SeqCst,
         );
         if self.fail {
-            Err(awaken_protocol_managed::RunError::internal(
+            Err(awaken_session_contract::RunError::internal(
                 "binding store unavailable",
             ))
         } else {
@@ -2474,7 +2473,7 @@ impl awaken_protocol_managed::SessionEnvironmentBindingSink for BindingOrderSink
 // and already-equal idempotence at the durable aggregate boundary.
 #[tokio::test]
 async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use_it() {
-    use awaken_protocol_managed::SessionRuntime;
+    use awaken_session_contract::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
@@ -2497,7 +2496,7 @@ async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use
 
 #[tokio::test]
 async fn binding_commit_failure_disposes_and_never_publishes_the_environment() {
-    use awaken_protocol_managed::SessionRuntime;
+    use awaken_session_contract::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
@@ -2520,7 +2519,7 @@ async fn binding_commit_failure_disposes_and_never_publishes_the_environment() {
 /// environment after its durable binding has succeeded.
 #[tokio::test]
 async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() {
-    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
@@ -2573,7 +2572,7 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
 /// L5: persistence failure fails closed; no deferred environment becomes visible.
 #[tokio::test]
 async fn on_tool_use_binding_failure_never_publishes_the_environment() {
-    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
@@ -2620,7 +2619,7 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
 /// does not need the Agent binding repository, which keeps remote workers stateless.
 #[tokio::test]
 async fn prepare_session_mounts_an_effective_memory_resource() {
-    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
 
     // Seed a memory store with known bytes. The control plane has already resolved
@@ -2655,7 +2654,7 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
         model: None,
         runtime: None,
         environment: session_environment(
-            awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+            awaken_session_contract::SessionNetworkPolicy::Unrestricted,
             serde_json::json!({}),
         ),
     };
@@ -2697,11 +2696,11 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
 
 #[tokio::test]
 async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
-    use awaken_protocol_managed::SessionRuntime;
     use awaken_resource_contract::{
         ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
         ResourceState,
     };
+    use awaken_session_contract::SessionRuntime;
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let store_id = test_memory_store_id();
@@ -2754,11 +2753,11 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
 
 #[tokio::test]
 async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic() {
-    use awaken_protocol_managed::SessionRuntime;
     use awaken_resource_contract::{
         ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
         ResourceState,
     };
+    use awaken_session_contract::SessionRuntime;
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let store_id = test_memory_store_id();
@@ -2809,8 +2808,8 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
 /// exposing their authoring repository to Runtime.
 #[tokio::test]
 async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
-    use awaken_protocol_managed::{SessionInit, SessionRuntime};
     use awaken_provisioning_contract::{MountAccess, MountSource};
+    use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
 
     // Seed a file blob and pass the already-resolved File and Repository inputs.
@@ -2858,7 +2857,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
                 model: None,
                 runtime: None,
                 environment: session_environment(
-                    awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+                    awaken_session_contract::SessionNetworkPolicy::Unrestricted,
                     serde_json::json!({}),
                 ),
             },
@@ -2898,7 +2897,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
 #[tokio::test]
 async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
     use awaken_file_store::{FileStore, FileStoreError};
-    use awaken_protocol_managed::SessionRuntime;
+    use awaken_session_contract::SessionRuntime;
 
     struct CorruptFileStore;
 
@@ -2927,7 +2926,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
     let host = Arc::new(raw_host);
     let public_id = "file_corrupt".to_string();
     host.file_catalog()
-        .create_file(awaken_protocol_managed::resource_plane::FileRecord {
+        .create_file(awaken_resource_contract::FileRecord {
             id: public_id.clone(),
             workspace_id: host.local_workspace().into(),
             blob_id: declared_blob_id,
@@ -2965,7 +2964,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
 
 #[tokio::test]
 async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic() {
-    use awaken_protocol_managed::SessionRuntime;
+    use awaken_session_contract::SessionRuntime;
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let file_id = host
@@ -3003,11 +3002,11 @@ async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic()
 
 #[tokio::test]
 async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_revision() {
-    use awaken_protocol_managed::McpAttachmentRealizer;
     use awaken_runtime_contract::{
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
         CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
     };
+    use awaken_session_contract::McpAttachmentRealizer;
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
@@ -3032,22 +3031,22 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .with_credentials(credentials.clone(), secrets.clone());
     let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
     let (mcp_url, _seen) = crate::test_mcp::start(Some("Bearer published-mcp-token")).await;
-    let generation = |session: &str| awaken_protocol_managed::McpGenerationRef {
+    let generation = |session: &str| awaken_session_contract::McpGenerationRef {
         session_id: session.into(),
-        attachment_id: awaken_protocol_managed::McpAttachmentId("mcp-docs".into()),
-        generation: awaken_protocol_managed::McpGeneration(1),
+        attachment_id: awaken_session_contract::McpAttachmentId("mcp-docs".into()),
+        generation: awaken_session_contract::McpGeneration(1),
         runtime_incarnation: "runtime-1".into(),
         lease_epoch: 1,
         lease_expires_at_unix_ms: u64::MAX - 1,
     };
     let request = |session: &str, workspace: &str, revision: u64| {
-        awaken_protocol_managed::StageMcpAttachment {
+        awaken_session_contract::StageMcpAttachment {
             workspace_id: workspace.into(),
             generation: generation(session),
             realization_id: format!("realize-{session}"),
             stage_idempotency_key: format!("stage-{session}"),
             name: "docs".into(),
-            target: awaken_protocol_managed::McpTarget::parse_http(&mcp_url).unwrap(),
+            target: awaken_session_contract::McpTarget::parse_http(&mcp_url).unwrap(),
             credential: Some(CredentialAccess::new(
                 CredentialRef {
                     id: credential.id.0.clone(),
@@ -3154,7 +3153,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     conflicting_renewal.generation.lease_expires_at_unix_ms = u64::MAX;
     conflicting_renewal.stage_idempotency_key = "renew-conflicting".into();
     conflicting_renewal.target =
-        awaken_protocol_managed::McpTarget::parse_http("https://other.example.test/mcp").unwrap();
+        awaken_session_contract::McpTarget::parse_http("https://other.example.test/mcp").unwrap();
     assert_eq!(
         managed
             .stage_mcp_attachment(conflicting_renewal)
@@ -3351,7 +3350,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
 /// | R2 | yes | failure | exact external error | never |
 #[tokio::test]
 async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
-    use awaken_protocol_managed::{
+    use awaken_session_contract::{
         McpAttachmentId, McpAttachmentRealizer, McpGeneration, McpGenerationRef,
         McpRealizationReceipt, McpTarget, StageMcpAttachment,
     };
@@ -3367,10 +3366,10 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         async fn stage_mcp_attachment(
             &self,
             request: StageMcpAttachment,
-        ) -> Result<McpRealizationReceipt, awaken_protocol_managed::RunError> {
+        ) -> Result<McpRealizationReceipt, awaken_session_contract::RunError> {
             self.calls.lock().unwrap().push("stage");
             if self.fail_stage.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(awaken_protocol_managed::RunError::classified(
+                return Err(awaken_session_contract::RunError::classified(
                     "external_stage_rejected",
                     "external realizer rejected stage",
                 ));
@@ -3388,7 +3387,7 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         async fn publish_mcp_generation(
             &self,
             _generation: McpGenerationRef,
-        ) -> Result<(), awaken_protocol_managed::RunError> {
+        ) -> Result<(), awaken_session_contract::RunError> {
             self.calls.lock().unwrap().push("publish");
             Ok(())
         }
@@ -3396,7 +3395,7 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         async fn drain_mcp_generation(
             &self,
             _generation: McpGenerationRef,
-        ) -> Result<(), awaken_protocol_managed::RunError> {
+        ) -> Result<(), awaken_session_contract::RunError> {
             self.calls.lock().unwrap().push("drain");
             Ok(())
         }
@@ -3464,10 +3463,10 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
 async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
     use crate::mcp::{McpTransportMaterial, McpWiring, project_mcp_transport};
     use crate::session_slot::{McpGenerationProjection, McpProjectionState};
-    use awaken_protocol_managed::{
+    use awaken_run_executor_acp::McpTransport;
+    use awaken_session_contract::{
         McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt,
     };
-    use awaken_run_executor_acp::McpTransport;
 
     let host = SharedHost::new(Arc::new(OkModel), "stub");
     let generation = |number: u64| McpGenerationRef {
@@ -3610,7 +3609,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
 async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
     use crate::mcp::McpTransportMaterial;
     use crate::session_slot::{McpGenerationProjection, McpProjectionState};
-    use awaken_protocol_managed::{
+    use awaken_session_contract::{
         McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt,
     };
 
@@ -3694,7 +3693,7 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
 async fn worker_authority_loss_revokes_every_session_projection() {
     use crate::mcp::{McpTransportMaterial, McpWiring};
     use crate::session_slot::{McpGenerationProjection, McpProjectionState};
-    use awaken_protocol_managed::{
+    use awaken_session_contract::{
         McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt,
     };
 
@@ -3764,7 +3763,7 @@ async fn worker_authority_loss_revokes_every_session_projection() {
 /// generations.
 #[tokio::test]
 async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection() {
-    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
@@ -3801,7 +3800,7 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
                 model: None,
                 runtime: None,
                 environment: session_environment(
-                    awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+                    awaken_session_contract::SessionNetworkPolicy::Unrestricted,
                     serde_json::json!({}),
                 ),
             },
@@ -3868,7 +3867,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
         drop(managed);
 
         let thread = format!("worker-dispatch-repository-{rule}");
-        let manifest = awaken_protocol_managed::SessionResourceManifest::new(
+        let manifest = awaken_session_contract::SessionResourceManifest::new(
             host.local_workspace(),
             effective_repository(
                 "repo-1",
@@ -3931,7 +3930,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
 /// | H13 | present | T | T | T | T | scalar | reject material kind |
 #[tokio::test]
 async fn repository_credential_realization_follows_the_decision_table() {
-    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    use awaken_session_contract::{SessionInit, SessionRuntime};
 
     #[derive(Clone, Copy)]
     enum Case {
@@ -4066,7 +4065,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
             "/workspace/repo",
             binding,
         );
-        let awaken_protocol_managed::ResolvedInputSource::Repository {
+        let awaken_session_contract::ResolvedInputSource::Repository {
             config, credential, ..
         } = &mut resources.inputs[0].source
         else {
@@ -4135,7 +4134,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
                     model: None,
                     runtime: None,
                     environment: session_environment(
-                        awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+                        awaken_session_contract::SessionNetworkPolicy::Unrestricted,
                         serde_json::json!({}),
                     ),
                 },
@@ -4165,7 +4164,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
 /// Resource realization only; it still creates no MCP projection.
 #[tokio::test]
 async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
-    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
@@ -4202,7 +4201,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
                 model: None,
                 runtime: None,
                 environment: session_environment(
-                    awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+                    awaken_session_contract::SessionNetworkPolicy::Unrestricted,
                     serde_json::json!({}),
                 ),
             },
@@ -4264,8 +4263,8 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
 /// A bare session for `agent` with no wire resources — the common "just run the agent"
 /// path where only its bound resources apply.
 #[cfg(test)]
-fn bare_session(agent: &str, workspace: &str) -> awaken_protocol_managed::SessionInit {
-    awaken_protocol_managed::SessionInit {
+fn bare_session(agent: &str, workspace: &str) -> awaken_session_contract::SessionInit {
+    awaken_session_contract::SessionInit {
         workspace_id: workspace.into(),
         agent_id: agent.into(),
         delegate_ids: Vec::new(),
@@ -4274,7 +4273,7 @@ fn bare_session(agent: &str, workspace: &str) -> awaken_protocol_managed::Sessio
         model: None,
         runtime: None,
         environment: session_environment(
-            awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+            awaken_session_contract::SessionNetworkPolicy::Unrestricted,
             serde_json::json!({}),
         ),
     }
@@ -4283,8 +4282,8 @@ fn bare_session(agent: &str, workspace: &str) -> awaken_protocol_managed::Sessio
 /// G1 — prompt and mount are derived from the same effective input, including access.
 #[tokio::test]
 async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount() {
-    use awaken_protocol_managed::SessionRuntime;
     use awaken_provisioning_contract::MountAccess;
+    use awaken_session_contract::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let store_id = test_memory_store_id();
     host.memory_stores
@@ -4326,7 +4325,7 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
 /// Agent defaults of its own. Replacement is a Session-control-plane decision.
 #[tokio::test]
 async fn runtime_stages_exactly_the_effective_resource_list() {
-    use awaken_protocol_managed::SessionRuntime;
+    use awaken_session_contract::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let s2 = test_memory_store_id();
     host.memory_stores
@@ -4377,7 +4376,7 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
 /// G4 — an effective Memory input whose backing store is absent fails closed.
 #[tokio::test]
 async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed() {
-    use awaken_protocol_managed::SessionRuntime;
+    use awaken_session_contract::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let managed = crate::ManagedHost::new(host.clone()).with_resource_validator(resource_catalog());
     let mut init = bare_session("a", host.local_workspace());
@@ -4400,11 +4399,11 @@ async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed(
 
 #[tokio::test]
 async fn activation_validates_the_frozen_config_without_selecting_current_again() {
-    use awaken_protocol_managed::{ResolvedInputSource, SessionRuntime};
     use awaken_resource_contract::{
         ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
         ResourceState,
     };
+    use awaken_session_contract::{ResolvedInputSource, SessionRuntime};
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let workspace = host.local_workspace().to_string();
@@ -4497,7 +4496,7 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
 
 #[tokio::test]
 async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately() {
-    use awaken_protocol_managed::SessionRuntime;
+    use awaken_session_contract::SessionRuntime;
     use awaken_skill_store::{SkillBundleFile, SkillDefinition, SkillVersion, bundle_sha256};
 
     let storage = tempfile::tempdir().expect("storage");
@@ -4547,7 +4546,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .expect("create Skill");
     let managed = managed_with_resource_source(host.clone());
     let mut init = bare_session("a", &workspace);
-    init.resources.skills = Some(vec![awaken_protocol_managed::ResolvedSkillBinding {
+    init.resources.skills = Some(vec![awaken_session_contract::ResolvedSkillBinding {
         kind: awaken_agent_contract::AgentSkillKind::Custom,
         skill_id: "governed".into(),
         version: 1,
@@ -4576,7 +4575,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .apply_session_inputs(
             "skill-revoke",
             &workspace,
-            &awaken_protocol_managed::ResolvedSessionResources {
+            &awaken_session_contract::ResolvedSessionResources {
                 inputs: Vec::new(),
                 skills: Some(Vec::new()),
             },
@@ -4596,7 +4595,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
 /// access to the resource data plane but not to the Agent authoring repository.
 #[tokio::test]
 async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository() {
-    use awaken_protocol_managed::SessionRuntime;
+    use awaken_session_contract::SessionRuntime;
     let db_less = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let store_id = test_memory_store_id();
     db_less
@@ -4681,9 +4680,9 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
 fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
     let host = SharedHost::new(Arc::new(OkModel), "host-default");
     let thread = "t-dispatch-resources";
-    let manifest = awaken_protocol_managed::SessionResourceManifest::new(
+    let manifest = awaken_session_contract::SessionResourceManifest::new(
         "workspace-a",
-        awaken_protocol_managed::ResolvedSessionResources {
+        awaken_session_contract::ResolvedSessionResources {
             inputs: Vec::new(),
             skills: Some(Vec::new()),
         },
@@ -5278,8 +5277,8 @@ async fn supersede_run_without_durable_ingress_fails_closed() {
 /// rebind) which keep the per-thread workspace so the next turn reuses it.
 #[tokio::test]
 async fn end_session_disposes_the_threads_sandbox() {
-    use awaken_protocol_managed::SessionRuntime;
     use awaken_provisioning_contract::SandboxStatus;
+    use awaken_session_contract::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let managed = crate::ManagedHost::new(host.clone());
 
@@ -5313,7 +5312,7 @@ async fn end_session_disposes_the_threads_sandbox() {
     host.install_environment_projection(
         "t-end",
         &session_environment(
-            awaken_protocol_managed::SessionNetworkPolicy::None,
+            awaken_session_contract::SessionNetworkPolicy::None,
             serde_json::json!({}),
         ),
     )
