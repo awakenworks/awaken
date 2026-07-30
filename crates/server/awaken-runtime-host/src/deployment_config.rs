@@ -319,21 +319,7 @@ impl DeploymentConfig {
         use awaken_provisioning_contract::{IsolationClass, SandboxCapabilities};
 
         match self.sandbox_tier {
-            SandboxTier::Local => (
-                SandboxCapabilities {
-                    isolation: IsolationClass::Workdir,
-                    tool_transparent: false,
-                    path_fidelity: false,
-                    enforced_readonly: false,
-                    network_isolation: false,
-                    enforced_network_allowlist: false,
-                    secret_egress_substitution: false,
-                    resource_limits: false,
-                    custom_rootfs: false,
-                    package_provisioning: false,
-                },
-                "local",
-            ),
+            SandboxTier::Local => (awaken_sandbox_local::LocalProvider::capabilities(), "local"),
             SandboxTier::Docker | SandboxTier::Podman | SandboxTier::K8s => (
                 SandboxCapabilities {
                     isolation: IsolationClass::Container,
@@ -360,18 +346,7 @@ impl DeploymentConfig {
                 },
             ),
             SandboxTier::Namespace => (
-                SandboxCapabilities {
-                    isolation: IsolationClass::Namespace,
-                    tool_transparent: true,
-                    path_fidelity: true,
-                    enforced_readonly: true,
-                    network_isolation: true,
-                    enforced_network_allowlist: false,
-                    secret_egress_substitution: false,
-                    resource_limits: false,
-                    custom_rootfs: false,
-                    package_provisioning: false,
-                },
+                awaken_sandbox_local::NamespaceProvider::capabilities(),
                 "namespace",
             ),
         }

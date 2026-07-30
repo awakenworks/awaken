@@ -318,7 +318,7 @@ impl LocalProvider {
         spec: &pc::SandboxSpec,
     ) -> Result<LocalSandbox, pc::SandboxError> {
         // Fail closed against our capabilities (isolation, ro, egress secrets, …).
-        pc::prepare_environment(spec, &Self::caps()).map_err(err)?;
+        pc::prepare_environment(spec, &Self::capabilities()).map_err(err)?;
 
         let mut sandbox = self.build(&spec.scope, &spec.outputs_path);
         // Best-effort egress denial for the rooted `bash` tool (the Workdir-tier
@@ -410,7 +410,9 @@ impl LocalProvider {
         Ok(sandbox)
     }
 
-    fn caps() -> pc::SandboxCapabilities {
+    /// Static capability evidence shared by provider admission and owners of an
+    /// already-created local environment.
+    pub fn capabilities() -> pc::SandboxCapabilities {
         pc::SandboxCapabilities {
             isolation: pc::IsolationClass::Workdir,
             tool_transparent: false,
@@ -554,7 +556,7 @@ impl LocalProvider {
 #[async_trait]
 impl pc::SandboxProvider for LocalProvider {
     fn capabilities(&self) -> pc::SandboxCapabilities {
-        Self::caps()
+        Self::capabilities()
     }
 
     async fn create(

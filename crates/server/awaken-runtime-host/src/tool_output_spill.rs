@@ -40,7 +40,7 @@ impl ToolOutputSpiller for SandboxToolOutputSpiller {
 
         let logical_path = stable_output_path(run_id, call_id);
         self.environment
-            .materialize_workspace_file(&logical_path, content.as_bytes())
+            .write_workspace_file(&logical_path, content.as_bytes())
             .await
             .map_err(|error| {
                 ToolError::Execution(format!(

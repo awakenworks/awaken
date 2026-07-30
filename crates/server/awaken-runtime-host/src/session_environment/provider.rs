@@ -20,6 +20,29 @@ pub(crate) enum SessionEnvironmentProvider {
 }
 
 impl SessionEnvironmentProvider {
+    /// Construct the in-process adapter for a non-container Deployment tier.
+    /// Both initial Host construction and async composition use this one mapping;
+    /// container tiers return `None` because their provider requires async setup.
+    pub(crate) fn for_host_tier(
+        tier: crate::SandboxTier,
+        base: impl Into<std::path::PathBuf>,
+        inherit_agent_stderr: bool,
+    ) -> Option<Self> {
+        let base = base.into();
+        match tier {
+            crate::SandboxTier::Local => {
+                Some(Self::workdir_with_agent_stderr(base, inherit_agent_stderr))
+            }
+            crate::SandboxTier::Namespace => Some(Self::namespace_with_agent_stderr(
+                base,
+                inherit_agent_stderr,
+            )),
+            crate::SandboxTier::Docker | crate::SandboxTier::Podman | crate::SandboxTier::K8s => {
+                None
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn supports_host_identity(&self) -> bool {
         matches!(self, Self::Workdir(_))
@@ -127,6 +150,7 @@ impl SessionEnvironmentProvider {
                 hand_factory,
                 hand_bin,
             } => {
+                let capabilities = provider.sandbox_capabilities();
                 let mut spec = spec.clone();
                 spec.isolation = pc::IsolationClass::Container;
                 spec.mounts.extend(extra_mounts.iter().cloned());
@@ -136,7 +160,13 @@ impl SessionEnvironmentProvider {
                     }
                 }
                 let environment = provider.create_environment(&spec).await?;
-                SessionEnvironment::container(environment, hand_factory.as_ref(), hand_bin).await
+                SessionEnvironment::container(
+                    environment,
+                    hand_factory.as_ref(),
+                    hand_bin,
+                    capabilities,
+                )
+                .await
             }
         }
     }
@@ -160,9 +190,16 @@ impl SessionEnvironmentProvider {
                 hand_bin,
                 ..
             } => {
+                let capabilities = provider.sandbox_capabilities();
                 let environment = provider.adopt_environment(handle).await?;
                 environment.renew_lease().await?;
-                SessionEnvironment::container(environment, hand_factory.as_ref(), hand_bin).await
+                SessionEnvironment::container(
+                    environment,
+                    hand_factory.as_ref(),
+                    hand_bin,
+                    capabilities,
+                )
+                .await
             }
         }
     }

@@ -865,11 +865,11 @@ impl WorkerNode {
         }
         // Serve only the ACP CLI capability this worker advertises. The run's snapshot
         // selects the matching backend and supplies its published provider access.
+        let hand_factory = awaken_server::relay_hand_executor_factory();
         host = host
-            .with_acp_from_deployment(
-                awaken_server::relay_hand_executor_factory(),
-                self.credential_materializer,
-            )
+            .with_session_environment_from_deployment(hand_factory)
+            .await
+            .with_acp_from_deployment(self.credential_materializer)
             .await;
 
         let host = Arc::new(host);

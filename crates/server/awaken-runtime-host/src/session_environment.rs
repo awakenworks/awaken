@@ -84,6 +84,7 @@ pub(crate) enum SessionEnvironment {
         hand_process: Arc<dyn pc::ProcessHandle>,
         hand: Arc<dyn ToolExecutor>,
         skills: Arc<ContainerSkillCache>,
+        capabilities: pc::SandboxCapabilities,
     },
 }
 
@@ -134,6 +135,7 @@ impl SessionEnvironment {
         sandbox: Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         hand_factory: &dyn HandExecutorFactory,
         hand_bin: &str,
+        capabilities: pc::SandboxCapabilities,
     ) -> Result<Self, pc::SandboxError> {
         let process = sandbox
             .spawn_agent_process(pc::Command {
@@ -154,7 +156,36 @@ impl SessionEnvironment {
             hand_process: Arc::from(process.process),
             hand,
             skills,
+            capabilities,
         })
+    }
+
+    /// Exact capability evidence of the provider that created this live
+    /// environment. Resource hot-plug admission must inspect the resident
+    /// environment rather than a process default that may select another tier.
+    pub(crate) fn capabilities(&self) -> pc::SandboxCapabilities {
+        match self {
+            Self::Workdir(_) => awaken_sandbox_local::LocalProvider::capabilities(),
+            Self::Namespace(_) => awaken_sandbox_local::NamespaceProvider::capabilities(),
+            Self::Container { capabilities, .. } => capabilities.clone(),
+        }
+    }
+
+    /// Validate a complete replacement manifest against the resident backend's
+    /// mount guarantees and hot-plug support before any projection is changed.
+    pub(crate) fn validate_live_mount_replacement(
+        &self,
+        previous: &[pc::MountRequirement],
+        next: &[pc::MountRequirement],
+    ) -> Result<(), pc::SandboxError> {
+        pc::validate_mount_requirements(next, &self.capabilities())
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        if previous != next && matches!(self, Self::Container { .. }) {
+            return Err(pc::SandboxError::new(
+                "late mount replacement is unsupported on the container tier",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn bound_tool_executor(&self) -> Option<Arc<dyn ToolExecutor>> {
@@ -294,8 +325,33 @@ impl SessionEnvironment {
         }
     }
 
-    /// Project a resolved immutable file into the already-live Session workspace.
-    pub(crate) async fn materialize_workspace_file(
+    /// Attach a governed mount through the backend's canonical live-injection
+    /// port. Unsupported tiers fail closed instead of receiving a writable copy.
+    pub(crate) async fn attach_mount(
+        &self,
+        requirement: pc::MountRequirement,
+    ) -> Result<pc::RealizedMount, pc::SandboxError> {
+        self.sandbox().attach(requirement).await
+    }
+
+    /// Rebuild the dynamic bind layout of an adopted Namespace from the frozen
+    /// Session manifest. Workdir paths survive directly and container runtimes
+    /// retain their own mount namespace across process ownership changes.
+    pub(crate) async fn reconcile_adopted_mounts(
+        &self,
+        requirements: &[pc::MountRequirement],
+    ) -> Result<(), pc::SandboxError> {
+        if let Self::Namespace(sandbox) = self {
+            for requirement in requirements {
+                pc::Sandbox::attach(sandbox.as_ref(), requirement.clone()).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Write an ordinary runtime-owned workspace file. This is intentionally
+    /// distinct from [`Self::attach_mount`], which carries access guarantees.
+    pub(crate) async fn write_workspace_file(
         &self,
         logical: &str,
         contents: &[u8],
@@ -318,7 +374,7 @@ impl SessionEnvironment {
     ) -> Result<(), pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => sandbox.remove_inline(logical),
-            Self::Namespace(sandbox) => sandbox.remove_inline(logical),
+            Self::Namespace(sandbox) => sandbox.remove_mount(logical),
             Self::Container { sandbox, .. } => {
                 container_files::remove(sandbox.as_ref(), logical).await
             }
@@ -849,7 +905,7 @@ mod tests {
             .await
             .unwrap();
         environment
-            .materialize_workspace_file("projected.bin", b"projected")
+            .write_workspace_file("projected.bin", b"projected")
             .await
             .unwrap();
         environment

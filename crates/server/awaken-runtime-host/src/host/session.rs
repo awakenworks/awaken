@@ -944,6 +944,10 @@ impl SharedHost {
                     handle.sandbox_id
                 )));
             }
+            sandbox
+                .reconcile_adopted_mounts(&self.thread_session_mounts(thread))
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
             Ok(sandbox)
         }
         .await;

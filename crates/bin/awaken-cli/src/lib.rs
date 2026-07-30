@@ -1477,11 +1477,11 @@ async fn management_router_over(
     // Production ACP wiring (`acp:*` threads): the environment advertises only the
     // installed CLI/sandbox capability. Provider coordinates and credentials are
     // realized from the same publication-pinned DB facts as native inference.
+    let hand_factory = awaken_server::relay_hand_executor_factory();
     let host_builder = host_builder
-        .with_acp_from_deployment(
-            awaken_server::relay_hand_executor_factory(),
-            Some(credential_materializer.clone()),
-        )
+        .with_session_environment_from_deployment(hand_factory)
+        .await
+        .with_acp_from_deployment(Some(credential_materializer.clone()))
         .await;
     // Last-mile backend wiring the management plane does not assemble itself, injected
     // by the composition root (a scenario that serves external-CLI sessions).

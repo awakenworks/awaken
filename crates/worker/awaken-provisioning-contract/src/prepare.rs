@@ -48,6 +48,25 @@ pub enum PrepareError {
     OutputsPathNotAbsolute,
 }
 
+/// Validate only the guarantees carried by mount requirements.
+///
+/// Live Session resource updates cannot rerun full environment admission, but
+/// they must use the same fail-closed rule as initial sandbox creation. Keeping
+/// this check here makes mount admission one source of truth for both paths.
+pub fn validate_mount_requirements(
+    mounts: &[MountRequirement],
+    caps: &SandboxCapabilities,
+) -> Result<(), PrepareError> {
+    if !caps.enforced_readonly
+        && let Some(mount) = mounts
+            .iter()
+            .find(|mount| mount.access == MountAccess::ReadOnly)
+    {
+        return Err(PrepareError::ReadOnlyUnsupported(mount.mount_id.clone()));
+    }
+    Ok(())
+}
+
 /// Validate `spec` against `caps` and produce a plan. Fail-closed: any guarantee
 /// the backend cannot enforce is an error, never a silent downgrade.
 pub fn prepare_environment(
@@ -64,15 +83,7 @@ pub fn prepare_environment(
         return Err(PrepareError::OutputsPathNotAbsolute);
     }
 
-    // Read-only mounts require OS-enforced read-only.
-    if !caps.enforced_readonly
-        && let Some(m) = spec
-            .mounts
-            .iter()
-            .find(|m| m.access == MountAccess::ReadOnly)
-    {
-        return Err(PrepareError::ReadOnlyUnsupported(m.mount_id.clone()));
-    }
+    validate_mount_requirements(&spec.mounts, caps)?;
 
     // Env: no reserved keys; egress-only secrets need substitution support.
     for var in &spec.env {
@@ -223,6 +234,25 @@ mod tests {
             prepare_environment(&spec(), &c),
             Err(PrepareError::ReadOnlyUnsupported("in".into()))
         );
+    }
+
+    /// Mount admission cause/effect table shared by create and hot-plug paths:
+    /// | RO mount present | Provider enforces RO | Effect |
+    /// |---|---|---|
+    /// | no | either | admit |
+    /// | yes | yes | admit |
+    /// | yes | no | reject with the first offending mount id |
+    #[test]
+    fn mount_only_admission_uses_the_same_readonly_rule() {
+        let requested = spec().mounts;
+        let mut incapable = caps(IsolationClass::Namespace);
+        incapable.enforced_readonly = false;
+        assert_eq!(
+            validate_mount_requirements(&requested, &incapable),
+            Err(PrepareError::ReadOnlyUnsupported("in".into()))
+        );
+        assert!(validate_mount_requirements(&[], &incapable).is_ok());
+        assert!(validate_mount_requirements(&requested, &caps(IsolationClass::Namespace)).is_ok());
     }
 
     #[test]

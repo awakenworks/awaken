@@ -59,14 +59,27 @@ async function main() {
   try {
     await ready(server);
 
+    // Cause/effect decision table for logical File identity:
+    // same bytes + same Workspace + distinct upload -> distinct public File ids;
+    // same bytes + other Workspace -> distinct id and independent ownership;
+    // all three may share one private content-addressed blob, which is not exposed.
     const file = await upload(WORKSPACE, 'same immutable bytes');
-    assert.equal((await upload(WORKSPACE, 'same immutable bytes')).id, file.id);
-    assert.equal((await upload(OTHER, 'same immutable bytes')).id, file.id);
+    const duplicate = await upload(WORKSPACE, 'same immutable bytes');
+    const otherWorkspaceFile = await upload(OTHER, 'same immutable bytes');
+    assert.notEqual(duplicate.id, file.id);
+    assert.notEqual(otherWorkspaceFile.id, file.id);
     assert.equal((await json('GET', WORKSPACE, `files/${file.id}`)).body.id, file.id);
-    assert.equal(await (await fetch(scoped(WORKSPACE, `files/${file.id}/content`))).text(), 'same immutable bytes');
+    assert.equal((await json('GET', WORKSPACE, `files/${duplicate.id}`)).body.id, duplicate.id);
+    assert.equal((await json('GET', OTHER, `files/${otherWorkspaceFile.id}`)).body.id, otherWorkspaceFile.id);
+    assert.equal(
+      (await fetch(scoped(WORKSPACE, `files/${file.id}/content`))).status,
+      400,
+      'uploaded inputs are not downloadable Agent artifacts',
+    );
     assert.equal((await json('DELETE', WORKSPACE, `files/${file.id}`)).status, 200);
     assert.equal((await fetch(scoped(WORKSPACE, `files/${file.id}/content`))).status, 404);
-    assert.equal((await fetch(scoped(OTHER, `files/${file.id}/content`))).status, 200);
+    assert.equal((await json('GET', WORKSPACE, `files/${duplicate.id}`)).status, 200);
+    assert.equal((await json('GET', OTHER, `files/${otherWorkspaceFile.id}`)).status, 200);
 
     // The no-storage composition still runs the same authorization-independent
     // lifecycle state machine over its in-memory adapter. A live Session edge
@@ -248,7 +261,7 @@ async function main() {
     assert.equal(skill.status, 409, JSON.stringify(skill.body));
     assert.match(skill.body.error, /no durable skill store/u);
 
-    assert.equal((await json('DELETE', OTHER, `files/${file.id}`)).status, 200);
+    assert.equal((await json('DELETE', OTHER, `files/${otherWorkspaceFile.id}`)).status, 200);
     await sleep(5_500);
     console.log('E2E PASS: ephemeral resource adapters are scoped, lifecycle-complete, and do not synthesize Skill durability.');
   } finally {

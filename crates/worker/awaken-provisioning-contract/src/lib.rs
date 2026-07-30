@@ -56,7 +56,9 @@ pub use poison::{
     AttemptSignal, InFlightOutcome, PoisonVerdict, classify as classify_poison, resolve_inflight,
     should_redispatch,
 };
-pub use prepare::{EnvironmentPlan, PrepareError, prepare_environment};
+pub use prepare::{
+    EnvironmentPlan, PrepareError, prepare_environment, validate_mount_requirements,
+};
 pub use sandbox::{
     BlobSource, ExitStatus, IsolationClass, IsolationPolicy, MemoryMount, MemoryMounter, OnUnmet,
     PolicySelection, ProcessHandle, RepositoryHttpBasicCredential, RepositoryRealizationPlan,
