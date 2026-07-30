@@ -10,6 +10,7 @@
 pub mod dispatch;
 pub mod operational;
 pub mod run_dispatch;
+pub mod transport;
 
 pub use awaken_runtime_contract::{
     AttemptCredentialBinding, CandidateFingerprint, CredentialRealizationReceipt,
@@ -37,4 +38,9 @@ pub use operational::{
 };
 pub use run_dispatch::{
     ExecutionScopeRef, PlacementRequirements, RunDispatch, SessionResourceEnvelope,
+};
+pub use transport::{
+    BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest,
+    CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest, HeartbeatWorkerRequest,
+    RecoveryRequest, RegisterWorkerRequest, RenewRequest, SettleRequest, WorkerIdentityRequest,
 };

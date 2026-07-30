@@ -20,19 +20,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // starts the HTTP surface; Serve is the default — single-machine all-in-one, or a
     // coordinator when the local pool is disabled. (The hand is now the separate
     // `awaken-sandbox hand` execution-plane binary, not a server role.)
-    let scenario_role = if std::env::var("AWAKEN_SCENARIO_ROLE").as_deref() == Ok("worker") {
-        awaken_server::Role::Worker
-    } else {
-        awaken_server::Role::Serve
-    };
-    match scenario_role {
-        awaken_server::Role::Worker => {
-            let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
-            // Test-only echo-draining worker (the worker-pool e2e). The production
-            // worker with real per-run model resolution lives in `awaken-worker`.
-            return awaken_scenario_host::run_echo_worker(&upstream).await;
-        }
-        awaken_server::Role::Serve => {}
+    if std::env::var("AWAKEN_SCENARIO_ROLE").as_deref() == Ok("worker") {
+        let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
+        // Test-only echo-draining worker (the worker-pool e2e). The production
+        // worker with real per-run model resolution lives in `awaken-worker`.
+        return awaken_scenario_host::run_echo_worker(&upstream).await;
     }
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:38080".to_string());
     // Durability guard: refuse to boot a `typed durable ingress` ingress that would

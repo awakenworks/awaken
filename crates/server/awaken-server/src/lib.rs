@@ -393,57 +393,6 @@ fn local_managed_state_over(
     managed
 }
 
-/// The deployment role this process runs as — the single role axis, selected by
-/// `AWAKEN_ROLE` with backward-compatible inference from the historic per-role env
-/// (`AWAKEN_HAND_*`, `AWAKEN_UPSTREAM_URL`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    /// Serve the HTTP surface: single-machine all-in-one, or a coordinator when
-    /// `DeploymentConfig::disable_local_pool=1`. The default.
-    Serve,
-    /// A database-less worker of a cell server (claims/commits over HTTP).
-    Worker,
-}
-
-/// Pure role selection: an explicit `AWAKEN_ROLE` wins; otherwise infer from whether
-/// the historic worker env is configured. Unit-tested without env. (The hand is now a
-/// separate execution-plane binary — `awaken-sandbox hand` — not a server role.)
-#[cfg(test)]
-fn role_from(explicit: Option<&str>, worker_configured: bool) -> Role {
-    match explicit {
-        Some("worker") => Role::Worker,
-        Some("serve") | Some("server") | Some("coordinator") | Some("all-in-one") => Role::Serve,
-        _ if worker_configured => Role::Worker,
-        _ => Role::Serve,
-    }
-}
-
-#[cfg(test)]
-mod role_tests {
-    use super::{Role, role_from};
-
-    #[test]
-    fn explicit_role_wins() {
-        assert_eq!(role_from(Some("worker"), false), Role::Worker);
-        assert_eq!(role_from(Some("coordinator"), true), Role::Serve);
-        assert_eq!(role_from(Some("all-in-one"), true), Role::Serve);
-    }
-
-    #[test]
-    fn inference_from_historic_env_when_role_unset() {
-        // Upstream → Worker; neither → Serve (the default). The hand is no longer a
-        // server role — it is the `awaken-sandbox hand` execution-plane binary.
-        assert_eq!(role_from(None, true), Role::Worker);
-        assert_eq!(role_from(None, false), Role::Serve);
-    }
-
-    #[test]
-    fn an_unknown_explicit_role_falls_back_to_inference() {
-        assert_eq!(role_from(Some("bogus"), true), Role::Worker);
-        assert_eq!(role_from(Some("bogus"), false), Role::Serve);
-    }
-}
-
 // The database-less **worker** role moved to the production `awaken-worker` crate
 // (Stage C): it resolves EACH drained run's model from the DB-configured catalog +
 // vault via `CredentialInferenceMaterializer`; its `NoModelConfiguredExecutor` is

@@ -254,7 +254,11 @@ pub fn resolved_toolsets(policies: &[awaken_agent_contract::ToolsetPolicy]) -> V
 }
 
 pub struct AgentConfigView {
+    /// Managed/API-facing model id, including provider/endpoint qualification.
     pub model: Option<String>,
+    /// Exact `ResolvedModelCandidate.binding.model_ref` used by Runtime. Keeping
+    /// this separate prevents an API display id from becoming an execution override.
+    pub execution_model_ref: Option<String>,
     /// Exact execution backend projected from the immutable publication. Session
     /// creation may copy this fact into its baseline but never author another one.
     pub backend_ref: String,
@@ -321,6 +325,7 @@ mod agent_config_source_tests {
         fn agent_view_in(&self, workspace: &str, agent: &str) -> Option<AgentConfigView> {
             (workspace == "workspace" && agent == "coordinator").then(|| AgentConfigView {
                 model: None,
+                execution_model_ref: None,
                 backend_ref: "native".into(),
                 system: None,
                 tool_ids: Vec::new(),

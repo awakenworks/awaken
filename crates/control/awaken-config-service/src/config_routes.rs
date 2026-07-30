@@ -25,6 +25,10 @@ pub fn config_router(plane: ConfigPlane) -> Router {
             "/v1/config/publications/{fingerprint}",
             get(get_publication),
         )
+        .route(
+            "/v1/config/publications/{fingerprint}/export",
+            get(export_publication),
+        )
         .route("/v1/config/agents/{id}/validate", post(validate))
         .route("/v1/config/agents/{id}/publish", post(publish))
         .route("/v1/config/agents/{id}", get(get_config).put(put_config))
@@ -53,6 +57,44 @@ async fn get_publication(
             StatusCode::OK,
             Json(serde_json::to_value(publication).expect("StoredPublication serializes")),
         ),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "publication not found" })),
+        ),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": error })),
+        ),
+    }
+}
+
+/// Export the canonical executable snapshot itself. The embedded SDK accepts no
+/// alternate bundle/spec and rejects publications containing ACP/A2A branches.
+async fn export_publication(
+    State(plane): State<ConfigPlane>,
+    Path(fingerprint): Path<String>,
+    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+) -> (StatusCode, Json<Value>) {
+    if fingerprint.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "publication fingerprint is required" })),
+        );
+    }
+    match plane.publication(&request_scope(scope), &fingerprint).await {
+        Ok(Some(publication)) => match publication.snapshot.validate_embedded_native() {
+            Ok(()) => (
+                StatusCode::OK,
+                Json(
+                    serde_json::to_value(publication.snapshot)
+                        .expect("ExecutableAgentSnapshot serializes"),
+                ),
+            ),
+            Err(error) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({ "error": error })),
+            ),
+        },
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "publication not found" })),
@@ -294,6 +336,52 @@ mod publication_projection_tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(
             get_publication(State(failing_scoped_plane()), Path("fp".into()), None)
+                .await
+                .0,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    /// Cause/effect decision table for online export:
+    /// R1 owned native publication => exact canonical snapshot; R2 cross-scope
+    /// fingerprint => 404; R3 repository fault => 500. Backend rejection is
+    /// covered at the snapshot contract boundary where ACP and A2A are exhaustive.
+    #[tokio::test]
+    async fn export_is_scoped_and_returns_the_existing_snapshot_contract() {
+        let plane = ConfigPlane::new(
+            Arc::new(test_service()),
+            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        );
+        let owner = ScopeId::from("workspace-owner");
+        plane.put(&owner, &agent_config("agent-a")).await.unwrap();
+        let published = plane.publish(&owner, "agent-a").await.unwrap();
+
+        let (status, body) = export_publication(
+            State(plane.clone()),
+            Path(published.fingerprint.clone()),
+            Some(Extension(awaken_tenancy::WorkspaceScope(
+                owner.as_str().to_owned(),
+            ))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let snapshot: awaken_runtime_contract::ExecutableAgentSnapshot =
+            serde_json::from_value(body.0).unwrap();
+        assert_eq!(snapshot.fingerprint.0, published.fingerprint);
+
+        assert_eq!(
+            export_publication(
+                State(plane),
+                Path(published.fingerprint),
+                Some(Extension(awaken_tenancy::WorkspaceScope("intruder".into()))),
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            export_publication(State(failing_scoped_plane()), Path("fp".into()), None)
                 .await
                 .0,
             StatusCode::INTERNAL_SERVER_ERROR

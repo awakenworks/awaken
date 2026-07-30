@@ -488,7 +488,7 @@ async fn published_agent_mcp_binding_takes_effect_without_session_inline_servers
                 "mode": "pinned",
                 "provider_identity_ref": "default",
                 "model_ref": "management",
-                "backend_ref": "default"
+                "backend_ref": "genai"
             },
             "system": "Use the calculator tool and report its result.",
             "mcp_servers": [{ "name": "calc", "url": url }],
