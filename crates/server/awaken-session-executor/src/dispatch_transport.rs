@@ -114,7 +114,7 @@ impl WorkerDispatchService {
         self
     }
 
-    /// Install the Control-owned Session application service behind the same
+    /// Install the Coordinator-owned Session application service behind the same
     /// authenticated Worker and exact-claim boundary as dispatch/recovery.
     #[must_use]
     pub fn with_application_session_control(
@@ -279,7 +279,7 @@ pub fn registered_worker_transport_router(
 /// Compose the complete registered-Worker transport from already-configured
 /// application services.
 ///
-/// Embedding Control Nodes use this entry after selecting their authoritative
+/// Embedding Coordinator processes use this entry after selecting their authoritative
 /// dispatch, commit, directory, authentication, recovery, and checkpoint ports.
 /// Keeping the merge here prevents a product composition root from mounting
 /// claims without the matching claim-fenced commit surface.

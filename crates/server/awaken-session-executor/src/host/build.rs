@@ -589,7 +589,7 @@ impl SharedHost {
         self
     }
 
-    /// Make this host a database-less **Worker** of the Control Node at `url`.
+    /// Make this host a database-less **Worker** of the Coordinator at `url`.
     /// Attempts use the registered HTTP dispatch transport and a claim-fenced
     /// operation coordinator; the Worker holds no authoritative store.
     #[must_use]

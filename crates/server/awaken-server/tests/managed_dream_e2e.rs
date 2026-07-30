@@ -46,7 +46,7 @@ async fn terminal_dream(app: &Router, id: &str) -> Value {
         ) {
             return value;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
     panic!("Dream remained non-terminal")
 }
@@ -56,9 +56,11 @@ async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_
     // Managed-overview cause/effect graph:
     // C1 Agent-referenced Session + user event -> E1 durable full event history;
     // C2 ordinary MemoryStore + selected Session -> E2 asynchronous Dream;
-    // C3 frozen transcript export -> E3 Files JSONL preserving committed messages;
-    // C4 consolidation execution -> E4 ordinary archived Session + independent
-    // output MemoryStore; C5 source/output separation -> E5 source stays unchanged;
+    // C3 frozen transcript export -> E3 transient JSONL Files are mounted and
+    // removed after execution; C4 consolidation execution -> E4 ordinary archived
+    // Session + an independent output MemoryStore reached through a real write
+    // tool call; C5
+    // source/output separation -> E5 source stays unchanged;
     // C6 explicit `view=full` -> E6 list projections include Dream contents (the
     // official default `basic` projection intentionally omits them). Decision rule
     // R1 covers the successful end-to-end combination of all six causes. Route/unit
@@ -143,8 +145,29 @@ async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_
         None,
     )
     .await;
+    let auxiliary_events = ok(
+        &app,
+        "GET",
+        &format!(
+            "/v1/sessions/{}/events",
+            terminal["session_id"].as_str().unwrap()
+        ),
+        None,
+    )
+    .await;
     assert_eq!(source["data"][0]["content"], "# Existing\n- Keep me.\n");
     assert_eq!(output["data"][0]["content"], source["data"][0]["content"]);
+    assert!(
+        auxiliary_events["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event["type"] == "agent.tool_use"
+                    && event["name"] == "write"
+                    && event["input"]["path"] == "/mnt/dream/output-memory/MEMORY.md"
+            })
+    );
 
     let auxiliary = ok(
         &app,
@@ -166,40 +189,9 @@ async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_
                 .as_str()
                 .is_some_and(|name| name == format!("{session_id}.jsonl"))
         })
-        .expect("Dream exports one JSONL artifact per selected Session");
-    let content_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!(
-                    "/v1/files/{}/content",
-                    transcript["id"].as_str().unwrap()
-                ))
-                .header(
-                    "anthropic-beta",
-                    "managed-agents-2026-04-01,dreaming-2026-04-21",
-                )
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(content_response.status(), StatusCode::OK);
-    let jsonl = String::from_utf8(
-        content_response
-            .into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes()
-            .to_vec(),
-    )
-    .unwrap();
-    assert!(jsonl.contains("Remember that Project Atlas uses Rust."));
+        .cloned();
     assert!(
-        jsonl
-            .lines()
-            .all(|line| serde_json::from_str::<Value>(line).is_ok())
+        transcript.is_none(),
+        "transient transcript Files must be deleted after terminal cleanup"
     );
 }

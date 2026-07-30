@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{
     Dream, DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig,
-    DreamModelInput, DreamOutput, DreamPage, DreamStatus, DreamUsage,
+    DreamModelInput, DreamModelSpeed, DreamOutput, DreamPage, DreamStatus, DreamUsage,
 };
 
 const MAX_INSTRUCTIONS_CHARS: usize = 4096;
@@ -37,6 +37,14 @@ pub struct DreamAgentSelection {
     pub agent_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DreamAgentConfiguration {
+    #[serde(rename = "type")]
+    pub object_type: &'static str,
+    pub agent_id: String,
+    pub source: &'static str,
+}
+
 fn default_dream_agent_selection() -> DreamAgentSelection {
     DreamAgentSelection {
         agent_id: default_dream_agent_id(),
@@ -58,6 +66,10 @@ pub struct DreamRequest {
 pub struct DreamPreparation {
     pub result_memory_store_id: String,
     pub session_id: String,
+    /// Generated Files backing the frozen JSONL transcript inputs. They are
+    /// implementation artifacts, not Dream outputs, and are deleted by the
+    /// worker cleanup lifecycle.
+    pub transcript_file_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,7 +176,27 @@ pub trait DreamWorker: Send + Sync {
         cancellation: DreamCancellation,
     ) -> Result<DreamUsage, DreamFailure>;
 
-    async fn cancel(&self, _session_id: Option<&str>) -> Result<(), DreamFailure> {
+    async fn cleanup(
+        &self,
+        _request: &DreamRequest,
+        _preparation: Option<&DreamPreparation>,
+    ) -> Result<(), DreamFailure> {
+        Ok(())
+    }
+
+    async fn cancel(
+        &self,
+        request: &DreamRequest,
+        preparation: Option<&DreamPreparation>,
+    ) -> Result<(), DreamFailure> {
+        self.cleanup(request, preparation).await
+    }
+
+    async fn validate_agent(
+        &self,
+        _workspace_id: &str,
+        _agent_id: &str,
+    ) -> Result<(), DreamFailure> {
         Ok(())
     }
 }
@@ -182,6 +214,10 @@ struct DreamJob {
     agent_selection: DreamAgentSelection,
     result_memory_store_id: Option<String>,
     session_id: Option<String>,
+    #[serde(default)]
+    transcript_file_ids: Vec<String>,
+    #[serde(default)]
+    cleanup_pending: bool,
     created_at: u64,
     ended_at: Option<u64>,
     archived_at: Option<u64>,
@@ -205,16 +241,29 @@ impl DreamJob {
     }
 
     fn project(&self) -> Dream {
+        // The durable terminal decision is written before resource cleanup so a
+        // crash can resume cleanup. Do not publish that terminal state until the
+        // output store is released and transient transcript Files are removed.
+        let public_terminal_pending = self.cleanup_pending
+            && matches!(self.status, DreamStatus::Completed | DreamStatus::Failed);
         Dream {
             id: self.id.clone(),
             kind: "dream",
             archived_at: self.archived_at.map(timestamp),
             created_at: timestamp(self.created_at),
-            ended_at: self.ended_at.map(timestamp),
-            error: self.error.as_ref().map(|error| DreamError {
-                message: error.message.clone(),
-                kind: error.kind.clone(),
-            }),
+            ended_at: if public_terminal_pending {
+                None
+            } else {
+                self.ended_at.map(timestamp)
+            },
+            error: if public_terminal_pending {
+                None
+            } else {
+                self.error.as_ref().map(|error| DreamError {
+                    message: error.message.clone(),
+                    kind: error.kind.clone(),
+                })
+            },
             inputs: vec![
                 DreamInput::MemoryStore {
                     memory_store_id: self.source_memory_store_id.clone(),
@@ -234,10 +283,31 @@ impl DreamJob {
                 })
                 .collect(),
             session_id: self.session_id.clone(),
-            status: self.status.clone(),
+            status: if public_terminal_pending {
+                DreamStatus::Running
+            } else {
+                self.status.clone()
+            },
             usage: self.usage.clone(),
         }
     }
+}
+
+fn job_record(job: &DreamJob) -> Result<DreamJobRecord, DreamApiError> {
+    Ok(DreamJobRecord {
+        job_id: job.id.clone(),
+        data: serde_json::to_string(job)
+            .map_err(|error| DreamApiError::Unavailable(error.to_string()))?,
+    })
+}
+
+fn policy_record(policy: &StoredDreamPolicy) -> Result<DreamPolicyRecord, DreamApiError> {
+    Ok(DreamPolicyRecord {
+        workspace_id: policy.workspace_id.clone(),
+        memory_store_id: policy.memory_store_id.clone(),
+        data: serde_json::to_string(policy)
+            .map_err(|error| DreamApiError::Unavailable(error.to_string()))?,
+    })
 }
 
 fn timestamp(value: u64) -> String {
@@ -363,7 +433,7 @@ impl DreamState {
     /// Dreams in one Workspace. Absence selects the built-in effective
     /// default; no default Agent row is copied per Workspace. A job freezes the
     /// resolved id at create time, so later policy edits cannot alter retries.
-    pub fn set_workspace_agent_override(
+    pub async fn set_workspace_agent_override(
         &self,
         workspace_id: &str,
         agent_id: Option<&str>,
@@ -375,6 +445,17 @@ impl DreamState {
                 "Workspace and Agent ids must be non-empty".into(),
             ));
         }
+        if let Some(agent_id) = agent_id {
+            self.worker
+                .validate_agent(workspace_id, agent_id)
+                .await
+                .map_err(|error| DreamApiError::BadRequest(error.message))?;
+        }
+        if let Some(repository) = &self.durable {
+            repository
+                .set_dream_agent_override(workspace_id, agent_id)
+                .map_err(|error| DreamApiError::Unavailable(error.to_string()))?;
+        }
         let mut overrides = self.workspace_agent_overrides.lock().unwrap();
         match agent_id {
             Some(agent_id) => {
@@ -384,12 +465,29 @@ impl DreamState {
                 overrides.remove(workspace_id);
             }
         }
-        if let Some(repository) = &self.durable {
-            repository
-                .set_dream_agent_override(workspace_id, agent_id)
-                .map_err(|error| DreamApiError::Unavailable(error.to_string()))?;
-        }
         Ok(())
+    }
+
+    #[must_use]
+    pub fn workspace_agent_configuration(&self, workspace_id: &str) -> DreamAgentConfiguration {
+        match self
+            .workspace_agent_overrides
+            .lock()
+            .unwrap()
+            .get(workspace_id)
+            .cloned()
+        {
+            Some(agent_id) => DreamAgentConfiguration {
+                object_type: "dream_agent_configuration",
+                agent_id,
+                source: "workspace_override",
+            },
+            None => DreamAgentConfiguration {
+                object_type: "dream_agent_configuration",
+                agent_id: default_dream_agent_id(),
+                source: "built_in",
+            },
+        }
     }
 
     pub fn bind_session_source(&self, source: Arc<dyn DreamSessionSource>) {
@@ -416,6 +514,7 @@ impl DreamState {
             || config.max_sessions > MAX_SESSIONS
             || config.min_new_sessions > config.max_sessions
             || !SUPPORTED_MODELS.contains(&config.model.id.as_str())
+            || config.model.speed == Some(DreamModelSpeed::Fast)
             || config
                 .instructions
                 .as_ref()
@@ -438,23 +537,33 @@ impl DreamState {
                 .map_or(0, |value| value.last_completed_cutoff_ms),
             config,
         };
-        self.persist_policy(&policy)?;
+        self.persist_policy(current.as_ref(), &policy)?;
         self.policies.lock().unwrap().insert(key, policy);
         Ok(())
     }
 
-    fn persist_policy(&self, policy: &StoredDreamPolicy) -> Result<(), DreamApiError> {
+    fn persist_policy(
+        &self,
+        expected: Option<&StoredDreamPolicy>,
+        policy: &StoredDreamPolicy,
+    ) -> Result<(), DreamApiError> {
         let Some(repository) = &self.durable else {
             return Ok(());
         };
-        repository
-            .upsert_dream_policy(DreamPolicyRecord {
-                workspace_id: policy.workspace_id.clone(),
-                memory_store_id: policy.memory_store_id.clone(),
-                data: serde_json::to_string(policy)
-                    .map_err(|error| DreamApiError::Unavailable(error.to_string()))?,
-            })
-            .map_err(|error| DreamApiError::Unavailable(error.to_string()))
+        let expected = expected
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| DreamApiError::Unavailable(error.to_string()))?;
+        let changed = repository
+            .compare_and_swap_dream_policy(expected.as_deref(), policy_record(policy)?)
+            .map_err(|error| DreamApiError::Unavailable(error.to_string()))?;
+        if changed {
+            Ok(())
+        } else {
+            Err(DreamApiError::Conflict(
+                "Dream policy changed concurrently".into(),
+            ))
+        }
     }
 
     /// Return the configured policy or the disabled effective default. Reading a
@@ -506,6 +615,7 @@ impl DreamState {
         })?;
         let mut created = Vec::new();
         for mut policy in due {
+            let previous = policy.clone();
             let key = (policy.workspace_id.clone(), policy.memory_store_id.clone());
             let already_running = self
                 .jobs
@@ -515,44 +625,46 @@ impl DreamState {
                 .any(|job| job.policy_key.as_ref() == Some(&key) && !job.status.is_terminal());
             policy.next_due_ms = now.saturating_add(policy.config.interval_seconds * 1_000);
             if already_running {
-                self.persist_policy(&policy)?;
+                self.persist_policy(Some(&previous), &policy)?;
                 self.policies.lock().unwrap().insert(key, policy);
                 continue;
             }
+            let workspace_id = policy.workspace_id.clone();
             let sessions = source
                 .eligible_sessions(
-                    &policy.workspace_id,
+                    &workspace_id,
                     policy.last_completed_cutoff_ms,
                     policy.config.max_sessions,
                 )
                 .await;
-            self.persist_policy(&policy)?;
-            self.policies
-                .lock()
-                .unwrap()
-                .insert(key.clone(), policy.clone());
             if sessions.len() < policy.config.min_new_sessions {
+                self.persist_policy(Some(&previous), &policy)?;
+                self.policies.lock().unwrap().insert(key, policy);
                 continue;
             }
-            created.push(
-                self.create_with_policy(
-                    &policy.workspace_id,
+            match self
+                .create_with_policy(
+                    &workspace_id,
                     DreamCreateParams {
                         inputs: vec![
                             DreamInput::MemoryStore {
-                                memory_store_id: policy.memory_store_id,
+                                memory_store_id: policy.memory_store_id.clone(),
                             },
                             DreamInput::Sessions {
                                 session_ids: sessions,
                             },
                         ],
-                        model: DreamModelInput::Config(policy.config.model),
-                        instructions: policy.config.instructions,
+                        model: DreamModelInput::Config(policy.config.model.clone()),
+                        instructions: policy.config.instructions.clone(),
                     },
-                    Some(key),
+                    Some((key, previous, policy)),
                 )
-                .await?,
-            );
+                .await
+            {
+                Ok(dream) => created.push(dream),
+                Err(DreamApiError::Conflict(_)) => continue,
+                Err(error) => return Err(error),
+            }
         }
         Ok(created)
     }
@@ -561,18 +673,30 @@ impl DreamState {
     /// reuses deterministic snapshot/result/session identities, so preparation is
     /// idempotent at the lower authorities.
     pub fn resume_incomplete(self: &Arc<Self>) {
-        let resumable = self
+        let jobs = self
             .jobs
             .lock()
             .unwrap()
-            .values_mut()
-            .filter(|job| matches!(job.status, DreamStatus::Pending | DreamStatus::Running))
-            .map(|job| {
-                job.status = DreamStatus::Pending;
-                job.id.clone()
+            .values()
+            .filter(|job| {
+                matches!(job.status, DreamStatus::Pending | DreamStatus::Running)
+                    || (job.status.is_terminal() && job.cleanup_pending)
             })
+            .map(|job| (job.id.clone(), job.status.is_terminal()))
             .collect::<Vec<_>>();
-        for id in resumable {
+        for (id, terminal) in jobs {
+            if terminal {
+                let state = self.clone();
+                tokio::spawn(async move { state.cleanup_job(&id).await });
+                continue;
+            }
+            if let Err(error) = self.commit_job_update(&id, |job| {
+                job.status = DreamStatus::Pending;
+                Ok(())
+            }) {
+                tracing::warn!(dream_id = %id, %error, "Dream resume transition did not commit");
+                continue;
+            }
             let cancellation = DreamCancellation::default();
             self.cancellations
                 .lock()
@@ -583,19 +707,39 @@ impl DreamState {
         }
     }
 
-    fn persist(&self, job: &DreamJob) -> Result<(), DreamApiError> {
-        let Some(repository) = &self.durable else {
-            return Ok(());
-        };
-        let data = serde_json::to_string(job)
-            .map_err(|error| DreamApiError::Unavailable(error.to_string()))?;
-        repository
-            .upsert_dream_job(DreamJobRecord {
-                job_id: job.id.clone(),
-                data,
-            })
-            .map_err(|error| DreamApiError::Unavailable(error.to_string()))?;
-        Ok(())
+    fn commit_job_update(
+        &self,
+        id: &str,
+        update: impl FnOnce(&mut DreamJob) -> Result<(), DreamApiError>,
+    ) -> Result<DreamJob, DreamApiError> {
+        let mut jobs = self.jobs.lock().unwrap();
+        let current = jobs.get(id).cloned().ok_or(DreamApiError::NotFound)?;
+        let mut candidate = current.clone();
+        update(&mut candidate)?;
+        if let Some(repository) = &self.durable {
+            let expected = serde_json::to_string(&current)
+                .map_err(|error| DreamApiError::Unavailable(error.to_string()))?;
+            let changed = repository
+                .compare_and_swap_dream_job(Some(&expected), job_record(&candidate)?)
+                .map_err(|error| DreamApiError::Unavailable(error.to_string()))?;
+            if !changed {
+                return Err(DreamApiError::Conflict("Dream changed concurrently".into()));
+            }
+        }
+        jobs.insert(id.to_string(), candidate.clone());
+        Ok(candidate)
+    }
+
+    fn insert_job(&self, job: DreamJob) -> Result<bool, DreamApiError> {
+        if let Some(repository) = &self.durable
+            && !repository
+                .compare_and_swap_dream_job(None, job_record(&job)?)
+                .map_err(|error| DreamApiError::Unavailable(error.to_string()))?
+        {
+            return Ok(false);
+        }
+        self.jobs.lock().unwrap().insert(job.id.clone(), job);
+        Ok(true)
     }
 
     pub async fn create(
@@ -610,43 +754,98 @@ impl DreamState {
         self: &Arc<Self>,
         workspace_id: &str,
         params: DreamCreateParams,
-        policy_key: Option<(String, String)>,
+        policy_claim: Option<((String, String), StoredDreamPolicy, StoredDreamPolicy)>,
     ) -> Result<Dream, DreamApiError> {
         let (source_memory_store_id, session_ids) = validate_create(&params)?;
-        let id = format!("dream_{}", self.next_id.fetch_add(1, Ordering::SeqCst));
-        let job = DreamJob {
-            id: id.clone(),
+        let model = params.model.into_config();
+        let request_guidance = params.instructions;
+        let agent_selection = DreamAgentSelection {
+            agent_id: self
+                .workspace_agent_overrides
+                .lock()
+                .unwrap()
+                .get(workspace_id)
+                .cloned()
+                .unwrap_or_else(default_dream_agent_id),
+        };
+        let mut job = DreamJob {
+            id: String::new(),
             workspace_id: workspace_id.to_string(),
             status: DreamStatus::Pending,
             source_memory_store_id,
             session_ids,
-            model: params.model.into_config(),
-            request_guidance: params.instructions,
-            agent_selection: DreamAgentSelection {
-                agent_id: self
-                    .workspace_agent_overrides
-                    .lock()
-                    .unwrap()
-                    .get(workspace_id)
-                    .cloned()
-                    .unwrap_or_else(default_dream_agent_id),
-            },
+            model,
+            request_guidance,
+            agent_selection,
             result_memory_store_id: None,
             session_id: None,
+            transcript_file_ids: Vec::new(),
+            cleanup_pending: false,
             created_at: now_ms(),
             ended_at: None,
             archived_at: None,
             error: None,
             usage: DreamUsage::default(),
-            policy_key,
+            policy_key: policy_claim.as_ref().map(|(key, _, _)| key.clone()),
         };
+        job.id = format!("dream_{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         self.worker
             .validate_inputs(&job.request())
             .await
             .map_err(|error| DreamApiError::BadRequest(error.message))?;
+        if let Some((key, previous, policy)) = policy_claim {
+            let claimed = if let Some(repository) = &self.durable {
+                let expected = serde_json::to_string(&previous)
+                    .map_err(|error| DreamApiError::Unavailable(error.to_string()))?;
+                loop {
+                    if repository
+                        .claim_dream_policy(&expected, policy_record(&policy)?, job_record(&job)?)
+                        .map_err(|error| DreamApiError::Unavailable(error.to_string()))?
+                    {
+                        break true;
+                    }
+                    let policy_was_claimed = repository
+                        .dream_policies()
+                        .map_err(|error| DreamApiError::Unavailable(error.to_string()))?
+                        .into_iter()
+                        .find(|record| {
+                            record.workspace_id == key.0 && record.memory_store_id == key.1
+                        })
+                        .is_none_or(|record| record.data != expected);
+                    if policy_was_claimed {
+                        break false;
+                    }
+                    // The exact policy is unchanged, so the transaction lost only
+                    // the process-local numeric job id. Allocate another id and
+                    // retry the same atomic occurrence claim.
+                    job.id = format!("dream_{}", self.next_id.fetch_add(1, Ordering::SeqCst));
+                }
+            } else {
+                let mut policies = self.policies.lock().unwrap();
+                if policies.get(&key) != Some(&previous) {
+                    false
+                } else {
+                    policies.insert(key.clone(), policy.clone());
+                    true
+                }
+            };
+            if !claimed {
+                return Err(DreamApiError::Conflict(
+                    "Dream policy was claimed concurrently".into(),
+                ));
+            }
+            self.policies.lock().unwrap().insert(key, policy);
+            self.jobs
+                .lock()
+                .unwrap()
+                .insert(job.id.clone(), job.clone());
+        } else {
+            while !self.insert_job(job.clone())? {
+                job.id = format!("dream_{}", self.next_id.fetch_add(1, Ordering::SeqCst));
+            }
+        }
+        let id = job.id.clone();
         let projected = job.project();
-        self.persist(&job)?;
-        self.jobs.lock().unwrap().insert(id.clone(), job);
         let cancellation = DreamCancellation::default();
         self.cancellations
             .lock()
@@ -660,49 +859,68 @@ impl DreamState {
     }
 
     async fn run_job(&self, id: String, cancellation: DreamCancellation) {
-        let (request, running_job) = {
-            let mut jobs = self.jobs.lock().unwrap();
-            let Some(job) = jobs.get_mut(&id) else { return };
+        let running_job = match self.commit_job_update(&id, |job| {
             if job.status == DreamStatus::Canceled {
-                return;
+                return Err(DreamApiError::Conflict("Dream is canceled".into()));
             }
             job.status = DreamStatus::Running;
-            (job.request(), job.clone())
+            Ok(())
+        }) {
+            Ok(job) => job,
+            Err(error) => {
+                tracing::warn!(dream_id = %id, %error, "Dream running transition did not commit");
+                return;
+            }
         };
-        let _ = self.persist(&running_job);
+        let request = running_job.request();
         let preparation = match self.worker.prepare(&request).await {
             Ok(preparation) => preparation,
             Err(error) => {
-                self.fail_if_active(&id, error);
+                let cleanup_failed = self.worker.cleanup(&request, None).await.is_err();
+                if let Err(persist_error) = self.fail_if_active(&id, error) {
+                    tracing::warn!(dream_id = %id, %persist_error, "Dream failure transition did not commit");
+                }
+                if cleanup_failed {
+                    let _ = self.commit_job_update(&id, |job| {
+                        job.cleanup_pending = true;
+                        Ok(())
+                    });
+                }
                 return;
             }
         };
-        let (canceled_after_prepare, prepared_job) = {
-            let mut jobs = self.jobs.lock().unwrap();
-            let Some(job) = jobs.get_mut(&id) else { return };
+        let prepared_job = match self.commit_job_update(&id, |job| {
             job.result_memory_store_id = Some(preparation.result_memory_store_id.clone());
             job.session_id = Some(preparation.session_id.clone());
-            (
-                job.status == DreamStatus::Canceled || cancellation.is_canceled(),
-                job.clone(),
-            )
+            job.transcript_file_ids = preparation.transcript_file_ids.clone();
+            Ok(())
+        }) {
+            Ok(job) => job,
+            Err(error) => {
+                tracing::warn!(dream_id = %id, %error, "Dream preparation transition did not commit");
+                let _ = self.worker.cleanup(&request, Some(&preparation)).await;
+                return;
+            }
         };
-        let _ = self.persist(&prepared_job);
+        let canceled_after_prepare =
+            prepared_job.status == DreamStatus::Canceled || cancellation.is_canceled();
         if canceled_after_prepare {
-            let _ = self.worker.cancel(Some(&preparation.session_id)).await;
+            let _ = self.worker.cancel(&request, Some(&preparation)).await;
             self.cancellations.lock().unwrap().remove(&id);
             return;
         }
-        let result = self
+        let result = match self
             .worker
             .execute(&request, &preparation, cancellation.clone())
-            .await;
-        let terminal_job = {
-            let mut jobs = self.jobs.lock().unwrap();
-            let Some(job) = jobs.get_mut(&id) else { return };
-            match result {
+            .await
+        {
+            Ok(usage) => self.worker.validate_inputs(&request).await.map(|()| usage),
+            Err(error) => Err(error),
+        };
+        let terminal_job = match self.commit_job_update(&id, |job| {
+            match &result {
                 Ok(usage) => {
-                    job.usage = usage;
+                    job.usage = usage.clone();
                     if job.status != DreamStatus::Canceled && !cancellation.is_canceled() {
                         job.status = DreamStatus::Completed;
                         job.ended_at = Some(now_ms());
@@ -711,50 +929,78 @@ impl DreamState {
                 Err(error) => {
                     if job.status != DreamStatus::Canceled && !cancellation.is_canceled() {
                         job.status = DreamStatus::Failed;
-                        job.error = Some(error);
+                        job.error = Some(error.clone());
                         job.ended_at = Some(now_ms());
                     }
                 }
             }
-            job.clone()
+            job.cleanup_pending = true;
+            Ok(())
+        }) {
+            Ok(job) => job,
+            Err(error) => {
+                tracing::warn!(dream_id = %id, %error, "Dream terminal transition did not commit");
+                return;
+            }
         };
-        let _ = self.persist(&terminal_job);
         if terminal_job.status == DreamStatus::Completed
             && let Some(key) = &terminal_job.policy_key
         {
-            let updated = {
-                let mut policies = self.policies.lock().unwrap();
-                policies.get_mut(key).map(|policy| {
-                    policy.last_completed_cutoff_ms =
-                        policy.last_completed_cutoff_ms.max(terminal_job.created_at);
-                    policy.clone()
-                })
-            };
-            if let Some(policy) = updated {
-                let _ = self.persist_policy(&policy);
+            let previous = self.policies.lock().unwrap().get(key).cloned();
+            if let Some(mut policy) = previous.clone() {
+                policy.last_completed_cutoff_ms =
+                    policy.last_completed_cutoff_ms.max(terminal_job.created_at);
+                if let Err(error) = self.persist_policy(previous.as_ref(), &policy) {
+                    tracing::warn!(dream_id = %id, %error, "Dream policy cutoff did not commit");
+                } else {
+                    self.policies.lock().unwrap().insert(key.clone(), policy);
+                }
             }
         }
+        self.cleanup_job(&id).await;
         self.cancellations.lock().unwrap().remove(&id);
     }
 
-    fn fail_if_active(&self, id: &str, error: DreamFailure) {
-        let failed = {
-            let mut jobs = self.jobs.lock().unwrap();
-            jobs.get_mut(id).and_then(|job| {
-                if job.status == DreamStatus::Canceled {
-                    None
-                } else {
-                    job.status = DreamStatus::Failed;
-                    job.error = Some(error);
-                    job.ended_at = Some(now_ms());
-                    Some(job.clone())
-                }
-            })
+    async fn cleanup_job(&self, id: &str) {
+        let Some(job) = self.jobs.lock().unwrap().get(id).cloned() else {
+            return;
         };
-        if let Some(job) = failed {
-            let _ = self.persist(&job);
+        let preparation = match (&job.result_memory_store_id, &job.session_id) {
+            (Some(result_memory_store_id), Some(session_id)) => Some(DreamPreparation {
+                result_memory_store_id: result_memory_store_id.clone(),
+                session_id: session_id.clone(),
+                transcript_file_ids: job.transcript_file_ids.clone(),
+            }),
+            _ => None,
+        };
+        if let Err(error) = self
+            .worker
+            .cleanup(&job.request(), preparation.as_ref())
+            .await
+        {
+            tracing::warn!(dream_id = %id, message = %error.message, "Dream resource cleanup remains pending");
+            return;
         }
+        if let Err(error) = self.commit_job_update(id, |job| {
+            job.cleanup_pending = false;
+            job.transcript_file_ids.clear();
+            Ok(())
+        }) {
+            tracing::warn!(dream_id = %id, %error, "Dream cleanup transition did not commit");
+        }
+    }
+
+    fn fail_if_active(&self, id: &str, error: DreamFailure) -> Result<(), DreamApiError> {
+        self.commit_job_update(id, |job| {
+            if job.status != DreamStatus::Canceled {
+                job.status = DreamStatus::Failed;
+                job.error = Some(error);
+                job.ended_at = Some(now_ms());
+            }
+            Ok(())
+        })?;
         self.cancellations.lock().unwrap().remove(id);
+        Ok(())
     }
 
     pub fn retrieve(&self, workspace_id: &str, id: &str) -> Result<Dream, DreamApiError> {
@@ -816,56 +1062,76 @@ impl DreamState {
     }
 
     pub async fn cancel(&self, workspace_id: &str, id: &str) -> Result<Dream, DreamApiError> {
-        let (session_id, canceled_job) = {
-            let mut jobs = self.jobs.lock().unwrap();
-            let job = jobs
-                .get_mut(id)
-                .filter(|job| job.workspace_id == workspace_id)
-                .ok_or(DreamApiError::NotFound)?;
-            match job.status {
-                DreamStatus::Pending | DreamStatus::Running => {
-                    job.status = DreamStatus::Canceled;
-                    job.ended_at = Some(now_ms());
-                }
-                DreamStatus::Canceled => return Ok(job.project()),
-                DreamStatus::Completed | DreamStatus::Failed => {
-                    return Err(DreamApiError::BadRequest(
-                        "only pending or running Dreams can be canceled".into(),
-                    ));
-                }
-            }
-            (job.session_id.clone(), job.clone())
-        };
-        self.persist(&canceled_job)?;
+        let current = self
+            .jobs
+            .lock()
+            .unwrap()
+            .get(id)
+            .filter(|job| job.workspace_id == workspace_id)
+            .cloned()
+            .ok_or(DreamApiError::NotFound)?;
+        if current.status == DreamStatus::Canceled {
+            return Ok(current.project());
+        }
+        if current.status.is_terminal() {
+            return Err(DreamApiError::BadRequest(
+                "only pending or running Dreams can be canceled".into(),
+            ));
+        }
+        let canceled_job = self.commit_job_update(id, |job| {
+            job.status = DreamStatus::Canceled;
+            job.ended_at = Some(now_ms());
+            job.cleanup_pending = true;
+            Ok(())
+        })?;
         if let Some(cancellation) = self.cancellations.lock().unwrap().get(id) {
             cancellation.cancel();
         }
+        let preparation = match (
+            canceled_job.result_memory_store_id.clone(),
+            canceled_job.session_id.clone(),
+        ) {
+            (Some(result_memory_store_id), Some(session_id)) => Some(DreamPreparation {
+                result_memory_store_id,
+                session_id,
+                transcript_file_ids: canceled_job.transcript_file_ids.clone(),
+            }),
+            _ => None,
+        };
         self.worker
-            .cancel(session_id.as_deref())
+            .cancel(&canceled_job.request(), preparation.as_ref())
             .await
             .map_err(|error| DreamApiError::Unavailable(error.message))?;
+        self.commit_job_update(id, |job| {
+            job.cleanup_pending = false;
+            job.transcript_file_ids.clear();
+            Ok(())
+        })?;
         self.retrieve(workspace_id, id)
     }
 
     pub fn archive(&self, workspace_id: &str, id: &str) -> Result<Dream, DreamApiError> {
-        let mut jobs = self.jobs.lock().unwrap();
-        let job = jobs
-            .get_mut(id)
+        let current = self
+            .jobs
+            .lock()
+            .unwrap()
+            .get(id)
             .filter(|job| job.workspace_id == workspace_id)
+            .cloned()
             .ok_or(DreamApiError::NotFound)?;
-        if !job.status.is_terminal() {
+        if !current.status.is_terminal() {
             return Err(DreamApiError::BadRequest(
                 "only terminal Dreams can be archived".into(),
             ));
         }
-        if job.archived_at.is_none() {
-            job.archived_at = Some(now_ms());
+        if current.archived_at.is_some() {
+            return Ok(current.project());
         }
-        let projected = job.project();
-        let persisted = job.clone();
-        drop(jobs);
-        self.persist(&persisted)?;
-        Ok(projected)
+        self.commit_job_update(id, |job| {
+            job.archived_at = Some(now_ms());
+            Ok(())
+        })
+        .map(|job| job.project())
     }
 }
 
@@ -898,6 +1164,17 @@ fn validate_create(params: &DreamCreateParams) -> Result<(String, Vec<String>), 
         return Err(DreamApiError::BadRequest(format!(
             "unsupported Dream model `{model}`"
         )));
+    }
+    if matches!(
+        &params.model,
+        DreamModelInput::Config(DreamModelConfig {
+            speed: Some(DreamModelSpeed::Fast),
+            ..
+        })
+    ) {
+        return Err(DreamApiError::BadRequest(
+            "Dream model speed `fast` is not supported by this deployment".into(),
+        ));
     }
     if params
         .instructions
@@ -970,7 +1247,7 @@ impl DreamSessionSource for crate::ManagedState {
                 (updated > updated_after_ms).then_some((updated, session.id))
             })
             .collect::<Vec<_>>();
-        sessions.sort();
+        sessions.sort_by(|left, right| right.cmp(left));
         sessions.into_iter().take(limit).map(|(_, id)| id).collect()
     }
 }

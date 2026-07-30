@@ -121,7 +121,7 @@ subsequent Session execution remains Session truth.
 ```text
 timer tick
   -> find active, non-archived due cron occurrences
-  -> retain exact scheduled_at; apply stable 15% jitter (5s..9m)
+  -> retain exact scheduled_at; apply stable execution jitter (0s..10s)
   -> if primary Agent is missing/archived: archive Deployment, no run
   -> transactionally insert unique claim + started run + advanced cursor + fact
        lost claim -> discard process-local candidate, no Session
