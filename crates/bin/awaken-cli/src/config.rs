@@ -100,6 +100,8 @@ impl CloudModelMode {
 #[derive(Debug, Clone)]
 pub struct WorkerBootstrap {
     pub worker_id: String,
+    pub credential_material_root: PathBuf,
+    pub credential_trust_domain: String,
     pub admin_listen: Option<String>,
     pub drain_grace_secs: u64,
     pub build_digest: Option<String>,
@@ -139,6 +141,7 @@ impl ResourcePlaneStoreBackend {
 
 #[derive(Clone)]
 pub enum SealKeySource {
+    NotOwnedByRole,
     Inline(String),
     File(PathBuf),
     LocalFile(PathBuf),
@@ -147,6 +150,7 @@ pub enum SealKeySource {
 impl std::fmt::Debug for SealKeySource {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NotOwnedByRole => formatter.write_str("NotOwnedByRole"),
             Self::Inline(_) => formatter.write_str("Inline([REDACTED])"),
             Self::File(path) => formatter.debug_tuple("File").field(path).finish(),
             Self::LocalFile(path) => formatter.debug_tuple("LocalFile").field(path).finish(),
@@ -157,6 +161,7 @@ impl std::fmt::Debug for SealKeySource {
 impl SealKeySource {
     pub fn description(&self) -> String {
         match self {
+            Self::NotOwnedByRole => "not owned by this role".to_owned(),
             Self::Inline(_) => "config.toml (redacted)".to_owned(),
             Self::File(path) | Self::LocalFile(path) => path.display().to_string(),
         }
@@ -166,6 +171,9 @@ impl SealKeySource {
     /// once with owner-only permissions. The returned bytes are never logged.
     pub fn load_or_create(&self) -> Result<[u8; 32], String> {
         let value = match self {
+            Self::NotOwnedByRole => {
+                return Err("this process role does not own the Control seal key".to_owned());
+            }
             Self::Inline(value) => value.clone(),
             Self::File(path) => fs::read_to_string(path)
                 .map_err(|error| format!("read seal key {}: {error}", path.display()))?,
@@ -338,6 +346,11 @@ impl ResolvedDeployment {
                 ("config_db", file.config_db.is_some()),
                 ("admin_db", file.admin_db.is_some()),
                 ("sessions_db", file.sessions_db.is_some()),
+                ("control_seal_key", file.control_seal_key.is_some()),
+                (
+                    "control_seal_key_file",
+                    file.control_seal_key_file.is_some(),
+                ),
             ],
         )?;
         let executable_agent_registration = ExecutableAgentRegistrationConfig::resolve(
@@ -361,6 +374,13 @@ impl ResolvedDeployment {
                 .worker_id
                 .clone()
                 .unwrap_or_else(|| "awaken-worker".to_owned()),
+            credential_material_root: file
+                .worker_credential_material_root
+                .clone()
+                .unwrap_or_else(|| data_dir.join("worker-credentials")),
+            credential_trust_domain: file.worker_credential_trust_domain.clone().unwrap_or_else(
+                || awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN.to_owned(),
+            ),
             admin_listen: file
                 .worker_admin_listen
                 .clone()
@@ -379,6 +399,14 @@ impl ResolvedDeployment {
         };
         if worker.worker_id.trim().is_empty() {
             return Err("worker_id must not be empty".to_owned());
+        }
+        if worker.credential_material_root.as_os_str().is_empty()
+            || worker.credential_trust_domain.trim().is_empty()
+        {
+            return Err(
+                "worker_credential_material_root and worker_credential_trust_domain must not be empty"
+                    .to_owned(),
+            );
         }
         if worker.credential_probe_interval_secs == 0
             || worker.credential_observation_ttl_secs <= worker.credential_probe_interval_secs
@@ -586,7 +614,7 @@ impl ResolvedDeployment {
                 "log_filter and OTel timeout/export interval must be non-empty/non-zero".to_owned(),
             );
         }
-        let runtime = DeploymentConfig {
+        let mut runtime = DeploymentConfig {
             durable: true,
             storage_dir: Some(data_dir.clone()),
             store: if dispatch_url.is_some() {
@@ -617,6 +645,17 @@ impl ResolvedDeployment {
             container_image: file.container_image.clone(),
             disable_local_pool: !run_local_pool,
         };
+        if role == Role::Worker {
+            // The registered Worker receives durable claims through its injected
+            // HTTP dispatch store. Everything it owns locally is ephemeral
+            // execution state; retaining the product data directory here would
+            // make `SharedHost` silently open Session/File/Memory SQLite stores.
+            runtime.storage_dir = None;
+            runtime.database_url = None;
+            runtime.dispatch_backend = DispatchBackend::Sqlite;
+            runtime.store = StoreKind::Sqlite;
+            runtime.nats_url = None;
+        }
         let shared_management_database = file
             .management_database_url_file
             .as_deref()
@@ -673,18 +712,24 @@ impl ResolvedDeployment {
                     .to_owned(),
             );
         }
-        let seal_key = match (&file.control_seal_key, &file.control_seal_key_file, mode) {
-            (Some(_), Some(_), _) => {
+        let seal_key = match (
+            role,
+            &file.control_seal_key,
+            &file.control_seal_key_file,
+            mode,
+        ) {
+            (Role::Worker, None, None, _) => SealKeySource::NotOwnedByRole,
+            (_, Some(_), Some(_), _) => {
                 return Err(
                     "configure exactly one of control_seal_key or control_seal_key_file".to_owned(),
                 );
             }
-            (Some(value), None, _) => SealKeySource::Inline(value.clone()),
-            (None, Some(path), _) => SealKeySource::File(path.clone()),
-            (None, None, OperatingMode::Local) => {
+            (_, Some(value), None, _) => SealKeySource::Inline(value.clone()),
+            (_, None, Some(path), _) => SealKeySource::File(path.clone()),
+            (_, None, None, OperatingMode::Local) => {
                 SealKeySource::LocalFile(data_dir.join("control-seal.key"))
             }
-            (None, None, OperatingMode::Server) => {
+            (_, None, None, OperatingMode::Server) => {
                 return Err(
                     "server mode requires control_seal_key or control_seal_key_file".to_owned(),
                 );
@@ -870,6 +915,22 @@ pub(crate) fn local_test_deployment(data_dir: PathBuf) -> ResolvedDeployment {
     .expect("test local deployment")
 }
 
+#[cfg(test)]
+pub(crate) fn worker_test_deployment(data_dir: PathBuf) -> ResolvedDeployment {
+    ResolvedDeployment::resolve_file(
+        ConfigOverrides {
+            role: Some(Role::Worker),
+            worker_server: Some("http://coordinator".to_owned()),
+            data_dir: Some(data_dir),
+            ..Default::default()
+        },
+        Some(PathBuf::from("/home/test")),
+        PathBuf::from("/home/test/.awaken/config.toml"),
+        FileConfig::default(),
+    )
+    .expect("test Worker deployment")
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileConfig {
@@ -879,6 +940,8 @@ struct FileConfig {
     role: Option<String>,
     worker_server: Option<String>,
     worker_id: Option<String>,
+    worker_credential_material_root: Option<PathBuf>,
+    worker_credential_trust_domain: Option<String>,
     worker_admin_listen: Option<String>,
     worker_drain_grace_secs: Option<u64>,
     worker_build_digest: Option<String>,

@@ -166,7 +166,24 @@ The local and remote Deployment launch slices are also complete:
 - an unavailable boundary leaves the already-persisted DeploymentRun pending
   instead of recording a false terminal business failure.
 
-Exact Credential/Resource adapters and the remaining Coordinator/Resource
+The exact Worker-private Credential boundary is also complete:
+
+- `WorkerCredentialFileResolver` implements the existing
+  `CredentialMaterialResolver` and supports only `WorkerReference` without an
+  envelope;
+- its deterministic projection path is bound to credential id, revision,
+  Workspace, and target/use fingerprint; scalar and canonical HTTP Basic
+  material have distinct fail-closed file shapes;
+- Kubernetes Secret, Vault CSI, or another volume projector moves material into
+  the Worker trust domain. Awaken adds no plaintext credential HTTP payload,
+  envelope store, or second credential model;
+- the Worker role no longer loads a Control seal key, opens Control credential
+  stores, accepts authority database settings, or gives `SharedHost` a durable
+  storage root that would silently create local Session/File/Memory databases;
+- until the per-kind Resource clients are installed, the Worker omits Session
+  Resource and Repository credential capabilities so placement fails closed.
+
+Per-kind Resource adapters and the remaining Coordinator/Resource
 store-ownership separation remain subsequent ADR-0071 slices.
 
 ## Consequences

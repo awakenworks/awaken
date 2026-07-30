@@ -301,13 +301,16 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - stable DeploymentRun-to-Session identity/fingerprint replay and separate
   launch token-file composition;
 - `AgentResourceReferenceSource` as a narrow read port.
+- `WorkerCredentialFileResolver` as the exact Worker-private
+  `CredentialMaterialResolver` adapter; Worker role composition removes the
+  Control seal key, authority stores, and implicit durable Host stores.
 
 ### Required remaining ADR-0071 work
 
 - Worker resource composition uses per-kind network adapters rather than shared
   authority-store implementations;
 - remaining Coordinator/Resource composition removes direct non-owner stores;
-- per-kind File, Memory, Skill, and credential clients/handlers;
+- per-kind File, Memory, and Skill clients/handlers;
 - service-data-ownership fitness check for the remaining boundaries.
 
 No new Agent, Deployment, Session, Resource, Credential, Run, or response domain

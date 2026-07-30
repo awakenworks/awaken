@@ -1,12 +1,11 @@
 //! `awaken-worker` — the production authority-store-isolated executor.
 //!
-//! A peer of the control and data planes. It owns no Run, Session, or authoring
-//! store: it drains runs
-//! from a Coordinator cell over the typed dispatch transport and sends claim-fenced
-//! commit operations back through the same Worker boundary. A resource-capable
-//! worker may currently be composed with shared Credential and Resource authority
-//! adapters. That shared-store deployment is not process-level authority isolation;
-//! the strict remote adapters remain a separate acceptance boundary.
+//! A peer of the control and data planes. It owns no Run, Session, Resource, or
+//! authoring store: it drains runs from a Coordinator cell over the typed dispatch
+//! transport and sends claim-fenced commit operations back through the same Worker
+//! boundary. Exact Worker-private credentials enter only through an injected
+//! material resolver such as [`WorkerCredentialFileResolver`]. Resource capability
+//! is advertised only after per-kind remote adapters are installed.
 //!
 //! **Real per-run model resolution, no mocks.** A drained run arrives as a
 //! `RunActivation` carrying its own `ExecutableAgentSnapshot`, whose
@@ -21,6 +20,7 @@ use std::sync::Arc;
 
 mod admin;
 mod application;
+mod credential_files;
 mod credential_liveness;
 mod lifecycle;
 mod manifest;
@@ -39,6 +39,7 @@ use manifest::{
 pub use application::{
     RegisteredApplicationFactory, RegisteredWorkerApplication, RegisteredWorkerContext,
 };
+pub use credential_files::WorkerCredentialFileResolver;
 pub use lifecycle::WorkerShutdown;
 pub use manifest::StandardManifestConfig;
 pub use resource_plane::WorkerResourcePlane;

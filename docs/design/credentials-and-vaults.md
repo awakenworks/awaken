@@ -368,6 +368,32 @@ blocking later valid work without creating a second selection policy.
 separate proposal defines its application service, transaction/saga,
 idempotency, compensation, outbox, and orphan cleanup.
 
+### Distributed Worker-private material
+
+The server-role Worker does not open the Control credential repository or
+`SecretStore`, and Awaken does not serialize `RedactedString` into a private HTTP
+response. `WorkerCredentialFileResolver` is the production boundary adapter for
+`CredentialMaterialSource::WorkerReference`. An external secret-volume provider
+projects the exact material under:
+
+```text
+<root>/<hex credential id>/<revision>/<hex workspace>/<hex target-use fingerprint>/
+  secret                 # scalar Provider/header/query/env/file usage
+  username + password    # canonical awaken.http-basic/v1 only
+```
+
+The adapter supports one configured Worker `PlaintextHolder`, rejects Control
+references, envelopes, another trust domain, empty bindings, malformed UTF-8,
+missing fields, and unsupported structured extensions. It never enumerates the
+root or falls back to another revision/binding. The path values are secret-free;
+the files are plaintext inside the already-selected Worker trust domain and must
+be supplied and protected by the deployment's Secret/CSI volume policy.
+
+AllInOne continues to use the local `PinnedCredentialMaterializer` over the
+Control-owned stores. Both compositions consume the same exact resolver port and
+the same Model/MCP/Repository validation; there is no compatibility bridge
+between `ControlPlaneReference` and `WorkerReference`.
+
 ## Staging
 
 Keep one authority per responsibility and stage additional policy without adding
