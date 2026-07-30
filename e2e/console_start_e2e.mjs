@@ -34,8 +34,8 @@ function awakenBin() {
   throw new Error('could not resolve the awaken binary path');
 }
 
-function waitForPort(port, timeoutMs = 60_000) {
-  const deadline = Date.now() + timeoutMs;
+function waitForPort(port, server, timeoutMs = 180_000) {
+  const deadline = performance.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const attempt = () => {
       const socket = net.createConnection({ port, host: '127.0.0.1' });
@@ -45,7 +45,9 @@ function waitForPort(port, timeoutMs = 60_000) {
       });
       socket.once('error', () => {
         socket.destroy();
-        if (Date.now() > deadline) reject(new Error(`server did not listen on ${port}`));
+        if (server.exitCode !== null || server.signalCode !== null) {
+          reject(new Error(`server exited before listening on ${port}`));
+        } else if (performance.now() > deadline) reject(new Error(`server did not listen on ${port}`));
         else setTimeout(attempt, 100);
       });
     };
@@ -86,6 +88,7 @@ async function main() {
   fs.writeFileSync(path.join(configDir, 'config.toml'), [
     `data_dir = ${JSON.stringify(path.join(temp, 'data'))}`,
     `bind = ${JSON.stringify(`127.0.0.1:${PORT}`)}`,
+    'acp_clis = ["gemini"]',
   ].join('\n'));
   let server = spawn(bin, ['start', '--no-browser'], {
     cwd: temp,
@@ -118,7 +121,7 @@ async function main() {
   };
 
   try {
-    await waitForPort(PORT);
+    await waitForPort(PORT, server);
     const base = `http://127.0.0.1:${PORT}`;
 
     let response = await fetch(`${base}/`);

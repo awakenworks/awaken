@@ -254,7 +254,11 @@ const obligations: Obligation[] = [
 ];
 
 function docker(...args: string[]): string {
-  return execFileSync('docker', args, { cwd: ROOT, encoding: 'utf8' }).trim();
+  return execFileSync('docker', args, {
+    cwd: ROOT,
+    encoding: 'utf8',
+    timeout: 30_000,
+  }).trim();
 }
 
 function unavailableOptionalInfrastructure(scenario: Scenario): string | undefined {
@@ -270,9 +274,18 @@ function unavailableOptionalInfrastructure(scenario: Scenario): string | undefin
   // | I1 | T | T | any | run and count only on success |
   // | I2 | T | F | F | run/fail strict |
   // | I3 | T | F | T | explicit uncovered gap; continue |
-  if (scenario.id === 'container_podman') {
-    const probe = spawnSync('podman', ['version'], { cwd: ROOT, stdio: 'ignore' });
-    if (probe.status !== 0) return 'Podman runtime is unavailable';
+  const engine = scenario.id === 'container_docker'
+    ? 'docker'
+    : scenario.id === 'container_podman'
+      ? 'podman'
+      : undefined;
+  if (engine) {
+    const probe = spawnSync(engine, ['version'], {
+      cwd: ROOT,
+      stdio: 'ignore',
+      timeout: 10_000,
+    });
+    if (probe.status !== 0) return `${engine} runtime is unavailable`;
   }
   return undefined;
 }

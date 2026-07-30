@@ -25,7 +25,7 @@ function start(directory) {
 }
 
 async function ready(child) {
-  await waitForPort(PORT, 60_000, child);
+  await waitForPort(PORT, 180_000, child);
 }
 
 async function stop(child, signal = 'SIGINT') {

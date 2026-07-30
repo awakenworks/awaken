@@ -42,7 +42,7 @@ function definition(delegate: string, server: string, url: string): Record<strin
   return {
     name: 'Typed coordinator',
     system: 'Coordinate only through the published roster.',
-    model: { id: 'management' },
+    model: { id: 'fake-haiku' },
     tools: [],
     mcp_servers: [{
       name: server,

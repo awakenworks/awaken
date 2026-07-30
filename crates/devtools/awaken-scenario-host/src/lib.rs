@@ -127,7 +127,9 @@ const FAKE_OUTCOME_ACP_SCRIPT: &str = "read _p; \
         printf '%s\\n' '{\"type\":\"message\",\"text\":\"ACP worker acknowledged remaining feedback\"}';; \
       *) printf '%s\\n' '{\"type\":\"message\",\"text\":\"a rough draft from ACP worker\"}';; \
     esac; \
-    printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
+    printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'; \
+    trap 'exit 0' TERM INT; \
+    while :; do sleep 1; done";
 
 /// Managed Outcome backend matrix: each Session independently selects a Native
 /// or ACP Worker, while `AWAKEN_OUTCOME_JUDGE_RUNTIME` pins the Judge snapshot.
