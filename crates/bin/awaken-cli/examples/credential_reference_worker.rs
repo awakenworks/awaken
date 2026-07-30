@@ -218,11 +218,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ));
             let resources = awaken_worker::WorkerResourcePlane::new(ports, validator)
                 .with_memory_mounter(mounter);
-            let credentials = awaken_session_executor::PinnedCredentialMaterializer::new(
-                Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
-                Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-            )
-            .with_external_material_resolver(materializer.clone());
+            let credentials = awaken_session_executor::PinnedCredentialMaterializer::external_only(
+                materializer.clone(),
+            );
             awaken_worker::WorkerNodeBuilder::new(awaken_session_executor::WorkerUpstream::new(
                 upstream,
             ))

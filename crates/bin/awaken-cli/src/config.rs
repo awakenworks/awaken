@@ -374,6 +374,12 @@ impl ResolvedDeployment {
                     .to_owned(),
             );
         }
+        if role == Role::Worker && file.run_local_pool.is_some() {
+            return Err(
+                "run_local_pool is a Serve-only setting; a Worker always runs its registered claim pool"
+                    .to_owned(),
+            );
+        }
         let run_local_pool = file.run_local_pool.unwrap_or(true);
         let dispatch_url = file.runtime_database_url.clone();
         if dispatch_url
@@ -1684,6 +1690,69 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("--server"));
+    }
+
+    #[test]
+    fn local_pool_setting_has_one_serve_only_meaning() {
+        // Cause/effect graph:
+        // role + optional run_local_pool -> one process-role interpretation. Serve
+        // owns an optional co-located claim pool; Worker owns its mandatory registered
+        // claim pool. Accepting the same switch for both would let WorkerNode::build
+        // silently override resolved configuration and create two meanings.
+        //
+        // Decision table:
+        // | rule | role   | setting | dispatch DB | result |
+        // | P1   | Serve  | absent  | local       | co-located pool enabled |
+        // | P2   | Serve  | false   | local       | reject: remote drain needs Postgres |
+        // | P3   | Worker | absent  | local       | registered Worker pool enabled |
+        // | P4   | Worker | any     | any         | reject: setting is Serve-only |
+        let serve = resolve(FileConfig::default(), ConfigOverrides::default());
+        assert!(serve.run_local_pool, "P1");
+        assert!(!serve.runtime.disable_local_pool, "P1");
+
+        let serve_without_shared_dispatch = ResolvedDeployment::resolve_file(
+            ConfigOverrides::default(),
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            FileConfig {
+                run_local_pool: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            serve_without_shared_dispatch.contains("runtime_database_url"),
+            "P2"
+        );
+
+        let worker = resolve(
+            FileConfig::default(),
+            ConfigOverrides {
+                role: Some(Role::Worker),
+                worker_server: Some("http://coordinator".to_owned()),
+                ..Default::default()
+            },
+        );
+        assert!(worker.run_local_pool, "P3");
+        assert!(!worker.runtime.disable_local_pool, "P3");
+
+        for setting in [false, true] {
+            let error = ResolvedDeployment::resolve_file(
+                ConfigOverrides {
+                    role: Some(Role::Worker),
+                    worker_server: Some("http://coordinator".to_owned()),
+                    ..Default::default()
+                },
+                Some(PathBuf::from("/home/dev")),
+                PathBuf::from("/home/dev/.awaken/config.toml"),
+                FileConfig {
+                    run_local_pool: Some(setting),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert!(error.contains("Serve-only"), "P4: {setting}");
+        }
     }
 
     #[test]
