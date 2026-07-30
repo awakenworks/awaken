@@ -1,0 +1,47 @@
+# Canonical ephemeral Postgres fixture shared by every k3d scenario.
+# Scenario overlays own consumers and fault timing; this base alone owns the
+# Service, readiness contract, credentials, and disposable storage policy.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels: { app: postgres }
+spec:
+  selector: { app: postgres }
+  ports:
+    - { name: pg, port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels: { app: postgres }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          imagePullPolicy: Never
+          env:
+            - { name: POSTGRES_PASSWORD, value: "test" } # awaken-allow: secret
+            - { name: POSTGRES_DB, value: "awaken" }
+            - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "awaken"]
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+      volumes:
+        - name: data
+          emptyDir: {}

@@ -155,6 +155,11 @@ resolution, execution, and commit is defined in
 the reference for deciding whether a value is config data, activation data,
 resolved runtime input, live execution wiring, or committed truth.
 
+Real-cluster deployment fixtures and their non-overlapping ownership rules are
+defined in the [K3D distributed test topology guide](../../deploy/k3d/README.md).
+The guide is the fixture authority; architecture documents do not duplicate its
+cluster lifecycle or manifest layout.
+
 ---
 
 ## 4. Dispatch Boundary

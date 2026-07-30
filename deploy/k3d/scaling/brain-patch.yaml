@@ -1,0 +1,15 @@
+# Three pools compete for one SKIP-LOCKED queue and spread across k3d nodes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brain
+spec:
+  replicas: 3
+  template:
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: brain }
