@@ -9,6 +9,7 @@ mod attempt_credential;
 mod composition;
 mod delegation;
 mod deployment;
+mod distributed_control;
 mod dream;
 mod model_publication;
 mod models;
@@ -18,6 +19,7 @@ pub use acp_gateway::build_acp_gateway_router;
 pub use composition::build_unscoped_resource_router;
 pub use delegation::build_delegation_router;
 pub use deployment::scenario_deployment;
+pub use distributed_control::build_distributed_control_router;
 pub use dream::{build_dream_router, build_dream_router_and_host};
 pub use worker::run_echo_worker;
 
@@ -1711,42 +1713,7 @@ pub async fn build_config_router() -> Router {
     // scenario model, so an `Auto` config (the management assistant) resolves to a
     // concrete binding at publish (ADR-0052 D5) AND the capability reader reports the
     // scenario model live.
-    let catalog_repo: Arc<dyn awaken_model_catalog::repo::CatalogRepo> =
-        Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new());
-    catalog_repo
-        .put_provider(awaken_model_catalog::Provider {
-            id: awaken_model_catalog::ProviderId::new("default"),
-            slug: "default".into(),
-            display_name: "Default".into(),
-            version: 1,
-        })
-        .await
-        .expect("put provider");
-    catalog_repo
-        .put_endpoint(awaken_model_catalog::ProtocolEndpoint {
-            id: awaken_model_catalog::ProtocolEndpointId::new("ep"),
-            provider_id: awaken_model_catalog::ProviderId::new("default"),
-            dialect: awaken_model_catalog::ApiDialect::AnthropicMessages,
-            base_url: None,
-            timeout_secs: 30,
-            display_name: "ep".into(),
-            version: 1,
-        })
-        .await
-        .expect("put endpoint");
-    catalog_repo
-        .put_offering(awaken_model_catalog::Offering {
-            model_id: model_ref.clone(),
-            provider_id: awaken_model_catalog::ProviderId::new("default"),
-            protocol_endpoint_id: awaken_model_catalog::ProtocolEndpointId::new("ep"),
-            dialect: awaken_model_catalog::ApiDialect::AnthropicMessages,
-            upstream_model: None,
-            source: Default::default(),
-            status: Default::default(),
-            last_seen_at_unix_ms: None,
-        })
-        .await
-        .expect("put offering");
+    let catalog_repo = model_publication::scenario_model_catalog(&model_ref).await;
     // The service is scope-free (ADR-0051); `ConfigPlane` is the scope edge that binds
     // the request scope (a `ScopedConfig` registry + the scope's tool catalog) onto it.
     let executable_agent_catalog = Arc::new(ExecutableAgentCatalog::new());
