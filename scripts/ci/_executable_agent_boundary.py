@@ -21,6 +21,10 @@ EXECUTABLE_AGENT_ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-session-contract",
         "awaken-resource-contract",
         "async-trait",
+        "axum",
+        "reqwest",
+        "serde",
+        "serde_json",
         "tokio",
     },
 }

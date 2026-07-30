@@ -72,8 +72,8 @@ flowchart TD
     K["Added: ExecutableAgentRegistrar.register"]
     KA{"Composition mode"}
     KB["Added: LocalExecutableAgentRegistrar"]
-    KC["Pending: CoordinatorExecutableAgentClient"]
-    KD["Pending: RegisterExecutableAgentHandler"]
+    KC["Added: HttpExecutableAgentRegistrar"]
+    KD["Added: authenticated registration router"]
     KE["Added: ExecutableAgentCatalog; durable adapter pending"]
     KF{"Registration acknowledged?"}
     KG["Return publication success with id and fingerprint"]
@@ -121,8 +121,8 @@ flowchart TD
 The publication compiler, revision fence, `StoredPublication`, and
 `ExecutableAgentSnapshot` are reused. The former Config Service-owned catalog
 write has been removed. Control now calls one registrar; the AllInOne adapter
-updates the single Coordinator catalog. The distributed client, handler, and
-durable catalog adapter remain pending.
+and distributed HTTP adapter reach the same Coordinator catalog state machine.
+The durable catalog adapter and split-role wiring remain pending.
 
 Registration identity is `(workspace_id, agent_id, source_revision)` with the
 snapshot fingerprint as the conflict check. The same registration may be
@@ -289,11 +289,12 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 
 - `ExecutableAgentRegistrar`, its command/outcome/error values, and withdrawal;
 - `ExecutableAgentCatalog` and `LocalExecutableAgentRegistrar`;
+- `HttpExecutableAgentRegistrar` and the authenticated registration router;
 - `AgentResourceReferenceSource` as a narrow read port.
 
 ### Required remaining ADR-0071 work
 
-- Coordinator registration client, handler, and durable catalog adapter;
+- durable Coordinator catalog adapter and split-role registration wiring;
 - Deployment launch carries `deployment_run_id` and supports a remote adapter;
 - Worker resource composition uses per-kind network adapters rather than shared
   authority-store implementations;

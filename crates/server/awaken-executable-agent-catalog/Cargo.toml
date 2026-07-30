@@ -10,9 +10,14 @@ awaken-runtime-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-resource-contract.workspace = true
 async-trait.workspace = true
+axum.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "macros", "net", "time"] }
 
 [lints]
 workspace = true

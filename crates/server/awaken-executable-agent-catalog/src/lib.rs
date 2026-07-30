@@ -22,6 +22,13 @@ use awaken_runtime_contract::{
 };
 use awaken_session_contract::{AgentConfigSource, AgentConfigView};
 
+mod http;
+
+pub use http::{
+    EXECUTABLE_AGENT_REGISTER_PATH, EXECUTABLE_AGENT_WITHDRAW_PATH, HttpExecutableAgentRegistrar,
+    executable_agent_registration_router,
+};
+
 type AgentKey = (String, String);
 type RevisionKey = (String, String, u64);
 type FingerprintKey = (String, String);
@@ -217,8 +224,8 @@ impl ExecutableAgentCatalog {
     }
 }
 
-/// Explicit AllInOne adapter over the same Coordinator catalog service used by
-/// the future network handler.
+/// Explicit AllInOne adapter over the same Coordinator catalog state machine
+/// exposed by the authenticated HTTP registration router.
 #[derive(Clone)]
 pub struct LocalExecutableAgentRegistrar {
     catalog: Arc<ExecutableAgentCatalog>,

@@ -55,10 +55,16 @@ for this boundary.
 
 ### D2: One port, local and remote adapters
 
-AllInOne uses a local `ExecutableAgentRegistrar` adapter. A split deployment uses
-`CoordinatorExecutableAgentClient` and `RegisterExecutableAgentHandler`. Startup
-rehydration calls the same registrar; it does not maintain a second warm-install
-path.
+AllInOne uses `LocalExecutableAgentRegistrar`. A split deployment uses
+`HttpExecutableAgentRegistrar` and the authenticated
+`executable_agent_registration_router`. These are transport adapters for the
+same port and commands, not a second registration service or state machine.
+Startup rehydration calls the same registrar; it does not maintain a second
+warm-install path.
+
+The private HTTP boundary requires a bearer token. Its client retries only
+idempotent network, availability, and storage failures; validation,
+authentication, and semantic conflicts return immediately.
 
 Publication success means the Coordinator acknowledged registration. A durable
 publication may exist while registration is temporarily unavailable; that call
@@ -110,7 +116,7 @@ not receive Control or Coordinator database connections.
 
 ## Implementation Status
 
-The first registration slice is complete:
+The local and remote registration-boundary slices are complete:
 
 - `ConfigService::publish` persists first and calls the sole
   `ExecutableAgentRegistrar`; registration availability/storage failures map to
@@ -124,12 +130,16 @@ The first registration slice is complete:
   reads;
 - AllInOne and scenario composition use `LocalExecutableAgentRegistrar`, and
   startup recovery replays durable publications through that same port;
+- split composition can use `HttpExecutableAgentRegistrar` and the authenticated
+  registration router; their real-network tests cover authorization,
+  idempotency, transient retry, conflict, withdrawal, and incomplete endpoint
+  configuration;
 - the superseded process-local catalog, runtime projection wrapper, and separate
   warm-install path have been removed.
 
-The split-deployment client/handler and durable Coordinator catalog adapter,
-remote Deployment Session launch, exact Credential/Resource adapters, and
-role-aware data-ownership checks remain subsequent ADR-0071 slices.
+The durable Coordinator catalog adapter, split-role wiring, remote Deployment
+Session launch, exact Credential/Resource adapters, and role-aware data-ownership
+checks remain subsequent ADR-0071 slices.
 
 ## Consequences
 

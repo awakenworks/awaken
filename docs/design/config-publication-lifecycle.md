@@ -88,8 +88,10 @@ The identity and outcomes are:
 | an older exact revision arrives | retain it as historical; never move current backwards |
 | Coordinator is unreachable | keep `StoredPublication`; return availability failure |
 
-A natural remote representation is an idempotent `PUT` keyed by Workspace,
-Agent, and source revision. Transport naming is secondary to the port contract.
+The implemented private HTTP adapter posts the complete command to a fixed
+registration route. Idempotency belongs to the application identity and
+Coordinator state machine, not to an HTTP-method convention. Transport naming
+is secondary to the port contract.
 
 ## Implemented Scope
 
@@ -118,12 +120,13 @@ Agent, and source revision. Transport naming is secondary to the port contract.
 - `ExecutableAgentRegistrar` with registration and withdrawal commands;
 - `ExecutableAgentCatalog` as the one rebuildable execution projection;
 - `LocalExecutableAgentRegistrar` for AllInOne composition;
+- `HttpExecutableAgentRegistrar` and the authenticated
+  `executable_agent_registration_router` for split deployment;
 - `AgentResourceReferenceSource`, allowing Resource reclamation to query the
   same execution projection without depending on Config Service.
 
 ### Required remaining boundary code
 
-- `CoordinatorExecutableAgentClient` and `RegisterExecutableAgentHandler`;
 - a durable Coordinator adapter for `ExecutableAgentCatalog`;
 - split-role composition and registration reconciliation scheduling.
 

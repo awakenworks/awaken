@@ -633,6 +633,10 @@ dependencies = [
  "awaken-resource-contract",
  "awaken-runtime-contract",
  "awaken-session-contract",
+ "axum",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
