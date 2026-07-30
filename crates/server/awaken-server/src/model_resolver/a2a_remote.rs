@@ -75,8 +75,13 @@ impl CatalogModelPublicationResolver {
                 security.accepted_headers.first().cloned().ok_or_else(|| {
                     unavailable("A2A card has no supported authentication".into())
                 })?;
-            let pool =
-                derive_vendor_pool(workspace.as_str(), &origin, &binding.backend_ref, sources);
+            let pool = derive_vendor_pool(
+                workspace.as_str(),
+                &origin,
+                None,
+                &binding.backend_ref,
+                sources,
+            );
             let derived = CredentialBinding::OneOfCredentialPool {
                 credential_pool_id: pool.id.clone(),
             };
@@ -88,6 +93,7 @@ impl CatalogModelPublicationResolver {
                 &derived,
                 &lookup,
                 Some(&origin),
+                None,
                 Some(&binding.backend_ref),
                 None,
                 Some(workspace.as_str()),
@@ -167,7 +173,7 @@ mod tests {
     }
 
     fn remote_selection() -> ModelSelection {
-        ModelSelection::Pinned(ModelBinding::new(
+        ModelSelection::Pinned(awaken_runtime_contract::resolved::ModelBinding::new(
             "",
             "",
             "a2a:https://agent.example/service",

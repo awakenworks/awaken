@@ -64,14 +64,13 @@ impl PublishedAcpLaunchResolver {
         let ModelProvisioning::Provider {
             endpoint,
             credential,
+            acp,
             ..
         } = &candidate.provisioning
         else {
             if let ModelProvisioning::BackendOwned {
                 model_selection,
-                capability_adapter_version,
-                capability_fingerprint,
-                session_configuration,
+                acp,
                 ..
             } = &candidate.provisioning
             {
@@ -84,8 +83,8 @@ impl PublishedAcpLaunchResolver {
                         "published backend model policy is incoherent".into(),
                     ));
                 }
-                if capability_adapter_version.trim().is_empty()
-                    || capability_fingerprint.trim().is_empty()
+                if acp.capability_adapter_version.trim().is_empty()
+                    || acp.capability_fingerprint.trim().is_empty()
                 {
                     return Err(OpenError(
                         "published backend capability pin is missing".into(),
@@ -95,9 +94,9 @@ impl PublishedAcpLaunchResolver {
                     *model_selection,
                     candidate.binding.model_ref.clone(),
                     self.cli.id,
-                    capability_adapter_version,
-                    capability_fingerprint,
-                    session_configuration.clone(),
+                    &acp.capability_adapter_version,
+                    &acp.capability_fingerprint,
+                    acp.session_configuration.clone(),
                 ));
             }
             return Err(OpenError(format!(
@@ -141,12 +140,21 @@ impl PublishedAcpLaunchResolver {
                     .into(),
             ));
         }
-        Ok(ResolvedModel::managed(
-            endpoint.base_url,
-            endpoint.upstream_model,
-            process_secret,
-            credential_artifact,
-        ))
+        Ok(match acp {
+            Some(acp) => ResolvedModel::managed_with_acp(
+                endpoint.base_url,
+                endpoint.upstream_model,
+                process_secret,
+                credential_artifact,
+                acp.as_ref().clone(),
+            ),
+            None => ResolvedModel::managed(
+                endpoint.base_url,
+                endpoint.upstream_model,
+                process_secret,
+                credential_artifact,
+            ),
+        })
     }
 
     /// Open the exact thread config home. Failure is terminal: allowing the CLI

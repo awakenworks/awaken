@@ -42,7 +42,11 @@ pub(crate) fn select(
             && credentials.iter().filter(active).any(|source| {
                 !source.is_claude_code_setup_token()
                     && source.kind != CredentialKind::WorkerLocal
-                    && awaken_config_resolver::can_consume(offering.provider_id.as_str(), source)
+                    && awaken_config_resolver::can_consume(
+                        offering.provider_id.as_str(),
+                        Some(offering.protocol_endpoint_id.as_str()),
+                        source,
+                    )
             })
     }) {
         return Some(ModelSelection::Auto);
@@ -94,6 +98,7 @@ mod tests {
             workspace_id: "workspace".into(),
             kind,
             provider_id: provider.map(str::to_string),
+            protocol_endpoint_id: None,
             env_key: env_key.map(str::to_string),
             material_ref: None,
             auxiliary_material_refs: Default::default(),

@@ -276,6 +276,7 @@ pub async fn ensure_worker_local(
         workspace_id: workspace_id.to_string(),
         kind: CredentialKind::WorkerLocal,
         provider_id,
+        protocol_endpoint_id: None,
         env_key: None,
         material_ref: None,
         auxiliary_material_refs: BTreeMap::new(),
@@ -327,15 +328,30 @@ pub struct CredentialEntry {
 pub async fn enter_credential_idempotent(
     id: CredentialSourceId,
     params: CredentialCreateParams,
+    protocol_endpoint_id: Option<String>,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
 ) -> Result<CredentialEntry, CredentialError> {
     validate_create_params(&params)?;
+    if protocol_endpoint_id
+        .as_deref()
+        .is_some_and(|endpoint| endpoint.trim().is_empty())
+    {
+        return Err(CredentialError::InvalidSource(
+            "credential endpoint scope must not be empty".into(),
+        ));
+    }
+    if protocol_endpoint_id.is_some() && params.provider_id.is_none() {
+        return Err(CredentialError::InvalidSource(
+            "an endpoint-scoped credential requires a provider".into(),
+        ));
+    }
     let expected = CredentialSource {
         id: id.clone(),
         workspace_id: params.workspace_id.clone(),
         kind: params.kind,
         provider_id: params.provider_id.clone(),
+        protocol_endpoint_id: protocol_endpoint_id.clone(),
         env_key: params.env_key.clone(),
         material_ref: (params.kind == CredentialKind::Vault && params.secret.is_some())
             .then(|| crate::SecretRef(format!("sec:{}", id.0))),
@@ -357,7 +373,7 @@ pub async fn enter_credential_idempotent(
         Err(error) => return Err(error),
     }
 
-    match enter_credential_with_id(id.clone(), params, store, repo).await {
+    match enter_credential_with_id(id.clone(), params, protocol_endpoint_id, store, repo).await {
         Ok(source) => Ok(CredentialEntry {
             source,
             created: true,
@@ -382,6 +398,7 @@ fn validate_idempotent_source(
         || actual.workspace_id != expected.workspace_id
         || actual.kind != expected.kind
         || actual.provider_id != expected.provider_id
+        || actual.protocol_endpoint_id != expected.protocol_endpoint_id
         || actual.env_key != expected.env_key
         || actual.material_ref != expected.material_ref
         || actual.oauth_command != expected.oauth_command
@@ -413,11 +430,13 @@ pub async fn enter_credential_with_materials(
 async fn enter_credential_with_id(
     id: CredentialSourceId,
     params: CredentialCreateParams,
+    protocol_endpoint_id: Option<String>,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
 ) -> Result<CredentialSource, CredentialError> {
     validate_create_params(&params)?;
-    let (source, secret) = prepare_source_with_id(id, params);
+    let (mut source, secret) = prepare_source_with_id(id, params);
+    source.protocol_endpoint_id = protocol_endpoint_id;
     enter_prepared_credential(source, secret, BTreeMap::new(), store, repo).await
 }
 
@@ -959,6 +978,7 @@ mod tests {
             workspace_id: "ws".into(),
             kind: CredentialKind::Vault,
             provider_id: Some("anthropic".into()),
+            protocol_endpoint_id: None,
             env_key: None,
             material_ref: Some(crate::SecretRef("sec:cred:ws:interrupted".into())),
             auxiliary_material_refs: Default::default(),
@@ -1228,6 +1248,7 @@ mod tests {
             workspace_id: "ws".into(),
             kind: CredentialKind::Vault,
             provider_id: None,
+            protocol_endpoint_id: None,
             env_key: None,
             material_ref: Some(crate::SecretRef("sec:cred:ws:conflict".into())),
             auxiliary_material_refs: Default::default(),
@@ -1314,6 +1335,7 @@ mod tests {
             workspace_id: "ws".into(),
             kind: CredentialKind::Vault,
             provider_id: None,
+            protocol_endpoint_id: None,
             env_key: None,
             material_ref: Some(reference.clone()),
             auxiliary_material_refs: Default::default(),
@@ -1402,6 +1424,7 @@ mod tests {
     // R2 same identity + same non-secret facts -> return the existing row without
     //    creating another material ref.
     // R3 same identity + different provider facts -> fail closed as a conflict.
+    // R4 same identity/provider + different endpoint scope -> fail closed.
     #[tokio::test]
     async fn idempotent_entry_has_one_identity_and_rejects_conflicting_facts() {
         let store = InMemorySecretStore::new();
@@ -1416,21 +1439,40 @@ mod tests {
             oauth_command: None,
         };
 
-        let first =
-            enter_credential_idempotent(id.clone(), params("anthropic", "first"), &store, &repo)
-                .await
-                .unwrap();
-        let replay = enter_credential_idempotent(
+        let first = enter_credential_idempotent(
             id.clone(),
-            params("anthropic", "ignored-on-replay"),
+            params("anthropic", "first"),
+            Some("anthropic.anthropic_messages".into()),
             &store,
             &repo,
         )
         .await
         .unwrap();
-        let conflict =
-            enter_credential_idempotent(id, params("openai", "different-command"), &store, &repo)
-                .await;
+        let replay = enter_credential_idempotent(
+            id.clone(),
+            params("anthropic", "ignored-on-replay"),
+            Some("anthropic.anthropic_messages".into()),
+            &store,
+            &repo,
+        )
+        .await
+        .unwrap();
+        let conflict = enter_credential_idempotent(
+            id,
+            params("openai", "different-command"),
+            Some("openai.open_ai_chat".into()),
+            &store,
+            &repo,
+        )
+        .await;
+        let endpoint_conflict = enter_credential_idempotent(
+            CredentialSourceId("cred:ws:provider-command".into()),
+            params("anthropic", "different-endpoint"),
+            Some("anthropic.anthropic_messages.backup".into()),
+            &store,
+            &repo,
+        )
+        .await;
 
         assert!(first.created);
         assert!(!replay.created);
@@ -1438,6 +1480,10 @@ mod tests {
         assert_eq!(repo.list("ws").await.unwrap().len(), 1);
         assert_eq!(store.inventory().await.unwrap().len(), 1);
         assert!(matches!(conflict, Err(CredentialError::InvalidSource(_))));
+        assert!(matches!(
+            endpoint_conflict,
+            Err(CredentialError::InvalidSource(_))
+        ));
     }
 
     #[tokio::test]

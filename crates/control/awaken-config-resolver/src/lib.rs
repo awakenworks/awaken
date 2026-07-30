@@ -25,10 +25,15 @@ pub use awaken_resource_contract::{
 };
 
 mod credential_selection;
+mod executable_models;
 mod reference_stores;
 pub use credential_selection::{
     CredentialCandidateSet, can_consume, credential_can_supply, credential_candidates,
     derive_vendor_pool,
+};
+pub use executable_models::{
+    ExecutableModelOption, ExecutableModelReadiness, ExecutorModelCapability,
+    project_executable_models, validate_executor_offering,
 };
 /// Read ports for authored aggregates. The runtime host reads through these
 /// application contracts without depending on the authoring HTTP crate.
@@ -185,66 +190,6 @@ pub fn select_offering<'a>(
                 .collect(),
         }),
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum ExecutableModelReadiness {
-    Ready,
-    OfferingUnavailable,
-    CredentialUnavailable,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ExecutableModelOption {
-    pub provider_id: String,
-    pub model_id: String,
-    pub endpoint_id: String,
-    pub readiness: ExecutableModelReadiness,
-}
-
-/// Pure Catalog × Credential evaluator shared by config reads and Managed
-/// model-directory projection. Publication performs the stateful credential
-/// choice and revision fence after this side-effect-free readiness check.
-#[must_use]
-pub fn project_executable_models(
-    catalog: &ProviderCatalog,
-    credentials: &[CredentialSource],
-    backend_ref: &str,
-) -> Vec<ExecutableModelOption> {
-    let mut options = catalog
-        .offerings
-        .iter()
-        .map(|offering| {
-            let readiness = if offering.status != awaken_model_catalog::OfferingStatus::Active {
-                ExecutableModelReadiness::OfferingUnavailable
-            } else if credentials.iter().any(|credential| {
-                credential.status == awaken_credential_vault::CredentialStatus::Active
-                    && credential.is_executable_origin()
-                    && credential_can_supply(offering.provider_id.as_str(), backend_ref, credential)
-            }) {
-                ExecutableModelReadiness::Ready
-            } else {
-                ExecutableModelReadiness::CredentialUnavailable
-            };
-            ExecutableModelOption {
-                provider_id: offering.provider_id.0.clone(),
-                model_id: offering.model_id.clone(),
-                endpoint_id: offering.protocol_endpoint_id.0.clone(),
-                readiness,
-            }
-        })
-        .collect::<Vec<_>>();
-    options.sort_by(|left, right| {
-        (&left.model_id, &left.provider_id, &left.endpoint_id).cmp(&(
-            &right.model_id,
-            &right.provider_id,
-            &right.endpoint_id,
-        ))
-    });
-    options
 }
 
 #[cfg(test)]
@@ -420,6 +365,7 @@ pub async fn resolve_inference_target(
         // The inference path carries no workspace parameter; the pool fence
         // (member vs pool workspace) is intrinsic and always applied.
         None,
+        Some(offering.protocol_endpoint_id.as_str()),
     )
     .await?;
 
@@ -431,11 +377,10 @@ pub async fn resolve_inference_target(
     })
 }
 
-/// An authored "how to run this model" unit (ADR-0043 `InferenceProfile` /
-/// oversight-next `ProviderIdentity`): it names an exact primary and ordered
-/// fallback candidates, each with a vault-backed (never inline) credential
-/// binding, plus endpoints the operator has toggled off. The resolver reads it —
-/// it is never flowed into the runtime.
+/// An authored "how to run this model" unit: it names an exact primary and
+/// ordered fallback candidates, each with a vault-backed (never inline)
+/// credential binding, plus endpoints the operator has toggled off. The resolver
+/// reads it — it is never flowed into the runtime.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -613,11 +558,13 @@ async fn resolve_credential(
     offering_provider: Option<&str>,
     availability: Option<(&AvailabilityLedger, u64)>,
     expected_workspace: Option<&str>,
+    offering_endpoint: Option<&str>,
 ) -> Result<Option<RedactedString>, ResolveError> {
     match credential_candidates(
         binding,
         sources,
         offering_provider,
+        offering_endpoint,
         None,
         availability,
         expected_workspace,
@@ -1220,8 +1167,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(can_consume("openai", &scoped));
-        assert!(!can_consume("anthropic", &scoped));
+        assert!(can_consume("openai", None, &scoped));
+        assert!(!can_consume("anthropic", None, &scoped));
 
         let unscoped = create_source(
             CredentialCreateParams {
@@ -1237,8 +1184,8 @@ mod tests {
         .await
         .unwrap();
         // An explicitly unscoped persisted source consumes any provider.
-        assert!(can_consume("anthropic", &unscoped));
-        assert!(can_consume("openai", &unscoped));
+        assert!(can_consume("anthropic", None, &unscoped));
+        assert!(can_consume("openai", None, &unscoped));
 
         let backend_login = ensure_worker_local(
             &InMemoryCredentialRepo::new(),
@@ -1249,7 +1196,7 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            !can_consume("anthropic", &backend_login),
+            !can_consume("anthropic", None, &backend_login),
             "a CLI-owned login is not an unscoped provider secret"
         );
     }
@@ -1340,6 +1287,7 @@ mod tests {
             workspace_id: "ws".into(),
             kind: CredentialKind::Vault,
             provider_id: None,
+            protocol_endpoint_id: None,
             env_key: None,
             material_ref: None,
             auxiliary_material_refs: Default::default(),
@@ -1391,6 +1339,7 @@ mod tests {
             Some("anthropic"),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1409,6 +1358,7 @@ mod tests {
             &sources,
             &store,
             Some("anthropic"),
+            None,
             None,
             None,
         )
@@ -1432,6 +1382,7 @@ mod tests {
             &sources,
             &store,
             Some("anthropic"),
+            None,
             None,
             None,
         )
@@ -1467,6 +1418,7 @@ mod tests {
             &ctx,
             &store,
             Some("anthropic"),
+            None,
             None,
             None,
         )
@@ -1523,6 +1475,7 @@ mod tests {
             Some("anthropic"),
             Some((&ledger, 5_000)),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1536,6 +1489,7 @@ mod tests {
             &store,
             Some("anthropic"),
             Some((&ledger, 5_000)),
+            None,
             None,
         )
         .await
@@ -1555,6 +1509,7 @@ mod tests {
             &store,
             Some("anthropic"),
             Some((&ledger, 20_000)),
+            None,
             None,
         )
         .await
@@ -1576,6 +1531,7 @@ mod tests {
             },
             &sources,
             &store,
+            None,
             None,
             None,
             None,
@@ -1615,6 +1571,7 @@ mod tests {
             Some("anthropic"),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1649,6 +1606,7 @@ mod tests {
             &ctx,
             &store,
             Some("anthropic"),
+            None,
             None,
             None,
         )
@@ -1708,6 +1666,7 @@ mod tests {
             Some("anthropic"),
             None,
             None,
+            None,
         )
         .await
         .unwrap_err();
@@ -1752,6 +1711,7 @@ mod tests {
             None,
             // The binding's owning workspace is A; the source belongs to B.
             Some("wrkspc_a"),
+            None,
         )
         .await
         .unwrap_err();
@@ -1770,6 +1730,7 @@ mod tests {
             Some("anthropic"),
             None,
             Some("wrkspc_b"),
+            None,
         )
         .await
         .unwrap();

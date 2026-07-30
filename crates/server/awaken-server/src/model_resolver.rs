@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use awaken_config_resolver::{
-    InferenceProfile, InferenceProfileStore, ModelTarget, derive_vendor_pool,
-    get_workspace_profile, select_offering,
+    ExecutorModelCapability, InferenceProfile, InferenceProfileStore, ModelTarget,
+    derive_vendor_pool, get_workspace_profile, select_offering, validate_executor_offering,
 };
 use awaken_config_store::ModelSelection;
 use awaken_credential_vault::repo::CredentialRepo;
@@ -29,11 +29,13 @@ use awaken_tenancy::ScopeId;
 
 mod a2a_remote;
 mod acp_configuration;
+mod acp_publication;
 mod composition;
 mod credential_publication;
 pub use a2a_remote::A2aCardDiscovery;
 use a2a_remote::HttpA2aCardDiscovery;
 use acp_configuration::validate_acp_session_configuration;
+use acp_publication::wall_clock_ms;
 use composition::CatalogSource;
 use credential_publication::PublicationCredentialLookup;
 
@@ -48,6 +50,7 @@ pub struct CatalogModelPublicationResolver {
     brokered_access_enabled: bool,
     workers: Option<Arc<dyn awaken_worker_registry::WorkerDirectory>>,
     a2a_cards: Arc<dyn A2aCardDiscovery>,
+    executor_capabilities: Arc<Vec<ExecutorModelCapability>>,
     credential_selection_sequences: Arc<Mutex<HashMap<String, u64>>>,
 }
 
@@ -278,32 +281,31 @@ impl CatalogModelPublicationResolver {
         sources: &[CredentialSource],
         workspace: &ScopeId,
         binding: ModelBinding,
+        session_configuration: Option<&awaken_runtime_contract::resolved::AcpSessionConfiguration>,
     ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
         if matches!(Backend::from_ref(&binding.backend_ref), Backend::Native)
             || !binding.provider_identity_ref.is_empty()
         {
             let offering = Self::offering_for(catalog, &binding)?;
-            if let Backend::Acp { cli } = Backend::from_ref(&binding.backend_ref) {
-                let profile = awaken_run_executor_acp::acp_cli(&cli).ok_or_else(|| {
-                    PublicationResolutionError::CandidateUnavailable {
-                        binding: binding.clone(),
-                        reason: format!("ACP backend {cli} is not in the executable catalog"),
-                    }
-                })?;
-                if !profile.supports_model_api_dialect(offering.dialect.as_str()) {
-                    return Err(PublicationResolutionError::CandidateUnavailable {
-                        binding: binding.clone(),
-                        reason: format!(
-                            "ACP backend {} does not support model API dialect {}",
-                            binding.backend_ref,
-                            offering.dialect.as_str()
-                        ),
-                    });
-                }
-            }
+            validate_executor_offering(
+                &self.executor_capabilities,
+                &binding.backend_ref,
+                offering.dialect.as_str(),
+            )
+            .map_err(
+                |readiness| PublicationResolutionError::CandidateUnavailable {
+                    binding: binding.clone(),
+                    reason: format!(
+                        "backend {} cannot consume model API dialect {}: {readiness:?}",
+                        binding.backend_ref,
+                        offering.dialect.as_str()
+                    ),
+                },
+            )?;
             let pool = derive_vendor_pool(
                 workspace.as_str(),
                 offering.provider_id.as_str(),
+                Some(offering.protocol_endpoint_id.as_str()),
                 &binding.backend_ref,
                 sources,
             );
@@ -323,7 +325,27 @@ impl CatalogModelPublicationResolver {
                         binding.model_ref
                     ),
                 })?;
-            return Self::provider_candidate(catalog, workspace, binding, offering, access);
+            let acp = if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp { .. }) {
+                let configuration = session_configuration.cloned().unwrap_or_default();
+                let (capability_adapter_version, capability_fingerprint, negotiated) = self
+                    .verified_acp_capability(&binding.backend_ref, None, wall_clock_ms())
+                    .await?;
+                validate_acp_session_configuration(&binding, &configuration, &negotiated)?;
+                Some(awaken_runtime_contract::resolved::AcpExecutionProfile {
+                    capability_adapter_version,
+                    capability_fingerprint,
+                    session_configuration: configuration,
+                })
+            } else {
+                if session_configuration.is_some_and(|configuration| !configuration.is_empty()) {
+                    return Err(PublicationResolutionError::CandidateUnavailable {
+                        binding,
+                        reason: "ACP Session configuration requires an ACP executor".into(),
+                    });
+                }
+                None
+            };
+            return Self::provider_candidate(catalog, workspace, binding, offering, access, acp);
         }
         if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp { .. }) {
             let configuration = Default::default();
@@ -432,7 +454,7 @@ impl CatalogModelPublicationResolver {
                     reason,
                 })?;
             resolved.push(Self::provider_candidate(
-                catalog, workspace, binding, offering, access,
+                catalog, workspace, binding, offering, access, None,
             )?);
         }
         let primary = resolved.remove(0);
@@ -444,165 +466,6 @@ impl CatalogModelPublicationResolver {
             max_output_tokens: catalog.max_output_tokens(&primary_model),
         })
     }
-
-    async fn backend_candidate(
-        &self,
-        binding: ModelBinding,
-        sources: &[CredentialSource],
-        model_selection: BackendModelSelection,
-        session_configuration: &awaken_runtime_contract::resolved::AcpSessionConfiguration,
-    ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
-        Self::validate_acp_binding(&binding, model_selection)?;
-        let mut matches = sources.iter().filter(|source| {
-            source.status == CredentialStatus::Active
-                && source.kind == CredentialKind::WorkerLocal
-                && source.worker_local_binding.as_ref().is_some_and(|local| {
-                    local.driver_id == binding.backend_ref
-                        && (binding.provider_identity_ref.is_empty()
-                            || binding.provider_identity_ref == source.id.0)
-                })
-        });
-        let source =
-            matches
-                .next()
-                .ok_or_else(|| PublicationResolutionError::CandidateUnavailable {
-                    binding: binding.clone(),
-                    reason: format!(
-                        "no active Worker-local binding is registered for {}",
-                        binding.backend_ref
-                    ),
-                })?;
-        if matches.next().is_some() {
-            return Err(PublicationResolutionError::CandidateUnavailable {
-                binding: binding.clone(),
-                reason: format!(
-                    "multiple Worker-local bindings are registered for {}; select an exact identity",
-                    binding.backend_ref
-                ),
-            });
-        }
-        let revision = u64::try_from(source.version)
-            .ok()
-            .filter(|revision| *revision > 0)
-            .ok_or_else(|| PublicationResolutionError::CandidateUnavailable {
-                binding: binding.clone(),
-                reason: format!(
-                    "Worker-local source {} has an invalid revision",
-                    source.id.0
-                ),
-            })?;
-        let mut resolved_binding = binding;
-        resolved_binding
-            .provider_identity_ref
-            .clone_from(&source.id.0);
-        let required_credential = awaken_worker_registry::WorkerCredentialRevision {
-            id: source.id.0.clone(),
-            revision,
-        };
-        let (capability_adapter_version, capability_fingerprint, negotiated) = self
-            .verified_backend_capability(
-                &resolved_binding.backend_ref,
-                &required_credential,
-                wall_clock_ms(),
-            )
-            .await?;
-        validate_acp_session_configuration(&resolved_binding, session_configuration, &negotiated)?;
-        Ok(ResolvedModelCandidate::backend_owned(
-            resolved_binding,
-            CredentialRef {
-                id: source.id.0.clone(),
-                revision,
-            },
-            model_selection,
-            capability_adapter_version,
-            capability_fingerprint,
-            session_configuration.clone(),
-        ))
-    }
-
-    async fn verified_backend_capability(
-        &self,
-        backend_ref: &str,
-        credential: &awaken_worker_registry::WorkerCredentialRevision,
-        now_ms: u64,
-    ) -> Result<
-        (
-            String,
-            String,
-            awaken_acp_contract::NegotiatedAcpCapabilities,
-        ),
-        PublicationResolutionError,
-    > {
-        let workers = self.workers.as_ref().ok_or_else(|| {
-            PublicationResolutionError::CandidateUnavailable {
-                binding: ModelBinding::new(&credential.id, "", backend_ref),
-                reason: "live Worker capability observations are unavailable".into(),
-            }
-        })?;
-        let snapshots = workers.list().await.map_err(|error| {
-            PublicationResolutionError::CandidateUnavailable {
-                binding: ModelBinding::new(&credential.id, "", backend_ref),
-                reason: format!("Worker capability observations are unavailable: {error}"),
-            }
-        })?;
-        let mut fingerprints = snapshots
-            .into_iter()
-            .map(|registered| registered.snapshot)
-            .filter(|worker| {
-                worker.state.accepts_work()
-                    && worker.expires_at_ms > now_ms
-                    && worker
-                        .credential_observations
-                        .iter()
-                        .any(|observation| observation.is_selectable_at(credential, now_ms))
-            })
-            .flat_map(|worker| worker.acp_capability_observations)
-            .filter(|capability| {
-                capability.valid_until_ms > now_ms
-                    && capability.observation.observed_at_ms <= now_ms
-                    && capability.observation.backend_ref == backend_ref
-                    && capability.observation.state
-                        == awaken_acp_contract::AcpCapabilityObservationState::Verified
-            })
-            .filter_map(|capability| {
-                capability.observation.fingerprint.and_then(|fingerprint| {
-                    capability.observation.negotiated.map(|negotiated| {
-                        (
-                            capability.observation.adapter_version,
-                            fingerprint,
-                            negotiated,
-                        )
-                    })
-                })
-            })
-            .collect::<Vec<_>>();
-        fingerprints.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
-        fingerprints.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);
-        match (fingerprints.pop(), fingerprints.is_empty()) {
-            (Some((version, fingerprint, negotiated)), true)
-                if !version.trim().is_empty() && !fingerprint.trim().is_empty() =>
-            {
-                Ok((version, fingerprint, negotiated))
-            }
-            (None, _) => Err(PublicationResolutionError::CandidateUnavailable {
-                binding: ModelBinding::new(&credential.id, "", backend_ref),
-                reason: format!("no fresh verified ACP capability is available for {backend_ref}"),
-            }),
-            _ => Err(PublicationResolutionError::CandidateUnavailable {
-                binding: ModelBinding::new(&credential.id, "", backend_ref),
-                reason: format!(
-                    "multiple incompatible ACP capability fingerprints are live for {backend_ref}"
-                ),
-            }),
-        }
-    }
-}
-
-fn wall_clock_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 #[async_trait::async_trait]
@@ -688,13 +551,19 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
             )
             .await?
         } else {
-            self.candidate(&catalog, &sources, workspace, primary_binding.clone())
-                .await?
+            self.candidate(
+                &catalog,
+                &sources,
+                workspace,
+                primary_binding.clone(),
+                selection.acp_configuration(),
+            )
+            .await?
         };
         let mut candidates = Vec::with_capacity(fallback_bindings.len());
         for binding in fallback_bindings {
             candidates.push(
-                self.candidate(&catalog, &sources, workspace, binding)
+                self.candidate(&catalog, &sources, workspace, binding, None)
                     .await?,
             );
         }
@@ -754,6 +623,32 @@ mod tests {
         backend_ref: &str,
         fingerprint: &str,
     ) -> Arc<dyn WorkerDirectory> {
+        verified_acp_worker_with_negotiated(
+            credential_id,
+            backend_ref,
+            fingerprint,
+            awaken_acp_contract::NegotiatedAcpCapabilities {
+                protocol_version: "1".into(),
+                load_session: false,
+                prompt_image: false,
+                prompt_audio: false,
+                prompt_embedded_context: false,
+                mcp_http: false,
+                mcp_sse: false,
+                session_list: false,
+                modes: Vec::new(),
+                config_options: Vec::new(),
+            },
+        )
+        .await
+    }
+
+    async fn verified_acp_worker_with_negotiated(
+        credential_id: &str,
+        backend_ref: &str,
+        fingerprint: &str,
+        negotiated: awaken_acp_contract::NegotiatedAcpCapabilities,
+    ) -> Arc<dyn WorkerDirectory> {
         let directory = Arc::new(MemoryWorkerDirectory::new());
         let now = wall_clock_ms();
         let registered = directory
@@ -792,18 +687,7 @@ mod tests {
                             state: awaken_acp_contract::AcpCapabilityObservationState::Verified,
                             observed_at_ms: now,
                             fingerprint: Some(fingerprint.into()),
-                            negotiated: Some(awaken_acp_contract::NegotiatedAcpCapabilities {
-                                protocol_version: "1".into(),
-                                load_session: false,
-                                prompt_image: false,
-                                prompt_audio: false,
-                                prompt_embedded_context: false,
-                                mcp_http: false,
-                                mcp_sse: false,
-                                session_list: false,
-                                modes: Vec::new(),
-                                config_options: Vec::new(),
-                            }),
+                            negotiated: Some(negotiated),
                             reason_code: None,
                         },
                         valid_until_ms: now + 30_000,
@@ -1410,6 +1294,7 @@ mod tests {
                 &ModelSelection::Target {
                     target: ModelTarget::unqualified("m-first"),
                     backend_ref: "genai".into(),
+                    configuration: Default::default(),
                 },
                 &[],
             )
@@ -1449,7 +1334,9 @@ mod tests {
         // P1 provider Target + ACP -> Provider/Vault on exact ACP backend
         // P2 BackendExact          -> BackendOwned/CLI login
         // P3 unqualified Target    -> canonical native provider binding
-        let resolver = resolver(&["primary"]).await;
+        let resolver = resolver(&["primary"]).await.with_worker_directory(
+            verified_acp_worker("provider-managed", "acp:codex", "sha256:codex-provider").await,
+        );
         let managed = resolver
             .resolve_models(
                 &ScopeId::from("workspace-a"),
@@ -1461,6 +1348,7 @@ mod tests {
                         endpoint_name: None,
                     },
                     backend_ref: "acp:codex".into(),
+                    configuration: Default::default(),
                 },
                 &[],
             )
@@ -1513,12 +1401,97 @@ mod tests {
                 &ModelSelection::Target {
                     target: ModelTarget::unqualified("primary"),
                     backend_ref: "genai".into(),
+                    configuration: Default::default(),
                 },
                 &[],
             )
             .await
             .expect("P3");
         assert_eq!(native.primary.binding.backend_ref, "genai", "P3");
+    }
+
+    #[tokio::test]
+    async fn provider_backed_acp_configuration_uses_live_evidence_and_freezes_one_profile() {
+        // Causes: C1 provider/model/dialect/credential executable; C2 ACP Worker
+        // has fresh negotiated evidence; C3 mode exists; C4 option exists; C5
+        // value is advertised. Effects: E1 one Provider candidate freezes the
+        // capability fingerprint and exact Session configuration; any false
+        // C2-C5 fails publication before an Agent becomes visible.
+        //
+        // | Rule | C2 | C3 | C4 | C5 | Effect |
+        // | A1   | Y  | Y  | Y  | Y  | E1     |
+        // | A2   | Y  | Y  | Y  | N  | reject |
+        let negotiated = awaken_acp_contract::NegotiatedAcpCapabilities {
+            protocol_version: "1".into(),
+            load_session: true,
+            prompt_image: false,
+            prompt_audio: false,
+            prompt_embedded_context: false,
+            mcp_http: false,
+            mcp_sse: false,
+            session_list: false,
+            modes: vec![awaken_acp_contract::AcpSessionModeDescriptor {
+                native_id: "plan".into(),
+                name: "Plan".into(),
+                description: None,
+                current: false,
+            }],
+            config_options: vec![awaken_acp_contract::AcpSessionConfigOptionDescriptor {
+                native_id: "reasoning_effort".into(),
+                name: "Reasoning effort".into(),
+                description: None,
+                category: None,
+                current_value: "medium".into(),
+                choices: vec![awaken_acp_contract::AcpSessionConfigChoice {
+                    native_value: "high".into(),
+                    name: "High".into(),
+                    description: None,
+                    group_id: None,
+                    group_name: None,
+                }],
+            }],
+        };
+        let resolver = resolver(&["primary"]).await.with_worker_directory(
+            verified_acp_worker_with_negotiated(
+                "provider-managed",
+                "acp:codex",
+                "sha256:codex-options",
+                negotiated,
+            )
+            .await,
+        );
+        let selection = |value: &str| ModelSelection::Target {
+            target: ModelTarget {
+                model_id: "primary".into(),
+                provider_id: Some("openai".into()),
+                protocol_endpoint_id: None,
+                endpoint_name: None,
+            },
+            backend_ref: "acp:codex".into(),
+            configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration {
+                mode: Some("plan".into()),
+                options: [("reasoning_effort".into(), value.into())]
+                    .into_iter()
+                    .collect(),
+            },
+        };
+        let resolved = resolver
+            .resolve_models(&ScopeId::from("workspace-a"), &selection("high"), &[])
+            .await
+            .expect("A1");
+        assert!(matches!(
+            resolved.primary.provisioning,
+            ModelProvisioning::Provider { acp: Some(acp), .. }
+                if acp.capability_fingerprint == "sha256:codex-options"
+                    && acp.session_configuration.options["reasoning_effort"] == "high"
+        ));
+        assert!(
+            resolver
+                .resolve_models(&ScopeId::from("workspace-a"), &selection("impossible"), &[],)
+                .await
+                .is_err(),
+            "A2"
+        );
     }
 
     #[tokio::test]
@@ -1592,7 +1565,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let resolver = CatalogModelPublicationResolver::new(catalog, credentials);
+        let resolver = CatalogModelPublicationResolver::new(catalog, credentials)
+            .with_worker_directory(
+                verified_acp_worker("provider-managed", "acp:claude", "sha256:claude-provider")
+                    .await,
+            );
 
         let native = resolver
             .resolve_models(
@@ -1623,6 +1600,7 @@ mod tests {
                         endpoint_name: None,
                     },
                     backend_ref: "acp:claude".into(),
+                    configuration: Default::default(),
                 },
                 &[],
             )
@@ -1826,9 +1804,9 @@ mod tests {
         assert!(matches!(
             &default.primary.provisioning,
             ModelProvisioning::BackendOwned {
-                capability_fingerprint,
+                acp,
                 ..
-            } if capability_fingerprint == "sha256:codex-test"
+            } if acp.capability_fingerprint == "sha256:codex-test"
         ));
 
         let exact = resolver

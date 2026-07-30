@@ -383,6 +383,7 @@ mod tests {
                 },
                 agent_id: "agent".into(),
                 model: "model".into(),
+                execution_model_ref: "model".into(),
                 runtime: None,
                 mcp_authoring: Default::default(),
                 delegate_ids: Vec::new(),

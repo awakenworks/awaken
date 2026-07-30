@@ -183,6 +183,91 @@ fn provider_model_candidate_provisioning_is_pinned() {
     );
 }
 
+#[test]
+fn acp_execution_profile_preserves_backend_wire_and_is_optional_on_provider_wire() {
+    // Causes: C1 backend-owned ACP always has a capability profile; C2 native
+    // Provider has none; C3 ACP Provider has one. Effects: E1 BackendOwned keeps
+    // the historical flattened field names; E2 native Provider has no `acp`;
+    // E3 ACP Provider carries exactly one nested profile. These three rules
+    // prevent a parallel capability/configuration shape per provisioning mode.
+    let profile = awaken_runtime_contract::resolved::AcpExecutionProfile {
+        capability_adapter_version: "1.2.3".into(),
+        capability_fingerprint: "sha256:profile".into(),
+        session_configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration {
+            mode: Some("plan".into()),
+            options: [("reasoning_effort".into(), "high".into())]
+                .into_iter()
+                .collect(),
+        },
+    };
+    let backend = awaken_runtime_contract::resolved::ResolvedModelCandidate::backend_owned(
+        ModelBinding::new("local-codex", "", "acp:codex"),
+        awaken_runtime_contract::CredentialRef {
+            id: "local-codex".into(),
+            revision: 1,
+        },
+        awaken_runtime_contract::resolved::BackendModelSelection::Default,
+        "1.2.3",
+        "sha256:profile",
+        profile.session_configuration.clone(),
+    );
+    assert_eq!(
+        serde_json::to_value(backend).unwrap()["provisioning"],
+        json!({
+            "type": "backend_owned",
+            "credential": {"id":"local-codex", "revision":1},
+            "model_selection": "default",
+            "capability_adapter_version": "1.2.3",
+            "capability_fingerprint": "sha256:profile",
+            "session_configuration": {
+                "mode": "plan",
+                "options": {"reasoning_effort":"high"}
+            }
+        }),
+        "E1"
+    );
+
+    let endpoint = || awaken_runtime_contract::InferenceEndpoint {
+        adapter_kind: "openai_chat_completions".into(),
+        api_dialect: "open_ai_chat".into(),
+        base_url: "https://provider.example/v1".into(),
+        upstream_model: "gpt-5".into(),
+    };
+    let native = awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+        ModelBinding::new("openai", "gpt-5", "genai"),
+        "openai@1",
+        "openai.open_ai_chat@1",
+        "workspace-a",
+        None,
+        endpoint(),
+    );
+    assert!(
+        serde_json::to_value(native).unwrap()["provisioning"]
+            .get("acp")
+            .is_none(),
+        "E2"
+    );
+
+    let provider = awaken_runtime_contract::resolved::ResolvedModelCandidate::provider_with_acp(
+        ModelBinding::new("openai", "gpt-5", "acp:codex"),
+        "openai@1",
+        "openai.open_ai_chat@1",
+        "workspace-a",
+        None,
+        endpoint(),
+        profile,
+    );
+    let provider = serde_json::to_value(provider).unwrap();
+    assert_eq!(
+        provider["provisioning"]["acp"]["capability_fingerprint"], "sha256:profile",
+        "E3"
+    );
+    assert_eq!(
+        provider["provisioning"]["acp"]["session_configuration"]["mode"], "plan",
+        "E3"
+    );
+}
+
 // --- Item 1: RunActivation wire shape --------------------------------------
 
 fn activation() -> RunActivation {

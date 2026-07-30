@@ -559,6 +559,7 @@ mod tests {
             workspace_id: "ws".into(),
             kind: CredentialKind::Vault,
             provider_id: Some("anthropic".into()),
+            protocol_endpoint_id: None,
             env_key: Some("ANTHROPIC_API_KEY".into()),
             material_ref: None,
             auxiliary_material_refs: Default::default(),

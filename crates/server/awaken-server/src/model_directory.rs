@@ -1,6 +1,5 @@
 //! Workspace-aware Managed `/v1/models` projection.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use awaken_credential_vault::repo::CredentialRepo;
@@ -10,29 +9,71 @@ use awaken_model_catalog::{Offering, OfferingStatus, ProviderCatalog, repo::Cata
 pub struct CatalogModelDirectory {
     catalog: Arc<dyn CatalogRepo>,
     credentials: Arc<dyn CredentialRepo>,
+    executors: Arc<dyn ExecutorModelCapabilitySource>,
+}
+
+#[async_trait::async_trait]
+pub trait ExecutorModelCapabilitySource: Send + Sync {
+    async fn current(&self) -> Vec<awaken_config_resolver::ExecutorModelCapability>;
+}
+
+struct StaticExecutorModelCapabilities(Vec<awaken_config_resolver::ExecutorModelCapability>);
+
+#[async_trait::async_trait]
+impl ExecutorModelCapabilitySource for StaticExecutorModelCapabilities {
+    async fn current(&self) -> Vec<awaken_config_resolver::ExecutorModelCapability> {
+        self.0.clone()
+    }
 }
 
 impl CatalogModelDirectory {
     #[must_use]
-    pub fn new(catalog: Arc<dyn CatalogRepo>, credentials: Arc<dyn CredentialRepo>) -> Self {
+    pub fn new(
+        catalog: Arc<dyn CatalogRepo>,
+        credentials: Arc<dyn CredentialRepo>,
+        executors: Arc<Vec<awaken_config_resolver::ExecutorModelCapability>>,
+    ) -> Self {
         Self {
             catalog,
             credentials,
+            executors: Arc::new(StaticExecutorModelCapabilities(executors.as_ref().clone())),
+        }
+    }
+
+    #[must_use]
+    pub fn with_source(
+        catalog: Arc<dyn CatalogRepo>,
+        credentials: Arc<dyn CredentialRepo>,
+        executors: Arc<dyn ExecutorModelCapabilitySource>,
+    ) -> Self {
+        Self {
+            catalog,
+            credentials,
+            executors,
         }
     }
 }
 
-fn ready_endpoints(
-    catalog: &ProviderCatalog,
-    credentials: &[awaken_credential_vault::CredentialSource],
-    backend_ref: &str,
-) -> BTreeSet<String> {
-    awaken_config_resolver::project_executable_models(catalog, credentials, backend_ref)
-        .into_iter()
-        .filter(|option| {
-            option.readiness == awaken_config_resolver::ExecutableModelReadiness::Ready
-        })
-        .map(|option| option.endpoint_id)
+/// The sole built-in executor-to-model capability projection. Runtime
+/// diagnostics, model discovery, and publication consume this data rather than
+/// rebuilding CLI-specific dialect tables.
+#[must_use]
+pub fn installed_executor_model_capabilities()
+-> Vec<awaken_config_resolver::ExecutorModelCapability> {
+    std::iter::once(awaken_config_resolver::ExecutorModelCapability::native())
+        .chain(
+            awaken_run_executor_acp::known_acp_clis()
+                .iter()
+                .map(|executor| awaken_config_resolver::ExecutorModelCapability {
+                    backend_ref: format!("acp:{}", executor.id),
+                    model_api_dialects: executor
+                        .model_api_dialects
+                        .iter()
+                        .map(|dialect| (*dialect).to_string())
+                        .collect(),
+                    available: true,
+                }),
+        )
         .collect()
 }
 
@@ -118,17 +159,12 @@ impl ModelDirectory for CatalogModelDirectory {
                 .list(workspace_id)
                 .await
                 .map_err(|error| error.to_string())?;
-            let native_ready = ready_endpoints(&catalog, &credentials, "genai");
-            let acp_ready = awaken_run_executor_acp::known_acp_clis()
-                .iter()
-                .map(|executor| {
-                    let backend_ref = format!("acp:{}", executor.id);
-                    (
-                        executor,
-                        ready_endpoints(&catalog, &credentials, &backend_ref),
-                    )
-                })
-                .collect::<Vec<_>>();
+            let executors = self.executors.current().await;
+            let routes = awaken_config_resolver::project_executable_models(
+                &catalog,
+                &credentials,
+                &executors,
+            );
             let executable = catalog
                 .offerings
                 .iter()
@@ -136,23 +172,25 @@ impl ModelDirectory for CatalogModelDirectory {
                 .collect::<Vec<_>>();
 
             let mut entries = Vec::new();
-            for offering in &executable {
-                if native_ready.contains(offering.protocol_endpoint_id.as_str()) {
+            for route in routes.into_iter().filter(|route| {
+                route.readiness == awaken_config_resolver::ExecutableModelReadiness::Ready
+            }) {
+                let Some(offering) = executable.iter().copied().find(|offering| {
+                    offering.provider_id.as_str() == route.provider_id
+                        && offering.protocol_endpoint_id.as_str() == route.endpoint_id
+                        && offering.model_id == route.model_id
+                }) else {
+                    continue;
+                };
+                if route.backend_ref == "genai" {
                     let native_id = route_id(offering, &executable);
                     entries.push(entry(&catalog, offering, native_id));
-                }
-                for (executor, ready) in &acp_ready {
-                    if !executor.supports_model_api_dialect(offering.dialect.as_str()) {
-                        continue;
-                    }
-                    if !ready.contains(offering.protocol_endpoint_id.as_str()) {
-                        continue;
-                    }
+                } else if let Some(cli) = route.backend_ref.strip_prefix("acp:") {
                     let provider_route = provider_route_id(offering, &executable);
                     entries.push(entry(
                         &catalog,
                         offering,
-                        format!("acp:{}@{provider_route}/{}", executor.id, offering.model_id),
+                        format!("acp:{cli}@{provider_route}/{}", offering.model_id),
                     ));
                 }
             }
@@ -177,8 +215,15 @@ fn entry(catalog: &ProviderCatalog, offering: &Offering, id: String) -> ModelEnt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_model_catalog::{ApiDialect, OfferingSource, ProtocolEndpointId, ProviderId};
+    use awaken_agent_contract::RedactedString;
+    use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
+    use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};
+    use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
+    use awaken_model_catalog::{
+        ApiDialect, OfferingSource, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
+    };
     use http_body_util::BodyExt as _;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tower::ServiceExt as _;
 
     fn offering_with_dialect(
@@ -289,5 +334,99 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["id"], id);
+    }
+
+    struct ChangingExecutors(AtomicBool);
+
+    #[async_trait::async_trait]
+    impl ExecutorModelCapabilitySource for ChangingExecutors {
+        async fn current(&self) -> Vec<awaken_config_resolver::ExecutorModelCapability> {
+            let acp_available = self.0.swap(true, Ordering::SeqCst);
+            vec![
+                awaken_config_resolver::ExecutorModelCapability::native(),
+                awaken_config_resolver::ExecutorModelCapability {
+                    backend_ref: "acp:codex".into(),
+                    model_api_dialects: vec!["open_ai_chat".into()],
+                    available: acp_available,
+                },
+            ]
+        }
+    }
+
+    #[tokio::test]
+    async fn model_directory_rechecks_live_executor_readiness_on_every_list() {
+        // Causes: C1 catalog Offering and compatible credential are stable; C2
+        // native executor is available; C3 ACP capability is unavailable then
+        // Verified/available. Effects: E1 native id is always visible; E2 ACP id
+        // is absent on the first list and appears on the second. The directory
+        // stores no parallel readiness snapshot.
+        //
+        // | Rule | C1 | C2 | C3 | visible ids |
+        // | L1   | Y  | Y  | N  | native      |
+        // | L2   | Y  | Y  | Y  | native+ACP  |
+        let catalog = Arc::new(InMemoryCatalogRepo::new());
+        catalog
+            .put_provider(Provider {
+                id: ProviderId::new("openai"),
+                slug: "openai".into(),
+                display_name: "OpenAI".into(),
+                version: 1,
+            })
+            .await
+            .unwrap();
+        catalog
+            .put_endpoint(ProtocolEndpoint {
+                id: ProtocolEndpointId::new("openai.open_ai_chat"),
+                provider_id: ProviderId::new("openai"),
+                dialect: ApiDialect::OpenAiChat,
+                base_url: Some("https://openai.example/v1".into()),
+                timeout_secs: 30,
+                display_name: "OpenAI".into(),
+                version: 1,
+            })
+            .await
+            .unwrap();
+        catalog
+            .put_offering(offering("openai", "openai.open_ai_chat", "gpt-5"))
+            .await
+            .unwrap();
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("openai".into()),
+                env_key: Some("OPENAI_API_KEY".into()),
+                secret: Some(RedactedString::new("test-secret")),
+                oauth_command: None,
+            },
+            &InMemorySecretStore::new(),
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let directory = CatalogModelDirectory::with_source(
+            catalog,
+            credentials,
+            Arc::new(ChangingExecutors(AtomicBool::new(false))),
+        );
+        let first = directory.list("workspace-a").await.unwrap();
+        assert_eq!(
+            first
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            ["gpt-5"],
+            "L1"
+        );
+        let second = directory.list("workspace-a").await.unwrap();
+        assert_eq!(
+            second
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            ["acp:codex@openai/gpt-5", "gpt-5"],
+            "L2"
+        );
     }
 }

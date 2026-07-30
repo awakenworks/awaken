@@ -20,7 +20,7 @@ use awaken_protocol_managed::types::agent::{
     AgentUpdateParams, CustomToolInputSchema, MultiagentConfig as WireMultiagent,
     MultiagentRosterEntry, UrlMcpServer, UrlMcpServerKind,
 };
-use awaken_protocol_managed::types::{ModelConfig, ModelEffort, ModelSpeed};
+use awaken_protocol_managed::types::{AwakenModelExtensions, ModelConfig, ModelEffort, ModelSpeed};
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_runtime_contract::agent_bindings::{InferenceOptions, InferenceSpeed, ReasoningEffort};
@@ -254,14 +254,16 @@ fn config_from_create(
 ) -> Result<AgentConfig, ManagedAgentError> {
     let model = params.model.into_config();
     let inference = inference_from_wire(model.speed, model.effort.map(|value| value.resolved()));
+    let mut model_binding = parse_managed_model_id(&model.id)
+        .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?;
+    apply_model_extensions(&mut model_binding, model.x_awaken)?;
     let multiagent = params.multiagent.map(typed_multiagent);
     let config = AgentConfig {
         id,
         instructions: params.system.unwrap_or_default(),
         max_steps: 8,
         delegation_limits: Default::default(),
-        model_binding: parse_managed_model_id(&model.id)
-            .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?,
+        model_binding,
         inference,
         tool_ids: Vec::new(),
         toolsets: awaken_protocol_managed::project::toolset_policies(&params.tools),
@@ -407,7 +409,26 @@ fn inference_from_wire(speed: Option<ModelSpeed>, effort: Option<ModelEffort>) -
     }
 }
 
-fn model_config(model: String, inference: InferenceOptions) -> ModelConfig {
+fn apply_model_extensions(
+    selection: &mut ModelSelection,
+    extensions: Option<AwakenModelExtensions>,
+) -> Result<(), ManagedAgentError> {
+    let Some(AwakenModelExtensions { acp }) = extensions else {
+        return Ok(());
+    };
+    let Some(configuration) = acp else {
+        return Ok(());
+    };
+    selection
+        .set_acp_configuration(configuration)
+        .map_err(|error| ManagedAgentError::Invalid(error.into()))
+}
+
+fn model_config(
+    model: String,
+    inference: InferenceOptions,
+    acp: Option<&awaken_runtime_contract::resolved::AcpSessionConfiguration>,
+) -> ModelConfig {
     ModelConfig {
         id: model,
         speed: inference.speed.map(|value| match value {
@@ -421,6 +442,11 @@ fn model_config(model: String, inference: InferenceOptions) -> ModelConfig {
             ReasoningEffort::Xhigh => ModelEffort::Xhigh,
             ReasoningEffort::Max => ModelEffort::Max,
         }),
+        x_awaken: acp
+            .filter(|configuration| !configuration.is_empty())
+            .map(|configuration| AwakenModelExtensions {
+                acp: Some(configuration.clone()),
+            }),
     }
 }
 
@@ -468,7 +494,11 @@ fn project(revision: AgentConfigRevision) -> Agent {
         updated_at: OBJECT_AT.to_string(),
         name: config.name.unwrap_or_else(|| id.clone()),
         description: config.description,
-        model: model_config(model, config.inference),
+        model: model_config(
+            model,
+            config.inference,
+            config.model_binding.acp_configuration(),
+        ),
         system: (!config.instructions.is_empty()).then_some(config.instructions),
         metadata: config.metadata,
         mcp_servers: config
@@ -681,7 +711,10 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             let current_model = render_managed_model_id(&config.model_binding).ok();
             let preserve_effort =
                 current_model.as_deref() == Some(model.id.as_str()) && model.effort.is_none();
+            let preserve_acp =
+                current_model.as_deref() == Some(model.id.as_str()) && model.x_awaken.is_none();
             let prior_effort = config.inference.effort;
+            let prior_acp = config.model_binding.acp_configuration().cloned();
             config.inference =
                 inference_from_wire(model.speed, model.effort.map(|value| value.resolved()));
             if preserve_effort {
@@ -689,6 +722,16 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             }
             config.model_binding = parse_managed_model_id(&model.id)
                 .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?;
+            if preserve_acp {
+                if let Some(configuration) = prior_acp {
+                    config
+                        .model_binding
+                        .set_acp_configuration(configuration)
+                        .map_err(|error| ManagedAgentError::Invalid(error.into()))?;
+                }
+            } else {
+                apply_model_extensions(&mut config.model_binding, model.x_awaken)?;
+            }
         }
         if let Some(description) = params.description {
             config.description = description;
@@ -1254,6 +1297,35 @@ mod tests {
                 effort: Some(ReasoningEffort::Xhigh),
             }
         );
+    }
+
+    #[test]
+    fn managed_model_extension_configures_only_the_selected_acp_executor() {
+        // Causes: C1 model id selects explicit ACP/native; C2 x_awaken.acp is
+        // absent/present. Effects: E1 omitted extension preserves the official
+        // Managed shape; E2 explicit ACP stores native mode/options on the same
+        // ModelSelection; E3 native+Acp extension fails at the ACL.
+        //
+        // | Rule | executor | extension | Effect |
+        // | X1   | ACP      | present   | E2     |
+        // | X2   | native   | present   | E3     |
+        let configured = |id: &str| {
+            let mut params = create_params("configured");
+            params.model = serde_json::from_value(json!({
+                "id": id,
+                "x_awaken": {"acp": {
+                    "mode": "plan",
+                    "options": {"reasoning_effort": "high"}
+                }}
+            }))
+            .unwrap();
+            config_from_create("agent_configured".into(), params)
+        };
+        let config = configured("acp:codex/gpt-5").expect("X1");
+        let acp = config.model_binding.acp_configuration().expect("X1");
+        assert_eq!(acp.mode.as_deref(), Some("plan"), "X1");
+        assert_eq!(acp.options["reasoning_effort"], "high", "X1");
+        assert!(configured("gpt-5").is_err(), "X2");
     }
 
     #[tokio::test]

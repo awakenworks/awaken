@@ -37,6 +37,9 @@ pub enum ModelSelection {
     Target {
         target: ModelTarget,
         backend_ref: String,
+        /// Adapter-native Session intent. Empty for the native executor and
+        /// validated against live ACP capability evidence at publication.
+        configuration: AcpSessionConfiguration,
     },
     /// Use this exact external backend and let it retain its own configured
     /// default model. Publication must resolve an exact Worker-local binding;
@@ -156,6 +159,7 @@ impl ModelSelection {
             Self::Target {
                 target,
                 backend_ref,
+                ..
             } => Some((target, backend_ref)),
             _ => None,
         }
@@ -176,9 +180,49 @@ impl ModelSelection {
     #[must_use]
     pub fn acp_configuration(&self) -> Option<&AcpSessionConfiguration> {
         match self {
-            Self::BackendDefault { configuration, .. }
+            Self::Target { configuration, .. }
+            | Self::BackendDefault { configuration, .. }
             | Self::BackendExact { configuration, .. } => Some(configuration),
             _ => None,
+        }
+    }
+
+    /// Attach adapter-native Session intent to the existing executor selection.
+    /// The model/executor grammar remains the sole route authority; this method
+    /// rejects native/A2A/pinned selections instead of creating a parallel ACP
+    /// selector in the public protocol adapter.
+    pub fn set_acp_configuration(
+        &mut self,
+        configuration: AcpSessionConfiguration,
+    ) -> Result<(), &'static str> {
+        let backend_ref = self
+            .backend_ref()
+            .ok_or("ACP configuration requires an explicit acp:<cli> model selection")?;
+        if !matches!(
+            awaken_runtime_contract::resolved::Backend::from_ref(backend_ref),
+            awaken_runtime_contract::resolved::Backend::Acp { cli } if !cli.is_empty()
+        ) {
+            return Err("ACP configuration requires an explicit acp:<cli> model selection");
+        }
+        match self {
+            Self::Target {
+                configuration: current,
+                ..
+            }
+            | Self::BackendDefault {
+                configuration: current,
+                ..
+            }
+            | Self::BackendExact {
+                configuration: current,
+                ..
+            } => {
+                *current = configuration;
+                Ok(())
+            }
+            Self::Auto | Self::Profile { .. } | Self::Pinned(_) => {
+                Err("ACP configuration requires an unresolved ACP model selection")
+            }
         }
     }
 }
@@ -255,12 +299,16 @@ impl Serialize for ModelSelection {
             ModelSelection::Target {
                 target,
                 backend_ref,
+                configuration,
             } => {
                 use serde::ser::SerializeMap;
-                let mut map = serializer.serialize_map(Some(3))?;
+                let mut map = serializer.serialize_map(Some(4))?;
                 map.serialize_entry("mode", "target")?;
                 map.serialize_entry("target", target)?;
                 map.serialize_entry("backend_ref", backend_ref)?;
+                if !configuration.is_empty() {
+                    map.serialize_entry("configuration", configuration)?;
+                }
                 map.end()
             }
             ModelSelection::BackendDefault {
@@ -308,6 +356,7 @@ impl<'de> Deserialize<'de> for ModelSelection {
             ModelSelectionWire::Target {
                 target,
                 backend_ref,
+                configuration,
             } if !target.model_id.trim().is_empty()
                 && !backend_ref.trim().is_empty()
                 && !(target.protocol_endpoint_id.is_some() && target.endpoint_name.is_some()) =>
@@ -315,6 +364,7 @@ impl<'de> Deserialize<'de> for ModelSelection {
                 Ok(Self::Target {
                     target,
                     backend_ref,
+                    configuration,
                 })
             }
             ModelSelectionWire::Target { .. } => Err(serde::de::Error::custom(
@@ -356,6 +406,8 @@ enum ModelSelectionWire {
     Target {
         target: ModelTarget,
         backend_ref: String,
+        #[serde(default)]
+        configuration: AcpSessionConfiguration,
     },
     BackendDefault {
         backend_ref: String,
