@@ -125,12 +125,16 @@ is secondary to the port contract.
 - `PostgresExecutableAgentRegistrar` and one scoped command-log migration; the
   log stores the existing commands and replays the canonical catalog state
   machine rather than defining a parallel projection model;
+- role-aware composition and configuration: Control loads
+  `coordinator_internal_url` plus an operator-projected registration token file,
+  Coordinator mounts the authenticated durable router, and Worker rejects both
+  registration credentials and authority database bindings;
 - `AgentResourceReferenceSource`, allowing Resource reclamation to query the
   same execution projection without depending on Config Service.
 
-### Required remaining boundary code
-
-- split-role composition and registration reconciliation scheduling.
+There is no remaining registration boundary code. Periodic reconciliation is an
+operational optimization; startup recovery and an explicit retry already reuse
+the same authoritative registrar path.
 
 No whole-catalog command, second publication model, generic RPC framework, or
 parallel compatibility path is added.

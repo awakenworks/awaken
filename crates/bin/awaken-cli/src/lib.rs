@@ -14,7 +14,9 @@ mod brain_admin;
 pub mod config;
 mod console_assets;
 mod control;
+mod credential_probe;
 mod exact_host_model;
+mod executable_agent_registration;
 mod identity;
 mod observation_reconcile;
 mod process_surface;
@@ -23,7 +25,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
 use awaken_protocol_managed::{EnvironmentState, ManagedState, VaultState};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_host::{
@@ -56,155 +57,6 @@ pub use awaken_control::{
 };
 mod live_runtime_capabilities;
 use live_runtime_capabilities::LiveRuntimeCapabilities;
-
-/// Project the one executable ACP catalog into the management read model. This
-/// composition edge is intentionally the only place that knows both contexts;
-/// neither Control nor the executor keeps a synchronized adapter list.
-fn runtime_capabilities(
-    observations: &[awaken_acp_application::AcpHostObservation],
-) -> Vec<awaken_control::RuntimeCapability> {
-    std::iter::once(awaken_control::RuntimeCapability::native())
-        .chain(awaken_run_executor_acp::known_acp_clis().iter().map(|cli| {
-            let capability =
-                awaken_control::RuntimeCapability::acp(cli.id, cli.display_name, cli.description);
-            let Some(observation) = observations.iter().find(|row| row.cli_id == cli.id) else {
-                return capability;
-            };
-            capability.with_local(awaken_control::LocalRuntimeCapability {
-                detected: observation.detected(),
-                version: observation.version.clone(),
-                login_state: observation.credential_state.map(credential_state_name),
-                reason_code: observation.reason_code.clone(),
-                remediation: cli
-                    .remediation(observation.reason_code.as_deref())
-                    .map(str::to_string),
-                negotiated: None,
-            })
-        }))
-        .collect()
-}
-
-fn credential_state_name(state: awaken_runtime_contract::CredentialObservationState) -> String {
-    serde_json::to_value(state)
-        .expect("credential observation state serializes")
-        .as_str()
-        .expect("credential observation state serializes as a string")
-        .to_string()
-}
-
-#[cfg(test)]
-mod runtime_capability_tests {
-    use super::*;
-
-    #[test]
-    fn management_runtime_projection_is_exactly_the_executable_catalog() {
-        // Cause graph:
-        // C1 native runtime is intrinsic -> E1 exactly one `awaken` row.
-        // C2 an AcpCli catalog row exists -> E2 exactly one matching `acp:<id>` row.
-        // C3 no AcpCli row exists -> E3 no management capability can advertise it.
-        //
-        // Decision table:
-        // | Rule | Native | catalog row | capability |
-        // | R1 | T | - | awaken exactly once |
-        // | R2 | - | T | matching acp:<id> exactly once |
-        // | R3 | - | F | absent |
-        let projected = runtime_capabilities(&[]);
-        assert_eq!(
-            projected.iter().filter(|row| row.id == "awaken").count(),
-            1,
-            "R1"
-        );
-
-        let catalog = awaken_run_executor_acp::known_acp_clis();
-        let projected_acp: Vec<_> = projected.iter().filter(|row| row.kind == "acp").collect();
-        assert_eq!(projected_acp.len(), catalog.len(), "R2/R3 cardinality");
-        for cli in catalog {
-            let row = projected_acp
-                .iter()
-                .find(|row| row.cli.as_deref() == Some(cli.id))
-                .unwrap_or_else(|| panic!("R2 missing catalog projection for {}", cli.id));
-            assert_eq!(row.id, format!("acp:{}", cli.id), "R2");
-            assert_eq!(row.label, cli.display_name, "R2 metadata");
-            assert_eq!(row.description, cli.description, "R2 metadata");
-        }
-        assert!(
-            projected.iter().all(|row| row.id != "acp:kimi"),
-            "R3 unsupported Kimi is not advertised"
-        );
-        assert!(
-            projected.iter().all(|row| row.id != "acp:hermes"),
-            "R3 unsupported Hermes is not advertised"
-        );
-    }
-
-    #[test]
-    fn management_runtime_projection_joins_one_secret_free_local_observation() {
-        // Cause graph: catalog row + same-id startup observation -> enriched
-        // read model. Rows without an observation stay supported with unknown
-        // local status; no joined inventory is persisted.
-        //
-        // Decision table:
-        // L1 same id + detected/login-required -> detected status + remediation
-        // L2 no observation                    -> local status absent
-        let projected = runtime_capabilities(&[awaken_acp_application::AcpHostObservation {
-            cli_id: "codex".into(),
-            display_name: "Codex".into(),
-            detection: awaken_acp_application::AcpDetectionState::Detected,
-            version: Some("codex 1".into()),
-            credential_state: Some(
-                awaken_runtime_contract::CredentialObservationState::LoginRequired,
-            ),
-            reason_code: Some("acp_login_required".into()),
-            capability_state: None,
-            capability_fingerprint: None,
-            capability_reason_code: None,
-        }]);
-        let codex = projected.iter().find(|row| row.id == "acp:codex").unwrap();
-        let local = codex.local.as_ref().expect("L1");
-        assert!(local.detected, "L1");
-        assert_eq!(local.login_state.as_deref(), Some("login_required"), "L1");
-        assert!(
-            local
-                .remediation
-                .as_deref()
-                .unwrap()
-                .contains("codex login")
-        );
-        assert!(
-            projected
-                .iter()
-                .find(|row| row.id == "acp:gemini")
-                .unwrap()
-                .local
-                .is_none(),
-            "L2"
-        );
-    }
-}
-
-/// The live credential probe backing the admin router, backed by provider-genai
-/// here — the only place the model SDK is named in the composition; the admin CRUD
-/// crate stays SDK-free. `ghost` providers simply resolve `Unknown`.
-struct GenaiProbe;
-
-#[async_trait::async_trait]
-impl awaken_admin_config_api::CredentialProbe for GenaiProbe {
-    async fn probe(
-        &self,
-        base_url: &str,
-        secret: &awaken_agent_contract::RedactedString,
-        model: &str,
-    ) -> awaken_admin_config_api::ProbeStatus {
-        use awaken_admin_config_api::ProbeStatus;
-        use awaken_provider_genai::CredentialProbe;
-        match awaken_provider_genai::probe_credential(base_url, secret.expose_secret(), model).await
-        {
-            CredentialProbe::Valid => ProbeStatus::Valid,
-            CredentialProbe::Invalid => ProbeStatus::Invalid,
-            CredentialProbe::Unknown => ProbeStatus::Unknown,
-        }
-    }
-}
 
 /// The two legal composition modes are deliberately disjoint: production
 /// publishes catalog-backed provider candidates and installs their credential
@@ -248,14 +100,7 @@ struct ProcessAssemblyOptions {
     web_search_providers: Option<awaken_runtime_host::WebSearchProviderRegistry>,
     web_search_publication_resolver:
         Option<Arc<dyn awaken_runtime_host::PluginPublicationResolver>>,
-}
-
-struct CatalogDeclaredHandSource(Arc<ExecutableAgentCatalog>);
-
-impl awaken_server::placement::DeclaredHandSource for CatalogDeclaredHandSource {
-    fn declared_hand(&self, agent_id: &str) -> Result<Option<String>, String> {
-        self.0.declared_hand_for_agent(agent_id)
-    }
+    executable_agent_wiring: Option<executable_agent_registration::ExecutableAgentWiring>,
 }
 
 /// Router plus the cleartext local setup handoff printed by the CLI once.
@@ -834,6 +679,8 @@ async fn build_runtime_process_assembly(
     .await?;
     let hand_executors =
         awaken_server::placement::connect_declared_hands(&deployment.hand_connections).await?;
+    let executable_agent_wiring =
+        executable_agent_registration::for_runtime_role(role, deployment, postgres_schema).await?;
     let router = assemble_process_router(
         stores,
         identity.iam,
@@ -851,6 +698,7 @@ async fn build_runtime_process_assembly(
             hand_executors,
             web_search_providers: None,
             web_search_publication_resolver: None,
+            executable_agent_wiring: Some(executable_agent_wiring),
         },
         None,
     )
@@ -878,7 +726,8 @@ pub async fn migrate_deployment_schema(
         PostgresSchemaMode::Migrate,
     )
     .await
-    .map(drop)
+    .map(drop)?;
+    executable_agent_registration::migrate(deployment).await
 }
 
 /// Build the real env-selected management surface with one explicit in-process
@@ -952,6 +801,7 @@ async fn build_all_in_one_router_with_composition(
             hand_executors,
             web_search_providers: None,
             web_search_publication_resolver: None,
+            executable_agent_wiring: None,
         },
         None,
     )
@@ -1102,6 +952,9 @@ async fn assemble_process_router(
     customize_host: Option<Box<dyn FnOnce(SharedHost) -> SharedHost + Send>>,
 ) -> Router {
     let role = assembly.role;
+    let executable_agent_wiring = assembly
+        .executable_agent_wiring
+        .unwrap_or_else(executable_agent_registration::ExecutableAgentWiring::local);
     let deployment = assembly.deployment;
     let hand_executors = assembly.hand_executors;
     let cloud_api_base_url = assembly.cloud_api_base_url;
@@ -1267,12 +1120,10 @@ async fn assemble_process_router(
             ))
         });
     // One Coordinator-owned executable projection serves every execution read.
-    // The local registrar is the explicit AllInOne transport adapter; distributed
-    // composition replaces only this adapter, not the catalog or publication path.
-    let executable_agent_catalog = Arc::new(ExecutableAgentCatalog::new());
-    let executable_agent_registrar = Arc::new(LocalExecutableAgentRegistrar::new(
-        executable_agent_catalog.clone(),
-    ));
+    // Composition selects only the local, HTTP, or durable boundary adapter.
+    let executable_agent_catalog = executable_agent_wiring.catalog;
+    let executable_agent_registrar = executable_agent_wiring.registrar;
+    let executable_agent_private_router = executable_agent_wiring.private_router;
     let config_service = Arc::new(
         ConfigService::new(
             model_wiring.publication_resolver,
@@ -1287,13 +1138,19 @@ async fn assemble_process_router(
     // Re-submit durable Control publications through the same registration port
     // used by live publication. The catalog is a rebuildable Coordinator projection,
     // never a second publication source of truth.
-    let warmed = config_service
-        .reconcile_registrations(
-            config.as_ref(),
-            &awaken_tenancy::ScopeId::from(platform_workspace.as_str()),
-        )
-        .await
-        .unwrap_or_else(|error| panic!("executable Agent registration recovery failed: {error}"));
+    let warmed = if role == config::Role::Coordinator {
+        0
+    } else {
+        config_service
+            .reconcile_registrations(
+                config.as_ref(),
+                &awaken_tenancy::ScopeId::from(platform_workspace.as_str()),
+            )
+            .await
+            .unwrap_or_else(|error| {
+                panic!("executable Agent registration recovery failed: {error}")
+            })
+    };
     if warmed > 0 {
         eprintln!("config: reconciled {warmed} durable Agent publication(s)");
     }
@@ -1311,7 +1168,8 @@ async fn assemble_process_router(
         &assistant_credentials,
         &assembly.local_acp_observations,
     );
-    if let Some(assistant_selection) = assistant_selection
+    if role != config::Role::Coordinator
+        && let Some(assistant_selection) = assistant_selection
         && let Err(err) =
             awaken_control::seed_admin_assistant(&plane, &platform_workspace, assistant_selection)
                 .await
@@ -1415,7 +1273,7 @@ async fn assemble_process_router(
             webhook_store,
             sessions: sessions.clone(),
             resource_store: resource_store.clone(),
-            probe: Arc::new(GenaiProbe),
+            probe: Arc::new(credential_probe::GenaiProbe),
             model_discovery: Arc::new(awaken_server::model_discovery::GenaiModelDiscovery::new(
                 secrets.clone(),
             )),
@@ -1443,7 +1301,7 @@ async fn assemble_process_router(
         return process_surface::finish(
             control,
             mcp_export,
-            reconciler,
+            Some(reconciler),
             platform_workspace,
             managed_rate_limiter,
         );
@@ -1488,7 +1346,9 @@ async fn assemble_process_router(
         .with_admin_tools(admin_execs);
     host_builder = host_builder.with_tool_executor_provider(Arc::new(
         awaken_server::placement::ConfigToolExecutorProvider::from_declared_hands(
-            Arc::new(CatalogDeclaredHandSource(executable_agent_catalog.clone())),
+            Arc::new(executable_agent_registration::CatalogDeclaredHandSource(
+                executable_agent_catalog.clone(),
+            )),
             hand_executors,
         ),
     ));
@@ -1604,6 +1464,7 @@ async fn assemble_process_router(
             model_directory,
             dream_repository,
         );
+    data = data.merge(executable_agent_private_router);
     // One timer drives every Managed periodic trigger. Deployment remains the cron
     // authority; Dream policies submit the same durable DreamJob as manual create.
     let scheduled_deployments = deployment_state.clone();
@@ -1643,7 +1504,8 @@ async fn assemble_process_router(
     process_surface::finish(
         flat,
         mcp_export,
-        reconciler,
+        (role == config::Role::AllInOne)
+            .then_some(reconciler as Arc<dyn awaken_runtime_host::PublicationBindingReconciler>),
         platform_workspace,
         managed_rate_limiter,
     )
@@ -1826,10 +1688,10 @@ mod process_role_surface_tests {
 
     /// Cause/effect decision table:
     ///
-    /// | role | Control API | Coordinator API |
-    /// | --- | --- | --- |
-    /// | Control | mounted | absent |
-    /// | Coordinator | absent | mounted |
+    /// | role | Control API | Coordinator API | private registration API |
+    /// | --- | --- | --- | --- |
+    /// | Control | mounted | absent | absent |
+    /// | Coordinator | absent | mounted | mounted and independently authenticated |
     ///
     /// AllInOne merging is covered by the existing full-surface integration
     /// suites; this test owns the two exclusion rules that those suites cannot
@@ -1861,6 +1723,19 @@ mod process_role_surface_tests {
             .unwrap();
         assert_eq!(control.status(), StatusCode::OK);
 
+        let registration = app
+            .clone()
+            .oneshot(
+                Request::post(awaken_executable_agent_catalog::EXECUTABLE_AGENT_REGISTER_PATH)
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer registration-token")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(registration.status(), StatusCode::NOT_FOUND);
+
         let session = app
             .oneshot(Request::get("/v1/sessions").body(Body::empty()).unwrap())
             .await
@@ -1875,6 +1750,11 @@ mod process_role_surface_tests {
             PublicationModelComposition::PublishedProviders,
             ProcessAssemblyOptions {
                 role: config::Role::Coordinator,
+                executable_agent_wiring: Some(
+                    executable_agent_registration::ExecutableAgentWiring::local_server(
+                        "registration-token",
+                    ),
+                ),
                 ..Default::default()
             },
             None,
@@ -1892,10 +1772,22 @@ mod process_role_surface_tests {
         assert_eq!(control.status(), StatusCode::NOT_FOUND);
 
         let session = app
+            .clone()
             .oneshot(Request::get("/v1/sessions").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(session.status(), StatusCode::OK);
+        let registration = app
+            .oneshot(
+                Request::post(awaken_executable_agent_catalog::EXECUTABLE_AGENT_REGISTER_PATH)
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer registration-token")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(registration.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[derive(Debug)]

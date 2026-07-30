@@ -8,7 +8,7 @@ use axum::Router;
 pub(crate) fn finish(
     mut flat: Router,
     mcp_export: Router,
-    reconciler: Arc<dyn awaken_runtime_host::PublicationBindingReconciler>,
+    reconciler: Option<Arc<dyn awaken_runtime_host::PublicationBindingReconciler>>,
     platform_workspace: String,
     managed_rate_limiter: Arc<awaken_protocol_managed::ManagedRateLimiter>,
 ) -> Router {
@@ -20,38 +20,40 @@ pub(crate) fn finish(
         managed_rate_limiter,
         awaken_protocol_managed::enforce_managed_rate_limit,
     ));
-    let worker_observation_gate =
-        Arc::new(crate::observation_reconcile::WorkerObservationReconcileGate::default());
-    let reconcile_on_authority_change = axum::middleware::from_fn(
-        move |req: axum::extract::Request, next: axum::middleware::Next| {
-            let reconciler = reconciler.clone();
-            let worker_observation_gate = worker_observation_gate.clone();
-            async move {
-                let method = req.method().clone();
-                let path = req.uri().path().to_string();
-                let is_write =
-                    method == axum::http::Method::POST || method == axum::http::Method::PUT;
-                let model_authority_changed = is_write
-                    && (path.contains("/config/provider-connections")
-                        || path.contains("/config/model-attributes")
-                        || path.contains("/config/inference-profiles/")
-                        || path.contains("/config/brokered-models/refresh"));
-                let worker_observations_may_have_changed =
-                    method == axum::http::Method::POST && path == "/v1/worker/heartbeat";
-                let response = next.run(req).await;
-                if response.status().is_success() && model_authority_changed {
-                    let _ = reconciler.reconcile().await;
+    if let Some(reconciler) = reconciler {
+        let worker_observation_gate =
+            Arc::new(crate::observation_reconcile::WorkerObservationReconcileGate::default());
+        let reconcile_on_authority_change = axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let reconciler = reconciler.clone();
+                let worker_observation_gate = worker_observation_gate.clone();
+                async move {
+                    let method = req.method().clone();
+                    let path = req.uri().path().to_string();
+                    let is_write =
+                        method == axum::http::Method::POST || method == axum::http::Method::PUT;
+                    let model_authority_changed = is_write
+                        && (path.contains("/config/provider-connections")
+                            || path.contains("/config/model-attributes")
+                            || path.contains("/config/inference-profiles/")
+                            || path.contains("/config/brokered-models/refresh"));
+                    let worker_observations_may_have_changed =
+                        method == axum::http::Method::POST && path == "/v1/worker/heartbeat";
+                    let response = next.run(req).await;
+                    if response.status().is_success() && model_authority_changed {
+                        let _ = reconciler.reconcile().await;
+                    }
+                    if response.status().is_success() && worker_observations_may_have_changed {
+                        // The gate advances only after success; heartbeat is the
+                        // bounded retry clock for a transient reconciliation failure.
+                        let _ = worker_observation_gate.reconcile(reconciler.as_ref()).await;
+                    }
+                    response
                 }
-                if response.status().is_success() && worker_observations_may_have_changed {
-                    // The gate advances only after success; heartbeat is the
-                    // bounded retry clock for a transient reconciliation failure.
-                    let _ = worker_observation_gate.reconcile(reconciler.as_ref()).await;
-                }
-                response
-            }
-        },
-    );
-    let flat = flat.layer(reconcile_on_authority_change);
+            },
+        );
+        flat = flat.layer(reconcile_on_authority_change);
+    }
     let flat = awaken_server::workspace_path::with_platform_workspace(flat, platform_workspace);
     awaken_server::workspace_path::with_workspace_path_addressing(flat)
 }
@@ -98,7 +100,7 @@ mod tests {
                 .route("/v1/worker/heartbeat", post(|| async { StatusCode::OK }))
                 .route("/unrelated", post(|| async { StatusCode::OK })),
             Router::new(),
-            reconciler.clone(),
+            Some(reconciler.clone()),
             "platform".into(),
             Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization("org_test")),
         );
@@ -125,7 +127,7 @@ mod tests {
         let app = finish(
             Router::new().route("/v1/sessions", post(|| async { StatusCode::OK })),
             Router::new(),
-            Arc::new(RecordingReconciler::default()),
+            Some(Arc::new(RecordingReconciler::default())),
             "platform".into(),
             Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization("org_shared")),
         );

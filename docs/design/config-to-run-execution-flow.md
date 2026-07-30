@@ -123,7 +123,9 @@ The publication compiler, revision fence, `StoredPublication`, and
 write has been removed. Control now calls one registrar; the AllInOne adapter
 and distributed HTTP adapter reach the same Coordinator catalog state machine.
 The PostgreSQL adapter persists the existing commands before applying that
-state machine and replays them on restart. Split-role wiring remains pending.
+state machine and replays them on restart. Control and Coordinator select those
+adapters from role-aware configuration; Worker cannot receive their token or an
+authority database binding.
 
 Registration identity is `(workspace_id, agent_id, source_revision)` with the
 snapshot fingerprint as the conflict check. The same registration may be
@@ -292,18 +294,19 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - `ExecutableAgentCatalog` and `LocalExecutableAgentRegistrar`;
 - `HttpExecutableAgentRegistrar` and the authenticated registration router;
 - `PostgresExecutableAgentRegistrar` and its scoped command-log schema;
+- split-role registration composition, token-file loading, catalog migration,
+  and Worker database rejection;
 - `AgentResourceReferenceSource` as a narrow read port.
 
 ### Required remaining ADR-0071 work
 
-- split-role registration wiring and reconciliation scheduling;
 - Deployment launch carries `deployment_run_id` and supports a remote adapter;
 - Worker resource composition uses per-kind network adapters rather than shared
   authority-store implementations;
-- deployment configuration and startup checks enforce data ownership;
+- remaining Coordinator/Resource composition removes direct non-owner stores;
 - Coordinator Deployment Session client and handler;
 - per-kind File, Memory, Skill, and credential clients/handlers;
-- service-data-ownership and architecture-vocabulary fitness checks.
+- service-data-ownership fitness check for the remaining boundaries.
 
 No new Agent, Deployment, Session, Resource, Credential, Run, or response domain
 model is introduced.

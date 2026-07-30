@@ -137,12 +137,16 @@ The local and remote registration-boundary slices are complete:
 - `PostgresExecutableAgentRegistrar` durably appends the existing registration
   and withdrawal commands before changing the rebuildable projection, and
   startup replays those commands through the same catalog state machine;
+- role composition selects `LocalExecutableAgentRegistrar` only for AllInOne,
+  the HTTP client only for Control, and the authenticated durable router only
+  for Coordinator; the migration command owns the catalog schema, and Worker
+  configuration rejects registration credentials and authority database URLs;
 - the superseded process-local catalog, runtime projection wrapper, and separate
   warm-install path have been removed.
 
-Split-role wiring, remote Deployment Session launch, exact Credential/Resource
-adapters, and role-aware data-ownership checks remain subsequent ADR-0071
-slices.
+Remote Deployment Session launch, exact Credential/Resource adapters, and the
+remaining Coordinator/Resource store-ownership separation remain subsequent
+ADR-0071 slices.
 
 ## Consequences
 

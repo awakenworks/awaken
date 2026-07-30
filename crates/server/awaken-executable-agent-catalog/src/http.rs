@@ -125,6 +125,20 @@ impl HttpExecutableAgentRegistrar {
                 "Coordinator URL and registration bearer token are required".into(),
             ));
         }
+        let parsed = reqwest::Url::parse(&base_url).map_err(|error| {
+            ExecutableAgentRegistrationError::Invalid(format!(
+                "invalid Coordinator registration URL: {error}"
+            ))
+        })?;
+        if !matches!(parsed.scheme(), "http" | "https")
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err(ExecutableAgentRegistrationError::Invalid(
+                "Coordinator registration URL must be an http(s) base URL without query or fragment"
+                    .into(),
+            ));
+        }
         Ok(Self {
             base_url,
             bearer_token,
@@ -366,6 +380,11 @@ mod tests {
         // Causes: blank Coordinator URL or blank bearer token. Effect: reject
         // construction before any request can cross the private boundary.
         assert!(HttpExecutableAgentRegistrar::new("", "secret-token").is_err());
+        assert!(HttpExecutableAgentRegistrar::new("http://", "secret-token").is_err());
+        assert!(
+            HttpExecutableAgentRegistrar::new("http://coordinator?mode=write", "secret-token")
+                .is_err()
+        );
         assert!(HttpExecutableAgentRegistrar::new("http://coordinator", " ").is_err());
         let catalog = Arc::new(ExecutableAgentCatalog::new());
         assert!(
