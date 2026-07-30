@@ -568,6 +568,7 @@ mod tests {
         crate::McpAttachmentDraft {
             name: name.into(),
             target: crate::McpTarget::parse_http(url).unwrap(),
+            prompts_as_skills: false,
             credential: None,
             origin,
         }

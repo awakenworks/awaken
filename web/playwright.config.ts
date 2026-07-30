@@ -25,11 +25,12 @@ export default defineConfig({
       // `awaken` (awaken-cli) is the production binary that subsumes awaken-server: its
       // default Serve role mounts the full management + data plane over AWAKEN_HTTP_ADDR.
       // Worktrees can otherwise race on the repository-level Cargo target
-      // directory and load stale trait metadata from another branch.
+      // directory and load stale trait metadata from another branch. Each run
+      // also gets a fresh data root instead of inheriting ~/.awaken migrations.
       // Browser E2E owns no human who can consume the one-time setup handoff.
       // Exercise application behavior in the explicit no-login deployment mode;
       // local-browser authentication has its own control-plane integration tests.
-      command: "CARGO_TARGET_DIR=/tmp/awaken-target-ia-ui-ux-p0-p2 cargo run --quiet -p awaken-cli --bin awaken -- start --port 38080 --data-dir /tmp/awaken-e2e-ia-ui-ux-p0-p2 --no-browser --identity-mode no-login",
+      command: "e2e_data_dir=$(mktemp -d /tmp/awaken-console-e2e.XXXXXX) && CARGO_TARGET_DIR=/tmp/awaken-target-console-e2e exec cargo run --quiet -p awaken-cli --bin awaken -- start --port 38080 --data-dir \"$e2e_data_dir\" --no-browser --identity-mode no-login",
       cwd: "..",
       url: "http://127.0.0.1:38080/v1/config/catalog",
       timeout: 240_000,

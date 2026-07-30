@@ -153,6 +153,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
             target: McpTarget::parse_http(server.url).map_err(|error| {
                 <serde_json::Error as serde::de::Error>::custom(error.to_string())
             })?,
+            prompts_as_skills: false,
             credential,
             origin: McpAttachmentOrigin::Session,
         });

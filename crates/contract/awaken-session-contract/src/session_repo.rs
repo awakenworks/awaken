@@ -24,6 +24,7 @@ use crate::ManagedLifecycleFact;
 pub struct VisibleMcpServer {
     pub name: String,
     pub url: String,
+    pub prompts_as_skills: bool,
 }
 
 /// Monotonic root revision for every mutation of one Session aggregate.
@@ -140,6 +141,7 @@ impl PersistedSession {
             .map(|attachment| VisibleMcpServer {
                 name: attachment.name.clone(),
                 url: attachment.target.url.clone(),
+                prompts_as_skills: attachment.prompts_as_skills,
             })
             .collect()
     }

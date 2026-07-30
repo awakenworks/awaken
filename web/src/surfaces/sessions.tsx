@@ -44,7 +44,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
   const [environmentId, setEnvironmentId] = useState("");
   const [title, setTitle] = useState("");
   const [vaultIds, setVaultIds] = useState("");
-  const [mcp, setMcp] = useState<{ name: string; url: string }[]>([]);
+  const [mcp, setMcp] = useState<{ name: string; url: string; prompts_as_skills: boolean }[]>([]);
   const [manage, setManage] = useState<"agents" | "environments" | null>(null);
   // Inline pickers over the config plane (published agents) + environments.
   const agents = useQuery({
@@ -124,6 +124,16 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
                 value={m.name}
                 onChange={(e) => setMcp(mcp.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))}
               />
+              <label className="row" style={{ whiteSpace: "nowrap" }}>
+                <input
+                  type="checkbox"
+                  checked={m.prompts_as_skills}
+                  onChange={(e) => setMcp(mcp.map((x, j) => (
+                    j === i ? { ...x, prompts_as_skills: e.target.checked } : x
+                  )))}
+                />
+                {app.t("Prompts as skills", "Prompt 作为 Skill")}
+              </label>
               <input
                 className="input mono"
                 style={{ flex: 1 }}
@@ -136,7 +146,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
               </Button>
             </div>
           ))}
-          <Button variant="ghost" onClick={() => setMcp([...mcp, { name: "", url: "" }])}>
+          <Button variant="ghost" onClick={() => setMcp([...mcp, { name: "", url: "", prompts_as_skills: false }])}>
             + {app.t("add inline server", "添加内联服务器")}
           </Button>
           <span className="mut">{app.t("MCP servers declared by the Agent are included automatically.", "Agent 声明的 MCP 服务器会自动包含。")}</span>

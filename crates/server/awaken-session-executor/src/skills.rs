@@ -13,8 +13,8 @@ use std::sync::Arc;
 use awaken_ext_builtin_tools::{AUXILIARY_AGENT, AuxiliaryAgentInput};
 use awaken_ext_skills::{
     ActiveSkillTools, CompositeSkillRegistry, InMemorySkillRegistry, ListSkillsTool,
-    PathActivations, RecordingGate, SkillAllowedToolsGate, SkillFile, SkillProvenance,
-    SkillRegistry, SkillSource, SkillSpec, SkillTool, SourceSkillRegistry,
+    PathActivations, RecordingGate, SkillAllowedToolsGate, SkillEnvironment, SkillFile,
+    SkillProvenance, SkillRegistry, SkillSource, SkillSpec, SkillTool, SourceSkillRegistry,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::permission::ToolGateHook;
@@ -71,6 +71,15 @@ impl SkillSource for EnvSkillSource {
 /// [`SkillStore`]: awaken_skill_store::SkillStore
 struct SnapshotSkillSource {
     files: Vec<SkillFile>,
+}
+
+fn requires_filesystem(version: &SkillVersion, content: &str) -> bool {
+    let declared = awaken_ext_skills::parse_skill_md(version.skill_id.to_string(), content);
+    declared.environment == SkillEnvironment::Filesystem
+        || version
+            .files
+            .iter()
+            .any(|file| file.path != "SKILL.md" && !file.path.ends_with("/SKILL.md"))
 }
 
 impl SkillSource for SnapshotSkillSource {
@@ -153,6 +162,7 @@ pub(crate) struct SkillWiring {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn wire_skills(
     configured: &[SkillSpec],
+    external_registries: Vec<Arc<dyn SkillRegistry>>,
     delivered: Option<Vec<SkillVersion>>,
     env: Arc<crate::session_environment::SessionEnvironment>,
     llm: Arc<dyn LlmExecutor>,
@@ -167,8 +177,17 @@ pub(crate) async fn wire_skills(
     // wired — the workspace-authored source alone never opens the surface (a run with
     // no delivered skills shows nothing until the agent authors one it can re-read).
     // `delivered` is `Some` (possibly empty) exactly when a durable store is wired.
-    if configured.is_empty() && delivered.is_none() {
+    if configured.is_empty() && external_registries.is_empty() && delivered.is_none() {
         return Ok(None);
+    }
+    if let Some(skill) = configured
+        .iter()
+        .find(|skill| skill.environment == SkillEnvironment::Filesystem && skill.dir.is_none())
+    {
+        return Err(format!(
+            "filesystem Skill `{}` has no materialized directory",
+            skill.id
+        ));
     }
     env.register_skill_dir(skills_subdir);
     if let Err(error) = env.refresh_skills().await {
@@ -200,18 +219,6 @@ pub(crate) async fn wire_skills(
                     version.skill_id, version.version
                 ));
             }
-            let directory = format!(
-                "{DELIVERED_SKILLS_SUBDIR}/{}",
-                awaken_skill_store::sanitize_stem(version.skill_id.as_str())
-            );
-            let materialized = version
-                .files
-                .iter()
-                .map(|file| (file.path.clone(), file.content.clone(), file.executable))
-                .collect::<Vec<_>>();
-            env.materialize_read_only_tree(&directory, &materialized)
-                .await
-                .map_err(|error| error.to_string())?;
             let content = version
                 .skill_md()
                 .and_then(|bytes| std::str::from_utf8(bytes).ok())
@@ -222,10 +229,31 @@ pub(crate) async fn wire_skills(
                     )
                 })?
                 .to_string();
+            // A bundle containing only SKILL.md is instruction-only unless the
+            // author explicitly declares a filesystem requirement. It stays in
+            // the host snapshot and is never projected into the Hand workspace.
+            // Any supporting file makes the requirement objective and forces
+            // materialization regardless of authored metadata.
+            let directory = requires_filesystem(&version, &content).then(|| {
+                format!(
+                    "{DELIVERED_SKILLS_SUBDIR}/{}",
+                    awaken_skill_store::sanitize_stem(version.skill_id.as_str())
+                )
+            });
+            if let Some(directory) = &directory {
+                let materialized = version
+                    .files
+                    .iter()
+                    .map(|file| (file.path.clone(), file.content.clone(), file.executable))
+                    .collect::<Vec<_>>();
+                env.materialize_read_only_tree(directory, &materialized)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
             files.push(SkillFile {
                 id: version.skill_id.to_string(),
                 content,
-                dir: Some(directory),
+                dir: directory,
             });
         }
         registries.push(Arc::new(SourceSkillRegistry::new(
@@ -233,6 +261,7 @@ pub(crate) async fn wire_skills(
             SkillProvenance::Delivered,
         )));
     }
+    registries.extend(external_registries);
     registries.push(Arc::new(SourceSkillRegistry::new(
         Arc::new(EnvSkillSource {
             env: env.clone(),
@@ -284,6 +313,53 @@ fn skill_descriptor() -> ToolDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn version_with(files: Vec<awaken_skill_store::SkillBundleFile>) -> SkillVersion {
+        SkillVersion {
+            id: "skver-test-1".into(),
+            skill_id: "test".into(),
+            version: 1,
+            name: "test".into(),
+            description: String::new(),
+            directory: "/skills/test".into(),
+            bundle_sha256: awaken_skill_store::bundle_sha256(&files),
+            files,
+            created_unix_nanos: 0,
+        }
+    }
+
+    #[test]
+    fn instruction_only_and_filesystem_bundles_select_the_minimum_substrate() {
+        use awaken_skill_store::SkillBundleFile;
+        let pure_body = "---\ndescription: think\n---\nThink carefully.";
+        let pure = version_with(vec![SkillBundleFile {
+            path: "SKILL.md".into(),
+            content: pure_body.as_bytes().to_vec(),
+        }]);
+        assert!(!requires_filesystem(&pure, pure_body));
+
+        let declared_body = "---\nenvironment: filesystem\n---\nRead the workspace.";
+        let declared = version_with(vec![SkillBundleFile {
+            path: "SKILL.md".into(),
+            content: declared_body.as_bytes().to_vec(),
+        }]);
+        assert!(requires_filesystem(&declared, declared_body));
+
+        let bundled = version_with(vec![
+            SkillBundleFile {
+                path: "SKILL.md".into(),
+                content: pure_body.as_bytes().to_vec(),
+            },
+            SkillBundleFile {
+                path: "references/guide.md".into(),
+                content: b"guide".to_vec(),
+            },
+        ]);
+        assert!(
+            requires_filesystem(&bundled, pure_body),
+            "supporting files override instruction-only metadata"
+        );
+    }
 
     #[tokio::test]
     async fn durable_store_snapshot_scans_the_catalog_as_delivered_skill_files() {
