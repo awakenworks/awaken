@@ -134,12 +134,15 @@ The local and remote registration-boundary slices are complete:
   registration router; their real-network tests cover authorization,
   idempotency, transient retry, conflict, withdrawal, and incomplete endpoint
   configuration;
+- `PostgresExecutableAgentRegistrar` durably appends the existing registration
+  and withdrawal commands before changing the rebuildable projection, and
+  startup replays those commands through the same catalog state machine;
 - the superseded process-local catalog, runtime projection wrapper, and separate
   warm-install path have been removed.
 
-The durable Coordinator catalog adapter, split-role wiring, remote Deployment
-Session launch, exact Credential/Resource adapters, and role-aware data-ownership
-checks remain subsequent ADR-0071 slices.
+Split-role wiring, remote Deployment Session launch, exact Credential/Resource
+adapters, and role-aware data-ownership checks remain subsequent ADR-0071
+slices.
 
 ## Consequences
 

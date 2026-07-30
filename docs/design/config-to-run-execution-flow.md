@@ -74,7 +74,7 @@ flowchart TD
     KB["Added: LocalExecutableAgentRegistrar"]
     KC["Added: HttpExecutableAgentRegistrar"]
     KD["Added: authenticated registration router"]
-    KE["Added: ExecutableAgentCatalog; durable adapter pending"]
+    KE["Added: durable Postgres registrar + ExecutableAgentCatalog"]
     KF{"Registration acknowledged?"}
     KG["Return publication success with id and fingerprint"]
     KH["Return retryable unavailability; publication remains durable"]
@@ -122,7 +122,8 @@ The publication compiler, revision fence, `StoredPublication`, and
 `ExecutableAgentSnapshot` are reused. The former Config Service-owned catalog
 write has been removed. Control now calls one registrar; the AllInOne adapter
 and distributed HTTP adapter reach the same Coordinator catalog state machine.
-The durable catalog adapter and split-role wiring remain pending.
+The PostgreSQL adapter persists the existing commands before applying that
+state machine and replays them on restart. Split-role wiring remains pending.
 
 Registration identity is `(workspace_id, agent_id, source_revision)` with the
 snapshot fingerprint as the conflict check. The same registration may be
@@ -290,11 +291,12 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - `ExecutableAgentRegistrar`, its command/outcome/error values, and withdrawal;
 - `ExecutableAgentCatalog` and `LocalExecutableAgentRegistrar`;
 - `HttpExecutableAgentRegistrar` and the authenticated registration router;
+- `PostgresExecutableAgentRegistrar` and its scoped command-log schema;
 - `AgentResourceReferenceSource` as a narrow read port.
 
 ### Required remaining ADR-0071 work
 
-- durable Coordinator catalog adapter and split-role registration wiring;
+- split-role registration wiring and reconciliation scheduling;
 - Deployment launch carries `deployment_run_id` and supports a remote adapter;
 - Worker resource composition uses per-kind network adapters rather than shared
   authority-store implementations;

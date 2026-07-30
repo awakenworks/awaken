@@ -18,6 +18,7 @@ EXECUTABLE_AGENT_ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-executable-agent-catalog": {
         "awaken-executable-agent-contract",
         "awaken-runtime-contract",
+        "awaken-scoped-migration",
         "awaken-session-contract",
         "awaken-resource-contract",
         "async-trait",
@@ -25,6 +26,7 @@ EXECUTABLE_AGENT_ALLOWED_DEPS: dict[str, set[str]] = {
         "reqwest",
         "serde",
         "serde_json",
+        "sqlx",
         "tokio",
     },
 }

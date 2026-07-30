@@ -23,11 +23,15 @@ use awaken_runtime_contract::{
 use awaken_session_contract::{AgentConfigSource, AgentConfigView};
 
 mod http;
+mod postgres;
+mod schema;
 
 pub use http::{
     EXECUTABLE_AGENT_REGISTER_PATH, EXECUTABLE_AGENT_WITHDRAW_PATH, HttpExecutableAgentRegistrar,
     executable_agent_registration_router,
 };
+pub use postgres::PostgresExecutableAgentRegistrar;
+pub use schema::executable_agent_catalog_bundle;
 
 type AgentKey = (String, String);
 type RevisionKey = (String, String, u64);
@@ -39,7 +43,7 @@ struct CurrentEntry {
     registration: Option<ExecutableAgentRegistration>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct CatalogState {
     current: BTreeMap<AgentKey, CurrentEntry>,
     revisions: BTreeMap<RevisionKey, ExecutableAgentRegistration>,
@@ -189,6 +193,14 @@ impl ExecutableAgentCatalog {
         }
     }
 
+    fn preview_registration(
+        &self,
+        registration: ExecutableAgentRegistration,
+    ) -> Result<ExecutableAgentRegistrationOutcome, ExecutableAgentRegistrationError> {
+        let mut state = self.state.read().expect("executable Agent catalog").clone();
+        Self::register_locked(&mut state, registration)
+    }
+
     fn withdraw_locked(
         state: &mut CatalogState,
         withdrawal: ExecutableAgentWithdrawal,
@@ -221,6 +233,14 @@ impl ExecutableAgentCatalog {
                 Ok(ExecutableAgentWithdrawalOutcome::WithdrawnCurrent)
             }
         }
+    }
+
+    fn preview_withdrawal(
+        &self,
+        withdrawal: ExecutableAgentWithdrawal,
+    ) -> Result<ExecutableAgentWithdrawalOutcome, ExecutableAgentRegistrationError> {
+        let mut state = self.state.read().expect("executable Agent catalog").clone();
+        Self::withdraw_locked(&mut state, withdrawal)
     }
 }
 
@@ -345,15 +365,16 @@ impl AgentResourceReferenceSource for ExecutableAgentCatalog {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod test_support {
     use awaken_executable_agent_contract::ExecutableAgentRegistration;
+    use awaken_runtime_contract::snapshot::AgentId;
     use awaken_runtime_contract::{
         AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
-        AgentSnapshotMetadata,
+        AgentSnapshotMetadata, ExecutableAgentSnapshot,
     };
+    use awaken_session_contract::AgentConfigView;
 
-    fn registration(revision: u64, fingerprint: &str) -> ExecutableAgentRegistration {
+    pub(crate) fn registration(revision: u64, fingerprint: &str) -> ExecutableAgentRegistration {
         let mut snapshot = ExecutableAgentSnapshot::builder("agent-a")
             .fingerprint(fingerprint)
             .build();
@@ -375,6 +396,12 @@ mod tests {
             declared_hand: Some("hand-a".into()),
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::registration;
 
     #[tokio::test]
     async fn registration_is_idempotent_monotonic_and_conflict_checked() {

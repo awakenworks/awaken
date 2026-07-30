@@ -9,12 +9,14 @@ awaken-executable-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-resource-contract.workspace = true
+awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 async-trait.workspace = true
 axum.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["time"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "net", "time"] }

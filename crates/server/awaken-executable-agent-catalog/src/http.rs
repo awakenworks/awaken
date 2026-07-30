@@ -239,36 +239,13 @@ impl ExecutableAgentRegistrar for HttpExecutableAgentRegistrar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::registration as test_registration;
     use crate::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
-    use awaken_runtime_contract::snapshot::AgentId;
-    use awaken_runtime_contract::{
-        AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
-        AgentSnapshotMetadata, CatalogFingerprint, ExecutableAgentSnapshot,
-    };
-    use awaken_session_contract::AgentConfigView;
+    use awaken_runtime_contract::{AgentSnapshotFingerprint, CatalogFingerprint};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn registration() -> ExecutableAgentRegistration {
-        let mut snapshot = ExecutableAgentSnapshot::builder("agent-a")
-            .fingerprint("fp-a")
-            .build();
-        snapshot.metadata = AgentSnapshotMetadata {
-            source: AgentConfigRevisionRef {
-                agent_id: AgentId("agent-a".into()),
-                revision: 7,
-            },
-            publication_version: AgentPublicationVersion("v7".into()),
-            resolution: Default::default(),
-            fingerprint: AgentSnapshotFingerprint("fp-a".into()),
-        };
-        ExecutableAgentRegistration {
-            workspace_id: "workspace-a".into(),
-            agent_id: "agent-a".into(),
-            source_revision: 7,
-            snapshot,
-            agent_view: AgentConfigView::default(),
-            declared_hand: None,
-        }
+        test_registration(7, "fp-a")
     }
 
     async fn server_for(

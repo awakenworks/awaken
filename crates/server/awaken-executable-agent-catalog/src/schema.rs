@@ -1,0 +1,38 @@
+//! Coordinator-owned durable command log for the rebuildable catalog.
+
+use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
+
+pub(crate) const NS: &str = "executable_agent";
+
+/// The catalog persists boundary commands, not a second derived snapshot shape.
+/// Startup replays these exact commands through the canonical in-memory state
+/// machine.
+pub fn executable_agent_catalog_bundle() -> Result<MigrationBundle, MigrationError> {
+    MigrationBundle::new(
+        "awaken.executable_agent_catalog",
+        vec![Migration::new(
+            1,
+            "executable Agent registration and withdrawal command log",
+            "CREATE TABLE {prefix}_command (\
+                workspace_id TEXT NOT NULL, \
+                agent_id TEXT NOT NULL, \
+                lifecycle_revision BIGINT NOT NULL, \
+                command_kind TEXT NOT NULL, \
+                command_json TEXT NOT NULL, \
+                PRIMARY KEY (workspace_id, agent_id, lifecycle_revision, command_kind))",
+        )?],
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_bundle_is_portable_and_linted() {
+        // One portable scoped bundle is the sole schema authority; PostgreSQL
+        // startup and the migration command must not carry parallel raw DDL.
+        let bundle = executable_agent_catalog_bundle().unwrap();
+        awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).unwrap();
+    }
+}

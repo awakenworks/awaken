@@ -122,12 +122,14 @@ is secondary to the port contract.
 - `LocalExecutableAgentRegistrar` for AllInOne composition;
 - `HttpExecutableAgentRegistrar` and the authenticated
   `executable_agent_registration_router` for split deployment;
+- `PostgresExecutableAgentRegistrar` and one scoped command-log migration; the
+  log stores the existing commands and replays the canonical catalog state
+  machine rather than defining a parallel projection model;
 - `AgentResourceReferenceSource`, allowing Resource reclamation to query the
   same execution projection without depending on Config Service.
 
 ### Required remaining boundary code
 
-- a durable Coordinator adapter for `ExecutableAgentCatalog`;
 - split-role composition and registration reconciliation scheduling.
 
 No whole-catalog command, second publication model, generic RPC framework, or
