@@ -207,6 +207,8 @@ pub struct ResolvedDeployment {
     pub config_path: PathBuf,
     pub config_file_exists: bool,
     pub no_browser: bool,
+    /// Optional deployment-owned suite hub shown by the browser console.
+    pub suite_hub_url: Option<String>,
     pub run_local_pool: bool,
     pub worker_server: Option<String>,
     pub worker: WorkerBootstrap,
@@ -731,6 +733,11 @@ impl ResolvedDeployment {
             service_token: file.cloud_iam_service_token.clone(),
             service_token_file: file.cloud_iam_service_token_file.clone(),
         };
+        let suite_hub_url = file
+            .suite_hub_url
+            .as_deref()
+            .map(|value| validate_suite_hub_url(value, mode))
+            .transpose()?;
         Ok(Self {
             role,
             mode,
@@ -739,6 +746,7 @@ impl ResolvedDeployment {
             config_file_exists: config_path.exists(),
             config_path,
             no_browser: overrides.no_browser.or(file.no_browser).unwrap_or(false),
+            suite_hub_url,
             run_local_pool,
             worker_server,
             worker,
@@ -872,6 +880,32 @@ const fn identity_mode_name(mode: awaken_control::ManagementIdentityMode) -> &'s
     }
 }
 
+fn validate_suite_hub_url(value: &str, mode: OperatingMode) -> Result<String, String> {
+    if value.trim() != value || value.is_empty() {
+        return Err("suite_hub_url must be a non-empty exact URL".to_owned());
+    }
+    let parsed = url::Url::parse(value).map_err(|_| "suite_hub_url must be an absolute URL")?;
+    let loopback_http = mode == OperatingMode::Local
+        && parsed.scheme() == "http"
+        && parsed.host_str().is_some_and(|host| {
+            host == "localhost"
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        });
+    if parsed.scheme() != "https" && !loopback_http {
+        return Err("suite_hub_url must use HTTPS (or loopback HTTP in local mode)".to_owned());
+    }
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("suite_hub_url must not contain credentials, query, or fragment".to_owned());
+    }
+    Ok(value.to_owned())
+}
+
 #[cfg(test)]
 pub(crate) fn local_test_deployment(data_dir: PathBuf) -> ResolvedDeployment {
     ResolvedDeployment::resolve_file(
@@ -914,6 +948,7 @@ struct FileConfig {
     worker_credential_observation_ttl_secs: Option<u64>,
     run_local_pool: Option<bool>,
     no_browser: Option<bool>,
+    suite_hub_url: Option<String>,
     runtime_database_url: Option<String>,
     postgres_max_connections: Option<u32>,
     hand_connections: Option<BTreeMap<String, awaken_connection_plan::ConnectionPlan>>,
@@ -1603,6 +1638,80 @@ mod tests {
                 .inference_base_url,
             "https://api.awakenworks.com"
         );
+    }
+
+    #[test]
+    fn suite_hub_is_optional_exact_and_transport_safe() {
+        // Cause graph: deployment mode + exact absolute URL -> browser exit;
+        // absent value -> standalone console; remote cleartext or URL-carried
+        // credentials/query/fragment -> fail before the listener starts.
+        //
+        // | rule | mode | value | effect |
+        // | S1 | any | absent | standalone projection |
+        // | S2 | server | HTTPS path | exact hub retained |
+        // | S3 | local | loopback HTTP | exact dev hub retained |
+        // | S4 | server | HTTP | reject |
+        // | S5 | any | credential/query/fragment | reject |
+        let standalone = resolve(FileConfig::default(), ConfigOverrides::default());
+        assert_eq!(standalone.suite_hub_url, None, "S1");
+
+        let hosted = resolve(
+            FileConfig {
+                mode: Some("server".into()),
+                control_seal_key: Some(
+                    "0000000000000000000000000000000000000000000000000000000000000000".into(),
+                ),
+                suite_hub_url: Some("https://cloud.example/products".into()),
+                ..FileConfig::default()
+            },
+            ConfigOverrides::default(),
+        );
+        assert_eq!(
+            hosted.suite_hub_url.as_deref(),
+            Some("https://cloud.example/products"),
+            "S2"
+        );
+
+        let local = resolve(
+            FileConfig {
+                suite_hub_url: Some("http://127.0.0.1:17878/products".into()),
+                ..FileConfig::default()
+            },
+            ConfigOverrides::default(),
+        );
+        assert_eq!(
+            local.suite_hub_url.as_deref(),
+            Some("http://127.0.0.1:17878/products"),
+            "S3"
+        );
+
+        let error_for = |value: &str| {
+            ResolvedDeployment::resolve_file(
+                ConfigOverrides::default(),
+                Some(PathBuf::from("/home/dev")),
+                PathBuf::from("/home/dev/.awaken/config.toml"),
+                FileConfig {
+                    mode: Some("server".into()),
+                    control_seal_key: Some(
+                        "0000000000000000000000000000000000000000000000000000000000000000".into(),
+                    ),
+                    suite_hub_url: Some(value.into()),
+                    ..FileConfig::default()
+                },
+            )
+            .unwrap_err()
+        };
+        assert!(
+            error_for("http://cloud.example/products").contains("HTTPS"),
+            "S4"
+        );
+        for unsafe_url in [
+            "https://user@cloud.example/products",
+            "https://cloud.example/products?tenant=forbidden",
+            "https://cloud.example/products#fragment",
+        ] {
+            assert!(error_for(unsafe_url).contains("must not contain"), "S5");
+        }
     }
 
     #[test]

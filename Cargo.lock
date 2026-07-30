@@ -320,7 +320,7 @@ dependencies = [
 [[package]]
 name = "awaken-api-contract"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation?rev=599c139bb224b9382fd938aec8d561a62d90c468#599c139bb224b9382fd938aec8d561a62d90c468"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a#8a0037c012fe63f496dad1772cdcbc89bbc03c5a"
 dependencies = [
  "serde",
  "serde_json",
@@ -353,6 +353,7 @@ dependencies = [
  "awaken-admin-assistant",
  "awaken-admin-config-api",
  "awaken-agent-contract",
+ "awaken-api-contract",
  "awaken-authz-enforce",
  "awaken-config-resolver",
  "awaken-config-store",
@@ -399,6 +400,7 @@ dependencies = [
  "tokio",
  "toml",
  "tower",
+ "url",
 ]
 
 [[package]]
@@ -461,7 +463,7 @@ dependencies = [
 [[package]]
 name = "awaken-connection"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation?rev=599c139bb224b9382fd938aec8d561a62d90c468#599c139bb224b9382fd938aec8d561a62d90c468"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a#8a0037c012fe63f496dad1772cdcbc89bbc03c5a"
 dependencies = [
  "async-trait",
  "futures",
@@ -1535,7 +1537,7 @@ dependencies = [
 [[package]]
 name = "awaken-scoped-migration"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation?rev=599c139bb224b9382fd938aec8d561a62d90c468#599c139bb224b9382fd938aec8d561a62d90c468"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a#8a0037c012fe63f496dad1772cdcbc89bbc03c5a"
 dependencies = [
  "sha2 0.10.9",
  "sqlx",
@@ -1545,7 +1547,7 @@ dependencies = [
 [[package]]
 name = "awaken-scoped-migration-sqlite"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation?rev=599c139bb224b9382fd938aec8d561a62d90c468#599c139bb224b9382fd938aec8d561a62d90c468"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a#8a0037c012fe63f496dad1772cdcbc89bbc03c5a"
 dependencies = [
  "awaken-scoped-migration",
  "rusqlite",

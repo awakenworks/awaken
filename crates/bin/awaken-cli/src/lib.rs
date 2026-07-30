@@ -44,6 +44,7 @@ pub use acp_local_credentials::{
     prepare_local_acp,
 };
 pub use console_assets::mount as mount_console;
+pub use console_assets::mount_with_navigation as mount_console_with_navigation;
 pub use hosted_control::{
     build_control_assembly_with_deployment, build_control_router_with_deployment,
     build_control_router_with_publication_resolver,

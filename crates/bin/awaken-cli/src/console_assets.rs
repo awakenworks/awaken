@@ -1,19 +1,32 @@
 //! Embedded Management console mounted over the canonical API router.
 
-use axum::Router;
+use awaken_api_contract::{SUITE_NAVIGATION_PATH, SuiteNavigation};
 use axum::body::Body;
 use axum::extract::Path;
 use axum::http::{StatusCode, header};
 use axum::response::Response;
 use axum::routing::get;
+use axum::{Json, Router};
 
 include!(concat!(env!("OUT_DIR"), "/embedded_console.rs"));
 
 pub fn mount(app: Router) -> Router {
+    mount_with_navigation(app, SuiteNavigation::default())
+}
+
+/// Mount the embedded console with its optional deployment-owned suite exit.
+pub fn mount_with_navigation(app: Router, navigation: SuiteNavigation) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/w/{*path}", get(index))
         .route("/assets/{*path}", get(asset))
+        .route(
+            SUITE_NAVIGATION_PATH,
+            get(move || {
+                let navigation = navigation.clone();
+                async move { Json(navigation) }
+            }),
+        )
         .fallback_service(app)
 }
 
@@ -80,6 +93,7 @@ mod tests {
     /// | request | embedded match | result |
     /// | `/` | index | SPA HTML |
     /// | `/assets/*` | yes | immutable asset |
+    /// | suite navigation | JSON projection | exact inert deployment value |
     /// | `/v1/*` | no | canonical API result |
     #[tokio::test]
     async fn embedded_console_serves_the_spa_and_preserves_the_api() {
@@ -107,5 +121,46 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(api.status(), StatusCode::CREATED);
+    }
+
+    /// Cause graph: configured hub -> exact projection; absent hub -> explicit
+    /// standalone projection; either state -> canonical API remains unshadowed.
+    ///
+    /// Decision table:
+    /// | rule | hub | effect |
+    /// | R1 | configured | exact JSON URL |
+    /// | R2 | absent | `hub_url: null` |
+    #[tokio::test]
+    async fn suite_navigation_projects_only_the_trusted_deployment_value() {
+        for (navigation, expected, rule) in [
+            (
+                SuiteNavigation {
+                    hub_url: Some("https://cloud.example/products".to_owned()),
+                },
+                serde_json::json!({"hub_url":"https://cloud.example/products"}),
+                "R1",
+            ),
+            (
+                SuiteNavigation::default(),
+                serde_json::json!({"hub_url":null}),
+                "R2",
+            ),
+        ] {
+            let response = mount_with_navigation(Router::new(), navigation)
+                .oneshot(
+                    Request::get(SUITE_NAVIGATION_PATH)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{rule}");
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                expected,
+                "{rule}"
+            );
+        }
     }
 }

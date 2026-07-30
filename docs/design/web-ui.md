@@ -146,6 +146,8 @@ Repository 是可变资源，只 pin 它们的配置版本，不 pin 内部内�
 - secret 创建只显示一次；列表、详情、日志和 telemetry 永不回显明文。
 - capability/authorization 结果用于 UX，服务端拒绝仍是最终事实。
 - 未提供的后端能力以明确 capability gate 展示，不发明占位领域对象。
+- 可选的托管套件入口只读取 Foundation `SuiteNavigation`；产品 Shell 不推导
+  Cloud 域名、不读取 sibling 产品拓扑，也不复制 Cloud 的 Products/Billing 页面。
 
 ## 8. 验收条件
 

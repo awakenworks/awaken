@@ -343,3 +343,28 @@ contract is validated through the IAM PAP before it is considered deployable.
 This release projection does not merge hosted closed code into Awaken. The open
 Management image remains independently deployable; a hosted release composes
 its immutable image and contract with external IAM lifecycle management.
+
+## Amendment (2026-07-30): hosted suite navigation is inert deployment presentation
+
+An Awaken console may be delivered alone or as one product in a hosted suite.
+Hosted composition supplies an optional `suite_hub_url` through the existing
+typed deployment document. The CLI validates that it is an exact HTTPS URL
+(loopback HTTP is allowed only in local mode) without credentials, query, or
+fragment, then projects Foundation's `SuiteNavigation` from
+`/.well-known/awaken-suite-navigation`.
+
+```text
+deployment suite_hub_url
+  -> Awaken composition root validation
+  -> inert same-origin SuiteNavigation
+  -> optional product menu in the Awaken-owned shell
+  -> full-page navigation to the external hub
+```
+
+The projection carries no Org, Workspace, account, entitlement, sibling
+product URL, or Billing fact. IAM remains the authentication/authorization
+authority; the hub remains the product launch authority; Awaken remains the
+Agent/Session/Run authority. Standalone mode returns `hub_url: null` and does
+not guess from Host, issuer, referrer, or an OAuth token. The browser menu is a
+navigation affordance, never an authorization decision or a second product
+topology.
