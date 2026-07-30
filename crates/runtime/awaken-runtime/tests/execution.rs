@@ -80,6 +80,12 @@ fn activation(fingerprint: &str) -> RunActivation {
     }
 }
 
+/// Test design for the split engine critical path.
+/// Causes: C1=fresh Execute, C2=deterministic text response, C3=commit and live
+/// sink configured. Effects: E1=NaturalEnd, E2=input/reply and state facts are
+/// committed, E3=live deltas remain separate from replay truth. Rule R1:
+/// C1+C2+C3 -> E1+E2+E3. This crosses run_commands, run_loop, inference,
+/// progress, and finalize without relying on module-local implementation detail.
 #[tokio::test]
 async fn one_model_step_commits_facts_and_streams_progress() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm("hi there")));

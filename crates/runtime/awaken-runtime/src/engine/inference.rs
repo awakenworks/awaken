@@ -292,3 +292,203 @@ async fn infer_with_retry_inner(
         }
     }
 }
+
+/// Forwards a step's streamed text chunks to the live stream as `OutputText`
+/// events. Live progress only — the committed message comes from the returned
+/// response, never these chunks (G10/G13).
+pub(super) struct StreamDeltaSink<'a> {
+    pub(super) context: &'a RuntimeRunContext,
+    pub(super) run_id: &'a RunId,
+}
+
+#[async_trait]
+impl DeltaSink for StreamDeltaSink<'_> {
+    async fn on_text(&self, chunk: &str) {
+        emit(
+            self.context,
+            self.run_id,
+            AgentEvent::Delta(Delta::TextDelta {
+                delta: chunk.to_string(),
+            }),
+        )
+        .await;
+    }
+
+    async fn on_reasoning(&self, chunk: &str) {
+        emit(
+            self.context,
+            self.run_id,
+            AgentEvent::Delta(Delta::ReasoningDelta {
+                delta: chunk.to_string(),
+            }),
+        )
+        .await;
+    }
+
+    async fn on_tool_call_delta(&self, call_id: &str, tool_id: &str, args_delta: &str) {
+        emit(
+            self.context,
+            self.run_id,
+            AgentEvent::Delta(Delta::ToolCallDelta {
+                id: call_id.to_string(),
+                name: tool_id.to_string(),
+                args_delta: args_delta.to_string(),
+            }),
+        )
+        .await;
+    }
+}
+
+/// The model-facing prompt appended after a confirmed partial when continuing an
+/// interrupted stream, so the model resumes instead of regenerating. Same intent
+/// as the in-place `MaxTokens` continuation, but for a transient mid-stream drop.
+const STREAM_CONTINUATION_PROMPT: &str = "Your previous response was interrupted \
+    mid-stream. Continue from exactly where you left off, without repeating any \
+    text you already wrote.";
+
+/// The current attempt's captured partial: streamed text plus any tool calls
+/// seen (each with its accumulated-so-far raw argument text, last-wins by id).
+struct Snapshot {
+    text: String,
+    tools: Vec<PartialToolCall>,
+}
+
+/// Wraps the live `DeltaSink` to also capture the current attempt's streamed
+/// partial, so a mid-stream interruption can be *continued from it* rather than
+/// regenerated from scratch (R1–R3 recovery). Text and tool progress are
+/// forwarded to `inner` unchanged, so the live stream is untouched. Tool
+/// arguments arrive as de-accumulated suffix fragments (see `on_tool_call_delta`)
+/// which are appended into raw JSON text; whether it parses later decides
+/// completed-vs-in-flight.
+struct ContinuationSink<'a> {
+    inner: &'a dyn DeltaSink,
+    text: std::sync::Mutex<String>,
+    tools: std::sync::Mutex<Vec<PartialToolCall>>,
+}
+
+impl<'a> ContinuationSink<'a> {
+    fn new(inner: &'a dyn DeltaSink) -> Self {
+        Self {
+            inner,
+            text: std::sync::Mutex::new(String::new()),
+            tools: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The current attempt's captured partial.
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            text: self.text.lock().expect("continuation buffer").clone(),
+            tools: self.tools.lock().expect("continuation tools").clone(),
+        }
+    }
+
+    /// Reset per-attempt capture before a fresh attempt streams.
+    fn reset(&self) {
+        self.text.lock().expect("continuation buffer").clear();
+        self.tools.lock().expect("continuation tools").clear();
+    }
+}
+
+#[async_trait]
+impl DeltaSink for ContinuationSink<'_> {
+    async fn on_text(&self, chunk: &str) {
+        // Guard drops at the statement end, never held across the await below.
+        self.text
+            .lock()
+            .expect("continuation buffer")
+            .push_str(chunk);
+        self.inner.on_text(chunk).await;
+    }
+
+    async fn on_reasoning(&self, chunk: &str) {
+        self.inner.on_reasoning(chunk).await;
+    }
+
+    async fn on_tool_call_delta(&self, call_id: &str, tool_id: &str, args_delta: &str) {
+        // The provider adapter now hands a suffix `args_delta`, so accumulate them
+        // per call id to rebuild the running raw JSON — a later parse decides whether
+        // the call had finished when a mid-stream drop lands mid-arguments.
+        {
+            let mut tools = self.tools.lock().expect("continuation tools");
+            match tools.iter_mut().find(|t| t.call_id == call_id) {
+                Some(existing) => {
+                    existing.tool_id = tool_id.to_string();
+                    existing.raw_arguments.push_str(args_delta);
+                }
+                None => tools.push(PartialToolCall {
+                    call_id: call_id.to_string(),
+                    tool_id: tool_id.to_string(),
+                    raw_arguments: args_delta.to_string(),
+                }),
+            }
+        }
+        self.inner
+            .on_tool_call_delta(call_id, tool_id, args_delta)
+            .await;
+    }
+}
+
+/// The tool calls whose accumulated arguments parse as complete JSON — i.e. the
+/// model finished emitting them before the drop, so they can be executed as-is
+/// (R2). A call still in flight (unparseable / empty-named args) is excluded.
+fn parse_completed(tools: &[PartialToolCall]) -> Vec<ToolCall> {
+    tools
+        .iter()
+        .filter(|tool| !tool.tool_id.is_empty())
+        .filter_map(|tool| {
+            serde_json::from_str::<serde_json::Value>(&tool.raw_arguments)
+                .ok()
+                .map(|arguments| ToolCall {
+                    call_id: tool.call_id.clone(),
+                    tool_id: tool.tool_id.clone(),
+                    arguments,
+                })
+        })
+        .collect()
+}
+
+/// Synthesize the step the model had produced when a drop interrupted it after
+/// its tool calls were complete (R2): the salvaged text followed by the completed
+/// tool-use blocks, stopped for tool use. The engine's tool loop runs these
+/// without another model round-trip.
+fn synthesized_tool_response(text: &str, calls: Vec<ToolCall>) -> ChatResponse {
+    let mut blocks = Vec::new();
+    if !text.is_empty() {
+        blocks.push(ContentBlock::text(text.to_string()));
+    }
+    for call in calls {
+        blocks.push(ContentBlock::tool_use(
+            call.call_id,
+            call.tool_id,
+            call.arguments,
+        ));
+    }
+    ChatResponse {
+        output: AssistantOutput::from_blocks(blocks),
+        usage: None,
+        stop_reason: Some(StopReason::ToolUse),
+    }
+}
+
+/// Per-run wiring for durable interrupted-stream checkpoints (Phase 3), present
+/// only when the run context supplies a `StreamCheckpointStore`. Holds the keys a
+/// flush needs; the store handle is borrowed for the run's duration.
+pub(super) struct CheckpointCtx<'a> {
+    pub(super) store: &'a dyn StreamCheckpointStore,
+    pub(super) run_id: String,
+    pub(super) thread_id: String,
+    pub(super) model: String,
+}
+
+impl CheckpointCtx<'_> {
+    fn checkpoint(&self, text: String, tools: Vec<PartialToolCall>) -> StreamCheckpoint {
+        StreamCheckpoint {
+            run_id: self.run_id.clone(),
+            thread_id: self.thread_id.clone(),
+            model: self.model.clone(),
+            partial_text: text,
+            partial_tools: tools,
+        }
+    }
+}
