@@ -244,14 +244,13 @@ pub struct SharedHost {
     /// plugin (a `BeforeInference` hook) and a matching `KeepLast` window so summarized
     /// older turns leave the model view.
     compaction: Option<crate::compact::Compaction>,
-    /// The config data plane, when the server exposes `/v1/config/*`. A thread's
-    /// runtime config is the installed (published) config for its agent, if any,
-    /// else the built-in default (slice A).
-    pub(crate) config_service: Option<Arc<crate::config_plane::ConfigService>>,
-    /// Runtime-only view of immutable Agent publications. This is also populated
-    /// by `with_config_service`; embedded hosts may supply a static source.
+    /// Runtime-only view of immutable Agent publications.
     pub(crate) agent_publications:
         Option<Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>>,
+    /// Current registered Agent bindings used only as intrinsic Resource
+    /// reclamation evidence.
+    pub(crate) agent_resource_references:
+        Option<Arc<dyn awaken_resource_contract::AgentResourceReferenceSource>>,
     /// The host's loopback MCP relay (α-reference resolver), started lazily on the first
     /// sandboxed ACP session that stages an authenticated MCP server. It holds the real
     /// bearers host-side and injects them when forwarding the sandbox's MCP calls, so the

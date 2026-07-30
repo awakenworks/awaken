@@ -72,6 +72,30 @@ impl ConfigPlaneManagedAgentRepository {
         ScopeId::from(workspace_id)
     }
 
+    async fn publication_for_read(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Result<Option<awaken_config_store::StoredPublication>, ManagedAgentError> {
+        let direct = self
+            .plane
+            .publication_at_revision(&Self::scope(workspace_id), agent_id, source_revision)
+            .await
+            .map_err(ManagedAgentError::Storage)?;
+        if direct.is_some() || workspace_id != self.platform_workspace {
+            return Ok(direct);
+        }
+        self.plane
+            .publication_at_revision(
+                &ScopeId::from(RESERVED_ADMIN_SCOPE),
+                agent_id,
+                source_revision,
+            )
+            .await
+            .map_err(ManagedAgentError::Storage)
+    }
+
     async fn versioned_for_read(
         &self,
         workspace_id: &str,
@@ -88,46 +112,46 @@ impl ConfigPlaneManagedAgentRepository {
         if let Some(current) = current {
             let visible = current.config.lifecycle() != AgentLifecycle::Published
                 || self
-                    .plane
-                    .service()
-                    .installed_in(workspace_id, id)
-                    .is_some()
-                || self
-                    .plane
-                    .has_published_revision(&Self::scope(workspace_id), id, current.revision)
-                    .await
-                    .map_err(ManagedAgentError::Storage)?;
+                    .publication_for_read(workspace_id, id, current.revision)
+                    .await?
+                    .is_some();
             return Ok(visible.then_some(current));
         }
-        if workspace_id != self.platform_workspace
-            || self
-                .plane
-                .service()
-                .installed_in(workspace_id, id)
-                .is_none()
-        {
+        if workspace_id != self.platform_workspace {
             return Ok(None);
         }
-        self.plane
+        let reserved = self
+            .plane
             .get_versioned(&ScopeId::from(RESERVED_ADMIN_SCOPE), id)
             .await
-            .map_err(ManagedAgentError::Storage)
+            .map_err(ManagedAgentError::Storage)?;
+        let Some(reserved) = reserved else {
+            return Ok(None);
+        };
+        Ok(self
+            .publication_for_read(workspace_id, id, reserved.revision)
+            .await?
+            .is_some()
+            .then_some(reserved))
     }
 
-    fn project_current(&self, workspace_id: &str, mut revision: AgentConfigRevision) -> Agent {
-        if let Some(snapshot) = self
-            .plane
-            .service()
-            .installed_in(workspace_id, &revision.config.id)
+    async fn project_current(
+        &self,
+        workspace_id: &str,
+        mut revision: AgentConfigRevision,
+    ) -> Result<Agent, ManagedAgentError> {
+        if let Some(publication) = self
+            .publication_for_read(workspace_id, &revision.config.id, revision.revision)
+            .await?
             && matches!(
                 &revision.config.model_binding,
                 ModelSelection::Auto | ModelSelection::Profile { .. }
             )
         {
-            let binding = snapshot.resolved_spec.model_binding.binding;
+            let binding = publication.snapshot.resolved_spec.model_binding.binding;
             revision.config.model_binding = ModelSelection::Pinned(binding);
         }
-        project(revision)
+        Ok(project(revision))
     }
 
     async fn publish_strict(&self, scope: &ScopeId, id: &str) -> Result<(), ManagedAgentError> {
@@ -584,7 +608,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                         ManagedAgentError::Storage("published Agent is not readable".into())
                     })?;
                 let _ = revision;
-                Ok(self.project_current(workspace_id, current))
+                self.project_current(workspace_id, current).await
             }
             ConfigWrite::Conflict { .. } => Err(ManagedAgentError::Conflict(
                 "generated Agent id already exists".into(),
@@ -606,10 +630,11 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                 .find(|revision| revision.version == version)
                 .ok_or(ManagedAgentError::NotFound);
         }
-        self.versioned_for_read(workspace_id, id)
+        let revision = self
+            .versioned_for_read(workspace_id, id)
             .await?
-            .map(|revision| self.project_current(workspace_id, revision))
-            .ok_or(ManagedAgentError::NotFound)
+            .ok_or(ManagedAgentError::NotFound)?;
+        self.project_current(workspace_id, revision).await
     }
 
     async fn list(
@@ -636,19 +661,13 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                 .ok_or_else(|| ManagedAgentError::Storage("listed Agent disappeared".into()))?;
             if versioned.config.lifecycle() == AgentLifecycle::Published
                 && self
-                    .plane
-                    .service()
-                    .installed_in(workspace_id, &config.id)
+                    .publication_for_read(workspace_id, &config.id, versioned.revision)
+                    .await?
                     .is_none()
-                && !self
-                    .plane
-                    .has_published_revision(&scope, &config.id, versioned.revision)
-                    .await
-                    .map_err(ManagedAgentError::Storage)?
             {
                 continue;
             }
-            let agent = self.project_current(workspace_id, versioned);
+            let agent = self.project_current(workspace_id, versioned).await?;
             if !params.include_archived && agent.archived_at.is_some() {
                 continue;
             }
@@ -800,7 +819,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                         ManagedAgentError::Storage("published Agent is not readable".into())
                     })?;
                 let _ = revision;
-                Ok(self.project_current(workspace_id, current))
+                self.project_current(workspace_id, current).await
             }
             ConfigWrite::Conflict { current_revision } => Err(ManagedAgentError::Conflict(
                 format!("Agent changed concurrently (current version: {current_revision:?})"),
@@ -837,7 +856,10 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .map_err(ManagedAgentError::Storage)?
         {
             ConfigWrite::Applied { revision } => {
-                self.plane.uninstall(workspace_id, id);
+                self.plane
+                    .withdraw(workspace_id, id, revision)
+                    .await
+                    .map_err(ManagedAgentError::Storage)?;
                 Ok(project(AgentConfigRevision { config, revision }))
             }
             ConfigWrite::Conflict { current_revision } => Err(ManagedAgentError::Conflict(
@@ -870,7 +892,10 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .map_err(ManagedAgentError::Storage)?
         {
             ConfigWrite::Applied { revision } => {
-                self.plane.uninstall(workspace_id, id);
+                self.plane
+                    .withdraw(workspace_id, id, revision)
+                    .await
+                    .map_err(ManagedAgentError::Storage)?;
                 Ok(project(AgentConfigRevision { config, revision }))
             }
             ConfigWrite::Conflict { current_revision } => Err(ManagedAgentError::Conflict(
@@ -892,14 +917,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .list_revisions(&Self::scope(workspace_id), id)
             .await
             .map_err(ManagedAgentError::Storage)?;
-        if revisions.is_empty()
-            && workspace_id == self.platform_workspace
-            && self
-                .plane
-                .service()
-                .installed_in(workspace_id, id)
-                .is_some()
-        {
+        if revisions.is_empty() && workspace_id == self.platform_workspace {
             revisions = self
                 .plane
                 .list_revisions(&ScopeId::from(RESERVED_ADMIN_SCOPE), id)
@@ -921,6 +939,7 @@ mod tests {
         ConfigService, ModelPublicationResolver, ResolvedPublicationModels, StaticToolCatalog,
     };
     use awaken_config_store::{ModelSelection, SqliteConfigStore};
+    use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
     use awaken_protocol_managed::types::agent::{AgentCreateParams, AgentUpdateParams, ModelInput};
     use awaken_runtime_contract::resolved::ModelBinding;
     use serde_json::json;
@@ -1024,16 +1043,32 @@ mod tests {
     }
 
     fn plane(path: &str) -> ConfigPlane {
-        ConfigPlane::new(
-            Arc::new(ConfigService::new(Arc::new(TestModelResolver))),
-            Arc::new(SqliteConfigStore::open(path).expect("config store")),
-            Arc::new(StaticToolCatalog(Vec::new())),
+        plane_with_catalog(path).0
+    }
+
+    fn plane_with_catalog(path: &str) -> (ConfigPlane, Arc<ExecutableAgentCatalog>) {
+        let catalog = Arc::new(ExecutableAgentCatalog::new());
+        (
+            ConfigPlane::new(
+                Arc::new(ConfigService::new(
+                    Arc::new(TestModelResolver),
+                    Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
+                )),
+                Arc::new(SqliteConfigStore::open(path).expect("config store")),
+                Arc::new(StaticToolCatalog(Vec::new())),
+            ),
+            catalog,
         )
     }
 
     fn rejecting_plane(path: &str) -> ConfigPlane {
         ConfigPlane::new(
-            Arc::new(ConfigService::new(Arc::new(RejectModelResolver))),
+            Arc::new(ConfigService::new(
+                Arc::new(RejectModelResolver),
+                Arc::new(LocalExecutableAgentRegistrar::new(Arc::new(
+                    ExecutableAgentCatalog::new(),
+                ))),
+            )),
             Arc::new(SqliteConfigStore::open(path).expect("config store")),
             Arc::new(StaticToolCatalog(Vec::new())),
         )
@@ -1106,7 +1141,7 @@ mod tests {
         // | L5   | Archived  | archive | no                 | yes            | no new revision |
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
-        let plane = plane(path.to_str().unwrap());
+        let (plane, catalog) = plane_with_catalog(path.to_str().unwrap());
         let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
 
         let created = repository
@@ -1119,17 +1154,12 @@ mod tests {
             &created.skills[0],
             AgentSkill::Custom { skill_id, .. } if skill_id == "skill-docs"
         ));
-        assert!(
-            plane
-                .service()
-                .installed_in("workspace-a", &created.id)
-                .is_some()
-        );
+        assert!(catalog.current("workspace-a", &created.id).is_some());
         assert_eq!(created.status, AgentStatus::Published);
-        let fingerprint = plane
-            .service()
-            .installed_in("workspace-a", &created.id)
+        let fingerprint = catalog
+            .current("workspace-a", &created.id)
             .expect("published")
+            .snapshot
             .fingerprint
             .0;
 
@@ -1140,13 +1170,7 @@ mod tests {
         assert_eq!(disabled.version, 2, "L1");
         assert_eq!(disabled.status, AgentStatus::Disabled, "L1");
         assert!(disabled.disabled_at.is_some(), "L1");
-        assert!(
-            plane
-                .service()
-                .installed_in("workspace-a", &created.id)
-                .is_none(),
-            "L1"
-        );
+        assert!(catalog.current("workspace-a", &created.id).is_none(), "L1");
         assert!(
             plane
                 .publication(&ScopeId::from("workspace-a"), &fingerprint)
@@ -1253,7 +1277,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
         let id = {
-            let plane = plane(path.to_str().unwrap());
+            let (plane, catalog) = plane_with_catalog(path.to_str().unwrap());
             let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
             let mut params = create_params("controlled");
             params.model = serde_json::from_value(json!({
@@ -1265,12 +1289,11 @@ mod tests {
             let created = repository.create("workspace-a", params).await.unwrap();
             assert_eq!(created.model.speed, Some(ModelSpeed::Fast));
             assert_eq!(created.model.effort, Some(ModelEffort::Xhigh));
-            let installed = plane
-                .service()
-                .installed_in("workspace-a", &created.id)
+            let installed = catalog
+                .current("workspace-a", &created.id)
                 .expect("create publishes an executable revision");
             assert_eq!(
-                installed.resolved_spec.plugin_config.inference,
+                installed.snapshot.resolved_spec.plugin_config.inference,
                 InferenceOptions {
                     speed: Some(InferenceSpeed::Fast),
                     effort: Some(ReasoningEffort::Xhigh),
@@ -1279,7 +1302,7 @@ mod tests {
             created.id
         };
 
-        let plane = plane(path.to_str().unwrap());
+        let (plane, catalog) = plane_with_catalog(path.to_str().unwrap());
         let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
         let restored = repository.retrieve("workspace-a", &id, None).await.unwrap();
         assert_eq!(restored.model.speed, Some(ModelSpeed::Fast));
@@ -1288,12 +1311,11 @@ mod tests {
             .publish(&ScopeId::from("workspace-a"), &id)
             .await
             .expect("reconciliation republishes the restored authoring revision");
-        let installed = plane
-            .service()
-            .installed_in("workspace-a", &id)
+        let installed = catalog
+            .current("workspace-a", &id)
             .expect("restart restores the same executable publication");
         assert_eq!(
-            installed.resolved_spec.plugin_config.inference,
+            installed.snapshot.resolved_spec.plugin_config.inference,
             InferenceOptions {
                 speed: Some(InferenceSpeed::Fast),
                 effort: Some(ReasoningEffort::Xhigh),

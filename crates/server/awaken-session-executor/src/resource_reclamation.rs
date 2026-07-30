@@ -96,29 +96,8 @@ impl ResourcePurgeGuard for HostResourceReclamation {
                 reference_id,
             });
         }
-        if let Some(config_service) = &self.host.config_service {
-            let agents = match target.kind {
-                ResourceKind::File => config_service.agents_referencing_input(
-                    &target.workspace_id,
-                    &awaken_config_resolver::InputResourceId::File(
-                        awaken_config_resolver::FileId::from(target.resource_id.clone()),
-                    ),
-                ),
-                ResourceKind::MemoryStore => config_service.agents_referencing_input(
-                    &target.workspace_id,
-                    &awaken_config_resolver::InputResourceId::MemoryStore(
-                        awaken_config_resolver::MemoryStoreId::from(target.resource_id.clone()),
-                    ),
-                ),
-                ResourceKind::Repository => config_service.agents_referencing_input(
-                    &target.workspace_id,
-                    &awaken_config_resolver::InputResourceId::Repository(
-                        awaken_config_resolver::RepositoryId::from(target.resource_id.clone()),
-                    ),
-                ),
-                ResourceKind::Skill => config_service
-                    .agents_referencing_skill(&target.workspace_id, &target.resource_id),
-            };
+        if let Some(source) = &self.host.agent_resource_references {
+            let agents = source.agents_referencing(target);
             blockers.extend(agents.into_iter().map(|agent_id| ResourceReference {
                 kind: ResourceReferenceKind::AgentBinding,
                 reference_id: agent_id,

@@ -42,7 +42,8 @@ CANONICAL_REQUIREMENTS = {
         "ExecutableAgentRegistrar",
         "register",
         "StoredPublication",
-        "ExecutableAgentCatalogRepository",
+        "ExecutableAgentCatalog",
+        "LocalExecutableAgentRegistrar",
     ),
     Path("docs/design/config-to-run-execution-flow.md"): (
         "## Flow One: Configuration To Application",

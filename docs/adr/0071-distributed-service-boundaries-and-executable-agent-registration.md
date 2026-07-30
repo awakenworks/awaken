@@ -9,9 +9,10 @@
 
 ## Context
 
-The implemented publication path persists a `StoredPublication` and then writes
-the same `ExecutableAgentSnapshot` into a process-local `InstalledAgentCatalog`.
-The implemented Deployment adapter likewise calls the ordinary Managed Session
+Before this ADR's first implementation slice, publication persisted a
+`StoredPublication` and then wrote the same `ExecutableAgentSnapshot` into a
+process-local catalog owned by Config Service. The Deployment adapter still
+calls the ordinary Managed Session
 creation command in the same process. Remote Workers already use authenticated,
 claim-fenced dispatch and commit transports, but publication availability,
 Deployment-to-Session launch, exact credential materialization, and per-kind
@@ -54,10 +55,16 @@ for this boundary.
 
 ### D2: One port, local and remote adapters
 
-AllInOne uses a local `ExecutableAgentRegistrar` adapter. A split deployment uses
-`CoordinatorExecutableAgentClient` and `RegisterExecutableAgentHandler`. Startup
-rehydration calls the same registrar; it does not maintain a second warm-install
-path.
+AllInOne uses `LocalExecutableAgentRegistrar`. A split deployment uses
+`HttpExecutableAgentRegistrar` and the authenticated
+`executable_agent_registration_router`. These are transport adapters for the
+same port and commands, not a second registration service or state machine.
+Startup rehydration calls the same registrar; it does not maintain a second
+warm-install path.
+
+The private HTTP boundary requires a bearer token. Its client retries only
+idempotent network, availability, and storage failures; validation,
+authentication, and semantic conflicts return immediately.
 
 Publication success means the Coordinator acknowledged registration. A durable
 publication may exist while registration is temporarily unavailable; that call
@@ -106,6 +113,36 @@ Control owns authoring and publication stores. Coordinator owns executable Agent
 registration, Deployment, Session, dispatch, and commit stores. Resource
 providers own their content. Worker owns only ephemeral execution state and must
 not receive Control or Coordinator database connections.
+
+## Implementation Status
+
+The local and remote registration-boundary slices are complete:
+
+- `ConfigService::publish` persists first and calls the sole
+  `ExecutableAgentRegistrar`; registration availability/storage failures map to
+  retryable HTTP 503 responses while the publication remains durable;
+- `ExecutableAgentRegistration` reuses the existing immutable snapshot and
+  `AgentConfigView`, and carries only boundary identity plus Hand placement;
+- `ExecutableAgentWithdrawal` preserves exact history while removing current
+  availability after disable/archive;
+- `ExecutableAgentCatalog` is the single Coordinator execution projection for
+  current, exact-revision, fingerprint, Session-view, Hand, and Resource-reference
+  reads;
+- AllInOne and scenario composition use `LocalExecutableAgentRegistrar`, and
+  startup recovery replays durable publications through that same port;
+- split composition can use `HttpExecutableAgentRegistrar` and the authenticated
+  registration router; their real-network tests cover authorization,
+  idempotency, transient retry, conflict, withdrawal, and incomplete endpoint
+  configuration;
+- `PostgresExecutableAgentRegistrar` durably appends the existing registration
+  and withdrawal commands before changing the rebuildable projection, and
+  startup replays those commands through the same catalog state machine;
+- the superseded process-local catalog, runtime projection wrapper, and separate
+  warm-install path have been removed.
+
+Split-role wiring, remote Deployment Session launch, exact Credential/Resource
+adapters, and role-aware data-ownership checks remain subsequent ADR-0071
+slices.
 
 ## Consequences
 

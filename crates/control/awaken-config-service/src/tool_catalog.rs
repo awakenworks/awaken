@@ -3,7 +3,7 @@
 //! Which tools an agent config may *name* is a projection of the global tool catalog
 //! over the request's scope — not a field on the tool, and not a duplicated
 //! `ConfigService`. The [`ToolCatalogSource`] port answers "which descriptors exist
-//! for this scope"; [`ConfigService`](crate::config_plane::ConfigService) feeds the
+//! for this scope"; [`ConfigService`](crate::config_service::ConfigService) feeds the
 //! answer to `compile`, so a config that names a tool absent from its scope's catalog
 //! hits `UnknownTool` at compile time (fail-closed) — and the tool's very existence
 //! is never disclosed to other tenants.
