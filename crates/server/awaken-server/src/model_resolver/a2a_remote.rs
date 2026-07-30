@@ -1,6 +1,8 @@
 //! A2A Agent Card discovery and remote-counterparty publication.
 
-use awaken_config_resolver::{CredentialCandidateSet, credential_candidates, derive_vendor_pool};
+use awaken_config_resolver::{
+    CredentialCandidateSet, CredentialSelectionContext, credential_candidates, derive_vendor_pool,
+};
 use awaken_credential_vault::{
     CredentialBinding, CredentialKind, CredentialSource, CredentialStatus,
 };
@@ -92,12 +94,14 @@ impl CatalogModelPublicationResolver {
             let candidates = credential_candidates(
                 &derived,
                 &lookup,
-                Some(&origin),
-                None,
-                Some(&binding.backend_ref),
-                None,
-                Some(workspace.as_str()),
-                0,
+                CredentialSelectionContext {
+                    offering_provider: Some(&origin),
+                    offering_endpoint: None,
+                    backend_ref: Some(&binding.backend_ref),
+                    availability: None,
+                    expected_workspace: Some(workspace.as_str()),
+                    selection_sequence: 0,
+                },
             )
             .map_err(|error| unavailable(error.to_string()))?;
             let source = match candidates {

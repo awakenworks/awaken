@@ -357,9 +357,9 @@ impl<'de> Deserialize<'de> for ModelSelection {
                 target,
                 backend_ref,
                 configuration,
-            } if !target.model_id.trim().is_empty()
-                && !backend_ref.trim().is_empty()
-                && !(target.protocol_endpoint_id.is_some() && target.endpoint_name.is_some()) =>
+            } if !(target.model_id.trim().is_empty()
+                || backend_ref.trim().is_empty()
+                || target.protocol_endpoint_id.is_some() && target.endpoint_name.is_some()) =>
             {
                 Ok(Self::Target {
                     target,

@@ -1,6 +1,8 @@
 //! Secret-free credential selection and Provider publication projection.
 
-use awaken_config_resolver::{CredentialCandidateSet, SourceLookup, credential_candidates};
+use awaken_config_resolver::{
+    CredentialCandidateSet, CredentialSelectionContext, SourceLookup, credential_candidates,
+};
 use awaken_credential_vault::{
     CredentialBinding, CredentialMaterialOrigin, CredentialPool, CredentialSource,
     CredentialStatus, SelectionPolicy,
@@ -83,12 +85,14 @@ impl CatalogModelPublicationResolver {
         let candidates = credential_candidates(
             credential_binding,
             lookup,
-            Some(offering.provider_id.as_str()),
-            Some(offering.protocol_endpoint_id.as_str()),
-            Some(&binding.backend_ref),
-            None,
-            Some(workspace.as_str()),
-            sequence,
+            CredentialSelectionContext {
+                offering_provider: Some(offering.provider_id.as_str()),
+                offering_endpoint: Some(offering.protocol_endpoint_id.as_str()),
+                backend_ref: Some(&binding.backend_ref),
+                availability: None,
+                expected_workspace: Some(workspace.as_str()),
+                selection_sequence: sequence,
+            },
         )
         .map_err(|error| match credential_binding {
             CredentialBinding::Exact {

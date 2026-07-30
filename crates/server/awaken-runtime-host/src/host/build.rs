@@ -33,30 +33,15 @@ impl ResourcePlane {
         }
     }
 
-    /// Decompose the wiring value at an outer composition root that also mounts
-    /// the resource APIs. Every capability still refers to the same opened family.
-    pub fn into_parts(
-        self,
-    ) -> (
-        Arc<dyn awaken_file_store::FileStore>,
-        Arc<dyn awaken_resource_contract::FileCatalog>,
-        Arc<dyn awaken_memory_store::MemoryRepository>,
-        Arc<dyn awaken_skill_store::SkillStore>,
-        Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>,
-    ) {
-        (
-            self.file_store,
-            self.file_catalog,
-            self.memory_repository,
-            self.skill_store,
-            self.lifecycle,
-        )
-    }
-
     /// Clone the Memory repository so an outer composition root can build the
     /// matching worker-side mounter before moving this complete plane into the Host.
     pub fn memory_repository(&self) -> Arc<dyn awaken_memory_store::MemoryRepository> {
         self.memory_repository.clone()
+    }
+
+    /// Clone the Skill store for management API composition.
+    pub fn skill_store(&self) -> Arc<dyn awaken_skill_store::SkillStore> {
+        self.skill_store.clone()
     }
 }
 

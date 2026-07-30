@@ -315,9 +315,7 @@ impl SharedHost {
         attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
         commit: Arc<HostCommit>,
         stream_checkpoint: Arc<dyn StreamCheckpointStore>,
-        terminal_observers: &[Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>],
-        session_plugins: &[Arc<dyn awaken_runtime_contract::plugin::Plugin>],
-        session_hand: Option<Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>,
+        run_context: awaken_runtime_contract::RuntimeRunContext,
     ) -> Result<
         (
             Arc<dyn RunIngress>,
@@ -353,18 +351,6 @@ impl SharedHost {
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
-        let run_context = terminal_observers.iter().cloned().fold(
-            awaken_runtime_contract::RuntimeRunContext::new(),
-            awaken_runtime_contract::RuntimeRunContext::with_terminal_observer,
-        );
-        let run_context = session_plugins.iter().cloned().fold(
-            run_context,
-            awaken_runtime_contract::RuntimeRunContext::with_session_plugin,
-        );
-        let run_context = match session_hand {
-            Some(hand) => run_context.with_tool_executor(hand),
-            None => run_context,
-        };
         let mut ingress = DurableRunIngress::with_owner_and_resolver(
             runtime,
             store,
@@ -1025,15 +1011,28 @@ impl SharedHost {
             hand_placement.bind_environment_hand(hand);
         }
         let session_hand = hand_placement.session_hand().cloned();
+        // Cause/effect composition rules: terminal observers and Session plugins
+        // are additive; an Environment/placement hand overrides only the tool
+        // executor; one canonical RuntimeRunContext crosses the ingress boundary.
+        let run_context = terminal_observers.iter().cloned().fold(
+            awaken_runtime_contract::RuntimeRunContext::new(),
+            awaken_runtime_contract::RuntimeRunContext::with_terminal_observer,
+        );
+        let run_context = mcp.plugins.iter().cloned().fold(
+            run_context,
+            awaken_runtime_contract::RuntimeRunContext::with_session_plugin,
+        );
+        let run_context = match session_hand {
+            Some(hand) => run_context.with_tool_executor(hand),
+            None => run_context,
+        };
         let (ingress, durable_ingress) = self
             .build_ingress(
                 runtime.clone(),
                 attempt_executor,
                 commit.clone(),
                 stream_checkpoint.clone(),
-                &terminal_observers,
-                &mcp.plugins,
-                session_hand,
+                run_context,
             )
             .await?;
         let durable = durable_ingress.is_some();

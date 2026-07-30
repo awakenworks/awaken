@@ -133,19 +133,35 @@ impl<'a> CredentialCandidateSet<'a> {
     }
 }
 
+/// Resolver-bound selection inputs that do not own credential or catalog data.
+/// Keeping this bundle explicit prevents publication and preview callers from
+/// growing parallel positional parameter conventions.
+#[derive(Clone, Copy, Default)]
+pub struct CredentialSelectionContext<'a> {
+    pub offering_provider: Option<&'a str>,
+    pub offering_endpoint: Option<&'a str>,
+    pub backend_ref: Option<&'a str>,
+    pub availability: Option<(&'a AvailabilityLedger, u64)>,
+    pub expected_workspace: Option<&'a str>,
+    pub selection_sequence: u64,
+}
+
 /// Resolve one binding into a canonical, policy-ordered source set without
 /// materializing secrets. `selection_sequence` is meaningful only for
 /// `RotateSpread`; publication/application orchestration owns that sequence.
 pub fn credential_candidates<'a>(
     binding: &CredentialBinding,
     sources: &'a dyn SourceLookup,
-    offering_provider: Option<&str>,
-    offering_endpoint: Option<&str>,
-    backend_ref: Option<&str>,
-    availability: Option<(&AvailabilityLedger, u64)>,
-    expected_workspace: Option<&str>,
-    selection_sequence: u64,
+    context: CredentialSelectionContext<'_>,
 ) -> Result<CredentialCandidateSet<'a>, ResolveError> {
+    let CredentialSelectionContext {
+        offering_provider,
+        offering_endpoint,
+        backend_ref,
+        availability,
+        expected_workspace,
+        selection_sequence,
+    } = context;
     match binding {
         CredentialBinding::None => Ok(CredentialCandidateSet::None),
         CredentialBinding::Brokered => Ok(CredentialCandidateSet::Brokered),

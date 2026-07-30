@@ -462,23 +462,20 @@ async fn open_deployment_stores(
     }
 
     ensure_parent(&cfg.sessions)?;
-    let (sessions, deployments, memory_extractions, dream_repository): (
-        Arc<dyn awaken_session_contract::ManagedSessionRepository>,
-        Arc<dyn awaken_protocol_managed::DeploymentRepository>,
-        Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>,
-        Arc<dyn awaken_protocol_managed::DreamRepository>,
-    ) = match &cfg.sessions {
+    let sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>;
+    let deployments: Arc<dyn awaken_protocol_managed::DeploymentRepository>;
+    let memory_extractions: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>;
+    let dream_repository: Arc<dyn awaken_protocol_managed::DreamRepository>;
+    match &cfg.sessions {
         StoreBackend::Sqlite(p) => {
             let repository = Arc::new(
                 awaken_session_store::SqliteManagedSessionRepository::open(&path(p))
                     .map_err(|error| format!("open sessions SQLite {}: {error}", p.display()))?,
             );
-            (
-                repository.clone(),
-                repository.clone(),
-                repository.clone(),
-                repository,
-            )
+            sessions = repository.clone();
+            deployments = repository.clone();
+            memory_extractions = repository.clone();
+            dream_repository = repository;
         }
         StoreBackend::Postgres(url) => {
             let repository = Arc::new(
@@ -495,14 +492,12 @@ async fn open_deployment_stores(
                 }
                 .map_err(|error| format!("connect sessions Postgres: {error}"))?,
             );
-            (
-                repository.clone(),
-                repository.clone(),
-                repository.clone(),
-                repository,
-            )
+            sessions = repository.clone();
+            deployments = repository.clone();
+            memory_extractions = repository.clone();
+            dream_repository = repository;
         }
-    };
+    }
 
     ensure_parent(&cfg.config)?;
     let config: Arc<dyn awaken_config_store::ScopedConfigRegistry> = match &cfg.config {
@@ -1006,8 +1001,10 @@ async fn assemble_process_router(
         config,
         environments,
     } = stores;
-    let (file_store, file_catalog, memory_store, skill_store, resource_lifecycle) =
-        resource_plane.into_parts();
+    // Cause/effect composition rule: one selected ResourcePlane is moved intact
+    // into the Host. The management Skill API borrows the one additional view it
+    // needs; no tuple decomposition or parallel ResourcePlane reconstruction.
+    let skill_store = resource_plane.skill_store();
     // Resolve the installation's Workspace exactly once, then inject the same
     // coordinate into every adapter assembled below. Durable roots persist it;
     // ephemeral roots receive a process-local generated coordinate.
@@ -1353,13 +1350,6 @@ async fn assemble_process_router(
     // Resource Catalog the capability inventory reads, so a skill or memory store the
     // host serves is exactly what the assistant enumerates, and identity survives a
     // restart.
-    let resource_plane = awaken_runtime_host::ResourcePlane::new(
-        file_store,
-        file_catalog,
-        memory_store,
-        skill_store,
-        resource_lifecycle,
-    );
     let mut host_builder = match deployment {
         Some(deployment) => SharedHost::new_with_resource_plane_and_deployment(
             model_wiring.executor,

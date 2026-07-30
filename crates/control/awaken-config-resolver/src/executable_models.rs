@@ -199,7 +199,10 @@ mod tests {
             project_executable_models(&catalog, credentials, &[capability])[0].readiness
         };
         assert_eq!(
-            readiness(capability(true, &["open_ai_chat"]), &[credential.clone()]),
+            readiness(
+                capability(true, &["open_ai_chat"]),
+                std::slice::from_ref(&credential),
+            ),
             ExecutableModelReadiness::Ready,
             "E1"
         );
@@ -216,7 +219,10 @@ mod tests {
             "E3: a credential for another endpoint cannot make this route ready"
         );
         assert_eq!(
-            readiness(capability(false, &["open_ai_chat"]), &[credential.clone()]),
+            readiness(
+                capability(false, &["open_ai_chat"]),
+                std::slice::from_ref(&credential),
+            ),
             ExecutableModelReadiness::RuntimeUnavailable,
             "E4"
         );
