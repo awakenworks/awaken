@@ -65,20 +65,37 @@ function installGeminiFixture() {
     return;
   }
   const fixture = path.join(BIN_DIR, 'gemini');
-  fs.writeFileSync(fixture, `#!/bin/sh
-while IFS= read -r line; do
-  case "$line" in
-    *'"method":"initialize"'*)
-      printf '%s\\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}' ;;
-    *'"method":"session/new"'*)
-      printf '%s\\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"projected-session"}}' ;;
-    *'"method":"session/prompt"'*)
-      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"projected-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"PROJECTED base=%s model=%s key=%s cwd=%s home=%s"}}}}\\n' \
-        "$GOOGLE_GEMINI_BASE_URL" "$GEMINI_MODEL" "$(printf %s "$GEMINI_API_KEY" | cut -c1-6)" "$(pwd)" "$GEMINI_DIR"
-      printf '%s\\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
-      exit 0 ;;
-  esac
-done
+  fs.writeFileSync(fixture, `#!${process.execPath}
+if (process.argv.includes('--version')) {
+  console.log('gemini-fixture 1.0.0');
+  process.exit(0);
+}
+if (process.argv.includes('--list-sessions')) process.exit(0);
+const readline = require('node:readline');
+const lines = readline.createInterface({ input: process.stdin });
+lines.on('line', (line) => {
+  const request = JSON.parse(line);
+  if (request.method === 'initialize') {
+    console.log(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: 1,
+      agentCapabilities: { loadSession: true, promptCapabilities: { embeddedContext: true },
+        mcpCapabilities: { http: true } } } }));
+  } else if (request.method === 'session/new') {
+    console.log(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
+      sessionId: 'projected-session', modes: { currentModeId: 'code',
+        availableModes: [{ id: 'code', name: 'Code' }] }, configOptions: [],
+    } }));
+  } else if (request.method === 'session/prompt') {
+    const text = ['PROJECTED', 'base=' + process.env.GOOGLE_GEMINI_BASE_URL,
+      'model=' + process.env.GEMINI_MODEL, 'key=' + (process.env.GEMINI_API_KEY || '').slice(0, 6),
+      'cwd=' + process.cwd(), 'home=' + process.env.GEMINI_DIR].join(' ');
+    console.log(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: {
+      sessionId: 'projected-session', update: { sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text } },
+    } }));
+    console.log(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { stopReason: 'end_turn' } }));
+    process.exit(0);
+  }
+});
 `);
   fs.chmodSync(fixture, 0o755);
 
@@ -122,6 +139,20 @@ async function ready(child) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error('awaken did not become ready');
+}
+
+async function readyAcpWorker(cli) {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const response = await fetch(`http://127.0.0.1:${PORT}/v1/capabilities`).catch(() => undefined);
+    if (response?.ok) {
+      const value = await response.json();
+      const runtime = value.runtimes?.find((candidate) => candidate.id === `acp:${cli}`);
+      if (runtime?.local?.detected && runtime.local.negotiated) return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`ACP worker ${cli} did not publish fresh negotiated capability evidence`);
 }
 
 async function stop(child) {
@@ -214,6 +245,7 @@ async function main() {
   });
   try {
     await ready(server);
+    await readyAcpWorker('gemini');
     WORKSPACE = fs.readFileSync(path.join(STORAGE, 'platform-workspace-id'), 'utf8').trim();
     const base = `http://127.0.0.1:${PORT}`;
     await publishProviderAgent(base, {
@@ -246,7 +278,7 @@ async function main() {
     const assistantTexts = await messages(client, assistantSession.id);
     assert.ok(
       assistantTexts.some((text) => text.includes('PROJECTED')),
-      `reserved Assistant automatically used the existing Gemini ACP binding: ${assistantTexts}`,
+      `reserved Assistant used the startup-selected Gemini ACP binding: ${assistantTexts}`,
     );
 
     const session = await client.beta.sessions.create({
@@ -272,6 +304,7 @@ async function main() {
     await stop(server);
     server = start(binary, 'codex');
     await ready(server);
+    await readyAcpWorker('codex');
     const codexClient = new Anthropic({
       apiKey: 'e2e-dummy',
       baseURL: `http://127.0.0.1:${PORT}`,

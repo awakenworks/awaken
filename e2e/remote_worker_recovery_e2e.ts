@@ -108,6 +108,7 @@ type CapturedCommit = {
 async function startFaultProxy(): Promise<{
   url: string;
   capturedClaim: () => any;
+  claims: () => Array<{ workerId: string; claimed: any }>;
   capturedCommit: () => CapturedCommit | undefined;
   commits: () => any[];
   commitAttempts: () => any[];
@@ -118,6 +119,7 @@ async function startFaultProxy(): Promise<{
   close: () => Promise<void>;
 }> {
   let claimed: any;
+  const claims: Array<{ workerId: string; claimed: any }> = [];
   let firstCommit: CapturedCommit | undefined;
   const firstOperationAttempts: any[] = [];
   const commits: any[] = [];
@@ -182,7 +184,10 @@ async function startFaultProxy(): Promise<{
       upstream.ok
     ) {
       const claimResponse = JSON.parse(upstreamBody.toString('utf8'));
-      if (claimResponse.claimed) claimed = claimResponse.claimed;
+      if (claimResponse.claimed) {
+        claimed = claimResponse.claimed;
+        claims.push({ workerId, claimed });
+      }
     }
 
     if (
@@ -214,6 +219,7 @@ async function startFaultProxy(): Promise<{
   return {
     url: `http://127.0.0.1:${address.port}`,
     capturedClaim: () => claimed,
+    claims: () => claims,
     capturedCommit: () => firstCommit,
     commits: () => commits,
     commitAttempts: () => firstOperationAttempts,
@@ -397,6 +403,28 @@ async function waitForDispatchStatus(
   );
 }
 
+async function waitForReplacementBinding(
+  proxy: {
+    registration: () => any;
+    requestCounts: () => Record<string, number>;
+  },
+  workerId: string,
+  timeoutMs = 120_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const registered = proxy.registration()?.registration?.worker_id === workerId;
+    const bindings = proxy.requestCounts()['POST /v1/worker/dispatch/bind_sandbox'] ?? 0;
+    if (registered && bindings >= 2) return;
+    await sleep(50);
+  }
+  throw new Error(
+    `replacement Worker ${workerId} did not bind the reclaimed dispatch; ` +
+      `registration=${JSON.stringify(proxy.registration())} ` +
+      `requests=${JSON.stringify(proxy.requestCounts())}`,
+  );
+}
+
 async function waitForTerminalMessage(thread: string, timeoutMs = 30_000): Promise<any[]> {
   const deadline = Date.now() + timeoutMs;
   let messages: any[] = [];
@@ -501,8 +529,10 @@ async function main(): Promise<void> {
       AWAKEN_WORKER_ID: 'recovery-worker-b',
       AWAKEN_WORKER_CAPABILITIES: capability,
     }).server;
-    await waitForDispatchStatus(thread, runId, 'Awaiting');
-
+    await waitForReplacementBinding(
+      proxy,
+      'recovery-worker-b',
+    );
     const epochB = Math.max(
       ...databases.map((database) =>
         Number(

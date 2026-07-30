@@ -136,7 +136,7 @@ function seedRepository(root) {
 }
 
 async function main() {
-  const upstream = await startFakeAnthropic(FAKE_KEY);
+  const upstream = await startFakeAnthropic(FAKE_KEY, { models: [MODEL] });
   const bin = awakenBin();
   const mgmtDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-cli-e2e-'));
   const configPath = path.join(mgmtDir, 'config.toml');
