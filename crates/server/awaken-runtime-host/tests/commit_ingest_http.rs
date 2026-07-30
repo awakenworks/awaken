@@ -128,6 +128,11 @@ fn terminal_commit() -> ThreadCommit {
     }
 }
 
+/// Shared Worker-auth middleware decision table:
+/// C1 exact identity header -> verified context reaches the claimed-commit
+/// handler and an idempotent retry returns the durable receipt; C2 missing or
+/// rejected identity -> HTTP 401 before the handler and no commit. Both rules
+/// are covered here over real HTTP.
 #[tokio::test(flavor = "multi_thread")]
 async fn registered_worker_commits_one_idempotent_versioned_operation() {
     let manifest = WorkerManifest::default();
@@ -175,6 +180,23 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
             .await
             .unwrap()
     });
+
+    let unauthenticated = reqwest::Client::new()
+        .post(format!("http://{address}/v1/worker/commit-claimed"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("C2 unauthenticated request reaches middleware");
+    assert_eq!(
+        unauthenticated.status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "C2"
+    );
+    assert!(
+        ThreadReader::committed_messages(&*coordinator, &ThreadId("typed-commit-thread".into()))
+            .is_empty(),
+        "C2 rejects before commit"
+    );
 
     let commit = terminal_commit();
     let operation = CommitOperation {

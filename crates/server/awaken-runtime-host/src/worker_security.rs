@@ -12,7 +12,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use awaken_run_ingress::{WorkerIdentity, WorkerRequestAuthorizer};
-use axum::http::request::Parts;
+use axum::Json;
+use axum::extract::{Request, State};
+use axum::http::{StatusCode, request::Parts};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -22,6 +26,33 @@ use sha2::Sha256;
 pub const WORKER_ID_HEADER: &str = "x-awaken-worker-id";
 /// Authorization scheme carrying a signed, short-lived Worker request assertion.
 pub const SIGNED_WORKER_SCHEME: &str = "AwakenWorker";
+
+/// Authenticate one Worker-facing HTTP request and publish the verified context
+/// as a request extension for the typed route handler.
+///
+/// Every Worker transport router installs this same middleware with its own
+/// configured authenticator. Keeping the protocol response and extension logic
+/// here prevents dispatch, commit, and Resource adapters from drifting into
+/// separate authentication paths.
+pub(crate) async fn authenticate_worker_request(
+    State(authenticator): State<Arc<dyn WorkerRequestAuthenticator>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let (parts, body) = request.into_parts();
+    match authenticator.authenticate(&parts).await {
+        Ok(worker) => {
+            let mut request = Request::from_parts(parts, body);
+            request.extensions_mut().insert(worker);
+            next.run(request).await
+        }
+        Err(error) => (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
 
 type HmacSha256 = Hmac<Sha256>;
 

@@ -6,10 +6,8 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Extension, Request, State};
+use axum::extract::{Extension, State};
 use axum::http::StatusCode;
-use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -37,6 +35,7 @@ use crate::worker_http::respond;
 use crate::worker_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, SystemWorkerClock, VerifiedWorkerContext,
     WorkerClock, WorkerLeasePolicy, WorkerRequestAuthenticator, WorkerUpstream,
+    authenticate_worker_request,
 };
 
 /// Build the database-less worker's dispatch store from the same authenticated
@@ -342,8 +341,8 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
             post(fail_session_realization),
         )
         .route_layer(axum::middleware::from_fn_with_state(
-            service.clone(),
-            authenticate_worker,
+            service.authenticator.clone(),
+            authenticate_worker_request,
         ))
         .with_state(service)
 }
@@ -940,26 +939,6 @@ async fn deregister_worker(
     }
     .await;
     respond(result)
-}
-
-async fn authenticate_worker(
-    State(service): State<Arc<WorkerDispatchService>>,
-    request: Request,
-    next: Next,
-) -> Response {
-    let (parts, body) = request.into_parts();
-    match service.authenticator.authenticate(&parts).await {
-        Ok(worker) => {
-            let mut request = Request::from_parts(parts, body);
-            request.extensions_mut().insert(worker);
-            next.run(request).await
-        }
-        Err(error) => (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": error.to_string() })),
-        )
-            .into_response(),
-    }
 }
 
 async fn enqueue(

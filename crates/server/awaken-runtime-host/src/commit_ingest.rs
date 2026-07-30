@@ -8,10 +8,8 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Extension, Request, State};
+use axum::extract::{Extension, State};
 use axum::http::StatusCode;
-use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
@@ -28,7 +26,10 @@ use awaken_run_ingress::{
 use crate::host::HostError;
 use crate::host::SharedHost;
 use crate::worker_http::respond;
-use crate::worker_security::{VerifiedWorkerContext, WORKER_ID_HEADER, WorkerRequestAuthenticator};
+use crate::worker_security::{
+    VerifiedWorkerContext, WORKER_ID_HEADER, WorkerRequestAuthenticator,
+    authenticate_worker_request,
+};
 
 #[async_trait::async_trait]
 trait CommitApplier: Send + Sync {
@@ -149,26 +150,10 @@ fn commit_ingest_router_from_parts(
             axum::routing::post(commit_claimed),
         )
         .route_layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            authenticate_commit_worker,
+            state.authenticator.clone(),
+            authenticate_worker_request,
         ))
         .with_state(state)
-}
-
-async fn authenticate_commit_worker(
-    State(state): State<Arc<CommitIngestState>>,
-    request: Request,
-    next: Next,
-) -> Response {
-    let (parts, body) = request.into_parts();
-    match state.authenticator.authenticate(&parts).await {
-        Ok(worker) => {
-            let mut request = Request::from_parts(parts, body);
-            request.extensions_mut().insert(worker);
-            next.run(request).await
-        }
-        Err(error) => unauthorized(error.to_string()).into_response(),
-    }
 }
 
 /// Atomically validate a remote worker's claim and apply its ThreadCommit while

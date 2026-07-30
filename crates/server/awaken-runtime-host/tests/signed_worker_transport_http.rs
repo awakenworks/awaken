@@ -318,6 +318,12 @@ fn activation() -> RunActivation {
     )
 }
 
+/// Shared Worker-auth middleware decision table:
+/// C1 valid route-bound signed bootstrap assertion -> registration only; C2 the
+/// same bootstrap assertion used as an allocated incarnation -> reject before
+/// dispatch; C3 valid incarnation-bound assertion -> heartbeat and dispatch
+/// handlers receive one verified context; C4 invalid/replayed assertion -> HTTP
+/// 401 before a handler. The assertions below cover C1-C4 over real HTTP.
 #[tokio::test(flavor = "multi_thread")]
 async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let clock = Arc::new(ManualWorkerClock::new(10_000));
@@ -346,6 +352,18 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let unauthenticated = reqwest::Client::new()
+        .post(format!("http://{address}/v1/worker/register"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("C4 unauthenticated request reaches middleware");
+    assert_eq!(
+        unauthenticated.status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "C4"
+    );
 
     let authorizer = Arc::new(
         SignedWorkerRequestAuthorizer::new(credential)
