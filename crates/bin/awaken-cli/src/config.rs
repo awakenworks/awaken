@@ -1939,6 +1939,11 @@ mod tests {
 
     #[test]
     fn reports_never_include_database_credentials() {
+        // Cause/effect decision table: R1 Local mode -> report automatic
+        // startup migration; R2 Server mode -> report explicit migration and
+        // verify-only startup; R3 either mode with credential-bearing URLs ->
+        // redact credentials and schemes. The report must not promise the Local
+        // lifecycle for a distributed deployment.
         let config = resolve(
             FileConfig {
                 runtime_database_url: Some("postgres://user:secret@db/awaken".to_owned()),
@@ -1949,8 +1954,30 @@ mod tests {
             Default::default(),
         );
         for report in [config.report(false), config.report(true)] {
+            assert!(report.contains("automatic at startup"), "R1: {report}");
             assert!(!report.contains("user:secret"), "{report}");
             assert!(!report.contains("postgres://"), "{report}");
+        }
+        let server = ResolvedDeployment::resolve_file(
+            ConfigOverrides::default(),
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            FileConfig {
+                mode: Some("server".to_owned()),
+                runtime_database_url: Some("postgres://db/awaken".to_owned()),
+                resource_database_url: Some("postgres://db/awaken".to_owned()),
+                admin_db: Some("postgres://db/awaken".to_owned()),
+                control_seal_key: Some(
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".to_owned(),
+                ),
+                ..FileConfig::default()
+            },
+        )
+        .unwrap();
+        for report in [server.report(false), server.report(true)] {
+            assert!(report.contains("awaken database migrate"), "R2: {report}");
+            assert!(report.contains("startup verifies"), "R2: {report}");
+            assert!(!report.contains("postgres://"), "R3: {report}");
         }
     }
 
