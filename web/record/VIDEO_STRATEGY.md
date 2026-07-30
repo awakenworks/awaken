@@ -133,6 +133,6 @@ runtime MCP and Codex ACP stories, not by a metadata-only Session setup video.
 ## Installation claim
 
 The `awaken` binary embeds the production console at compile time. The installation
-story may claim one-binary startup through `awaken start` only when its checkpoint
+story may claim one-binary startup through `awaken all-in-one` only when its checkpoint
 copies the release binary into a clean directory, starts it without Node.js or external
 web assets, and opens the console from the binary's HTTP listener.

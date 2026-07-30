@@ -164,7 +164,7 @@ async function startHostLoginProfile() {
     // Intentionally no sandbox_tier, acp_clis, default backend, or credential
     // setting: host ACP discovery is the zero-configuration product path.
   ].join('\n'));
-  const child = spawn(binary, ['serve', '--config', config], {
+  const child = spawn(binary, ['all-in-one', '--config', config], {
     env: process.env,
     stdio: ['ignore', 'ignore', 'inherit'],
   });

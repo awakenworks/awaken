@@ -936,7 +936,7 @@ earliest fail-closed boundary, never a silent default.
 ### Assembly — three composition roots, one rule
 
 One role axis (`Role::{Serve,Worker,Hand}`, `awaken-cli/main.rs:44`), three
-roots: `awaken serve` (management assembly), `awaken_worker::run`,
+roots: `awaken all-in-one` (combined process assembly), `awaken_worker::run`,
 `awaken-scenario-host` (e2e). The rule: **roots read env and build providers;
 everything else receives ports** — enforced by the clippy env rule above. Every
 seam is a named `SharedHost` builder method (`with_executor_provider`,

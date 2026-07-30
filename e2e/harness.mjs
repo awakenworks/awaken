@@ -147,7 +147,7 @@ export function spawnProduction(
     ...extraEnv,
   };
   if (workspace) env.AWAKEN_SCENARIO_WORKSPACE = workspace;
-  return spawn(ensureProductionBuilt(), ['serve', '--port', String(port)], {
+  return spawn(ensureProductionBuilt(), ['all-in-one', '--port', String(port)], {
     env,
     stdio: ['ignore', 'ignore', stderr],
   });

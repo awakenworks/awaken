@@ -45,7 +45,7 @@ async function ready(base, timeoutMs = 180_000) {
   }
 }
 
-// Boot production `awaken serve` from the one typed deployment source. Reusing
+// Boot production `awaken all-in-one` from the one typed deployment source. Reusing
 // the exact data root across boots proves process durability without restoring
 // the retired management/storage environment-variable configuration path.
 function startAwaken(port, dataDir) {

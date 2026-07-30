@@ -13,10 +13,10 @@ Build one program, then start it:
 
 ```console
 cargo build -p awaken-cli --bin awaken
-awaken start
+awaken all-in-one
 ```
 
-Running `awaken` without a command is the same as `awaken start`: it starts the
+Running `awaken` without a command is the same as `awaken all-in-one`: it starts the
 API, embedded web console, and local worker, persists all local state under
 `~/.awaken`, and opens `http://127.0.0.1:8080`. Use `--port`, `--data-dir`, or
 `--no-browser` for common local overrides. The resulting binary contains the
@@ -25,8 +25,10 @@ complete console and needs no external web directory or Node.js at runtime.
 Useful operational commands:
 
 ```console
-awaken serve                         # foreground, headless/service-manager mode
-awaken worker --config /etc/awaken/config.toml --server http://host
+awaken all-in-one --no-browser       # Control + Coordinator + local Worker
+awaken control --config /etc/awaken/config.toml
+awaken coordinator --config /etc/awaken/config.toml
+awaken worker --config /etc/awaken/config.toml --server http://coordinator
 awaken config                        # effective config and database paths
 awaken config --json                 # redacted machine-readable report
 awaken --version

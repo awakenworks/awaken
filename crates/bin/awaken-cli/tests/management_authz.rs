@@ -1,7 +1,7 @@
 //! Embedded IAM over the management plane (ADR-0042/0043 P1): the admin +
 //! vault surfaces behind bearer `ApiToken` authn and preset-role authz.
 //!
-//! Uses `build_secured_management_router` (explicit dir + key, env-free) so the
+//! Uses `build_secured_all_in_one_router` (explicit dir + key, env-free) so the
 //! tests cannot race other tests on process-global env vars, and the returned
 //! [`ManagementAuthz`] handle to mint non-admin tokens. Trust-model pins:
 //! missing/garbage/expired tokens 401 in the Managed `ErrorResponse` envelope;
@@ -13,7 +13,7 @@
 
 use awaken_cli::{
     ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, TokenSpec,
-    build_durable_management_router, build_secured_management_router,
+    build_durable_all_in_one_router, build_secured_all_in_one_router,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -72,7 +72,7 @@ fn credential_body() -> Value {
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_and_garbage_tokens_are_rejected_with_401() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
 
     // No token at all → 401 in the Managed error envelope.
     let (s, err) = call(&app, "GET", "/v1/config/catalog", None, None).await;
@@ -104,7 +104,7 @@ async fn missing_and_garbage_tokens_are_rejected_with_401() {
 #[tokio::test(flavor = "multi_thread")]
 async fn resource_plane_is_guarded_without_entering_resource_services() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
 
     for uri in [
         "/v1/files",
@@ -164,7 +164,7 @@ async fn resource_plane_is_guarded_without_entering_resource_services() {
 #[tokio::test(flavor = "multi_thread")]
 async fn resource_pep_stamps_token_scope_and_rejects_foreign_path_selection() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     let token = admin_token(dir.path());
 
     let (status, store) = call(
@@ -202,7 +202,7 @@ async fn resource_pep_stamps_token_scope_and_rejects_foreign_path_selection() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_expired_token_fails_authentication_with_401() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
 
     // Minted in the past and already expired (expiry must be strictly after
     // creation, so both stamps are historical).
@@ -232,7 +232,7 @@ async fn an_expired_token_fails_authentication_with_401() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_bootstrap_admin_token_authorizes_full_crud_over_http() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     let token = admin_token(dir.path());
     let t = Some(token.as_str());
 
@@ -321,7 +321,7 @@ async fn the_bootstrap_admin_token_authorizes_full_crud_over_http() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restricted_developer_token_reads_everything_but_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
 
     // Per the preset catalog, workspace_restricted_developer holds
     // `apikey.read` + `workspace.read` (among file/skill), but no write.
@@ -380,7 +380,7 @@ async fn a_restricted_developer_token_reads_everything_but_writes_nothing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_workspace_user_token_reads_config_but_not_credentials() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
 
     // workspace_user holds workspace.read but NO apikey pattern at all.
     let token = iam
@@ -412,7 +412,7 @@ async fn a_workspace_user_token_reads_config_but_not_credentials() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_workspace_mismatch_is_refused_fail_closed() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     let token = admin_token(dir.path());
     let t = Some(token.as_str());
 
@@ -442,7 +442,7 @@ async fn a_workspace_mismatch_is_refused_fail_closed() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_workspace_user_cannot_read_the_vault_surface() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     let token = iam
         .mint_service_token(TokenSpec {
             token_id: "tok_user_vault".into(),
@@ -464,7 +464,7 @@ async fn a_workspace_user_cannot_read_the_vault_surface() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_read_scoped_token_cannot_write_vault_sub_resources() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     let token = iam
         .mint_service_token(TokenSpec {
             token_id: "tok_ro_vault".into(),
@@ -493,7 +493,7 @@ async fn a_read_scoped_token_cannot_write_vault_sub_resources() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_read_scoped_token_cannot_archive_a_credential() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     let token = iam
         .mint_service_token(TokenSpec {
             token_id: "tok_ro_cred".into(),
@@ -523,7 +523,7 @@ async fn a_read_scoped_token_cannot_archive_a_credential() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_workspace_bound_token_reads_its_own_tenant_but_not_another() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     let token = iam
         .mint_service_token(TokenSpec {
             token_id: "tok_ws_b".into(),
@@ -568,7 +568,7 @@ async fn minted_tokens_survive_a_restart_over_the_same_directory() {
     let bootstrap;
     let developer;
     {
-        let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+        let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
         bootstrap = admin_token(dir.path());
         developer = iam
             .mint_service_token(TokenSpec {
@@ -592,7 +592,7 @@ async fn minted_tokens_survive_a_restart_over_the_same_directory() {
     } // drop router A: "process" ends
 
     // ---- lifetime B: same dir — hydration, not re-bootstrap ----------------
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
 
     // The directory hydrated, so no fresh bootstrap overwrote the token file.
     assert_eq!(admin_token(dir.path()), bootstrap);
@@ -627,7 +627,7 @@ async fn without_the_guard_the_management_plane_stays_open() {
     // Regression pin: typed open identity mode has no guard and is
     // byte-identical to the pre-IAM behavior — no token, everything works.
     let dir = tempfile::tempdir().unwrap();
-    let app = build_durable_management_router(dir.path(), &KEY).await;
+    let app = build_durable_all_in_one_router(dir.path(), &KEY).await;
 
     let (s, _) = call(&app, "GET", "/v1/config/catalog", None, None).await;
     assert_eq!(s, StatusCode::OK);
@@ -705,7 +705,7 @@ async fn a_legacy_hand_rolled_iam_layout_is_imported_once_on_boot() {
     // Boot the SqlStore-backed code over the legacy file: the import must carry
     // the token across (no re-bootstrap: the hydrated directory is non-empty,
     // so no admin-token file appears), authenticating and authorizing as before.
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     assert!(!dir.path().join(ADMIN_TOKEN_FILE).exists());
     let (s, _) = call(
         &app,
@@ -719,7 +719,7 @@ async fn a_legacy_hand_rolled_iam_layout_is_imported_once_on_boot() {
 
     // A second boot must not import again (the legacy tables were renamed).
     drop(app);
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     let (s, _) = call(&app, "GET", "/v1/config/catalog", Some(&cleartext), None).await;
     assert_eq!(s, StatusCode::OK);
 }
@@ -732,7 +732,7 @@ async fn an_oversize_request_body_is_413() {
     // Managed-specific seams that keep the guard local even though iam-host's PEP
     // is now tenancy-capable (ADR-0048; see the authz.rs module doc).
     let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     let token = admin_token(dir.path());
     let big = "x".repeat(3 * 1024 * 1024);
     let body = json!({ "workspace_id": BOOTSTRAP_WORKSPACE, "blob": big });

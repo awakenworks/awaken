@@ -99,10 +99,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 std::sync::Arc::new(awaken_scenario_host::McpToolModel),
                 "management",
             );
-            awaken_cli::build_management_router_with_scenario_model(model, model_ref).await
+            awaken_cli::build_all_in_one_router_with_scenario_model(model, model_ref).await
         }
         Ok("management-agents") => {
-            awaken_cli::build_management_router_with_scenario_model(
+            awaken_cli::build_all_in_one_router_with_scenario_model(
                 std::sync::Arc::new(awaken_scenario_host::RegistryDelegatingModel),
                 "management-agents".to_string(),
             )
@@ -111,12 +111,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Production model composition for provider/BYOK/brokered e2e: no
         // deterministic Host executor is installed, so publications resolve from
         // the authored catalog and execute through the real materializer.
-        Ok("management-providers") => awaken_cli::build_management_router().await,
+        Ok("management-providers") => awaken_cli::build_all_in_one_router().await,
         // The production management composition (durable stores + config plane +
         // resource PEP) with only its deterministic fallback model replaced. Used
         // by the Skill pin/restart e2e; resource repositories remain auth-agnostic.
         Ok("management-skills") => {
-            awaken_cli::build_management_router_with_scenario_model(
+            awaken_cli::build_all_in_one_router_with_scenario_model(
                 std::sync::Arc::new(awaken_scenario_host::SkillDrivingModel),
                 "management-skills".to_string(),
             )
