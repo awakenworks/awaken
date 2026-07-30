@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
-use awaken_protocol_managed::types::DreamUsage;
+use awaken_protocol_managed::types::{DreamModelConfig, DreamUsage};
 use awaken_protocol_managed::{
-    BUILT_IN_MEMORY_CONSOLIDATOR_AGENT_ID, DREAMING_BETA, DreamState,
-    MemoryConsolidationCancellation, MemoryConsolidationFailure, MemoryConsolidationPreparation,
-    MemoryConsolidationRequest, MemoryConsolidationWorker, SqliteManagedSessionRepository,
-    dreams_router, enforce_managed_beta,
+    BUILT_IN_DREAM_AGENT_ID, DREAMING_BETA, DreamCancellation, DreamFailure, DreamPolicyConfig,
+    DreamPreparation, DreamRequest, DreamSessionSource, DreamState, DreamWorker,
+    SqliteManagedSessionRepository, dreams_router, enforce_managed_beta,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -21,6 +20,184 @@ enum Outcome {
     Block,
 }
 
+#[tokio::test]
+async fn automatic_policy_is_opt_in_thresholded_and_reuses_the_dream_job_path() {
+    struct Sessions(Arc<std::sync::atomic::AtomicBool>);
+    #[async_trait::async_trait]
+    impl DreamSessionSource for Sessions {
+        async fn eligible_sessions(
+            &self,
+            _workspace_id: &str,
+            updated_after_ms: u64,
+            limit: usize,
+        ) -> Vec<String> {
+            if updated_after_ms > 0 {
+                Vec::new()
+            } else if self.0.load(std::sync::atomic::Ordering::SeqCst) {
+                vec!["s1".into()]
+            } else {
+                ["s1", "s2", "s3"]
+                    .into_iter()
+                    .take(limit)
+                    .map(str::to_string)
+                    .collect()
+            }
+        }
+    }
+
+    // Policy decision table:
+    // P1 absent/default-disabled -> no automatic Dream;
+    // P2 enabled but fewer than min -> advance schedule, no job;
+    // P3 enabled + threshold -> exactly one ordinary DreamJob using max bound;
+    // P4 successful job advances cutoff -> unchanged Sessions are not reprocessed.
+    let (state, _, _) = state(Outcome::Complete);
+    let sparse = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    state.bind_session_source(Arc::new(Sessions(sparse.clone())));
+    state
+        .set_policy(
+            "default",
+            "mem_policy",
+            DreamPolicyConfig {
+                enabled: false,
+                interval_seconds: 60,
+                min_new_sessions: 2,
+                max_sessions: 2,
+                model: DreamModelConfig {
+                    id: "claude-sonnet-5".into(),
+                    speed: None,
+                },
+                instructions: Some("Keep durable facts.".into()),
+            },
+        )
+        .unwrap();
+    assert!(
+        state.tick_policies(u64::MAX).await.unwrap().is_empty(),
+        "P1"
+    );
+    state
+        .set_policy(
+            "default",
+            "mem_policy",
+            DreamPolicyConfig {
+                enabled: true,
+                interval_seconds: 60,
+                min_new_sessions: 2,
+                max_sessions: 2,
+                model: DreamModelConfig {
+                    id: "claude-sonnet-5".into(),
+                    speed: None,
+                },
+                instructions: Some("Keep durable facts.".into()),
+            },
+        )
+        .unwrap();
+    assert!(
+        state.tick_policies(u64::MAX).await.unwrap().is_empty(),
+        "P2"
+    );
+    sparse.store(false, std::sync::atomic::Ordering::SeqCst);
+    let created = state.tick_policies(u64::MAX).await.unwrap();
+    assert_eq!(created.len(), 1, "P3");
+    assert_eq!(
+        created[0].inputs[1],
+        serde_json::from_value(json!({
+            "type":"sessions", "session_ids":["s1", "s2"]
+        }))
+        .unwrap(),
+        "P3 max bound"
+    );
+    let app = dreams_router(state.clone());
+    wait_for_status(&app, &created[0].id, "completed").await;
+    assert!(
+        state.tick_policies(u64::MAX).await.unwrap().is_empty(),
+        "P4"
+    );
+}
+
+#[tokio::test]
+async fn dream_policy_api_projects_defaults_validates_and_survives_restart() {
+    // Policy API cause/effect decision table:
+    // A1 no durable row -> GET projects the disabled effective default and no cursor;
+    // A2 invalid interval/session/model bounds -> 400 and no row;
+    // A3 valid POST -> configured projection with a due cursor;
+    // A4 process restart -> the same Workspace/MemoryStore policy is restored.
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "awaken-dream-policy-{}-{unique}.db",
+        std::process::id()
+    ));
+    let repository =
+        Arc::new(SqliteManagedSessionRepository::open(path.to_str().unwrap()).unwrap());
+    let worker = Arc::new(Worker {
+        outcome: Outcome::Complete,
+        started: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+    });
+    let state = Arc::new(DreamState::with_repository(worker, repository).unwrap());
+    let app = dreams_router(state);
+
+    let (status, default) = request(&app, "GET", "/v1/dream_policies/mem_policy", None).await;
+    assert_eq!(status, StatusCode::OK, "A1");
+    assert_eq!(default["type"], "dream_policy", "A1");
+    assert_eq!(default["enabled"], false, "A1");
+    assert!(default["next_due_at"].is_null(), "A1");
+
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/v1/dream_policies/mem_policy",
+        Some(json!({
+            "enabled": true,
+            "interval_seconds": 59,
+            "min_new_sessions": 2,
+            "max_sessions": 10,
+            "model": {"id":"claude-sonnet-5"},
+            "instructions": null
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "A2");
+
+    let configured_body = json!({
+        "enabled": true,
+        "interval_seconds": 3600,
+        "min_new_sessions": 2,
+        "max_sessions": 10,
+        "model": {"id":"claude-sonnet-5"},
+        "instructions": "Keep durable decisions."
+    });
+    let (status, configured) = request(
+        &app,
+        "POST",
+        "/v1/dream_policies/mem_policy",
+        Some(configured_body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "A3");
+    assert_eq!(configured["enabled"], true, "A3");
+    assert!(configured["next_due_at"].is_string(), "A3");
+    drop(app);
+
+    let reopened = Arc::new(
+        DreamState::with_repository(
+            Arc::new(Worker {
+                outcome: Outcome::Complete,
+                started: Arc::new(Notify::new()),
+                release: Arc::new(Notify::new()),
+            }),
+            Arc::new(SqliteManagedSessionRepository::open(path.to_str().unwrap()).unwrap()),
+        )
+        .unwrap(),
+    );
+    let restored = reopened.policy("default", "mem_policy");
+    assert!(restored.config.enabled, "A4");
+    assert_eq!(restored.config.interval_seconds, 3600, "A4");
+    let _ = std::fs::remove_file(path);
+}
+
 struct Worker {
     outcome: Outcome,
     started: Arc<Notify>,
@@ -28,13 +205,10 @@ struct Worker {
 }
 
 #[async_trait::async_trait]
-impl MemoryConsolidationWorker for Worker {
-    async fn validate_inputs(
-        &self,
-        request: &MemoryConsolidationRequest,
-    ) -> Result<(), MemoryConsolidationFailure> {
+impl DreamWorker for Worker {
+    async fn validate_inputs(&self, request: &DreamRequest) -> Result<(), DreamFailure> {
         if request.source_memory_store_id == "missing" {
-            Err(MemoryConsolidationFailure::new(
+            Err(DreamFailure::new(
                 "input_memory_store_unavailable",
                 "missing input",
             ))
@@ -43,11 +217,8 @@ impl MemoryConsolidationWorker for Worker {
         }
     }
 
-    async fn prepare(
-        &self,
-        request: &MemoryConsolidationRequest,
-    ) -> Result<MemoryConsolidationPreparation, MemoryConsolidationFailure> {
-        Ok(MemoryConsolidationPreparation {
+    async fn prepare(&self, request: &DreamRequest) -> Result<DreamPreparation, DreamFailure> {
+        Ok(DreamPreparation {
             result_memory_store_id: format!("mem_result_{}", request.job_id),
             session_id: format!("sesn_{}", request.job_id),
         })
@@ -55,10 +226,10 @@ impl MemoryConsolidationWorker for Worker {
 
     async fn execute(
         &self,
-        _request: &MemoryConsolidationRequest,
-        _preparation: &MemoryConsolidationPreparation,
-        cancellation: MemoryConsolidationCancellation,
-    ) -> Result<DreamUsage, MemoryConsolidationFailure> {
+        _request: &DreamRequest,
+        _preparation: &DreamPreparation,
+        cancellation: DreamCancellation,
+    ) -> Result<DreamUsage, DreamFailure> {
         self.started.notify_waiters();
         match self.outcome {
             Outcome::Complete => Ok(DreamUsage {
@@ -66,10 +237,7 @@ impl MemoryConsolidationWorker for Worker {
                 output_tokens: 3,
                 ..Default::default()
             }),
-            Outcome::Fail => Err(MemoryConsolidationFailure::new(
-                "internal_error",
-                "planned failure",
-            )),
+            Outcome::Fail => Err(DreamFailure::new("internal_error", "planned failure")),
             Outcome::Block => {
                 self.release.notified().await;
                 if cancellation.is_canceled() {
@@ -254,37 +422,42 @@ async fn dream_routes_require_managed_and_dreaming_betas() {
     // Dreams research-preview beta; query `beta=true` never substitutes for headers.
     let (state, _, _) = state(Outcome::Complete);
     let app = dreams_router(state).layer(axum::middleware::from_fn(enforce_managed_beta));
-    for header in [
-        None,
-        Some(awaken_managed_bridge::MANAGED_BETA),
-        Some(DREAMING_BETA),
-    ] {
-        let mut builder = Request::builder().method("GET").uri("/v1/dreams?beta=true");
-        if let Some(header) = header {
-            builder = builder.header("anthropic-beta", header);
+    for path in ["/v1/dreams?beta=true", "/v1/dream_policies/mem_1"] {
+        for header in [
+            None,
+            Some(awaken_managed_bridge::MANAGED_BETA),
+            Some(DREAMING_BETA),
+        ] {
+            let mut builder = Request::builder().method("GET").uri(path);
+            if let Some(header) = header {
+                builder = builder.header("anthropic-beta", header);
+            }
+            let response = app
+                .clone()
+                .oneshot(builder.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
+    }
+    for path in ["/v1/dreams?beta=true", "/v1/dream_policies/mem_1"] {
         let response = app
             .clone()
-            .oneshot(builder.body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(path)
+                    .header(
+                        "anthropic-beta",
+                        format!("{},{}", awaken_managed_bridge::MANAGED_BETA, DREAMING_BETA),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::OK);
     }
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/v1/dreams?beta=true")
-                .header(
-                    "anthropic-beta",
-                    format!("{},{}", awaken_managed_bridge::MANAGED_BETA, DREAMING_BETA),
-                )
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -388,32 +561,26 @@ async fn sqlite_repository_restores_terminal_dreams_after_restart() {
 async fn workspace_agent_selection_uses_effective_default_and_freezes_override() {
     struct RecordingWorker(Arc<std::sync::Mutex<Vec<String>>>);
     #[async_trait::async_trait]
-    impl MemoryConsolidationWorker for RecordingWorker {
-        async fn validate_inputs(
-            &self,
-            request: &MemoryConsolidationRequest,
-        ) -> Result<(), MemoryConsolidationFailure> {
+    impl DreamWorker for RecordingWorker {
+        async fn validate_inputs(&self, request: &DreamRequest) -> Result<(), DreamFailure> {
             self.0
                 .lock()
                 .unwrap()
                 .push(request.agent_selection.agent_id.clone());
             Ok(())
         }
-        async fn prepare(
-            &self,
-            request: &MemoryConsolidationRequest,
-        ) -> Result<MemoryConsolidationPreparation, MemoryConsolidationFailure> {
-            Ok(MemoryConsolidationPreparation {
+        async fn prepare(&self, request: &DreamRequest) -> Result<DreamPreparation, DreamFailure> {
+            Ok(DreamPreparation {
                 result_memory_store_id: format!("result-{}", request.job_id),
                 session_id: format!("session-{}", request.job_id),
             })
         }
         async fn execute(
             &self,
-            _request: &MemoryConsolidationRequest,
-            _preparation: &MemoryConsolidationPreparation,
-            _cancellation: MemoryConsolidationCancellation,
-        ) -> Result<DreamUsage, MemoryConsolidationFailure> {
+            _request: &DreamRequest,
+            _preparation: &DreamPreparation,
+            _cancellation: DreamCancellation,
+        ) -> Result<DreamUsage, DreamFailure> {
             Ok(DreamUsage::default())
         }
     }
@@ -433,7 +600,7 @@ async fn workspace_agent_selection_uses_effective_default_and_freezes_override()
     )
     .await;
     state
-        .set_workspace_agent_override("default", Some("agent_custom_consolidator"))
+        .set_workspace_agent_override("default", Some("agent_custom_dream"))
         .unwrap();
     let _ = request(
         &app,
@@ -445,8 +612,8 @@ async fn workspace_agent_selection_uses_effective_default_and_freezes_override()
     assert_eq!(
         *seen.lock().unwrap(),
         vec![
-            BUILT_IN_MEMORY_CONSOLIDATOR_AGENT_ID.to_string(),
-            "agent_custom_consolidator".to_string()
+            BUILT_IN_DREAM_AGENT_ID.to_string(),
+            "agent_custom_dream".to_string()
         ]
     );
 }

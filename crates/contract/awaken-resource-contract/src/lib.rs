@@ -433,7 +433,7 @@ pub fn validate_path_len(path: &str) -> Result<(), MemErr> {
 pub trait MemoryRepository: Send + Sync {
     /// Atomically read every current file head, including content, from one
     /// store. The returned vector is path-ordered. This is the canonical frozen
-    /// input primitive for operations such as memory consolidation; callers must
+    /// input primitive for operations such as Dream; callers must
     /// not emulate it with `list` followed by per-path reads because concurrent
     /// writes could create a mixed-generation snapshot.
     async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr>;

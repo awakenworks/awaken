@@ -1,17 +1,17 @@
-//! Memory-consolidation application service behind the public Dreams adapter.
+//! Dream application service behind the public Dreams adapter.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_ext_memory::{MemoryConsolidationJobRecord, MemoryConsolidationRepository};
+use awaken_ext_memory::{DreamJobRecord, DreamPolicyRecord, DreamRepository};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
     Dream, DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig,
-    DreamOutput, DreamPage, DreamStatus, DreamUsage,
+    DreamModelInput, DreamOutput, DreamPage, DreamStatus, DreamUsage,
 };
 
 const MAX_INSTRUCTIONS_CHARS: usize = 4096;
@@ -26,47 +26,106 @@ const SUPPORTED_MODELS: &[&str] = &[
     "claude-sonnet-4-6",
 ];
 
-pub const BUILT_IN_MEMORY_CONSOLIDATOR_AGENT_ID: &str = "awaken_builtin_memory_consolidator";
+pub const BUILT_IN_DREAM_AGENT_ID: &str = "awaken_builtin_dream_agent";
 
-fn default_memory_consolidator_agent_id() -> String {
-    BUILT_IN_MEMORY_CONSOLIDATOR_AGENT_ID.into()
+fn default_dream_agent_id() -> String {
+    BUILT_IN_DREAM_AGENT_ID.into()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MemoryConsolidationAgentSelection {
+pub struct DreamAgentSelection {
     pub agent_id: String,
 }
 
-fn default_memory_consolidator_agent_selection() -> MemoryConsolidationAgentSelection {
-    MemoryConsolidationAgentSelection {
-        agent_id: default_memory_consolidator_agent_id(),
+fn default_dream_agent_selection() -> DreamAgentSelection {
+    DreamAgentSelection {
+        agent_id: default_dream_agent_id(),
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct MemoryConsolidationRequest {
+pub struct DreamRequest {
     pub job_id: String,
     pub workspace_id: String,
     pub source_memory_store_id: String,
     pub session_ids: Vec<String>,
     pub model: DreamModelConfig,
     pub request_guidance: Option<String>,
-    pub agent_selection: MemoryConsolidationAgentSelection,
+    pub agent_selection: DreamAgentSelection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemoryConsolidationPreparation {
+pub struct DreamPreparation {
     pub result_memory_store_id: String,
     pub session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MemoryConsolidationFailure {
+pub struct DreamPolicyConfig {
+    pub enabled: bool,
+    pub interval_seconds: u64,
+    pub min_new_sessions: usize,
+    pub max_sessions: usize,
+    pub model: DreamModelConfig,
+    pub instructions: Option<String>,
+}
+
+/// Awaken extension projection for the opt-in automatic policy of one
+/// Workspace-owned MemoryStore. Absence projects the disabled effective default
+/// without creating a durable row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DreamPolicy {
+    #[serde(rename = "type")]
+    pub object_type: &'static str,
+    pub memory_store_id: String,
+    #[serde(flatten)]
+    pub config: DreamPolicyConfig,
+    pub next_due_at: Option<String>,
+    pub last_completed_cutoff_at: Option<String>,
+}
+
+impl Default for DreamPolicyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_seconds: 24 * 60 * 60,
+            min_new_sessions: 5,
+            max_sessions: MAX_SESSIONS,
+            model: DreamModelConfig {
+                id: "claude-sonnet-5".into(),
+                speed: None,
+            },
+            instructions: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct StoredDreamPolicy {
+    workspace_id: String,
+    memory_store_id: String,
+    config: DreamPolicyConfig,
+    next_due_ms: u64,
+    last_completed_cutoff_ms: u64,
+}
+
+#[async_trait]
+pub trait DreamSessionSource: Send + Sync {
+    async fn eligible_sessions(
+        &self,
+        workspace_id: &str,
+        updated_after_ms: u64,
+        limit: usize,
+    ) -> Vec<String>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DreamFailure {
     pub kind: String,
     pub message: String,
 }
 
-impl MemoryConsolidationFailure {
+impl DreamFailure {
     #[must_use]
     pub fn new(kind: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
@@ -77,9 +136,9 @@ impl MemoryConsolidationFailure {
 }
 
 #[derive(Clone, Default)]
-pub struct MemoryConsolidationCancellation(Arc<AtomicBool>);
+pub struct DreamCancellation(Arc<AtomicBool>);
 
-impl MemoryConsolidationCancellation {
+impl DreamCancellation {
     fn cancel(&self) {
         self.0.store(true, Ordering::SeqCst);
     }
@@ -90,34 +149,28 @@ impl MemoryConsolidationCancellation {
     }
 }
 
-/// The one execution seam. Production composes existing Memory, Files, Session,
+/// The one Dream execution seam. Production composes existing MemoryStore, Files, Session,
 /// and Runtime authorities here; tests use a deterministic implementation.
 #[async_trait]
-pub trait MemoryConsolidationWorker: Send + Sync {
-    async fn validate_inputs(
-        &self,
-        request: &MemoryConsolidationRequest,
-    ) -> Result<(), MemoryConsolidationFailure>;
+pub trait DreamWorker: Send + Sync {
+    async fn validate_inputs(&self, request: &DreamRequest) -> Result<(), DreamFailure>;
 
-    async fn prepare(
-        &self,
-        request: &MemoryConsolidationRequest,
-    ) -> Result<MemoryConsolidationPreparation, MemoryConsolidationFailure>;
+    async fn prepare(&self, request: &DreamRequest) -> Result<DreamPreparation, DreamFailure>;
 
     async fn execute(
         &self,
-        request: &MemoryConsolidationRequest,
-        preparation: &MemoryConsolidationPreparation,
-        cancellation: MemoryConsolidationCancellation,
-    ) -> Result<DreamUsage, MemoryConsolidationFailure>;
+        request: &DreamRequest,
+        preparation: &DreamPreparation,
+        cancellation: DreamCancellation,
+    ) -> Result<DreamUsage, DreamFailure>;
 
-    async fn cancel(&self, _session_id: Option<&str>) -> Result<(), MemoryConsolidationFailure> {
+    async fn cancel(&self, _session_id: Option<&str>) -> Result<(), DreamFailure> {
         Ok(())
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct MemoryConsolidationJob {
+struct DreamJob {
     id: String,
     workspace_id: String,
     status: DreamStatus,
@@ -125,20 +178,22 @@ struct MemoryConsolidationJob {
     session_ids: Vec<String>,
     model: DreamModelConfig,
     request_guidance: Option<String>,
-    #[serde(default = "default_memory_consolidator_agent_selection")]
-    agent_selection: MemoryConsolidationAgentSelection,
+    #[serde(default = "default_dream_agent_selection")]
+    agent_selection: DreamAgentSelection,
     result_memory_store_id: Option<String>,
     session_id: Option<String>,
     created_at: u64,
     ended_at: Option<u64>,
     archived_at: Option<u64>,
-    error: Option<MemoryConsolidationFailure>,
+    error: Option<DreamFailure>,
     usage: DreamUsage,
+    #[serde(default)]
+    policy_key: Option<(String, String)>,
 }
 
-impl MemoryConsolidationJob {
-    fn request(&self) -> MemoryConsolidationRequest {
-        MemoryConsolidationRequest {
+impl DreamJob {
+    fn request(&self) -> DreamRequest {
+        DreamRequest {
             job_id: self.id.clone(),
             workspace_id: self.workspace_id.clone(),
             source_memory_store_id: self.source_memory_store_id.clone(),
@@ -199,7 +254,7 @@ fn now_ms() -> u64 {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum MemoryConsolidationApiError {
+pub enum DreamApiError {
     #[error("{0}")]
     BadRequest(String),
     #[error("Dream was not found")]
@@ -211,17 +266,19 @@ pub enum MemoryConsolidationApiError {
 }
 
 pub struct DreamState {
-    jobs: Mutex<BTreeMap<String, MemoryConsolidationJob>>,
-    cancellations: Mutex<BTreeMap<String, MemoryConsolidationCancellation>>,
-    worker: Arc<dyn MemoryConsolidationWorker>,
+    jobs: Mutex<BTreeMap<String, DreamJob>>,
+    cancellations: Mutex<BTreeMap<String, DreamCancellation>>,
+    worker: Arc<dyn DreamWorker>,
     next_id: AtomicU64,
-    durable: Option<Arc<dyn MemoryConsolidationRepository>>,
+    durable: Option<Arc<dyn DreamRepository>>,
     workspace_agent_overrides: Mutex<BTreeMap<String, String>>,
+    policies: Mutex<BTreeMap<(String, String), StoredDreamPolicy>>,
+    session_source: Mutex<Option<Arc<dyn DreamSessionSource>>>,
 }
 
 impl DreamState {
     #[must_use]
-    pub fn new(worker: Arc<dyn MemoryConsolidationWorker>) -> Self {
+    pub fn new(worker: Arc<dyn DreamWorker>) -> Self {
         Self {
             jobs: Mutex::new(BTreeMap::new()),
             cancellations: Mutex::new(BTreeMap::new()),
@@ -229,26 +286,28 @@ impl DreamState {
             next_id: AtomicU64::new(1),
             durable: None,
             workspace_agent_overrides: Mutex::new(BTreeMap::new()),
+            policies: Mutex::new(BTreeMap::new()),
+            session_source: Mutex::new(None),
         }
     }
 
     pub fn with_repository(
-        worker: Arc<dyn MemoryConsolidationWorker>,
-        repository: Arc<dyn MemoryConsolidationRepository>,
-    ) -> Result<Self, MemoryConsolidationApiError> {
+        worker: Arc<dyn DreamWorker>,
+        repository: Arc<dyn DreamRepository>,
+    ) -> Result<Self, DreamApiError> {
         let jobs = repository
-            .consolidation_jobs()
-            .map_err(|error| MemoryConsolidationApiError::Unavailable(error.to_string()))?
+            .dream_jobs()
+            .map_err(|error| DreamApiError::Unavailable(error.to_string()))?
             .into_iter()
             .map(|record| {
-                serde_json::from_str::<MemoryConsolidationJob>(&record.data)
-                    .map_err(|error| MemoryConsolidationApiError::Unavailable(error.to_string()))
+                serde_json::from_str::<DreamJob>(&record.data)
+                    .map_err(|error| DreamApiError::Unavailable(error.to_string()))
                     .and_then(|job| {
                         if job.id == record.job_id {
                             Ok((job.id.clone(), job))
                         } else {
-                            Err(MemoryConsolidationApiError::Unavailable(
-                                "Memory Consolidation job record identity mismatch".into(),
+                            Err(DreamApiError::Unavailable(
+                                "Dream job record identity mismatch".into(),
                             ))
                         }
                     })
@@ -261,15 +320,32 @@ impl DreamState {
             .unwrap_or(0)
             .saturating_add(1);
         let workspace_agent_overrides = repository
-            .memory_consolidator_overrides()
-            .map_err(|error| MemoryConsolidationApiError::Unavailable(error.to_string()))?
+            .dream_agent_overrides()
+            .map_err(|error| DreamApiError::Unavailable(error.to_string()))?
             .into_iter()
             .map(|record| (record.workspace_id, record.agent_id))
             .collect();
+        let policies = repository
+            .dream_policies()
+            .map_err(|error| DreamApiError::Unavailable(error.to_string()))?
+            .into_iter()
+            .map(|record| {
+                let policy: StoredDreamPolicy = serde_json::from_str(&record.data)
+                    .map_err(|error| DreamApiError::Unavailable(error.to_string()))?;
+                if policy.workspace_id != record.workspace_id
+                    || policy.memory_store_id != record.memory_store_id
+                {
+                    return Err(DreamApiError::Unavailable(
+                        "Dream policy identity mismatch".into(),
+                    ));
+                }
+                Ok(((record.workspace_id, record.memory_store_id), policy))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
         let cancellations = jobs
             .iter()
             .filter(|(_, job)| matches!(job.status, DreamStatus::Pending | DreamStatus::Running))
-            .map(|(id, _)| (id.clone(), MemoryConsolidationCancellation::default()))
+            .map(|(id, _)| (id.clone(), DreamCancellation::default()))
             .collect();
         Ok(Self {
             jobs: Mutex::new(jobs),
@@ -278,22 +354,24 @@ impl DreamState {
             next_id: AtomicU64::new(next_id),
             durable: Some(repository),
             workspace_agent_overrides: Mutex::new(workspace_agent_overrides),
+            policies: Mutex::new(policies),
+            session_source: Mutex::new(None),
         })
     }
 
     /// Configure or clear the exact published Agent used for future
-    /// consolidations in one Workspace. Absence selects the built-in effective
+    /// Dreams in one Workspace. Absence selects the built-in effective
     /// default; no default Agent row is copied per Workspace. A job freezes the
     /// resolved id at create time, so later policy edits cannot alter retries.
     pub fn set_workspace_agent_override(
         &self,
         workspace_id: &str,
         agent_id: Option<&str>,
-    ) -> Result<(), MemoryConsolidationApiError> {
+    ) -> Result<(), DreamApiError> {
         if workspace_id.trim().is_empty()
             || agent_id.is_some_and(|agent_id| agent_id.trim().is_empty())
         {
-            return Err(MemoryConsolidationApiError::BadRequest(
+            return Err(DreamApiError::BadRequest(
                 "Workspace and Agent ids must be non-empty".into(),
             ));
         }
@@ -308,10 +386,175 @@ impl DreamState {
         }
         if let Some(repository) = &self.durable {
             repository
-                .set_memory_consolidator_override(workspace_id, agent_id)
-                .map_err(|error| MemoryConsolidationApiError::Unavailable(error.to_string()))?;
+                .set_dream_agent_override(workspace_id, agent_id)
+                .map_err(|error| DreamApiError::Unavailable(error.to_string()))?;
         }
         Ok(())
+    }
+
+    pub fn bind_session_source(&self, source: Arc<dyn DreamSessionSource>) {
+        *self.session_source.lock().unwrap() = Some(source);
+    }
+
+    /// Configure the opt-in automatic Dream policy for one Workspace-owned
+    /// MemoryStore. The effective Dream Agent remains the same built-in/override
+    /// selection used by manual Dreams; the policy creates no copied Agent.
+    pub fn set_policy(
+        &self,
+        workspace_id: &str,
+        memory_store_id: &str,
+        config: DreamPolicyConfig,
+    ) -> Result<(), DreamApiError> {
+        if workspace_id.trim().is_empty() || memory_store_id.trim().is_empty() {
+            return Err(DreamApiError::BadRequest(
+                "Workspace and MemoryStore ids must be non-empty".into(),
+            ));
+        }
+        if config.interval_seconds < 60
+            || config.min_new_sessions == 0
+            || config.max_sessions == 0
+            || config.max_sessions > MAX_SESSIONS
+            || config.min_new_sessions > config.max_sessions
+            || !SUPPORTED_MODELS.contains(&config.model.id.as_str())
+            || config
+                .instructions
+                .as_ref()
+                .is_some_and(|value| value.chars().count() > MAX_INSTRUCTIONS_CHARS)
+        {
+            return Err(DreamApiError::BadRequest(
+                "invalid Dream policy interval, session bounds, model, or instructions".into(),
+            ));
+        }
+        let key = (workspace_id.to_string(), memory_store_id.to_string());
+        let current = self.policies.lock().unwrap().get(&key).cloned();
+        let policy = StoredDreamPolicy {
+            workspace_id: workspace_id.to_string(),
+            memory_store_id: memory_store_id.to_string(),
+            next_due_ms: current
+                .as_ref()
+                .map_or_else(now_ms, |value| value.next_due_ms),
+            last_completed_cutoff_ms: current
+                .as_ref()
+                .map_or(0, |value| value.last_completed_cutoff_ms),
+            config,
+        };
+        self.persist_policy(&policy)?;
+        self.policies.lock().unwrap().insert(key, policy);
+        Ok(())
+    }
+
+    fn persist_policy(&self, policy: &StoredDreamPolicy) -> Result<(), DreamApiError> {
+        let Some(repository) = &self.durable else {
+            return Ok(());
+        };
+        repository
+            .upsert_dream_policy(DreamPolicyRecord {
+                workspace_id: policy.workspace_id.clone(),
+                memory_store_id: policy.memory_store_id.clone(),
+                data: serde_json::to_string(policy)
+                    .map_err(|error| DreamApiError::Unavailable(error.to_string()))?,
+            })
+            .map_err(|error| DreamApiError::Unavailable(error.to_string()))
+    }
+
+    /// Return the configured policy or the disabled effective default. Reading a
+    /// default never creates a per-Workspace row.
+    pub fn policy(&self, workspace_id: &str, memory_store_id: &str) -> DreamPolicy {
+        let stored = self
+            .policies
+            .lock()
+            .unwrap()
+            .get(&(workspace_id.to_string(), memory_store_id.to_string()))
+            .cloned();
+        match stored {
+            Some(policy) => DreamPolicy {
+                object_type: "dream_policy",
+                memory_store_id: policy.memory_store_id,
+                config: policy.config,
+                next_due_at: Some(crate::cron::to_rfc3339(policy.next_due_ms)),
+                last_completed_cutoff_at: (policy.last_completed_cutoff_ms > 0)
+                    .then(|| crate::cron::to_rfc3339(policy.last_completed_cutoff_ms)),
+            },
+            None => DreamPolicy {
+                object_type: "dream_policy",
+                memory_store_id: memory_store_id.to_string(),
+                config: DreamPolicyConfig::default(),
+                next_due_at: None,
+                last_completed_cutoff_at: None,
+            },
+        }
+    }
+
+    /// Evaluate every due policy once. This method is deterministic and public
+    /// for the composition root's single Managed periodic driver. Every accepted
+    /// trigger calls the ordinary `create` path.
+    pub async fn tick_policies(self: &Arc<Self>, now: u64) -> Result<Vec<Dream>, DreamApiError> {
+        let source = self.session_source.lock().unwrap().clone();
+        let due = self
+            .policies
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|policy| policy.config.enabled && policy.next_due_ms <= now)
+            .cloned()
+            .collect::<Vec<_>>();
+        if due.is_empty() {
+            return Ok(Vec::new());
+        }
+        let source = source.ok_or_else(|| {
+            DreamApiError::Unavailable("Dream policy Session source is not bound".into())
+        })?;
+        let mut created = Vec::new();
+        for mut policy in due {
+            let key = (policy.workspace_id.clone(), policy.memory_store_id.clone());
+            let already_running = self
+                .jobs
+                .lock()
+                .unwrap()
+                .values()
+                .any(|job| job.policy_key.as_ref() == Some(&key) && !job.status.is_terminal());
+            policy.next_due_ms = now.saturating_add(policy.config.interval_seconds * 1_000);
+            if already_running {
+                self.persist_policy(&policy)?;
+                self.policies.lock().unwrap().insert(key, policy);
+                continue;
+            }
+            let sessions = source
+                .eligible_sessions(
+                    &policy.workspace_id,
+                    policy.last_completed_cutoff_ms,
+                    policy.config.max_sessions,
+                )
+                .await;
+            self.persist_policy(&policy)?;
+            self.policies
+                .lock()
+                .unwrap()
+                .insert(key.clone(), policy.clone());
+            if sessions.len() < policy.config.min_new_sessions {
+                continue;
+            }
+            created.push(
+                self.create_with_policy(
+                    &policy.workspace_id,
+                    DreamCreateParams {
+                        inputs: vec![
+                            DreamInput::MemoryStore {
+                                memory_store_id: policy.memory_store_id,
+                            },
+                            DreamInput::Sessions {
+                                session_ids: sessions,
+                            },
+                        ],
+                        model: DreamModelInput::Config(policy.config.model),
+                        instructions: policy.config.instructions,
+                    },
+                    Some(key),
+                )
+                .await?,
+            );
+        }
+        Ok(created)
     }
 
     /// Re-dispatch durable non-terminal jobs after a process restart. The worker
@@ -330,7 +573,7 @@ impl DreamState {
             })
             .collect::<Vec<_>>();
         for id in resumable {
-            let cancellation = MemoryConsolidationCancellation::default();
+            let cancellation = DreamCancellation::default();
             self.cancellations
                 .lock()
                 .unwrap()
@@ -340,18 +583,18 @@ impl DreamState {
         }
     }
 
-    fn persist(&self, job: &MemoryConsolidationJob) -> Result<(), MemoryConsolidationApiError> {
+    fn persist(&self, job: &DreamJob) -> Result<(), DreamApiError> {
         let Some(repository) = &self.durable else {
             return Ok(());
         };
         let data = serde_json::to_string(job)
-            .map_err(|error| MemoryConsolidationApiError::Unavailable(error.to_string()))?;
+            .map_err(|error| DreamApiError::Unavailable(error.to_string()))?;
         repository
-            .upsert_consolidation_job(MemoryConsolidationJobRecord {
+            .upsert_dream_job(DreamJobRecord {
                 job_id: job.id.clone(),
                 data,
             })
-            .map_err(|error| MemoryConsolidationApiError::Unavailable(error.to_string()))?;
+            .map_err(|error| DreamApiError::Unavailable(error.to_string()))?;
         Ok(())
     }
 
@@ -359,10 +602,19 @@ impl DreamState {
         self: &Arc<Self>,
         workspace_id: &str,
         params: DreamCreateParams,
-    ) -> Result<Dream, MemoryConsolidationApiError> {
+    ) -> Result<Dream, DreamApiError> {
+        self.create_with_policy(workspace_id, params, None).await
+    }
+
+    async fn create_with_policy(
+        self: &Arc<Self>,
+        workspace_id: &str,
+        params: DreamCreateParams,
+        policy_key: Option<(String, String)>,
+    ) -> Result<Dream, DreamApiError> {
         let (source_memory_store_id, session_ids) = validate_create(&params)?;
         let id = format!("dream_{}", self.next_id.fetch_add(1, Ordering::SeqCst));
-        let job = MemoryConsolidationJob {
+        let job = DreamJob {
             id: id.clone(),
             workspace_id: workspace_id.to_string(),
             status: DreamStatus::Pending,
@@ -370,14 +622,14 @@ impl DreamState {
             session_ids,
             model: params.model.into_config(),
             request_guidance: params.instructions,
-            agent_selection: MemoryConsolidationAgentSelection {
+            agent_selection: DreamAgentSelection {
                 agent_id: self
                     .workspace_agent_overrides
                     .lock()
                     .unwrap()
                     .get(workspace_id)
                     .cloned()
-                    .unwrap_or_else(default_memory_consolidator_agent_id),
+                    .unwrap_or_else(default_dream_agent_id),
             },
             result_memory_store_id: None,
             session_id: None,
@@ -386,15 +638,16 @@ impl DreamState {
             archived_at: None,
             error: None,
             usage: DreamUsage::default(),
+            policy_key,
         };
         self.worker
             .validate_inputs(&job.request())
             .await
-            .map_err(|error| MemoryConsolidationApiError::BadRequest(error.message))?;
+            .map_err(|error| DreamApiError::BadRequest(error.message))?;
         let projected = job.project();
         self.persist(&job)?;
         self.jobs.lock().unwrap().insert(id.clone(), job);
-        let cancellation = MemoryConsolidationCancellation::default();
+        let cancellation = DreamCancellation::default();
         self.cancellations
             .lock()
             .unwrap()
@@ -406,7 +659,7 @@ impl DreamState {
         Ok(projected)
     }
 
-    async fn run_job(&self, id: String, cancellation: MemoryConsolidationCancellation) {
+    async fn run_job(&self, id: String, cancellation: DreamCancellation) {
         let (request, running_job) = {
             let mut jobs = self.jobs.lock().unwrap();
             let Some(job) = jobs.get_mut(&id) else { return };
@@ -466,10 +719,25 @@ impl DreamState {
             job.clone()
         };
         let _ = self.persist(&terminal_job);
+        if terminal_job.status == DreamStatus::Completed
+            && let Some(key) = &terminal_job.policy_key
+        {
+            let updated = {
+                let mut policies = self.policies.lock().unwrap();
+                policies.get_mut(key).map(|policy| {
+                    policy.last_completed_cutoff_ms =
+                        policy.last_completed_cutoff_ms.max(terminal_job.created_at);
+                    policy.clone()
+                })
+            };
+            if let Some(policy) = updated {
+                let _ = self.persist_policy(&policy);
+            }
+        }
         self.cancellations.lock().unwrap().remove(&id);
     }
 
-    fn fail_if_active(&self, id: &str, error: MemoryConsolidationFailure) {
+    fn fail_if_active(&self, id: &str, error: DreamFailure) {
         let failed = {
             let mut jobs = self.jobs.lock().unwrap();
             jobs.get_mut(id).and_then(|job| {
@@ -489,25 +757,21 @@ impl DreamState {
         self.cancellations.lock().unwrap().remove(id);
     }
 
-    pub fn retrieve(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<Dream, MemoryConsolidationApiError> {
+    pub fn retrieve(&self, workspace_id: &str, id: &str) -> Result<Dream, DreamApiError> {
         self.jobs
             .lock()
             .unwrap()
             .get(id)
             .filter(|job| job.workspace_id == workspace_id)
-            .map(MemoryConsolidationJob::project)
-            .ok_or(MemoryConsolidationApiError::NotFound)
+            .map(DreamJob::project)
+            .ok_or(DreamApiError::NotFound)
     }
 
     pub fn list(
         &self,
         workspace_id: &str,
         params: DreamListParams,
-    ) -> Result<DreamPage, MemoryConsolidationApiError> {
+    ) -> Result<DreamPage, DreamApiError> {
         let after = parse_bound(params.created_after.as_deref())?;
         let before = parse_bound(params.created_before.as_deref())?;
         let statuses = params.statuses.into_iter().collect::<BTreeSet<_>>();
@@ -534,9 +798,7 @@ impl DreamState {
                 .iter()
                 .position(|job| job.id == cursor)
                 .map(|index| index + 1)
-                .ok_or_else(|| {
-                    MemoryConsolidationApiError::BadRequest("unknown page cursor".into())
-                })?,
+                .ok_or_else(|| DreamApiError::BadRequest("unknown page cursor".into()))?,
             None => 0,
         };
         let limit = params
@@ -553,17 +815,13 @@ impl DreamState {
         })
     }
 
-    pub async fn cancel(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<Dream, MemoryConsolidationApiError> {
+    pub async fn cancel(&self, workspace_id: &str, id: &str) -> Result<Dream, DreamApiError> {
         let (session_id, canceled_job) = {
             let mut jobs = self.jobs.lock().unwrap();
             let job = jobs
                 .get_mut(id)
                 .filter(|job| job.workspace_id == workspace_id)
-                .ok_or(MemoryConsolidationApiError::NotFound)?;
+                .ok_or(DreamApiError::NotFound)?;
             match job.status {
                 DreamStatus::Pending | DreamStatus::Running => {
                     job.status = DreamStatus::Canceled;
@@ -571,7 +829,7 @@ impl DreamState {
                 }
                 DreamStatus::Canceled => return Ok(job.project()),
                 DreamStatus::Completed | DreamStatus::Failed => {
-                    return Err(MemoryConsolidationApiError::BadRequest(
+                    return Err(DreamApiError::BadRequest(
                         "only pending or running Dreams can be canceled".into(),
                     ));
                 }
@@ -585,22 +843,18 @@ impl DreamState {
         self.worker
             .cancel(session_id.as_deref())
             .await
-            .map_err(|error| MemoryConsolidationApiError::Unavailable(error.message))?;
+            .map_err(|error| DreamApiError::Unavailable(error.message))?;
         self.retrieve(workspace_id, id)
     }
 
-    pub fn archive(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<Dream, MemoryConsolidationApiError> {
+    pub fn archive(&self, workspace_id: &str, id: &str) -> Result<Dream, DreamApiError> {
         let mut jobs = self.jobs.lock().unwrap();
         let job = jobs
             .get_mut(id)
             .filter(|job| job.workspace_id == workspace_id)
-            .ok_or(MemoryConsolidationApiError::NotFound)?;
+            .ok_or(DreamApiError::NotFound)?;
         if !job.status.is_terminal() {
-            return Err(MemoryConsolidationApiError::BadRequest(
+            return Err(DreamApiError::BadRequest(
                 "only terminal Dreams can be archived".into(),
             ));
         }
@@ -615,23 +869,19 @@ impl DreamState {
     }
 }
 
-fn parse_bound(value: Option<&str>) -> Result<Option<u64>, MemoryConsolidationApiError> {
+fn parse_bound(value: Option<&str>) -> Result<Option<u64>, DreamApiError> {
     value
         .map(|value| {
             DateTime::parse_from_rfc3339(value)
                 .map(|value| value.with_timezone(&Utc).timestamp_millis().max(0) as u64)
-                .map_err(|_| {
-                    MemoryConsolidationApiError::BadRequest("invalid RFC 3339 timestamp".into())
-                })
+                .map_err(|_| DreamApiError::BadRequest("invalid RFC 3339 timestamp".into()))
         })
         .transpose()
 }
 
-fn validate_create(
-    params: &DreamCreateParams,
-) -> Result<(String, Vec<String>), MemoryConsolidationApiError> {
+fn validate_create(params: &DreamCreateParams) -> Result<(String, Vec<String>), DreamApiError> {
     if params.inputs.len() != 2 {
-        return Err(MemoryConsolidationApiError::BadRequest(
+        return Err(DreamApiError::BadRequest(
             "inputs must contain exactly one memory_store and one sessions input".into(),
         ));
     }
@@ -640,12 +890,12 @@ fn validate_create(
         crate::types::DreamModelInput::Config(config) => &config.id,
     };
     if model.is_empty() || model.chars().count() > 256 {
-        return Err(MemoryConsolidationApiError::BadRequest(
+        return Err(DreamApiError::BadRequest(
             "model id must contain 1 to 256 characters".into(),
         ));
     }
     if !SUPPORTED_MODELS.contains(&model.as_str()) {
-        return Err(MemoryConsolidationApiError::BadRequest(format!(
+        return Err(DreamApiError::BadRequest(format!(
             "unsupported Dream model `{model}`"
         )));
     }
@@ -654,7 +904,7 @@ fn validate_create(
         .as_ref()
         .is_some_and(|value| value.chars().count() > MAX_INSTRUCTIONS_CHARS)
     {
-        return Err(MemoryConsolidationApiError::BadRequest(format!(
+        return Err(DreamApiError::BadRequest(format!(
             "instructions may contain at most {MAX_INSTRUCTIONS_CHARS} characters"
         )));
     }
@@ -671,26 +921,56 @@ fn validate_create(
                 sessions = Some(session_ids.clone());
             }
             _ => {
-                return Err(MemoryConsolidationApiError::BadRequest(
+                return Err(DreamApiError::BadRequest(
                     "inputs must contain exactly one non-empty memory_store and one sessions input"
                         .into(),
                 ));
             }
         }
     }
-    let sessions = sessions.ok_or_else(|| {
-        MemoryConsolidationApiError::BadRequest("sessions input is required".into())
-    })?;
+    let sessions =
+        sessions.ok_or_else(|| DreamApiError::BadRequest("sessions input is required".into()))?;
     if sessions.is_empty() || sessions.len() > MAX_SESSIONS {
-        return Err(MemoryConsolidationApiError::BadRequest(format!(
+        return Err(DreamApiError::BadRequest(format!(
             "sessions input must contain 1 to {MAX_SESSIONS} session ids"
         )));
     }
     let unique = sessions.iter().collect::<BTreeSet<_>>();
     if unique.len() != sessions.len() || sessions.iter().any(|id| id.trim().is_empty()) {
-        return Err(MemoryConsolidationApiError::BadRequest(
+        return Err(DreamApiError::BadRequest(
             "session ids must be non-empty and unique".into(),
         ));
     }
     Ok((memory.expect("validated memory input"), sessions))
+}
+
+#[async_trait]
+impl DreamSessionSource for crate::ManagedState {
+    async fn eligible_sessions(
+        &self,
+        workspace_id: &str,
+        updated_after_ms: u64,
+        limit: usize,
+    ) -> Vec<String> {
+        let mut sessions = self
+            .list_sessions_scoped(workspace_id)
+            .into_iter()
+            .filter(|session| session.status != "running")
+            .filter(|session| {
+                session
+                    .metadata
+                    .get("awaken.session.origin")
+                    .is_none_or(|origin| origin != "dream")
+            })
+            .filter_map(|session| {
+                let updated = DateTime::parse_from_rfc3339(&session.updated_at)
+                    .ok()?
+                    .timestamp_millis()
+                    .max(0) as u64;
+                (updated > updated_after_ms).then_some((updated, session.id))
+            })
+            .collect::<Vec<_>>();
+        sessions.sort_by(|left, right| left.cmp(right));
+        sessions.into_iter().take(limit).map(|(_, id)| id).collect()
+    }
 }

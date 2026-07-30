@@ -220,7 +220,15 @@ async fn archive_agent(
         .await
         .map_err(wire_error)?;
     if let Some(deployments) = &state.deployments {
-        deployments.archive_for_agent(&scope, &id);
+        deployments
+            .archive_for_agent(&scope, &id)
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(ErrorResponse::new("api_error", error.to_string())),
+                )
+            })?;
     }
     Ok(Json(agent))
 }

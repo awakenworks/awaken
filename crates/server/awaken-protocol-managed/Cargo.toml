@@ -10,6 +10,7 @@ awaken-agent-contract.workspace = true
 # owns the wire DTOs + the neutral→wire encoder and re-exports each moved port via a
 # shim so consumers stay unchanged until flipped to the contract directly.
 awaken-session-contract.workspace = true
+awaken-deployment-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-ext-memory.workspace = true
 # Typed resource ids/bindings plus the Resource Catalog port used by the Managed

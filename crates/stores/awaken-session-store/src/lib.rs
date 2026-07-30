@@ -18,12 +18,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_session_contract::{
-    IdempotencyRecord, ManagedSessionRepository, PersistedSession, ScopedPersistedSession,
-    SessionLifecycleFact, SessionMutation, SessionMutationPayload, SessionMutationResult,
+    IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
+    ScopedPersistedSession, SessionMutation, SessionMutationPayload, SessionMutationResult,
     SessionRepositoryError, SessionRevision,
 };
 
-mod consolidation;
+mod deployments;
+mod dream;
 mod extraction;
 mod row_codec;
 use row_codec::{EncodedSessionRow, decode};
@@ -142,17 +143,51 @@ fn session_bundle() -> Result<MigrationBundle, MigrationError> {
             )?,
             Migration::new(
                 14,
-                "durable Memory Consolidation jobs",
-                "CREATE TABLE {prefix}_memory_consolidation (\
+                "durable Dream jobs",
+                "CREATE TABLE {prefix}_dream (\
                     job_id TEXT PRIMARY KEY, \
                     data TEXT NOT NULL)",
             )?,
             Migration::new(
                 15,
-                "Workspace Memory Consolidator Agent overrides",
-                "CREATE TABLE {prefix}_memory_consolidator_override (\
+                "Workspace Dream Agent overrides",
+                "CREATE TABLE {prefix}_dream_agent_override (\
                     workspace_id TEXT PRIMARY KEY, \
                     agent_id TEXT NOT NULL)",
+            )?,
+            Migration::new(
+                16,
+                "durable Managed Deployments",
+                "CREATE TABLE {prefix}_deployment (\
+                    deployment_id TEXT PRIMARY KEY, \
+                    workspace_id TEXT NOT NULL, \
+                    data TEXT NOT NULL)",
+            )?,
+            Migration::new(
+                17,
+                "durable Managed DeploymentRuns",
+                "CREATE TABLE {prefix}_deployment_run (\
+                    run_id TEXT PRIMARY KEY, \
+                    deployment_id TEXT NOT NULL, \
+                    workspace_id TEXT NOT NULL, \
+                    data TEXT NOT NULL)",
+            )?,
+            Migration::new(
+                18,
+                "exactly-once scheduled Deployment occurrence claims",
+                "CREATE TABLE {prefix}_deployment_claim (\
+                    claim_id TEXT PRIMARY KEY, \
+                    run_id TEXT NOT NULL UNIQUE, \
+                    created_at {timestamptz} NOT NULL DEFAULT {now})",
+            )?,
+            Migration::new(
+                19,
+                "Workspace Dream scheduling policies",
+                "CREATE TABLE {prefix}_dream_policy (\
+                    workspace_id TEXT NOT NULL, \
+                    memory_store_id TEXT NOT NULL, \
+                    data TEXT NOT NULL, \
+                    PRIMARY KEY (workspace_id, memory_store_id))",
             )?,
         ],
     )
@@ -162,10 +197,10 @@ fn aggregate_str(session: &PersistedSession) -> String {
     serde_json::to_string(session).expect("Session aggregate serializes")
 }
 
-fn lifecycle_str(fact: &SessionLifecycleFact) -> String {
+fn lifecycle_str(fact: &ManagedLifecycleFact) -> String {
     serde_json::json!({
         "id": fact.id,
-        "session_id": fact.session_id,
+        "object_id": fact.object_id,
         "workspace_id": fact.workspace_id,
         "event_type": fact.event_type,
         "timestamp": fact.timestamp,
@@ -183,11 +218,15 @@ fn storage(error: impl std::fmt::Display) -> SessionRepositoryError {
     SessionRepositoryError::Storage(error.to_string())
 }
 
-fn decode_lifecycle(data: &str) -> Result<SessionLifecycleFact, serde_json::Error> {
+fn decode_lifecycle(data: &str) -> Result<ManagedLifecycleFact, serde_json::Error> {
     let value: serde_json::Value = serde_json::from_str(data)?;
-    Ok(SessionLifecycleFact {
+    Ok(ManagedLifecycleFact {
         id: value["id"].as_str().unwrap_or_default().to_string(),
-        session_id: value["session_id"].as_str().unwrap_or_default().to_string(),
+        object_id: value["object_id"]
+            .as_str()
+            .or_else(|| value["session_id"].as_str())
+            .unwrap_or_default()
+            .to_string(),
         workspace_id: value["workspace_id"].as_str().map(str::to_string),
         event_type: value["event_type"].as_str().unwrap_or_default().to_string(),
         timestamp: value["timestamp"].as_i64().unwrap_or_default(),
@@ -236,7 +275,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         owner_scope: &str,
         mut session: PersistedSession,
         idempotency: IdempotencyRecord,
-        lifecycle_facts: Vec<SessionLifecycleFact>,
+        lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<SessionRevision, SessionRepositoryError> {
         if session.session_id.trim().is_empty()
             || idempotency.key.trim().is_empty()
@@ -244,7 +283,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             || session.revision != SessionRevision(0)
             || lifecycle_facts
                 .iter()
-                .any(|fact| fact.session_id != session.session_id)
+                .any(|fact| fact.object_id != session.session_id)
         {
             return Err(SessionRepositoryError::InvalidMutation(
                 "invalid Session create command".into(),
@@ -467,7 +506,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         Ok(SessionMutationResult::Applied { new_revision: next })
     }
 
-    async fn append_lifecycle(&self, fact: SessionLifecycleFact) {
+    async fn append_lifecycle(&self, fact: ManagedLifecycleFact) {
         let data = lifecycle_str(&fact);
         self.conn
             .lock()
@@ -479,7 +518,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             .expect("append session lifecycle fact");
     }
 
-    async fn pending_lifecycle(&self) -> Vec<SessionLifecycleFact> {
+    async fn pending_lifecycle(&self) -> Vec<ManagedLifecycleFact> {
         let conn = self.conn.lock().expect("session store mutex poisoned");
         let mut statement = conn
             .prepare("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
@@ -692,7 +731,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         owner_scope: &str,
         mut session: PersistedSession,
         idempotency: IdempotencyRecord,
-        lifecycle_facts: Vec<SessionLifecycleFact>,
+        lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<SessionRevision, SessionRepositoryError> {
         if session.session_id.trim().is_empty()
             || idempotency.key.trim().is_empty()
@@ -700,7 +739,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             || session.revision != SessionRevision(0)
             || lifecycle_facts
                 .iter()
-                .any(|fact| fact.session_id != session.session_id)
+                .any(|fact| fact.object_id != session.session_id)
         {
             return Err(SessionRepositoryError::InvalidMutation(
                 "invalid Session create command".into(),
@@ -924,7 +963,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         Ok(SessionMutationResult::Applied { new_revision: next })
     }
 
-    async fn append_lifecycle(&self, fact: SessionLifecycleFact) {
+    async fn append_lifecycle(&self, fact: ManagedLifecycleFact) {
         sqlx::query(
             "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ($1, $2)
              ON CONFLICT (fact_id) DO NOTHING",
@@ -936,7 +975,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .expect("append session lifecycle fact");
     }
 
-    async fn pending_lifecycle(&self) -> Vec<SessionLifecycleFact> {
+    async fn pending_lifecycle(&self) -> Vec<ManagedLifecycleFact> {
         sqlx::query("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
             .fetch_all(&self.pool)
             .await
@@ -1192,10 +1231,10 @@ mod tests {
         }
     }
 
-    fn fact(id: &str, session_id: &str, event_type: &str) -> SessionLifecycleFact {
-        SessionLifecycleFact {
+    fn fact(id: &str, session_id: &str, event_type: &str) -> ManagedLifecycleFact {
+        ManagedLifecycleFact {
             id: id.into(),
-            session_id: session_id.into(),
+            object_id: session_id.into(),
             workspace_id: Some("ws_a".into()),
             event_type: event_type.into(),
             timestamp: 1_700_000_000,
@@ -1206,7 +1245,7 @@ mod tests {
         repo: &R,
         owner: &str,
         mut session: PersistedSession,
-        facts: Vec<SessionLifecycleFact>,
+        facts: Vec<ManagedLifecycleFact>,
     ) -> PersistedSession {
         session.revision = SessionRevision(0);
         let payload = SessionMutationPayload::Replace(session.clone());
@@ -1231,7 +1270,7 @@ mod tests {
         owner: &str,
         mut session: PersistedSession,
         key: &str,
-        facts: Vec<SessionLifecycleFact>,
+        facts: Vec<ManagedLifecycleFact>,
     ) -> PersistedSession {
         session.revision = repo.get(&session.session_id).await.unwrap().revision;
         let payload = SessionMutationPayload::Replace(session.clone());
@@ -1263,7 +1302,7 @@ mod tests {
         repo: &R,
         owner: &str,
         session_id: &str,
-        fact: SessionLifecycleFact,
+        fact: ManagedLifecycleFact,
     ) {
         let current = repo.get(session_id).await.unwrap();
         let payload = SessionMutationPayload::Delete(awaken_session_contract::SessionTombstone {

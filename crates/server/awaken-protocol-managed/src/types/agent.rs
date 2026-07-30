@@ -229,12 +229,16 @@ impl AgentListParams {
 /// deployment, a session): `{ id, type: "agent", version }`. The single typed form
 /// of the normalized reference; the deserialize-only input form a client may send
 /// (a bare id string or `{id, version?}`) is [`super::session::AgentRef`].
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentReference {
     pub id: String,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", skip_deserializing, default = "agent_reference_type")]
     pub object_type: &'static str,
     pub version: u64,
+}
+
+fn agent_reference_type() -> &'static str {
+    "agent"
 }
 
 impl AgentReference {

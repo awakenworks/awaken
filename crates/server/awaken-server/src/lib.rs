@@ -406,7 +406,7 @@ fn local_managed_state_over(
 /// a vault-aware `ManagedState` over an MCP-wired `ManagedHost` (ADR-0043 Phase
 /// 3); every other mode goes through [`mount`], whose state is the plain host.
 pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -> Router {
-    mount_with_managed_over(host, managed_state, ephemeral_resource_catalog(), None)
+    mount_with_managed_over(host, managed_state, ephemeral_resource_catalog(), None).0
 }
 
 fn ephemeral_resource_catalog() -> Arc<dyn awaken_protocol_managed::ResourceCatalog> {
@@ -424,7 +424,7 @@ pub fn mount_with_managed_and_resource_catalog(
     managed_state: Arc<ManagedState>,
     resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
 ) -> Router {
-    mount_with_managed_over(host, managed_state, resource_catalog, None)
+    mount_with_managed_over(host, managed_state, resource_catalog, None).0
 }
 
 /// Assemble the production data plane with application credentials enforced on
@@ -442,6 +442,7 @@ pub fn mount_with_managed_and_application_access(
         resource_catalog,
         Some(application_access),
     )
+    .0
 }
 
 /// Production data plane with a live executable model directory.
@@ -459,6 +460,26 @@ pub fn mount_with_managed_and_application_access_and_models(
         Some(application_access),
         Some(model_directory),
     )
+    .0
+}
+
+/// Production data plane with the live model directory and the exact Dream state
+/// mounted in that same Router. The composition root uses the returned state for
+/// periodic policies instead of constructing a second scheduler.
+pub fn mount_with_managed_application_access_models_and_dreams(
+    host: Arc<SharedHost>,
+    managed_state: Arc<ManagedState>,
+    resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
+    model_directory: Arc<dyn awaken_managed_routers::ModelDirectory>,
+) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
+    mount_with_managed_over_and_models(
+        host,
+        managed_state,
+        resource_catalog,
+        Some(application_access),
+        Some(model_directory),
+    )
 }
 
 fn mount_with_managed_over(
@@ -466,7 +487,7 @@ fn mount_with_managed_over(
     managed_state: Arc<ManagedState>,
     resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
-) -> Router {
+) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
     mount_with_managed_over_and_models(
         host,
         managed_state,
@@ -482,7 +503,7 @@ fn mount_with_managed_over_and_models(
     resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
     model_directory: Option<Arc<dyn awaken_managed_routers::ModelDirectory>>,
-) -> Router {
+) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
     install_platform_memory_data_plane(&host);
     // Spawn the process-level dispatch pool once when durable ingress is enabled
     // (O2): it is the sole claimer of the shared queue and drives every session's
@@ -495,7 +516,7 @@ fn mount_with_managed_over_and_models(
     if host.runs_local_dispatch_pool() {
         host.ensure_dispatch_pool();
     }
-    let consolidation_worker = Arc::new(dream::BuiltInMemoryConsolidatorAgent::new(
+    let dream_worker = Arc::new(dream::BuiltInDreamAgent::new(
         managed_state.clone(),
         host.clone(),
         host.memory_repository(),
@@ -504,7 +525,7 @@ fn mount_with_managed_over_and_models(
     let dream_state = match host.storage_dir() {
         Some(root) => Arc::new(
             awaken_protocol_managed::DreamState::with_repository(
-                consolidation_worker,
+                dream_worker,
                 Arc::new(
                     awaken_runtime_host::SqliteManagedSessionRepository::open(
                         &root.join("sessions.db").to_string_lossy(),
@@ -512,14 +533,13 @@ fn mount_with_managed_over_and_models(
                     .expect("open durable Memory Consolidation repository"),
                 ),
             )
-            .expect("load durable Memory Consolidation jobs"),
+            .expect("load durable Dream jobs"),
         ),
-        None => Arc::new(awaken_protocol_managed::DreamState::new(
-            consolidation_worker,
-        )),
+        None => Arc::new(awaken_protocol_managed::DreamState::new(dream_worker)),
     };
+    dream_state.bind_session_source(managed_state.clone());
     dream_state.resume_incomplete();
-    let dreams = awaken_protocol_managed::dreams_router(dream_state);
+    let dreams = awaken_protocol_managed::dreams_router(dream_state.clone());
     let managed = router(managed_state.clone()).merge(dreams);
     // One neutral port impl behind the three wire adapters (each `router` takes
     // `Arc<dyn ProtocolRuntime>`), so they share the host with no per-protocol twin.
@@ -605,7 +625,7 @@ fn mount_with_managed_over_and_models(
     let erasure = awaken_runtime_host::erasure_router(resolver);
     let consent = awaken_runtime_host::consent_router(ds_repo, host.content_capture_ceiling());
     let local_workspace = host.local_workspace().to_string();
-    managed
+    let router = managed
         .merge(ai_sdk)
         .merge(ag_ui)
         .merge(a2a)
@@ -637,7 +657,8 @@ fn mount_with_managed_over_and_models(
                     next.run(request).await
                 }
             },
-        ))
+        ));
+    (router, dream_state)
 }
 
 /// The open data-subject plane (ADR-0050): the captured-content store (used as

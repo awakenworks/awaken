@@ -323,14 +323,14 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     // `/v1/agents` projects the config plane it hosts: an agent published via
     // `/v1/config/agents` is retrievable as a managed-wire projection of that single
     // truth (no second store), which is how the console probes the assistant.
+    let agent_repository = Arc::new(managed_agents::ConfigPlaneManagedAgentRepository::new(
+        audit_plane.clone(),
+        platform_workspace.clone(),
+    ));
+    deployment_state.bind_agent_repository(agent_repository.clone());
     let agents = agents_router(Arc::new(
-        AgentRegistryState::from_repository(Arc::new(
-            managed_agents::ConfigPlaneManagedAgentRepository::new(
-                audit_plane.clone(),
-                platform_workspace.clone(),
-            ),
-        ))
-        .with_deployments(deployment_state.clone()),
+        AgentRegistryState::from_repository(agent_repository)
+            .with_deployments(deployment_state.clone()),
     ));
     // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
     // installable plugins (with config schema) so the console authors data-driven.

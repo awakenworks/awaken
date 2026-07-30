@@ -75,9 +75,9 @@ pub enum Schedule {
     Cron {
         expression: String,
         timezone: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         last_run_at: Option<String>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(default)]
         upcoming_runs_at: Vec<String>,
     },
 }
@@ -160,7 +160,7 @@ pub struct DeploymentUpdateParams {
 
 /// `BetaManagedAgentsTriggerContext` — why a deployment run started. This surface
 /// only mints manual runs; `Schedule` is modeled for wire completeness.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TriggerContext {
     Manual,
@@ -168,7 +168,7 @@ pub enum TriggerContext {
 }
 
 /// `BetaManagedAgentsDeploymentPausedReason` — why a deployment is paused.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PausedReason {
     Manual,
@@ -178,7 +178,7 @@ pub enum PausedReason {
 /// Error kinds that stop future scheduled fires until an operator unpauses the
 /// deployment. This is the exact SDK paused-reason union; transient rate limits
 /// and request validation failures deliberately do not appear here.
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PausedReasonError {
     EnvironmentArchivedError,
@@ -198,7 +198,7 @@ pub enum PausedReasonError {
 }
 
 /// Exact `BetaManagedAgentsDeploymentRun.error` tagged union.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RunError {
     EnvironmentArchivedError { message: String },

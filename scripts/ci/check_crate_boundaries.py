@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Enforce Awaken crate dependency, vocabulary, and core/extension boundaries."""
-
 from __future__ import annotations
 import re
 import sys
@@ -769,6 +768,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # from awaken-runtime-host so the host stays lean (Step 3b).
     "awaken-session-store": {
         "awaken-session-contract",
+        "awaken-deployment-contract",
         "awaken-credential-contract",
         # ADR-0064: Memory extraction aggregate/repository port belongs to the
         # Memory Runtime Extension; this store is one persistence adapter.

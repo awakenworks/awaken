@@ -1,0 +1,13 @@
+[package]
+name = "awaken-deployment-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+thiserror.workspace = true
+awaken-session-contract.workspace = true
+
+[lints]
+workspace = true

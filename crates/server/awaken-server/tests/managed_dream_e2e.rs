@@ -1,4 +1,4 @@
-//! Cross-module Managed Agents overview -> Dream memory-consolidation E2E.
+//! Cross-module Managed Agents overview -> Dream E2E.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -202,10 +202,7 @@ async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_
     )
     .await;
     assert_eq!(auxiliary["status"], "terminated");
-    assert_eq!(
-        auxiliary["metadata"]["awaken.session.origin"],
-        "memory_consolidation"
-    );
+    assert_eq!(auxiliary["metadata"]["awaken.session.origin"], "dream");
 
     let files = ok(&app, "GET", "/v1/files", None).await;
     let transcript = files["data"]

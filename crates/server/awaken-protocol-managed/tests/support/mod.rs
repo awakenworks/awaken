@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use awaken_session_contract::{
-    IdempotencyRecord, ManagedSessionRepository, PersistedSession, ScopedPersistedSession,
-    SessionIdempotencyReceipt, SessionLifecycleFact, SessionMutation, SessionMutationPayload,
+    IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
+    ScopedPersistedSession, SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload,
     SessionMutationResult, SessionRepositoryError, SessionRevision,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -112,7 +112,7 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
         owner_scope: &str,
         session: PersistedSession,
         idempotency: IdempotencyRecord,
-        lifecycle_facts: Vec<SessionLifecycleFact>,
+        lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<SessionRevision, SessionRepositoryError> {
         self.inner
             .create(owner_scope, session, idempotency, lifecycle_facts)
@@ -195,11 +195,11 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
         self.inner.commit_mutation(owner_scope, mutation).await
     }
 
-    async fn append_lifecycle(&self, fact: SessionLifecycleFact) {
+    async fn append_lifecycle(&self, fact: ManagedLifecycleFact) {
         self.inner.append_lifecycle(fact).await;
     }
 
-    async fn pending_lifecycle(&self) -> Vec<SessionLifecycleFact> {
+    async fn pending_lifecycle(&self) -> Vec<ManagedLifecycleFact> {
         self.inner.pending_lifecycle().await
     }
 

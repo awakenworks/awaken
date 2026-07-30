@@ -8,6 +8,7 @@ license.workspace = true
 # The ManagedSessionRepository port + PersistedSession this crate implements a durable
 # backend for (SQLite embedded / Postgres distributed, at parity).
 awaken-session-contract = { workspace = true }
+awaken-deployment-contract = { workspace = true }
 awaken-credential-contract = { workspace = true }
 awaken-ext-memory = { workspace = true }
 # The opaque tenancy `ScopeId` the in-memory scoped-session store keys its isolation

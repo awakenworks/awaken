@@ -1,4 +1,4 @@
-//! Production memory-consolidation worker composed from existing authorities.
+//! Production dream worker composed from existing authorities.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -12,8 +12,7 @@ use awaken_protocol_managed::resource_plane::{
 use awaken_protocol_managed::types::{DreamUsage, InboundEvent, SendEventsRequest};
 use awaken_protocol_managed::{
     ApplicationSessionContribution, ApplicationSessionContributionPort, ApplicationSessionInput,
-    ManagedState, MemoryConsolidationCancellation, MemoryConsolidationFailure,
-    MemoryConsolidationPreparation, MemoryConsolidationRequest, MemoryConsolidationWorker,
+    DreamCancellation, DreamFailure, DreamPreparation, DreamRequest, DreamWorker, ManagedState,
 };
 use awaken_runtime_host::{
     MemoryWriteConsistency, MountAccess, MountLifetime, MountRequirement, MountSource,
@@ -21,7 +20,7 @@ use awaken_runtime_host::{
 
 use crate::SharedHost;
 
-const PLATFORM_INSTRUCTIONS: &str = r#"You are the built-in Memory Consolidator Agent.
+const PLATFORM_INSTRUCTIONS: &str = r#"You are the built-in Dream Agent.
 
 Your only task is to curate durable memories from the frozen inputs into the independent output memory store.
 
@@ -87,7 +86,7 @@ impl ExclusiveMemoryStoreWriterLease {
     }
 }
 
-pub(crate) struct BuiltInMemoryConsolidatorAgent {
+pub(crate) struct BuiltInDreamAgent {
     managed: Arc<ManagedState>,
     host: Arc<SharedHost>,
     memory: Arc<dyn MemoryRepository>,
@@ -95,7 +94,7 @@ pub(crate) struct BuiltInMemoryConsolidatorAgent {
     prepared: Mutex<BTreeMap<String, PreparedResources>>,
 }
 
-impl BuiltInMemoryConsolidatorAgent {
+impl BuiltInDreamAgent {
     pub(crate) fn new(
         managed: Arc<ManagedState>,
         host: Arc<SharedHost>,
@@ -112,7 +111,7 @@ impl BuiltInMemoryConsolidatorAgent {
     }
 
     fn memory_definition(
-        request: &MemoryConsolidationRequest,
+        request: &DreamRequest,
         id: &str,
         name: &str,
         state: ResourceState,
@@ -121,11 +120,8 @@ impl BuiltInMemoryConsolidatorAgent {
             id: MemoryStoreId::from(id.to_string()),
             workspace_id: request.workspace_id.clone(),
             name: name.into(),
-            description: format!("Memory consolidation output for {}", request.job_id),
-            metadata: BTreeMap::from([(
-                "awaken.memory_consolidation_job_id".into(),
-                request.job_id.clone(),
-            )]),
+            description: format!("Dream output for {}", request.job_id),
+            metadata: BTreeMap::from([("awaken.dream_job_id".into(), request.job_id.clone())]),
             state,
             current_config_version: ConfigVersion::INITIAL,
             timestamps: ResourceTimestamps::default(),
@@ -144,24 +140,22 @@ impl BuiltInMemoryConsolidatorAgent {
 
     async fn export_transcripts(
         &self,
-        request: &MemoryConsolidationRequest,
-    ) -> Result<Vec<(String, Vec<u8>)>, MemoryConsolidationFailure> {
+        request: &DreamRequest,
+    ) -> Result<Vec<(String, Vec<u8>)>, DreamFailure> {
         let mut exports = Vec::with_capacity(request.session_ids.len());
         for session_id in &request.session_ids {
             let messages = self
                 .managed
-                .memory_consolidation_transcript(&request.workspace_id, session_id)
+                .dream_transcript(&request.workspace_id, session_id)
                 .await
                 .map_err(|error| {
-                    MemoryConsolidationFailure::new(
+                    DreamFailure::new(
                         "input_session_unavailable",
                         format!("Session `{session_id}` is unavailable: {error}"),
                     )
                 })?;
-            let bytes =
-                SessionTranscriptJsonlExporter::encode(session_id, &messages).map_err(|error| {
-                    MemoryConsolidationFailure::new("internal_error", error.to_string())
-                })?;
+            let bytes = SessionTranscriptJsonlExporter::encode(session_id, &messages)
+                .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             let filename = format!("{session_id}.jsonl");
             self.host
                 .create_generated_file(
@@ -169,12 +163,10 @@ impl BuiltInMemoryConsolidatorAgent {
                     filename.clone(),
                     "application/x-ndjson".into(),
                     &bytes,
-                    format!("memory-consolidation\0{}\0{session_id}", request.job_id),
+                    format!("dream\0{}\0{session_id}", request.job_id),
                 )
                 .await
-                .map_err(|error| {
-                    MemoryConsolidationFailure::new("internal_error", error.to_string())
-                })?;
+                .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             exports.push((filename, bytes));
         }
         Ok(exports)
@@ -182,12 +174,12 @@ impl BuiltInMemoryConsolidatorAgent {
 
     async fn make_session(
         &self,
-        request: &MemoryConsolidationRequest,
+        request: &DreamRequest,
         snapshot_store_id: &str,
         result_store_id: &str,
         transcripts: Vec<(String, Vec<u8>)>,
-    ) -> Result<String, MemoryConsolidationFailure> {
-        let session_id = format!("sesn_memory_consolidation_{}", request.job_id);
+    ) -> Result<String, DreamFailure> {
+        let session_id = format!("sesn_dream_{}", request.job_id);
         let create = serde_json::from_value(serde_json::json!({
             "agent": {
                 "id": request.agent_selection.agent_id.clone(),
@@ -210,11 +202,11 @@ impl BuiltInMemoryConsolidatorAgent {
             },
             "application_contribution_required": true,
             "metadata": {
-                "awaken.session.origin": "memory_consolidation",
-                "awaken.memory_consolidation_job_id": request.job_id,
+                "awaken.session.origin": "dream",
+                "awaken.dream_job_id": request.job_id,
             }
         }))
-        .map_err(|error| MemoryConsolidationFailure::new("internal_error", error.to_string()))?;
+        .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         self.managed
             .create_application_session(
                 session_id.clone(),
@@ -222,9 +214,7 @@ impl BuiltInMemoryConsolidatorAgent {
                 Some(request.workspace_id.clone()),
             )
             .await
-            .map_err(|error| {
-                MemoryConsolidationFailure::new("internal_error", error.to_string())
-            })?;
+            .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
 
         let mut mounts = vec![
             MountRequirement {
@@ -270,9 +260,7 @@ impl BuiltInMemoryConsolidatorAgent {
             .into_iter()
             .map(serde_json::to_value)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| {
-                MemoryConsolidationFailure::new("internal_error", error.to_string())
-            })?;
+            .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         let mut prompts = vec![PLATFORM_INSTRUCTIONS.into()];
         if let Some(guidance) = &request.request_guidance {
             prompts.push(format!(
@@ -292,19 +280,15 @@ impl BuiltInMemoryConsolidatorAgent {
                 input,
             })
             .await
-            .map_err(|error| {
-                MemoryConsolidationFailure::new("internal_error", error.to_string())
-            })?;
+            .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         self.managed
             .realize_application_session(&session_id)
             .await
-            .map_err(|error| {
-                MemoryConsolidationFailure::new("internal_error", error.to_string())
-            })?;
+            .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         Ok(session_id)
     }
 
-    async fn release_result(&self, request: &MemoryConsolidationRequest) {
+    async fn release_result(&self, request: &DreamRequest) {
         let resources = self.prepared.lock().unwrap().remove(&request.job_id);
         if let Some(resources) = resources {
             resources.writer_lease.release(self.catalog.as_ref());
@@ -371,30 +355,22 @@ mod tests {
 }
 
 #[async_trait::async_trait]
-impl MemoryConsolidationWorker for BuiltInMemoryConsolidatorAgent {
-    async fn validate_inputs(
-        &self,
-        request: &MemoryConsolidationRequest,
-    ) -> Result<(), MemoryConsolidationFailure> {
+impl DreamWorker for BuiltInDreamAgent {
+    async fn validate_inputs(&self, request: &DreamRequest) -> Result<(), DreamFailure> {
         self.managed
-            .validate_memory_consolidator_agent(
-                &request.workspace_id,
-                &request.agent_selection.agent_id,
-            )
-            .map_err(|error| {
-                MemoryConsolidationFailure::new("internal_error", error.to_string())
-            })?;
+            .validate_dream_agent(&request.workspace_id, &request.agent_selection.agent_id)
+            .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         self.catalog
             .resolve_memory_store(&request.workspace_id, &request.source_memory_store_id)
             .map_err(|error| {
-                MemoryConsolidationFailure::new("input_memory_store_unavailable", error.to_string())
+                DreamFailure::new("input_memory_store_unavailable", error.to_string())
             })?;
         for session_id in &request.session_ids {
             self.managed
-                .memory_consolidation_transcript(&request.workspace_id, session_id)
+                .dream_transcript(&request.workspace_id, session_id)
                 .await
                 .map_err(|error| {
-                    MemoryConsolidationFailure::new(
+                    DreamFailure::new(
                         "input_session_unavailable",
                         format!("Session `{session_id}` is unavailable: {error}"),
                     )
@@ -403,23 +379,18 @@ impl MemoryConsolidationWorker for BuiltInMemoryConsolidatorAgent {
         Ok(())
     }
 
-    async fn prepare(
-        &self,
-        request: &MemoryConsolidationRequest,
-    ) -> Result<MemoryConsolidationPreparation, MemoryConsolidationFailure> {
+    async fn prepare(&self, request: &DreamRequest) -> Result<DreamPreparation, DreamFailure> {
         let snapshot_id = format!("mem_snapshot_{}", request.job_id);
         let result_id = format!("mem_result_{}", request.job_id);
-        let expected_session_id = format!("sesn_memory_consolidation_{}", request.job_id);
+        let expected_session_id = format!("sesn_dream_{}", request.job_id);
         let existing_result = self
             .catalog
             .memory_store(&request.workspace_id, &result_id)
-            .map_err(|error| {
-                MemoryConsolidationFailure::new("internal_error", error.to_string())
-            })?;
+            .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         if existing_result.is_some() {
             let session_exists = self
                 .managed
-                .memory_consolidation_transcript(&request.workspace_id, &expected_session_id)
+                .dream_transcript(&request.workspace_id, &expected_session_id)
                 .await
                 .is_ok();
             let session_id = if session_exists {
@@ -440,7 +411,7 @@ impl MemoryConsolidationWorker for BuiltInMemoryConsolidatorAgent {
                     },
                 },
             );
-            return Ok(MemoryConsolidationPreparation {
+            return Ok(DreamPreparation {
                 result_memory_store_id: result_id,
                 session_id,
             });
@@ -457,15 +428,12 @@ impl MemoryConsolidationWorker for BuiltInMemoryConsolidatorAgent {
                 .snapshot_heads(&request.source_memory_store_id)
                 .await
                 .map_err(|error| {
-                    MemoryConsolidationFailure::new(
-                        "input_memory_store_unavailable",
-                        error.to_string(),
-                    )
+                    DreamFailure::new("input_memory_store_unavailable", error.to_string())
                 })?,
         };
         for head in &snapshot.files {
             let content = head.content.as_deref().ok_or_else(|| {
-                MemoryConsolidationFailure::new(
+                DreamFailure::new(
                     "input_memory_store_unavailable",
                     format!("snapshot content for `{}` is unavailable", head.path),
                 )
@@ -473,31 +441,24 @@ impl MemoryConsolidationWorker for BuiltInMemoryConsolidatorAgent {
             self.memory
                 .create(&snapshot.snapshot_memory_store_id, &head.path, content)
                 .await
-                .map_err(|error| {
-                    MemoryConsolidationFailure::new("internal_error", error.to_string())
-                })?;
+                .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             self.memory
                 .create(&result_id, &head.path, content)
                 .await
-                .map_err(|error| {
-                    MemoryConsolidationFailure::new("internal_error", error.to_string())
-                })?;
+                .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         }
         self.catalog
             .create_memory_store(
                 Self::memory_definition(
                     request,
                     &result_id,
-                    "Dream memory consolidation result",
+                    "Dream result",
                     ResourceState::Suspended,
                 ),
                 Self::memory_config(&result_id),
             )
             .map_err(|error| {
-                MemoryConsolidationFailure::new(
-                    "memory_store_org_limit_exceeded",
-                    error.to_string(),
-                )
+                DreamFailure::new("memory_store_org_limit_exceeded", error.to_string())
             })?;
         let transcripts = self.export_transcripts(request).await?;
         let session_id = self
@@ -514,7 +475,7 @@ impl MemoryConsolidationWorker for BuiltInMemoryConsolidatorAgent {
                 },
             },
         );
-        Ok(MemoryConsolidationPreparation {
+        Ok(DreamPreparation {
             result_memory_store_id: result_id,
             session_id,
         })
@@ -522,10 +483,10 @@ impl MemoryConsolidationWorker for BuiltInMemoryConsolidatorAgent {
 
     async fn execute(
         &self,
-        request: &MemoryConsolidationRequest,
-        preparation: &MemoryConsolidationPreparation,
-        cancellation: MemoryConsolidationCancellation,
-    ) -> Result<DreamUsage, MemoryConsolidationFailure> {
+        request: &DreamRequest,
+        preparation: &DreamPreparation,
+        cancellation: DreamCancellation,
+    ) -> Result<DreamUsage, DreamFailure> {
         if cancellation.is_canceled() {
             self.release_result(request).await;
             return Ok(DreamUsage::default());
@@ -550,7 +511,7 @@ impl MemoryConsolidationWorker for BuiltInMemoryConsolidatorAgent {
         let session = self.managed.get_session(&preparation.session_id).ok();
         let _ = self.managed.archive_session(&preparation.session_id).await;
         self.release_result(request).await;
-        run.map_err(|error| MemoryConsolidationFailure::new("internal_error", error.to_string()))?;
+        run.map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         let usage = session.map(|session| session.usage).unwrap_or_default();
         Ok(DreamUsage {
             cache_creation_input_tokens: usage.cache_creation_input_tokens,
@@ -560,7 +521,7 @@ impl MemoryConsolidationWorker for BuiltInMemoryConsolidatorAgent {
         })
     }
 
-    async fn cancel(&self, session_id: Option<&str>) -> Result<(), MemoryConsolidationFailure> {
+    async fn cancel(&self, session_id: Option<&str>) -> Result<(), DreamFailure> {
         if let Some(session_id) = session_id {
             let _ = self
                 .managed

@@ -100,34 +100,34 @@ pub(super) fn stage_mcp_request(
 }
 
 impl ManagedState {
-    pub fn validate_memory_consolidator_agent(
+    pub fn validate_dream_agent(
         &self,
         workspace_id: &str,
         agent_id: &str,
     ) -> Result<(), StateError> {
-        if agent_id == crate::dream::BUILT_IN_MEMORY_CONSOLIDATOR_AGENT_ID {
+        if agent_id == crate::dream::BUILT_IN_DREAM_AGENT_ID {
             return Ok(());
         }
         let Some(source) = &self.config_source else {
             return Err(StateError::Run(RunError::bad_request(format!(
-                "memory consolidator Agent `{agent_id}` is unavailable"
+                "dream agent Agent `{agent_id}` is unavailable"
             ))));
         };
         if source.agent_view_in(workspace_id, agent_id).is_none()
             || source.agent_unavailable_in(workspace_id, agent_id)
         {
             return Err(StateError::Run(RunError::bad_request(format!(
-                "memory consolidator Agent `{agent_id}` is unavailable"
+                "dream agent Agent `{agent_id}` is unavailable"
             ))));
         }
         Ok(())
     }
 
-    /// Frozen committed Session input used by the memory-consolidation
+    /// Frozen committed Session input used by the dream
     /// application. Workspace ownership is checked before the Runtime transcript
     /// is read; the returned messages preserve tool calls and tool results exactly
     /// as committed by the ordinary Session authority.
-    pub async fn memory_consolidation_transcript(
+    pub async fn dream_transcript(
         &self,
         workspace_id: &str,
         session_id: &str,
@@ -315,7 +315,7 @@ impl ManagedState {
         owner_scope: &str,
         session: PersistedSession,
         operation: &str,
-        lifecycle_facts: Vec<SessionLifecycleFact>,
+        lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<PersistedSession, StateError> {
         let expected_revision = session.revision;
         let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
@@ -337,7 +337,7 @@ impl ManagedState {
         owner_scope: &str,
         mut session: PersistedSession,
         idempotency: awaken_session_contract::IdempotencyRecord,
-        lifecycle_facts: Vec<SessionLifecycleFact>,
+        lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<(PersistedSession, bool), StateError> {
         let expected_revision = session.revision;
         let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
@@ -404,7 +404,7 @@ impl ManagedState {
         &self,
         owner_scope: &str,
         session: &PersistedSession,
-        fact: SessionLifecycleFact,
+        fact: ManagedLifecycleFact,
     ) -> Result<(), StateError> {
         let deleted_revision =
             awaken_session_contract::SessionRevision(
@@ -488,6 +488,24 @@ impl ManagedState {
             .await
     }
 
+    /// The canonical public create command: create the Session and enqueue its
+    /// admitted initial Events through the ordinary Event command. Protocol
+    /// handlers and Deployment launchers share this method so neither can create
+    /// an inert Session or invent a follow-up Event path.
+    pub async fn create_session_with_initial_events(
+        self: &Arc<Self>,
+        req: SessionCreateParams,
+        workspace_id: Option<String>,
+    ) -> Result<Session, StateError> {
+        let initial_events = req.initial_events.clone();
+        let mut session = self.create_session(req, workspace_id).await?;
+        if !initial_events.is_empty() {
+            self.start_initial_events(&session.id, initial_events)?;
+            session.status = "running";
+        }
+        Ok(session)
+    }
+
     /// Create the Control-owned half of an externally dispatched application
     /// Session under the dispatcher's exact durable thread identity.
     ///
@@ -554,18 +572,17 @@ impl ManagedState {
             .config_source
             .as_ref()
             .and_then(|source| source.agent_view_in(&owner_scope, &agent_id));
-        let is_built_in_memory_consolidator = agent_id
-            == crate::dream::BUILT_IN_MEMORY_CONSOLIDATOR_AGENT_ID
+        let is_built_in_dream_agent = agent_id == crate::dream::BUILT_IN_DREAM_AGENT_ID
             && req
                 .metadata
                 .get("awaken.session.origin")
-                .is_some_and(|origin| origin == "memory_consolidation");
+                .is_some_and(|origin| origin == "dream");
         if config_view.is_none()
             && self
                 .config_source
                 .as_ref()
                 .is_some_and(|source| source.agent_unavailable_in(&owner_scope, &agent_id))
-            && !is_built_in_memory_consolidator
+            && !is_built_in_dream_agent
         {
             return Err(StateError::Run(RunError::bad_request(format!(
                 "agent_unavailable: agent `{agent_id}` cannot start a new session"

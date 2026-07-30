@@ -3,7 +3,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use awaken_session_contract::{
-    IdempotencyRecord, ManagedSessionRepository, PersistedSession, SessionLifecycleFact,
+    IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
     SessionMutationPayload,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -62,10 +62,10 @@ fn session() -> PersistedSession {
     }
 }
 
-fn fact() -> SessionLifecycleFact {
-    SessionLifecycleFact {
+fn fact() -> ManagedLifecycleFact {
+    ManagedLifecycleFact {
         id: "session:sesn_process_crash:created".into(),
-        session_id: "sesn_process_crash".into(),
+        object_id: "sesn_process_crash".into(),
         workspace_id: Some("ws_a".into()),
         event_type: "session.status_idled".into(),
         timestamp: 1_700_000_000,

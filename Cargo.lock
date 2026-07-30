@@ -566,6 +566,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-deployment-contract"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-session-contract",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "awaken-env-store"
 version = "1.0.0-dev"
 dependencies = [
@@ -1026,6 +1035,7 @@ dependencies = [
  "awaken-config-resolver",
  "awaken-credential-contract",
  "awaken-credential-vault",
+ "awaken-deployment-contract",
  "awaken-env-store",
  "awaken-ext-memory",
  "awaken-managed-bridge",
@@ -1619,6 +1629,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-credential-contract",
+ "awaken-deployment-contract",
  "awaken-ext-memory",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",

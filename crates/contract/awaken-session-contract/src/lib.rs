@@ -54,7 +54,7 @@ pub use baseline::{
     SessionNetworkPolicy,
 };
 pub use defaults::{CompiledSessionDefaults, SessionDefaultsCompiler};
-pub use lifecycle::{SessionLifecycleFact, SessionLifecycleSink};
+pub use lifecycle::{ManagedLifecycleFact, SessionLifecycleSink};
 pub use mcp_attachment::{
     McpAttachmentDraft, McpAttachmentError, McpAttachmentId, McpAttachmentOrigin,
     McpAttachmentState, McpDesiredSetFingerprint, McpGeneration, McpGenerationRef,

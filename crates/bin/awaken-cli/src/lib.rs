@@ -1559,9 +1559,28 @@ async fn management_router_over(
         eprintln!("reconciled {reconciled_mcp_attachments} durable Session MCP projection(s)");
     }
     let _ = managed_state.spawn_realization_lease_supervisor();
-    deployment_state.bind_launcher(managed_state.clone());
-    // Drive cron Deployments in production. The state mints due runs and launches
-    // them through the exact same Session port as the manual `/run` action.
+    deployment_state.bind_launcher(Arc::new(
+        awaken_protocol_managed::ManagedDeploymentSessionLauncher::new(managed_state.clone()),
+    ));
+    // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat
+    // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
+    // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
+    // routing. Flat requests fall through unchanged. The same assembly returns the
+    // DreamState it mounted, so scheduling cannot target a parallel instance.
+    let model_directory = Arc::new(awaken_server::model_directory::CatalogModelDirectory::new(
+        catalog.clone(),
+        credentials.clone(),
+    ));
+    let (mut data, dream_state) =
+        awaken_server::mount_with_managed_application_access_models_and_dreams(
+            host,
+            managed_state,
+            resource_catalog,
+            application_access,
+            model_directory,
+        );
+    // One timer drives every Managed periodic trigger. Deployment remains the cron
+    // authority; Dream policies submit the same durable DreamJob as manual create.
     let scheduled_deployments = deployment_state.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
@@ -1571,24 +1590,14 @@ async fn management_router_over(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|duration| duration.as_millis() as u64)
                 .unwrap_or_default();
-            scheduled_deployments.tick_and_launch(now_ms).await;
+            if let Err(error) = scheduled_deployments.tick_and_launch(now_ms).await {
+                eprintln!("scheduled Deployment tick failed: {error}");
+            }
+            if let Err(error) = dream_state.tick_policies(now_ms).await {
+                eprintln!("scheduled Dream policy tick failed: {error}");
+            }
         }
     });
-    // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat
-    // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
-    // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
-    // routing. Flat requests fall through unchanged.
-    let model_directory = Arc::new(awaken_server::model_directory::CatalogModelDirectory::new(
-        catalog.clone(),
-        credentials.clone(),
-    ));
-    let mut data = awaken_server::mount_with_managed_and_application_access_and_models(
-        host,
-        managed_state,
-        resource_catalog,
-        application_access,
-        model_directory,
-    );
     if let Some(iam) = resource_iam {
         data = data.layer(axum::middleware::from_fn_with_state(
             iam,

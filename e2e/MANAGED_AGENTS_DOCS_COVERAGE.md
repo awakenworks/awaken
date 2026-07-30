@@ -18,10 +18,10 @@ single docs-driven coverage owner for all of them. `PROTOCOL_COMPATIBILITY_TEST_
 continues to own only the cross-protocol normalization method; tests must not duplicate
 the Managed state machine there or create one suite per documentation page.
 
-Files and Dreams are explicitly excluded from the implementation initiative that added
-this baseline. File behavior remains recorded in the traceability table so its existing
-coverage is visible, but it creates no new work. Dreams remains an explicit absent
-research-preview surface and likewise creates no implementation work.
+Files were excluded from the implementation initiative that originally added this
+baseline; their existing behavior remains visible in the traceability table. Dreams
+are now implemented as a research-preview surface and are covered by the Rust
+cross-module suites linked below rather than by a duplicate Node state machine.
 
 ### Complete cause and effect inventory
 
@@ -361,10 +361,11 @@ expected in this parity scope.
 
 | Doc surface | Status in awaken | Evidence |
 |---|---|---|
-| **Dreams** (`/v1/dreams`, `dreaming-2026-04-21` header, create/poll/cancel/archive) | Designed, not implemented — research preview | canonical target: [`managed-dream-memory-consolidation.md`](../docs/design/managed-dream-memory-consolidation.md); no `dreams`/`Dream` route or type in `crates/` |
+| **Dreams** (`/v1/dreams`, `dreaming-2026-04-21` header, create/poll/cancel/archive) | Implemented | canonical design: [`managed-dream.md`](../docs/design/managed-dream.md); protocol tests: `awaken-protocol-managed/tests/dreams.rs`; cross-module E2E: `awaken-server/tests/managed_dream_e2e.rs` |
 | **Cloud env `packages` provisioning** (pip/npm/apt/cargo/gem/go, version pinning) | Implemented through the one neutral Sandbox provisioning seam. Podman resolves the selected base image to its exact local ID, builds/reuses a content-addressed derived image, and the real workload observes the installed effect. Providers without package provisioning reject before workload creation; there is no fallback. | Admission/update semantics: `management_environments_e2e.mjs`; real success/fail-closed behavior: `managed_container_agent_e2e.mjs`; provider/cache side effects: `awaken-sandbox-container` cause-table tests |
-| **Managed request rate limits** (300 Create/min, 1,200 Read/min, organization-scoped token buckets) | Implemented at the one merged Managed composition edge; flat and Workspace-addressed requests, Native Sessions and ACP Sessions share the same organization buckets. Files, Dreams, non-Managed routes and non-Create mutations are not charged. | `rate_limit` cause/decision-table tests in `awaken-protocol-managed`; `management_surface::flat_and_workspace_paths_share_one_organization_create_bucket` |
-| **Scheduled-deployment capacity and execution jitter** (1,000 scheduled deployments/organization; up to 15% interval jitter, bounded 5 seconds–9 minutes) | Implemented in the existing `DeploymentState`: capacity is atomic across create/update/archive; previews and trigger contexts retain exact cron instants; execution uses stable bounded jitter. Unpause skips missed occurrences, archive is terminal, internal Session creation shares the organization Create bucket, and primary-Agent archive cascades without a run. | `routes::deployments::tests` cause/decision-table cases; `management_deployment_schedule_e2e.mjs` |
+| **Managed request rate limits** (300 Create/min, 1,200 Read/min, organization-scoped token buckets) | Implemented at the one merged Managed composition edge; flat and Workspace-addressed requests, Native Sessions, ACP Sessions, Dreams, and Dream policies share the appropriate organization buckets. Files, non-Managed routes, and non-Create mutations are not charged. | `rate_limit` cause/decision-table tests in `awaken-protocol-managed`; `management_surface::flat_and_workspace_paths_share_one_organization_create_bucket` |
+| **Scheduled-deployment capacity and execution jitter** (1,000 scheduled deployments/organization; up to 15% interval jitter, bounded 5 seconds–9 minutes) | Implemented with durable SQLite/Postgres Deployment/DeploymentRun records and atomic `(Deployment, scheduled_at)` claims. Capacity is atomic across create/update/archive; previews and trigger contexts retain exact cron instants; execution uses stable bounded jitter. Unpause skips missed occurrences, archive is terminal, internal Session creation shares the organization Create bucket, and primary-Agent archive cascades without a run. | canonical design: [`managed-deployments.md`](../docs/design/managed-deployments.md); `routes::deployments::tests`; `managed_deployment_e2e.rs`; `management_deployment_schedule_e2e.mjs` |
+| **Automatic Dream policy** | Awaken extension, opt-in per `(Workspace, MemoryStore)`, default disabled; durable threshold/cursor policy submits the canonical Dream job and shares the one Managed periodic driver with Deployments. | `automatic_policy_is_opt_in_thresholded_and_reuses_the_dream_job_path`; `dream_policy_api_projects_defaults_validates_and_survives_restart`; `managed_dream_e2e.rs` |
 | **100k tool-output / oversized-block spill to file (preview + path)** | Implemented once at the Session sandbox boundary for Native local/MCP/remote-hand/delegated/recovered/client results and external ACP result projections. `<=100,000` characters remain inline; larger content is stored whole at a stable jailed path and only a bounded preview + readable path is committed. Storage failure is fail-closed. This internal result file is not the excluded Files API. | `tool_output_spill` cause/decision-table test; Native `tools`/`awaiting`/`formal_refinement` rules; ACP executor cause table; `acp_jsonrpc_e2e.mjs` reads and verifies complete files produced by both Native and ACP runs |
 
 ## Redundancy / dead-code assessment

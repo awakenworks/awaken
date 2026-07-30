@@ -1,15 +1,15 @@
-# Managed Dream Memory Consolidation
+# Managed Dream
 
 ## End-to-end objective
 
 Anthropic exposes this asynchronous resource as a **Dream**. Awaken names the
-internal operation **Memory Consolidation**: it freezes one source MemoryStore
+internal operation **Dream**: it freezes one source MemoryStore
 and the committed histories of 1–100 Sessions, exports each transcript as JSONL,
 and runs an ordinary auxiliary Agent against a new, independent MemoryStore.
 
 ```text
 POST /v1/dreams
-  -> durable MemoryConsolidationJob
+  -> durable DreamJob
   -> atomic source-memory snapshot + independent output clone
   -> one Files JSONL artifact per selected Session
   -> ordinary Managed Session and Run
@@ -21,12 +21,14 @@ POST /v1/dreams
 ```
 
 Dream is not a new Agent state and is not context compaction. The auxiliary
-Session retains the ordinary Session/Run lifecycle; `MemoryConsolidationJob`
+Session retains the ordinary Session/Run lifecycle; `DreamJob`
 owns only the public Dream lifecycle and references that Session.
 
-Automatic scheduling is intentionally separate and deferred. Every Workspace
-has an effective consolidator (built-in unless explicitly overridden), but that
-default does not automatically create Dreams.
+Every Workspace has an effective Dream Agent (built-in unless explicitly
+overridden). Automatic Dream policy is opt-in and defaults off. When enabled for
+one `(Workspace, MemoryStore)`, the production Managed scheduler evaluates it on
+the same timer that drives cron Deployments and submits the same durable DreamJob
+as `POST /v1/dreams`; there is no second Dream executor or Agent state.
 
 ## Verified duplication review and change classification
 
@@ -41,7 +43,7 @@ path.
 | Authority | Owner | Role in Dream |
 |---|---|---|
 | Managed Session/Event application | `awaken-protocol-managed::ManagedState` | validates Sessions, reads committed Messages, creates and archives the auxiliary Session |
-| ordinary Agent execution | `awaken-runtime-host::SessionRuntime` | executes the consolidator through the normal Run path |
+| ordinary Agent execution | `awaken-runtime-host::SessionRuntime` | executes the Dream Agent through the normal Run path |
 | Memory file truth | `awaken-resource-contract::MemoryRepository` | reads and commits path-addressed Memory content |
 | Files data plane | `awaken-server::SharedHost` | stores downloadable JSONL artifacts using the canonical File record path |
 | Resource catalog | `ResourceCatalog` | validates source ownership and gates the output store while Dream owns it |
@@ -56,21 +58,22 @@ path.
 | local, namespace, and container providers | reject copy realization for `WriteThroughRequired` | no silent copy/harvest downgrade before Agent launch |
 | Managed beta middleware and rate-limit classifier | Dreams family and both beta capabilities | wire compatibility and existing Managed request governance |
 | Managed Session application | exact built-in-origin exception and public realization seam | the built-in auxiliary Agent still uses one canonical Session path |
-| Memory extension and Managed Session store | add the `MemoryConsolidationRepository` port plus scoped job/override tables | Dream durability reuses the auxiliary-work repository family instead of embedding a database in the protocol adapter |
+| Memory extension and Managed Session store | add the `DreamRepository` port plus scoped job/override tables | Dream durability reuses the auxiliary-work repository family instead of embedding a database in the protocol adapter |
 | server assembly | FUSE-preferred Memory mounter and one Dream composition root | ordinary mounts may fall back; Dream output may not |
+| Managed periodic driver | evaluate opt-in Dream policies beside cron Deployments | one timer and one trigger path; policies never execute an Agent directly |
 
 ### Genuinely new behavior
 
 | New type/component | Owner | Responsibility |
 |---|---|---|
-| `DreamState` / `MemoryConsolidationJob` | Managed protocol application | validation, durable lifecycle, filtering, cancellation, archive, public projection |
+| `DreamState` / `DreamJob` | Managed protocol application | validation, durable lifecycle, filtering, cancellation, archive, public projection |
 | Dream DTOs and routes | Managed protocol adapter | Anthropic-compatible HTTP and SDK shape |
-| `MemoryConsolidationWorker` | application port | the single orchestration seam between lifecycle and lower authorities |
-| `BuiltInMemoryConsolidatorAgent` | server composition | snapshots inputs, exports JSONL, contributes an ordinary Session, executes and cleans up |
+| `DreamWorker` | application port | the single orchestration seam between lifecycle and lower authorities |
+| `BuiltInDreamAgent` | server composition | snapshots inputs, exports JSONL, contributes an ordinary Session, executes and cleans up |
 | `SessionTranscriptJsonlExporter` | server composition | deterministic committed-Message JSONL encoding |
 | `MemoryStoreContentSnapshot` | server composition | names one exact set of source heads used for both input and output |
 | `ExclusiveMemoryStoreWriterLease` | server composition | keeps the result catalog-gated until the auxiliary writer terminates |
-| `MemoryConsolidationAgentSelection` | Managed protocol application | freezes the effective built-in or Workspace override at create time |
+| `DreamAgentSelection` | Managed protocol application | freezes the effective built-in or Workspace override at create time |
 
 No `DreamAgentState`, `MemoryCompactAgent`, alternate transcript schema store, or
 parallel output import/harvest implementation exists.
@@ -87,12 +90,12 @@ following static view shows how those roles depend on one another.
 Dream routes
     |
     v
-DreamState ------ MemoryConsolidationRepository port
+DreamState ------ DreamRepository port
                           |
                           `------ SqliteManagedSessionRepository
     |
-    v  MemoryConsolidationWorker
-BuiltInMemoryConsolidatorAgent
+    v  DreamWorker
+BuiltInDreamAgent
     |---- ResourceCatalog: source validation + output availability fence
     |---- MemoryRepository.snapshot_heads: frozen source and independent clone
     |---- ManagedState: committed transcript + ordinary auxiliary Session
@@ -106,23 +109,23 @@ BuiltInMemoryConsolidatorAgent
 The data contracts are deliberately narrow:
 
 ```rust
-struct MemoryConsolidationRequest {
+struct DreamRequest {
     job_id: String,
     workspace_id: String,
     source_memory_store_id: String,
     session_ids: Vec<String>,
     model: DreamModelConfig,
     request_guidance: Option<String>,
-    agent_selection: MemoryConsolidationAgentSelection,
+    agent_selection: DreamAgentSelection,
 }
 
-struct MemoryConsolidationPreparation {
+struct DreamPreparation {
     result_memory_store_id: String,
     session_id: String,
 }
 ```
 
-`MemoryConsolidationJob` is the only source for `pending`, `running`,
+`DreamJob` is the only source for `pending`, `running`,
 `completed`, `failed`, `canceled`, archive time, output id, usage, and error.
 Memory content, File bytes, and ordinary Session events stay owned by their
 existing repositories.
@@ -172,12 +175,12 @@ List is newest-first, defaults to 20, caps `limit` at 100, excludes archived
 jobs by default, and supports `page`, repeated `statuses`, `include_archived`,
 `created_at[gt]`, and `created_at[lt]`.
 
-## Workspace consolidator selection
+## Workspace Dream Agent selection
 
-There is one effective consolidator per Workspace, not one copied Agent record:
+There is one effective Dream Agent per Workspace, not one copied Agent record:
 
 ```text
-Workspace override absent  -> awaken_builtin_memory_consolidator
+Workspace override absent  -> awaken_builtin_dream_agent
 Workspace override present -> validate and use that exact active Agent
 ```
 
@@ -185,6 +188,47 @@ Selection is frozen into the job before dispatch. Changing the Workspace policy
 therefore affects only later Dreams. Request `model` overrides the selected
 Agent's model for this Session, while request `instructions` is appended as
 bounded guidance and cannot widen mounts, tools, network, or credentials.
+
+## Automatic Dream policy
+
+The scheduling key is exactly `(workspace_id, memory_store_id)`. Absence is the
+effective default and means disabled; no policy row or default Agent row is copied
+for each Workspace. A configured policy contains:
+
+```text
+enabled                 default false
+interval_seconds        minimum 60; recommended/default 86400
+min_new_sessions        default 5
+max_sessions            default/cap 100
+model + instructions    same validation as manual Dream create
+next_due_ms              durable cursor
+last_completed_cutoff_ms durable successful-evidence cutoff
+```
+
+At a due tick, the Session source selects non-running, non-Dream auxiliary
+Sessions in the Workspace whose `updated_at` is newer than the last successful
+cutoff. If fewer than `min_new_sessions` exist, only `next_due_ms` advances. If a
+job for the same policy is already pending/running, no duplicate is submitted.
+Otherwise the selected set is capped at `max_sessions` and passed to the ordinary
+Dream create path. Only successful completion advances the evidence cutoff;
+failure/cancel therefore permits a later retry over the same evidence.
+
+Deployment cron and Dream interval policies intentionally have different domain
+contracts but one production driver. Deployment creates ordinary Sessions from a
+cron occurrence; Dream policy creates a DreamJob, which then creates its bounded
+auxiliary Session. Reusing the timer does not conflate these aggregates.
+
+Policy configuration is an explicit Awaken extension, not an Anthropic Dreams
+method:
+
+```text
+GET  /v1/dream_policies/{memory_store_id}  -> configured or disabled effective default
+POST /v1/dream_policies/{memory_store_id}  -> validate, persist, and return policy
+```
+
+Both routes require the Managed and Dreaming beta capabilities. Reading an
+absent policy does not create a row. The response includes the MemoryStore id,
+flattened configuration, `next_due_at`, and `last_completed_cutoff_at`.
 
 ## Frozen inputs and JSONL
 
@@ -274,6 +318,11 @@ redispatches them. Deterministic lower-resource ids make preparation idempotent:
 an existing result and Session are adopted; a clone left before its catalog
 commit is purged and rebuilt. Terminal jobs are loaded without redispatch.
 
+Dream policies and their due/success cursors are stored in the same repository.
+The composition root's single 15-second Managed timer first claims due Deployment
+occurrences and then evaluates due Dream policies. Either failure is reported and
+does not stop the other family on later ticks.
+
 ### Cancel and archive
 
 Cancel immediately and durably sets a pending/running job to `canceled`, sets
@@ -316,6 +365,8 @@ oracle.
 | API-5 | limit/cursor/repeated status/date bounds | SDK-compatible newest-first pages or 400; `list_supports_official_repeated_status_filters_and_cursor_pages` |
 | REC-1 | terminal SQLite job and restart | same status/output/usage restored; `sqlite_repository_restores_terminal_dreams_after_restart` |
 | SEL-1 | default/override Workspace policy | effective selection frozen without copied default rows; `workspace_agent_selection_uses_effective_default_and_freezes_override` |
+| SCH-1 | disabled / below threshold / due / completed cutoff | no job, threshold gating, one ordinary DreamJob, no unchanged reprocessing; `automatic_policy_is_opt_in_thresholded_and_reuses_the_dream_job_path` |
+| SCH-2 | absent / invalid / configured / restart | default projection, atomic 400, durable cursor/config restore; `dream_policy_api_projects_defaults_validates_and_survives_restart` |
 | MEM-1 | snapshot then source update | frozen heads unchanged and path ordered; `snapshot_heads_conformance` |
 | MNT-1 | strict output with copy-only mounter | teardown and fail before Agent launch; `write_through_required_rejects_copy_before_agent_launch` |
 | JSONL-1 | committed text/tool-use/tool-result/empty history | exact ordered payload or empty file; `jsonl_export_preserves_every_committed_message_and_tool_payload_in_order` |
@@ -328,11 +379,11 @@ durable local lifecycle/recovery, frozen JSONL evidence, independent Memory
 output, strict mount semantics, auxiliary Agent execution, Workspace selection,
 and cross-module E2E.
 
-Deferred work is periodic auto-Dream scheduling, automatic replacement of an
-Agent's bound MemoryStore, personal-to-team promotion, multi-source Memory merge,
-and a distributed Dream repository for a coordinator-only deployment. Those
-features must submit or store the same `MemoryConsolidationJob`; they may not add
-another executor or state machine.
+Deferred work is automatic replacement of an Agent's bound MemoryStore,
+personal-to-team promotion, multi-source Memory merge, and a distributed
+Postgres Dream-job repository for coordinator-only deployments. Those features
+must submit or store the same `DreamJob`; they may not add another executor or
+state machine.
 
 ## References
 

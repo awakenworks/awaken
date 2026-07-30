@@ -2,7 +2,7 @@
 
 ## End-to-End Objective
 
-Memory Extraction, Dream Memory Consolidation, Compact, and Outcome evaluation
+Memory Extraction, Dream, Compact, and Outcome evaluation
 reuse one immutable transcript service and one ordinary Agent Run lifecycle.
 They differ in the evidence they select, the result they own, and whether the
 parent Run may continue before the auxiliary result is ready.
@@ -37,7 +37,7 @@ projection retain their existing owners.
 | Memory Extraction controller | intent, retry, receipt | terminal snapshot, stable Run, MemoryStore | at-least-once observation, exactly-once effect |
 | Compact plugin/backend | thresholds, fold range, artifact cache | snapshot, stable Run | soft prefetch; hard join; no raw-history rewrite |
 | Outcome controller/Grader | evaluation range and state transition | snapshot, stable Run, Thread state | frozen evidence range; version-guarded transition |
-| Dream Memory Consolidation | explicit cross-Session Memory curation | Session snapshots, JSONL exports, source/result MemoryStores, ordinary Managed Session | product-owned lifecycle and mounts defined by [Managed Dream Memory Consolidation](managed-dream-memory-consolidation.md) |
+| Dream | explicit cross-Session Memory curation | Session snapshots, JSONL exports, source/result MemoryStores, ordinary Managed Session | product-owned lifecycle and mounts defined by [Managed Dream](managed-dream.md) |
 | Runtime Host | concrete Run/store/provider wiring | neutral ports above | no Memory/Compact/Outcome lifecycle ownership |
 | ACP/A2A adapters | external execution/projection | prepared input and ordinary Run facts | no extension vocabulary or independent memory truth |
 

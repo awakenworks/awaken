@@ -23,7 +23,7 @@ use crate::types::{
     SessionCreateParams, SessionError, SessionStats, SessionThread, SessionThreadAgent,
     SessionThreadStatus, StopReason, StreamFrame, Usage,
 };
-use awaken_session_contract::{ManagedSessionRepository, PersistedSession, SessionLifecycleFact};
+use awaken_session_contract::{ManagedLifecycleFact, ManagedSessionRepository, PersistedSession};
 use awaken_session_store::SqliteManagedSessionRepository;
 
 /// The seeded owner scope a bare/self-hosted session is created under when the

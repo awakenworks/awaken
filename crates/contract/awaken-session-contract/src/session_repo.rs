@@ -16,7 +16,7 @@
 use async_trait::async_trait;
 use std::collections::BTreeMap;
 
-use crate::SessionLifecycleFact;
+use crate::ManagedLifecycleFact;
 
 /// Secret-free active MCP projection consumed by protocol adapters. It is
 /// derived from the typed attachment aggregate without a JSON serialization hop.
@@ -206,7 +206,7 @@ pub struct SessionMutation {
     pub idempotency: IdempotencyRecord,
     pub payload: SessionMutationPayload,
     #[serde(default)]
-    pub lifecycle_facts: Vec<SessionLifecycleFact>,
+    pub lifecycle_facts: Vec<ManagedLifecycleFact>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -283,7 +283,7 @@ impl SessionMutation {
         if self
             .lifecycle_facts
             .iter()
-            .any(|fact| fact.session_id != session_id)
+            .any(|fact| fact.object_id != session_id)
         {
             return Err(SessionMutationValidationError::LifecycleSessionMismatch);
         }
@@ -303,7 +303,7 @@ pub trait ManagedSessionRepository: Send + Sync {
         _owner_scope: &str,
         _session: PersistedSession,
         _idempotency: IdempotencyRecord,
-        _lifecycle_facts: Vec<SessionLifecycleFact>,
+        _lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<SessionRevision, SessionRepositoryError> {
         Err(SessionRepositoryError::Storage(
             "repository does not implement root Session create".into(),
@@ -322,9 +322,9 @@ pub trait ManagedSessionRepository: Send + Sync {
     }
 
     /// Commit a lifecycle transition fact idempotently by stable id.
-    async fn append_lifecycle(&self, fact: SessionLifecycleFact);
+    async fn append_lifecycle(&self, fact: ManagedLifecycleFact);
 
-    async fn pending_lifecycle(&self) -> Vec<SessionLifecycleFact>;
+    async fn pending_lifecycle(&self) -> Vec<ManagedLifecycleFact>;
 
     async fn complete_lifecycle(&self, fact_id: &str);
 
@@ -633,9 +633,9 @@ mod mutation_tests {
                     .into(),
                 },
                 payload,
-                lifecycle_facts: vec![SessionLifecycleFact {
+                lifecycle_facts: vec![ManagedLifecycleFact {
                     id: "fact-1".into(),
-                    session_id: if rule.lifecycle_session_exact {
+                    object_id: if rule.lifecycle_session_exact {
                         session_id
                     } else {
                         "another-session"

@@ -49,9 +49,9 @@ mod state;
 pub mod work_queue;
 
 pub use dream::{
-    BUILT_IN_MEMORY_CONSOLIDATOR_AGENT_ID, DreamState, MemoryConsolidationAgentSelection,
-    MemoryConsolidationApiError, MemoryConsolidationCancellation, MemoryConsolidationFailure,
-    MemoryConsolidationPreparation, MemoryConsolidationRequest, MemoryConsolidationWorker,
+    BUILT_IN_DREAM_AGENT_ID, DreamAgentSelection, DreamApiError, DreamCancellation, DreamFailure,
+    DreamPolicy, DreamPolicyConfig, DreamPreparation, DreamRequest, DreamSessionSource, DreamState,
+    DreamWorker,
 };
 pub use env_registry::{EnvItem, EnvRegistry, EnvUpdate, InMemoryEnvRegistry};
 pub use rate_limit::{ManagedRateLimiter, ManagedRateLimits, enforce_managed_rate_limit};
@@ -61,7 +61,7 @@ pub use routes::agents_registry::{
 };
 pub use routes::deployments::{
     DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher, DeploymentState,
-    deployments_router,
+    ManagedDeploymentSessionLauncher, deployments_router,
 };
 pub use routes::environments::{EnvironmentState, environments_router};
 pub use routes::user_profiles::{UserProfileState, user_profiles_router};
@@ -70,12 +70,12 @@ pub use routes::{DREAMING_BETA, dreams_router};
 pub use routes::{MEMORY_BETA, SKILLS_BETA, WorkspaceScope, enforce_managed_beta, router};
 // The session-repository port family now lives in `awaken-session-contract`;
 // re-exported so existing `awaken_protocol_managed::…` paths keep resolving.
+pub use awaken_deployment_contract::DeploymentRepository;
 pub use awaken_ext_memory::{
-    MemoryConsolidationJobRecord, MemoryConsolidationRepository,
-    MemoryConsolidationRepositoryError, MemoryExtractionError, MemoryExtractionIntent,
-    MemoryExtractionMutation, MemoryExtractionReceipt, MemoryExtractionRepository,
-    MemoryExtractionStatus, MemoryExtractorSnapshot, MemoryMutationReceipt,
-    PutMemoryExtractionOutcome,
+    DreamJobRecord, DreamRepository, DreamRepositoryError, MemoryExtractionError,
+    MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionReceipt,
+    MemoryExtractionRepository, MemoryExtractionStatus, MemoryExtractorSnapshot,
+    MemoryMutationReceipt, PutMemoryExtractionOutcome,
 };
 pub use awaken_resource_contract::ResourceCatalog;
 pub use awaken_session_contract::env_registry::{EnvironmentPackages, EnvironmentRevision};
