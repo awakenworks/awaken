@@ -108,10 +108,8 @@ async fn run(command: console::Command) -> Result<(), String> {
             })?;
             warn_deprecations(&deployment);
             deployment.ensure_data_layout()?;
-            let key = deployment.seal_key.load_or_create()?;
             awaken_observability::init(&deployment.observability);
-            let result = match awaken_cli::build_configured_worker(&server, &deployment, &key).await
-            {
+            let result = match awaken_cli::build_configured_worker(&server, &deployment).await {
                 Ok(worker) => worker
                     .run_until_shutdown()
                     .await

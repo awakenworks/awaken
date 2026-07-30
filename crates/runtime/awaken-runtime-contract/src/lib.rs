@@ -81,6 +81,10 @@ pub use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 pub use awaken_agent_contract::agent::state::{Command as StateCommand, Key as StateKey};
 pub use awaken_agent_contract::agent::state::{MergePolicy, Scope, Store};
 pub use awaken_agent_contract::agent::thread::Id as ThreadId;
+// Credential material ports expose this opaque value in their signatures.
+// Re-export it with the rest of the runtime-facing agent types so boundary
+// adapters do not need a second, upward dependency on the agent contract.
+pub use awaken_agent_contract::RedactedString;
 pub use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error as CommitError,
     OperationCoordinator as CommitOperationCoordinator,

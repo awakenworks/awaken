@@ -11,12 +11,12 @@ path = "src/lib.rs"
 # The production authority-store-isolated executor crate: a peer of the control/data planes.
 # It drains runs over the dispatch transport and resolves EACH run's model_ref (from
 # its activation snapshot) to the real DB-configured provider via
-# snapshot-pinned model candidates over the SAME credential store `awaken-cli`
-# opens — no catalog re-resolution and no mocks. `NoModelConfiguredExecutor` is
+# snapshot-pinned model candidates through an exact Worker-private resolver — no
+# authority database, catalog re-resolution, or mocks. `NoModelConfiguredExecutor` is
 # only an inert host-construction placeholder; installed materialization makes a
 # missing or stale publication pin fail closed before it can run. A worker
-# explicitly configured for shared resources additionally opens data-plane clients
-# plus the narrow ResourceBindingValidator; it still owns no authoring/Session store.
+# configured for Resources installs per-kind data-plane clients plus the narrow
+# ResourceBindingValidator; it never opens an authority store.
 [features]
 # Container sandbox tiers (AWAKEN_SANDBOX_TIER=docker|podman|k8s), passed directly
 # to the shared host so a remote execution worker can realize its ACP
@@ -31,7 +31,7 @@ container-k8s = ["awaken-runtime-host/container-k8s"]
 awaken-runtime-host = { workspace = true }
 awaken-runtime-contract = { workspace = true }
 awaken-resource-contract = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "fs"] }
 # The cloud-native admin surface (readyz / livez / metrics / drain) on a separate
 # port, so an orchestrator can gate routing and drain the worker gracefully.
 axum = { workspace = true }
@@ -41,12 +41,12 @@ awaken-observability = { workspace = true }
 awaken-worker-contract = { workspace = true }
 awaken-acp-contract = { workspace = true }
 awaken-provisioning-contract = { workspace = true }
+async-trait = { workspace = true }
 getrandom = "0.2"
 
 [dev-dependencies]
 # The admin router tests drive the axum router directly (oneshot).
 tower = { version = "0.5", features = ["util"] }
-async-trait = { workspace = true }
 
 [lints]
 workspace = true

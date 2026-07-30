@@ -152,15 +152,13 @@ fn configured_worker_builder(
 pub async fn build_configured_worker(
     upstream: impl Into<String>,
     deployment: &crate::config::ResolvedDeployment,
-    seal_key: &[u8; 32],
 ) -> Result<awaken_worker::WorkerNode, String> {
-    let stores =
-        awaken_control::open_inference_materialization_stores(&deployment.control, seal_key).await;
-    let credentials =
-        awaken_runtime_host::PinnedCredentialMaterializer::new(stores.credentials, stores.secrets);
-    let resources = local_worker_resources(deployment).await?;
+    let resolver = Arc::new(awaken_worker::WorkerCredentialFileResolver::new(
+        &deployment.worker.credential_material_root,
+        &deployment.worker.credential_trust_domain,
+    ));
+    let credentials = awaken_runtime_host::PinnedCredentialMaterializer::external_only(resolver);
     configured_worker_builder(upstream, deployment, credentials)
-        .with_resource_plane(resources)
         .build()
         .map_err(|error| error.to_string())
 }
@@ -323,40 +321,57 @@ mod tests {
 
     use super::*;
 
-    /// Cause/effect graph: a resolved CLI deployment installs inference, A2A,
-    /// Resource and credential implementations once. Independent credential
-    /// implementations remain alternatives rather than a synthetic union.
+    /// Cause/effect graph: the server-role Worker installs inference and A2A over
+    /// one exact Worker-private file resolver. Resource adapters remain absent
+    /// until their network boundary is installed; no authority store is opened.
     ///
     /// | Rule | Installed implementations | Effect |
     /// |---|---|---|
-    /// | C1 | inference + A2A + Resource | capabilities advertise all three |
-    /// | C2 | multiple credential implementations | one decodable value with exact alternatives |
+    /// | C1 | exact file resolver | WorkerReference capability only |
+    /// | C2 | no Resource network adapters | no Session Resource capability |
+    /// | C3 | Worker runtime config | no durable local storage root |
     #[tokio::test]
     async fn configured_worker_projects_only_the_cli_installed_adapters() {
         let directory = tempfile::tempdir().unwrap();
-        let deployment = crate::config::local_test_deployment(directory.path().into());
+        let deployment = crate::config::worker_test_deployment(directory.path().into());
         deployment.ensure_data_layout().unwrap();
-        let worker = build_configured_worker("http://127.0.0.1:1", &deployment, &[7_u8; 32])
+        let worker = build_configured_worker("http://127.0.0.1:1", &deployment)
             .await
-            .expect("C1 complete CLI Worker topology");
+            .expect("C1 authority-store-isolated CLI Worker topology");
         let capabilities = &worker.manifest().capabilities;
         assert!(capabilities.contains(awaken_runtime_contract::A2A_RUNTIME_CAPABILITY));
-        assert!(capabilities.contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY));
-        assert!(capabilities.contains(awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY));
+        assert!(
+            !capabilities.contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
+            "C2"
+        );
+        assert!(
+            !capabilities.contains(awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY),
+            "C2"
+        );
         let evidence =
             awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
                 capabilities,
             )
             .expect("C1 one merged credential evidence capability");
-        fn includes_control_reference(
+        fn includes_source(
             evidence: &awaken_runtime_contract::CredentialRealizationCapabilities,
+            source: CredentialMaterialSource,
         ) -> bool {
-            evidence
-                .material_sources
-                .contains(&CredentialMaterialSource::ControlPlaneReference)
-                || evidence.alternatives.iter().any(includes_control_reference)
+            evidence.material_sources.contains(&source)
+                || evidence
+                    .alternatives
+                    .iter()
+                    .any(|alternative| includes_source(alternative, source))
         }
-        assert!(includes_control_reference(&evidence), "C2: {evidence:?}");
+        assert!(
+            includes_source(&evidence, CredentialMaterialSource::WorkerReference),
+            "C1: {evidence:?}"
+        );
+        assert!(
+            !includes_source(&evidence, CredentialMaterialSource::ControlPlaneReference),
+            "C1: {evidence:?}"
+        );
+        assert!(deployment.runtime.storage_dir.is_none(), "C3");
     }
 
     struct FixedDiscovery {
