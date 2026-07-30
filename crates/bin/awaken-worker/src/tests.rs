@@ -273,6 +273,13 @@ fn external_credential_resolver_has_one_canonical_composition_path() {
             .contains(awaken_worker_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY),
         "X1 exact observation/revalidation capability"
     );
+    assert!(
+        worker
+            .manifest()
+            .capabilities
+            .contains(awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY),
+        "X2 the installed pinned adapter satisfies provider-source placement"
+    );
     let evidence =
         awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
             &worker.manifest().capabilities,
@@ -367,6 +374,11 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
                 .iter()
                 .any(supports_worker_provider_adapter)
     );
+    assert!(
+        workload
+            .capabilities
+            .contains(awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY)
+    );
 
     let without_acp = derive_standard_manifest(StandardManifestInputs {
         deployment: &deployment(),
@@ -396,6 +408,11 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         native
             .realization_kinds
             .contains(&awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,)
+    );
+    assert!(
+        without_acp
+            .capabilities
+            .contains(awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY)
     );
 }
 
