@@ -48,8 +48,8 @@ pub use awaken_agent_contract::stable_fingerprint;
 pub use baseline::{
     ApplicationContributionError, ApplicationContributionOutcome, ApplicationContributionReceipt,
     ApplicationContributionState, ApplicationSessionInput, CompiledSessionCreation,
-    ControlSessionCreationInputs, EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline,
-    SessionBaselineFingerprint, SessionBaselineInputs, SessionBaselineState,
+    ControlSessionCreationInputs, EnvironmentFingerprint, EnvironmentSnapshot, SandboxProvisioning,
+    SessionBaseline, SessionBaselineFingerprint, SessionBaselineInputs, SessionBaselineState,
     SessionCreationFinalizeError, SessionCreationIntent, SessionMcpAuthoringContext,
     SessionNetworkPolicy,
 };

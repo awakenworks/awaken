@@ -1909,6 +1909,30 @@ pub(crate) mod resource_prompt_tests {
     }
 
     #[tokio::test]
+    async fn warm_install_keeps_archived_publications_unavailable() {
+        // Warm-install lifecycle decision table:
+        // R1 current config Published + durable publication -> install snapshot;
+        // R2 current config Disabled/Archived + old publication -> uninstall and
+        // skip every historical snapshot; R3 current-config read failure -> zero
+        // installs. This case pins R2 across the process-restart boundary.
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let scope = ScopeId::from("wrkspc_archived_warm");
+        let author = plane_over(store.clone());
+        let mut config = agent_config("archived-agent");
+        author.put(&scope, &config).await.unwrap();
+        author.publish(&scope, &config.id).await.unwrap();
+        config.archived_at = Some("2026-07-30T00:00:00Z".into());
+        store.put_config_scoped(&scope, &config).await.unwrap();
+
+        let cold = test_service();
+        assert_eq!(cold.warm_install(store.as_ref(), &scope).await, 0, "R2");
+        assert!(
+            cold.installed_in(scope.as_str(), &config.id).is_none(),
+            "R2"
+        );
+    }
+
+    #[tokio::test]
     async fn publish_is_idempotent_by_fingerprint() {
         // Re-publishing an unchanged config is content-addressed: the same
         // fingerprint both times, and exactly one durable published row

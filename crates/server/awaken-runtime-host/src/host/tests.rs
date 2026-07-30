@@ -38,7 +38,7 @@ fn on_tool_use_environment() -> awaken_protocol_managed::EnvironmentSnapshot {
         awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
         serde_json::json!({}),
     );
-    environment.sandbox_provisioning = awaken_provisioning_contract::SandboxProvisioning::OnToolUse;
+    environment.sandbox_provisioning = awaken_protocol_managed::SandboxProvisioning::OnToolUse;
     environment
 }
 
@@ -2467,6 +2467,11 @@ impl awaken_protocol_managed::SessionEnvironmentBindingSink for BindingOrderSink
     }
 }
 
+// Immediate binding decision table:
+// resident/adopted -> reuse without a write; absent + concurrent callers -> one
+// lifecycle owner; successful CAS -> persist before publish; failed CAS ->
+// dispose and publish nothing. Repository tests own conflict retry/exhaustion
+// and already-equal idempotence at the durable aggregate boundary.
 #[tokio::test]
 async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use_it() {
     use awaken_protocol_managed::SessionRuntime;

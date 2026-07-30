@@ -1,21 +1,10 @@
 //! Versioned sandbox execution policy and exact Environment binding.
 
 use async_trait::async_trait;
+use awaken_session_contract::SandboxProvisioning;
 use serde::{Deserialize, Serialize};
 
 use crate::SandboxOverride;
-
-/// When a Session materializes the sandbox selected by its Environment.
-///
-/// `OnToolUse` is intentionally a Native-Awaken capability: runtimes which need
-/// an execution environment before their process starts cannot honor it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SandboxProvisioning {
-    #[default]
-    Eager,
-    OnToolUse,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]

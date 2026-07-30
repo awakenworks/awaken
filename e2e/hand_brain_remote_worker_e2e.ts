@@ -39,7 +39,7 @@ function buildWorker(): string {
   const features = CONTAINER ? ['--features', `container-${TIER}`] : [];
   const output = execFileSync(
     'cargo',
-    ['build', '--quiet', '--message-format=json', '-p', 'awaken-worker', '--example', 'hand_brain_lazy_worker', ...features],
+    ['build', '--quiet', '--message-format=json', '-p', 'awaken-cli', '--example', 'hand_brain_lazy_worker', ...features],
     { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
   );
   for (const line of output.split('\n')) {
@@ -122,7 +122,10 @@ async function dispatch(sessionId: string): Promise<any> {
 async function json(method: string, route: string, body?: unknown): Promise<any> {
   const response = await fetch(`${BASE}${route}`, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers: {
+      'anthropic-beta': BETAS[0],
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(15_000),
   });

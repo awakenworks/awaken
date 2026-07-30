@@ -41,19 +41,12 @@ awaken-observability = { workspace = true }
 awaken-worker-contract = { workspace = true }
 awaken-acp-contract = { workspace = true }
 awaken-provisioning-contract = { workspace = true }
-awaken-control = { workspace = true }
 getrandom = "0.2"
 
 [dev-dependencies]
 # The admin router tests drive the axum router directly (oneshot).
 tower = { version = "0.5", features = ["util"] }
 async-trait = { workspace = true }
-awaken-credential-vault = { workspace = true }
-# The materialization test builds a CredentialInferenceMaterializer over in-memory
-# stores and asserts exact published access materializes a real executor.
-awaken-agent-contract = { workspace = true }
-awaken-admin-config-api = { workspace = true }
-serde_json = { workspace = true }
 
 [lints]
 workspace = true

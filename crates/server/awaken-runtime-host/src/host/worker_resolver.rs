@@ -385,7 +385,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                         .as_ref()
                         .is_some_and(|environment| {
                             environment.provisioning
-                                == awaken_provisioning_contract::SandboxProvisioning::OnToolUse
+                                == awaken_protocol_managed::SandboxProvisioning::OnToolUse
                         })
             })
             .unwrap_or(false);
@@ -520,7 +520,7 @@ mod tests {
                 "lazy-env-v1".into(),
             ),
             sandbox: serde_json::json!({}),
-            sandbox_provisioning: awaken_provisioning_contract::SandboxProvisioning::OnToolUse,
+            sandbox_provisioning: awaken_protocol_managed::SandboxProvisioning::OnToolUse,
             packages: Default::default(),
             network: awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
             credential_realization:

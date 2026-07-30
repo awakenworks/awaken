@@ -6,6 +6,12 @@
 //   Hand Session: built-in read call -> binding committed before tool execution.
 // The disposable SQLite aggregate is inspected only as persistence evidence; no
 // test-only runtime hook participates in either run.
+//
+// Decision rules owned here:
+// H1/H2 Environment and Session creation leave binding null;
+// H3 a dynamic MCP Brain call succeeds and leaves binding null;
+// H4 the first Sandbox call observes no binding before dispatch;
+// H5 successful Hand execution commits one Session-owned binding before result.
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';

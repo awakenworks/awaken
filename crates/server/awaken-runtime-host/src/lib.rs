@@ -1210,7 +1210,7 @@ impl SessionRuntime for ManagedHost {
             .install_environment_projection(thread, &init.environment)
             .map_err(to_run_error)?;
         if init.environment.sandbox_provisioning
-            == awaken_provisioning_contract::SandboxProvisioning::OnToolUse
+            == awaken_protocol_managed::SandboxProvisioning::OnToolUse
         {
             let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> =
                 Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(

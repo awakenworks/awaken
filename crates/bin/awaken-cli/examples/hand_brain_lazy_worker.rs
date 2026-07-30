@@ -86,7 +86,7 @@ impl InferenceExecutorMaterializer for HostMaterializer {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    awaken_observability::init();
+    awaken_observability::init(&Default::default());
     let upstream = std::env::var("AWAKEN_UPSTREAM_URL")?;
     let storage = std::env::var("AWAKEN_TEST_WORKER_STORAGE_DIR")?;
     let tier = std::env::var("SESSION_ENVIRONMENT_TIER").unwrap_or_else(|_| "local".into());
@@ -94,7 +94,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     deployment.durable = true;
     deployment.storage_dir = Some(storage.clone().into());
     deployment.sandbox_dir = Some(format!("{storage}/sandboxes").into());
-    deployment.sandbox_tier_explicit = true;
     deployment.sandbox_tier = match tier.as_str() {
         "local" => awaken_runtime_host::SandboxTier::Local,
         "namespace" => awaken_runtime_host::SandboxTier::Namespace,

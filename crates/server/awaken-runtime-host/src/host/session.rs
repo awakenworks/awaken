@@ -55,7 +55,7 @@ impl SharedHost {
                         .as_ref()
                         .is_some_and(|projection| {
                             projection.provisioning
-                                == awaken_provisioning_contract::SandboxProvisioning::OnToolUse
+                                == awaken_protocol_managed::SandboxProvisioning::OnToolUse
                         })
                     && slot.delegates.is_empty()
                     && slot.memory.is_none()

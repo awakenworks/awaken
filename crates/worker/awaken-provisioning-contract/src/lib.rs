@@ -43,10 +43,10 @@ mod vocab;
 
 pub use admission::{AdmissionError, EnvironmentDecl, check_environment_soundness};
 pub use approval::{ApprovalDecision, ApprovalPolicy, SandboxAction, decide as approval_decide};
+pub use awaken_session_contract::SandboxProvisioning;
 pub use execution_policy::{
     SandboxExecutionPolicy, SandboxExecutionPolicyError, SandboxExecutionPolicyId,
     SandboxExecutionPolicyRef, SandboxExecutionPolicyStore, SandboxExecutionPolicyVersion,
-    SandboxProvisioning,
 };
 pub use lease::{
     AdoptionPlan, LeaseGrant, LeaseLiveness, LivenessSignals, ReapCause, ReconcileOutcome,

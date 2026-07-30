@@ -65,17 +65,19 @@ pub awaken_run_executor_acp::ResolvedModel::BackendOwned
 pub awaken_run_executor_acp::ResolvedModel::BackendOwned::capability: awaken_protocol_acp::AcpCapabilityExpectation
 pub awaken_run_executor_acp::ResolvedModel::BackendOwned::model: alloc::string::String
 pub awaken_run_executor_acp::ResolvedModel::BackendOwned::model_selection: awaken_runtime_contract::resolved::BackendModelSelection
-pub awaken_run_executor_acp::ResolvedModel::BackendOwned::session_configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration
+pub awaken_run_executor_acp::ResolvedModel::BackendOwned::session_configuration: awaken_agent_contract::acp::AcpSessionConfiguration
 pub awaken_run_executor_acp::ResolvedModel::Managed
+pub awaken_run_executor_acp::ResolvedModel::Managed::acp: core::option::Option<awaken_runtime_contract::resolved::AcpExecutionProfile>
 pub awaken_run_executor_acp::ResolvedModel::Managed::base_url: alloc::string::String
 pub awaken_run_executor_acp::ResolvedModel::Managed::credential_artifact: core::option::Option<awaken_run_executor_acp::CredentialArtifactRequirement>
 pub awaken_run_executor_acp::ResolvedModel::Managed::model: alloc::string::String
 pub awaken_run_executor_acp::ResolvedModel::Managed::process_secret: core::option::Option<awaken_run_executor_acp::ProcessSecretRequirement>
 impl awaken_run_executor_acp::ResolvedModel
-pub fn awaken_run_executor_acp::ResolvedModel::backend_owned(awaken_runtime_contract::resolved::BackendModelSelection, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, awaken_runtime_contract::resolved::AcpSessionConfiguration) -> Self
+pub fn awaken_run_executor_acp::ResolvedModel::backend_owned(awaken_runtime_contract::resolved::BackendModelSelection, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, awaken_agent_contract::acp::AcpSessionConfiguration) -> Self
 pub fn awaken_run_executor_acp::ResolvedModel::cloud_managed_gateway(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_run_executor_acp::ResolvedModel::credential_artifact(&self) -> core::option::Option<&awaken_run_executor_acp::CredentialArtifactRequirement>
 pub fn awaken_run_executor_acp::ResolvedModel::managed(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<awaken_run_executor_acp::ProcessSecretRequirement>, core::option::Option<awaken_run_executor_acp::CredentialArtifactRequirement>) -> Self
+pub fn awaken_run_executor_acp::ResolvedModel::managed_with_acp(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<awaken_run_executor_acp::ProcessSecretRequirement>, core::option::Option<awaken_run_executor_acp::CredentialArtifactRequirement>, awaken_runtime_contract::resolved::AcpExecutionProfile) -> Self
 pub enum awaken_run_executor_acp::SessionKey
 pub awaken_run_executor_acp::SessionKey::Cwd
 pub awaken_run_executor_acp::SessionKey::InternalId
@@ -104,6 +106,7 @@ pub awaken_run_executor_acp::AcpCli::id: &'static str
 pub awaken_run_executor_acp::AcpCli::managed_credential_delivery: awaken_run_executor_acp::ManagedCredentialDelivery
 pub awaken_run_executor_acp::AcpCli::mcp_interface: awaken_run_executor_acp::McpInterface
 pub awaken_run_executor_acp::AcpCli::memory_entrypoint: &'static str
+pub awaken_run_executor_acp::AcpCli::model_api_dialects: &'static [&'static str]
 pub awaken_run_executor_acp::AcpCli::model_delivery: core::option::Option<awaken_run_executor_acp::ModelDelivery>
 pub awaken_run_executor_acp::AcpCli::session_export_excludes: &'static [&'static str]
 pub awaken_run_executor_acp::AcpCli::session_persistence: awaken_run_executor_acp::SessionPersistence
@@ -111,6 +114,8 @@ impl awaken_run_executor_acp::AcpCli
 pub fn awaken_run_executor_acp::AcpCli::project_mcp(&self, &[awaken_runtime_contract::resolved::AcpMcpServer]) -> awaken_run_executor_acp::McpDelivery
 impl awaken_run_executor_acp::AcpCli
 pub fn awaken_run_executor_acp::AcpCli::remediation(self, core::option::Option<&str>) -> core::option::Option<&'static str>
+impl awaken_run_executor_acp::AcpCli
+pub fn awaken_run_executor_acp::AcpCli::supports_model_api_dialect(self, &str) -> bool
 impl awaken_run_executor_acp::AcpCli
 pub fn awaken_run_executor_acp::AcpCli::try_project(&self, &awaken_run_executor_acp::ResolvedModel, core::option::Option<u64>, &[(alloc::string::String, alloc::string::String)]) -> core::result::Result<awaken_run_executor_acp::AcpLaunch, awaken_run_executor_acp::OpenError>
 pub fn awaken_run_executor_acp::AcpCli::try_project_with_argv(&self, &awaken_run_executor_acp::ResolvedModel, core::option::Option<u64>, &[(alloc::string::String, alloc::string::String)], core::option::Option<&[alloc::string::String]>) -> core::result::Result<awaken_run_executor_acp::AcpLaunch, awaken_run_executor_acp::OpenError>

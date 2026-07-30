@@ -413,6 +413,11 @@ impl ToolExecutor for RecordingExecutor {
     }
 }
 
+// Per-tool placement decision table:
+// registered Brain tool -> local invocation regardless of executor;
+// registered Sandbox tool + executor -> executor only;
+// registered Sandbox tool without executor -> model-visible fail-closed result,
+// never local fallback; unknown id -> model-visible unknown-tool result.
 #[tokio::test]
 async fn sandbox_tool_uses_the_wired_executor() {
     // The echo tool is registered and visible, but a run that wires a

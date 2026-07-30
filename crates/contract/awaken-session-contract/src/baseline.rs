@@ -13,6 +13,18 @@ pub enum SessionNetworkPolicy {
     None,
 }
 
+/// When a Session materializes the sandbox selected by its frozen Environment.
+///
+/// This is Session configuration truth. Providers consume the decision but do
+/// not own or reinterpret it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxProvisioning {
+    #[default]
+    Eager,
+    OnToolUse,
+}
+
 impl SessionNetworkPolicy {
     /// Whether the frozen Session policy restricts egress at all.
     #[must_use]
@@ -95,7 +107,7 @@ pub struct EnvironmentSnapshot {
     /// Frozen creation timing from the exact Environment-bound execution policy.
     /// Absence in older persisted rows preserves the historical eager behavior.
     #[serde(default)]
-    pub sandbox_provisioning: awaken_provisioning_contract::SandboxProvisioning,
+    pub sandbox_provisioning: SandboxProvisioning,
     /// Exact package inputs frozen with this Environment revision. Providers
     /// provision them before workload launch or reject the spec fail-closed.
     #[serde(default)]
