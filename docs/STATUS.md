@@ -66,7 +66,8 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/remote-worker-protocol.md` | Role owner | Required | self |
 | `application-authentication.md` | Product/downstream mapping | Not required | n/a |
 | `design/anthropic-alignment-and-sessions.md` | Product/downstream mapping | Not required | n/a |
-| `design/managed-dream-memory-consolidation.md` | Role owner | Required | self |
+| `design/managed-dream.md` | Role owner | Required | self |
+| `design/managed-deployments.md` | Role owner | Required | self |
 | `design/web-ui.md` | Product/downstream mapping | Not required | n/a |
 | `design/awaken-server-local-overview.md` | Product/downstream mapping | Not required | n/a |
 | `design/credentials-and-vaults.md` | Product/downstream mapping | Not required | n/a |

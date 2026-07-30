@@ -183,7 +183,7 @@ async function main() {
 
       // path_prefix drills into the subtree, excluding /notes.md.
       const drilled = await drain(
-        client.beta.memoryStores.memories.list(store.id, { path_prefix: '/archive', betas: BETAS }),
+        client.beta.memoryStores.memories.list(store.id, { path_prefix: '/archive/', betas: BETAS }),
       );
       assert.deepEqual(
         drilled.map((m) => m.id),
@@ -191,7 +191,7 @@ async function main() {
         'path_prefix returns only memories under the prefix',
       );
 
-      // view=basic elides content (content is populated only under the default full view).
+      // view=basic (also the list default) elides content; full must be explicit.
       const basic = await drain(
         client.beta.memoryStores.memories.list(store.id, { view: 'basic', betas: BETAS }),
       );

@@ -1,4 +1,4 @@
-//! Anthropic-compatible Dreams routes over the memory-consolidation application.
+//! Anthropic-compatible Dreams routes over the dream application.
 
 use std::sync::Arc;
 
@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-use crate::dream::{DreamState, MemoryConsolidationApiError};
+use crate::dream::{DreamApiError, DreamPolicy, DreamPolicyConfig, DreamState};
 use crate::routes::{ManagedJson, WorkspaceScope};
 use crate::types::{
     Dream, DreamCreateParams, DreamListParams, DreamPage, DreamStatus, ErrorResponse,
@@ -21,6 +21,10 @@ pub fn dreams_router(state: Arc<DreamState>) -> Router {
         .route("/v1/dreams/{id}", get(retrieve))
         .route("/v1/dreams/{id}/cancel", post(cancel))
         .route("/v1/dreams/{id}/archive", post(archive))
+        .route(
+            "/v1/dream_policies/{memory_store_id}",
+            get(retrieve_policy).post(update_policy),
+        )
         .with_state(state)
 }
 
@@ -65,7 +69,7 @@ async fn list(
         .map_err(error_response)
 }
 
-fn parse_list_query(raw: Option<&str>) -> Result<DreamListParams, MemoryConsolidationApiError> {
+fn parse_list_query(raw: Option<&str>) -> Result<DreamListParams, DreamApiError> {
     let mut params = DreamListParams::default();
     for (key, value) in form_urlencoded::parse(raw.unwrap_or_default().as_bytes()) {
         match key.as_ref() {
@@ -73,9 +77,7 @@ fn parse_list_query(raw: Option<&str>) -> Result<DreamListParams, MemoryConsolid
             "created_at[lt]" => params.created_before = Some(value.into_owned()),
             "include_archived" => {
                 params.include_archived = value.parse().map_err(|_| {
-                    MemoryConsolidationApiError::BadRequest(
-                        "include_archived must be a boolean".into(),
-                    )
+                    DreamApiError::BadRequest("include_archived must be a boolean".into())
                 })?;
             }
             "statuses" => params.statuses.push(match value.as_ref() {
@@ -85,17 +87,17 @@ fn parse_list_query(raw: Option<&str>) -> Result<DreamListParams, MemoryConsolid
                 "failed" => DreamStatus::Failed,
                 "canceled" => DreamStatus::Canceled,
                 _ => {
-                    return Err(MemoryConsolidationApiError::BadRequest(
+                    return Err(DreamApiError::BadRequest(
                         "unknown Dream status filter".into(),
                     ));
                 }
             }),
             "limit" => {
-                let limit: usize = value.parse().map_err(|_| {
-                    MemoryConsolidationApiError::BadRequest("limit must be an integer".into())
-                })?;
+                let limit: usize = value
+                    .parse()
+                    .map_err(|_| DreamApiError::BadRequest("limit must be an integer".into()))?;
                 if !(1..=100).contains(&limit) {
-                    return Err(MemoryConsolidationApiError::BadRequest(
+                    return Err(DreamApiError::BadRequest(
                         "limit must be between 1 and 100".into(),
                     ));
                 }
@@ -131,16 +133,33 @@ async fn archive(
         .map_err(error_response)
 }
 
-fn error_response(error: MemoryConsolidationApiError) -> (StatusCode, Json<ErrorResponse>) {
+async fn retrieve_policy(
+    State(state): State<Arc<DreamState>>,
+    workspace: Option<axum::Extension<WorkspaceScope>>,
+    Path(memory_store_id): Path<String>,
+) -> Json<DreamPolicy> {
+    Json(state.policy(&scope(workspace), &memory_store_id))
+}
+
+async fn update_policy(
+    State(state): State<Arc<DreamState>>,
+    workspace: Option<axum::Extension<WorkspaceScope>>,
+    Path(memory_store_id): Path<String>,
+    ManagedJson(config): ManagedJson<DreamPolicyConfig>,
+) -> Result<Json<DreamPolicy>, (StatusCode, Json<ErrorResponse>)> {
+    let workspace = scope(workspace);
+    state
+        .set_policy(&workspace, &memory_store_id, config)
+        .map_err(error_response)?;
+    Ok(Json(state.policy(&workspace, &memory_store_id)))
+}
+
+fn error_response(error: DreamApiError) -> (StatusCode, Json<ErrorResponse>) {
     let (status, kind) = match error {
-        MemoryConsolidationApiError::BadRequest(_) => {
-            (StatusCode::BAD_REQUEST, "invalid_request_error")
-        }
-        MemoryConsolidationApiError::NotFound => (StatusCode::NOT_FOUND, "not_found_error"),
-        MemoryConsolidationApiError::Conflict(_) => (StatusCode::CONFLICT, "invalid_request_error"),
-        MemoryConsolidationApiError::Unavailable(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, "api_error")
-        }
+        DreamApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, "invalid_request_error"),
+        DreamApiError::NotFound => (StatusCode::NOT_FOUND, "not_found_error"),
+        DreamApiError::Conflict(_) => (StatusCode::CONFLICT, "invalid_request_error"),
+        DreamApiError::Unavailable(_) => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
     };
     (status, Json(ErrorResponse::new(kind, error.to_string())))
 }

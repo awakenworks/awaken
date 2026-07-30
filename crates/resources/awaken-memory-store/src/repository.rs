@@ -24,8 +24,8 @@ use sha2::{Digest, Sha256};
 // contract crate. This module implements the port and re-exports them so
 // `awaken_memory_store::repository::Memory` and root re-exports resolve uniformly.
 pub use awaken_resource_contract::{
-    MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry, MemoryPurgeSummary,
-    MemoryRepository, MemoryVersion, MemoryVersionOperation,
+    MAX_MEMORIES_PER_STORE, MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry,
+    MemoryPurgeSummary, MemoryRepository, MemoryVersion, MemoryVersionOperation,
 };
 
 /// Lowercase hex SHA-256 of `content` — the CAS token (Anthropic wire is sha256).
@@ -217,6 +217,9 @@ impl MemoryRepository for VolatileMemoryRepository {
         let store_map = guard.records.entry(store.to_string()).or_default();
         if store_map.contains_key(path) {
             return Err(MemErr::PathConflict(path.to_string()));
+        }
+        if store_map.len() >= MAX_MEMORIES_PER_STORE {
+            return Err(MemErr::AtCapacity);
         }
         let now = now_nanos();
         let record = Record {
@@ -459,7 +462,7 @@ impl MemoryRepository for VolatileMemoryRepository {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Run the same conformance suite over any `MemoryRepository` backend.
@@ -1121,5 +1124,39 @@ mod tests {
             Some("updated"),
             "the second handle sees the update"
         );
+    }
+
+    pub(crate) async fn capacity_conformance(fs: &dyn MemoryRepository) {
+        // Causes: live-head count at 1,999/2,000, create vs update, then delete.
+        // Constraints: versions do not consume capacity and the check shares the
+        // atomic repository mutation used by API and write-through mounts.
+        // Effects: 2,000th create succeeds; 2,001st is AtCapacity; existing update
+        // succeeds; deleting one head permits exactly one replacement create.
+        // Decision rule: Memory capacity MC1-MC4.
+        let first = fs.create("capacity", "/m0.md", "zero").await.unwrap();
+        for index in 1..MAX_MEMORIES_PER_STORE {
+            fs.create("capacity", &format!("/m{index}.md"), "x")
+                .await
+                .unwrap();
+        }
+        assert!(matches!(
+            fs.create("capacity", "/overflow.md", "x").await,
+            Err(MemErr::AtCapacity)
+        ));
+        let updated = fs
+            .update("capacity", &first.id, "updated", &first.content_sha256)
+            .await
+            .unwrap();
+        assert_eq!(updated.content.as_deref(), Some("updated"), "MC3");
+        fs.delete_by_path("capacity", "/m1.md").await.unwrap();
+        assert!(
+            fs.create("capacity", "/replacement.md", "x").await.is_ok(),
+            "MC4"
+        );
+    }
+
+    #[tokio::test]
+    async fn volatile_store_capacity_rejects_only_new_heads_and_reopens_after_delete() {
+        capacity_conformance(&VolatileMemoryRepository::new()).await;
     }
 }

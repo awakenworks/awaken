@@ -20,7 +20,7 @@ use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::{WebhookEndpointDef, WebhookStore};
 use awaken_credential_vault::{SecretRef, SecretStore};
 use awaken_session_contract::{
-    ManagedSessionRepository, SessionLifecycleFact, SessionLifecycleSink,
+    ManagedLifecycleFact, ManagedSessionRepository, SessionLifecycleSink,
 };
 use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::{
@@ -148,7 +148,7 @@ impl WebhookLifecycleSink {
                 row.id.clone(),
                 rfc3339(row.timestamp),
                 row.event_type.clone(),
-                row.session_id.clone(),
+                row.object_id.clone(),
                 workspace_id,
                 org_id.cloned(),
             );
@@ -169,9 +169,9 @@ impl SessionLifecycleSink for WebhookLifecycleSink {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
         self.session_outbox
-            .append_lifecycle(SessionLifecycleFact {
+            .append_lifecycle(ManagedLifecycleFact {
                 id: format!("event_{n}"),
-                session_id: session_id.to_string(),
+                object_id: session_id.to_string(),
                 workspace_id: workspace_id.map(str::to_string),
                 event_type: event_type.to_string(),
                 timestamp: now,

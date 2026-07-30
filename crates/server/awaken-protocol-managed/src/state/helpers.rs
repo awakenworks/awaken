@@ -8,14 +8,14 @@ pub(crate) fn lifecycle_fact(
     session_id: &str,
     workspace_id: Option<String>,
     event_type: &str,
-) -> SessionLifecycleFact {
+) -> ManagedLifecycleFact {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or(0);
-    SessionLifecycleFact {
+    ManagedLifecycleFact {
         id,
-        session_id: session_id.to_string(),
+        object_id: session_id.to_string(),
         workspace_id,
         event_type: event_type.to_string(),
         timestamp,

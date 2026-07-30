@@ -164,7 +164,7 @@ async function main() {
     await json('POST', WORKSPACE, `memory_stores/${store}/memories`, {
       path: '/root.md', content: 'root',
     });
-    const prefix = await json('GET', WORKSPACE, `memory_stores/${store}/memories?path_prefix=/notes`);
+    const prefix = await json('GET', WORKSPACE, `memory_stores/${store}/memories?path_prefix=/notes/`);
     assert.deepEqual(prefix.body.data.map((entry) => entry.path), ['/notes/a.md', '/notes/b.md']);
     const versionsBeforeRejectedUpdate = await json(
       'GET', WORKSPACE, `memory_stores/${store}/memory_versions`,

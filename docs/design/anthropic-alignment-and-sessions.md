@@ -2,9 +2,9 @@
 
 This doc covers the downstream `managed-agents-runtime-protocol` adapter. It is
 intentionally not the runtime architecture and it does not include Managed Agents
-management APIs. The concrete Dream management API and its Memory Consolidation
+management APIs. The concrete Dream management API and its Dream
 orchestration are owned separately by
-[Managed Dream Memory Consolidation](managed-dream-memory-consolidation.md).
+[Managed Dream](managed-dream.md).
 
 ## Protocol Naming
 

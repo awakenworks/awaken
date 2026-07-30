@@ -37,6 +37,15 @@ import { withScenarioServer, pass } from './harness.mjs';
  * | D9   | boundary violation | any         | any             | 400; deployment aggregate unchanged |
  * | D10  | list filters | absent           | absent          | exact active/paused/archive/agent/time partition |
  *
+ * Causes: authoritative Agent/Environment state, create/update inputs,
+ * lifecycle operation, trigger result, and list-filter values.
+ * Constraints: every accepted Deployment binds one existing active Agent
+ * version and one Workspace-owned Environment before mutation.
+ * Effects: typed Deployment/Run projections, one ordinary Session on a valid
+ * trigger, atomic rejection, terminal archive, and exact list partitions.
+ * Decision rules: D1-D10 above cover the public CRUD, manual-trigger, failure,
+ * boundary, and filter combinations owned by this official SDK suite.
+ *
  * Assertions below target lifecycle and mutation effects through the official SDK,
  * not only response decoding.
  */
@@ -58,9 +67,14 @@ async function main() {
         config: { type: 'cloud' },
         betas: BETAS,
       });
+      const deploymentAgent = await client.beta.agents.create({
+        name: 'deployment-e2e-agent',
+        model: 'claude-opus-4-8',
+        betas: BETAS,
+      });
 
       const dep = await client.beta.deployments.create({
-        agent: 'agent_x',
+        agent: deploymentAgent.id,
         environment_id: environment.id,
         name: 'nightly',
         description: 'scheduled work',
@@ -74,7 +88,7 @@ async function main() {
       assert.ok(dep.id.startsWith('depl_'), `id: ${dep.id}`);
       assert.equal(dep.status, 'active');
       assert.equal(dep.agent.type, 'agent');
-      assert.equal(dep.agent.id, 'agent_x');
+      assert.equal(dep.agent.id, deploymentAgent.id);
       pass('beta.deployments.create -> BetaManagedAgentsDeployment (agent normalized)');
 
       const got = await client.beta.deployments.retrieve(dep.id, { betas: BETAS });
@@ -133,7 +147,7 @@ async function main() {
         name: 'deployment-doomed', config: { type: 'cloud' }, betas: BETAS,
       });
       const doomed = await client.beta.deployments.create({
-        agent: 'agent_x', environment_id: doomedEnvironment.id, name: 'doomed',
+        agent: deploymentAgent.id, environment_id: doomedEnvironment.id, name: 'doomed',
         initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
         betas: BETAS,
       });
@@ -186,8 +200,8 @@ async function main() {
       const beforeInvalid = await drain(client.beta.deployments.list({ betas: BETAS }));
       await assert.rejects(
         client.beta.deployments.create({
-          agent: 'agent_x',
-          environment_id: 'env_1',
+          agent: deploymentAgent.id,
+          environment_id: environment.id,
           name: 'invalid-event',
           initial_events: [{ type: 'user.interrupt' }],
           betas: BETAS,
@@ -202,7 +216,7 @@ async function main() {
       pass('invalid deployment initial event fails before state mutation');
 
       const baseCreate = {
-        agent: 'agent_x', environment_id: environment.id, name: 'boundary',
+        agent: deploymentAgent.id, environment_id: environment.id, name: 'boundary',
         initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
       };
       const repeatedEvents = Array.from({ length: 51 }, () => baseCreate.initial_events[0]);

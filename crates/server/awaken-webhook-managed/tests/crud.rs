@@ -12,7 +12,7 @@ use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::{WebhookEndpointDef, WebhookStore};
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
 use awaken_session_contract::{
-    ManagedSessionRepository, PersistedSession, SessionLifecycleFact, SessionLifecycleSink,
+    ManagedLifecycleFact, ManagedSessionRepository, PersistedSession, SessionLifecycleSink,
 };
 use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::{ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookSender};
@@ -31,18 +31,18 @@ use tower::ServiceExt;
 struct MemStore(Mutex<HashMap<String, WebhookEndpointDef>>);
 
 #[derive(Default)]
-struct SessionOutbox(Mutex<HashMap<String, SessionLifecycleFact>>);
+struct SessionOutbox(Mutex<HashMap<String, ManagedLifecycleFact>>);
 
 #[async_trait]
 impl ManagedSessionRepository for SessionOutbox {
-    async fn append_lifecycle(&self, fact: SessionLifecycleFact) {
+    async fn append_lifecycle(&self, fact: ManagedLifecycleFact) {
         self.0
             .lock()
             .unwrap()
             .entry(fact.id.clone())
             .or_insert(fact);
     }
-    async fn pending_lifecycle(&self) -> Vec<SessionLifecycleFact> {
+    async fn pending_lifecycle(&self) -> Vec<ManagedLifecycleFact> {
         self.0.lock().unwrap().values().cloned().collect()
     }
     async fn complete_lifecycle(&self, fact_id: &str) {
@@ -625,9 +625,9 @@ async fn a_stable_fact_id_is_enqueued_and_delivered_only_once_per_pending_row() 
     // and retirement of the canonical session-outbox row (E2).
     let outbox = Arc::new(SessionOutbox::default());
     outbox
-        .append_lifecycle(SessionLifecycleFact {
+        .append_lifecycle(ManagedLifecycleFact {
             id: "session:sesn_1:created".into(),
-            session_id: "sesn_1".into(),
+            object_id: "sesn_1".into(),
             workspace_id: Some("ws_a".into()),
             event_type: "session.created".into(),
             timestamp: 1_768_780_800,
@@ -677,9 +677,9 @@ async fn failed_delivery_keeps_the_stable_fact_pending_for_recovery() {
     // (C2) keeps that exact fact pending (E1) for later reconciliation.
     let outbox = Arc::new(SessionOutbox::default());
     outbox
-        .append_lifecycle(SessionLifecycleFact {
+        .append_lifecycle(ManagedLifecycleFact {
             id: "session:sesn_1:archived".into(),
-            session_id: "sesn_1".into(),
+            object_id: "sesn_1".into(),
             workspace_id: Some("ws_a".into()),
             event_type: "session.archived".into(),
             timestamp: 1_768_780_800,
@@ -712,7 +712,7 @@ async fn failed_delivery_keeps_the_stable_fact_pending_for_recovery() {
     let pending = outbox.pending_lifecycle().await;
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].id, "session:sesn_1:archived");
-    assert_eq!(pending[0].session_id, "sesn_1");
+    assert_eq!(pending[0].object_id, "sesn_1");
 }
 
 #[tokio::test]
@@ -721,9 +721,9 @@ async fn rebuilding_the_sink_drains_rows_left_by_the_prior_process() {
     // (C1) is recovered by sink construction (E1) and retired after success (E2).
     let outbox = Arc::new(SessionOutbox::default());
     outbox
-        .append_lifecycle(SessionLifecycleFact {
+        .append_lifecycle(ManagedLifecycleFact {
             id: "session:sesn_1:deleted".into(),
-            session_id: "sesn_1".into(),
+            object_id: "sesn_1".into(),
             workspace_id: Some("ws_a".into()),
             event_type: "session.deleted".into(),
             timestamp: 1_768_780_800,
@@ -756,9 +756,9 @@ async fn rebuilding_the_sink_drains_rows_left_by_the_prior_process() {
 async fn session_local_outbox_is_drained_after_commit_before_notify_crash() {
     let outbox = Arc::new(SessionOutbox::default());
     outbox
-        .append_lifecycle(SessionLifecycleFact {
+        .append_lifecycle(ManagedLifecycleFact {
             id: "session:sesn_tx:created".into(),
-            session_id: "sesn_tx".into(),
+            object_id: "sesn_tx".into(),
             workspace_id: Some("ws_a".into()),
             event_type: "session.status_idled".into(),
             timestamp: 1_768_780_800,
@@ -787,9 +787,9 @@ async fn session_local_outbox_is_drained_after_commit_before_notify_crash() {
 async fn periodic_reconciliation_redelivers_without_restart_or_a_new_event() {
     let outbox = Arc::new(SessionOutbox::default());
     outbox
-        .append_lifecycle(SessionLifecycleFact {
+        .append_lifecycle(ManagedLifecycleFact {
             id: "session:sesn_retry:created".into(),
-            session_id: "sesn_retry".into(),
+            object_id: "sesn_retry".into(),
             workspace_id: Some("ws_a".into()),
             event_type: "session.status_idled".into(),
             timestamp: 1_768_780_800,

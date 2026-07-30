@@ -48,7 +48,19 @@ fn resource_catalog() -> std::sync::Arc<SqliteAdminStore> {
     let catalog = std::sync::Arc::new(
         SqliteAdminStore::open_in_memory().expect("open ephemeral Resource Catalog"),
     );
-    for id in ["mem_1", "agent-memory", "session-memory"] {
+    for id in [
+        "mem_1",
+        "mem_2",
+        "mem_3",
+        "mem_4",
+        "mem_5",
+        "mem_6",
+        "mem_7",
+        "mem_8",
+        "mem_9",
+        "agent-memory",
+        "session-memory",
+    ] {
         catalog
             .create_memory_store(
                 MemoryStoreDefinition {
@@ -907,6 +919,87 @@ async fn create_time_resources_are_backfilled_and_addressable() {
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(got["type"], "file");
+}
+
+#[tokio::test]
+async fn memory_store_attachment_count_and_instruction_length_use_inclusive_limits() {
+    // Causes: 8/9 MemoryStore attachments and 4096/4097 Unicode characters of instructions.
+    // Constraints: attachment admission is create-time only and happens before Runtime prepare.
+    // Effects: inclusive boundaries create one Session; first out-of-range values return 400
+    // with no partial Session or preparation side effect.
+    // Decision rule: memory M1-M4.
+    let runtime = AcceptingFake::default();
+    let prepared = runtime.prepared.clone();
+    let app = router(std::sync::Arc::new(
+        ManagedState::new(runtime).with_resource_catalog(resource_catalog()),
+    ));
+    let resources = (1..=8)
+        .map(|index| {
+            json!({
+                "type": "memory_store",
+                "memory_store_id": format!("mem_{index}"),
+                "mount_path": format!("/mnt/memory/store-{index}"),
+                "instructions": if index == 1 { "界".repeat(4096) } else { String::new() },
+            })
+        })
+        .collect::<Vec<_>>();
+    let (status, accepted) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "agent": "a", "resources": resources })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "M1/M3: {accepted}");
+    assert_eq!(
+        prepared.lock().unwrap().len(),
+        1,
+        "one accepted preparation"
+    );
+
+    let nine = (1..=9)
+        .map(|index| {
+            json!({
+                "type": "memory_store",
+                "memory_store_id": format!("mem_{index}"),
+                "mount_path": format!("/mnt/memory/nine-{index}"),
+            })
+        })
+        .collect::<Vec<_>>();
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "agent": "a", "resources": nine })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "M2");
+    assert_eq!(
+        prepared.lock().unwrap().len(),
+        1,
+        "M2 no Runtime side effect"
+    );
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "a",
+            "resources": [{
+                "type": "memory_store",
+                "memory_store_id": "mem_1",
+                "instructions": "界".repeat(4097),
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "M4");
+    assert_eq!(
+        prepared.lock().unwrap().len(),
+        1,
+        "M4 no Runtime side effect"
+    );
 }
 
 #[tokio::test]

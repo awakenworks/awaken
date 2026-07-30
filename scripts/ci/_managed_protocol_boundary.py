@@ -1,10 +1,19 @@
 """Dependency boundary owned by the Managed Agents anti-corruption adapter."""
 
 MANAGED_PROTOCOL_ALLOWED_DEPS = {
+    # Managed Deployment persistence port. The protocol adapter owns wire/domain
+    # projection; this leaf carries only opaque records, occurrence claims, and
+    # the shared lifecycle fact value needed for transactional outbox commits.
+    "awaken-deployment-contract": {
+        "awaken-session-contract",
+        "async-trait",
+        "thiserror",
+    },
     "awaken-protocol-managed": {
         "awaken-agent-contract",
         "awaken-credential-contract",
         "awaken-session-contract",
+        "awaken-deployment-contract",
         "awaken-ext-memory",
         "awaken-resource-contract",
         "awaken-work-store",
