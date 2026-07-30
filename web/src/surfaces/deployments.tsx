@@ -5,7 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useParams } from "react-router";
-import { Button, Card, Modal, Pill, SelectField, TextAreaField, TextField } from "../components/ui";
+import { Button, Card, Modal, Pill, SelectField, TextAreaField, TextField, useConfirm, useToast } from "../components/ui";
 import { api, ws } from "../lib/api/client";
 import type { AgentConfigList, Deployment, DeploymentRun, Environment, Page } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
@@ -108,6 +108,8 @@ export default function DeploymentsSurface() {
   const app = useApp();
   const { ws: wsId = "default" } = useParams();
   const qc = useQueryClient();
+  const confirm = useConfirm();
+  const toast = useToast();
   const [creating, setCreating] = useState(false);
   const [lastRun, setLastRun] = useState<DeploymentRun | null>(null);
   const deployments = useQuery({
@@ -122,7 +124,19 @@ export default function DeploymentsSurface() {
       if (variables.action === "run") setLastRun(result as DeploymentRun);
       void qc.invalidateQueries({ queryKey: ["deployments", wsId] });
     },
+    onError: (cause) => toast.err(cause instanceof Error ? cause.message : String(cause)),
   });
+  const runAction = async (id: string, action: string) => {
+    if (action === "archive") {
+      const approved = await confirm({
+        title: app.t("Archive this deployment?", "归档该部署？"),
+        body: app.t("Its schedule will stop. Existing runs and sessions remain available.", "它的计划将停止；已有运行和会话仍会保留。"),
+        confirmLabel: app.t("Archive", "归档"),
+      });
+      if (!approved) return;
+    }
+    act.mutate({ id, action });
+  };
   const rows = deployments.data?.data ?? [];
 
   return (
@@ -181,7 +195,7 @@ export default function DeploymentsSurface() {
                         variant="primary"
                         style={{ height: 22 }}
                         disabled={act.isPending}
-                        onClick={() => act.mutate({ id: d.id, action: "run" })}
+                        onClick={() => void runAction(d.id, "run")}
                       >
                         {app.t("Run", "运行")}
                       </Button>
@@ -189,7 +203,7 @@ export default function DeploymentsSurface() {
                         variant="ghost"
                         style={{ height: 22 }}
                         disabled={act.isPending}
-                        onClick={() => act.mutate({ id: d.id, action: d.paused_reason ? "unpause" : "pause" })}
+                        onClick={() => void runAction(d.id, d.paused_reason ? "unpause" : "pause")}
                       >
                         {d.paused_reason ? app.t("Unpause", "恢复") : app.t("Pause", "暂停")}
                       </Button>
@@ -197,7 +211,7 @@ export default function DeploymentsSurface() {
                         variant="ghost"
                         style={{ height: 22 }}
                         disabled={act.isPending}
-                        onClick={() => act.mutate({ id: d.id, action: "archive" })}
+                        onClick={() => void runAction(d.id, "archive")}
                       >
                         {app.t("Archive", "归档")}
                       </Button>

@@ -275,6 +275,48 @@ export interface MemoryStore {
   updated_at: string;
 }
 
+export interface MemoryStoreConfig {
+  memory_store_id: string;
+  version: number;
+  recall_policy: {
+    enabled: boolean;
+    max_results: number;
+  };
+  extraction_policy: {
+    enabled: boolean;
+  };
+  retention_policy: {
+    retention_days?: number | null;
+  };
+}
+
+export interface MemoryEntry {
+  id: string;
+  type: "memory";
+  memory_store_id: string;
+  memory_version_id: string;
+  path: string;
+  content?: string | null;
+  content_sha256: string;
+  content_size_bytes: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MemoryVersion {
+  id: string;
+  type: "memory_version";
+  memory_id: string;
+  memory_store_id: string;
+  operation: "created" | "modified" | "deleted";
+  path: string;
+  content?: string | null;
+  content_sha256?: string | null;
+  content_size_bytes?: number | null;
+  created_at: string;
+  redacted_at?: string | null;
+}
+
 // ---- Agent default inputs (ADR-0063) ---------------------------------------
 export type InputResourceKind = "file" | "memory_store" | "repository";
 export type ResourceAccess = "read_only" | "read_write";

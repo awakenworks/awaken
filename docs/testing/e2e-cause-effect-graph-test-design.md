@@ -508,3 +508,35 @@ MCP:           F77/F79 → E4(工具注入) ; F78 → 工具列表 version bump
 
 **未发现 fail-open 代码 bug**:所有安全敏感 fail-closed 分支在代码中均存在,仅部分欠测;唯一结构性欠测(M6 `RequireApproval` 因无注入 seam 不可达)已通过抽出 `collapse_session_decision` 纯函数修复并钉住。
 7. **与单模块设计的关系**:本份的 F→E 边在跨越模块;每条 F 内部的分支细节(为何 await、为何 fail-closed)由 `cause-effect-graph-test-design.md` 的 112 因/110 果单测护住。两层合起来 = 单元判定表(内部正确)+ e2e 矩阵(集成 × 部署正确)。
+
+---
+
+## 10. Console 当前草稿 Try 与 Resource 管理增量图（2026-07-31）
+
+这组边专门防止 UI 看似可用、实际仍要求先持久化，或把长期服务密钥带进浏览器。
+
+```mermaid
+flowchart LR
+  F101[新建 Agent 当前字段] --> E101[临时 preview snapshot]
+  F102[当前 resource bindings 与 instructions] --> E101
+  E101 --> E102[短期 application token]
+  E102 --> E103[AI SDK Try]
+  E101 -.不得发生.-> N101[写入 Agent Draft 或 Publication]
+
+  F103[本地 setup token] --> E104[HttpOnly browser session]
+  E104 --> E105[Resource PDP]
+  E105 --> E106[可信 WorkspaceScope]
+  E106 --> E107[Memory / Skills / Files]
+  E104 -.不得发生.-> N102[向浏览器暴露 admin API token]
+```
+
+| 用例 | 因 | 期望效果 | 否定断言 | 自动化位置 |
+|---|---|---|---|---|
+| C1 | 新建草稿无持久 id | preview 可编译安装 | ConfigRegistry 无 Draft/Publication | `awaken-config-service::preview_installs_only_an_ephemeral_snapshot_with_exact_inline_inputs` |
+| C2 | 草稿绑定 memory/file/repository 并填写 instructions | preview 投影逐字段一致 | 不读取旧的已保存 resources | `SandboxPane.test.ts` + C1 |
+| C3 | 修改任一 config/resource 字段 | preview signature 变化并提示重启 | 不继续冒充当前草稿 | `SandboxPane.test.ts` |
+| C4 | 本地 HttpOnly session 访问 Resource 路由 | Resource PDP allow 并写入可信 workspace | 无 bearer 且无 session 必须 401 | `local_browser_session_enters_the_existing_resource_pdp` |
+| C5 | Memory/Skills/API family | 发送各自 beta header | 不交叉发送不相关 beta | `api/client.test.ts` |
+| C6 | State Machine 高级字段 + 相邻可视化编辑 | `on_unmatched` / `emit.role` 保留 | 不因 trigger/content 编辑丢字段 | `state-machine-presets.test.ts` |
+
+真实 UI 验收必须额外证明：新建页 Resources 可进入且没有 “Save first”；Try 的说明明确“临时且不保存”；Memory/Skills 能由同源本地浏览器会话返回真实数据；失败态不得同时显示为空数据。

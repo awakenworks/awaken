@@ -3,19 +3,21 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { api, isAbsent, ws } from "../lib/api/client";
+import { api, isAbsent, workspaceFields, workspaceQuery, ws } from "../lib/api/client";
 import type { IamTokenView } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import GatedPage from "../components/app/GatedPage";
-import { Button, Card, CopyButton, Pill, TextField, SelectField } from "../components/ui";
+import { Button, Card, CopyButton, Pill, TextField, SelectField, useConfirm, useToast } from "../components/ui";
 
 export default function AccessSurface() {
   const app = useApp();
   const workspace = app.workspaceId;
   const qc = useQueryClient();
+  const confirm = useConfirm();
+  const toast = useToast();
   const tokens = useQuery({
     queryKey: ["iam-tokens", workspace],
-    queryFn: () => api.get<IamTokenView[]>(ws(`/v1/config/iam/tokens?workspace_id=${workspace}`)),
+    queryFn: () => api.get<IamTokenView[]>(ws(workspaceQuery("/v1/config/iam/tokens", workspace))),
     retry: false,
   });
   const [form, setForm] = useState({ name: "console", role: "workspace_admin" });
@@ -23,7 +25,7 @@ export default function AccessSurface() {
   const mint = useMutation({
     mutationFn: () =>
       api.post<Record<string, unknown>>(ws("/v1/config/iam/tokens"), {
-        workspace_id: workspace,
+        ...workspaceFields(workspace),
         name: form.name,
         role: form.role,
       }),
@@ -37,8 +39,21 @@ export default function AccessSurface() {
   });
   const revoke = useMutation({
     mutationFn: (id: string) => api.del(ws(`/v1/config/iam/tokens/${id}`)),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["iam-tokens", workspace] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["iam-tokens", workspace] });
+      toast.ok(app.t("Token revoked.", "令牌已吊销。"));
+    },
+    onError: (cause) => toast.err(cause instanceof Error ? cause.message : String(cause)),
   });
+  const revokeToken = async (id: string) => {
+    const approved = await confirm({
+      title: app.t("Revoke this token?", "吊销该令牌？"),
+      body: app.t("Clients using it will lose access immediately. This cannot be undone.", "使用它的客户端会立即失去访问权限，且无法撤销。"),
+      confirmLabel: app.t("Revoke", "吊销"),
+      danger: true,
+    });
+    if (approved) revoke.mutate(id);
+  };
 
   if (tokens.isError && isAbsent(tokens.error)) {
     return (
@@ -83,8 +98,8 @@ export default function AccessSurface() {
                   <Pill tone="neutral">{t.role ?? "?"}</Pill>
                 </td>
                 <td style={{ textAlign: "right" }}>
-                  <Button variant="danger" style={{ height: 26 }} onClick={() => revoke.mutate(t.id)}>
-                    {app.t("Revoke", "吊销")}
+                  <Button variant="danger" style={{ height: 26 }} disabled={revoke.isPending && revoke.variables === t.id} onClick={() => void revokeToken(t.id)}>
+                    {revoke.isPending && revoke.variables === t.id ? app.t("Revoking…", "正在吊销…") : app.t("Revoke", "吊销")}
                   </Button>
                 </td>
               </tr>
@@ -92,6 +107,7 @@ export default function AccessSurface() {
           </tbody>
         </table>
       </Card>
+      {tokens.error instanceof Error && <div className="err">{tokens.error.message}</div>}
       <Card>
         <h2>{app.t("Mint token", "铸造令牌")}</h2>
         <div className="row">

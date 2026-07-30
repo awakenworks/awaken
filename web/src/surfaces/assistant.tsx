@@ -167,7 +167,14 @@ export function AssistantPanel({
     >
       {() =>
         !sid ? (
-          <Skeleton height={80} />
+          start.error instanceof Error ? (
+            <div className="banner err">
+              <span>{start.error.message}</span>
+              <Button variant="ghost" disabled={start.isPending} onClick={() => start.mutate()}>
+                {start.isPending ? app.t("Retrying…", "正在重试…") : app.t("Try again", "重试")}
+              </Button>
+            </div>
+          ) : <Skeleton height={80} />
         ) : (
           <>
             <div className="assistant-context">

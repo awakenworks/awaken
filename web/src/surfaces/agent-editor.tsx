@@ -18,12 +18,14 @@ import ResourcesTab from "../components/agent/ResourcesTab";
 import { useAgentDraftReview } from "../components/agent/useAgentDraftReview";
 import AgentEditorHeader from "../components/agent/AgentEditorHeader";
 import ReadinessPanel from "../components/app/ReadinessPanel";
-import { api, isAbsent, ws } from "../lib/api/client";
+import { api, isAbsent, workspaceQuery, ws } from "../lib/api/client";
 import type {
   AgentConfig,
   AgentConfigItem,
+  AgentInputConfig,
   CredentialSource,
   ContextPolicy,
+  InputBinding,
   PermissionConfig,
   PublishResult,
   ValidationIssue,
@@ -36,6 +38,7 @@ import { useModels } from "../lib/useModels";
 import { useUnsavedGuard } from "../lib/useUnsavedGuard";
 import AgentModelSelectionEditor from "../components/agent/AgentModelSelectionEditor";
 import ModelsSurface from "./models";
+import { shouldEnableMemoryExtraction } from "../lib/agent-memory-binding";
 
 // Editor sections, organized by user intent (not by mechanism): Behavior groups the
 // runtime behaviors (context window, auto-compaction, memory recall, tool ordering) as
@@ -74,10 +77,14 @@ export default function AgentEditorSurface() {
   const [integrationsValid, setIntegrationsValid] = useState(true);
   const [cfg, setCfg] = useState<AgentConfig>(BLANK);
   const [dirty, setDirty] = useState(false);
+  const [resourceInputs, setResourceInputs] = useState<InputBinding[]>([]);
+  const [resourceRevision, setResourceRevision] = useState(0);
+  const [resourcesDirty, setResourcesDirty] = useState(false);
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
   const [manageModels, setManageModels] = useState(false);
   const toast = useToast();
-  useUnsavedGuard(dirty, app.t("You have unsaved changes. Leave anyway?", "有未保存的更改,仍要离开吗?"));
+  const hasUnsavedChanges = dirty || resourcesDirty;
+  useUnsavedGuard(hasUnsavedChanges, app.t("You have unsaved changes. Leave anyway?", "有未保存的更改,仍要离开吗?"));
 
   // Existing agent: hydrate the draft from the config plane (managed object shape).
   const existing = useQuery({
@@ -86,10 +93,16 @@ export default function AgentEditorSurface() {
     queryFn: () => api.get<AgentConfigItem>(ws(`/v1/config/agents/${id}`)),
     retry: (n, err) => !isAbsent(err) && n < 2,
   });
+  const existingResources = useQuery({
+    queryKey: ["agent-resources", id],
+    enabled: !isNew,
+    queryFn: () => api.get<AgentInputConfig>(ws(`/v1/config/agents/${id}/resources`)),
+    retry: (attempts, error) => !isAbsent(error) && attempts < 2,
+  });
   const caps = useCapabilities();
   const credentials = useQuery({
     queryKey: ["credentials", wsId],
-    queryFn: () => api.get<CredentialSource[]>(ws(`/v1/config/credentials?workspace_id=${wsId}`)),
+    queryFn: () => api.get<CredentialSource[]>(ws(workspaceQuery("/v1/config/credentials", wsId))),
   });
   // Only models whose provider has a credential — a picked model always resolves a
   // real executor (never a run-time "no key" failure). `all` drives the hidden hint.
@@ -97,6 +110,18 @@ export default function AgentEditorSurface() {
   const targetId = () => (isNew ? cfg.id.trim() : id);
   const canSave = rawValid && integrationsValid && targetId().length > 0 && (cfg.system ?? "").trim().length > 0;
   const body = () => ({ ...cfg, id: targetId() });
+  const saveResources = async () => {
+    if (!resourcesDirty && !(isNew && resourceInputs.length > 0)) return;
+    const agentId = targetId();
+    if (!agentId) throw new Error(app.t("Enter an Agent id before saving or publishing.", "保存或发布前请输入 Agent id。"));
+    const saved = await api.put<AgentInputConfig>(ws(`/v1/config/agents/${agentId}/resources`), {
+      agent_id: agentId,
+      inputs: resourceInputs,
+      revision: resourceRevision + 1,
+    });
+    setResourceRevision(saved.revision);
+    setResourcesDirty(false);
+  };
   const review = useAgentDraftReview({
     agentId: targetId(),
     config: cfg,
@@ -108,6 +133,7 @@ export default function AgentEditorSurface() {
     setDirty,
     onIssues: setIssues,
     onOpenPublish: () => setShowPublish(true),
+    saveResources,
     onError: (error) => toast.err(error instanceof Error ? error.message : "error"),
   });
   useEffect(() => {
@@ -121,6 +147,12 @@ export default function AgentEditorSurface() {
   // Review reset is intentionally tied to a newly hydrated server Draft.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [existing.data]);
+  useEffect(() => {
+    if (existingResources.data && !resourcesDirty) {
+      setResourceInputs(existingResources.data.inputs);
+      setResourceRevision(existingResources.data.revision);
+    }
+  }, [existingResources.data, resourcesDirty]);
   // The config as loaded when the editor opened (the detail query is not refetched on
   // save), so the publish preview diffs the outgoing config against the pre-session state.
   const baseline = useMemo(() => {
@@ -161,9 +193,14 @@ export default function AgentEditorSurface() {
   }, [savedId, dirty, wsId, nav]);
 
   const save = useMutation({
-    mutationFn: () => api.put<{ id: string }>(ws(`/v1/config/agents/${targetId()}`), body()),
+    mutationFn: async () => {
+      const result = await api.put<{ id: string }>(ws(`/v1/config/agents/${targetId()}`), body());
+      await saveResources();
+      return result;
+    },
     onSuccess: () => {
       setDirty(false);
+      setResourcesDirty(false);
       review.markSaved();
       toast.ok(app.t("Saved.", "已保存。"));
       void qc.invalidateQueries({ queryKey: ["config-agents"] });
@@ -203,14 +240,16 @@ export default function AgentEditorSurface() {
         ? cfg.tools.length + (cfg.tool_overrides?.length ?? 0)
         : k === "integrations"
           ? cfg.mcp_servers.length + cfg.skills.length
-          : 0;
+          : k === "resources"
+            ? resourceInputs.length
+            : 0;
 
   return (
     <>
       <AgentEditorHeader
         id={id}
         isNew={isNew}
-        dirty={dirty}
+        dirty={hasUnsavedChanges}
         status={review.status}
         rawOpen={rawOpen}
         canSave={canSave}
@@ -295,14 +334,21 @@ export default function AgentEditorSurface() {
       {!rawOpen && tab === "resources" && (
         <Card className={changed("resources") ? "agent-change-highlight" : undefined}>
           {changed("resources") && <div className="agent-change-label">✦ {app.t("Agent updated resources", "Agent 已更新资源")}</div>}
-          {isNew ? (
-            <div className="banner gate">
-              <span>◌</span>
-              <span>{app.t("Save the agent first, then bind resources to it.", "先保存 agent,再给它绑定资源。")}</span>
+          {existingResources.error instanceof Error && !isAbsent(existingResources.error) ? (
+            <div className="banner warn">
+              <span>⚠</span>
+              <span>{existingResources.error.message}</span>
+              <Button variant="ghost" onClick={() => void existingResources.refetch()}>{app.t("Retry", "重试")}</Button>
             </div>
-          ) : (
-            <ResourcesTab agentId={id} />
-          )}
+          ) : <ResourcesTab inputs={resourceInputs} onChange={(inputs) => {
+            if (shouldEnableMemoryExtraction(resourceInputs, inputs, cfg.plugins)) {
+              patch({ plugins: [...cfg.plugins, "memory"] });
+              toast.info(app.t("Memory extraction settings enabled for the newly bound store.", "已为新绑定的记忆库启用记忆提取设置。"));
+            }
+            setResourceInputs(inputs);
+            setResourcesDirty(true);
+            review.onManualEdit(["resources"]);
+          }} />}
         </Card>
       )}
 
@@ -370,8 +416,8 @@ export default function AgentEditorSurface() {
             <TextAreaField
               label={app.t("System instructions", "系统指令") + (changed("system") ? "  ✦" : "")}
               hint={app.t(
-                "The agent's own behavior — the system prompt it runs with. Bound-resource guidance is appended automatically at publish (see the Resources tab).",
-                "agent 自己的行为——它运行时的系统提示。绑定资源的说明会在发布时自动追加(见资源标签页)。",
+                "The agent's own behavior — the system prompt it runs with. Bound-resource guidance is injected at Session preparation (see Resources).",
+                "Agent 自己的行为——它运行时的系统提示。绑定资源的说明会在会话准备阶段注入（见资源）。",
               )}
               mono
               rows={8}
@@ -424,6 +470,15 @@ export default function AgentEditorSurface() {
                   "每个行为启用后自动生效——打开开关并微调。高级字段一键展开。",
                 )}
               </span>
+              {resourceInputs.some((binding) => binding.target.kind === "memory_store") && (
+                <div className="banner" style={{ marginTop: 8 }}>
+                  <span>ⓘ</span>
+                  <span>{app.t(
+                    "A Memory Store is bound. Its versioned policy controls recall and retention. The Agent Memory toggle controls extraction prompts and optional recall tuning; turning it off does not disable Store recall.",
+                    "已绑定记忆库。召回与保留由记忆库的版本化策略控制；Agent 的记忆开关只控制提取提示词和可选召回调优，关闭它不会关闭记忆库召回。",
+                  )}</span>
+                </div>
+              )}
               <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 8 }}>
                 {(caps.data?.plugins ?? []).map((p) => (
                   <BehaviorCard
@@ -521,7 +576,11 @@ export default function AgentEditorSurface() {
 
       {showSandbox && (
         <Drawer title={app.t("Try it", "试运行")} onClose={() => setShowSandbox(false)}>
-          <SandboxPane agentId={id} ready={!isNew && !!existing.data?.published} dirty={dirty} />
+          <SandboxPane
+            draft={body()}
+            resources={resourceInputs}
+            canPreview={rawValid && integrationsValid && models.length > 0 && (cfg.system ?? "").trim().length > 0}
+          />
         </Drawer>
       )}
 

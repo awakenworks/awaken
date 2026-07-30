@@ -52,7 +52,7 @@ export default function AgentEditorHeader({
           {rawOpen ? app.t("Visual editor", "可视化编辑") : "{} JSON"}
         </Button>
         <Button variant="ghost" disabled={!canSave || validatePending} onClick={onValidate}>{app.t("Validate", "校验")}</Button>
-        <Button disabled={!canSave || savePending} onClick={onSave}>{app.t("Save", "保存")}</Button>
+        <Button disabled={!canSave || savePending} onClick={onSave} title={app.t("Optional: keep this draft for later", "可选：保存草稿供稍后继续")}>{app.t("Save draft", "保存草稿")}</Button>
         <Button
           variant="primary"
           disabled={!canSave || publishPending || busy}

@@ -8,7 +8,7 @@
 //! Runtime consumes compiled configuration and never edits authoring records.
 use std::sync::Arc;
 
-use awaken_config_resolver::AgentInputBindingRepository;
+use awaken_config_resolver::{AgentInputBindingRepository, AgentInputConfig};
 use awaken_config_store::{
     AgentConfig, AgentConfigRevision, ConfigRegistry, ConfigWrite, StoredPublication,
 };
@@ -127,6 +127,93 @@ impl ConfigService {
             path: e.field_path().to_string(),
             message: e.to_string(),
         })
+    }
+
+    /// Compile an unsaved draft and register it through the canonical
+    /// Control-to-Coordinator boundary without creating authoring or publication
+    /// records. Preview ids are immutable: a refreshed draft receives a new id.
+    pub async fn preview(
+        &self,
+        workspace: &ScopeId,
+        preview_id: &str,
+        config: &AgentConfig,
+        inputs: AgentInputConfig,
+        catalog: &[ToolDescriptor],
+    ) -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, PublishError> {
+        if config.id != preview_id || inputs.agent_id != preview_id {
+            return Err(PublishError::Unresolvable(
+                "preview config and resources must use the requested preview id".into(),
+            ));
+        }
+        let source_revision = 1;
+        let mut resolved = prepare_agent_publication(
+            self.model_publication_resolver.as_ref(),
+            workspace,
+            AgentConfigRevision {
+                config: config.clone(),
+                revision: source_revision,
+            },
+        )
+        .await?;
+        resolve_plugin_configuration(
+            &self.plugin_publication_resolvers,
+            workspace,
+            &mut resolved.config,
+        )
+        .await
+        .map_err(|error| {
+            PublishError::Unresolvable(format!("{}: {}", error.path, error.message))
+        })?;
+        validate_credential_references(
+            self.credential_reference_validator.as_ref(),
+            workspace,
+            &resolved.config,
+        )
+        .await
+        .map_err(|error| {
+            PublishError::Unresolvable(format!("{}: {}", error.path, error.message))
+        })?;
+        let mut metadata = snapshot_metadata(&resolved);
+        let mut resolved_inputs = std::mem::take(&mut metadata.resolution.inputs);
+        resolved_inputs.push(awaken_runtime_contract::ResolvedInputRef {
+            kind: "agent_session_defaults".into(),
+            id: preview_id.to_owned(),
+            version: awaken_runtime_contract::ResolvedInputVersion::Revision(
+                inputs.revision as u64,
+            ),
+        });
+        metadata.resolution = awaken_runtime_contract::ResolutionManifest::new(resolved_inputs)
+            .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
+        let snapshot = awaken_config_store::compile_published(
+            &resolved.config,
+            catalog,
+            metadata,
+            resolved.models.primary,
+            resolved.models.candidates,
+        )
+        .map_err(|error| PublishError::Compile(error.to_string()))?;
+        let session_profile =
+            registered_session_profile(&snapshot, &resolved.authored_model_selection, Some(inputs))
+                .ok_or_else(|| {
+                    PublishError::Registration(
+                        awaken_executable_agent_contract::ExecutableAgentRegistrationError::Invalid(
+                            "preview Session defaults changed while the snapshot was compiled"
+                                .into(),
+                        ),
+                    )
+                })?;
+        self.registrar
+            .register(ExecutableAgentRegistration {
+                workspace_id: workspace.as_str().to_owned(),
+                agent_id: preview_id.to_owned(),
+                source_revision,
+                snapshot: snapshot.clone(),
+                session_profile,
+                declared_hand: resolved.config.hand.clone(),
+            })
+            .await
+            .map_err(PublishError::Registration)?;
+        Ok(snapshot)
     }
 
     /// Store a config draft (upsert by id) in the caller-supplied scope-bound
@@ -564,6 +651,59 @@ pub(crate) mod resource_prompt_tests {
         assert_eq!(scope_id.as_str(), "workspace-a");
         assert_eq!(credential.credential.id, "credential-workspace-a");
         assert_eq!(publication.fingerprint, publication.snapshot.fingerprint.0);
+    }
+
+    #[tokio::test]
+    async fn preview_registers_inline_inputs_without_authoring_persistence() {
+        // Preview cause/effect decision table:
+        // P1 exact preview/config/input id + valid draft -> one Coordinator
+        // registration carrying the exact inline resources; P2 no ConfigRegistry
+        // is supplied -> no authoring draft or StoredPublication can be written;
+        // P3 the monotonic successor withdrawal -> current resolution disappears.
+        let (service, catalog) = test_service_and_catalog();
+        let workspace = scope("workspace-preview");
+        let preview_id = "preview-causal-1";
+        let inputs = AgentInputConfig {
+            agent_id: preview_id.into(),
+            environment: None,
+            inputs: vec![InputBinding {
+                binding_id: BindingId::from("memory"),
+                target: InputResourceId::MemoryStore(MemoryStoreId::from("memstore-7")),
+                mount_path: "/mnt/memory".into(),
+                access: ResourceAccess::ReadWrite,
+                instructions: Some("prefer current project decisions".into()),
+            }],
+            revision: 1,
+        };
+
+        service
+            .preview(
+                &workspace,
+                preview_id,
+                &agent_config(preview_id),
+                inputs.clone(),
+                &[],
+            )
+            .await
+            .unwrap();
+        let registration = catalog
+            .current(workspace.as_str(), preview_id)
+            .expect("P1 preview registration");
+        assert_eq!(registration.session_profile.resources, inputs.inputs, "P1");
+
+        service
+            .registrar
+            .withdraw(ExecutableAgentWithdrawal {
+                workspace_id: workspace.as_str().into(),
+                agent_id: preview_id.into(),
+                lifecycle_revision: 2,
+            })
+            .await
+            .unwrap();
+        assert!(
+            catalog.current(workspace.as_str(), preview_id).is_none(),
+            "P3"
+        );
     }
 
     #[tokio::test]

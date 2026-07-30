@@ -1,6 +1,11 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { FormEvent, ReactNode, useEffect, useState } from "react";
-import { ApiClientError, api, getToken } from "../../lib/api/client";
+import {
+  ApiClientError,
+  api,
+  getToken,
+  resolveWorkspaceContext,
+} from "../../lib/api/client";
 import {
   hostedSessionEntry,
   suiteNavigationQuery,
@@ -33,11 +38,18 @@ export default function LocalSetupGate({ children }: { children: ReactNode }) {
       }
       try {
         await api.get("/v1/session");
-        if (active) setState("ready");
       } catch (cause: unknown) {
         if (!active) return;
-        if (cause instanceof ApiClientError && cause.status === 401) setState("setup");
-        else setState("ready");
+        if (cause instanceof ApiClientError && cause.status === 401) {
+          setState("setup");
+          return;
+        }
+      }
+      try {
+        await resolveWorkspaceContext();
+        if (active) setState("ready");
+      } catch {
+        if (active) setState("unavailable");
       }
     }
     void initialize();
@@ -49,10 +61,11 @@ export default function LocalSetupGate({ children }: { children: ReactNode }) {
     setError("");
     try {
       await api.post("/v1/auth/local/exchange", { setup_token: token.trim() });
+      await resolveWorkspaceContext();
       setToken("");
       setState("ready");
-    } catch {
-      setError("The setup token is invalid, expired, or already used.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The setup token is invalid, expired, or already used.");
     }
   }
 

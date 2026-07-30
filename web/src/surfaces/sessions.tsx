@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
-import { Button, Card, CopyButton, Modal, Pill, Segmented, TextField } from "../components/ui";
+import { Button, Card, CopyButton, Modal, Pill, Segmented, TextField, useConfirm, useToast } from "../components/ui";
 import { api, getWorkspace, ws } from "../lib/api/client";
 import type {
   AgentConfigList,
@@ -74,10 +74,9 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
           </label>
           <select className="input mono" value={agent} onChange={(e) => setAgent(e.target.value)}>
             <option value="">{app.t("— select an agent —", "— 选择 agent —")}</option>
-            {(agents.data?.data ?? []).map((a) => (
+            {(agents.data?.data ?? []).filter((a) => a.published).map((a) => (
               <option key={a.id} value={a.id}>
                 {a.id}
-                {a.published ? "" : app.t(" (draft)", "(草稿)")}
               </option>
             ))}
           </select>
@@ -194,6 +193,8 @@ export default function SessionsSurface() {
   const app = useApp();
   const nav = useNavigate();
   const qc = useQueryClient();
+  const confirm = useConfirm();
+  const toast = useToast();
   const { ws: wsId = "default" } = useParams();
   const [creating, setCreating] = useState(false);
   const [openId, setOpenId] = useState("");
@@ -207,8 +208,20 @@ export default function SessionsSurface() {
   });
   const archive = useMutation({
     mutationFn: (sid: string) => api.post<Session>(ws(`/v1/sessions/${sid}/archive`)),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["sessions", wsId] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["sessions", wsId] });
+      toast.ok(app.t("Session archived.", "会话已归档。"));
+    },
+    onError: (cause) => toast.err(cause instanceof Error ? cause.message : String(cause)),
   });
+  const archiveSession = async (sid: string) => {
+    const approved = await confirm({
+      title: app.t("Archive this session?", "归档该会话？"),
+      body: app.t("It remains readable, but no new work should be sent to it.", "它仍可读取，但不应再向其发送新任务。"),
+      confirmLabel: app.t("Archive", "归档"),
+    });
+    if (approved) archive.mutate(sid);
+  };
   const rows = (sessions.data?.data ?? []).filter((s) =>
     filter === "all"
       ? true
@@ -274,13 +287,13 @@ export default function SessionsSurface() {
                     <Button
                       variant="ghost"
                       style={{ height: 22 }}
-                      disabled={archive.isPending}
+                      disabled={archive.isPending && archive.variables === s.id}
                       onClick={(e) => {
                         e.stopPropagation();
-                        archive.mutate(s.id);
+                        void archiveSession(s.id);
                       }}
                     >
-                      {app.t("Archive", "归档")}
+                      {archive.isPending && archive.variables === s.id ? app.t("Archiving…", "正在归档…") : app.t("Archive", "归档")}
                     </Button>
                   )}
                 </td>

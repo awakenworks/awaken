@@ -19,8 +19,8 @@ export default function A2aSurface() {
         </p>
         <div className="row">
           <input className="input mono" style={{ width: 280 }} placeholder="agent id" value={agentId} onChange={(e) => setAgentId(e.target.value)} />
-          <Button variant="primary" disabled={!agentId.trim()} onClick={() => card.mutate(agentId.trim())}>
-            {app.t("Fetch card", "获取")}
+          <Button variant="primary" disabled={!agentId.trim() || card.isPending} onClick={() => card.mutate(agentId.trim())}>
+            {card.isPending ? app.t("Fetching…", "正在获取…") : app.t("Fetch card", "获取")}
           </Button>
         </div>
         {card.data && (

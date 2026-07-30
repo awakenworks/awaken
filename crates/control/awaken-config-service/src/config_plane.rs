@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use awaken_config_resolver::AgentInputConfig;
 use awaken_config_store::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigWrite,
     ManagementAuditEntry, ManagementAuditRecord, ManagementEffect, ScopedConfig,
@@ -85,6 +86,25 @@ impl ConfigPlane {
                 &ScopeId::from(execution_workspace),
                 config,
                 &self.catalog_for(scope),
+            )
+            .await
+    }
+
+    pub async fn preview_for_execution_workspace(
+        &self,
+        configuration_scope: &ScopeId,
+        execution_workspace: &str,
+        preview_id: &str,
+        config: &AgentConfig,
+        inputs: AgentInputConfig,
+    ) -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, PublishError> {
+        self.service
+            .preview(
+                &ScopeId::from(execution_workspace),
+                preview_id,
+                config,
+                inputs,
+                &self.catalog_for(configuration_scope),
             )
             .await
     }
@@ -330,6 +350,13 @@ impl ConfigPlane {
             .await
             .map(|_| ())
             .map_err(|error| error.to_string())
+    }
+
+    /// Remove one immutable draft preview from current Session resolution.
+    /// Revision two is the monotonic successor to the preview registration's
+    /// fixed source revision one.
+    pub async fn remove_preview(&self, execution_workspace: &str, id: &str) -> Result<(), String> {
+        self.withdraw(execution_workspace, id, 2).await
     }
 
     /// The scope-free authoring/publication service.
