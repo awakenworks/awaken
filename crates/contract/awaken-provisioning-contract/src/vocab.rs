@@ -30,6 +30,19 @@ pub enum MountLifetime {
     Durable,
 }
 
+/// Required durability semantics for a writable MemoryStore mount.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryWriteConsistency {
+    /// The provider may use its ordinary realization, including copy/harvest.
+    #[default]
+    ProviderDefault,
+    /// Every successful filesystem mutation must reach the canonical repository
+    /// during execution. Providers must fail admission rather than fall back to
+    /// a copy that is harvested only at teardown.
+    WriteThroughRequired,
+}
+
 /// Where a mount's content comes from. Logical / content-addressed only — a raw
 /// host directory bind is a provider-specific concern expressed via
 /// [`super::EnvironmentKind`], not carried here (G3). `Other` keeps the wire
@@ -47,7 +60,10 @@ pub enum MountSource {
         content_hash: Option<String>,
     },
     /// A persistent memory store, mounted for read/write (typically via FUSE).
-    MemoryStore { store_id: String },
+    MemoryStore {
+        store_id: String,
+        write_consistency: MemoryWriteConsistency,
+    },
     /// A **Cache Volume** (ADR-0056): a caller-supplied, node-local, ReadWriteOnce
     /// cache — a warm directory (checkout, build cache) whose bytes have **no truth
     /// authority**. The provider mounts the opaque `host_path` **in place** and NEVER
@@ -123,6 +139,8 @@ enum KnownMountSource {
     },
     MemoryStore {
         store_id: String,
+        #[serde(default)]
+        write_consistency: MemoryWriteConsistency,
     },
     CacheVolume {
         host_path: String,
@@ -173,7 +191,13 @@ impl From<KnownMountSource> for MountSource {
                 resource_id,
                 content_hash,
             },
-            KnownMountSource::MemoryStore { store_id } => MountSource::MemoryStore { store_id },
+            KnownMountSource::MemoryStore {
+                store_id,
+                write_consistency,
+            } => MountSource::MemoryStore {
+                store_id,
+                write_consistency,
+            },
             KnownMountSource::CacheVolume { host_path, key } => {
                 MountSource::CacheVolume { host_path, key }
             }
@@ -215,8 +239,12 @@ impl MountSource {
                 resource_id: resource_id.clone(),
                 content_hash: content_hash.clone(),
             },
-            MountSource::MemoryStore { store_id } => KnownMountSource::MemoryStore {
+            MountSource::MemoryStore {
+                store_id,
+                write_consistency,
+            } => KnownMountSource::MemoryStore {
                 store_id: store_id.clone(),
+                write_consistency: *write_consistency,
             },
             MountSource::CacheVolume { host_path, key } => KnownMountSource::CacheVolume {
                 host_path: host_path.clone(),
@@ -612,6 +640,7 @@ mod tests {
             },
             MountSource::MemoryStore {
                 store_id: "s".into(),
+                write_consistency: MemoryWriteConsistency::ProviderDefault,
             },
             MountSource::Secret {
                 reference: "broker://k".into(),

@@ -341,6 +341,36 @@ fn append_version(
 
 #[async_trait::async_trait]
 impl MemoryRepository for SqliteMemoryRepository {
+    async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
+        let store = store.to_string();
+        with_conn_mem(&self.conn, move |conn| {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "SELECT id, path, content, sha, version, created, updated \
+                     FROM {NS}_memories WHERE store_id = ?1 ORDER BY path"
+                ))
+                .map_err(mem_err)?;
+            stmt.query_map(params![store], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })
+            .map_err(mem_err)?
+            .map(|row| {
+                let (id, path, content, sha, version, created, updated) = row.map_err(mem_err)?;
+                row_memory(id, path, content, sha, version, created, updated)
+            })
+            .collect()
+        })
+        .await
+    }
+
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
         let (store, prefix) = (store.to_string(), prefix.to_string());
         with_conn_mem(&self.conn, move |conn| {

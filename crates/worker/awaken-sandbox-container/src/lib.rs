@@ -456,7 +456,10 @@ async fn stage_memory_binds(
         .mounts
         .iter()
         .filter_map(|mount| match &mount.source {
-            pc::MountSource::MemoryStore { store_id } => Some((mount, store_id)),
+            pc::MountSource::MemoryStore {
+                store_id,
+                write_consistency,
+            } => Some((mount, store_id, write_consistency)),
             _ => None,
         })
         .collect();
@@ -466,9 +469,17 @@ async fn stage_memory_binds(
     let mounter = mounter
         .ok_or_else(|| pc::SandboxError::new("container MemoryStore mount has no MemoryMounter"))?;
     let root = staging_dir(&mut staged.guard, &spec.scope)?;
-    for (mount, store_id) in memory {
+    for (mount, store_id, write_consistency) in memory {
         let host_path = root.join(format!("memory-{}", stage_name(&mount.mount_path)));
         let handle = mounter.mount(store_id, &host_path, mount.access).await?;
+        if *write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
+            && handle.realization() != pc::Realization::Fuse
+        {
+            handle.teardown().await;
+            return Err(pc::SandboxError::new(
+                "MemoryStore mount requires write-through FUSE realization",
+            ));
+        }
         #[cfg(unix)]
         make_memory_tree_accessible(&host_path, mount.access)?;
         plan.binds.push(BindPlan {
@@ -850,7 +861,7 @@ fn memory_mounts_of(spec: &pc::SandboxSpec) -> Vec<MemoryMount> {
     spec.mounts
         .iter()
         .filter_map(|m| match &m.source {
-            pc::MountSource::MemoryStore { store_id } => Some(MemoryMount {
+            pc::MountSource::MemoryStore { store_id, .. } => Some(MemoryMount {
                 store_id: store_id.clone(),
                 mount_path: m.mount_path.clone(),
             }),
@@ -863,7 +874,7 @@ fn mount_ref(source: &pc::MountSource) -> String {
     match source {
         pc::MountSource::File { file_id, .. } => file_id.clone(),
         pc::MountSource::Resource { resource_id, .. } => resource_id.clone(),
-        pc::MountSource::MemoryStore { store_id } => store_id.clone(),
+        pc::MountSource::MemoryStore { store_id, .. } => store_id.clone(),
         pc::MountSource::Secret { reference, .. } => reference.clone(),
         // A Cache Volume is identified by its caller-owned reuse key (ADR-0056).
         pc::MountSource::CacheVolume { key, .. } => key.clone(),

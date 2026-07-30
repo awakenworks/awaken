@@ -23,6 +23,7 @@ use awaken_session_contract::{
     SessionRepositoryError, SessionRevision,
 };
 
+mod consolidation;
 mod extraction;
 mod row_codec;
 use row_codec::{EncodedSessionRow, decode};
@@ -138,6 +139,20 @@ fn session_bundle() -> Result<MigrationBundle, MigrationError> {
                 13,
                 "one canonical serialized Session aggregate (ADR-0066)",
                 "ALTER TABLE {prefix}_session ADD COLUMN aggregate_json TEXT",
+            )?,
+            Migration::new(
+                14,
+                "durable Memory Consolidation jobs",
+                "CREATE TABLE {prefix}_memory_consolidation (\
+                    job_id TEXT PRIMARY KEY, \
+                    data TEXT NOT NULL)",
+            )?,
+            Migration::new(
+                15,
+                "Workspace Memory Consolidator Agent overrides",
+                "CREATE TABLE {prefix}_memory_consolidator_override (\
+                    workspace_id TEXT PRIMARY KEY, \
+                    agent_id TEXT NOT NULL)",
             )?,
         ],
     )

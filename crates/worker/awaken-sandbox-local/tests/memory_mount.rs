@@ -33,12 +33,51 @@ fn memory_mount(store_id: &str, access: pc::MountAccess) -> pc::MountRequirement
         mount_id: "mem".into(),
         source: pc::MountSource::MemoryStore {
             store_id: store_id.into(),
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
         },
         mount_path: "/mnt/memory".into(),
         access,
         lifetime: pc::MountLifetime::Durable,
         required: true,
     }
+}
+
+#[tokio::test]
+async fn write_through_required_rejects_copy_before_agent_launch() {
+    // Cause/effect decision rules: provider-default + copy -> admitted/harvested;
+    // write-through-required + FUSE -> admitted; write-through-required + copy ->
+    // rejected before launch with no writable sandbox. This test owns the third
+    // rule deterministically by injecting the copy-only realization.
+    let fs = Arc::new(VolatileMemoryRepository::new());
+    fs.create("strict", "/note.md", "v1").await.unwrap();
+    let mounter = Arc::new(MemoryStoreMounter::copy_only(fs.clone()));
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(tmp.path()).with_memory_mounter(mounter);
+    let mut requirement = memory_mount("strict", pc::MountAccess::ReadWrite);
+    let pc::MountSource::MemoryStore {
+        write_consistency, ..
+    } = &mut requirement.source
+    else {
+        unreachable!()
+    };
+    *write_consistency = pc::MemoryWriteConsistency::WriteThroughRequired;
+    let mut spec = base_spec("t-strict-memory");
+    spec.mounts.push(requirement);
+
+    let error = match provider.create(&spec).await {
+        Err(error) => error,
+        Ok(_) => panic!("copy realization must not satisfy write-through-required"),
+    };
+    assert!(error.to_string().contains("requires write-through FUSE"));
+    assert_eq!(
+        fs.get_by_path("strict", "/note.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("v1")
+    );
 }
 
 /// Find the first file named `name` anywhere under `root` (walks into the FUSE mount).

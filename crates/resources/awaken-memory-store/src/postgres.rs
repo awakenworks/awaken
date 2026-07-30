@@ -216,6 +216,30 @@ async fn append_version(
 
 #[async_trait::async_trait]
 impl MemoryRepository for PostgresMemoryRepository {
+    async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
+        let rows = sqlx::query(&format!(
+            "SELECT id, path, content, sha, version, created, updated \
+             FROM {NS}_memories WHERE store_id = $1 ORDER BY path"
+        ))
+        .bind(store)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(mem_err)?;
+        rows.into_iter()
+            .map(|row| {
+                to_memory(
+                    row.get("id"),
+                    row.get("path"),
+                    row.get("content"),
+                    row.get("sha"),
+                    row.get("version"),
+                    row.get("created"),
+                    row.get("updated"),
+                )
+            })
+            .collect()
+    }
+
     async fn list(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
         let rows = sqlx::query(&format!(
             "SELECT id, path, sha, length(content) AS n, version, updated \
