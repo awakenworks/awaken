@@ -131,6 +131,58 @@ fn host_projection_path(
     }
 }
 
+type RealizedMemoryMount = (RenderMount, pc::RealizedMount, Box<dyn pc::MemoryMount>);
+
+async fn realize_memory_mount(
+    memory_mounter: &Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
+    req: &pc::MountRequirement,
+    host: &std::path::Path,
+) -> Result<Option<RealizedMemoryMount>, pc::SandboxError> {
+    let pc::MountSource::MemoryStore {
+        store_id,
+        write_consistency,
+    } = &req.source
+    else {
+        return Ok(None);
+    };
+    let Some(mounter) = memory_mounter
+        .read()
+        .expect("memory mounter lock poisoned")
+        .clone()
+    else {
+        return Err(err(format!(
+            "mount {:?}: memory_store is not realizable on this provider (no memory mounter wired)",
+            req.mount_id
+        )));
+    };
+    let guard = mounter.mount(store_id, host, req.access).await?;
+    if *write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
+        && guard.realization() != pc::Realization::Fuse
+    {
+        guard.teardown().await;
+        return Err(err(format!(
+            "mount {:?}: memory_store requires write-through FUSE realization",
+            req.mount_id
+        )));
+    }
+    let realization = guard.realization();
+    Ok(Some((
+        RenderMount {
+            host: host.to_path_buf(),
+            dest: req.mount_path.clone(),
+            read_only: req.access == pc::MountAccess::ReadOnly,
+        },
+        pc::RealizedMount {
+            mount_id: req.mount_id.clone(),
+            mount_path: req.mount_path.clone(),
+            access: req.access,
+            realization,
+            content_hash: None,
+        },
+        guard,
+    )))
+}
+
 /// Render a `bwrap` command line (unprivileged, Linux). Deterministic and pure.
 /// Layout: unshare namespaces, mount `/proc` `/dev` `/tmp`, read-only-bind the
 /// host userland (so interpreters exist), bind the workspace and outputs, bind
@@ -423,7 +475,9 @@ impl NamespaceProvider {
             .expect("memory mounter lock poisoned") = Some(mounter);
     }
 
-    fn caps() -> pc::SandboxCapabilities {
+    /// Static capability evidence shared by provider admission and owners of an
+    /// already-created namespace environment.
+    pub fn capabilities() -> pc::SandboxCapabilities {
         pc::SandboxCapabilities {
             isolation: pc::IsolationClass::Namespace,
             tool_transparent: true,
@@ -476,44 +530,11 @@ impl NamespaceProvider {
             // materialized files on the copy fallback) which then binds into the namespace
             // — live write-through FUSE-in-bwrap works (ADR-0053 item 2); copy harvests on
             // dispose.
-            if let pc::MountSource::MemoryStore {
-                store_id,
-                write_consistency,
-            } = &req.source
+            if let Some((rendered, mount, guard)) =
+                realize_memory_mount(&self.memory_mounter, req, &host).await?
             {
-                let Some(mounter) = self
-                    .memory_mounter
-                    .read()
-                    .expect("memory mounter lock poisoned")
-                    .clone()
-                else {
-                    return Err(err(format!(
-                        "mount {:?}: memory_store is not realizable on this provider (no memory mounter wired)",
-                        req.mount_id
-                    )));
-                };
-                let guard = mounter.mount(store_id, &host, req.access).await?;
-                if *write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
-                    && guard.realization() != pc::Realization::Fuse
-                {
-                    guard.teardown().await;
-                    return Err(err(format!(
-                        "mount {:?}: memory_store requires write-through FUSE realization",
-                        req.mount_id
-                    )));
-                }
-                layout.push(RenderMount {
-                    host: host.clone(),
-                    dest: req.mount_path.clone(),
-                    read_only: req.access == pc::MountAccess::ReadOnly,
-                });
-                realized.push(pc::RealizedMount {
-                    mount_id: req.mount_id.clone(),
-                    mount_path: req.mount_path.clone(),
-                    access: req.access,
-                    realization: guard.realization(),
-                    content_hash: None,
-                });
+                layout.push(rendered);
+                realized.push(mount);
                 memory_mounts.push(guard);
                 continue;
             }
@@ -586,7 +607,7 @@ impl NamespaceProvider {
 #[async_trait]
 impl pc::SandboxProvider for NamespaceProvider {
     fn capabilities(&self) -> pc::SandboxCapabilities {
-        Self::caps()
+        Self::capabilities()
     }
 
     /// A real readiness probe of the OS-native isolator: bwrap must run an
@@ -632,7 +653,7 @@ impl NamespaceProvider {
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<NamespaceSandbox, pc::SandboxError> {
-        pc::prepare_environment(spec, &Self::caps()).map_err(err)?;
+        pc::prepare_environment(spec, &Self::capabilities()).map_err(err)?;
         // Neither bwrap nor the Seatbelt adapter can enforce a DNS-host allowlist;
         // refuse it rather than silently blocking all egress or allowing too much.
         if matches!(spec.network, pc::NetworkPolicy::Allowlist { .. }) {
@@ -677,10 +698,11 @@ impl NamespaceProvider {
             inherit_agent_stderr: self.inherit_agent_stderr,
             secret_broker: self.secret_broker.clone(),
             network: spec.network.clone(),
-            layout,
+            layout: std::sync::RwLock::new(layout),
             realized,
             secret_paths,
             memory_mounts: std::sync::Mutex::new(memory_mounts),
+            memory_mounter: self.memory_mounter.clone(),
         })
     }
 
@@ -731,10 +753,11 @@ impl NamespaceProvider {
             inherit_agent_stderr: self.inherit_agent_stderr,
             secret_broker: self.secret_broker.clone(),
             network: pc::NetworkPolicy::Unrestricted,
-            layout: Vec::new(),
+            layout: std::sync::RwLock::new(Vec::new()),
             realized: Vec::new(),
             secret_paths: Vec::new(),
             memory_mounts: std::sync::Mutex::new(Vec::new()),
+            memory_mounter: self.memory_mounter.clone(),
         })
     }
 }
@@ -750,7 +773,7 @@ pub struct NamespaceSandbox {
     inherit_agent_stderr: bool,
     secret_broker: Arc<std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>>,
     network: pc::NetworkPolicy,
-    layout: Vec<RenderMount>,
+    layout: std::sync::RwLock<Vec<RenderMount>>,
     realized: Vec<pc::RealizedMount>,
     /// Host paths of realized secrets, shredded at dispose before the tree is reaped
     /// (ADR-0023). Empty after an `adopt`.
@@ -758,6 +781,7 @@ pub struct NamespaceSandbox {
     /// Live memory-store mounts, harvested / unmounted at dispose before the tree is
     /// reaped. Empty after an `adopt` (a reconnected sandbox owns no fresh guards).
     memory_mounts: std::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
+    memory_mounter: Arc<std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>>,
 }
 
 impl NamespaceSandbox {
@@ -879,13 +903,35 @@ impl NamespaceSandbox {
         }
     }
 
+    /// Revoke a dynamically attached mount and its runtime-owned backing path.
+    /// Non-mount workspace paths retain the ordinary lexical removal behavior.
+    pub fn remove_mount(&self, logical: &str) -> Result<(), pc::SandboxError> {
+        let removed = {
+            let mut layout = self.layout.write().expect("namespace layout lock poisoned");
+            let before = layout.len();
+            layout.retain(|mount| mount.dest != logical);
+            layout.len() != before
+        };
+        if !removed {
+            return self.remove_inline(logical);
+        }
+        let path = host_projection_path(&self.root, &self.host_workspace, logical)?;
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path).map_err(err),
+            Ok(_) => std::fs::remove_file(path).map_err(err),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(err(error)),
+        }
+    }
+
     fn translate_macos_path(&self, value: &str) -> Option<String> {
         let mut mappings: Vec<(&str, &std::path::Path)> = vec![
             ("/workspace", &self.host_workspace),
             (&self.outputs_path, &self.host_outputs),
         ];
+        let layout = self.layout.read().expect("namespace layout lock poisoned");
         mappings.extend(
-            self.layout
+            layout
                 .iter()
                 .map(|mount| (mount.dest.as_str(), mount.host.as_path())),
         );
@@ -978,11 +1024,12 @@ impl NamespaceSandbox {
             .iter()
             .map(|arg| self.translate_macos_argument(arg))
             .collect();
+        let layout = self.layout.read().expect("namespace layout lock poisoned");
         let input = RenderInput {
             host_workspace: &self.host_workspace,
             host_outputs: &self.host_outputs,
             outputs_path: &self.outputs_path,
-            mounts: &self.layout,
+            mounts: &layout,
             env: &path_env,
             network: &self.network,
             cwd: &command.cwd,
@@ -1085,9 +1132,59 @@ impl pc::Sandbox for NamespaceSandbox {
 
     async fn attach(
         &self,
-        _req: pc::MountRequirement,
+        req: pc::MountRequirement,
     ) -> Result<pc::RealizedMount, pc::SandboxError> {
-        Err(err("runtime attach is a Slice-4 (FileStore) concern"))
+        // Dynamic mount decision table:
+        // Inline bytes + RO/RW -> materialize and add one bind;
+        // any source requiring an external resolver -> reject without layout change.
+        pc::validate_mount_requirements(
+            std::slice::from_ref(&req),
+            &NamespaceProvider::capabilities(),
+        )
+        .map_err(err)?;
+        let host = host_projection_path(&self.root, &self.host_workspace, &req.mount_path)?;
+        if let Some((rendered, realized, guard)) =
+            realize_memory_mount(&self.memory_mounter, &req, &host).await?
+        {
+            let mut layout = self.layout.write().expect("namespace layout lock poisoned");
+            layout.retain(|mount| mount.dest != req.mount_path);
+            layout.push(rendered);
+            self.memory_mounts.lock().unwrap().push(guard);
+            return Ok(realized);
+        }
+        let (contents, content_hash) = match &req.source {
+            pc::MountSource::Inline { contents } => (contents.as_bytes(), None),
+            pc::MountSource::InlineBytes {
+                contents,
+                content_hash,
+            } => (contents.as_slice(), content_hash.clone()),
+            _ => {
+                return Err(err(format!(
+                    "runtime attach for mount {:?} requires a provider-owned resolver",
+                    req.mount_id
+                )));
+            }
+        };
+        verify(&req.source, contents)?;
+        if let Some(parent) = host.parent() {
+            std::fs::create_dir_all(parent).map_err(err)?;
+        }
+        std::fs::write(&host, contents).map_err(err)?;
+        restrict_to_owner(&host)?;
+        let mut layout = self.layout.write().expect("namespace layout lock poisoned");
+        layout.retain(|mount| mount.dest != req.mount_path);
+        layout.push(RenderMount {
+            host,
+            dest: req.mount_path.clone(),
+            read_only: req.access == pc::MountAccess::ReadOnly,
+        });
+        Ok(pc::RealizedMount {
+            mount_id: req.mount_id,
+            mount_path: req.mount_path,
+            access: req.access,
+            realization: pc::Realization::Bind,
+            content_hash,
+        })
     }
 
     async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {
@@ -1341,6 +1438,73 @@ mod tests {
             std::os::unix::fs::symlink(outputs.join("result.txt"), &projection).unwrap();
             sandbox.clear_resource_projection().unwrap();
         }
+    }
+
+    /// Live attach cause/effect decision table:
+    /// | source | path | access | effect |
+    /// |---|---|---|---|
+    /// | InlineBytes | absolute | read-only | one runtime-owned file + RO bind |
+    /// | unresolved external source | any | any | reject, layout unchanged |
+    /// Detach removes both the bind entry and backing file, so a later process
+    /// cannot observe a stale mount.
+    #[tokio::test]
+    async fn live_inline_mount_updates_and_revokes_the_namespace_bind_layout() {
+        use pc::Sandbox;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sandbox = NamespaceProvider::new(tmp.path())
+            .create_sandbox(&ns_spec("t-ns-live-mount", Vec::new()))
+            .await
+            .unwrap();
+        let mount_path = "/mnt/session/uploads/workspace/live.txt";
+        let realized = sandbox
+            .attach(pc::MountRequirement {
+                mount_id: "file_live".into(),
+                source: pc::MountSource::InlineBytes {
+                    contents: b"live".to_vec(),
+                    content_hash: None,
+                },
+                mount_path: mount_path.into(),
+                access: pc::MountAccess::ReadOnly,
+                lifetime: pc::MountLifetime::PerRun,
+                required: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(realized.mount_path, mount_path);
+        assert!(
+            sandbox
+                .layout
+                .read()
+                .unwrap()
+                .iter()
+                .any(|mount| mount.dest == mount_path && mount.read_only)
+        );
+        let backing = sandbox.root.resolve(mount_path).unwrap();
+        assert_eq!(std::fs::read(&backing).unwrap(), b"live");
+
+        let before = sandbox.layout.read().unwrap().len();
+        assert!(
+            sandbox
+                .attach(pc::MountRequirement {
+                    mount_id: "external".into(),
+                    source: pc::MountSource::File {
+                        file_id: "unresolved".into(),
+                        content_hash: None,
+                    },
+                    mount_path: "/mnt/session/uploads/external".into(),
+                    access: pc::MountAccess::ReadOnly,
+                    lifetime: pc::MountLifetime::PerRun,
+                    required: true,
+                })
+                .await
+                .is_err()
+        );
+        assert_eq!(sandbox.layout.read().unwrap().len(), before);
+
+        sandbox.remove_mount(mount_path).unwrap();
+        assert!(!backing.exists());
+        assert!(sandbox.layout.read().unwrap().is_empty());
     }
 
     #[tokio::test]

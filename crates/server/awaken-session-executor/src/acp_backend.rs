@@ -172,7 +172,6 @@ impl crate::host::SharedHost {
     /// capability without a credential materializer or on a misconfigured tier.
     pub async fn with_acp_from_deployment(
         self,
-        hand_factory: Arc<dyn crate::HandExecutorFactory>,
         credentials: Option<crate::PinnedCredentialMaterializer>,
     ) -> Self {
         let deployment = self.deployment.clone();
@@ -211,9 +210,57 @@ impl crate::host::SharedHost {
         // The same exact, claim-fenced materializer owns both sides of the
         // last-mile seam: the resolver issues an opaque one-shot reference and
         // the selected sandbox asks it for bytes immediately before spawn.
-        self.with_acp_launch_source(hand_factory, source)
-            .await
+        self.with_bound_acp(source, None)
             .with_session_secret_broker(Arc::new(credentials))
+    }
+
+    /// Select the Session environment once from the typed Deployment, regardless
+    /// of whether this Host serves Native, provider, or ACP model execution.
+    /// Model backend selection must not create a parallel sandbox-tier decision.
+    pub async fn with_session_environment_from_deployment(
+        self,
+        hand_factory: Arc<dyn crate::HandExecutorFactory>,
+    ) -> Self {
+        if self.session_provider_explicit {
+            return self;
+        }
+        let deployment = self.deployment.clone();
+        let base = acp_sandbox_base(&deployment);
+        let tier = crate::resolve_sandbox_tier(
+            deployment.sandbox_tier,
+            deployment.sandbox.allow_local_fallback,
+            &base,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
+        let mut host = self;
+        host.session_provider = if let Some(provider) =
+            crate::session_environment::SessionEnvironmentProvider::for_host_tier(
+                tier,
+                base,
+                deployment.sandbox.inherit_agent_stderr,
+            ) {
+            provider
+        } else {
+            let (provider, extra_mounts) = crate::container_environment::build(
+                tier,
+                deployment.container_image.as_deref(),
+                &deployment.sandbox,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
+            crate::session_environment::SessionEnvironmentProvider::container(
+                provider,
+                extra_mounts,
+                hand_factory,
+                deployment.sandbox.container_hand_bin.clone(),
+            )
+        };
+        host.session_provider_explicit = true;
+        if let Some(mounter) = host.memory_mounter() {
+            host.session_provider.install_memory_mounter(mounter);
+        }
+        host
     }
 
     /// Realize an explicitly supplied ACP launch source in the deployment's sandbox
@@ -224,60 +271,9 @@ impl crate::host::SharedHost {
         hand_factory: Arc<dyn crate::HandExecutorFactory>,
         source: crate::LaunchSource,
     ) -> Self {
-        let dep = self.deployment.clone();
-        let base = acp_sandbox_base(&dep);
-        if self.session_provider_explicit {
-            return self.with_bound_acp(source, None);
-        }
-        // Probe the OS-native sandbox once. A bwrap-less host degrades to unsandboxed local
-        // ACP when the tier was left at its default (dev/single-machine ergonomics — the
-        // environment still runs) and fails closed only when `AWAKEN_SANDBOX_TIER=namespace`
-        // was requested EXPLICITLY, so an operator who asked for isolation never silently
-        // loses it. So a worker without bwrap works out of the box.
-        let tier =
-            crate::resolve_sandbox_tier(dep.sandbox_tier, dep.sandbox.allow_local_fallback, &base)
-                .await
-                .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
-        let mut host = self;
-        match tier {
-            crate::SandboxTier::Local => {
-                host.session_provider =
-                    crate::session_environment::SessionEnvironmentProvider::workdir_with_agent_stderr(
-                        base.clone(),
-                        dep.sandbox.inherit_agent_stderr,
-                    );
-                if let Some(mounter) = host.memory_mounter() {
-                    host.session_provider.install_memory_mounter(mounter);
-                }
-                return host.with_bound_acp(source, None);
-            }
-            crate::SandboxTier::Namespace => {
-                host.session_provider =
-                    crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
-                        base.clone(),
-                        dep.sandbox.inherit_agent_stderr,
-                    );
-                if let Some(mounter) = host.memory_mounter() {
-                    host.session_provider.install_memory_mounter(mounter);
-                }
-                return host.with_bound_acp(source, None);
-            }
-            _ => {}
-        }
-        let (provider, extra_mounts) =
-            crate::container_environment::build(tier, dep.container_image.as_deref(), &dep.sandbox)
-                .await
-                .unwrap_or_else(|e| panic!("configure the ACP sandbox tier: {e}"));
-        host.session_provider = crate::session_environment::SessionEnvironmentProvider::container(
-            provider,
-            extra_mounts,
-            hand_factory,
-            dep.sandbox.container_hand_bin.clone(),
-        );
-        if let Some(mounter) = host.memory_mounter() {
-            host.session_provider.install_memory_mounter(mounter);
-        }
-        host.with_bound_acp(source, None)
+        self.with_session_environment_from_deployment(hand_factory)
+            .await
+            .with_bound_acp(source, None)
     }
 
     /// The hub-backed launch observer for this host: republishes an ACP agent's

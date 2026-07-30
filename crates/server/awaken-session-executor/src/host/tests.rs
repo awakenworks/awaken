@@ -5,7 +5,10 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_protocol_managed::resource_plane as awaken_resource_contract;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Mutex, atomic::AtomicUsize};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 fn native_credential_profile() -> awaken_runtime_contract::CredentialRealizationProfile {
     awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
@@ -41,6 +44,7 @@ pub(super) struct TestResourceLifecycle {
     intents: Mutex<BTreeMap<String, awaken_resource_contract::ResourcePurgeIntent>>,
     references: Mutex<BTreeSet<awaken_resource_contract::ResourceReferenceRecord>>,
     fences: Mutex<BTreeMap<(awaken_resource_contract::ResourceKind, String), String>>,
+    fail_replace: AtomicBool,
 }
 
 #[async_trait::async_trait]
@@ -125,6 +129,11 @@ impl awaken_resource_contract::ResourceReferenceIndex for TestResourceLifecycle 
         reference_id: &str,
         records: Vec<awaken_resource_contract::ResourceReferenceRecord>,
     ) -> Result<(), awaken_resource_contract::ResourcePurgeError> {
+        if self.fail_replace.load(Ordering::SeqCst) {
+            return Err(awaken_resource_contract::ResourcePurgeError::Storage(
+                "injected reference replacement failure".into(),
+            ));
+        }
         let mut references = self.references.lock().unwrap();
         references.retain(|record| {
             record.reference.kind != kind || record.reference.reference_id != reference_id
@@ -1733,13 +1742,27 @@ impl LlmExecutor for OkModel {
     }
 }
 
-/// Hot-attach is realized, not a bookkeeping edit: attaching a file to a live
-/// session stages its mount AND evicts the cached sandbox, so the NEXT turn
-/// rebuilds with the file mounted; detaching reverses it.
+/// Live mount decision table:
+/// | resident tier | requested File access | effect |
+/// |---|---|---|
+/// | Namespace | read-only | materialize, replace projection, evict context |
+/// | Workdir | read-only | reject without changing projection (next test) |
+///
+/// This rule exercises the admitted branch and proves detach reverses it in the
+/// same Session-owned environment.
 #[tokio::test]
 async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_sandbox() {
     use awaken_protocol_managed::SessionRuntime;
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
+    raw_host.session_provider =
+        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+            std::env::temp_dir().join(format!(
+                "awaken-hot-attach-namespace-{}",
+                std::process::id()
+            )),
+            false,
+        );
+    let host = Arc::new(raw_host);
     let managed = managed_with_resource_source(host.clone());
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
 
@@ -1801,7 +1824,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     );
     assert_eq!(
         environment_before
-            .list_files("mnt/session/uploads")
+            .list_files("/mnt/session/uploads")
             .await
             .unwrap(),
         vec![("data.txt".into(), b"hello-attached".to_vec())],
@@ -1856,6 +1879,151 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     assert_eq!(
         host.session_environment_handle("t-attach").await,
         Some(handle_before)
+    );
+}
+
+/// Live replacement commit-failure decision table:
+/// | physical realization | reference/manifest commit | effect |
+/// |---|---|---|
+/// | succeeds | fails | old logical manifest remains; realized target is retryable |
+/// | succeeds again | succeeds | desired manifest commits exactly once |
+///
+/// Constraint: the persisted Session owns the pending generation and retries the
+/// complete replacement. Rule C1 proves Runtime ordering does not turn a transient
+/// commit failure into a permanently missing mount on that retry.
+#[tokio::test]
+async fn live_mount_realization_precedes_logical_commit_and_retry_converges() {
+    use awaken_protocol_managed::SessionRuntime;
+
+    let lifecycle = Arc::new(TestResourceLifecycle::default());
+    let mut raw_host =
+        SharedHost::new(Arc::new(OkModel), "stub").with_resource_lifecycle(lifecycle.clone());
+    raw_host.session_provider =
+        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+            std::env::temp_dir().join(format!("awaken-hot-attach-retry-{}", std::process::id())),
+            false,
+        );
+    let host = Arc::new(raw_host);
+    let managed = managed_with_resource_source(host.clone());
+    host.run(
+        None,
+        "t-attach-retry",
+        vec![Message::text(MessageId("initial".into()), Role::User, "hi")],
+    )
+    .await
+    .expect("first turn");
+    let environment = host
+        .session_environment("t-attach-retry")
+        .await
+        .expect("live Namespace environment");
+    let file_id = host
+        .create_uploaded_file(
+            host.local_workspace(),
+            "retry.txt".into(),
+            "text/plain".into(),
+            b"retry-safe",
+        )
+        .await
+        .expect("create File")
+        .id;
+    let desired = effective_resources(vec![TestInput {
+        kind: "file".into(),
+        id: file_id,
+        mount_path: "/retry.txt".into(),
+        access: awaken_resource_contract::ResourceAccess::ReadOnly,
+        instructions: None,
+        initial_branch: None,
+        initial_commit: None,
+    }]);
+
+    lifecycle.fail_replace.store(true, Ordering::SeqCst);
+    managed
+        .apply_session_inputs("t-attach-retry", host.local_workspace(), &desired)
+        .await
+        .expect_err("injected logical commit failure");
+    assert!(host.sandbox_spec("t-attach-retry").mounts.is_empty());
+    assert_eq!(
+        environment
+            .list_files("/mnt/session/uploads")
+            .await
+            .unwrap(),
+        vec![("retry.txt".into(), b"retry-safe".to_vec())]
+    );
+
+    lifecycle.fail_replace.store(false, Ordering::SeqCst);
+    managed
+        .apply_session_inputs("t-attach-retry", host.local_workspace(), &desired)
+        .await
+        .expect("idempotent retry");
+    assert_eq!(host.sandbox_spec("t-attach-retry").mounts.len(), 1);
+}
+
+/// Causes: a live Workdir environment exists and the replacement manifest adds
+/// a read-only File. Constraint: Workdir provides lexical containment but cannot
+/// enforce mount immutability. Effect/rule W1: reject before changing the staged
+/// manifest, resident files, or cached context.
+#[tokio::test]
+async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_projection() {
+    use awaken_protocol_managed::SessionRuntime;
+
+    let mut deployment = crate::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = crate::SandboxTier::Local;
+    let host = Arc::new(SharedHost::new_with_deployment(
+        Arc::new(OkModel),
+        "stub",
+        deployment,
+    ));
+    let managed = managed_with_resource_source(host.clone());
+    host.run(
+        None,
+        "t-local-attach",
+        vec![Message::text(MessageId("initial".into()), Role::User, "hi")],
+    )
+    .await
+    .expect("first turn");
+    let environment = host
+        .session_environment("t-local-attach")
+        .await
+        .expect("live Workdir environment");
+    let file_id = host
+        .create_uploaded_file(
+            host.local_workspace(),
+            "data.txt".into(),
+            "text/plain".into(),
+            b"must-remain-unmounted",
+        )
+        .await
+        .expect("create File")
+        .id;
+    let before = host.sandbox_spec("t-local-attach");
+    let attached = effective_resources(vec![TestInput {
+        kind: "file".into(),
+        id: file_id,
+        mount_path: "/data.txt".into(),
+        access: ResourceAccess::ReadOnly,
+        instructions: None,
+        initial_branch: None,
+        initial_commit: None,
+    }]);
+
+    let error = managed
+        .apply_session_inputs("t-local-attach", host.local_workspace(), &attached)
+        .await
+        .expect_err("Workdir cannot admit an official read-only File copy");
+    assert!(error.message.contains("does not enforce read-only"));
+    assert_eq!(host.sandbox_spec("t-local-attach"), before);
+    assert!(
+        environment
+            .list_files("mnt/session/uploads")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        host.session_slots
+            .read("t-local-attach", |slot| slot.runtime.is_some())
+            .unwrap_or(false),
+        "rejected replacement leaves the cached runtime intact"
     );
 }
 

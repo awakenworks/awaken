@@ -96,8 +96,6 @@ use awaken_protocol_transport::{
 use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, MessageOrigin, Offer};
 
 use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
-use crate::managed_resource_projection::{managed_file_mount_path, resolved_resource_prompt};
-
 mod postgres_migration_lock;
 mod worker_control_client;
 
@@ -464,26 +462,6 @@ impl SharedHost {
     }
 }
 
-fn repository_http_basic_credential(
-    material: awaken_runtime_contract::CredentialMaterial,
-) -> Result<awaken_provisioning_contract::RepositoryHttpBasicCredential, &'static str> {
-    let awaken_runtime_contract::CredentialMaterial::Structured(mut material) = material else {
-        return Err("HTTP Basic requires structured credential material");
-    };
-    if material.type_id != awaken_runtime_contract::credential::HTTP_BASIC_MATERIAL_TYPE {
-        return Err("HTTP Basic credential material has the wrong type");
-    }
-    let username = material
-        .fields
-        .remove("username")
-        .ok_or("HTTP Basic credential material has no username")?;
-    let password = material
-        .fields
-        .remove("password")
-        .ok_or("HTTP Basic credential material has no password")?;
-    Ok(awaken_provisioning_contract::RepositoryHttpBasicCredential::new(username, password))
-}
-
 impl ManagedHost {
     pub fn new(host: Arc<SharedHost>) -> Self {
         let managed = Self {
@@ -551,208 +529,23 @@ impl ManagedHost {
         self
     }
 
-    async fn stage_resolved_input(
-        &self,
-        workspace: &str,
-        input: &awaken_protocol_managed::ResolvedInput,
-    ) -> Result<crate::provisioning::StagedResources, RunError> {
-        use awaken_protocol_managed::ResolvedInputSource;
-        use awaken_resource_contract::ResourceAccess;
-
-        let mut staged = crate::provisioning::StagedResources::default();
-        let logical = input.mount_path.trim_start_matches('/').to_string();
-        staged.prompts.push(resolved_resource_prompt(input));
-        let mount_access = match input.access {
-            ResourceAccess::ReadOnly => awaken_provisioning_contract::MountAccess::ReadOnly,
-            ResourceAccess::ReadWrite => awaken_provisioning_contract::MountAccess::ReadWrite,
-        };
-
-        match &input.source {
-            ResolvedInputSource::File { file_id } => {
-                let record = self
-                    .host
-                    .file_record(workspace, file_id.as_str())
-                    .await
-                    .map_err(|error| RunError::internal(error.to_string()))?
-                    .ok_or_else(|| {
-                        RunError::bad_request(format!(
-                            "file resource `{file_id}` not found in this workspace"
-                        ))
-                    })?;
-                let bytes = self
-                    .host
-                    .file_store()
-                    .get(&record.blob_id)
-                    .await
-                    .map_err(|error| RunError::internal(error.to_string()))?
-                    .ok_or_else(|| {
-                        RunError::bad_request(format!(
-                            "file resource `{file_id}` references a missing blob"
-                        ))
-                    })?;
-                let actual = awaken_sandbox_local::content_fingerprint(&bytes);
-                if actual != record.blob_id {
-                    return Err(RunError::bad_request(format!(
-                        "file resource `{file_id}` content hash mismatch (realized `{actual}`)"
-                    )));
-                }
-                let managed_path = managed_file_mount_path(&input.mount_path);
-                staged
-                    .mounts
-                    .push(awaken_provisioning_contract::MountRequirement {
-                        mount_id: file_id.to_string(),
-                        source: awaken_provisioning_contract::MountSource::InlineBytes {
-                            contents: bytes,
-                            content_hash: Some(record.blob_id),
-                        },
-                        mount_path: managed_path,
-                        access: awaken_provisioning_contract::MountAccess::ReadOnly,
-                        lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
-                        required: true,
-                    });
-                staged
-                    .binding_checks
-                    .push(crate::provisioning::ResourceBindingCheck::File {
-                        file_id: file_id.to_string(),
-                    });
-            }
-            ResolvedInputSource::MemoryStore {
-                memory_store_id,
-                config,
-            } => {
-                let validator = self.resource_validator.as_ref().ok_or_else(|| {
-                    RunError::bad_request(
-                        "memory resources require a configured resource binding validator",
-                    )
-                })?;
-                validator
-                    .validate_memory_binding(workspace, memory_store_id.as_str(), config.version)
-                    .map_err(|error| RunError::bad_request(error.to_string()))?;
-                staged.binding_checks.push(
-                    crate::provisioning::ResourceBindingCheck::MemoryStore {
-                        memory_store_id: memory_store_id.to_string(),
-                        config_version: config.version,
-                    },
-                );
-                // The worker realizes one governed store directory through its
-                // MemoryMounter. The resource plane never receives a principal,
-                // role, API key, or policy: the outer authorization/ACL seam has
-                // already selected workspace, store, and maximum access.
-                staged
-                    .mounts
-                    .push(awaken_provisioning_contract::MountRequirement {
-                    mount_id: input.binding_id.to_string(),
-                    source: awaken_provisioning_contract::MountSource::MemoryStore {
-                        store_id: memory_store_id.to_string(),
-                        write_consistency:
-                            awaken_provisioning_contract::MemoryWriteConsistency::ProviderDefault,
-                    },
-                    mount_path: format!(".mnt/{logical}"),
-                    access: mount_access,
-                    lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
-                    required: true,
-                });
-            }
-            ResolvedInputSource::Repository {
-                repository_id,
-                config,
-                credential: credential_pin,
-            } => {
-                let validator = self.resource_validator.as_ref().ok_or_else(|| {
-                    RunError::bad_request(
-                        "repository resources require a configured resource binding validator",
-                    )
-                })?;
-                validator
-                    .validate_repository_binding(workspace, repository_id.as_str(), config.version)
-                    .map_err(|error| RunError::bad_request(error.to_string()))?;
-                staged
-                    .binding_checks
-                    .push(crate::provisioning::ResourceBindingCheck::Repository {
-                        repository_id: repository_id.to_string(),
-                        config_version: config.version,
-                    });
-                let credential = match (&config.credential_binding, credential_pin) {
-                    (Some(binding), Some(pin)) => {
-                        pin.validate_for_binding(binding).map_err(|error| {
-                            RunError::bad_request(format!(
-                                "repository `{repository_id}` credential: {error}"
-                            ))
-                        })?;
-                        if pin.selected_plaintext_holder.boundary
-                            != awaken_runtime_contract::PlaintextBoundary::Worker
-                        {
-                            return Err(RunError::bad_request(format!(
-                                "repository `{repository_id}` credential requires an unsupported plaintext holder"
-                            )));
-                        }
-                        let credentials = self.credentials.as_ref().ok_or_else(|| {
-                            RunError::bad_request(
-                                "repository credential requires a configured credential vault",
-                            )
-                        })?;
-                        let material = credentials
-                            .resolve_for_workspace(
-                                &pin.access,
-                                &pin.selected_plaintext_holder,
-                                awaken_runtime_contract::CredentialRealizationKind::WorkerRelay,
-                                workspace,
-                                &(repository_id, config.version),
-                            )
-                            .await
-                            .map_err(|error| {
-                                RunError::bad_request(format!(
-                                    "repository `{repository_id}` credential: {error}"
-                                ))
-                            })?
-                            .material;
-                        Some(repository_http_basic_credential(material).map_err(|error| {
-                            RunError::bad_request(format!(
-                                "repository `{repository_id}` credential: {error}"
-                            ))
-                        })?)
-                    }
-                    (None, None) => None,
-                    (Some(_), None) => {
-                        return Err(RunError::bad_request(format!(
-                            "repository `{repository_id}` credential binding has no exact Session pin"
-                        )));
-                    }
-                    (None, Some(_)) => {
-                        return Err(RunError::bad_request(format!(
-                            "repository `{repository_id}` has a credential pin without a binding"
-                        )));
-                    }
-                };
-                staged
-                    .repositories
-                    .push(crate::provisioning::RepositoryActivation {
-                        plan: awaken_provisioning_contract::RepositoryRealizationPlan {
-                            repository_id: repository_id.to_string(),
-                            mount_path: logical,
-                            remote_url: config.remote_url.clone(),
-                            initial_branch: config.initial_branch.clone(),
-                            initial_commit: config.initial_commit.clone(),
-                            access: mount_access,
-                        },
-                        credential,
-                    });
-            }
-        }
-        Ok(staged)
-    }
-
     /// Realize an already-resolved, secret-free manifest. The pinned Memory/
     /// Repository configuration in `inputs` remains authoritative; the per-item
     /// validation in `stage_resolved_input` checks only current ownership/state
     /// and the frozen version's integrity. No Agent binding or current config is
     /// composed here.
-    async fn stage_effective_inputs(
+    async fn compile_effective_inputs(
         &self,
         thread: &str,
         workspace: &str,
         inputs: &awaken_protocol_managed::ResolvedSessionResources,
-    ) -> Result<(), RunError> {
+    ) -> Result<
+        (
+            crate::provisioning::StagedResources,
+            Option<Arc<crate::memory::BoundMemory>>,
+        ),
+        RunError,
+    > {
         let mut all = crate::provisioning::StagedResources::default();
         let mut bound_memory = None;
         let mut memory_seen = false;
@@ -793,13 +586,24 @@ impl ManagedHost {
             }
         }
 
+        Ok((all, bound_memory))
+    }
+
+    async fn install_effective_inputs(
+        &self,
+        thread: &str,
+        workspace: &str,
+        inputs: &awaken_protocol_managed::ResolvedSessionResources,
+        staged: crate::provisioning::StagedResources,
+        bound_memory: Option<Arc<crate::memory::BoundMemory>>,
+    ) -> Result<(), RunError> {
         // The complete manifest replaces the prior projection. Register an empty
         // value too, so deleting the final input cannot leave a stale mount behind.
         self.host
             .replace_session_references(workspace, thread, inputs)
             .await
             .map_err(|error| RunError::internal(error.to_string()))?;
-        self.host.register_thread_resources(thread, all);
+        self.host.register_thread_resources(thread, staged);
         self.host.register_thread_resource_manifest(
             thread,
             awaken_protocol_managed::SessionResourceManifest::new(workspace, inputs.clone()),
@@ -811,6 +615,19 @@ impl ManagedHost {
             memory.reconcile(thread).await;
         }
         Ok(())
+    }
+
+    async fn stage_effective_inputs(
+        &self,
+        thread: &str,
+        workspace: &str,
+        inputs: &awaken_protocol_managed::ResolvedSessionResources,
+    ) -> Result<(), RunError> {
+        let (staged, bound_memory) = self
+            .compile_effective_inputs(thread, workspace, inputs)
+            .await?;
+        self.install_effective_inputs(thread, workspace, inputs, staged, bound_memory)
+            .await
     }
 
     /// Install one already-resolved Session resource manifest. This is shared by
@@ -1293,30 +1110,31 @@ impl SessionRuntime for ManagedHost {
                 "memory_store inputs are create-time only for a live Session",
             ));
         }
-        self.host.harvest_thread_skills(thread).await;
-        self.host.publish_thread_repositories(thread).await;
-        match &inputs.skills {
-            Some(bindings) => {
-                let versions = self
-                    .host
+        let skill_versions = match &inputs.skills {
+            Some(bindings) => Some(
+                self.host
                     .skills
                     .load_pinned(workspace_id, bindings)
                     .await
-                    .map_err(|error| RunError::bad_request(error.to_string()))?;
-                self.host
-                    .session_slots
-                    .update(thread, |slot| slot.skills = Some(versions));
-            }
-            None => {
-                self.host
-                    .session_slots
-                    .update(thread, |slot| slot.skills = None);
-            }
-        }
-        self.stage_effective_inputs(thread, workspace_id, inputs)
+                    .map_err(|error| RunError::bad_request(error.to_string()))?,
+            ),
+            None => None,
+        };
+        let (new, bound_memory) = self
+            .compile_effective_inputs(thread, workspace_id, inputs)
             .await?;
-        let new = self.host.thread_resources_snapshot(thread);
-        if let Some(environment) = live_environment {
+        if let Some(environment) = &live_environment {
+            environment
+                .validate_live_mount_replacement(&old.mounts, &new.mounts)
+                .map_err(|error| RunError::bad_request(error.to_string()))?;
+        }
+        self.host.harvest_thread_skills(thread).await;
+        self.host.publish_thread_repositories(thread).await;
+        if let Some(environment) = &live_environment {
+            // Realize the desired live projection before committing its logical
+            // manifest. Every operation is idempotent, so a failed attempt leaves
+            // the prior manifest authoritative and the persisted pending generation
+            // can safely retry without mistaking an unrealized mount for success.
             // Delivered Skills are an exact, runtime-owned tree. Remove the old
             // projection at the manifest transition itself; the rebuilt context
             // materializes only the newly frozen versions. Authored `skills/`
@@ -1338,13 +1156,9 @@ impl SessionRuntime for ManagedHost {
                 }
             }
             for mount in &new.mounts {
-                if !old.mounts.iter().any(|candidate| candidate == mount)
-                    && let awaken_provisioning_contract::MountSource::InlineBytes {
-                        contents, ..
-                    } = &mount.source
-                {
+                if !old.mounts.iter().any(|candidate| candidate == mount) {
                     environment
-                        .materialize_workspace_file(&mount.mount_path, contents)
+                        .attach_mount(mount.clone())
                         .await
                         .map_err(|error| RunError::internal(error.to_string()))?;
                 }
@@ -1377,6 +1191,11 @@ impl SessionRuntime for ManagedHost {
                 }
             }
         }
+        self.install_effective_inputs(thread, workspace_id, inputs, new, bound_memory)
+            .await?;
+        self.host
+            .session_slots
+            .update(thread, |slot| slot.skills = skill_versions);
         self.host.evict_session_for_rebuild(thread).await;
         Ok(())
     }
