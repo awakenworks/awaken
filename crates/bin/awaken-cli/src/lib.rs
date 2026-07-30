@@ -129,6 +129,10 @@ struct DeploymentStores {
     /// Durable home for the Managed session aggregate (its own `sessions.db`), so a
     /// rehydrated session reports its real config across a restart / peer process.
     sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
+    /// Control-owned Deployment and DeploymentRun view over that same physical
+    /// Session repository. Keeping the typed port separately avoids an invalid
+    /// trait-object cast and prevents an in-memory Deployment authority.
+    deployments: Arc<dyn awaken_protocol_managed::DeploymentRepository>,
     /// The same physical Session store viewed through the Dream repository interface.
     dream_repository: Arc<dyn awaken_protocol_managed::DreamRepository>,
     /// Same Session application repository viewed through the extraction-work
@@ -281,6 +285,7 @@ fn in_memory_deployment_stores() -> DeploymentStores {
         resource_catalog: admin.clone(),
         webhooks: admin,
         sessions: sessions.clone(),
+        deployments: sessions.clone(),
         memory_extractions: sessions.clone(),
         dream_repository: sessions,
         config: Arc::new(
@@ -304,12 +309,16 @@ fn deployment_stores_for_runtime_storage(
     };
     stores.workspace_root = Some(dir.to_path_buf());
     std::fs::create_dir_all(dir).expect("create runtime storage directory");
-    stores.sessions = Arc::new(
+    let sessions = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open(
             &dir.join("sessions.db").to_string_lossy(),
         )
         .expect("open sessions.db under runtime storage directory"),
     );
+    stores.sessions = sessions.clone();
+    stores.deployments = sessions.clone();
+    stores.memory_extractions = sessions.clone();
+    stores.dream_repository = sessions;
     stores
 }
 
@@ -453,8 +462,9 @@ async fn open_deployment_stores(
     }
 
     ensure_parent(&cfg.sessions)?;
-    let (sessions, memory_extractions, dream_repository): (
+    let (sessions, deployments, memory_extractions, dream_repository): (
         Arc<dyn awaken_session_contract::ManagedSessionRepository>,
+        Arc<dyn awaken_protocol_managed::DeploymentRepository>,
         Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>,
         Arc<dyn awaken_protocol_managed::DreamRepository>,
     ) = match &cfg.sessions {
@@ -463,7 +473,12 @@ async fn open_deployment_stores(
                 awaken_session_store::SqliteManagedSessionRepository::open(&path(p))
                     .map_err(|error| format!("open sessions SQLite {}: {error}", p.display()))?,
             );
-            (repository.clone(), repository.clone(), repository)
+            (
+                repository.clone(),
+                repository.clone(),
+                repository.clone(),
+                repository,
+            )
         }
         StoreBackend::Postgres(url) => {
             let repository = Arc::new(
@@ -480,7 +495,12 @@ async fn open_deployment_stores(
                 }
                 .map_err(|error| format!("connect sessions Postgres: {error}"))?,
             );
-            (repository.clone(), repository.clone(), repository)
+            (
+                repository.clone(),
+                repository.clone(),
+                repository.clone(),
+                repository,
+            )
         }
     };
 
@@ -576,6 +596,7 @@ async fn open_deployment_stores(
         resource_catalog: admin_catalog,
         webhooks: admin_webhooks,
         sessions,
+        deployments,
         memory_extractions,
         dream_repository,
         config,
@@ -979,6 +1000,7 @@ async fn assemble_process_router(
         resource_catalog,
         webhooks: webhook_store,
         sessions,
+        deployments,
         memory_extractions,
         dream_repository,
         config,
@@ -1254,7 +1276,14 @@ async fn assemble_process_router(
     // The authoring / authz plane (admin + vault + webhooks + user profiles +
     // deployments + environments + config plane + capabilities), guard applied over
     // admin + vault only. Returns the webhook sink the data plane feeds.
-    let deployment_state = Arc::new(awaken_protocol_managed::DeploymentState::new());
+    // Deployment and DeploymentRun are Control-owned durable truth. Restore the
+    // existing aggregate from the same repository that owns Managed Sessions;
+    // `DeploymentState::new()` is reserved for explicitly ephemeral tests.
+    let deployment_state = Arc::new(
+        awaken_protocol_managed::DeploymentState::with_repository(deployments)
+            .await
+            .unwrap_or_else(|error| panic!("restore Deployment state: {error}")),
+    );
     deployment_state.bind_rate_limiter(managed_rate_limiter.clone());
     if role == config::Role::Control
         && let Some(config) = deployment_session_launch.as_ref()
@@ -1642,6 +1671,29 @@ mod runtime_session_store_tests {
                 .expect("session survives restart")
                 .baseline,
             SessionBaselineState::Preparing(creation_intent())
+        );
+    }
+
+    #[test]
+    fn session_and_deployment_ports_share_one_physical_repository() {
+        // Cause/effect decision table: D1 durable runtime storage -> Session and
+        // Deployment typed ports point at one concrete repository allocation;
+        // D2 ephemeral composition -> the same single-allocation invariant holds.
+        // A different address would expose a parallel Deployment truth before
+        // `DeploymentState::with_repository` is assembled.
+        let dir = tempfile::tempdir().expect("temporary runtime storage");
+        let durable = deployment_stores_for_runtime_storage(Some(dir.path()));
+        assert_eq!(
+            Arc::as_ptr(&durable.sessions) as *const (),
+            Arc::as_ptr(&durable.deployments) as *const (),
+            "D1"
+        );
+
+        let ephemeral = deployment_stores_for_runtime_storage(None);
+        assert_eq!(
+            Arc::as_ptr(&ephemeral.sessions) as *const (),
+            Arc::as_ptr(&ephemeral.deployments) as *const (),
+            "D2"
         );
     }
 
