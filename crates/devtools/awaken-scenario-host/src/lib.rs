@@ -12,12 +12,14 @@ mod deployment;
 mod dream;
 mod model_publication;
 mod models;
+mod worker;
 pub use crate::models::*;
 pub use acp_gateway::build_acp_gateway_router;
 pub use composition::build_unscoped_resource_router;
 pub use delegation::build_delegation_router;
 pub use deployment::scenario_deployment;
 pub use dream::{build_dream_router, build_dream_router_and_host};
+pub use worker::run_echo_worker;
 
 mod scenario_shell;
 use composition::{
@@ -306,42 +308,6 @@ pub fn build_error_router() -> Router {
 /// `submit_answer` tool — by **running the tool and posting the result back**, the
 /// way a self-hosted worker executes the session's tool calls. Heartbeats the lease
 /// and stops the work on completion. `AWAKEN_MODEL_MODE=worker`.
-/// Run this process as a database-less **echo worker** of the cell server at
-/// `upstream` — the test-only drain the worker-pool e2e spawns (`AWAKEN_SCENARIO_ROLE=worker`
-/// on this scenario host). Its dispatch pool claims/settles runs over the server's
-/// dispatch transport and posts committed facts back over the commit ingest
-/// (`with_upstream`); it holds no store and serves no HTTP. A deterministic
-/// [`EchoModel`] keeps the worker self-contained (no upstream model needed), so the
-/// e2e can assert the worker drove the run without configuring a provider. The
-/// PRODUCTION worker (real per-run model resolution) lives in `awaken-worker`.
-pub async fn run_echo_worker(
-    upstream: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    struct EchoWorkerProvider;
-
-    impl InferenceExecutorMaterializer for EchoWorkerProvider {
-        fn supported_access_schemes(&self) -> &'static [&'static str] {
-            &[awaken_runtime_host::HOST_EXECUTOR_CAPABILITY]
-        }
-
-        fn materialize_pinned(
-            &self,
-            candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
-            _context: &awaken_runtime_contract::RuntimeRunContext,
-        ) -> Option<Arc<dyn LlmExecutor>> {
-            if !matches!(
-                candidate.provisioning,
-                awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
-            ) {
-                return None;
-            }
-            Some(Arc::new(EchoModel))
-        }
-    }
-
-    awaken_worker::run_with_inference_materializer(upstream, Arc::new(EchoWorkerProvider)).await
-}
-
 pub fn build_worker_router() -> Router {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
     let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "worker");

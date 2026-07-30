@@ -106,6 +106,12 @@ log "4/6 side-load single-platform images into every node"
 k3d_import_images "$CLUSTER" "$IMAGE" postgres:16
 
 log "5/6 apply the coordinator + worker fleet"
+# Cause/effect decision table:
+# W1 two distinct Pod identities + explicit Local test sandbox -> both Workers
+# register and expose Ready; W2 duplicate identity -> one registration is fenced
+# and rollout fails; W3 unavailable sandbox without explicit Local selection ->
+# Worker startup fails closed; W4 one Ready Worker is killed mid-drain -> its peer
+# reclaims every lease and each thread reaches exactly one committed reply.
 kubectl create namespace "$NS" >/dev/null 2>&1 || true
 kubectl -n "$NS" apply -k "$DEPLOY_DIR/worker-failover" >/dev/null
 kubectl -n "$NS" rollout status deploy/postgres --timeout=120s

@@ -21,9 +21,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // The hand is the separate `awaken-sandbox hand` execution-plane binary.
     if std::env::var("AWAKEN_SCENARIO_ROLE").as_deref() == Ok("worker") {
         let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
+        let worker_id = std::env::var("AWAKEN_WORKER_ID")
+            .unwrap_or_else(|_| "awaken-scenario-worker".to_string());
+        let admin_listen = std::env::var("AWAKEN_WORKER_ADMIN_LISTEN")
+            .ok()
+            .filter(|address| !address.trim().is_empty());
         // Test-only echo-draining worker (the worker-pool e2e). The production
         // worker with real per-run model resolution lives in `awaken-worker`.
-        return awaken_scenario_host::run_echo_worker(&upstream).await;
+        return awaken_scenario_host::run_echo_worker(
+            &upstream,
+            &worker_id,
+            admin_listen.as_deref(),
+        )
+        .await;
     }
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:38080".to_string());
     // Durability guard: refuse to boot a `typed durable ingress` ingress that would
