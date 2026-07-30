@@ -27,6 +27,13 @@ pub fn parse_managed_model_id(value: &str) -> Result<ModelSelection, ManagedMode
         return Err(ManagedModelIdError::Invalid(value.into()));
     }
 
+    if let Some(endpoint) = value.strip_prefix("a2a:") {
+        if endpoint.is_empty() {
+            return Err(ManagedModelIdError::Invalid(value.into()));
+        }
+        return Ok(ModelSelection::Pinned(ModelBinding::new("", "", value)));
+    }
+
     if let Some(acp) = value.strip_prefix("acp:") {
         return parse_acp(acp, value);
     }
@@ -47,6 +54,7 @@ pub fn parse_managed_model_id(value: &str) -> Result<ModelSelection, ManagedMode
             endpoint_name: endpoint_name.flatten(),
         },
         backend_ref: "genai".into(),
+        configuration: AcpSessionConfiguration::default(),
     })
 }
 
@@ -88,6 +96,7 @@ fn parse_acp(acp: &str, original: &str) -> Result<ModelSelection, ManagedModelId
                 endpoint_name: endpoint_name.map(str::to_string),
             },
             backend_ref,
+            configuration: AcpSessionConfiguration::default(),
         }),
         (Some(_), None) => Err(ManagedModelIdError::Invalid(original.into())),
     }
@@ -109,6 +118,7 @@ pub fn render_managed_model_id(selection: &ModelSelection) -> Result<String, Man
         ModelSelection::Target {
             target,
             backend_ref,
+            ..
         } => render_target(target, backend_ref),
         ModelSelection::BackendDefault { backend_ref, .. } => render_acp_backend(backend_ref, None),
         ModelSelection::BackendExact {
@@ -182,6 +192,13 @@ fn render_binding(binding: &ModelBinding) -> Result<String, ManagedModelIdError>
             "acp:{cli}@{}/{}",
             binding.provider_identity_ref, binding.model_ref
         )),
+        Backend::Remote { endpoint }
+            if !endpoint.is_empty()
+                && binding.provider_identity_ref.is_empty()
+                && binding.model_ref.is_empty() =>
+        {
+            Ok(format!("a2a:{endpoint}"))
+        }
         _ => Err(ManagedModelIdError::UnsupportedSelection),
     }
 }
@@ -193,11 +210,13 @@ mod tests {
     #[test]
     fn parses_the_complete_managed_model_id_decision_table() {
         // Causes: C1 native/ACP executor; C2 provider absent/present; C3 endpoint
-        // absent/present; C4 model absent/present. Effects: E1 catalog Target;
-        // E2 backend-owned default; E3 backend-owned exact; E4 reject.
+        // absent/present; C4 model absent/present; C5 remote endpoint
+        // absent/present. Effects: E1 catalog Target; E2 backend-owned default;
+        // E3 backend-owned exact; E4 remote pinned selection; E5 reject.
         // Decision rules: native+model -> E1; ACP+C2=N+C4=N -> E2;
         // ACP+C2=N+C4=Y -> E3; ACP+C2=Y+C4=Y -> E1; endpoint without
-        // provider or provider without model -> E4.
+        // provider or provider without model -> E5; A2A+C5=Y -> E4;
+        // A2A+C5=N -> E5.
         let cases = [
             ("gpt-5", "gpt-5"),
             ("openai/gpt-5", "openai/gpt-5"),
@@ -206,14 +225,22 @@ mod tests {
             ("acp:codex/gpt-5", "acp:codex/gpt-5"),
             ("acp:codex@openai/gpt-5", "acp:codex@openai/gpt-5"),
             ("acp:codex@openai@edge/gpt-5", "acp:codex@openai@edge/gpt-5"),
+            (
+                "a2a:https://agent.example/a2a",
+                "a2a:https://agent.example/a2a",
+            ),
             ("anyrouter/qwen/qwen3-235b", "anyrouter/qwen/qwen3-235b"),
         ];
         for (wire, canonical) in cases {
             let selection = parse_managed_model_id(wire).expect(wire);
             assert_eq!(render_managed_model_id(&selection).unwrap(), canonical);
-            assert!(selection.resolved().is_none(), "{wire} must remain intent");
+            if wire.starts_with("a2a:") {
+                assert!(selection.resolved().is_some(), "{wire} is an exact remote");
+            } else {
+                assert!(selection.resolved().is_none(), "{wire} must remain intent");
+            }
         }
-        for invalid in ["", "acp:", "acp:codex@openai", "openai@/gpt-5"] {
+        for invalid in ["", "acp:", "a2a:", "acp:codex@openai", "openai@/gpt-5"] {
             assert!(parse_managed_model_id(invalid).is_err(), "{invalid}");
         }
     }

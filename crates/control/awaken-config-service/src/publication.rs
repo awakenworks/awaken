@@ -66,11 +66,10 @@ pub(crate) async fn prepare_agent_publication(
         if matches!(
             &candidate.provisioning,
             awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
-                capability_fingerprint,
-                capability_adapter_version,
+                acp,
                 ..
-            } if capability_fingerprint.trim().is_empty()
-                || capability_adapter_version.trim().is_empty()
+            } if acp.capability_fingerprint.trim().is_empty()
+                || acp.capability_adapter_version.trim().is_empty()
         ) {
             return Err(PublishError::Unresolvable(
                 "backend-owned publication requires a fresh exact ACP capability pin".into(),

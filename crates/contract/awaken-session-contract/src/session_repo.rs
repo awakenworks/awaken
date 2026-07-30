@@ -417,6 +417,7 @@ mod mutation_tests {
                     },
                     agent_id: "assistant".into(),
                     model: "model".into(),
+                    execution_model_ref: "model".into(),
                     runtime: None,
                     mcp_authoring: Default::default(),
                     toolsets: Vec::new(),

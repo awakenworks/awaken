@@ -195,7 +195,7 @@ pub(super) async fn list_executable_models(
     Ok(Json(project_executable_models(
         &catalog,
         &credentials,
-        "genai",
+        &[awaken_config_resolver::ExecutorModelCapability::native()],
     )))
 }
 
@@ -227,6 +227,7 @@ mod tests {
             workspace_id: "workspace".into(),
             kind: CredentialKind::Vault,
             provider_id: Some(provider.into()),
+            protocol_endpoint_id: None,
             env_key: None,
             material_ref: Some(awaken_credential_vault::SecretRef(format!(
                 "sec:{provider}"
@@ -258,7 +259,11 @@ mod tests {
             ],
             ..ProviderCatalog::default()
         };
-        let options = project_executable_models(&catalog, &[credential("anthropic")], "genai");
+        let options = project_executable_models(
+            &catalog,
+            &[credential("anthropic")],
+            &[awaken_config_resolver::ExecutorModelCapability::native()],
+        );
         let readiness = options
             .into_iter()
             .map(|option| (option.model_id, option.readiness))

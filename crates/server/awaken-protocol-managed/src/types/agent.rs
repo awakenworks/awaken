@@ -308,7 +308,15 @@ mod tests {
         // | custom input_schema extension keyword      | preserve  |
         let valid = json!({
             "name": "typed",
-            "model": "model-1",
+            "model": {
+                "id": "acp:codex/model-1",
+                "x_awaken": {
+                    "acp": {
+                        "mode": "plan",
+                        "options": {"reasoning_effort": "high"}
+                    }
+                }
+            },
             "mcp_servers": [{"type":"url","name":"docs","url":"https://mcp.test"}],
             "skills": [{"type":"custom","skill_id":"skill_1","version":"2"}],
             "tools": [
@@ -321,6 +329,13 @@ mod tests {
             "multiagent": {"type":"coordinator","agents":["worker",{"type":"self"}]}
         });
         let parsed: AgentCreateParams = serde_json::from_value(valid).expect("SDK union parses");
+        let model = parsed.model.clone().into_config();
+        let acp = model
+            .x_awaken
+            .and_then(|extension| extension.acp)
+            .expect("namespaced ACP configuration");
+        assert_eq!(acp.mode.as_deref(), Some("plan"));
+        assert_eq!(acp.options["reasoning_effort"], "high");
         let AgentTool::Custom { input_schema, .. } = &parsed.tools[2] else {
             panic!("custom tool retained its variant")
         };

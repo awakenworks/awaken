@@ -110,6 +110,8 @@ pub struct ControlSessionCreationInputs {
     pub environment: EnvironmentSnapshot,
     pub agent_id: String,
     pub model: String,
+    #[serde(default)]
+    pub execution_model_ref: String,
     pub runtime: Option<String>,
     pub mcp_authoring: SessionMcpAuthoringContext,
     #[serde(default)]
@@ -306,6 +308,7 @@ impl SessionCreationIntent {
             mut environment,
             agent_id,
             model,
+            execution_model_ref,
             runtime,
             mcp_authoring,
             delegate_ids,
@@ -325,19 +328,22 @@ impl SessionCreationIntent {
         initial_mcp.extend(application_mcp);
         let initial_mcp = crate::mcp_attachment::resolve_mcp_draft_precedence(initial_mcp)
             .map_err(|error| SessionCreationFinalizeError::McpConflict(error.to_string()))?;
-        let baseline = SessionBaseline::compile(SessionBaselineInputs {
-            environment,
-            mcp_authoring,
-            agent_id,
-            model,
-            runtime,
-            application: receipt,
-            delegate_ids,
-            toolsets,
-            mounts,
-            env,
-            prompts,
-        });
+        let baseline = SessionBaseline::compile_with_execution_model_ref(
+            SessionBaselineInputs {
+                environment,
+                mcp_authoring,
+                agent_id,
+                model,
+                runtime,
+                application: receipt,
+                delegate_ids,
+                toolsets,
+                mounts,
+                env,
+                prompts,
+            },
+            execution_model_ref,
+        );
         Ok(CompiledSessionCreation {
             baseline,
             initial_resources: resources,
@@ -353,6 +359,11 @@ pub struct SessionBaseline {
     pub mcp_authoring: SessionMcpAuthoringContext,
     pub agent_id: String,
     pub model: String,
+    /// Runtime coordinate resolved from `model` by the published Agent source.
+    /// It is fingerprinted with the baseline and never inferred from public
+    /// Managed syntax after Session admission.
+    #[serde(default)]
+    pub execution_model_ref: String,
     pub runtime: Option<String>,
     #[serde(default)]
     pub application: Option<ApplicationContributionReceipt>,
@@ -392,12 +403,24 @@ pub enum SessionBaselineState {
 impl SessionBaseline {
     #[must_use]
     pub fn compile(inputs: SessionBaselineInputs) -> Self {
+        let execution_model_ref = inputs.model.clone();
+        Self::compile_with_execution_model_ref(inputs, execution_model_ref)
+    }
+
+    /// Compile a baseline whose public Managed model id differs from the exact
+    /// model coordinate frozen into the executable publication.
+    #[must_use]
+    pub fn compile_with_execution_model_ref(
+        inputs: SessionBaselineInputs,
+        execution_model_ref: String,
+    ) -> Self {
         #[derive(serde::Serialize)]
         struct Facts<'a> {
             environment: &'a EnvironmentSnapshot,
             mcp_authoring: &'a SessionMcpAuthoringContext,
             agent_id: &'a str,
             model: &'a str,
+            execution_model_ref: &'a str,
             runtime: &'a Option<String>,
             application: &'a Option<ApplicationContributionReceipt>,
             delegate_ids: &'a [String],
@@ -424,6 +447,7 @@ impl SessionBaseline {
             mcp_authoring: &mcp_authoring,
             agent_id: &agent_id,
             model: &model,
+            execution_model_ref: &execution_model_ref,
             runtime: &runtime,
             application: &application,
             delegate_ids: &delegate_ids,
@@ -438,6 +462,7 @@ impl SessionBaseline {
             mcp_authoring,
             agent_id,
             model,
+            execution_model_ref,
             runtime,
             application,
             delegate_ids,
@@ -498,6 +523,7 @@ mod tests {
             environment: environment(1, network),
             agent_id: "agent".into(),
             model: "model".into(),
+            execution_model_ref: "model".into(),
             runtime: Some("native".into()),
             mcp_authoring: SessionMcpAuthoringContext::default(),
             delegate_ids: vec!["delegate".into()],
@@ -508,6 +534,30 @@ mod tests {
             resources: crate::ResolvedSessionResources::default(),
             initial_mcp: Vec::new(),
         }
+    }
+
+    #[test]
+    fn public_model_id_and_execution_model_ref_are_frozen_as_distinct_facts() {
+        // Causes: C1 public id may be provider/endpoint qualified; C2 the
+        // publication resolves an exact upstream model coordinate. Effects: E1
+        // both facts survive independently; E2 changing only the execution
+        // coordinate changes the baseline fingerprint.
+        //
+        // | Rule | public id | execution ref | Effect |
+        // | M1 | qualified | upstream-a | E1 |
+        // | M2 | same | upstream-b | E2 |
+        let mut inputs = baseline_inputs(environment(1, SessionNetworkPolicy::Unrestricted));
+        inputs.model = "anyrouter@open_ai_chat/qwen/qwen3-235b".into();
+        let first =
+            SessionBaseline::compile_with_execution_model_ref(inputs, "qwen/qwen3-235b".into());
+        let mut inputs = baseline_inputs(environment(1, SessionNetworkPolicy::Unrestricted));
+        inputs.model = first.model.clone();
+        let second =
+            SessionBaseline::compile_with_execution_model_ref(inputs, "upstream-alias".into());
+
+        assert_eq!(first.model, "anyrouter@open_ai_chat/qwen/qwen3-235b", "M1");
+        assert_eq!(first.execution_model_ref, "qwen/qwen3-235b", "M1");
+        assert_ne!(first.fingerprint, second.fingerprint, "M2");
     }
 
     fn mcp_draft(

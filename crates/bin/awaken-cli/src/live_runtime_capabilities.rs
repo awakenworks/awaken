@@ -8,6 +8,42 @@ pub(crate) struct LiveRuntimeCapabilities {
 }
 
 #[async_trait::async_trait]
+impl awaken_server::model_directory::ExecutorModelCapabilitySource for LiveRuntimeCapabilities {
+    async fn current(&self) -> Vec<awaken_config_resolver::ExecutorModelCapability> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let workers = self.workers.list().await.unwrap_or_default();
+        awaken_server::model_directory::installed_executor_model_capabilities()
+            .into_iter()
+            .map(|mut capability| {
+                if capability.backend_ref != "genai" {
+                    capability.available = workers.iter().any(|worker| {
+                        worker.snapshot.state.accepts_work()
+                            && worker.snapshot.expires_at_ms > now
+                            && worker
+                                .snapshot
+                                .acp_capability_observations
+                                .iter()
+                                .any(|observation| {
+                                    observation.observation.backend_ref == capability.backend_ref
+                                        && observation.valid_until_ms > now
+                                        && observation.observation.observed_at_ms <= now
+                                        && observation.observation.state
+                                            == awaken_acp_contract::AcpCapabilityObservationState::Verified
+                                        && observation.observation.fingerprint.is_some()
+                                        && observation.observation.negotiated.is_some()
+                                })
+                    });
+                }
+                capability
+            })
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
 impl awaken_control::RuntimeCapabilitySource for LiveRuntimeCapabilities {
     async fn current(&self) -> Vec<awaken_control::RuntimeCapability> {
         let now = std::time::SystemTime::now()
