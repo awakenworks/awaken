@@ -35,7 +35,9 @@ pub mod types;
 // The direction-neutral wire layer (JSON-RPC peer, SSE parser, progress
 // vocabulary) is shared with the MCP server crate via `awaken-mcp-wire`;
 // re-exported here so client-side paths (`awaken_ext_mcp::jsonrpc`, …) hold.
-pub use awaken_mcp_wire::{jsonrpc, progress, sse};
+pub use awaken_mcp_wire::{
+    CallToolResult, McpToolDefinition, McpTransportError, jsonrpc, progress, sse,
+};
 
 pub use client::{McpConnection, connect_tools};
 pub use credential::{AuthChallenge, Credential, CredentialRefresher};

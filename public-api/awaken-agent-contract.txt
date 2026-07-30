@@ -1,4 +1,10 @@
 pub mod awaken_agent_contract
+pub mod awaken_agent_contract::acp
+pub struct awaken_agent_contract::acp::AcpSessionConfiguration
+pub awaken_agent_contract::acp::AcpSessionConfiguration::mode: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::acp::AcpSessionConfiguration::options: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+impl awaken_agent_contract::acp::AcpSessionConfiguration
+pub fn awaken_agent_contract::acp::AcpSessionConfiguration::is_empty(&self) -> bool
 pub mod awaken_agent_contract::agent
 pub mod awaken_agent_contract::agent::awaiting
 pub enum awaken_agent_contract::agent::awaiting::AwaitReason
@@ -95,6 +101,7 @@ pub awaken_agent_contract::agent::delegation::Delegation::depth: u16
 pub awaken_agent_contract::agent::delegation::Delegation::id: awaken_agent_contract::agent::delegation::DelegationId
 pub awaken_agent_contract::agent::delegation::Delegation::parent_call_id: alloc::string::String
 pub awaken_agent_contract::agent::delegation::Delegation::parent_run_id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::agent::delegation::Delegation::recursive_self: bool
 pub awaken_agent_contract::agent::delegation::Delegation::status: awaken_agent_contract::agent::delegation::DelegationStatus
 pub awaken_agent_contract::agent::delegation::Delegation::target_agent_id: alloc::string::String
 pub struct awaken_agent_contract::agent::delegation::DelegationId(pub alloc::string::String)
@@ -140,6 +147,7 @@ pub struct awaken_agent_contract::agent::delegation::RequestDelegation
 pub awaken_agent_contract::agent::delegation::RequestDelegation::child_run_id: awaken_agent_contract::agent::run::Id
 pub awaken_agent_contract::agent::delegation::RequestDelegation::id: awaken_agent_contract::agent::delegation::DelegationId
 pub awaken_agent_contract::agent::delegation::RequestDelegation::parent_call_id: alloc::string::String
+pub awaken_agent_contract::agent::delegation::RequestDelegation::recursive_self: bool
 pub awaken_agent_contract::agent::delegation::RequestDelegation::target_agent_id: alloc::string::String
 pub mod awaken_agent_contract::agent::message
 pub enum awaken_agent_contract::agent::message::Role
@@ -446,6 +454,21 @@ pub fn awaken_agent_contract::event::terminal(&awaken_agent_contract::agent::run
 pub fn awaken_agent_contract::event::terminal_awaiting(core::option::Option<&str>) -> awaken_agent_contract::event::agent::Fact
 pub mod awaken_agent_contract::fingerprint
 pub fn awaken_agent_contract::fingerprint::stable_fingerprint(&impl serde_core::ser::Serialize) -> alloc::string::String
+pub mod awaken_agent_contract::mcp_target
+pub enum awaken_agent_contract::mcp_target::McpTargetError
+pub awaken_agent_contract::mcp_target::McpTargetError::Invalid
+pub struct awaken_agent_contract::mcp_target::McpTarget
+pub awaken_agent_contract::mcp_target::McpTarget::fingerprint: alloc::string::String
+pub awaken_agent_contract::mcp_target::McpTarget::url: alloc::string::String
+impl awaken_agent_contract::mcp_target::McpTarget
+pub fn awaken_agent_contract::mcp_target::McpTarget::identity(&str) -> core::result::Result<awaken_agent_contract::mcp_target::McpTargetIdentity, awaken_agent_contract::mcp_target::McpTargetError>
+pub fn awaken_agent_contract::mcp_target::McpTarget::parse_http(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_agent_contract::mcp_target::McpTargetError>
+pub struct awaken_agent_contract::mcp_target::McpTargetIdentity
+pub awaken_agent_contract::mcp_target::McpTargetIdentity::host: alloc::string::String
+pub awaken_agent_contract::mcp_target::McpTargetIdentity::path: alloc::string::String
+pub awaken_agent_contract::mcp_target::McpTargetIdentity::port: core::option::Option<u16>
+pub awaken_agent_contract::mcp_target::McpTargetIdentity::query: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::mcp_target::McpTargetIdentity::scheme: alloc::string::String
 pub mod awaken_agent_contract::model_spec
 pub enum awaken_agent_contract::model_spec::Modality
 pub awaken_agent_contract::model_spec::Modality::Audio
@@ -468,6 +491,14 @@ pub awaken_agent_contract::model_spec::ModelSpec::modalities: awaken_agent_contr
 pub awaken_agent_contract::model_spec::ModelSpec::output_token_price_per_million_usd: core::option::Option<f64>
 impl awaken_agent_contract::model_spec::ModelSpec
 pub fn awaken_agent_contract::model_spec::ModelSpec::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub mod awaken_agent_contract::model_target
+pub struct awaken_agent_contract::model_target::ModelTarget
+pub awaken_agent_contract::model_target::ModelTarget::endpoint_name: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::model_target::ModelTarget::model_id: alloc::string::String
+pub awaken_agent_contract::model_target::ModelTarget::protocol_endpoint_id: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::model_target::ModelTarget::provider_id: core::option::Option<alloc::string::String>
+impl awaken_agent_contract::model_target::ModelTarget
+pub fn awaken_agent_contract::model_target::ModelTarget::unqualified(impl core::convert::Into<alloc::string::String>) -> Self
 pub mod awaken_agent_contract::page
 pub struct awaken_agent_contract::page::CursorParams
 pub awaken_agent_contract::page::CursorParams::cursor: core::option::Option<alloc::string::String>
@@ -501,6 +532,20 @@ pub fn awaken_agent_contract::secret::RedactedString::drop(&mut self)
 pub struct awaken_agent_contract::secret::StructuredCredentialMaterial
 pub awaken_agent_contract::secret::StructuredCredentialMaterial::fields: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_agent_contract::secret::RedactedString>
 pub awaken_agent_contract::secret::StructuredCredentialMaterial::type_id: alloc::string::String
+pub mod awaken_agent_contract::skill
+pub enum awaken_agent_contract::skill::AgentSkillKind
+pub awaken_agent_contract::skill::AgentSkillKind::Anthropic
+pub awaken_agent_contract::skill::AgentSkillKind::Custom
+pub struct awaken_agent_contract::skill::AgentSkillBinding
+pub awaken_agent_contract::skill::AgentSkillBinding::kind: awaken_agent_contract::skill::AgentSkillKind
+pub awaken_agent_contract::skill::AgentSkillBinding::skill_id: alloc::string::String
+pub awaken_agent_contract::skill::AgentSkillBinding::version: alloc::string::String
+impl awaken_agent_contract::skill::AgentSkillBinding
+pub fn awaken_agent_contract::skill::AgentSkillBinding::custom(impl core::convert::Into<alloc::string::String>) -> Self
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::skill::AgentSkillBinding
+pub fn awaken_agent_contract::skill::AgentSkillBinding::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub const awaken_agent_contract::skill::ANTHROPIC_SKILL_IDS: [&str; 4]
+pub fn awaken_agent_contract::skill::validate_agent_skills(&[awaken_agent_contract::skill::AgentSkillBinding]) -> core::result::Result<(), alloc::string::String>
 pub mod awaken_agent_contract::stream
 pub mod awaken_agent_contract::stream::checkpoint
 pub struct awaken_agent_contract::stream::checkpoint::PartialToolCall
@@ -765,10 +810,15 @@ pub awaken_agent_contract::AgentEvent::Fact(awaken_agent_contract::event::agent:
 impl awaken_agent_contract::event::agent::AgentEvent
 pub fn awaken_agent_contract::event::agent::AgentEvent::delta(awaken_agent_contract::event::agent::Delta) -> Self
 pub fn awaken_agent_contract::event::agent::AgentEvent::fact(awaken_agent_contract::event::agent::Fact) -> Self
+pub enum awaken_agent_contract::AgentSkillKind
+pub awaken_agent_contract::AgentSkillKind::Anthropic
+pub awaken_agent_contract::AgentSkillKind::Custom
 pub enum awaken_agent_contract::EventScope
 pub awaken_agent_contract::EventScope::All
 pub awaken_agent_contract::EventScope::Run(awaken_agent_contract::agent::run::Id)
 pub awaken_agent_contract::EventScope::Thread(awaken_agent_contract::agent::thread::Id)
+pub enum awaken_agent_contract::McpTargetError
+pub awaken_agent_contract::McpTargetError::Invalid
 pub enum awaken_agent_contract::RunLifecycleFeedError
 pub awaken_agent_contract::RunLifecycleFeedError::InvalidState
 pub awaken_agent_contract::RunLifecycleFeedError::InvalidState::sequence: u64
@@ -803,6 +853,19 @@ pub awaken_agent_contract::TranscriptError::SnapshotUnavailable::requested_end: 
 pub enum awaken_agent_contract::TranscriptView
 pub awaken_agent_contract::TranscriptView::ContextEffective
 pub awaken_agent_contract::TranscriptView::RawCommitted
+pub struct awaken_agent_contract::AcpSessionConfiguration
+pub awaken_agent_contract::AcpSessionConfiguration::mode: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::AcpSessionConfiguration::options: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+impl awaken_agent_contract::acp::AcpSessionConfiguration
+pub fn awaken_agent_contract::acp::AcpSessionConfiguration::is_empty(&self) -> bool
+pub struct awaken_agent_contract::AgentSkillBinding
+pub awaken_agent_contract::AgentSkillBinding::kind: awaken_agent_contract::skill::AgentSkillKind
+pub awaken_agent_contract::AgentSkillBinding::skill_id: alloc::string::String
+pub awaken_agent_contract::AgentSkillBinding::version: alloc::string::String
+impl awaken_agent_contract::skill::AgentSkillBinding
+pub fn awaken_agent_contract::skill::AgentSkillBinding::custom(impl core::convert::Into<alloc::string::String>) -> Self
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::skill::AgentSkillBinding
+pub fn awaken_agent_contract::skill::AgentSkillBinding::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_agent_contract::CheckpointRunLifecycleFeed
 impl awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed
 pub fn awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed::new(alloc::sync::Arc<dyn awaken_agent_contract::thread::read::checkpoint::CheckpointReader>) -> Self
@@ -833,6 +896,18 @@ pub struct awaken_agent_contract::LifecycleCursor(pub u64)
 pub struct awaken_agent_contract::LifecyclePage
 pub awaken_agent_contract::LifecyclePage::events: alloc::vec::Vec<awaken_agent_contract::thread::read::lifecycle::RunLifecycleEvent>
 pub awaken_agent_contract::LifecyclePage::next_cursor: awaken_agent_contract::thread::read::lifecycle::LifecycleCursor
+pub struct awaken_agent_contract::McpTarget
+pub awaken_agent_contract::McpTarget::fingerprint: alloc::string::String
+pub awaken_agent_contract::McpTarget::url: alloc::string::String
+impl awaken_agent_contract::mcp_target::McpTarget
+pub fn awaken_agent_contract::mcp_target::McpTarget::identity(&str) -> core::result::Result<awaken_agent_contract::mcp_target::McpTargetIdentity, awaken_agent_contract::mcp_target::McpTargetError>
+pub fn awaken_agent_contract::mcp_target::McpTarget::parse_http(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_agent_contract::mcp_target::McpTargetError>
+pub struct awaken_agent_contract::McpTargetIdentity
+pub awaken_agent_contract::McpTargetIdentity::host: alloc::string::String
+pub awaken_agent_contract::McpTargetIdentity::path: alloc::string::String
+pub awaken_agent_contract::McpTargetIdentity::port: core::option::Option<u16>
+pub awaken_agent_contract::McpTargetIdentity::query: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::McpTargetIdentity::scheme: alloc::string::String
 pub struct awaken_agent_contract::Message
 pub awaken_agent_contract::Message::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::Message::id: awaken_agent_contract::agent::message::Id
@@ -851,6 +926,13 @@ pub awaken_agent_contract::ModelSpec::modalities: awaken_agent_contract::model_s
 pub awaken_agent_contract::ModelSpec::output_token_price_per_million_usd: core::option::Option<f64>
 impl awaken_agent_contract::model_spec::ModelSpec
 pub fn awaken_agent_contract::model_spec::ModelSpec::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_agent_contract::ModelTarget
+pub awaken_agent_contract::ModelTarget::endpoint_name: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::ModelTarget::model_id: alloc::string::String
+pub awaken_agent_contract::ModelTarget::protocol_endpoint_id: core::option::Option<alloc::string::String>
+pub awaken_agent_contract::ModelTarget::provider_id: core::option::Option<alloc::string::String>
+impl awaken_agent_contract::model_target::ModelTarget
+pub fn awaken_agent_contract::model_target::ModelTarget::unqualified(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_agent_contract::RedactedString(_)
 impl awaken_agent_contract::secret::RedactedString
 pub fn awaken_agent_contract::secret::RedactedString::expose_secret(&self) -> &str
@@ -944,6 +1026,7 @@ pub awaken_agent_contract::TranscriptSnapshotRef::end_seq: u64
 pub awaken_agent_contract::TranscriptSnapshotRef::thread_id: awaken_agent_contract::agent::thread::Id
 pub awaken_agent_contract::TranscriptSnapshotRef::version: u64
 pub awaken_agent_contract::TranscriptSnapshotRef::view: awaken_agent_contract::thread::read::transcript::TranscriptView
+pub const awaken_agent_contract::ANTHROPIC_SKILL_IDS: [&str; 4]
 pub trait awaken_agent_contract::CheckpointReader: awaken_agent_contract::thread::read::thread_reader::ThreadReader
 pub fn awaken_agent_contract::CheckpointReader::latest_run(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
 pub fn awaken_agent_contract::CheckpointReader::list_events(&self, &awaken_agent_contract::thread::read::checkpoint::EventScope, core::option::Option<u64>, usize) -> alloc::vec::Vec<awaken_agent_contract::audit::record::Record>
@@ -958,3 +1041,4 @@ pub trait awaken_agent_contract::StreamSink: core::marker::Send + core::marker::
 pub fn awaken_agent_contract::StreamSink::send<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_agent_contract::classify_run_lifecycle(&awaken_agent_contract::agent::run::RunState, core::option::Option<&awaken_agent_contract::agent::run::RunState>) -> awaken_agent_contract::thread::read::lifecycle::RunLifecycleKind
 pub fn awaken_agent_contract::stable_fingerprint(&impl serde_core::ser::Serialize) -> alloc::string::String
+pub fn awaken_agent_contract::validate_agent_skills(&[awaken_agent_contract::skill::AgentSkillBinding]) -> core::result::Result<(), alloc::string::String>

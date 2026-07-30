@@ -362,6 +362,7 @@ mod tests {
         let pure = version_with(vec![SkillBundleFile {
             path: "SKILL.md".into(),
             content: pure_body.as_bytes().to_vec(),
+            executable: false,
         }]);
         assert!(!requires_filesystem(&pure, pure_body));
 
@@ -369,6 +370,7 @@ mod tests {
         let declared = version_with(vec![SkillBundleFile {
             path: "SKILL.md".into(),
             content: declared_body.as_bytes().to_vec(),
+            executable: false,
         }]);
         assert!(requires_filesystem(&declared, declared_body));
 
@@ -376,10 +378,12 @@ mod tests {
             SkillBundleFile {
                 path: "SKILL.md".into(),
                 content: pure_body.as_bytes().to_vec(),
+                executable: false,
             },
             SkillBundleFile {
                 path: "references/guide.md".into(),
                 content: b"guide".to_vec(),
+                executable: false,
             },
         ]);
         assert!(

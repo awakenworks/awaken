@@ -24,12 +24,10 @@
 //! hash-verified bundle before constructing this extension's registry, keeping
 //! this crate independent of repositories, tenancy, and sandbox implementation.
 
-mod mcp;
 mod registry;
 mod spec;
 mod tool;
 
-pub use mcp::McpPromptSkillRegistry;
 pub use registry::{
     CompositeSkillRegistry, InMemorySkillRegistry, SkillFile, SkillRegistry, SkillSource,
     SourceSkillRegistry,

@@ -6,6 +6,12 @@
 //   Hand Session: built-in read call -> binding committed before tool execution.
 // The disposable SQLite aggregate is inspected only as persistence evidence; no
 // test-only runtime hook participates in either run.
+//
+// Decision rules owned here:
+// H1/H2 Environment and Session creation leave binding null;
+// H3 a dynamic MCP Brain call succeeds and leaves binding null;
+// H4 the first Sandbox call observes no binding before dispatch;
+// H5 successful Hand execution commits one Session-owned binding before result.
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -21,6 +27,7 @@ import { alwaysAllowMcpAgent, sendManagedMessage } from './fixtures/managed_mcp_
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 39810);
+let adminToken = '';
 
 type Aggregate = { environment_binding?: string | null };
 type Event = { type: string; name?: string; content?: unknown };
@@ -52,7 +59,11 @@ async function events(client: Anthropic, sessionId: string): Promise<Event[]> {
 async function json<T>(base: string, method: string, route: string, body?: unknown): Promise<T> {
   const response = await fetch(`${base}${route}`, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers: {
+      authorization: `Bearer ${adminToken}`,
+      'anthropic-beta': BETAS.join(','),
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
@@ -70,6 +81,9 @@ async function main(): Promise<void> {
       'handBrainLazy',
       PORT,
       async (base: string) => {
+        // The shared scenario harness runs in explicit no-login mode, so no
+        // bootstrap admin-token file is minted. Keep a non-secret SDK placeholder.
+        adminToken = 'e2e-dummy';
         const environment = await json<{ id: string }>(base, 'POST', '/v1/environments', {
           name: 'native-lazy-e2e',
           config: { type: 'self_hosted' },
@@ -87,7 +101,7 @@ async function main(): Promise<void> {
         });
         pass('H1 Environment freezes an exact native on_tool_use Sandbox policy');
 
-        const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
+        const client = new Anthropic({ apiKey: adminToken, baseURL: base });
         const calc = { name: 'calc', type: 'url' as const, url: fixture.url };
         const brain = await client.beta.sessions.create({
           agent: alwaysAllowMcpAgent('assistant', [calc]),

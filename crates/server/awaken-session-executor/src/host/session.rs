@@ -55,7 +55,7 @@ impl SharedHost {
                         .as_ref()
                         .is_some_and(|projection| {
                             projection.provisioning
-                                == awaken_provisioning_contract::SandboxProvisioning::OnToolUse
+                                == awaken_protocol_managed::SandboxProvisioning::OnToolUse
                         })
                     && slot.delegates.is_empty()
                     && slot.memory.is_none()
@@ -687,9 +687,14 @@ impl SharedHost {
         }
         // Delegation is a runtime concern: inject the executor so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.
-        let has_published_delegates = installed
-            .as_ref()
-            .is_some_and(|snapshot| !snapshot.resolved_spec.plugin_config.agent.delegates.is_empty());
+        let has_published_delegates = installed.as_ref().is_some_and(|snapshot| {
+            !snapshot
+                .resolved_spec
+                .plugin_config
+                .agent
+                .delegates
+                .is_empty()
+        });
         if has_published_delegates && env.is_none() {
             return Err(HostError::internal(
                 "deferred Session environment cannot host delegate targets",

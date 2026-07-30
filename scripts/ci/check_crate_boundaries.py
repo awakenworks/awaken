@@ -417,6 +417,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # namespace / container) depend on it without pulling anything upward (G2/G3).
     "awaken-provisioning-contract": {
         "awaken-agent-contract",
+        # Session owns the frozen eager/on-tool-use timing value; providers
+        # consume that contract rather than defining a parallel policy enum.
+        "awaken-session-contract",
         "async-trait",
         "serde",
         "serde_json",

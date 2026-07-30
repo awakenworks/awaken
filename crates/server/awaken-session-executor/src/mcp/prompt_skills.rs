@@ -11,7 +11,7 @@ use awaken_ext_mcp::transport::McpToolTransport;
 use awaken_ext_mcp::{McpPromptArgument, McpPromptDefinition, McpPromptResult};
 use serde_json::Value;
 
-use crate::{SkillProvenance, SkillRegistry, SkillSpec};
+use awaken_ext_skills::{SkillProvenance, SkillRegistry, SkillSpec};
 
 pub struct McpPromptSkillRegistry {
     server_name: String,
@@ -213,8 +213,7 @@ fn render_prompt_result(server_name: &str, prompt_name: &str, result: McpPromptR
 mod tests {
     use std::sync::Mutex;
 
-    use awaken_ext_mcp::McpPromptMessage;
-    use awaken_mcp_wire::{CallToolResult, McpToolDefinition, McpTransportError};
+    use awaken_ext_mcp::{CallToolResult, McpPromptMessage, McpToolDefinition, McpTransportError};
     use awaken_runtime_contract::tool::{RawTool, ToolCall};
 
     use super::*;
@@ -397,11 +396,11 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let tool = crate::SkillTool::new(registry);
+        let tool = awaken_ext_skills::SkillTool::new(registry);
         let output = tool
             .invoke(ToolCall {
                 call_id: "activate-1".into(),
-                tool_id: crate::SKILL_TOOL_ID.into(),
+                tool_id: awaken_ext_skills::SKILL_TOOL_ID.into(),
                 arguments: serde_json::json!({
                     "skill": "mcp:github:review",
                     "arguments": { "focus": "correctness" }

@@ -56,7 +56,7 @@ pub(crate) fn default_environment_snapshot(
         )
     };
     let sandbox = serde_json::json!({});
-    let sandbox_provisioning = awaken_provisioning_contract::SandboxProvisioning::Eager;
+    let sandbox_provisioning = awaken_session_contract::SandboxProvisioning::Eager;
     let packages = awaken_session_contract::env_registry::EnvironmentPackages::default();
     let network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
     let credential_realization = awaken_credential_contract::CredentialRealizationProfile {
@@ -212,13 +212,13 @@ impl EnvironmentState {
                 }
                 Ok(None) => (
                     serde_json::json!({}),
-                    awaken_provisioning_contract::SandboxProvisioning::Eager,
+                    awaken_session_contract::SandboxProvisioning::Eager,
                 ),
                 Err(_) => return None,
             },
             None => (
                 serde_json::json!({}),
-                awaken_provisioning_contract::SandboxProvisioning::Eager,
+                awaken_session_contract::SandboxProvisioning::Eager,
             ),
         };
         let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
@@ -361,7 +361,7 @@ struct SandboxPolicyCreate {
     id: String,
     config: awaken_provisioning_contract::SandboxOverride,
     #[serde(default)]
-    provisioning: awaken_provisioning_contract::SandboxProvisioning,
+    provisioning: awaken_session_contract::SandboxProvisioning,
     #[serde(default)]
     disabled: bool,
 }
@@ -372,7 +372,7 @@ struct SandboxPolicyPublish {
     expected_current: u64,
     config: awaken_provisioning_contract::SandboxOverride,
     #[serde(default)]
-    provisioning: awaken_provisioning_contract::SandboxProvisioning,
+    provisioning: awaken_session_contract::SandboxProvisioning,
     #[serde(default)]
     disabled: bool,
 }
@@ -389,7 +389,7 @@ struct SandboxPolicyBindingOutput {
     environment_id: String,
     policy_id: String,
     version: u64,
-    provisioning: awaken_provisioning_contract::SandboxProvisioning,
+    provisioning: awaken_session_contract::SandboxProvisioning,
 }
 
 async fn project_policy_binding(
@@ -1204,6 +1204,11 @@ mod tests {
         }
     }
 
+    /// Environment policy snapshot decision table:
+    /// C1 no binding -> eager default; C7 disabled exact policy -> unavailable;
+    /// C8 old exact binding + newer published version -> freeze the old version.
+    /// This case owns C8 and proves isolation, provisioning, and fingerprint all
+    /// derive from the bound immutable version rather than the current policy.
     #[tokio::test]
     async fn environment_snapshot_freezes_the_exact_sandbox_policy_version() {
         use awaken_provisioning_contract::{
@@ -1226,7 +1231,7 @@ mod tests {
                 isolation: Some(IsolationClass::Namespace),
                 ..Default::default()
             },
-            provisioning: awaken_provisioning_contract::SandboxProvisioning::OnToolUse,
+            provisioning: awaken_session_contract::SandboxProvisioning::OnToolUse,
             disabled: false,
         };
         policies.create(v1.clone()).await.unwrap();
@@ -1250,7 +1255,7 @@ mod tests {
                         isolation: Some(IsolationClass::Container),
                         ..Default::default()
                     },
-                    provisioning: awaken_provisioning_contract::SandboxProvisioning::Eager,
+                    provisioning: awaken_session_contract::SandboxProvisioning::Eager,
                     disabled: false,
                 },
             )
@@ -1262,17 +1267,20 @@ mod tests {
         assert_eq!(frozen.isolation, Some(IsolationClass::Namespace));
         assert_eq!(
             snapshot.sandbox_provisioning,
-            awaken_provisioning_contract::SandboxProvisioning::OnToolUse
+            awaken_session_contract::SandboxProvisioning::OnToolUse
         );
     }
 
+    /// C1 proves the backward-compatible eager default. Binding an active
+    /// on-tool-use policy causes the exact timing to enter both the snapshot and
+    /// its fingerprint; a timing change can therefore never alias eager truth.
     #[tokio::test]
     async fn environment_snapshot_defaults_to_eager_and_fingerprints_provisioning() {
         use awaken_provisioning_contract::{
             SandboxExecutionPolicy, SandboxExecutionPolicyId, SandboxExecutionPolicyRef,
             SandboxExecutionPolicyStore, SandboxExecutionPolicyVersion, SandboxOverride,
-            SandboxProvisioning,
         };
+        use awaken_session_contract::SandboxProvisioning;
 
         let policies =
             Arc::new(awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default());

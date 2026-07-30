@@ -65,6 +65,9 @@ pub fn awaken_runtime::Runtime::with_tool(self, alloc::sync::Arc<dyn awaken_runt
 impl awaken_runtime::Runtime
 pub fn awaken_runtime::Runtime::load_snapshot(&self, &awaken_runtime_contract::snapshot::AgentSnapshotInput) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::resolver::Error>
 impl awaken_runtime::Runtime
+pub fn awaken_runtime::Runtime::load_snapshot_file(&self, impl core::convert::AsRef<std::path::Path>) -> core::io::error::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
+pub fn awaken_runtime::Runtime::save_snapshot_file(&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, impl core::convert::AsRef<std::path::Path>) -> core::io::error::Result<()>
+impl awaken_runtime::Runtime
 pub fn awaken_runtime::Runtime::prepare(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, alloc::string::String, impl core::convert::Into<awaken_runtime::RunInput>) -> (awaken_agent_contract::agent::run::Id, awaken_runtime_contract::activation::RunActivation)
 pub async fn awaken_runtime::Runtime::run(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error>
 pub async fn awaken_runtime::Runtime::run_to_completion<F>(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime_contract::runtime_context::RuntimeRunContext, F) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error> where F: core::ops::function::FnMut(&awaken_agent_contract::agent::awaiting::ResumeTicket) -> awaken_runtime_contract::resume::ResumeResult
