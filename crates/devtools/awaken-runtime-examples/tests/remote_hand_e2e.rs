@@ -27,7 +27,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
+use awaken_runtime_contract::tool::{RawTool, ToolError, ToolExecutionTarget, ToolOutput};
 use awaken_tool_relay::{HandSession, RemoteToolExecutor, serve_hand};
 
 /// First inference asks for `echo`; the second ends with text.
@@ -67,6 +67,9 @@ struct BrainSideTrap;
 impl RawTool for BrainSideTrap {
     fn id(&self) -> &str {
         "echo"
+    }
+    fn execution_target(&self) -> ToolExecutionTarget {
+        ToolExecutionTarget::Sandbox
     }
     async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
         panic!("the brain's in-process tool must not run when a remote hand is wired");
@@ -155,6 +158,9 @@ fn activation() -> RunActivation {
 
 #[tokio::test]
 async fn brain_runs_its_tool_on_an_in_process_hand() {
+    // Cause/effect rule: a tool explicitly targeted at Sandbox plus a supplied
+    // executor must invoke the remote Hand exactly once; the Brain trap must
+    // remain untouched. A Brain-targeted tool intentionally stays local.
     let ran = Arc::new(AtomicUsize::new(0));
     let session = HandSession::new([Arc::new(HandEcho { ran: ran.clone() }) as Arc<dyn RawTool>]);
 
@@ -189,6 +195,8 @@ async fn brain_runs_its_tool_on_an_in_process_hand() {
 
 #[tokio::test]
 async fn brain_runs_its_tool_on_a_unix_socket_hand() {
+    // Same placement rule as the in-process topology: changing only the channel
+    // to Unix must preserve remote execution and the committed Hand result.
     let ran = Arc::new(AtomicUsize::new(0));
     let path = std::env::temp_dir()
         .join(format!("awaken-relay-e2e-{}.sock", std::process::id()))
