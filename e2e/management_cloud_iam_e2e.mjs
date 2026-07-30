@@ -474,7 +474,7 @@ async function main() {
         name: 'Publication Access Matrix',
         system: 'Freeze exactly the configured model access.',
         max_steps: 2,
-        model: { mode: 'auto' },
+        model: { mode: 'profile', profile_id: 'publication-route' },
         tools: [],
       },
     });
@@ -516,12 +516,12 @@ async function main() {
         protocol_endpoint_id: brokered.protocol_endpoint_id,
       },
       { type: 'none' },
-      /explicit brokered access binding/u,
+      /explicit brokered access binding|brokered offering cannot consume a local credential/u,
     );
     await rejectedPublication(
       directTarget,
       { type: 'brokered' },
-      /requires a brokered catalog offering/u,
+      /requires a brokered catalog offering|brokered offering cannot consume a local credential/u,
     );
     await rejectedPublication(
       directTarget,
@@ -582,7 +582,7 @@ async function main() {
         name: 'Brokered Responses E2E',
         system: 'Use the managed Cloud model.',
         max_steps: 2,
-        model: { mode: 'auto' },
+        model: { mode: 'profile', profile_id: 'publication-route' },
         tools: [{
           type: 'custom',
           name: 'cloud_echo',

@@ -110,7 +110,7 @@ async function converse(sdk, sessionId, text) {
 }
 
 async function main() {
-  const upstream = await startFakeAnthropic(FAKE_KEY);
+  const upstream = await startFakeAnthropic(FAKE_KEY, { models: [MODEL] });
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-durable-'));
 
   let sessionId;

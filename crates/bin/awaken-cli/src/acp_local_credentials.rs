@@ -28,6 +28,14 @@ fn uses_trusted_local_identity(deployment: &crate::config::ResolvedDeployment) -
     deployment.mode == crate::config::OperatingMode::Local
 }
 
+fn uses_host_acp_discovery(deployment: &crate::config::ResolvedDeployment) -> bool {
+    uses_trusted_local_identity(deployment)
+        && matches!(
+            deployment.runtime.sandbox_tier,
+            awaken_runtime_host::SandboxTier::Local | awaken_runtime_host::SandboxTier::Namespace
+        )
+}
+
 /// Discover local ACP agents once, register their secret-free WorkerLocal
 /// locators idempotently, and compose the one liveness resolver. Server mode
 /// deliberately does none of this.
@@ -35,7 +43,11 @@ pub async fn prepare_local_acp(
     deployment: &mut crate::config::ResolvedDeployment,
     seal_key: &[u8; 32],
 ) -> Result<Option<PreparedLocalAcp>, String> {
-    if !uses_trusted_local_identity(deployment) {
+    if !uses_host_acp_discovery(deployment) {
+        // Container-backed ACP executables belong to the configured image/Pod,
+        // not the coordinator host. Host discovery would incorrectly erase a
+        // valid deployment profile merely because that executable is absent
+        // outside its Environment.
         return Ok(None);
     }
     let discovery: Arc<dyn AcpDiscovery> =
@@ -167,9 +179,13 @@ async fn prepare_local_acp_with(
     });
     let workspace =
         awaken_runtime_host::SharedHost::provision_local_workspace_at(&deployment.data_dir);
+    let probe_cwd = deployment.data_dir.join("acp-probe");
+    tokio::fs::create_dir_all(&probe_cwd)
+        .await
+        .map_err(|error| format!("create local ACP probe directory: {error}"))?;
     let prepared = prepare_host_acp_with(
         LocalAcpPreparation {
-            probe_cwd: deployment.data_dir.join("acp-host-probe"),
+            probe_cwd,
             initial_workspace: Some(workspace),
             wrapper_root,
             selected_cli_ids,
@@ -929,5 +945,25 @@ mod tests {
         );
         let text = render_diagnostics(&observations, false);
         assert!(text.contains("codex") && text.contains("login_required"));
+    }
+}
+#[test]
+fn host_discovery_is_limited_to_host_backed_sandbox_tiers() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut deployment = crate::config::local_test_deployment(directory.path().into());
+    for tier in [
+        awaken_runtime_host::SandboxTier::Local,
+        awaken_runtime_host::SandboxTier::Namespace,
+    ] {
+        deployment.runtime.sandbox_tier = tier;
+        assert!(uses_host_acp_discovery(&deployment));
+    }
+    for tier in [
+        awaken_runtime_host::SandboxTier::Docker,
+        awaken_runtime_host::SandboxTier::Podman,
+        awaken_runtime_host::SandboxTier::K8s,
+    ] {
+        deployment.runtime.sandbox_tier = tier;
+        assert!(!uses_host_acp_discovery(&deployment));
     }
 }

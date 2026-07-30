@@ -35,7 +35,7 @@ async function req(base, method, uri, body) {
 }
 
 async function main() {
-  const upstream = await startFakeAnthropic(FAKE_KEY);
+  const upstream = await startFakeAnthropic(FAKE_KEY, { models: ['fake-haiku'] });
   try {
     // ---- arm 1: AWAKEN_MODEL_MODE=real over the fake upstream --------------
     process.env.ANTHROPIC_API_KEY = FAKE_KEY;

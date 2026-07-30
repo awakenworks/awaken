@@ -147,7 +147,11 @@ async function main() {
     assert.equal(fs.readFileSync(tokenPath, 'utf8').trim(), token, 'admin-token not re-minted');
     r = await req(base, 'GET', '/v1/config/catalog', undefined, token);
     assert.equal(r.status, 200, `post-restart catalog: ${JSON.stringify(r.json)}`);
-    assert.ok(r.json.providers && r.json.providers.anthropic, 'provider persisted across restart');
+    assert.equal(
+      r.json.model_attributes?.['authz-model']?.context_window,
+      4096,
+      'authored model attributes persisted across restart',
+    );
     r = await req(base, 'GET', `/v1/config/credentials?workspace_id=${workspace}`, undefined, token);
     assert.equal(r.status, 200);
     assert.ok(r.json.some((c) => c.id === credId), 'credential row persisted across restart');
@@ -231,7 +235,11 @@ async function main() {
     assert.equal(r.status, 401, 'bootstrap revocation survives the restart');
     r = await req(base, 'GET', '/v1/config/catalog', undefined, opToken);
     assert.equal(r.status, 200, `minted token survives the restart: ${JSON.stringify(r.json)}`);
-    assert.ok(r.json.providers && r.json.providers.openai, 'new-token-authored provider persisted');
+    assert.equal(
+      r.json.model_attributes?.['operator-model']?.context_window,
+      8192,
+      'new-token-authored model attributes persisted',
+    );
     pass('second restart: revocation + minted token persisted (iam.sqlite rows)');
 
     

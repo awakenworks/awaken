@@ -71,7 +71,7 @@ async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-mgmt-e2e-'));
   const env = deploymentEnv(dir, { controlSealKey: SEAL_KEY });
   const fixture = await startCalcFixture(CALC_TOKEN);
-  const upstream = await startUpstream('mcp');
+  const upstream = await startUpstream('mcp', { models: ['fake-haiku'] });
   let server = null;
   try {
     // ---- lifetime A: author everything ------------------------------------
@@ -110,8 +110,9 @@ async function main() {
     // id; the durable row is owned by the platform-resolved local workspace.
     r = await req(base, 'GET', `/v1/config/credentials?workspace_id=${vault.id}`);
     assert.equal(r.status, 200);
-    assert.equal(r.json.length, 1, JSON.stringify(r.json));
-    const credId = r.json[0].id;
+    const mcpCredential = r.json.find((credential) => credential.provider_id === undefined);
+    assert.ok(mcpCredential, `the MCP credential is present beside provider credentials: ${JSON.stringify(r.json)}`);
+    const credId = mcpCredential.id;
     pass(`SDK vault mcp_oauth credential entered -> domain row ${credId} (secret-free)`);
 
     // Admin aggregates: pool + profile + one typed Agent definition whose MCP
@@ -182,8 +183,7 @@ async function main() {
 
     r = await req(base, 'GET', `/v1/config/credentials?workspace_id=${vault.id}`);
     assert.equal(r.status, 200);
-    assert.equal(r.json.length, 1);
-    assert.equal(r.json[0].id, credId);
+    assert.ok(r.json.some((credential) => credential.id === credId));
     assert.ok(!JSON.stringify(r.json).includes(CALC_TOKEN), 'persisted rows stay secret-free');
 
     r = await req(base, 'GET', '/v1/config/credential-pools/pool1');

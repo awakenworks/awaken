@@ -210,26 +210,36 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         capabilities.extend(profile.cli_ids().map(|cli| format!("acp:{cli}")));
     }
     capabilities.extend(inputs.config.extra_capabilities.iter().cloned());
-    let mut credential_realization = inputs
-        .materializer
-        .map(InferenceExecutorMaterializer::credential_realization_capabilities)
-        .unwrap_or_default();
+    let mut credential_profiles = Vec::new();
+    if let Some(materializer) = inputs.materializer {
+        credential_profiles.push(materializer.credential_realization_capabilities());
+    }
     if let Some(remote) = inputs.remote_credential_realization {
-        credential_realization.merge(remote);
+        credential_profiles.push(remote.clone());
     }
     if let Some(materializer) = inputs
         .credential_materializer
         .as_ref()
         .filter(|_| inputs.deployment.acp.is_some())
     {
-        credential_realization.merge(&materializer.process_secret);
+        credential_profiles.push(materializer.process_secret.clone());
     }
     if let Some(materializer) = inputs
         .credential_materializer
         .as_ref()
         .filter(|_| sandbox.supports_secret_egress_without_bypass())
     {
-        credential_realization.merge(&materializer.worker_relay);
+        credential_profiles.push(materializer.worker_relay.clone());
+    }
+    let mut credential_realization =
+        awaken_runtime_contract::CredentialRealizationCapabilities::alternatives(
+            credential_profiles,
+        );
+    if credential_realization.alternatives.len() == 1 {
+        credential_realization = credential_realization
+            .alternatives
+            .pop()
+            .expect("one credential profile exists");
     }
     if let Some(capability) = credential_realization
         .manifest_capability()

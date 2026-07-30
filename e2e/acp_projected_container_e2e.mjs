@@ -49,18 +49,19 @@ exec nc -lk -p 8080 -e /usr/local/bin/gemini
 set -eu
 mcp=no
 while IFS= read -r line; do
+  id="$(printf '%s' "$line" | sed -n 's/.*"id":\\([0-9][0-9]*\\).*/\\1/p')"
   case "$line" in
     *'"method":"initialize"'*)
-      printf '%s\\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}' ;;
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"embeddedContext":true},"mcpCapabilities":{"http":true}}}}\\n' "$id" ;;
     *'"method":"session/new"'*)
       case "$line" in *container-fixture*) mcp=yes ;; esac
-      printf '%s\\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"container-projected-session"}}' ;;
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"container-projected-session","modes":{"currentModeId":"code","availableModes":[{"id":"code","name":"Code"}]},"configOptions":[]}}\\n' "$id" ;;
     *'"method":"session/prompt"'*)
       mounted=no
       test "$(cat /workspace/.mnt/workspace/container-input.txt 2>/dev/null || true)" = CONTAINER_INPUT_OK && mounted=yes
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"container-projected-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"CONTAINER_PROJECTED base=%s model=%s key=%s file=%s mcp=%s home=%s"}}}}\\n' \
         "$GOOGLE_GEMINI_BASE_URL" "$GEMINI_MODEL" "$(printf %s "$GEMINI_API_KEY" | cut -c1-6)" "$mounted" "$mcp" "$GEMINI_DIR"
-      printf '%s\\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\\n' "$id"
       exit 0 ;;
   esac
 done

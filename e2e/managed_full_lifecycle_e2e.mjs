@@ -148,6 +148,7 @@ async function main() {
         agent: {
           id: agent.id,
           type: 'agent_with_overrides',
+          mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
           tools: [calcToolset()],
         }, // associate the session with the registry agent and explicit MCP policy
         environment_id: env.id,

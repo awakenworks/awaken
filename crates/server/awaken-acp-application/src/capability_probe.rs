@@ -1,6 +1,6 @@
 //! Bounded Worker-side ACP capability negotiation and evidence fingerprinting.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -77,6 +77,39 @@ impl HostAcpCapabilityNegotiator {
     }
 }
 
+fn executable_on_path(program: &str) -> PathBuf {
+    let requested = Path::new(program);
+    if requested.components().count() > 1 {
+        return requested.to_path_buf();
+    }
+    let extensions: Vec<String> = if cfg!(windows) {
+        let mut extensions = vec![String::new()];
+        extensions.extend(
+            std::env::var("PATHEXT")
+                .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+                .split(';')
+                .map(str::to_string),
+        );
+        extensions
+    } else {
+        vec![String::new()]
+    };
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .flat_map(|directory| {
+            extensions.iter().map(move |extension| {
+                directory.join(if extension.is_empty() {
+                    program.to_string()
+                } else {
+                    format!("{program}{extension}")
+                })
+            })
+        })
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| requested.to_path_buf())
+}
+
 #[async_trait]
 impl AcpCapabilityNegotiator for HostAcpCapabilityNegotiator {
     async fn negotiate(
@@ -88,7 +121,8 @@ impl AcpCapabilityNegotiator for HostAcpCapabilityNegotiator {
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| "ACP capability probe requires a non-empty argv".to_string())?;
-        let mut command = tokio::process::Command::new(program);
+        let executable = executable_on_path(program);
+        let mut command = tokio::process::Command::new(&executable);
         command
             .args(args)
             .current_dir(cwd)
