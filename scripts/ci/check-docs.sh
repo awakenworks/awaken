@@ -21,6 +21,8 @@ run "check-invariants"            python3 scripts/ci/check_invariants.py
 run "check-adr"                   python3 scripts/ci/check_adr.py $docs
 run "check-ownership-index"       python3 scripts/ci/check_ownership_index.py
 run "check-role-catalogs"         python3 scripts/ci/check_role_catalogs.py
+run "check-architecture-vocabulary-self-test" python3 scripts/ci/check_architecture_vocabulary.py --self-test
+run "check-architecture-vocabulary" python3 scripts/ci/check_architecture_vocabulary.py
 
 if [ "$fail" -ne 0 ]; then
   echo "✗ documentation checks failed" >&2

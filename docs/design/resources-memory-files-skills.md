@@ -274,12 +274,15 @@ process-local handle.
 | authorization PDP/PIP | External/shared authorization domain | IAM | decide principal/action/scope/resource facts under active policy | mounts, resource configuration, storage |
 | `SessionResourceCoordinator` | Existing in Managed Session application service | Session application/host | activation state, ordered provision/release, recovery handoff | Agent config loading, IAM policy language |
 | `FileStore` | Existing | File data plane | immutable content-addressed bytes | Workspace authorization; mutable overwrite |
+| `FileContentSource` | New boundary adapter | Worker/File boundary | retrieve one exact blob and verify its digest before read-only materialization | File ownership, mutable write-back, database access |
 | `MemoryRepository` | Existing canonical port | Memory data plane | scoped entries, CAS, atomic history, redaction, retention hooks | Agent/Session binding and IAM policy |
+| `MemorySnapshotSource` / `MemoryWritebackClient` | New boundary adapters | Worker/Memory boundary | obtain exact mutable content and apply claim-fenced CAS write-back | config selection, silent overwrite, Memory database access |
 | `MemoryRuntime` | Existing, moving to extension ownership | `awaken-ext-memory` | recall Plugin, terminal extraction observer, selector/extractor capability, stable intent/receipt | resource identity, default store, IAM policy, Host lifecycle |
 | `BoundMemory` | Existing | Session Runtime | one resolved store handle + pinned policy + maximum access shared by recall/extraction | workspace lookup, current-config resolution, authorization |
 | `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct working tree, publish Agent-authored commits with ephemeral transport credentials | remote repository ownership, authorization policy, or commit pinning |
 | Repository credential pin compiler | Existing in Managed Session application service | Session application/Vault ACL | compile a Repository config binding once into exact active source revision, canonical usage, `Forbidden` exposure, and selected Resource holder before persistence | material opening, Runtime lookup, generic Service state |
 | `CredentialMaterialResolver` | Existing canonical port | Credential execution boundary | validate and open one exact access/holder/Workspace/target-use binding for an installed adapter; shared by Model, MCP, and Repository | source enumeration, revision/holder/target selection, Agent prompt, persisted plaintext |
+| `SkillBundleSource` | New boundary adapter | Worker/Skill boundary | retrieve and verify one exact immutable capability bundle | generic Resource lifecycle, Skill policy selection, database access |
 | `SandboxProvider` | Existing | Environment provisioning | realize validated mounts/working trees and dispose them | product resource authoring and policy |
 | `ResourceReclaimer` | Existing, durable and per-resource | Product/session operations | reconcile crashed activations and purge intents; retention, reference checks, fenced claims, per-kind receipts | authorization decisions, remote Git deletion |
 | `ResourceReclamationFence` | Existing resource lifecycle port | Resource consistency | atomically prove zero physical references, fence `(kind, resource_id)`, and reject racing reference writes | principal, role, policy, API key, Org/Project/WorkUnit |
@@ -289,6 +292,26 @@ process-local handle.
 The catalog names roles rather than forcing them into one crate. Local mode may
 compose several roles in one process; cloud mode may deploy them separately.
 Their contracts and ownership stay the same.
+
+### Distributed composition
+
+The common boundary ends at `SessionResourceManifest`. A distributed Worker
+receives the same frozen, secret-free value as AllInOne, then invokes the narrow
+adapter for each resolved kind:
+
+```text
+SessionResourceManifest
+  |- File       -> FileContentSource -> read-only mount
+  |- Memory     -> MemorySnapshotSource -> MemoryMounter
+  |                `- MemoryWritebackClient (CAS)
+  |- Repository -> CredentialMaterialResolver -> RepositoryRealizer
+  `- Skill      -> SkillBundleSource -> capability load
+```
+
+`ResourcePlane` selects local or remote implementations at the composition root;
+it does not own a Resource aggregate. A separately deployed provider retains its
+per-kind contract and data authority. The design does not add a universal
+`ResourceService` or `ResourceMaterializer`.
 
 ## Lifecycle Stage Ownership
 
