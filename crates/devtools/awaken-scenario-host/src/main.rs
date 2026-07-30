@@ -121,6 +121,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // deterministic Host executor is installed, so publications resolve from
         // the authored catalog and execute through the real materializer.
         Ok("management-providers") => awaken_cli::build_all_in_one_router().await,
+        // Real split-Control composition with only its model-publication SPI
+        // supplied by the deterministic scenario adapter.
+        Ok("distributed-control") => awaken_scenario_host::build_distributed_control_router().await,
         // The production management composition (durable stores + config plane +
         // resource PEP) with only its deterministic fallback model replaced. Used
         // by the Skill pin/restart e2e; resource repositories remain auth-agnostic.
