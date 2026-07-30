@@ -41,7 +41,7 @@ Distributed:  application port -> network adapter -> same authority
 | Resource definitions and immutable config versions | Control / Resource Catalog | exact resolved values in the Session manifest plus per-kind clients |
 | credential metadata, policy, and encrypted material | Control / Vault | exact claim-fenced materialization only |
 | executable Agent catalog | Coordinator | exact snapshot carried by dispatch or resolved through Coordinator |
-| Deployment and DeploymentRun | Coordinator | none |
+| Deployment and DeploymentRun | Control | none; launch crosses the Session port |
 | Session baseline and frozen Resource manifest | Coordinator | secret-free dispatch envelope |
 | dispatch, Run commit, and completion | Coordinator | authenticated claim, commit, and settle APIs |
 | File bytes | File data plane | `FileContentSource` |
@@ -54,6 +54,13 @@ File, Memory, custom-Skill, and Repository execution use dedicated claim-fenced
 network adapters. The Worker opens no Control, Coordinator, File, Memory, Skill,
 or Resource Catalog database. Its standard capability manifest is derived from
 the installed adapters rather than from a marker composition value.
+
+An owner in this table is a component boundary, not necessarily a dedicated
+process. AllInOne co-locates every component. A distributed Coordinator process
+may co-locate the File, Memory, Skill, Repository-verification, and credential
+projection handlers, but each handler still delegates only to its named owner
+port. Separating one of those providers later changes composition and routing;
+it does not introduce another domain service or data model.
 
 ## Flow One: Configuration To Application
 
@@ -337,18 +344,18 @@ the exact snapshot, source revision, and fingerprint selected before execution.
   `deployment_session_launch_router` over the existing launch port;
 - stable DeploymentRun-to-Session identity/fingerprint replay and separate
   launch token-file composition;
-- `AgentResourceReferenceSource` as a narrow read port.
+- `AgentResourceReferenceSource` as a narrow read port;
 - `WorkerCredentialFileResolver` as the exact Worker-private
   `CredentialMaterialResolver` adapter; Worker role composition removes the
-  Control seal key, authority stores, and implicit durable Host stores.
-
-### Required remaining ADR-0071 work
-
-- Worker resource composition uses per-kind network adapters rather than shared
-  authority-store implementations;
-- remaining Coordinator/Resource composition removes direct non-owner stores;
-- per-kind File, Memory, and Skill clients/handlers;
-- service-data-ownership fitness check for the remaining boundaries.
+  Control seal key, authority stores, and implicit durable Host stores;
+- `HttpFileContentSource`, `HttpMemorySnapshotSource`,
+  `HttpMemoryWritebackClient`, `HttpSkillBundleSource`, and
+  `HttpRepositoryBindingVerifier`, paired with their authenticated,
+  claim-fenced handlers;
+- atomic Memory and Skill snapshot operations reused by both local and remote
+  adapters instead of reconstructing a snapshot through parallel read paths;
+- role-specific provider composition and the service-data-ownership fitness
+  check in `scripts/ci/check_crate_boundaries.py`.
 
 No new Agent, Deployment, Session, Resource, Credential, Run, or response domain
 model is introduced.
