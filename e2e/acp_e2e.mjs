@@ -75,12 +75,12 @@ async function main() {
         texts.some((t) => t.includes('acp-runtime reply')),
         `R3/R4: acp session ran on the ACP CLI, got ${JSON.stringify(texts)}`,
       );
-      pass('runtime:"acp:claude" runs on the external ACP CLI via the managed API (R3/R4)');
+      pass('the published assistant runs on the external ACP CLI via the managed API (R3/R4)');
 
       // Selection: a native session on the same server runs the built-in model.
       const native = await client.beta.sessions.create({
         agent: {
-          id: 'assistant',
+          id: 'native-assistant',
           type: 'agent_with_overrides',
           skills: XLSX_SKILL,
         },

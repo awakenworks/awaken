@@ -19,6 +19,10 @@ impl RepositoryEnvironmentBindingSink {
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
+    async fn owns(&self, session_id: &str) -> bool {
+        self.repo.owner(session_id).await.is_some()
+    }
+
     async fn persist(&self, session_id: &str, binding: &str) -> Result<(), RunError> {
         for attempt in 0..ManagedState::ROOT_CAS_ATTEMPTS {
             let owner_scope = self.repo.owner(session_id).await.ok_or_else(|| {
