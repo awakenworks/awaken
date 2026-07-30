@@ -4,31 +4,9 @@ use awaken_runtime_contract::llm::LlmExecutor;
 
 use super::{
     CredentialMaterializerSupport, InferenceExecutorMaterializer, ResourceManifestSupport,
-    StandardManifestConfig, StandardManifestInputs, WorkerNodeBuilder,
-    WorkerSessionResourceAdapters, derive_standard_manifest, grace_window,
+    StandardManifestConfig, StandardManifestInputs, WorkerNodeBuilder, derive_standard_manifest,
+    grace_window,
 };
-
-struct AcceptBindings;
-
-impl awaken_resource_contract::ResourceBindingValidator for AcceptBindings {
-    fn validate_memory_binding(
-        &self,
-        _workspace_id: &str,
-        _id: &str,
-        _version: awaken_resource_contract::ConfigVersion,
-    ) -> Result<(), awaken_resource_contract::ResourceCatalogError> {
-        Ok(())
-    }
-
-    fn validate_repository_binding(
-        &self,
-        _workspace_id: &str,
-        _id: &str,
-        _version: awaken_resource_contract::ConfigVersion,
-    ) -> Result<(), awaken_resource_contract::ResourceCatalogError> {
-        Ok(())
-    }
-}
 
 struct SchemeMaterializer;
 
@@ -823,20 +801,20 @@ fn a_configured_zero_grace_exits_immediately_even_on_sigterm() {
     );
 }
 
-/// Cause/effect rule R1: installing Resource eligibility without the
-/// registration-bound Memory projection would advertise a capability the Worker
-/// cannot realize, so construction fails before registration.
+/// Cause/effect rule R1: only an installed registration-bound Memory projection
+/// is evidence for Session Resource support. Without it, the standard manifest
+/// must not advertise a capability backed only by a catalog handle.
 #[test]
-fn resource_capable_worker_requires_registered_memory_projection() {
-    let resources = WorkerSessionResourceAdapters::new(Arc::new(AcceptBindings));
-    let error =
-        match WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new("http://control"))
-            .with_session_resource_adapters(resources)
-            .with_standard_manifest(Default::default())
-            .build()
-        {
-            Ok(_) => panic!("R1 missing Memory projection must fail closed"),
-            Err(error) => error,
-        };
-    assert!(error.to_string().contains("Memory mounter factory"), "R1");
+fn resource_capability_requires_the_registered_memory_projection() {
+    let worker = WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new("http://control"))
+        .with_standard_manifest(Default::default())
+        .build()
+        .expect("R1 no unsupported Resource claim");
+    assert!(
+        !worker
+            .manifest()
+            .capabilities
+            .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
+        "R1"
+    );
 }

@@ -21,7 +21,6 @@ use awaken_runtime_contract::CredentialObservationState;
 pub struct PreparedLocalAcp {
     resolver: Arc<AcpLocalCredentialResolver>,
     stores: awaken_control::InferenceMaterializationStores,
-    resources: Option<awaken_worker::WorkerSessionResourceAdapters>,
 }
 
 fn uses_trusted_local_identity(deployment: &crate::config::ResolvedDeployment) -> bool {
@@ -59,29 +58,7 @@ pub async fn prepare_local_acp(
     ));
     let stores =
         awaken_control::open_inference_materialization_stores(&deployment.control, seal_key).await;
-    let resources = Some(local_worker_resources(deployment).await?);
-    prepare_local_acp_with(
-        deployment, discovery, installer, negotiator, stores, resources,
-    )
-    .await
-}
-
-async fn local_worker_resources(
-    deployment: &crate::config::ResolvedDeployment,
-) -> Result<awaken_worker::WorkerSessionResourceAdapters, String> {
-    let validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator> =
-        match &deployment.control.admin {
-            awaken_control::StoreBackend::Sqlite(path) => Arc::new(
-                awaken_admin_config_api::SqliteAdminStore::open(&path.to_string_lossy())
-                    .map_err(|error| format!("open local Worker Resource Catalog: {error}"))?,
-            ),
-            awaken_control::StoreBackend::Postgres(_) => {
-                awaken_control::open_shared_resource_validator(Some(&deployment.control.admin))
-                    .await?
-                    .expect("Postgres admin backend produces a validator")
-            }
-        };
-    Ok(awaken_worker::WorkerSessionResourceAdapters::new(validator))
+    prepare_local_acp_with(deployment, discovery, installer, negotiator, stores).await
 }
 
 /// Compose the one registration-bound Memory adapter at the executable edge.
@@ -167,7 +144,6 @@ async fn prepare_local_acp_with(
     installer: Arc<dyn AcpWrapperInstaller>,
     negotiator: Arc<dyn AcpCapabilityNegotiator>,
     stores: awaken_control::InferenceMaterializationStores,
-    resources: Option<awaken_worker::WorkerSessionResourceAdapters>,
 ) -> Result<Option<PreparedLocalAcp>, String> {
     let wrapper_root = deployment.data_dir.join("acp-wrappers");
     let selected_cli_ids = deployment.runtime.acp.as_ref().map(|profile| {
@@ -210,7 +186,6 @@ async fn prepare_local_acp_with(
     Ok(Some(PreparedLocalAcp {
         resolver: prepared.resolver,
         stores,
-        resources,
     }))
 }
 
@@ -228,14 +203,12 @@ impl PreparedLocalAcp {
             self.stores.credentials,
             self.stores.secrets,
         );
-        let mut builder = configured_worker_builder(upstream, deployment, credentials)
+        configured_worker_builder(upstream, deployment, credentials)
             .with_worker_local_credential_resolver(resolver.clone())
             .with_acp_capability_observation_source(resolver)
-            .without_admin_surface();
-        if let Some(resources) = self.resources {
-            builder = builder.with_session_resource_adapters(resources);
-        }
-        builder.build().map_err(|error| error.to_string())
+            .without_admin_surface()
+            .build()
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -319,14 +292,14 @@ mod tests {
 
     use super::*;
 
-    /// Cause/effect graph: the server-role Worker installs inference and A2A over
-    /// one exact Worker-private file resolver. Resource adapters remain absent
-    /// until their network boundary is installed; no authority store is opened.
+    /// Cause/effect graph: the Worker installs inference, A2A, exact credential,
+    /// and registration-bound per-kind Resource adapters without opening an
+    /// authority store.
     ///
     /// | Rule | Installed implementations | Effect |
     /// |---|---|---|
     /// | C1 | exact file resolver | WorkerReference capability only |
-    /// | C2 | no Resource network adapters | no Session Resource capability |
+    /// | C2 | Memory factory + exact credential adapter | Session Resource and Repository credential capabilities |
     /// | C3 | Worker runtime config | no durable local storage root |
     #[tokio::test]
     async fn configured_worker_projects_only_the_cli_installed_adapters() {
@@ -339,11 +312,11 @@ mod tests {
         let capabilities = &worker.manifest().capabilities;
         assert!(capabilities.contains(awaken_runtime_contract::A2A_RUNTIME_CAPABILITY));
         assert!(
-            !capabilities.contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
+            capabilities.contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
             "C2"
         );
         assert!(
-            !capabilities.contains(awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY),
+            capabilities.contains(awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY),
             "C2"
         );
         let evidence =
@@ -738,7 +711,6 @@ mod tests {
             installer.clone(),
             fixed_negotiator(),
             stores.clone(),
-            None,
         )
         .await
         .unwrap()
@@ -791,7 +763,6 @@ mod tests {
             installer.clone(),
             fixed_negotiator(),
             stores,
-            None,
         )
         .await
         .unwrap()
@@ -925,7 +896,6 @@ mod tests {
             installer,
             fixed_negotiator(),
             stores,
-            None,
         )
         .await
         .expect("F2 startup remains diagnosable");

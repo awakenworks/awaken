@@ -181,19 +181,21 @@ impl crate::ManagedHost {
                 config,
                 credential: credential_pin,
             } => {
-                let validator = self.resource_validator.as_ref().ok_or_else(|| {
+                let verifier = self.repository_binding_verifier.as_ref().ok_or_else(|| {
                     RunError::bad_request(
-                        "repository resources require a configured resource binding validator",
+                        "repository resources require a configured binding verifier",
                     )
                 })?;
-                validator
-                    .validate_repository_binding(workspace, repository_id.as_str(), config.version)
+                verifier
+                    .verify(workspace, repository_id.as_str(), config.version, claim)
+                    .await
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
                 staged
                     .binding_checks
                     .push(crate::provisioning::ResourceBindingCheck::Repository {
                         repository_id: repository_id.to_string(),
                         config_version: config.version,
+                        claim: claim.cloned(),
                     });
                 let credential = match (&config.credential_binding, credential_pin) {
                     (Some(binding), Some(pin)) => {

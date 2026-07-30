@@ -7,9 +7,9 @@ product code.
 
 The context map below is the accepted ADR-0071 target. Executable Agent
 registration, Deployment launch, credential projection, and per-kind File,
-Memory, and custom-Skill realization now have local and distributed adapters
-over the same authorities. Repository realization and removal of the Worker's
-remaining direct Resource-catalog validator are the unfinished boundary slice.
+Memory, custom-Skill, and Repository realization now have local and distributed
+adapters over the same authorities. The Worker retains only ephemeral execution
+state and registration-bound clients; it receives no authority database handle.
 
 ---
 

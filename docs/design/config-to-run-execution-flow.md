@@ -50,10 +50,10 @@ Distributed:  application port -> network adapter -> same authority
 | Git repository contents | external Git provider | `RepositoryRealizer` with an ephemeral credential |
 | mounts, working trees, processes, and plaintext | Worker / Sandbox, ephemeral | local only |
 
-`WorkerSessionResourceAdapters` is a transitional composition value containing
-only the remaining live binding validator. It is not a Resource aggregate or a
-data-plane owner. File, Memory, and custom-Skill execution use dedicated
-claim-fenced network adapters; the Worker opens none of their databases.
+File, Memory, custom-Skill, and Repository execution use dedicated claim-fenced
+network adapters. The Worker opens no Control, Coordinator, File, Memory, Skill,
+or Resource Catalog database. Its standard capability manifest is derived from
+the installed adapters rather than from a marker composition value.
 
 ## Flow One: Configuration To Application
 
@@ -173,7 +173,7 @@ flowchart TD
     J["Existing: enqueue RunDispatch with snapshot and secret-free envelopes"]
 
     K["Existing: authenticated Worker claim with lease epoch"]
-    L["Modified/New: per-kind Resource realization (File/Memory/Skill complete; Repository pending)"]
+    L["Modified/New: per-kind File, Memory, Skill, and Repository boundaries"]
     M["Added: exact Worker-private credential materialization"]
     N["Existing: Sandbox creation and repository realization"]
     O["Existing: Runtime model, tool, child Run, and HITL execution"]
@@ -263,6 +263,14 @@ Worker incarnation, holds the claim epoch, and proves the exact binding and
 Workspace are frozen before reading `SkillStore`. Both sides recompute and
 verify the bundle digest. Built-in Anthropic Skills remain immutable runtime
 content and do not use the Resource network boundary.
+
+For Repository inputs, the frozen `RepositoryConfigVersion`, exact credential
+pin, and existing `RepositoryRealizer` remain authoritative. A local execution
+uses `CatalogRepositoryBindingVerifier`; a distributed Worker uses
+`HttpRepositoryBindingVerifier` before clone/use. The Coordinator holds the live
+claim and proves Workspace, Repository id, and config version against the frozen
+dispatch manifest before delegating to `ResourceBindingValidator`. No Git bytes
+or plaintext credential pass through this verification endpoint.
 
 ### Commit and response authority
 

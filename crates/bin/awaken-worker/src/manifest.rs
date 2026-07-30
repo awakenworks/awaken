@@ -10,8 +10,6 @@ use awaken_worker_contract::{
     WorkerCapacity, WorkerManifest,
 };
 
-use crate::WorkerSessionResourceAdapters;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManifestKind {
     Explicit,
@@ -132,20 +130,20 @@ pub(crate) enum ResourceManifestSupport {
 
 impl
     From<(
-        Option<&WorkerSessionResourceAdapters>,
+        bool,
         Option<&awaken_runtime_host::PinnedCredentialMaterializer>,
     )> for ResourceManifestSupport
 {
     fn from(
-        (resources, credentials): (
-            Option<&WorkerSessionResourceAdapters>,
+        (memory_mounter, credentials): (
+            bool,
             Option<&awaken_runtime_host::PinnedCredentialMaterializer>,
         ),
     ) -> Self {
-        match (resources, credentials) {
-            (Some(_), Some(_)) => Self::SessionWithRepositoryCredentials,
-            (Some(_), None) => Self::Session,
-            (None, _) => Self::None,
+        match (memory_mounter, credentials) {
+            (true, Some(_)) => Self::SessionWithRepositoryCredentials,
+            (true, None) => Self::Session,
+            (false, _) => Self::None,
         }
     }
 }

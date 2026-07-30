@@ -201,16 +201,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )
             .await
         }
-        (Some(_resource_url), Some(admin_url), Some(storage_dir)) => {
+        (Some(_resource_url), Some(_admin_url), Some(storage_dir)) => {
             let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
             deployment.durable = true;
             deployment.storage_dir = Some(storage_dir.into());
-            let validator = awaken_control::open_shared_resource_validator(Some(
-                &awaken_control::StoreBackend::Postgres(admin_url),
-            ))
-            .await?
-            .ok_or("admin database URL did not produce a Resource validator")?;
-            let resources = awaken_worker::WorkerSessionResourceAdapters::new(validator);
             let credentials = awaken_runtime_host::PinnedCredentialMaterializer::external_only(
                 materializer.clone(),
             );
@@ -222,7 +216,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .with_inference_materializer(materializer.clone())
             .with_credential_materializer(credentials)
             .with_worker_local_credential_resolver(materializer)
-            .with_session_resource_adapters(resources)
             .with_standard_manifest(Default::default())
             .build()?
             .run_until_shutdown()

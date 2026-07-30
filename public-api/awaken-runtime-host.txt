@@ -140,6 +140,11 @@ pub fn awaken_runtime_host::ApplicationSessionError::new(impl core::convert::Int
 impl core::error::Error for awaken_runtime_host::ApplicationSessionError
 impl core::fmt::Display for awaken_runtime_host::ApplicationSessionError
 pub fn awaken_runtime_host::ApplicationSessionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_runtime_host::CatalogRepositoryBindingVerifier
+impl awaken_runtime_host::CatalogRepositoryBindingVerifier
+pub fn awaken_runtime_host::CatalogRepositoryBindingVerifier::new(alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceBindingValidator>) -> Self
+impl awaken_runtime_host::RepositoryBindingVerifier for awaken_runtime_host::CatalogRepositoryBindingVerifier
+pub fn awaken_runtime_host::CatalogRepositoryBindingVerifier::verify<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_resource_contract::catalog::ConfigVersion, core::option::Option<&'life3 awaken_run_ingress_contract::dispatch::RunClaim>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_host::RepositoryBindingVerifierError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub struct awaken_runtime_host::ClaimedCommitService
 impl awaken_runtime_host::ClaimedCommitService
 pub fn awaken_runtime_host::ClaimedCommitService::new(alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::OperationCoordinator>, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>, alloc::sync::Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>) -> Self
@@ -215,6 +220,11 @@ pub fn awaken_runtime_host::HttpMemoryRepository::snapshot_heads<'life0, 'life1,
 pub fn awaken_runtime_host::HttpMemoryRepository::update_head<'life0, 'life1, 'life2, 'life3, 'life4, 'life5, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, &'life4 str, core::option::Option<&'life5 str>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait, 'life5: 'async_trait
 pub struct awaken_runtime_host::HttpMemorySnapshotSource
 pub struct awaken_runtime_host::HttpMemoryWritebackClient
+pub struct awaken_runtime_host::HttpRepositoryBindingVerifier
+impl awaken_runtime_host::HttpRepositoryBindingVerifier
+pub fn awaken_runtime_host::HttpRepositoryBindingVerifier::new(awaken_runtime_host::WorkerUpstream) -> Self
+impl awaken_runtime_host::RepositoryBindingVerifier for awaken_runtime_host::HttpRepositoryBindingVerifier
+pub fn awaken_runtime_host::HttpRepositoryBindingVerifier::verify<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_resource_contract::catalog::ConfigVersion, core::option::Option<&'life3 awaken_run_ingress_contract::dispatch::RunClaim>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_host::RepositoryBindingVerifierError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub struct awaken_runtime_host::HttpSkillBundleSource
 impl awaken_runtime_host::HttpSkillBundleSource
 pub fn awaken_runtime_host::HttpSkillBundleSource::new(awaken_runtime_host::WorkerUpstream) -> Self
@@ -226,6 +236,7 @@ pub fn awaken_runtime_host::ManagedHost::new(alloc::sync::Arc<awaken_runtime_hos
 pub fn awaken_runtime_host::ManagedHost::with_credential_materializer(self, awaken_runtime_host::PinnedCredentialMaterializer) -> Self
 pub fn awaken_runtime_host::ManagedHost::with_credentials(self, alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>, alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>) -> Self
 pub fn awaken_runtime_host::ManagedHost::with_mcp_attachment_realizer(self, alloc::sync::Arc<dyn awaken_session_contract::session::McpAttachmentRealizer>) -> Self
+pub fn awaken_runtime_host::ManagedHost::with_repository_binding_verifier(self, alloc::sync::Arc<dyn awaken_runtime_host::RepositoryBindingVerifier>) -> Self
 pub fn awaken_runtime_host::ManagedHost::with_resource_validator(self, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceBindingValidator>) -> Self
 impl awaken_session_contract::session::McpAttachmentRealizer for awaken_runtime_host::ManagedHost
 pub fn awaken_runtime_host::ManagedHost::drain_mcp_generation<'life0, 'async_trait>(&'life0 self, awaken_session_contract::mcp_attachment::McpGenerationRef) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -344,6 +355,7 @@ pub fn awaken_runtime_host::RemoteClaimedRunCommit::with_request_authorizer(self
 impl awaken_run_ingress::commit_fence::ClaimedRunCommit for awaken_runtime_host::RemoteClaimedRunCommit
 pub fn awaken_runtime_host::RemoteClaimedRunCommit::commit<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_run_ingress_contract::dispatch::RunClaim, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::RemoteClaimedRunCommit::commit_operation<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::dispatch::ClaimedCommitCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_runtime_host::RepositoryBindingVerifierError(_)
 pub struct awaken_runtime_host::ResourcePlane
 impl awaken_runtime_host::ResourcePlane
 pub fn awaken_runtime_host::ResourcePlane::into_parts(self) -> (alloc::sync::Arc<dyn awaken_resource_contract::FileStore>, alloc::sync::Arc<dyn awaken_resource_contract::FileCatalog>, alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceLifecycleRepository>)
@@ -582,6 +594,10 @@ pub fn awaken_runtime_host::WorkerFileContentService::with_worker_directory(self
 pub struct awaken_runtime_host::WorkerMemoryService
 impl awaken_runtime_host::WorkerMemoryService
 pub fn awaken_runtime_host::WorkerMemoryService::new(alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceBindingValidator>, alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>) -> Self
+pub struct awaken_runtime_host::WorkerRepositoryBindingService
+impl awaken_runtime_host::WorkerRepositoryBindingService
+pub fn awaken_runtime_host::WorkerRepositoryBindingService::new(alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceBindingValidator>, alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>) -> Self
+pub fn awaken_runtime_host::WorkerRepositoryBindingService::with_worker_directory(self, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>) -> Self
 pub struct awaken_runtime_host::WorkerSigningCredential
 impl awaken_runtime_host::WorkerSigningCredential
 pub fn awaken_runtime_host::WorkerSigningCredential::credential_id(&self) -> &str
@@ -628,6 +644,12 @@ pub fn awaken_runtime_host::InferenceExecutorMaterializer::credential_realizatio
 pub fn awaken_runtime_host::InferenceExecutorMaterializer::materialize(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>, alloc::string::String>
 pub fn awaken_runtime_host::InferenceExecutorMaterializer::materialize_pinned(&self, &awaken_runtime_contract::resolved::ResolvedModelCandidate, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub fn awaken_runtime_host::InferenceExecutorMaterializer::supported_access_schemes(&self) -> &'static [&'static str]
+pub trait awaken_runtime_host::RepositoryBindingVerifier: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_host::RepositoryBindingVerifier::verify<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_resource_contract::catalog::ConfigVersion, core::option::Option<&'life3 awaken_run_ingress_contract::dispatch::RunClaim>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_host::RepositoryBindingVerifierError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+impl awaken_runtime_host::RepositoryBindingVerifier for awaken_runtime_host::CatalogRepositoryBindingVerifier
+pub fn awaken_runtime_host::CatalogRepositoryBindingVerifier::verify<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_resource_contract::catalog::ConfigVersion, core::option::Option<&'life3 awaken_run_ingress_contract::dispatch::RunClaim>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_host::RepositoryBindingVerifierError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+impl awaken_runtime_host::RepositoryBindingVerifier for awaken_runtime_host::HttpRepositoryBindingVerifier
+pub fn awaken_runtime_host::HttpRepositoryBindingVerifier::verify<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_resource_contract::catalog::ConfigVersion, core::option::Option<&'life3 awaken_run_ingress_contract::dispatch::RunClaim>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_host::RepositoryBindingVerifierError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub trait awaken_runtime_host::SessionDefaultsPreparer: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::SessionDefaultsPreparer::prepare<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_host::SessionDefaultsPreparationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub trait awaken_runtime_host::SkillBundleSource: core::marker::Send + core::marker::Sync
@@ -676,5 +698,6 @@ pub fn awaken_runtime_host::self_hosted_inference_holder(&awaken_runtime_contrac
 pub fn awaken_runtime_host::worker_dispatch_store_with_upstream(&awaken_runtime_host::WorkerUpstream, awaken_worker_contract::WorkerIdentity) -> alloc::sync::Arc<awaken_run_ingress::any::AnyDispatchStore>
 pub fn awaken_runtime_host::worker_file_content_router(alloc::sync::Arc<awaken_runtime_host::WorkerFileContentService>) -> axum::routing::Router
 pub fn awaken_runtime_host::worker_memory_router(alloc::sync::Arc<awaken_runtime_host::WorkerMemoryService>) -> axum::routing::Router
+pub fn awaken_runtime_host::worker_repository_binding_router(alloc::sync::Arc<awaken_runtime_host::WorkerRepositoryBindingService>) -> axum::routing::Router
 pub fn awaken_runtime_host::worker_skill_bundle_router(alloc::sync::Arc<awaken_runtime_host::WorkerSkillBundleService>) -> axum::routing::Router
 pub type awaken_runtime_host::AttemptExecutorDecorator = alloc::sync::Arc<(dyn core::ops::function::Fn(alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>) -> alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> + core::marker::Send + core::marker::Sync)>

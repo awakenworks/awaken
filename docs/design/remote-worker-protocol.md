@@ -317,9 +317,6 @@ WorkerNodeBuilder::new(upstream)
     .with_session_container_provider("provider-id", provider)
     .with_application_factory(factory)
     .with_application_gate(gate)
-    .with_session_resource_adapters(WorkerSessionResourceAdapters::new(
-        validator,
-    ))
     .with_registered_memory_mounter_factory(memory_mounter_factory)
     .with_standard_manifest(application_capabilities)
     .build()?
@@ -346,11 +343,13 @@ their typed values on the Builder.
 transport. `awaken-cli` is the product composition root that injects the
 concrete inference, A2A, relay, and Memory-mount adapters. The Memory factory is
 evaluated after registration because its HTTP client must carry the assigned
-Worker incarnation. File, Memory, and custom-Skill clients are constructed from
-that identity-bound upstream; `WorkerSessionResourceAdapters` retains only the
-live binding validator and opens no File, Memory, or Skill store. The boundary
-check rejects any direct `awaken-worker` dependency on `awaken-server`,
-`awaken-control`, or `awaken-sandbox-memoryd`.
+Worker incarnation. File, Memory, custom-Skill, and Repository binding clients
+are constructed from that identity-bound upstream. Resource capability is
+derived from the installed Memory mounter; Repository credential capability also
+requires the exact credential materializer. No marker object or Resource Catalog
+connection is installed. The boundary check rejects any direct `awaken-worker`
+dependency on `awaken-server`, `awaken-control`, `awaken-resource-contract`, or
+`awaken-sandbox-memoryd`.
 
 `build()` is synchronous and side-effect free: it derives or accepts one
 manifest and runs the same contract validation before registration.

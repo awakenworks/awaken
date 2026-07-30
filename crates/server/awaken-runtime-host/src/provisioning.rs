@@ -203,6 +203,7 @@ pub(crate) enum ResourceBindingCheck {
     Repository {
         repository_id: String,
         config_version: awaken_resource_contract::ConfigVersion,
+        claim: Option<awaken_run_ingress::RunClaim>,
     },
 }
 

@@ -1901,7 +1901,6 @@ dependencies = [
  "awaken-acp-contract",
  "awaken-observability",
  "awaken-provisioning-contract",
- "awaken-resource-contract",
  "awaken-runtime-contract",
  "awaken-runtime-host",
  "awaken-worker-contract",

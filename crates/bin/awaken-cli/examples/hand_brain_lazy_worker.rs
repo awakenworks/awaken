@@ -107,17 +107,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .unwrap_or_else(|_| "awaken-sandbox:session-e2e".into()),
         );
     }
-    // Environment-managed Sessions always carry a (possibly empty) frozen
-    // resource envelope. Install the validator so the standard manifest may
-    // honestly advertise session-resources/v1; exact File, Memory, and Skill
-    // bytes cross registration-bound network adapters.
-    let resources = awaken_worker::WorkerSessionResourceAdapters::new(Arc::new(
-        awaken_admin_config_api::SqliteAdminStore::open_in_memory()?,
-    ));
     awaken_worker::WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new(upstream))
         .with_inference_materializer(Arc::new(HostMaterializer))
         .with_deployment_config(deployment)
-        .with_session_resource_adapters(resources)
         .with_registered_memory_mounter_factory(awaken_cli::registered_memory_mounter_factory())
         .with_standard_manifest(Default::default())
         .without_admin_surface()

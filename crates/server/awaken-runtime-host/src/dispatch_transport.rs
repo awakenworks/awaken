@@ -264,11 +264,19 @@ pub fn registered_worker_transport_router(
     ));
     let memory = crate::worker_memory_router(Arc::new(crate::WorkerMemoryService::new(
         host.memory_repository(),
-        resource_validator,
+        resource_validator.clone(),
         dispatch.clone() as Arc<dyn DispatchQueue>,
         Arc::new(HeaderWorkerAuthenticator),
         directory.clone(),
     )));
+    let repositories = crate::worker_repository_binding_router(Arc::new(
+        crate::WorkerRepositoryBindingService::new(
+            resource_validator,
+            dispatch.clone() as Arc<dyn DispatchQueue>,
+            Arc::new(HeaderWorkerAuthenticator),
+        )
+        .with_worker_directory(directory.clone()),
+    ));
     let skills = host.skill_store().map(|store| {
         crate::worker_skill_bundle_router(Arc::new(
             crate::WorkerSkillBundleService::new(
@@ -285,7 +293,10 @@ pub fn registered_worker_transport_router(
         directory,
         Arc::new(HeaderWorkerAuthenticator),
     ));
-    let worker_resources = dispatch_router.merge(file_content).merge(memory);
+    let worker_resources = dispatch_router
+        .merge(file_content)
+        .merge(memory)
+        .merge(repositories);
     let worker_resources = match skills {
         Some(skills) => worker_resources.merge(skills),
         None => worker_resources,

@@ -52,11 +52,10 @@ pub use awaken_config_service::{
 };
 pub use awaken_iam_contract::AccountId;
 pub use awaken_iam_host::{LocalBrowserAuth, LocalSetupHandoff};
-// Transitional shared-store Worker materialization: only the credential vault +
-// secret store needed by snapshot-pinned inference access.
+// Trusted local materialization: only the credential vault and secret store
+// needed by snapshot-pinned inference access.
 pub use crate::worker_stores::{
     InferenceMaterializationStores, open_inference_materialization_stores,
-    open_shared_resource_validator,
 };
 
 use awaken_admin_config_api::{AdminState, CredentialProbe, InferenceProfileStore, WebhookStore};

@@ -50,6 +50,7 @@ mod no_model;
 mod outcome_controller;
 mod provisioning;
 mod redact;
+mod repository_transport;
 mod resource_reclamation;
 pub use resource_reclamation::HostResourceReclamation;
 mod run_exec;
@@ -123,6 +124,11 @@ pub use crate::memory_transport::{
 };
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
 pub use crate::postgres_migration_lock::PostgresMigrationLock;
+pub use crate::repository_transport::{
+    CatalogRepositoryBindingVerifier, HttpRepositoryBindingVerifier, RepositoryBindingVerifier,
+    RepositoryBindingVerifierError, WorkerRepositoryBindingService,
+    worker_repository_binding_router,
+};
 pub use crate::skill_bundle_transport::{
     HttpSkillBundleSource, SkillBundleSource, SkillBundleSourceError, StoreSkillBundleSource,
     WorkerSkillBundleService, worker_skill_bundle_router,
@@ -290,6 +296,7 @@ pub struct ManagedHost {
     host: Arc<SharedHost>,
     credentials: Option<PinnedCredentialMaterializer>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
+    repository_binding_verifier: Option<Arc<dyn RepositoryBindingVerifier>>,
     mcp_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
 }
 
@@ -302,6 +309,7 @@ pub(crate) struct DispatchSessionRuntime {
     host: std::sync::Weak<SharedHost>,
     credentials: Option<PinnedCredentialMaterializer>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
+    repository_binding_verifier: Option<Arc<dyn RepositoryBindingVerifier>>,
     mcp_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
 }
 
@@ -315,6 +323,7 @@ impl DispatchSessionRuntime {
             host,
             credentials: self.credentials.clone(),
             resource_validator: self.resource_validator.clone(),
+            repository_binding_verifier: self.repository_binding_verifier.clone(),
             mcp_realizer: None,
         })
     }
@@ -456,6 +465,7 @@ impl ManagedHost {
             host,
             credentials: None,
             resource_validator: None,
+            repository_binding_verifier: None,
             mcp_realizer: None,
         };
         managed.refresh_dispatch_session_runtime();
@@ -471,6 +481,7 @@ impl ManagedHost {
             host: Arc::downgrade(&self.host),
             credentials: self.credentials.clone(),
             resource_validator: self.resource_validator.clone(),
+            repository_binding_verifier: self.repository_binding_verifier.clone(),
             mcp_realizer: self.mcp_realizer.clone(),
         });
     }
@@ -512,7 +523,22 @@ impl ManagedHost {
         mut self,
         validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
     ) -> Self {
+        self.repository_binding_verifier = Some(Arc::new(CatalogRepositoryBindingVerifier::new(
+            validator.clone(),
+        )));
         self.resource_validator = Some(validator);
+        self.refresh_dispatch_session_runtime();
+        self
+    }
+
+    /// Install the Repository-specific live binding guard used by a distributed
+    /// Worker without granting it Resource Catalog database access.
+    #[must_use]
+    pub fn with_repository_binding_verifier(
+        mut self,
+        verifier: Arc<dyn RepositoryBindingVerifier>,
+    ) -> Self {
+        self.repository_binding_verifier = Some(verifier);
         self.refresh_dispatch_session_runtime();
         self
     }
@@ -726,15 +752,17 @@ impl ManagedHost {
                 ResourceBindingCheck::Repository {
                     repository_id,
                     config_version,
+                    claim,
                 } => self
-                    .resource_validator
+                    .repository_binding_verifier
                     .as_ref()
                     .ok_or_else(|| {
                         RunError::bad_request(
-                            "repository resources require a configured resource binding validator",
+                            "repository resources require a configured binding verifier",
                         )
                     })?
-                    .validate_repository_binding(&workspace, &repository_id, config_version)
+                    .verify(&workspace, &repository_id, config_version, claim.as_ref())
+                    .await
                     .map_err(|error| RunError::bad_request(error.to_string()))?,
             }
         }

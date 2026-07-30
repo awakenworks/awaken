@@ -226,9 +226,9 @@ The mutable Memory boundary is complete:
   `awaken-worker` depends only on the neutral factory and `MemoryMounter` ports;
   `SharedHost::new_worker_with_deployment` installs File/Memory clients before
   store selection instead of opening and later replacing local databases;
-- the former full `WorkerResourcePlane` composition was reduced to
-  `WorkerSessionResourceAdapters` (binding validation only), and the unused
-  shared full-plane Worker factory was removed;
+- the former full `WorkerResourcePlane` and transitional
+  `WorkerSessionResourceAdapters` compositions were removed; capability evidence
+  now comes from the installed per-kind adapters, not a database-bearing marker;
 - Memory timestamps use a transport-only decimal representation because JSON
   cannot portably decode Rust `u128`; the existing domain type remains unchanged.
 
@@ -250,10 +250,23 @@ The immutable Skill boundary is complete:
   opens a filesystem or PostgreSQL Skill database. The redundant transitional
   shared-Skill-store helper and test double were removed.
 
-The remaining ADR-0071 Resource slice is Repository realization and the removal
-of the Worker's direct `ResourceBindingValidator` database access. Until then,
-`WorkerSessionResourceAdapters` contains only that validator and placement fails
-closed when it is absent.
+The exact Repository guard and final Resource data-ownership slice are complete:
+
+- `RepositoryRealizer` remains the sole clone/publish port and the frozen
+  `RepositoryConfigVersion` plus exact credential pin remain the sole plan;
+- `RepositoryBindingVerifier` adds only the missing asynchronous live-binding
+  guard. Its local adapter delegates to the existing `ResourceBindingValidator`;
+  its HTTP adapter carries Workspace, Repository id, config version, and claim;
+- the Coordinator handler authenticates the current Worker incarnation, holds
+  the claim epoch, proves the exact Repository binding is present in the frozen
+  Session manifest, and then delegates to the authoritative Resource Catalog;
+- the Worker installs this HTTP verifier from its registration-bound upstream.
+  It no longer opens a Resource Catalog database or depends directly on the
+  Resource Catalog contract crate;
+- `WorkerSessionResourceAdapters` and the CLI's local/shared validator opening
+  path were deleted. Standard manifest Resource capability is derived from the
+  installed Memory mounter, and Repository credential capability additionally
+  requires the exact credential adapter.
 
 ## Consequences
 

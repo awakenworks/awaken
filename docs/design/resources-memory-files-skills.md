@@ -282,6 +282,9 @@ process-local handle.
 | `MemoryRuntime` | Existing, moving to extension ownership | `awaken-ext-memory` | recall Plugin, terminal extraction observer, selector/extractor capability, stable intent/receipt | resource identity, default store, IAM policy, Host lifecycle |
 | `BoundMemory` | Existing | Session Runtime | one resolved store handle + pinned policy + maximum access shared by recall/extraction | workspace lookup, current-config resolution, authorization |
 | `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct working tree, publish Agent-authored commits with ephemeral transport credentials | remote repository ownership, authorization policy, or commit pinning |
+| `RepositoryBindingVerifier` | Implemented boundary port | Worker/Repository boundary | verify one exact frozen Workspace/Repository/config binding before Git realization/use | configuration selection, Git transport, credential material, generic Resource dispatch |
+| `CatalogRepositoryBindingVerifier` | Implemented local adapter | Resource Catalog | delegate the exact live check to the existing `ResourceBindingValidator` | claim or HTTP policy, a second catalog |
+| `HttpRepositoryBindingVerifier` / Worker Repository handler | Implemented network adapters | Worker/Repository boundary | authenticate the current Worker, prove the exact binding belongs to the frozen dispatch manifest, and hold the claim guard through catalog validation | Git bytes, clone/publish behavior, plaintext credential, Worker database access |
 | Repository credential pin compiler | Existing in Managed Session application service | Session application/Vault ACL | compile a Repository config binding once into exact active source revision, canonical usage, `Forbidden` exposure, and selected Resource holder before persistence | material opening, Runtime lookup, generic Service state |
 | `CredentialMaterialResolver` | Existing canonical port | Credential execution boundary | validate and open one exact access/holder/Workspace/target-use binding for an installed adapter; shared by Model, MCP, and Repository | source enumeration, revision/holder/target selection, Agent prompt, persisted plaintext |
 | `SkillBundleSource` | Implemented boundary port | Worker/Skill boundary | retrieve and verify one exact immutable custom capability bundle under a live claim | generic Resource lifecycle, Skill policy selection, database access |
@@ -345,6 +348,15 @@ locally and remotely. The HTTP handler proves the current Worker incarnation,
 live claim, Workspace, and frozen kind/id/version/hash before it reads the store;
 the Worker recomputes the digest before activation. Built-in Anthropic Skills
 remain runtime-owned and never cross the Resource boundary.
+
+The Repository branch reuses the existing `RepositoryRealizer` and exact
+credential pin; it does not proxy Git content. `RepositoryBindingVerifier`
+supplies only the missing live invariant check. Its HTTP handler verifies the
+current Worker incarnation, claim, Workspace, Repository id, config version, and
+frozen manifest before delegating to the Resource Catalog. The Worker then calls
+the unchanged environment realizer with the frozen secret-free plan and
+ephemeral credential. The former direct Worker catalog connection and empty
+composition marker were removed.
 
 `ResourcePlane` selects local or remote implementations at the composition root;
 it does not own a Resource aggregate. A separately deployed provider retains its
