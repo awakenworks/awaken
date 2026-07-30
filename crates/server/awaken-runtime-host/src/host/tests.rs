@@ -3264,6 +3264,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     acp_host.register_thread_backend_projection("mcp-acp-forbidden", "acp:test");
     acp_host.register_thread_backend_projection("mcp-acp-protected", "acp:test");
     acp_host.register_thread_backend_projection("mcp-acp-anonymous", "acp:test");
+    acp_host.register_thread_backend_projection("mcp-acp-prompt-skill", "acp:test");
     // Deliberately install no credential resolver: the no-bypass failure must mask
     // material-source availability and prove no secret lookup was attempted.
     let acp_managed = crate::ManagedHost::new(acp_host.clone());

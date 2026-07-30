@@ -20,6 +20,7 @@ const AGENT = 'skill-pin-agent';
 const V1 = 'PINNED_SKILL_V1_7119';
 const V2 = 'CURRENT_SKILL_V2_8120';
 const BINARY = Uint8Array.from([0, 159, 146, 150, 255, 13, 0, 10]);
+let adminToken = '';
 
 function skillMarkdown(marker) {
   return `---\nname: greet\ndescription: deterministic pinned skill\n---\n${marker}`;
@@ -33,6 +34,7 @@ async function request(baseUrl, method, route, body) {
     method,
     headers: {
       ...skillHeaders,
+      authorization: `Bearer ${adminToken}`,
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -51,7 +53,12 @@ async function uploadBundle(baseUrl, route, marker, binary = undefined) {
     form.append('file', new Blob([binary], { type: 'application/octet-stream' }), 'assets/data.bin');
   }
   const response = await fetch(`${baseUrl}${route}`, {
-    method: 'POST', headers: { 'anthropic-beta': SKILLS_BETA }, body: form,
+    method: 'POST',
+    headers: {
+      'anthropic-beta': SKILLS_BETA,
+      authorization: `Bearer ${adminToken}`,
+    },
+    body: form,
   });
   const body = await response.json().catch(() => ({}));
   assert.equal(response.status, 200, `${route}: ${JSON.stringify(body)}`);
@@ -138,7 +145,6 @@ async function main() {
   fs.writeFileSync(path.join(configDir, 'config.toml'), [
     `data_dir = ${JSON.stringify(managementDir)}`,
     `control_seal_key = ${JSON.stringify(SEAL_KEY)}`,
-    'identity_mode = "no-login"',
     'sandbox_tier = "local"',
     '',
   ].join('\n'));
@@ -151,7 +157,8 @@ async function main() {
     const first = spawnServer('management-skills', PORT, env);
     server = first.server;
     await waitForPort(PORT);
-    let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: first.baseUrl });
+    adminToken = fs.readFileSync(path.join(managementDir, 'admin-token'), 'utf8').trim();
+    let client = new Anthropic({ apiKey: adminToken, baseURL: first.baseUrl });
 
     const created = await uploadBundle(first.baseUrl, '/v1/skills', V1, BINARY);
     const skillId = created.id;
@@ -206,7 +213,7 @@ async function main() {
     const second = spawnServer('management-skills', PORT, env);
     server = second.server;
     await waitForPort(PORT);
-    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: second.baseUrl });
+    client = new Anthropic({ apiKey: adminToken, baseURL: second.baseUrl });
 
     const restoredReply = await runAndReadLastReply(client, pinned.id, 'use it again after restart');
     assert.ok(restoredReply.includes(V1), 'rehydrated old Session still loads retained v1 bytes');
@@ -285,7 +292,7 @@ async function main() {
     const third = spawnServer('management-skills', PORT, env);
     server = third.server;
     await waitForPort(PORT);
-    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: third.baseUrl });
+    client = new Anthropic({ apiKey: adminToken, baseURL: third.baseUrl });
     await assert.rejects(
       runAndReadLastReply(client, pinned.id, 'do not run a corrupted retained Skill'),
       (error) => {

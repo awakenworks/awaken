@@ -470,11 +470,10 @@ impl WebSearchPlugin {
             ));
         }
         let descriptor = web_search_descriptor();
-        let tool = erase(WebSearchTool::configured(
-            provider,
-            config,
-            self.credentials.clone(),
-        ));
+        let tool = erase_for(
+            WebSearchTool::configured(provider, config, self.credentials.clone()),
+            ToolExecutionTarget::Sandbox,
+        );
         Ok((descriptor, tool))
     }
 }
@@ -530,7 +529,7 @@ pub fn web_search_descriptor() -> ToolDescriptor {
 /// The static network-tool bundle owns only `web_fetch`. Search is exposed
 /// exclusively by [`WebSearchPlugin`], avoiding a second unconfigured path.
 pub fn web_hand_tools() -> Vec<Arc<dyn RawTool>> {
-    vec![erase(WebFetchTool)]
+    vec![erase_for(WebFetchTool, ToolExecutionTarget::Sandbox)]
 }
 
 pub struct DuckDuckGoProvider;
@@ -699,14 +698,6 @@ impl WebSearchProvider for BraveSearchProvider {
         })
         .await
     }
-}
-
-/// The network hand tools, erased for `Runtime::with_tool` registration.
-pub fn web_hand_tools() -> Vec<Arc<dyn RawTool>> {
-    vec![
-        erase_for(WebFetchTool, ToolExecutionTarget::Sandbox),
-        erase_for(WebSearchTool, ToolExecutionTarget::Sandbox),
-    ]
 }
 
 #[cfg(test)]

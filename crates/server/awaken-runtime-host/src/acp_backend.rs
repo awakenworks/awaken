@@ -172,17 +172,13 @@ impl crate::host::SharedHost {
     /// capability without a credential materializer or on a misconfigured tier.
     pub async fn with_acp_from_deployment(
         self,
-        hand_factory: Arc<dyn crate::HandExecutorFactory>,
         credentials: Option<crate::PinnedCredentialMaterializer>,
     ) -> Self {
-        let self_ = self
-            .with_session_environment_from_deployment(hand_factory.clone())
-            .await;
-        let deployment = self_.deployment.clone();
+        let deployment = self.deployment.clone();
         let Some(profile) = deployment.acp.as_ref() else {
             return match credentials {
-                Some(credentials) => self_.with_session_secret_broker(Arc::new(credentials)),
-                None => self_,
+                Some(credentials) => self.with_session_secret_broker(Arc::new(credentials)),
+                None => self,
             };
         };
         let base = acp_sandbox_base(&deployment);
@@ -214,9 +210,7 @@ impl crate::host::SharedHost {
         // The same exact, claim-fenced materializer owns both sides of the
         // last-mile seam: the resolver issues an opaque one-shot reference and
         // the selected sandbox asks it for bytes immediately before spawn.
-        self_
-            .with_acp_launch_source(hand_factory, source)
-            .await
+        self.with_bound_acp(source, None)
             .with_session_secret_broker(Arc::new(credentials))
     }
 
@@ -399,12 +393,13 @@ mod tests {
     async fn native_only_deployment_selects_the_session_provider() {
         let mut deployment = crate::DeploymentConfig::ephemeral();
         deployment.sandbox_tier = crate::SandboxTier::Local;
-        deployment.sandbox_tier_explicit = true;
         deployment.acp = None;
         let expected = deployment.sandbox_support().0;
 
         let host = SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment)
-            .with_acp_from_deployment(Arc::new(NoHandFactory), None)
+            .with_session_environment_from_deployment(Some(Arc::new(NoHandFactory)))
+            .await
+            .with_acp_from_deployment(None)
             .await;
 
         assert!(host.session_provider_explicit);

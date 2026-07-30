@@ -1234,7 +1234,7 @@ mod tests {
             owner_scope: &str,
             session: PersistedSession,
             idempotency: awaken_session_contract::IdempotencyRecord,
-            facts: Vec<awaken_session_contract::SessionLifecycleFact>,
+            facts: Vec<awaken_session_contract::ManagedLifecycleFact>,
         ) -> Result<
             awaken_session_contract::SessionRevision,
             awaken_session_contract::SessionRepositoryError,
@@ -1266,11 +1266,11 @@ mod tests {
             self.inner.commit_mutation(owner_scope, mutation).await
         }
 
-        async fn append_lifecycle(&self, fact: awaken_session_contract::SessionLifecycleFact) {
+        async fn append_lifecycle(&self, fact: awaken_session_contract::ManagedLifecycleFact) {
             self.inner.append_lifecycle(fact).await;
         }
 
-        async fn pending_lifecycle(&self) -> Vec<awaken_session_contract::SessionLifecycleFact> {
+        async fn pending_lifecycle(&self) -> Vec<awaken_session_contract::ManagedLifecycleFact> {
             self.inner.pending_lifecycle().await
         }
 

@@ -509,6 +509,17 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
         action_for(&post, "/v1/config/catalog"),
         Some(WORKSPACE_WRITE)
     );
+    assert_eq!(
+        action_for(&post, "/v1/awaken/sandbox-execution-policies"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        action_for(
+            &get,
+            "/v1/awaken/environments/env_1/sandbox-execution-policy"
+        ),
+        Some(WORKSPACE_READ)
+    );
     // An unknown bounded family still fails closed.
     assert_eq!(action_for(&get, "/v1/unknown"), None);
 }

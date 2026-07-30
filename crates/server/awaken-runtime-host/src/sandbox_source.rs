@@ -342,29 +342,6 @@ mod tests {
     const WORKDIR_CONFIG_HOME: &str = ".acp-config";
     const SANDBOX_WORKSPACE: &str = "/workspace";
 
-    fn frozen_resources(
-        thread: &str,
-        network: pc::NetworkPolicy,
-        sandbox: Option<pc::SandboxOverride>,
-    ) -> SessionRuntimeProjectionSource {
-        let slots = crate::session_slot::SessionRuntimeSlots::default();
-        slots.update(thread, |slot| {
-            slot.environment_projection =
-                Some(crate::session_slot::FrozenEnvironmentRuntimeProjection {
-                    fingerprint: awaken_protocol_managed::EnvironmentFingerprint(format!(
-                        "environment-{thread}"
-                    )),
-                    network,
-                    packages: Default::default(),
-                    sandbox,
-                    provisioning: pc::SandboxProvisioning::Eager,
-                    credential_realization:
-                        awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp(),
-                });
-        });
-        SessionRuntimeProjectionSource::new(slots)
-    }
-
     fn acp_activation(backend_ref: &str) -> RunActivation {
         acp_activation_with_plugin_config(backend_ref, Default::default())
     }

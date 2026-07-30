@@ -1061,6 +1061,20 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
         },
     },
     RoutePolicyDescriptor {
+        prefix: "/v1/awaken/sandbox-execution-policies",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/awaken/environments",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
         prefix: "/v1/capabilities",
         policy: RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
