@@ -1162,6 +1162,34 @@ mod tests {
             "unresolved target intent must round-trip without becoming a pin"
         );
 
+        // Cause/effect decision table for target selection admission:
+        // T1 non-empty model/backend + at most one endpoint selector -> accepted;
+        // T2 empty model or backend -> rejected; T3 protocol id + endpoint name ->
+        // rejected. Simplifying the admission predicate must preserve every rule.
+        for invalid in [
+            serde_json::json!({
+                "mode": "target",
+                "target": {"model_id": "", "endpoint_name": "primary"},
+                "backend_ref": "genai"
+            }),
+            serde_json::json!({
+                "mode": "target",
+                "target": {"model_id": "model", "endpoint_name": "primary"},
+                "backend_ref": ""
+            }),
+            serde_json::json!({
+                "mode": "target",
+                "target": {
+                    "model_id": "model",
+                    "protocol_endpoint_id": "endpoint-id",
+                    "endpoint_name": "primary"
+                },
+                "backend_ref": "genai"
+            }),
+        ] {
+            assert!(serde_json::from_value::<ModelSelection>(invalid).is_err());
+        }
+
         // Cause/effect decision table for the shared ACP selection wire:
         // W1 default + empty configuration -> compact backward-compatible shape;
         // W2 exact + native mode/options -> one lossless discriminated union;

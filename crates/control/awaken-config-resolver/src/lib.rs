@@ -28,8 +28,8 @@ mod credential_selection;
 mod executable_models;
 mod reference_stores;
 pub use credential_selection::{
-    CredentialCandidateSet, can_consume, credential_can_supply, credential_candidates,
-    derive_vendor_pool,
+    CredentialCandidateSet, CredentialSelectionContext, can_consume, credential_can_supply,
+    credential_candidates, derive_vendor_pool,
 };
 pub use executable_models::{
     ExecutableModelOption, ExecutableModelReadiness, ExecutorModelCapability,
@@ -563,12 +563,14 @@ async fn resolve_credential(
     match credential_candidates(
         binding,
         sources,
-        offering_provider,
-        offering_endpoint,
-        None,
-        availability,
-        expected_workspace,
-        0,
+        CredentialSelectionContext {
+            offering_provider,
+            offering_endpoint,
+            backend_ref: None,
+            availability,
+            expected_workspace,
+            selection_sequence: 0,
+        },
     )? {
         // Brokered access has no locally materializable Provider secret. The
         // management preview resolves the public model/protocol shape only; the

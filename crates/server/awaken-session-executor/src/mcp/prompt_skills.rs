@@ -218,8 +218,10 @@ mod tests {
 
     use super::*;
 
+    type RecordedPromptRequest = (String, Option<HashMap<String, String>>);
+
     struct PromptTransport {
-        seen: Mutex<Vec<(String, Option<HashMap<String, String>>)>>,
+        seen: Mutex<Vec<RecordedPromptRequest>>,
         fail_get: bool,
     }
 
