@@ -1,9 +1,9 @@
 // Scheduled deployments (scheduled-deployments doc): a deployment created with a
 // cron `schedule` must store + echo the {type,expression,timezone} verbatim, reject
 // an unparseable cron at write time (400, not silently stored), and keep the schedule
-// through a pause/unpause cycle. `management_deployments_e2e.mjs` covers the CRUD +
-// manual-run lifecycle but never sends a `schedule` — the cron half of the deployment
-// contract is otherwise untested.
+// through a pause/unpause cycle. `management_deployments_e2e.mjs` covers CRUD,
+// manual runs, and schedule replacement; this suite owns occurrence projection,
+// production timer execution, and schedule-specific lifecycle alternatives.
 //
 // Causal graph: typed cron + IANA timezone -> wall-clock scheduler -> future UTC
 // occurrences; lifecycle gates execution/projection independently.
@@ -18,6 +18,15 @@
 // | S5 | due + archived Environment | active | failed run then exact auto-pause |
 // | S6 | primary Agent archived | any | Deployment archives in same operation; no run |
 // | S7 | Deployment archived | terminal | mutation/manual run reject |
+//
+// Causes: cron/timezone validity, Agent/Environment lifecycle, exact due instant,
+// and Deployment active/paused/archived state.
+// Constraints: accepted schedules bind an existing active Agent and Environment;
+// previews remain exact while the production timer alone applies execution jitter.
+// Effects: ordered previews, suppressed or terminal schedules, typed failed runs,
+// auto-pause, synchronous primary-Agent archive cascade, and atomic rejection.
+// Decision rules: S1-S7 above cover the schedule-owned alternatives without
+// repeating the general Deployment CRUD state machine.
 //
 // Run: (from e2e/)  node management_deployment_schedule_e2e.mjs
 
@@ -42,12 +51,18 @@ async function status(fn) {
 async function main() {
   await withScenarioServer('management', 'mcp', PORT, async (baseUrl) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+    const scheduledAgent = await client.beta.agents.create({
+      name: 'scheduled-agent', model: 'claude-opus-4-8', betas: BETAS,
+    });
+    const environment = await client.beta.environments.create({
+      name: 'scheduled-environment', config: { type: 'cloud' }, betas: BETAS,
+    });
 
     // Valid cron: "every Friday at 20:00 America/New_York".
     const schedule = { type: 'cron', expression: '0 20 * * 5', timezone: 'America/New_York' };
     const dep = await client.beta.deployments.create({
-      agent: 'agent_sched',
-      environment_id: 'env_1',
+      agent: scheduledAgent.id,
+      environment_id: environment.id,
       name: 'weekly-report',
       initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
       schedule,
@@ -90,7 +105,7 @@ async function main() {
 
     // Garbage cron expression -> 400 (rejected at write time, not stored).
     const badExpr = await status(() => client.beta.deployments.create({
-      agent: 'agent_sched', environment_id: 'env_1', name: 'bad',
+      agent: scheduledAgent.id, environment_id: environment.id, name: 'bad',
       initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'x' }] }],
       schedule: { type: 'cron', expression: 'not a cron', timezone: 'UTC' }, betas: BETAS,
     }));
@@ -99,7 +114,7 @@ async function main() {
 
     // Schedule object without an `expression` -> 400.
     const noExpr = await status(() => client.beta.deployments.create({
-      agent: 'agent_sched', environment_id: 'env_1', name: 'noexpr',
+      agent: scheduledAgent.id, environment_id: environment.id, name: 'noexpr',
       initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'x' }] }],
       schedule: { type: 'cron', timezone: 'UTC' }, betas: BETAS,
     }));
@@ -107,7 +122,7 @@ async function main() {
     pass('schedule missing expression -> 400');
 
     const badTimezone = await status(() => client.beta.deployments.create({
-      agent: 'agent_sched', environment_id: 'env_1', name: 'bad-timezone',
+      agent: scheduledAgent.id, environment_id: environment.id, name: 'bad-timezone',
       initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'x' }] }],
       schedule: { type: 'cron', expression: '0 9 * * *', timezone: 'Mars/Olympus' }, betas: BETAS,
     }));
@@ -122,7 +137,7 @@ async function main() {
     });
     const primaryDeployment = await client.beta.deployments.create({
       agent: primary.id,
-      environment_id: 'env_1',
+      environment_id: environment.id,
       name: 'primary-archive-cascade',
       initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
       schedule: { type: 'cron', expression: '* * * * *', timezone: 'UTC' },
@@ -153,7 +168,7 @@ async function main() {
       name: 'scheduled-failure', config: { type: 'cloud' }, betas: BETAS,
     });
     const failingSchedule = await client.beta.deployments.create({
-      agent: 'agent_sched', environment_id: scheduledEnvironment.id, name: 'scheduled-failure',
+      agent: scheduledAgent.id, environment_id: scheduledEnvironment.id, name: 'scheduled-failure',
       initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
       schedule: { type: 'cron', expression: '* * * * *', timezone: 'UTC' }, betas: BETAS,
     });

@@ -183,6 +183,8 @@ Cause/effect and decision rules live in comments beside their tests.
 | schedule syntax/timezone and bounded stable jitter | `validate_schedule_rejects_a_malformed_cron`, `execution_jitter_is_stable_and_obeys_all_interval_bounds` |
 | capacity, pause/unpause, terminal archive, manual while paused, failure auto-pause | Deployment route decision-table unit tests |
 | official cross-module HTTP -> ordinary Session/Event behavior | `managed_deployment_e2e` |
+| official TypeScript SDK CRUD, manual run, filters, pause/unpause and archive | `management_deployments_e2e.mjs` |
+| official TypeScript SDK cron scheduling and persisted cursor behavior | `management_deployment_schedule_e2e.mjs` |
 | durable lifecycle retry and webhook projection | `awaken-webhook-managed` CRUD/outbox tests |
 
 ## References

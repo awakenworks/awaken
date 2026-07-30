@@ -7,6 +7,7 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use std::cmp::Ordering;
 use std::collections::HashSet;
 
 use axum::extract::rejection::JsonRejection;
@@ -16,15 +17,386 @@ use axum::response::IntoResponse;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use serde::Serialize;
 use tokio::sync::broadcast;
 use tokio_stream::Stream;
 
 use crate::state::{LiveInboxError, ManagedState, RunError, RunErrorKind, StateError};
 use crate::types::{
     DeletedSession, ErrorResponse, ListEventsResponse, Page, PageQuery, SendEventsRequest,
-    SendEventsResponse, Session, SessionCreateParams, SessionThread, paginate,
+    SendEventsResponse, Session, SessionCreateParams, SessionThread,
 };
 use crate::types::{Event, StreamFrame};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionListOrder {
+    Asc,
+    Desc,
+}
+
+impl SessionListOrder {
+    fn parse(value: &str) -> Result<Self, WireErr> {
+        match value {
+            "asc" => Ok(Self::Asc),
+            "desc" => Ok(Self::Desc),
+            _ => Err(error_response(StateError::Run(RunError::bad_request(
+                "order must be `asc` or `desc`",
+            )))),
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Asc => "asc",
+            Self::Desc => "desc",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionCursorDirection {
+    After,
+    Before,
+}
+
+#[derive(Debug, Clone)]
+struct SessionCursor {
+    order: SessionListOrder,
+    direction: SessionCursorDirection,
+    created_at: String,
+    id: String,
+}
+
+impl SessionCursor {
+    fn for_session(
+        order: SessionListOrder,
+        direction: SessionCursorDirection,
+        session: &Session,
+    ) -> Self {
+        Self {
+            order,
+            direction,
+            created_at: session.created_at.clone(),
+            id: session.id.clone(),
+        }
+    }
+
+    fn encode(&self) -> String {
+        let direction = match self.direction {
+            SessionCursorDirection::After => "after",
+            SessionCursorDirection::Before => "before",
+        };
+        let plain = format!(
+            "v1|{}|{direction}|{}|{}",
+            self.order.as_str(),
+            self.created_at,
+            self.id
+        );
+        plain
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    fn decode(value: &str) -> Result<Self, WireErr> {
+        if !value.len().is_multiple_of(2) || value.is_empty() {
+            return Err(invalid_session_cursor());
+        }
+        let bytes = (0..value.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&value[index..index + 2], 16))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| invalid_session_cursor())?;
+        let plain = String::from_utf8(bytes).map_err(|_| invalid_session_cursor())?;
+        let mut fields = plain.split('|');
+        if fields.next() != Some("v1") {
+            return Err(invalid_session_cursor());
+        }
+        let order = fields
+            .next()
+            .ok_or_else(invalid_session_cursor)
+            .and_then(SessionListOrder::parse)?;
+        let direction = match fields.next() {
+            Some("after") => SessionCursorDirection::After,
+            Some("before") => SessionCursorDirection::Before,
+            _ => return Err(invalid_session_cursor()),
+        };
+        let created_at = fields
+            .next()
+            .ok_or_else(invalid_session_cursor)?
+            .to_string();
+        let id = fields
+            .next()
+            .ok_or_else(invalid_session_cursor)?
+            .to_string();
+        if fields.next().is_some()
+            || id.is_empty()
+            || chrono::DateTime::parse_from_rfc3339(&created_at).is_err()
+        {
+            return Err(invalid_session_cursor());
+        }
+        Ok(Self {
+            order,
+            direction,
+            created_at,
+            id,
+        })
+    }
+}
+
+fn invalid_session_cursor() -> WireErr {
+    error_response(StateError::Run(RunError::bad_request(
+        "invalid session pagination cursor",
+    )))
+}
+
+#[derive(Debug)]
+struct SessionListParams {
+    limit: usize,
+    page: Option<SessionCursor>,
+    order: SessionListOrder,
+    agent_id: Option<String>,
+    agent_version: Option<u32>,
+    created_gt: Option<chrono::DateTime<chrono::FixedOffset>>,
+    created_gte: Option<chrono::DateTime<chrono::FixedOffset>>,
+    created_lt: Option<chrono::DateTime<chrono::FixedOffset>>,
+    created_lte: Option<chrono::DateTime<chrono::FixedOffset>>,
+    deployment_id: Option<String>,
+    include_archived: bool,
+    memory_store_id: Option<String>,
+    statuses: HashSet<String>,
+}
+
+fn parse_session_list(raw: Option<&str>) -> Result<SessionListParams, WireErr> {
+    let mut params = SessionListParams {
+        limit: awaken_agent_contract::page::DEFAULT_PAGE_LIMIT,
+        page: None,
+        order: SessionListOrder::Desc,
+        agent_id: None,
+        agent_version: None,
+        created_gt: None,
+        created_gte: None,
+        created_lt: None,
+        created_lte: None,
+        deployment_id: None,
+        include_archived: false,
+        memory_store_id: None,
+        statuses: HashSet::new(),
+    };
+    let pairs = form_urlencoded::parse(raw.unwrap_or_default().as_bytes());
+    let mut encoded_page = None;
+    for (key, value) in pairs {
+        match key.as_ref() {
+            "limit" => {
+                params.limit = value.parse::<usize>().map_err(|_| {
+                    error_response(StateError::Run(RunError::bad_request(
+                        "limit must be a positive integer",
+                    )))
+                })?;
+                if params.limit == 0 {
+                    return Err(error_response(StateError::Run(RunError::bad_request(
+                        "limit must be a positive integer",
+                    ))));
+                }
+                params.limit = params
+                    .limit
+                    .min(awaken_agent_contract::page::MAX_PAGE_LIMIT);
+            }
+            "page" => encoded_page = Some(value.into_owned()),
+            "order" => params.order = SessionListOrder::parse(&value)?,
+            "agent_id" => params.agent_id = Some(value.into_owned()),
+            "agent_version" => {
+                params.agent_version = Some(value.parse::<u32>().map_err(|_| {
+                    error_response(StateError::Run(RunError::bad_request(
+                        "agent_version must be a positive integer",
+                    )))
+                })?);
+            }
+            "created_at[gt]" => params.created_gt = Some(parse_list_time(&value)?),
+            "created_at[gte]" => params.created_gte = Some(parse_list_time(&value)?),
+            "created_at[lt]" => params.created_lt = Some(parse_list_time(&value)?),
+            "created_at[lte]" => params.created_lte = Some(parse_list_time(&value)?),
+            "deployment_id" => params.deployment_id = Some(value.into_owned()),
+            "include_archived" => {
+                params.include_archived = value.parse::<bool>().map_err(|_| {
+                    error_response(StateError::Run(RunError::bad_request(
+                        "include_archived must be a boolean",
+                    )))
+                })?;
+            }
+            "memory_store_id" => params.memory_store_id = Some(value.into_owned()),
+            "statuses" | "statuses[]" => match value.as_ref() {
+                "rescheduling" | "running" | "idle" | "terminated" => {
+                    params.statuses.insert(value.into_owned());
+                }
+                _ => {
+                    return Err(error_response(StateError::Run(RunError::bad_request(
+                        "statuses contains an unsupported Session status",
+                    ))));
+                }
+            },
+            _ => {}
+        }
+    }
+    params.page = encoded_page
+        .as_deref()
+        .map(SessionCursor::decode)
+        .transpose()?;
+    if params
+        .page
+        .as_ref()
+        .is_some_and(|cursor| cursor.order != params.order)
+    {
+        return Err(error_response(StateError::Run(RunError::bad_request(
+            "session pagination cursor order does not match the requested order",
+        ))));
+    }
+    Ok(params)
+}
+
+fn parse_list_time(value: &str) -> Result<chrono::DateTime<chrono::FixedOffset>, WireErr> {
+    chrono::DateTime::parse_from_rfc3339(value).map_err(|_| {
+        error_response(StateError::Run(RunError::bad_request(
+            "created_at filters must be RFC 3339 timestamps",
+        )))
+    })
+}
+
+#[derive(Debug, Serialize)]
+struct SessionListPage {
+    data: Vec<Session>,
+    next_page: Option<String>,
+    prev_page: Option<String>,
+}
+
+fn session_list_page(
+    mut data: Vec<Session>,
+    params: &SessionListParams,
+) -> Result<SessionListPage, WireErr> {
+    data.retain(|session| session_matches(session, params));
+    data.sort_by(|left, right| session_order(left, right, params.order));
+    let (start, end) = match &params.page {
+        None => (0, params.limit.min(data.len())),
+        Some(cursor) => match cursor.direction {
+            SessionCursorDirection::After => {
+                let start = data.partition_point(|session| {
+                    session_to_cursor_order(session, cursor, params.order) != Ordering::Greater
+                });
+                (start, start.saturating_add(params.limit).min(data.len()))
+            }
+            SessionCursorDirection::Before => {
+                let end = data.partition_point(|session| {
+                    session_to_cursor_order(session, cursor, params.order) == Ordering::Less
+                });
+                (end.saturating_sub(params.limit), end)
+            }
+        },
+    };
+    let page = data[start..end].to_vec();
+    let prev_page = (start > 0).then(|| page.first()).flatten().map(|first| {
+        SessionCursor::for_session(params.order, SessionCursorDirection::Before, first).encode()
+    });
+    let next_page = (end < data.len())
+        .then(|| page.last())
+        .flatten()
+        .map(|last| {
+            SessionCursor::for_session(params.order, SessionCursorDirection::After, last).encode()
+        });
+    Ok(SessionListPage {
+        data: page,
+        next_page,
+        prev_page,
+    })
+}
+
+fn session_order(left: &Session, right: &Session, order: SessionListOrder) -> Ordering {
+    let result = left
+        .created_at
+        .cmp(&right.created_at)
+        .then_with(|| left.id.cmp(&right.id));
+    match order {
+        SessionListOrder::Asc => result,
+        SessionListOrder::Desc => result.reverse(),
+    }
+}
+
+fn session_to_cursor_order(
+    session: &Session,
+    cursor: &SessionCursor,
+    order: SessionListOrder,
+) -> Ordering {
+    let result = session
+        .created_at
+        .cmp(&cursor.created_at)
+        .then_with(|| session.id.cmp(&cursor.id));
+    match order {
+        SessionListOrder::Asc => result,
+        SessionListOrder::Desc => result.reverse(),
+    }
+}
+
+fn session_matches(session: &Session, params: &SessionListParams) -> bool {
+    if !params.include_archived && session.archived_at.is_some() {
+        return false;
+    }
+    if params
+        .agent_id
+        .as_ref()
+        .is_some_and(|id| session.agent.id != *id)
+    {
+        return false;
+    }
+    if params.agent_id.is_some()
+        && params
+            .agent_version
+            .is_some_and(|version| session.agent.version != version)
+    {
+        return false;
+    }
+    if params
+        .deployment_id
+        .as_ref()
+        .is_some_and(|id| session.deployment_id.as_ref() != Some(id))
+    {
+        return false;
+    }
+    if params.memory_store_id.as_ref().is_some_and(|id| {
+        !session.resources.iter().any(|resource| {
+            matches!(
+                resource,
+                crate::types::resource::SessionResource::MemoryStore {
+                    memory_store_id,
+                    ..
+                } if memory_store_id == id
+            )
+        })
+    }) {
+        return false;
+    }
+    if !params.statuses.is_empty() && !params.statuses.contains(session.status) {
+        return false;
+    }
+    let Ok(created) = chrono::DateTime::parse_from_rfc3339(&session.created_at) else {
+        return false;
+    };
+    params
+        .created_gt
+        .as_ref()
+        .is_none_or(|bound| created > *bound)
+        && params
+            .created_gte
+            .as_ref()
+            .is_none_or(|bound| created >= *bound)
+        && params
+            .created_lt
+            .as_ref()
+            .is_none_or(|bound| created < *bound)
+        && params
+            .created_lte
+            .as_ref()
+            .is_none_or(|bound| created <= *bound)
+}
 
 /// A JSON body extractor scoped to the Managed Agents routes. On a decode failure
 /// (malformed JSON, missing/mistyped field, wrong content-type, or an unknown
@@ -396,13 +768,14 @@ type WireErr = (StatusCode, Json<ErrorResponse>);
 async fn list_sessions(
     State(state): State<Arc<ManagedState>>,
     workspace: Option<axum::Extension<WorkspaceScope>>,
-    Query(page): Query<PageQuery>,
-) -> Json<Page<Session>> {
+    RawQuery(raw): RawQuery,
+) -> Result<Json<SessionListPage>, WireErr> {
     let scope = workspace
         .map(|w| w.0.0)
         .unwrap_or_else(|| crate::state::DEFAULT_SCOPE.to_string());
     let data = state.list_sessions_scoped(&scope);
-    Json(paginate(data, &page, |s| s.id.as_str()))
+    let params = parse_session_list(raw.as_deref())?;
+    session_list_page(data, &params).map(Json)
 }
 
 /// `POST /v1/sessions/:id` — update `title` (null clears) + patch `metadata`.

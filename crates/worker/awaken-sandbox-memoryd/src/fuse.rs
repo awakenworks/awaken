@@ -17,7 +17,7 @@ use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyCreate,
     ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
 };
-use libc::{EAGAIN, EEXIST, EINVAL, EIO, ENOENT, ENOSYS, ENOTEMPTY, O_TRUNC};
+use libc::{EAGAIN, EEXIST, EINVAL, EIO, ENOENT, ENOSPC, ENOSYS, ENOTEMPTY, O_TRUNC};
 use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
 
@@ -837,6 +837,7 @@ impl MemoryFuse {
             FuseError::NotFound(_) | FuseError::Mem(MemErr::NotFound(_)) => ENOENT,
             FuseError::Mem(MemErr::PathConflict(_)) => EEXIST,
             FuseError::Mem(MemErr::InvalidPath(_)) => EINVAL,
+            FuseError::Mem(MemErr::AtCapacity) => ENOSPC,
             FuseError::DirtyFileLimitExceeded | FuseError::Mem(MemErr::Conflict { .. }) => EAGAIN,
             _ => EIO,
         }
@@ -1403,6 +1404,10 @@ mod tests {
         assert_eq!(
             MemoryFuse::errno(FuseError::Mem(MemErr::Conflict { current: mem() })),
             EAGAIN
+        );
+        assert_eq!(
+            MemoryFuse::errno(FuseError::Mem(MemErr::AtCapacity)),
+            ENOSPC
         );
         assert_eq!(MemoryFuse::errno(FuseError::TooLarge), EIO);
         assert_eq!(MemoryFuse::errno(FuseError::Internal("x".into())), EIO);

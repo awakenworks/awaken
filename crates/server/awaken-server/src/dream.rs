@@ -300,60 +300,6 @@ impl BuiltInDreamAgent {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use awaken_agent_contract::agent::content::ContentBlock;
-    use awaken_agent_contract::agent::message::{Id, Message, Role};
-
-    #[test]
-    fn jsonl_export_preserves_every_committed_message_and_tool_payload_in_order() {
-        // Transcript cause/effect rules: C1 committed user/assistant/tool sequence
-        // -> E1 one JSON object per message in the same order; C2 tool-use input
-        // and tool-result content -> E2 retained without text flattening; C3 empty
-        // transcript -> E3 empty file. These rules answer whether Dream sees full
-        // history and tool results: it sees the complete committed prefix only.
-        let messages = vec![
-            Message::text(Id("m1".into()), Role::User, "inspect"),
-            Message::new(
-                Id("m2".into()),
-                Role::Assistant,
-                vec![ContentBlock::tool_use(
-                    "call-1",
-                    "read",
-                    serde_json::json!({"path":"/a.md"}),
-                )],
-            ),
-            Message::new(
-                Id("m3".into()),
-                Role::Tool,
-                vec![ContentBlock::tool_result(
-                    "call-1",
-                    vec![ContentBlock::text("file contents")],
-                )],
-            ),
-        ];
-        let encoded = SessionTranscriptJsonlExporter::encode("sesn_1", &messages).unwrap();
-        let rows = std::str::from_utf8(&encoded)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0]["ordinal"], 0);
-        assert_eq!(rows[1]["message"]["content"][0]["input"]["path"], "/a.md");
-        assert_eq!(
-            rows[2]["message"]["content"][0]["content"][0]["text"],
-            "file contents"
-        );
-        assert!(
-            SessionTranscriptJsonlExporter::encode("empty", &[])
-                .unwrap()
-                .is_empty()
-        );
-    }
-}
-
 #[async_trait::async_trait]
 impl DreamWorker for BuiltInDreamAgent {
     async fn validate_inputs(&self, request: &DreamRequest) -> Result<(), DreamFailure> {
@@ -552,5 +498,59 @@ impl DreamWorker for BuiltInDreamAgent {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_agent_contract::agent::content::ContentBlock;
+    use awaken_agent_contract::agent::message::{Id, Message, Role};
+
+    #[test]
+    fn jsonl_export_preserves_every_committed_message_and_tool_payload_in_order() {
+        // Transcript cause/effect rules: C1 committed user/assistant/tool sequence
+        // -> E1 one JSON object per message in the same order; C2 tool-use input
+        // and tool-result content -> E2 retained without text flattening; C3 empty
+        // transcript -> E3 empty file. These rules answer whether Dream sees full
+        // history and tool results: it sees the complete committed prefix only.
+        let messages = vec![
+            Message::text(Id("m1".into()), Role::User, "inspect"),
+            Message::new(
+                Id("m2".into()),
+                Role::Assistant,
+                vec![ContentBlock::tool_use(
+                    "call-1",
+                    "read",
+                    serde_json::json!({"path":"/a.md"}),
+                )],
+            ),
+            Message::new(
+                Id("m3".into()),
+                Role::Tool,
+                vec![ContentBlock::tool_result(
+                    "call-1",
+                    vec![ContentBlock::text("file contents")],
+                )],
+            ),
+        ];
+        let encoded = SessionTranscriptJsonlExporter::encode("sesn_1", &messages).unwrap();
+        let rows = std::str::from_utf8(&encoded)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0]["ordinal"], 0);
+        assert_eq!(rows[1]["message"]["content"][0]["input"]["path"], "/a.md");
+        assert_eq!(
+            rows[2]["message"]["content"][0]["content"][0]["text"],
+            "file contents"
+        );
+        assert!(
+            SessionTranscriptJsonlExporter::encode("empty", &[])
+                .unwrap()
+                .is_empty()
+        );
     }
 }

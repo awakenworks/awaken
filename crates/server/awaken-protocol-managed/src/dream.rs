@@ -970,7 +970,7 @@ impl DreamSessionSource for crate::ManagedState {
                 (updated > updated_after_ms).then_some((updated, session.id))
             })
             .collect::<Vec<_>>();
-        sessions.sort_by(|left, right| left.cmp(right));
+        sessions.sort();
         sessions.into_iter().take(limit).map(|(_, id)| id).collect()
     }
 }

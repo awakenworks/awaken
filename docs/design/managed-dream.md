@@ -371,6 +371,24 @@ oracle.
 | MNT-1 | strict output with copy-only mounter | teardown and fail before Agent launch; `write_through_required_rejects_copy_before_agent_launch` |
 | JSONL-1 | committed text/tool-use/tool-result/empty history | exact ordered payload or empty file; `jsonl_export_preserves_every_committed_message_and_tool_payload_in_order` |
 | E2E-1 | Agent + Session + Events + Files + MemoryStore + Dream | one runtime/data plane, JSONL readable on demand, ordinary auxiliary Session, independent output/source unchanged; `agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane` |
+| E2E-2 | official TypeScript SDK + Session + Files + MemoryStore + Dream | typed SDK creation/poll/list/cancel/archive across one process boundary; `managed_dream_e2e.ts` |
+
+### P0-P6 completion evidence
+
+The P0-P6 labels are test-work packages, not seven parallel implementations.
+Each package terminates in the same `DreamState` / `DreamWorker` path described
+above, and the cause/effect table in `managed_dream_e2e.ts` is its executable
+cross-module acceptance design.
+
+| Package | Required outcome | Authoritative evidence |
+|---|---|---|
+| P0 | current official SDK can create and decode a typed asynchronous Dream with the Managed and Dreaming capabilities | SDK `0.115.0`; `managed_dream_e2e.ts`; SDK-surface conformance gate |
+| P1 | one frozen source and selected committed Sessions produce a terminal Dream with stable output and auxiliary Session references | `DreamState`; `BuiltInDreamAgent`; Rust and TypeScript Dream E2Es |
+| P2 | each committed transcript is exported as valid, downloadable JSONL and remains file input read on demand | `SessionTranscriptJsonlExporter`; `jsonl_export_preserves_every_committed_message_and_tool_payload_in_order`; TypeScript Files assertion |
+| P3 | input Dream store is read-only and unchanged; output Dream store is a distinct clone and the sole strict write-through target | `MemoryStoreContentSnapshot`; `WriteThroughRequired`; mount decision-table tests; both cross-module E2Es |
+| P4 | Dream execution is an ordinary restricted auxiliary Session, not an alternate Agent state | `ManagedState`; `BuiltInDreamAgent`; auxiliary Session origin/terminal assertions |
+| P5 | retrieve/list/filter/cancel/archive, durable recovery, Workspace selection, automatic policy, and shared periodic scheduling obey their state rules | protocol cause/decision-table tests; SQLite recovery tests; policy tests |
+| P6 | the public contract crosses Session, MemoryStore, Dream, and Files modules through the official TypeScript SDK without a Dream-specific shim | `managed_dream_e2e.ts`; `sdk_surface_coverage_e2e.mjs` |
 
 ## Required versus deferred work
 

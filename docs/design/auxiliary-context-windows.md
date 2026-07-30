@@ -19,7 +19,7 @@ TranscriptSnapshot (thread, view, version, message ids)
       +-- Memory Recall Window -----> request-only context
       +-- Compact Fold Window ------> stable Compactor Run --> summary + bridge
       +-- Goal Evaluation Window ---> stable Grader Run
-      +-- Dream Session Windows ----> JSONL files --> Memory Consolidator Run
+      +-- Dream Session Windows ----> JSONL files --> Dream Agent Run
       `-- Main Inference Window ----> model request
 ```
 

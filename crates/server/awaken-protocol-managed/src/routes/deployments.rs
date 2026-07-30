@@ -268,6 +268,9 @@ pub trait DeploymentSessionLauncher: Send + Sync {
     async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome;
 }
 
+#[path = "deployments/launcher.rs"]
+mod launcher;
+pub use launcher::ManagedDeploymentSessionLauncher;
 #[path = "deployments/scheduling.rs"]
 mod scheduling;
 #[cfg(test)]
@@ -833,10 +836,7 @@ async fn run_deployment(
         .lock()
         .unwrap()
         .insert(run_id.clone(), record.clone());
-    if let Err(error) = state
-        .persist_run_event(&run_id, &record, "deployment_run.started")
-        .await
-    {
+    if let Err(error) = state.persist_manual_run(&run_id, &record).await {
         state.runs.lock().unwrap().remove(&run_id);
         return Err(repository_unavailable(error));
     }
@@ -906,126 +906,6 @@ async fn list_runs(
         })
         .collect();
     Ok(Json(paginate(data, &page, |r| r.id.as_str())))
-}
-
-/// Adapter from Deployment's narrow launch port to the canonical Managed
-/// Session create command. It owns the `Arc` needed to enqueue initial Events.
-pub struct ManagedDeploymentSessionLauncher(Arc<crate::ManagedState>);
-
-impl ManagedDeploymentSessionLauncher {
-    #[must_use]
-    pub fn new(state: Arc<crate::ManagedState>) -> Self {
-        Self(state)
-    }
-}
-
-#[async_trait::async_trait]
-impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
-    async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome {
-        if request.environment_id != "env_local"
-            && let Some(environment) = self.0.deployment_environment(&request.environment_id).await
-        {
-            match environment {
-                None => {
-                    return DeploymentLaunchOutcome::Failed {
-                        error: RunError::EnvironmentNotFoundError {
-                            message: format!(
-                                "environment `{}` no longer exists",
-                                request.environment_id
-                            ),
-                        },
-                    };
-                }
-                Some(environment) if environment.archived_at.is_some() => {
-                    return DeploymentLaunchOutcome::Failed {
-                        error: RunError::EnvironmentArchivedError {
-                            message: format!(
-                                "environment `{}` is archived",
-                                request.environment_id
-                            ),
-                        },
-                    };
-                }
-                Some(_) => {}
-            }
-        }
-        if self
-            .0
-            .deployment_agent_unavailable(&request.workspace_id, &request.agent.id)
-        {
-            return DeploymentLaunchOutcome::Failed {
-                error: RunError::AgentArchivedError {
-                    message: format!("agent `{}` is archived", request.agent.id),
-                },
-            };
-        }
-        if let Some(delegate) = self
-            .0
-            .deployment_unavailable_delegate(&request.workspace_id, &request.agent.id)
-        {
-            return DeploymentLaunchOutcome::Failed {
-                error: RunError::AgentArchivedError {
-                    message: format!("subagent `{delegate}` is archived"),
-                },
-            };
-        }
-        // Admission already decoded the exact deployment-event subset. Lower it
-        // into the ordinary Session create command so validation, persistence and
-        // initial execution have one authority. A Deployment must never create an
-        // empty Session and then drive a second best-effort send-events path.
-        let initial_events = request.initial_events.into_iter().map(Into::into).collect();
-        let mut metadata = request.metadata;
-        metadata.insert(
-            "awaken.deployment_id".to_string(),
-            request.deployment_id.clone(),
-        );
-        let create = crate::types::SessionCreateParams {
-            agent: crate::types::AgentRef::Object(crate::types::AgentRefObject {
-                id: request.agent.id,
-                kind: Some(crate::types::AgentRefKind::Agent),
-                version: Some(request.agent.version as u32),
-                system: None,
-                tools: None,
-                mcp_servers: None,
-                skills: None,
-                model: None,
-            }),
-            initial_events,
-            application_contribution_required: false,
-            environment_id: Some(request.environment_id),
-            title: None,
-            metadata,
-            mcp_servers: Vec::new(),
-            vault_ids: request.vault_ids,
-            resources: request.resources,
-        };
-        let session = match self
-            .0
-            .create_session_with_initial_events(create, Some(request.workspace_id))
-            .await
-        {
-            Ok(session) => session,
-            Err(error) => {
-                let error = match error {
-                    crate::StateError::VaultNotFound(id) => RunError::VaultNotFoundError {
-                        message: format!("vault `{id}` not found"),
-                    },
-                    crate::StateError::Run(error) if error.code == "mcp_egress_blocked" => {
-                        RunError::McpEgressBlockedError {
-                            message: error.message,
-                        }
-                    }
-                    error => RunError::SessionCreationRejectedError {
-                        message: error.to_string(),
-                    },
-                };
-                return DeploymentLaunchOutcome::Failed { error };
-            }
-        };
-        DeploymentLaunchOutcome::Created {
-            session_id: session.id,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1438,6 +1318,84 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    #[tokio::test]
+    async fn manual_runs_are_durable_without_scheduled_run_webhook_facts() {
+        // Causes: the same Deployment is triggered manually or by its cron schedule.
+        // Constraints: DeploymentRun rows exist for both, but official run webhooks
+        // are emitted only for scheduled runs.
+        // Effects: manual success survives restart with no deployment_run.* outbox fact.
+        // Decision rule: webhooks/deployment-run W1 manual vs W2 scheduled.
+        struct SuccessfulLauncher;
+        #[async_trait::async_trait]
+        impl DeploymentSessionLauncher for SuccessfulLauncher {
+            async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome {
+                DeploymentLaunchOutcome::Created {
+                    session_id: format!("sesn_{}", request.deployment_id),
+                }
+            }
+        }
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "awaken-manual-deployment-run-{}-{unique}.db",
+            std::process::id()
+        ));
+        let repository = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
+                .unwrap(),
+        );
+        let state = Arc::new(
+            DeploymentState::with_repository(repository.clone())
+                .await
+                .unwrap(),
+        );
+        state.bind_launcher(Arc::new(SuccessfulLauncher));
+        let deployment = create_deployment(
+            State(state.clone()),
+            None,
+            ManagedJson(create_params(false)),
+        )
+        .await
+        .unwrap()
+        .0;
+        for fact in awaken_session_contract::ManagedSessionRepository::pending_lifecycle(
+            repository.as_ref(),
+        )
+        .await
+        {
+            awaken_session_contract::ManagedSessionRepository::complete_lifecycle(
+                repository.as_ref(),
+                &fact.id,
+            )
+            .await;
+        }
+
+        let run = run_deployment(State(state), Path(deployment.id), None)
+            .await
+            .unwrap()
+            .0;
+        assert!(run.session_id.is_some(), "W1 durable success");
+        assert!(
+            awaken_session_contract::ManagedSessionRepository::pending_lifecycle(
+                repository.as_ref(),
+            )
+            .await
+            .iter()
+            .all(|fact| !fact.event_type.starts_with("deployment_run.")),
+            "W1 manual run emits no scheduled-only webhook facts"
+        );
+        let restored = DeploymentState::with_repository(repository.clone())
+            .await
+            .unwrap();
+        assert!(restored.runs.lock().unwrap().contains_key(&run.id), "W1");
+        drop(restored);
+        drop(repository);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn validate_schedule_rejects_a_malformed_cron() {
         // schedule JSON -> typed union -> cron semantic validation -> store/no store
@@ -1630,11 +1588,12 @@ mod tests {
         other_agent.agent = AgentReference::new("agent_other", 1);
         let mut other_workspace = same.clone();
         other_workspace.workspace_id = "workspace_b".into();
-        let mut store = state.deployments.lock().unwrap();
-        store.insert("same".into(), same);
-        store.insert("other_agent".into(), other_agent);
-        store.insert("other_workspace".into(), other_workspace);
-        drop(store);
+        {
+            let mut store = state.deployments.lock().unwrap();
+            store.insert("same".into(), same);
+            store.insert("other_agent".into(), other_agent);
+            store.insert("other_workspace".into(), other_workspace);
+        }
 
         assert_eq!(
             state
@@ -1644,11 +1603,12 @@ mod tests {
             1,
             "P1"
         );
-        let store = state.deployments.lock().unwrap();
-        assert!(store["same"].archived_at.is_some(), "P1");
-        assert!(store["other_agent"].archived_at.is_none(), "P2");
-        assert!(store["other_workspace"].archived_at.is_none(), "P3");
-        drop(store);
+        {
+            let store = state.deployments.lock().unwrap();
+            assert!(store["same"].archived_at.is_some(), "P1");
+            assert!(store["other_agent"].archived_at.is_none(), "P2");
+            assert!(store["other_workspace"].archived_at.is_none(), "P3");
+        }
         assert_eq!(
             state
                 .archive_for_agent("workspace_a", "agent_primary")

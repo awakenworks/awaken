@@ -1,59 +1,12 @@
 //! Cross-module Managed Agents overview -> Dream E2E.
 
-use std::path::Path;
-use std::sync::Arc;
-
-use awaken_memory_store::MemoryRepository;
-use awaken_runtime_host::{MemoryMount, MemoryMounter, MountAccess, Realization, SandboxError};
-use awaken_scenario_host::{EchoModel, build_router_and_host};
+use awaken_scenario_host::build_dream_router;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
-
-struct DeterministicWriteThroughMounter {
-    memory: Arc<dyn MemoryRepository>,
-}
-
-struct DeterministicWriteThroughMount;
-
-#[async_trait::async_trait]
-impl MemoryMount for DeterministicWriteThroughMount {
-    fn realization(&self) -> Realization {
-        Realization::Fuse
-    }
-
-    async fn teardown(self: Box<Self>) {}
-}
-
-#[async_trait::async_trait]
-impl MemoryMounter for DeterministicWriteThroughMounter {
-    async fn mount(
-        &self,
-        store_id: &str,
-        host_path: &Path,
-        _access: MountAccess,
-    ) -> Result<Box<dyn MemoryMount>, SandboxError> {
-        std::fs::create_dir_all(host_path).map_err(|error| SandboxError::new(error.to_string()))?;
-        for memory in self
-            .memory
-            .snapshot_heads(store_id)
-            .await
-            .map_err(|error| SandboxError::new(error.to_string()))?
-        {
-            let path = host_path.join(memory.path.trim_start_matches('/'));
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|error| SandboxError::new(error.to_string()))?;
-            }
-            std::fs::write(&path, memory.content.unwrap_or_default())
-                .map_err(|error| SandboxError::new(error.to_string()))?;
-        }
-        Ok(Box::new(DeterministicWriteThroughMount))
-    }
-}
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
     let mut builder = Request::builder().method(method).uri(uri).header(
@@ -105,13 +58,12 @@ async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_
     // C2 ordinary MemoryStore + selected Session -> E2 asynchronous Dream;
     // C3 frozen transcript export -> E3 Files JSONL preserving committed messages;
     // C4 consolidation execution -> E4 ordinary archived Session + independent
-    // output MemoryStore; C5 source/output separation -> E5 source stays unchanged.
-    // Decision rule R1 covers the successful end-to-end combination of all five
-    // causes. Route/unit suites own invalid and terminal alternatives.
-    let (app, host) = build_router_and_host(Arc::new(EchoModel), "claude-sonnet-5");
-    host.install_memory_mounter(Arc::new(DeterministicWriteThroughMounter {
-        memory: host.memory_repository(),
-    }));
+    // output MemoryStore; C5 source/output separation -> E5 source stays unchanged;
+    // C6 explicit `view=full` -> E6 list projections include Dream contents (the
+    // official default `basic` projection intentionally omits them). Decision rule
+    // R1 covers the successful end-to-end combination of all six causes. Route/unit
+    // suites own invalid, default-basic, and terminal alternatives.
+    let app = build_dream_router();
 
     let session = ok(
         &app,
@@ -180,14 +132,14 @@ async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_
     let source = ok(
         &app,
         "GET",
-        &format!("/v1/memory_stores/{store_id}/memories"),
+        &format!("/v1/memory_stores/{store_id}/memories?view=full"),
         None,
     )
     .await;
     let output = ok(
         &app,
         "GET",
-        &format!("/v1/memory_stores/{output_id}/memories"),
+        &format!("/v1/memory_stores/{output_id}/memories?view=full"),
         None,
     )
     .await;

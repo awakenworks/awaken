@@ -333,11 +333,14 @@ async fn memory_crud_with_precondition_and_version_log() {
     assert_eq!(mem["content"], "hello");
     assert_eq!(mem["content_size_bytes"], 5);
 
-    // List (full view) returns the head content; basic view elides it.
+    // Causes: list view is omitted/basic/full.
+    // Constraints: list defaults to basic; retrieve defaults to full.
+    // Effects: explicit full returns content while omitted/basic returns null.
+    // Decision rule: Memory-list ML2/ML4.
     let (status, full) = call(
         &router,
         "GET",
-        &format!("/v1/memory_stores/{store}/memories"),
+        &format!("/v1/memory_stores/{store}/memories?view=full"),
         None,
     )
     .await;
@@ -346,7 +349,7 @@ async fn memory_crud_with_precondition_and_version_log() {
     let (_, basic) = call(
         &router,
         "GET",
-        &format!("/v1/memory_stores/{store}/memories?view=basic"),
+        &format!("/v1/memory_stores/{store}/memories"),
         None,
     )
     .await;

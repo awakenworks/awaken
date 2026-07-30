@@ -2,7 +2,7 @@
 
 Test-coverage design and gap analysis for the **Claude Managed Agents** API
 (`platform.claude.com/docs/en/managed-agents/*`), mapped against awaken's TS/Node
-e2e conformance suite in `e2e/` (234 `*_e2e.mjs` / `*_e2e.ts` files + the static conformance
+e2e conformance suite in `e2e/` (246 `*_e2e.mjs` / `*_e2e.ts` files + the static conformance
 gate in `e2e/conformance/`).
 
 The oracle is the installed official SDK (`@anthropic-ai/sdk`, pinned in
@@ -20,8 +20,47 @@ the Managed state machine there or create one suite per documentation page.
 
 Files were excluded from the implementation initiative that originally added this
 baseline; their existing behavior remains visible in the traceability table. Dreams
-are now implemented as a research-preview surface and are covered by the Rust
-cross-module suites linked below rather than by a duplicate Node state machine.
+are implemented as a research-preview surface. Rust owns the detailed lifecycle,
+JSONL, and mount alternatives; one official TypeScript SDK E2E owns only the
+cross-module contract, so it does not duplicate the state-machine suite.
+
+### Page-by-page traceability (official sitemap snapshot: 2026-07-30)
+
+This is the canonical page inventory. The offline docs gate checks that these exact
+26 official slugs occur once, every row names executable evidence, and every row
+records a test-design method. `✅` means Awaken-owned behavior is executable locally;
+`◇` means the page also contains Anthropic-hosted infrastructure, Console UX, SDK
+client logic, branding, or operator responsibilities that Awaken cannot truthfully
+execute, while the local API/security boundary is still covered.
+
+| Official page | Contract and scope | Executable evidence | Test design / status |
+|---|---|---|---|
+| [agent-setup](https://platform.claude.com/docs/en/managed-agents/agent-setup) | Agent defaults; model/effort; replace/clear/metadata merge; optimistic version; no-op; versions; frozen rosters; archive terminality | `management_agents_e2e.mjs`, `agent_publication_truth_e2e.ts`, `managed_agent_model_inherit_e2e.mjs` | Decision B; state transition + CAS + null/omit/empty partitions ✅ |
+| [cloud-sandboxes-reference](https://platform.claude.com/docs/en/managed-agents/cloud-sandboxes-reference) | Cloud configuration and fail-closed provisioning; Anthropic's exact Ubuntu image, CPU/RAM/disk inventory is external infrastructure | `management_environments_e2e.mjs`, `managed_container_agent_e2e.mjs`, `sandbox_provisioning_e2e.mjs` | Config equivalence + real provider success/failure; hosted inventory explicitly non-applicable ◇ |
+| [define-outcomes](https://platform.claude.com/docs/en/managed-agents/define-outcomes) | Rubric admission; one active outcome; iterations/spans; satisfied/revision/max/failed/interrupted terminals; output scope | `managed_outcome_e2e.mjs`, `managed_outcome_lifecycle_e2e.mjs`, `managed_outcome_runtime_matrix_e2e.ts` | State-machine transition/pairing + boundary 1..20; G1-G4/H8 ✅ |
+| [dreams](https://platform.claude.com/docs/en/managed-agents/dreams) | Create/retrieve/list/cancel/archive; frozen JSONL; read-only inputs/new writable output; usage/errors/limits; automatic policy uses same job path | `managed_dream_e2e.ts`, protocol `tests/dreams.rs`, server `managed_dream_e2e.rs` | Dream P1-P8/A1-A4; lifecycle + failure injection + restart + official SDK ✅ |
+| [environments](https://platform.claude.com/docs/en/managed-agents/environments) | Cloud/self-hosted config; packages; limited networking defaults/hosts/MCP/package managers; update/archive/delete; no filesystem sharing | `management_environments_e2e.mjs`, `managed_container_agent_e2e.mjs`, protocol `tests/environments.rs` | Decision F; config partitions + provider effect/fail-closed + lifecycle ✅ |
+| [events-and-streaming](https://platform.claude.com/docs/en/managed-agents/events-and-streaming) | Send/list/stream; ordering/processed_at; preview admission and reconciliation; reconnect/dedupe; interrupt/redirect; thread/custom/HITL/system/usage events | `managed_reconnect_e2e.mjs`, `managed_real_thinking_e2e.mjs`, `managed_processed_at_e2e.mjs`, `managed_system_message_e2e.mjs` | Decisions E/H; sequence/state transition + 100/101 boundaries + reconnect fault injection ✅ |
+| [files](https://platform.claude.com/docs/en/managed-agents/files) | Upload/download; create-time/live mounts; path defaults/parents; read-only inputs; copy identity; resource lifecycle/authorization | `managed_resources_api_e2e.mjs`, `management_files_models_e2e.mjs`, `managed_resource_mount_e2e.mjs`, `managed_resource_api_edge_e2e.mjs` | Union/path/boundary + authz + sandbox observation; Anthropic-only upload metadata noted ◇ |
+| [github](https://platform.claude.com/docs/en/managed-agents/github) | Token non-disclosure; repository mount/checkout; running-session credential rotation without repository replacement; clone/MCP use | `managed_git_repo_e2e.mjs`, `managed_resource_lifecycle_e2e.mjs`, `secret_nonleak_e2e.mjs`, `managed_full_chain_e2e.mjs` | Secret-flow + lifecycle mutation + real clone partitions ✅ |
+| [mcp-connector](https://platform.claude.com/docs/en/managed-agents/mcp-connector) | URL/name/count/reference validation; normalization; tool filters/policy; vault auth; typed retry/error; reconnect; oversized spill | `managed_mcp_e2e.ts`, `management_mcp_e2e.mjs`, `management_agents_e2e.mjs`, `managed_tool_result_e2e.mjs` | URL/cardinality/reference partitions + D2-D5 + failure taxonomy ✅ |
+| [memory](https://platform.claude.com/docs/en/managed-agents/memory) | Exclusive beta; 100KiB/2000 heads; max 8 attachments/4096-char guidance; RO/RW; segment prefix/depth/basic/full; CAS/history/redaction/lifecycle | `managed_memory_repository_durable_e2e.mjs`, `management_memory_stores_e2e.mjs`, `managed_memory_extraction_durable_e2e.mjs`, protocol `session_resources.rs` | ML1-ML7/MC1-MC4/M1-M4; boundary + CAS + restart + mount denial ✅ |
+| [migration](https://platform.claude.com/docs/en/managed-agents/migration) | Messages/Agent-SDK mapping to durable Agent/Environment/Session/events; built-in vs client tools; idle; pinning; resources/vaults/policies | `managed_full_lifecycle_e2e.mjs`, `managed_custom_e2e.mjs`, `management_agents_e2e.mjs`, `management_vaults_family_e2e.mjs` | End-to-end mapping + differential official-SDK DTO check; client-only planning/max-turns excluded ◇ |
+| [multiagent-orchestration](https://platform.claude.com/docs/en/managed-agents/multiagent-orchestration) | Shared sandbox/vault but isolated persistent threads; agent-scoped config; self; frozen version roster; one level; max 20; follow-up/archive/interrupt | `managed_delegation_e2e.mjs`, `management_agents_e2e.mjs`, protocol thread-selector tests | Roster 1/20/21 + nested/missing/archived partitions; thread state transitions ✅ |
+| [onboarding](https://platform.claude.com/docs/en/managed-agents/onboarding) | Console prototype/copy-code flow and inline runner map to the same Agent/Environment/Session/events resources | `managed_full_lifecycle_e2e.mjs`, `management_agents_e2e.mjs`, `management_environments_e2e.mjs` | API journey E2E; Anthropic Console rendering/copy UX is external ◇ |
+| [overview](https://platform.claude.com/docs/en/managed-agents/overview) | Core resource graph, built-in capabilities, state/history, steering/interrupt, scheduled execution and endpoint beta gate | `managed_full_lifecycle_e2e.mjs`, `managed_capabilities_e2e.mjs`, `managed_contract_guard_e2e.mjs`, `management_deployments_e2e.mjs` | Critical-path journey + decision A + lifecycle smoke ✅ |
+| [permission-policies](https://platform.claude.com/docs/en/managed-agents/permission-policies) | Agent default allow/MCP default ask; enable/disable; frozen sessions; all blocker confirmations; allow/deny; custom-tool exclusion | `management_mcp_e2e.mjs`, `managed_hitl_e2e.mjs`, `managed_tool_result_e2e.mjs` | Decision D; pending-set sequence + approve/deny/no-result partitions ✅ |
+| [quickstart](https://platform.claude.com/docs/en/managed-agents/quickstart) | Official SDK create Agent/Environment/Session, open stream before send, tool execution, idle; Memory header exception | `managed_full_lifecycle_e2e.mjs`, `managed_e2e.mjs`, `management_agents_e2e.mjs`, `managed_contract_guard_e2e.mjs` | Executable official-SDK happy path + ordering and header negatives ✅ |
+| [reference](https://platform.claude.com/docs/en/managed-agents/reference) | Complete inbound/agent/session/thread/span/system/delta catalogs; worker flags contract; MCP transport; 300/1200 org limits | `gate_event_catalog_e2e.mjs`, `management_official_worker_e2e.mjs`, `mcp_official_sdk_e2e.ts`, protocol `rate_limit.rs` tests | Catalog golden + boundary/rate-window + official worker/SDK; branding is non-executable ◇ |
+| [scheduled-deployments](https://platform.claude.com/docs/en/managed-agents/scheduled-deployments) | Cron/IANA/DST projection; five previews; jitter/capacity; pause/unpause/archive; manual/scheduled runs; error XOR/auto-pause; durable claim | `management_deployment_schedule_e2e.mjs`, `management_deployments_e2e.mjs`, server `managed_deployment_e2e.rs` | Decision G14-G17/S1-S7 + clock/state/failure/concurrency partitions ✅ |
+| [self-hosted-sandboxes](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes) | Queue/worker lifecycle; poll timing/reclaim; ack/heartbeat/stop; stats/liveness; queued-without-worker; resource limits; custom tools | `management_self_hosted_worker_e2e.mjs`, `management_official_worker_e2e.mjs`, `management_official_worker_run_e2e.mjs`, protocol `tests/environments.rs` | Poll P1-P5 + lease state/CAS/reclaim + official helper E2E ✅ |
+| [self-hosted-sandboxes-security](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes-security) | Credential/workspace/network/filesystem trust boundaries and fail-closed worker behavior; image hardening/retention remain operator-owned | `secret_nonleak_e2e.mjs`, `management_authz_routes_e2e.mjs`, `sandbox_provisioning_e2e.mjs`, `worker_resource_manifest_e2e.ts` | Threat-boundary negative tests + holder/egress/path partitions; operator controls non-applicable ◇ |
+| [session-operations](https://platform.claude.com/docs/en/managed-agents/session-operations) | Idle-only tools/MCP replace; retrieve/list/filter; bidirectional opaque order-bound pagination; archive/delete state gates and cascade scope | `management_sessions_family_e2e.mjs`, `managed_session_pagination_e2e.mjs`, `managed_session_deleted_e2e.mjs` | List L1-L7 + update state table + archive/delete transition/side-effect checks ✅ |
+| [sessions](https://platform.claude.com/docs/en/managed-agents/sessions) | Agent/env/version binding; 1..50 atomic initial events; override omit/null/replace; body/file/outcome/resource/vault limits; lazy idle | `management_sessions_family_e2e.mjs`, `managed_model_override_e2e.mjs`, `acp_e2e.mjs`, `managed_resource_api_edge_e2e.mjs` | Decision C + boundary 0/1/50/51 + invalid-batch atomicity ✅ |
+| [skills](https://platform.claude.com/docs/en/managed-agents/skills) | Skills beta; bundle/version/latest pin; uniqueness; max 500; attach/freeze; filesystem executable/progressive disclosure | `management_skills_e2e.mjs`, `managed_skill_bundle_pin_e2e.mjs`, `managed_skills_e2e.mjs`, `managed_contract_guard_e2e.mjs` | Header/count/version/bundle partitions + restart/pin observation ✅ |
+| [tools](https://platform.claude.com/docs/en/managed-agents/tools) | Built-in defaults/config/disable; custom declaration-use-result; client execution; 100000-char spill with preview/path | `managed_capabilities_e2e.mjs`, `managed_custom_e2e.mjs`, `managed_tool_result_e2e.mjs`, protocol `tool_output_spill` tests | Decision D + 100000/100001 boundary + structured result loop ✅ |
+| [vaults](https://platform.claude.com/docs/en/managed-agents/vaults) | Write-only secrets; MCP/static/env kinds; max 20; immutable structure/rotation; first match; all threads; archive/delete cascade; validation | `management_vaults_family_e2e.mjs`, `management_vaults_edge_e2e.mjs`, `secret_nonleak_e2e.mjs` | Kind/cardinality/validation partitions + lifecycle/rotation/secret-flow ✅ |
+| [webhooks](https://platform.claude.com/docs/en/managed-agents/webhooks) | Supported event families; ID-only payload; HTTPS/public/secret/signature; dedupe; no order/backfill; retry/3xx/auto-disable; scheduled-run-only facts | `awaken-webhook/tests/webhook_e2e.rs`, `awaken-webhook-managed/tests/crud.rs`, `awaken-server/tests/webhook_plane_e2e.rs`, protocol Deployment tests | G9-G13/W1-W2; response-class + SSRF/signature + retry + manual/scheduled differential ✅ |
 
 ### Complete cause and effect inventory
 
@@ -155,6 +194,7 @@ resets omitted effort to that model's default.
 | G15 | exact cron occurrence reaches its bounded jitter due time | one run; `scheduled_at` and previews retain the exact unjittered occurrence |
 | G16 | deployment is unpaused after missed occurrences | resume from the next future occurrence; never backfill missed runs |
 | G17 | deployment is archived | archive is idempotent and terminal; update/pause/unpause/manual run reject |
+| G18 | DeploymentRun trigger is manual / scheduled | both persist; only scheduled runs emit `deployment_run.*` webhook facts |
 
 ### Decision table H — event-batch admission and processing
 
@@ -189,15 +229,17 @@ coverage (session status, deployment lifecycle, multiagent thread lifecycle, out
 result machine), and error-guessing (fabricated cursors, unparseable cron, unreachable
 MCP servers).
 
-Each gap is classed by **implementation status in awaken**, because a doc behavior with
-no test is not automatically a coverage hole — awaken is a self-hostable conformant core,
-so some doc surface is Anthropic-cloud-only or a research preview it does not implement.
+Each row is classed by **executable ownership**, because an Anthropic-hosted behavior is
+not a local coverage hole in a self-hostable conformant core.
 
-- **✅ Closed this pass** — a real, implemented-but-untested behavior now covered.
-- **○ Implemented, untested** — awaken implements it; a future suite would pass. Backlog.
-- **▲ Not implemented / out-of-scope** — the *reason* the code is uncovered: awaken does
-  not implement this doc surface (cloud-only, infra-level, or research preview). Not a
-  bug, not dead code.
+- **✅ Locally executable** — every Awaken-owned behavior named by the row has direct
+  executable evidence.
+- **◇ Boundary-covered external scope** — the page also describes Anthropic-hosted
+  infrastructure, Console/SDK UX, branding, or operator controls; the local API and
+  security boundary is executable, but no false local execution claim is made.
+
+Older historical sections below retain `▲` only when quoting the state of an earlier
+audit; it is not a current matrix status.
 
 ## Cause-effect completeness and Ark portability (2026-07-24)
 
@@ -209,10 +251,10 @@ See the [official session operations contract](https://platform.claude.com/docs/
 [Update Session API reference](https://platform.claude.com/docs/en/api/beta/sessions/update),
 and [MCP connector constraints](https://platform.claude.com/docs/en/managed-agents/mcp-connector).
 
-The current inventory contains 234 `*_e2e.mjs` / `*_e2e.ts` files, 91 of them
-managed-named. That is broad coverage, but it is **not complete**: the remaining
-implemented-but-untested effects below remain open, and absent/cloud-only effects are
-tracked separately rather than being counted as covered.
+The current inventory contains 246 `*_e2e.mjs` / `*_e2e.ts` files, 136 of them
+managed-named. The 26-page inventory is complete for the sitemap snapshot: locally owned
+contracts have executable evidence, while hosted/cloud/operator-only effects are marked
+`◇` and are not counted as locally executed.
 
 The cause-effect graph has four materially different cause classes. A remote Ark endpoint
 can exercise only the provider-controlled part of the graph; it cannot replace the local
@@ -270,7 +312,7 @@ non-regression and second-turn relaunch coverage.
 
 | Behavior | Doc page | New suite | Design |
 |---|---|---|---|
-| Session-list cursor pagination (`?limit=&page=`, `{data,has_more,next_page}`, after-id) | session-operations | `managed_session_pagination_e2e.mjs` | boundary (`limit=1` vs all) + state-transition on the cursor + error-guess (fabricated cursor → empty terminal page) |
+| Session-list filtering and bidirectional opaque pagination (`?limit=&page=&order=`, `{data,next_page,prev_page}`) | session-operations | `managed_session_pagination_e2e.mjs` | L1-L7: default desc/asc, next/prev transitions, filter intersections, archived partition, fabricated/order-mismatched cursor → 400 |
 | Outcome evaluation lifecycle spans (`span.outcome_evaluation_start`/`_end` bracket every iteration; stable `outcome_id`; monotonic `iteration`) | define-outcomes / reference | `managed_outcome_lifecycle_e2e.mjs` | state-transition: each `_start(outcome_id,iteration)` pairs with one `_end` at the same key; iterations contiguous ascending |
 | Scheduled deployments (cron `schedule` echo/persist, pause retains, write-time cron validation) | scheduled-deployments | `management_deployment_schedule_e2e.mjs` | equivalence partition on cron expr (valid / garbage / missing → 400) + state-transition pause→unpause preserves schedule |
 | Session `initial_events` executes through the canonical event executor (0/1/50/51, allowed kinds, at-most-one outcome) and returns `running` while queued | start-a-session / reference | existing adapter tests + `acp_e2e.mjs` | decision table C; native and ACP initial turns share the same executor |
@@ -278,13 +320,16 @@ non-regression and second-turn relaunch coverage.
 | `system.message` content bounds, primary-model capability, and `requires_action` ordering | events-and-streaming | existing adapter/HITL tests + native/ACP SDK E2E | decision H1-H7; whole-batch rejection precedes mutation |
 | Event-delta admission at 100/101 and start-only thinking reconciliation | events-and-streaming | existing streaming suite | decision E3/E4; thinking content never crosses the wire and committed ids equal preview ids |
 | Managed beta gate covers ordinary Session/Agent/Environment/Deployment/Vault families; Skills uses its own beta | overview / skills / reference | existing contract-guard + Skills E2E | decision A1/A2/A5/A7; Memory follows the exclusive A3/A4 rule below |
-| Memory Store endpoints require only `agent-memory-2026-07-22`; missing, Managed-only, or both headers reject before domain work | using-agent-memory / beta-headers / reference | existing `managed_contract_guard_e2e.mjs` + Memory family/lifecycle suites | decision A3/A4; one prefix gate covers the collection and every subresource |
+| Memory Store endpoints require only `agent-memory-2026-07-22`; missing, Managed-only, or both headers reject before domain work | memory / beta-headers / reference | existing `managed_contract_guard_e2e.mjs` + Memory family/lifecycle suites | decision A3/A4; one prefix gate covers the collection and every subresource |
+| Memory listing/capacity/attachment boundaries (segment prefix, depth 0/1, basic/full, 2,000 heads, 8 stores, 4,096 characters) | memory | `managed_memory_repository_durable_e2e.mjs` + repository/protocol tests | ML1-ML7/MC1-MC4/M1-M4; inclusive boundary, invalid partition, restart, API/mount shared owner |
+| Self-hosted work long poll (`block_ms` omitted/null/1..999/outside) | self-hosted-sandboxes | protocol `tests/environments.rs` + official worker E2E | P1-P5; timing boundary + validation + no second queue |
+| Manual vs scheduled DeploymentRun webhook emission | webhooks / scheduled-deployments | protocol Deployment repository test | G18/W1-W2; differential trigger partition + restart durability + outbox absence/presence |
 
 Verified against source before writing: `deployments.rs` (`projected_schedule`/`active_cron` +
 write-time `Cron::parse` 400), `cron.rs` (dependency-free 5-field evaluator),
-`types/page.rs` (`paginate` after-id cursor), `types/session.rs`
-(`SpanOutcomeEvaluationStart{outcome_id,iteration}`). All three suites are registered in
-`package.json` (`test` + `test:extended`) and pass.
+the Session-list adapter (order-bound bidirectional cursor over the canonical list), `types/session.rs`
+(`SpanOutcomeEvaluationStart{outcome_id,iteration}`). The behavior E2Es are registered in
+`package.json`; the 26-page matrix is enforced by `test:docs-coverage`.
 
 ## Former implemented test gaps
 
@@ -361,7 +406,7 @@ expected in this parity scope.
 
 | Doc surface | Status in awaken | Evidence |
 |---|---|---|
-| **Dreams** (`/v1/dreams`, `dreaming-2026-04-21` header, create/poll/cancel/archive) | Implemented | canonical design: [`managed-dream.md`](../docs/design/managed-dream.md); protocol tests: `awaken-protocol-managed/tests/dreams.rs`; cross-module E2E: `awaken-server/tests/managed_dream_e2e.rs` |
+| **Dreams** (`/v1/dreams`, `dreaming-2026-04-21` header, create/poll/cancel/archive) | Implemented | canonical design: [`managed-dream.md`](../docs/design/managed-dream.md); protocol tests: `awaken-protocol-managed/tests/dreams.rs`; Rust cross-module E2E: `awaken-server/tests/managed_dream_e2e.rs`; official SDK E2E: `managed_dream_e2e.ts`; SDK declaration gate: `conformance/sdk_surface_coverage_e2e.mjs` |
 | **Cloud env `packages` provisioning** (pip/npm/apt/cargo/gem/go, version pinning) | Implemented through the one neutral Sandbox provisioning seam. Podman resolves the selected base image to its exact local ID, builds/reuses a content-addressed derived image, and the real workload observes the installed effect. Providers without package provisioning reject before workload creation; there is no fallback. | Admission/update semantics: `management_environments_e2e.mjs`; real success/fail-closed behavior: `managed_container_agent_e2e.mjs`; provider/cache side effects: `awaken-sandbox-container` cause-table tests |
 | **Managed request rate limits** (300 Create/min, 1,200 Read/min, organization-scoped token buckets) | Implemented at the one merged Managed composition edge; flat and Workspace-addressed requests, Native Sessions, ACP Sessions, Dreams, and Dream policies share the appropriate organization buckets. Files, non-Managed routes, and non-Create mutations are not charged. | `rate_limit` cause/decision-table tests in `awaken-protocol-managed`; `management_surface::flat_and_workspace_paths_share_one_organization_create_bucket` |
 | **Scheduled-deployment capacity and execution jitter** (1,000 scheduled deployments/organization; up to 15% interval jitter, bounded 5 seconds–9 minutes) | Implemented with durable SQLite/Postgres Deployment/DeploymentRun records and atomic `(Deployment, scheduled_at)` claims. Capacity is atomic across create/update/archive; previews and trigger contexts retain exact cron instants; execution uses stable bounded jitter. Unpause skips missed occurrences, archive is terminal, internal Session creation shares the organization Create bucket, and primary-Agent archive cascades without a run. | canonical design: [`managed-deployments.md`](../docs/design/managed-deployments.md); `routes::deployments::tests`; `managed_deployment_e2e.rs`; `management_deployment_schedule_e2e.mjs` |
@@ -379,7 +424,7 @@ The goal's cleanup clause ("is the uncovered code redundant/duplicate — if so,
   the multi-backend content-addressed store (`awaken-file-store`: e2e drives only its in-mem
   backend; Fs/Pg/S3 have their own Rust tests). This is separation of test tiers, not
   redundancy.
-- Remaining excluded doc surfaces are Dreams and the explicitly excluded Files
+- Remaining exclusions are the explicitly identified Anthropic-cloud-only Files
   behavior above; the implemented rows in the table carry direct test evidence.
 - Structural duplication that *did* exist (durable store backends inlined in the
   `awaken-runtime-host` god-hub) was removed by the Step-3b re-layout: `awaken-env-store`,
@@ -435,7 +480,7 @@ small (base-enum additions rippled to only a handful of `_`-less matches). This 
 
 - **Structural conformance**: `npm run test:conformance` — event catalog + `MANAGED_BETA` +
   serde golden vs the installed SDK. Green.
-- **Behavioral coverage**: 234 `*_e2e.mjs` / `*_e2e.ts` files, including 91 managed-named
+- **Behavioral coverage**: 246 `*_e2e.mjs` / `*_e2e.ts` files, including 136 managed-named
   files (104 in the default `test` script; the management surface in `test:extended`).
   **Cumulative run of the default
   suite (each suite spawned independently): 104 pass / 0 fail / 104** — the whole deterministic

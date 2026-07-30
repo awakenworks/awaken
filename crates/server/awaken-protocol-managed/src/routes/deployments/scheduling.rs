@@ -158,6 +158,22 @@ impl DeploymentState {
             .await
     }
 
+    /// Persist a DeploymentRun without publishing a lifecycle fact. Anthropic's
+    /// webhook contract exposes run events only for scheduled executions; manual
+    /// runs remain fully durable and listable through the same repository row.
+    pub(super) async fn persist_manual_run(
+        &self,
+        id: &str,
+        record: &RunRecord,
+    ) -> Result<(), DeploymentRepositoryError> {
+        let Some(repository) = &self.repository else {
+            return Ok(());
+        };
+        repository
+            .upsert_deployment_run(stored_run(id, record)?, None)
+            .await
+    }
+
     /// Bind the Session application service after both control and data planes
     /// have been assembled. The state is shared by the already-mounted router.
     pub fn bind_launcher(&self, launcher: Arc<dyn DeploymentSessionLauncher>) {
@@ -351,7 +367,12 @@ impl DeploymentState {
         } else {
             "deployment_run.succeeded"
         };
-        self.persist_run_event(run_id, &run, run_event).await?;
+        match &run.trigger {
+            TriggerContext::Schedule { .. } => {
+                self.persist_run_event(run_id, &run, run_event).await?;
+            }
+            TriggerContext::Manual => self.persist_manual_run(run_id, &run).await?,
+        }
         if let Some(deployment) = paused {
             self.persist_deployment_event(&deployment_id, &deployment, "deployment.paused")
                 .await?;

@@ -616,6 +616,7 @@ async fn create_memory(
         Err(MemErr::PathConflict(_)) => memory_conflict(),
         Err(MemErr::InvalidPath(_)) => err(StatusCode::BAD_REQUEST, "invalid memory path"),
         Err(MemErr::TooLarge) => err(StatusCode::BAD_REQUEST, "memory content too large"),
+        Err(error @ MemErr::AtCapacity) => err(StatusCode::BAD_REQUEST, error.to_string()),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
@@ -632,13 +633,55 @@ async fn list_memories(
         Err(error) => return catalog_error(error),
     }
     let prefix = q.get("path_prefix").map(String::as_str).unwrap_or("/");
-    let basic = q.get("view").map(String::as_str) == Some("basic");
+    if !prefix.starts_with('/') || !prefix.ends_with('/') {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "path_prefix must be absolute and end with `/`",
+        );
+    }
+    let depth = match q.get("depth").map(String::as_str) {
+        None | Some("0") => 0,
+        Some("1") => 1,
+        Some(_) => return err(StatusCode::BAD_REQUEST, "depth must be 0 or 1"),
+    };
+    let basic = match q.get("view").map(String::as_str) {
+        None | Some("basic") => true,
+        Some("full") => false,
+        Some(_) => return err(StatusCode::BAD_REQUEST, "view must be `basic` or `full`"),
+    };
+    let requested_limit = match q.get("limit") {
+        None => awaken_agent_contract::page::DEFAULT_PAGE_LIMIT,
+        Some(value) => match value.parse::<usize>() {
+            Ok(0) | Err(_) => return err(StatusCode::BAD_REQUEST, "limit must be positive"),
+            Ok(value) => value.min(awaken_agent_contract::page::MAX_PAGE_LIMIT),
+        },
+    };
+    let limit = if basic {
+        requested_limit
+    } else {
+        requested_limit.min(20)
+    };
     let entries = match state.memories.list(&id, prefix).await {
         Ok(entries) => entries,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
     let mut data = Vec::with_capacity(entries.len());
+    let mut rolled_up = std::collections::BTreeSet::new();
     for entry in entries {
+        if prefix != "/" && !entry.path.starts_with(prefix) {
+            continue;
+        }
+        let relative = if prefix == "/" {
+            entry.path.trim_start_matches('/')
+        } else {
+            entry.path.strip_prefix(prefix).unwrap_or_default()
+        };
+        if depth == 1
+            && let Some((directory, _)) = relative.split_once('/')
+        {
+            rolled_up.insert(format!("{prefix}{directory}/"));
+            continue;
+        }
         // `basic` elides content (metadata only); `full` fetches the head content.
         let content = if basic {
             None
@@ -664,9 +707,28 @@ async fn list_memories(
             "content_size_bytes": entry.content_size,
         }));
     }
+    data.extend(
+        rolled_up
+            .into_iter()
+            .map(|path| json!({ "type": "memory_prefix", "path": path })),
+    );
+    data.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
+    let page = match awaken_agent_contract::page::paginate_by_key(
+        &data,
+        q.get("page").map(String::as_str),
+        Some(limit),
+        |item| item["path"].as_str().unwrap_or_default().to_string(),
+    ) {
+        Ok(page) => page,
+        Err(_) => return err(StatusCode::BAD_REQUEST, "invalid memory pagination cursor"),
+    };
     (
         StatusCode::OK,
-        Json(json!({ "data": data, "has_more": false, "next_page": null })),
+        Json(json!({
+            "data": page.items,
+            "has_more": page.has_more,
+            "next_page": page.next_page,
+        })),
     )
         .into_response()
 }
@@ -734,6 +796,7 @@ async fn update_memory(
         Ok(updated) => (StatusCode::OK, Json(project_memory(&updated, &id))).into_response(),
         Err(MemErr::Conflict { .. }) => memory_conflict(),
         Err(MemErr::TooLarge) => err(StatusCode::BAD_REQUEST, "memory content too large"),
+        Err(error @ MemErr::AtCapacity) => err(StatusCode::BAD_REQUEST, error.to_string()),
         Err(MemErr::InvalidPath(_)) => err(StatusCode::BAD_REQUEST, "invalid memory path"),
         Err(MemErr::NotFound(_)) => not_found("memory"),
         Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),

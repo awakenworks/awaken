@@ -682,6 +682,30 @@ impl ManagedState {
         // Parse the wire `resources[]` (ADR-0038) into staged mounts, and project each
         // into a DTO entry so the created session echoes its create-time resources —
         // list/get/delete then address these and any later-attached ones uniformly.
+        const MAX_SESSION_MEMORY_STORES: usize = 8;
+        const MAX_MEMORY_INSTRUCTIONS_CHARS: usize = 4_096;
+        let memory_resources = req.resources.iter().filter_map(|resource| match resource {
+            crate::types::resource::ResourceInput::MemoryStore { instructions, .. } => {
+                Some(instructions)
+            }
+            _ => None,
+        });
+        let mut memory_count = 0usize;
+        for instructions in memory_resources {
+            memory_count += 1;
+            if instructions.as_ref().is_some_and(|instructions| {
+                instructions.chars().count() > MAX_MEMORY_INSTRUCTIONS_CHARS
+            }) {
+                return Err(StateError::Run(RunError::bad_request(format!(
+                    "memory store instructions support at most {MAX_MEMORY_INSTRUCTIONS_CHARS} characters"
+                ))));
+            }
+        }
+        if memory_count > MAX_SESSION_MEMORY_STORES {
+            return Err(StateError::Run(RunError::bad_request(format!(
+                "a Session supports at most {MAX_SESSION_MEMORY_STORES} memory stores"
+            ))));
+        }
         let resources = req
             .resources
             .iter()

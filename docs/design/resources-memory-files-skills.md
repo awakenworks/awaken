@@ -474,7 +474,7 @@ data and are not binding pins.
 A Managed Dream is deliberately not an ordinary mutable Session Memory binding.
 It captures a purpose-built `MemoryStoreContentSnapshot`, mounts that evidence
 read-only, clones an independent result MemoryStore from the same exact heads,
-and gives its Memory Consolidator Agent a required write-through mount of only
+and gives its Dream Agent a required write-through mount of only
 the result. The complete lifecycle and naming are owned by
 [Managed Dream](managed-dream.md).
 Ordinary Sessions may use ADR-0053's conflict-safe copy/harvest fallback; a Dream

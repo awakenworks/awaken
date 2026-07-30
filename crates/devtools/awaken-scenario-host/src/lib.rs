@@ -9,6 +9,7 @@ mod attempt_credential;
 mod composition;
 mod delegation;
 mod deployment;
+mod dream;
 mod model_publication;
 mod models;
 pub use crate::models::*;
@@ -16,6 +17,7 @@ pub use acp_gateway::build_acp_gateway_router;
 pub use composition::build_unscoped_resource_router;
 pub use delegation::build_delegation_router;
 pub use deployment::scenario_deployment;
+pub use dream::{build_dream_router, build_dream_router_and_host};
 
 mod scenario_shell;
 use composition::{
