@@ -40,11 +40,12 @@ environment variables are not deployment, model, business, or credential
 configuration sources.
 
 All embedded databases and the generated `control-seal.key` live under the one
-data directory. Database schema migrations run automatically, under the
-existing migration locks, before the server accepts traffic. Shared deployments
-select Postgres with `runtime_database_url`, `resource_database_url`, and the
-per-component control database fields shown by `awaken config`; database URLs
-and key material are always redacted.
+data directory. Local mode migrates embedded stores at startup. Shared server
+deployments run `awaken database migrate` before application Pods; application
+startup then verifies the existing schema without writing DDL. Shared
+deployments select Postgres with `runtime_database_url`,
+`resource_database_url`, and the per-component control database fields shown by
+`awaken config`; database URLs and key material are always redacted.
 
 The typed configuration file can hold bootstrap settings. For example:
 
@@ -70,9 +71,9 @@ worker_credential_trust_domain = "awaken.worker"
 
 The Worker rejects Control/Coordinator/Resource database URLs, Control seal-key
 settings, and private Control-to-Coordinator tokens. It does not require a
-Control seal key. Until per-kind Resource network adapters are configured, it
-does not advertise Session Resource capability and Resource-bearing runs are not
-placed there.
+Control seal key. Registration installs claim-fenced File, Memory, Skill, and
+Repository-verification clients; capability advertisement derives from those
+installed adapters and fails closed when a required adapter is absent.
 
 The file also accepts `runtime_database_url`, `resource_database_url`, and
 `catalog_db` / `credential_db` / `config_db` / `admin_db` / `sessions_db` for

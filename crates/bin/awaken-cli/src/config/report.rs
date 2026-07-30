@@ -24,6 +24,12 @@ impl ResolvedDeployment {
             ("admin", render_store_backend(&self.control.admin)),
             ("sessions", render_store_backend(&self.control.sessions)),
         ]);
+        let database_migrations = match self.mode {
+            super::OperatingMode::Local => "automatic at startup",
+            super::OperatingMode::Server => {
+                "explicit `awaken database migrate`; startup verifies only"
+            }
+        };
         if json {
             return serde_json::to_string_pretty(&serde_json::json!({
                 "role": self.role.as_str(),
@@ -39,7 +45,7 @@ impl ResolvedDeployment {
                 "runtime_dispatch_backend": runtime_backend,
                 "resource_backend": resource_backend,
                 "control_databases": databases,
-                "database_migrations": "automatic at startup",
+                "database_migrations": database_migrations,
                 "seal_key": self.seal_key.description(),
                 "origins": self.origins,
                 "deprecations": self.deprecations,
@@ -65,7 +71,9 @@ impl ResolvedDeployment {
             resources = resource_backend,
             key = self.seal_key.description(),
         );
-        report.push_str("\nControl databases (migrations run automatically at startup)\n");
+        report.push_str(&format!(
+            "\nControl databases (schema: {database_migrations})\n"
+        ));
         for (name, backend) in databases {
             report.push_str(&format!("  {name:<20} {backend}\n"));
         }
