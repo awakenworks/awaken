@@ -344,6 +344,7 @@ async function main() {
     AWAKEN_CONTAINER_IMAGE: IMAGE,
     SESSION_ENVIRONMENT_TIER: ENGINE,
     SESSION_DEPLOYMENT_STORAGE_DIR: `${TMP}/storage`,
+    AWAKEN_SCENARIO_SKILL_ID: 'delivered-container',
     AWAKEN_ACP_ARGV: `node -e ${ACP_FIXTURE}`,
     // Exercise the production pool wrapper. Resource-bearing environments are
     // deliberately non-poolable, so this changes composition without creating a
@@ -376,7 +377,7 @@ async function main() {
       headers: SKILL_HEADERS,
       body: {
         id: 'delivered-container',
-        content: '---\ndescription: delivered container skill\n---\nCONTAINER-DELIVERED-SKILL-OK',
+        content: '---\ndescription: delivered container skill\nenvironment: filesystem\n---\nCONTAINER-DELIVERED-SKILL-OK',
       },
     });
 

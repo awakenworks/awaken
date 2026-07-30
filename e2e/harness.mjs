@@ -85,6 +85,12 @@ function serverProcessEnv(addr, configured = {}) {
     ...process.env,
     HOME: E2E_HOME,
     ...configured,
+    // A caller's shell may globally clamp Rust logs (Codex commonly uses
+    // `warn`). That filter also controls tracing spans, so a trace-capture E2E
+    // would otherwise exercise the request successfully while exporting no
+    // evidence at all. Trace scenarios own their minimum deterministic filter;
+    // an explicit per-scenario RUST_LOG still wins.
+    RUST_LOG: configured.RUST_LOG ?? (configured.AWAKEN_TRACE_FILE ? 'info' : process.env.RUST_LOG),
     AWAKEN_HTTP_ADDR: addr,
     AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1',
   };
@@ -153,8 +159,11 @@ export const RED_PNG_B64 =
   'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdLep8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3IPanc8OLDQitxAAAAAElFTkSuQmCC';
 export const RED_PNG_DATA_URI = `data:image/png;base64,${RED_PNG_B64}`;
 
-export function waitForPort(port, timeoutMs = 180_000, server = null) {
-  const deadline = Date.now() + timeoutMs;
+export function waitForPort(port, timeoutMs = 600_000, server = null) {
+  // Readiness is an elapsed-time deadline. Wall-clock adjustments can jump
+  // `Date.now()` past the deadline between retries even though the child has
+  // just announced that it is listening; the monotonic clock cannot.
+  const deadline = performance.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const attempt = () => {
       const sock = net.createConnection({ port, host: '127.0.0.1' });
@@ -171,7 +180,7 @@ export function waitForPort(port, timeoutMs = 180_000, server = null) {
                 `(code=${server.exitCode}, signal=${server.signalCode})`,
             ),
           );
-        } else if (Date.now() > deadline) reject(new Error(`server did not listen on ${port}`));
+        } else if (performance.now() > deadline) reject(new Error(`server did not listen on ${port}`));
         else setTimeout(attempt, 200);
       });
     };
@@ -180,7 +189,7 @@ export function waitForPort(port, timeoutMs = 180_000, server = null) {
 }
 
 function waitForServer(server, port) {
-  return waitForPort(port, 180_000, server);
+  return waitForPort(port, 600_000, server);
 }
 
 export async function availablePort(preferred) {

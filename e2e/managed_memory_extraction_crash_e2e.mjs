@@ -108,7 +108,10 @@ async function main() {
         headers: MEMORY_HEADERS,
       });
       return JSON.stringify(page).includes(MARKER);
-    }, 'restarted process did not recover and store the extraction', 140);
+    // Coverage instrumentation can push the durable lease expiry + reclaim
+    // cycle beyond the ordinary 14 s window. Keep the wait bounded while
+    // preserving the exact-once version assertion below.
+    }, 'restarted process did not recover and store the extraction', 300);
 
     const versions = await client.get(`/v1/memory_stores/${store.id}/memory_versions`, {
       headers: MEMORY_HEADERS,

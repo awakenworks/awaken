@@ -140,6 +140,7 @@ async function main() {
     SESSION_ENVIRONMENT_TIER: TIER,
     AWAKEN_SANDBOX_DIR: `${TMP}/sandboxes`,
     SESSION_DEPLOYMENT_STORAGE_DIR: `${TMP}/storage`,
+    AWAKEN_SCENARIO_SKILL_ID: 'delivered-namespace',
     // JSON preserves Windows executable and fixture paths containing spaces;
     // the scenario host still accepts the legacy whitespace-delimited form.
     AWAKEN_ACP_ARGV: JSON.stringify(TIER === 'namespace'
@@ -161,7 +162,7 @@ async function main() {
       headers: SKILL_HEADERS,
       body: {
         id: 'delivered-namespace',
-        content: '---\ndescription: namespace skill\n---\nNAMESPACE-SKILL-OK',
+        content: '---\ndescription: namespace skill\nenvironment: filesystem\n---\nNAMESPACE-SKILL-OK',
       },
     });
     assert.equal(createdSkill.id, 'delivered-namespace');

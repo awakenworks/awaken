@@ -45,7 +45,7 @@ async function main() {
     await withServer('acp-jsonrpc', 38172, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
-      // A session selecting an ACP runtime drives the fake agent over official
+      // The published ACP Agent drives the fake agent over official
       // JSON-RPC — the `session/update` chunk lands as the agent's message.
       const acp = await client.beta.sessions.create({
         agent: 'acp-agent',
@@ -58,7 +58,7 @@ async function main() {
         texts.some((t) => t.includes('acp-jsonrpc reply')),
         `official ACP JSON-RPC turn projected the agent message, got ${JSON.stringify(texts)}`,
       );
-      pass('runtime:"acp:claude" runs over the official ACP JSON-RPC codec (handshake + prompt + update projection)');
+      pass('the published assistant runs over the official ACP JSON-RPC codec (handshake + prompt + update projection)');
 
       // Cause/effect + decision rules for both execution backends:
       // output <=100k -> inline unchanged; output >100k -> complete sandbox file

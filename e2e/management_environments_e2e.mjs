@@ -214,7 +214,7 @@ async function main() {
       assert.equal(published.status, 200);
       const exactBinding = await fetch(`${baseUrl}/v1/awaken/environments/${env.id}/sandbox-execution-policy`);
       assert.deepEqual(await exactBinding.json(), {
-        environment_id: env.id, policy_id: policyId, version: 1,
+        environment_id: env.id, policy_id: policyId, provisioning: 'eager', version: 1,
       });
       pass('SandboxExecutionPolicy exact-version binding and ownership decision table');
 

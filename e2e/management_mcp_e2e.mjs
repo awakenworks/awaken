@@ -264,7 +264,7 @@ async function main() {
       );
       pass('F3: MCP connection failure rejects the staged generation before activation');
 
-    });
+    }, { ANTHROPIC_MODEL: 'management' });
 
     console.log('E2E PASS: management-plane MCP config drives a multi-turn MCP conversation with the vault-backed bearer.');
     process.exitCode = 0;
