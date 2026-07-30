@@ -1842,6 +1842,10 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-acp-contract",
+ "awaken-admin-config-api",
+ "awaken-agent-contract",
+ "awaken-control",
+ "awaken-credential-vault",
  "awaken-observability",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
@@ -1850,6 +1854,7 @@ dependencies = [
  "awaken-worker-contract",
  "axum",
  "getrandom 0.2.17",
+ "serde_json",
  "tokio",
  "tower",
 ]

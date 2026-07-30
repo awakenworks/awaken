@@ -315,6 +315,9 @@ pub struct DispatchSummary {
     pub cancellation_requested: bool,
     /// Consecutive crash-recoveries without a settle.
     pub attempt_count: u64,
+    /// Whether an opaque Sandbox handle has been durably bound. The monitoring
+    /// view deliberately exposes no provider-specific handle material.
+    pub sandbox_bound: bool,
 }
 
 /// Dispatch-level options for an accepted run. Defaults to ordinary priority and

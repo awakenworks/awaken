@@ -861,7 +861,7 @@ impl ManagedState {
         };
         validate_sandbox_provisioning_runtime(
             environment.sandbox_provisioning,
-            req.awaken_runtime(),
+            published_backend_ref.as_deref(),
         )
         .map_err(StateError::Run)?;
         // Sole protocol-neutral composition/resolution point. Runtime receives this
