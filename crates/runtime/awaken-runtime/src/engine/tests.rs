@@ -703,6 +703,11 @@ async fn an_in_flight_tool_call_is_dropped_and_the_text_continues() {
     );
 }
 
+/// Test design for the inference checkpoint boundary.
+/// Causes: C1=stream drops after a partial, C2=no retry budget,
+/// C3=checkpoint store configured. Effects: E1=partial checkpoint is written,
+/// E2=normal function return clears it. Rule R1: C1+C2+C3 -> E1+E2; the
+/// following persisted-partial tests cover crash-before-clear recovery.
 #[tokio::test]
 async fn the_interruption_boundary_flushes_a_checkpoint_then_clears_it_on_return() {
     // A text-only drop with no retry budget: the boundary flush persists the

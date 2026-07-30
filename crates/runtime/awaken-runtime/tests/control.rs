@@ -103,6 +103,11 @@ fn activation() -> RunActivation {
     }
 }
 
+/// Test design for cancellation command handling.
+/// Decision rules: R1 pre-cancelled -> no model call and committed Cancelled;
+/// R2 cancellation during inference -> discard late output and end Cancelled;
+/// R3 no cancellation -> ordinary execution. This case covers R1; the following
+/// `live_cancel_steers_an_in_flight_run` covers R2, while execution tests cover R3.
 #[tokio::test]
 async fn pre_cancelled_run_commits_a_terminal_cancelled_outcome() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm));

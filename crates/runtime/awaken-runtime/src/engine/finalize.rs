@@ -3,6 +3,31 @@
 use super::*;
 use awaken_runtime_contract::terminal::{CommittedTerminalRun, deliver_committed_terminal};
 
+/// Validate the staged state batch, then commit. A conflict fails closed: the
+/// attempt becomes a `StateConflict` fault, drops any pause, and commits no
+/// state (G13). A run whose state did not commit cleanly must not be resumable.
+pub(super) async fn finalize(
+    runtime: &Runtime,
+    context: &RuntimeRunContext,
+    thread_id: &ThreadId,
+    run_id: RunId,
+    step: RunStepResult,
+) -> Result<RunState> {
+    if !step.staged_state.is_empty() && validate_batch(&step.staged_state).is_err() {
+        let failed = RunStepResult {
+            new_messages: step.new_messages,
+            staged_state: Vec::new(),
+            audit: step.audit,
+            disposition: RunDisposition::ended(
+                run_id.clone(),
+                EndCause::Error(Failure::StateConflict),
+            ),
+        };
+        return finish(runtime, context, thread_id, run_id, failed).await;
+    }
+    finish(runtime, context, thread_id, run_id, step).await
+}
+
 /// Deliver one committed terminal fact to every configured observer.
 ///
 /// Error and panic isolation are intentional: observation happens after the

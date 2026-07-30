@@ -162,6 +162,11 @@ fn audited_decisions(commit: &MemoryCommitCoordinator) -> Vec<String> {
         .collect()
 }
 
+/// Test design for tool authorization and execution selection.
+/// Decision rules: Allow -> execute once and audit allow; Deny -> do not execute
+/// and audit deny; Confirm -> await, then an allowed resume executes once; a
+/// run-scoped narrowing cannot be widened. This test covers Allow and the three
+/// adjacent cases cover Deny, Confirm, and narrowing respectively.
 #[tokio::test]
 async fn allow_runs_the_tool_and_audits() {
     let ran = Arc::new(AtomicUsize::new(0));

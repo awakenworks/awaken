@@ -183,6 +183,12 @@ fn context(commit: &Arc<MemoryCommitCoordinator>) -> RuntimeRunContext {
     RuntimeRunContext::new().with_commit(commit.clone())
 }
 
+/// Test design for committed scheduled commands.
+/// Causes: C1=matching ScheduledAction ticket, C2=first delivery,
+/// C3=terminal or missing/wrong ticket. Effects: E1=execute once and clear the
+/// ticket, E2=reject without execution. Rules: C1+C2 -> E1; C3 -> E2; duplicate
+/// delivery after E1 becomes C3 -> E2. This test covers the success rule and the
+/// adjacent idempotency/fail-closed cases cover the remaining rules.
 #[tokio::test]
 async fn scheduled_action_commits_then_perform_runs_it() {
     // RS-SCH-001.
