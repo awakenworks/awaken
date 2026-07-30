@@ -54,7 +54,7 @@ function awakenBin() {
 }
 
 function startAwaken(bin, port, configPath, extraEnv = {}) {
-  const server = spawn(bin, ['serve', '--config', configPath, '--port', String(port)], {
+  const server = spawn(bin, ['all-in-one', '--config', configPath, '--port', String(port)], {
     env: { ...process.env, ...extraEnv },
     stdio: ['ignore', 'inherit', 'pipe'],
   });

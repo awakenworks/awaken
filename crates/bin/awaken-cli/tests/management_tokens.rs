@@ -12,7 +12,7 @@
 //! scoped (404 unknown id); and the bootstrap token can be rotated away —
 //! revoke it with a freshly minted admin token and only the successor works.
 
-use awaken_cli::{BOOTSTRAP_WORKSPACE, TokenSpec, build_secured_management_router};
+use awaken_cli::{BOOTSTRAP_WORKSPACE, TokenSpec, build_secured_all_in_one_router};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -113,7 +113,7 @@ async fn mint_http(
 #[tokio::test(flavor = "multi_thread")]
 async fn the_org_bootstrap_binding_rejects_an_unregistered_workspace() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     let bootstrap = admin_token(dir.path());
 
     // The bootstrap is Org-bound, but wrkspc_two is not registered below that
@@ -184,7 +184,7 @@ async fn the_org_bootstrap_binding_rejects_an_unregistered_workspace() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_workspace_bound_admin_mints_only_for_its_own_workspace() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     iam.register_workspace(OTHER_WORKSPACE);
     let bootstrap = admin_token(dir.path());
     let (scoped, _) = mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "workspace_admin").await;
@@ -227,7 +227,7 @@ async fn a_workspace_bound_admin_mints_only_for_its_own_workspace() {
 #[tokio::test(flavor = "multi_thread")]
 async fn token_listings_are_secret_free() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     let bootstrap = admin_token(dir.path());
     let (cleartext, _) = mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "workspace_admin").await;
 
@@ -266,7 +266,7 @@ async fn token_listings_are_secret_free() {
 #[tokio::test(flavor = "multi_thread")]
 async fn non_admin_roles_cannot_mint_tokens() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     let bootstrap = admin_token(dir.path());
 
     // workspace_user holds no apikey pattern at all — mint (apikey.write) 403s.
@@ -297,7 +297,7 @@ async fn non_admin_roles_cannot_mint_tokens() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unknown_role_is_a_422_problem() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     let bootstrap = admin_token(dir.path());
 
     let (s, raw, content_type) = call_raw(
@@ -350,7 +350,7 @@ async fn revocation_is_immediate_and_survives_a_restart() {
     let revoked_cleartext;
     let keeper_cleartext;
     {
-        let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+        let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
         bootstrap = admin_token(dir.path());
         let (revoked, revoked_id) =
             mint_http(&app, &bootstrap, BOOTSTRAP_WORKSPACE, "workspace_admin").await;
@@ -410,7 +410,7 @@ async fn revocation_is_immediate_and_survives_a_restart() {
 
     // Restart over the same dir: the revocation hydrated from the rewritten
     // row — still 401 — and the untouched tokens still authenticate.
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     let (s, _) = call(
         &app,
         "GET",
@@ -436,7 +436,7 @@ async fn revocation_is_immediate_and_survives_a_restart() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_bootstrap_token_rotates_to_a_minted_successor() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     let bootstrap = admin_token(dir.path());
 
     // Mint the successor with the FULL admin role, then use the successor to
@@ -481,7 +481,7 @@ async fn the_bootstrap_token_rotates_to_a_minted_successor() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_token_may_revoke_itself_and_the_request_completes() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
 
     // Minted via the embedding path so the test controls the id.
     let cleartext = iam
@@ -516,7 +516,7 @@ async fn a_token_may_revoke_itself_and_the_request_completes() {
 #[tokio::test(flavor = "multi_thread")]
 async fn revoking_an_unknown_token_id_is_a_404_problem() {
     let dir = tempfile::tempdir().unwrap();
-    let (app, _iam) = build_secured_management_router(dir.path(), &KEY).await;
+    let (app, _iam) = build_secured_all_in_one_router(dir.path(), &KEY).await;
     let bootstrap = admin_token(dir.path());
 
     let (s, raw, content_type) = call_raw(

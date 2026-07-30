@@ -16,7 +16,7 @@
 //! 3. **Authz / trust boundary** — the run-serving router (managed `/v1/sessions`,
 //!    ai-sdk, a2a, AND the durable-ingress verbs) is the local-trust plane and
 //!    carries **no** bearer auth: IAM lives on the *separate* management/config
-//!    plane (`build_secured_management_router`, exercised by `management_authz`).
+//!    plane (`build_secured_all_in_one_router`, exercised by `management_authz`).
 //!    These tests PIN that boundary: the durable routes share the exact same open
 //!    posture as their managed siblings, so a durable route is not bypassing auth
 //!    that a sibling enforces (no sibling on this plane enforces any). An

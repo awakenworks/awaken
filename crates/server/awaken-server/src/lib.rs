@@ -287,7 +287,7 @@ pub fn a2a_attempt_executor(
 /// surface.
 pub fn mount(host: Arc<SharedHost>) -> Router {
     // The webhook plane (ADR-0048) now lives in the management path
-    // (`management_router_over`): subscriptions are a config resource in the admin
+    // (all-in-one process assembly): subscriptions are a config resource in the admin
     // store and their secret is sealed in the vault, so a webhook needs the config
     // plane. The plain mount has neither, so it wires no sink — a bare host emits no
     // webhooks (identical to an unconfigured plane before).

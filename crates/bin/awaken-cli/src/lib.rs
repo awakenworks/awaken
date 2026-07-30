@@ -1,13 +1,10 @@
 //! `awaken-cli` library: the single-machine **composition root**.
 //!
-//! Stage B2 split the management assembly into two sibling planes — the authoring /
-//! authz plane (`awaken-control`) and the data plane (`awaken-server`) — that do NOT
-//! depend on each other. This crate is the composition root that weaves them: it
-//! opens the management stores, builds the shared handles (the config plane, the
-//! vault/environment state), asks `awaken-control` for the guarded authoring router,
-//! asks `awaken-server` for the data-plane router (`mount_with_managed`), merges
-//! them, and applies workspace path addressing — behavior byte-identical to the
-//! pre-split `build_management_router`.
+//! Control (`awaken-control`) and Coordinator (`awaken-server`) do not depend on
+//! each other. This crate is their process composition root: it opens deployment
+//! stores, builds shared adapters, asks each owner for its router, and exposes
+//! exactly the API selected by `config::Role`. AllInOne merges those same routers;
+//! it does not maintain a second implementation.
 //!
 //! The `awaken` binary ([`main`](../main.rs)) is a thin shell over this library.
 
@@ -16,11 +13,11 @@ mod assistant_selection;
 mod brain_admin;
 pub mod config;
 mod console_assets;
+mod control;
 mod exact_host_model;
-mod hosted_control;
 mod identity;
-mod management_surface;
 mod observation_reconcile;
+mod process_surface;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -45,9 +42,8 @@ pub use acp_local_credentials::{
 };
 pub use console_assets::mount as mount_console;
 pub use console_assets::mount_with_navigation as mount_console_with_navigation;
-pub use hosted_control::{
-    build_control_assembly_with_deployment, build_control_router_with_deployment,
-    build_control_router_with_publication_resolver,
+pub use control::{
+    build_control_assembly, build_control_router, build_control_router_with_publication_resolver,
     build_control_router_with_publication_resolver_and_web_search,
 };
 use identity::identity_wiring;
@@ -213,7 +209,7 @@ impl awaken_admin_config_api::CredentialProbe for GenaiProbe {
 /// publishes catalog-backed provider candidates and installs their credential
 /// materializer; deterministic scenarios publish one exact host executor and do
 /// not install a provider materializer.
-enum ManagementModelComposition {
+enum PublicationModelComposition {
     PublishedProviders,
     /// A hosted composition owns provider custody and injects its resolver into
     /// the same Awaken publication pipeline. This variant is legal only for the
@@ -231,7 +227,7 @@ enum ManagementModelComposition {
 /// Concrete wiring produced by one legal composition mode. Keeping these four
 /// values together prevents a provider resolver from being paired with a host
 /// executor or a Host publication from receiving a credential materializer.
-struct ManagementModelWiring {
+struct PublicationModelWiring {
     executor: Arc<dyn LlmExecutor>,
     model_ref: String,
     publication_resolver: Arc<dyn awaken_runtime_host::ModelPublicationResolver>,
@@ -239,11 +235,11 @@ struct ManagementModelWiring {
 }
 
 #[derive(Default)]
-struct AssemblyOverrides {
+struct ProcessAssemblyOptions {
     deployment: Option<awaken_runtime_host::DeploymentConfig>,
     org_id: Option<String>,
     mcp_bearer_token: Option<String>,
-    management_only: bool,
+    role: config::Role,
     cloud_api_base_url: Option<String>,
     cloud_models_enabled: bool,
     local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
@@ -262,14 +258,14 @@ impl awaken_server::placement::DeclaredHandSource for ConfigDeclaredHandSource {
 }
 
 /// Router plus the cleartext local setup handoff printed by the CLI once.
-pub struct ManagementAssembly {
+pub struct ProcessAssembly {
     pub router: Router,
     pub local_setup: Option<awaken_control::LocalSetupHandoff>,
 }
 
-/// The store set the management plane runs over — one instance of each port,
-/// shared by the authoring router, the vault front door, and session prepare.
-struct ManagementStores {
+/// Store adapters opened once by the process composition and injected into their
+/// Control, Coordinator, Credential, Resource, and Session owners.
+struct DeploymentStores {
     /// Durable installation root used to persist the platform Workspace id.
     workspace_root: Option<std::path::PathBuf>,
     resource_plane: awaken_runtime_host::ResourcePlane,
@@ -280,15 +276,15 @@ struct ManagementStores {
     resources: Arc<dyn awaken_config_resolver::AgentInputBindingRepository>,
     resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     /// Authored webhook endpoints (ADR-0048), an id-addressed config resource beside
-    /// profiles/MCP — the same admin store, a distinct port.
+    /// profiles/MCP — the same admin store, a distinct interface.
     webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>,
     /// Durable home for the Managed session aggregate (its own `sessions.db`), so a
     /// rehydrated session reports its real config across a restart / peer process.
     sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
-    /// The same physical Session store viewed through the Dream repository port.
+    /// The same physical Session store viewed through the Dream repository interface.
     dream_repository: Arc<dyn awaken_protocol_managed::DreamRepository>,
     /// Same Session application repository viewed through the extraction-work
-    /// port; kept separate from MemoryRepository and from IAM.
+    /// interface; kept separate from MemoryRepository and from IAM.
     memory_extractions: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>,
     /// The config authoring plane (`config.db`): the rich `AgentConfig` drafts the
     /// management console authors directly, and their publications. Scoped so a
@@ -416,8 +412,8 @@ fn spawn_credential_mutation_reconciliation(
     });
 }
 
-/// Ephemeral management stores: everything in process memory (dev / e2e default).
-fn in_memory_management_stores() -> ManagementStores {
+/// Ephemeral deployment stores: everything in process memory (dev / e2e default).
+fn in_memory_deployment_stores() -> DeploymentStores {
     let sessions = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("open ephemeral managed Session repository"),
@@ -426,7 +422,7 @@ fn in_memory_management_stores() -> ManagementStores {
         awaken_admin_config_api::SqliteAdminStore::open_in_memory()
             .expect("open ephemeral admin store"),
     );
-    ManagementStores {
+    DeploymentStores {
         workspace_root: None,
         resource_plane: ephemeral_resource_plane(),
         catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
@@ -447,14 +443,14 @@ fn in_memory_management_stores() -> ManagementStores {
 }
 
 /// Keep the Managed Session aggregate durable whenever the runtime itself is
-/// durable, even when the rest of the management plane intentionally remains
+/// durable, even when the rest of the process composition intentionally remains
 /// ephemeral. A restarted runtime can only rehydrate a governed Session when its
 /// configuration and owner fence survive beside the committed thread facts.
 #[cfg(test)]
-fn management_stores_for_runtime_storage(
+fn deployment_stores_for_runtime_storage(
     storage_dir: Option<&std::path::Path>,
-) -> ManagementStores {
-    let mut stores = in_memory_management_stores();
+) -> DeploymentStores {
+    let mut stores = in_memory_deployment_stores();
     let Some(dir) = storage_dir else {
         return stores;
     };
@@ -475,13 +471,13 @@ fn management_stores_for_runtime_storage(
 /// typed per-component database binding, so a
 /// separate control / server process can share the same per-component databases
 /// (Option A, shared-DB).
-async fn open_management_stores(
+async fn open_deployment_stores(
     cfg: awaken_control::ControlStoreConfig,
     resource_plane: awaken_runtime_host::ResourcePlane,
     workspace_root: std::path::PathBuf,
     key: &[u8; 32],
     postgres_schema: PostgresSchemaMode,
-) -> Result<ManagementStores, String> {
+) -> Result<DeploymentStores, String> {
     use awaken_control::StoreBackend;
 
     // Create the parent directory for any SQLite path (a bundle dir or a custom path).
@@ -560,7 +556,7 @@ async fn open_management_stores(
         }
     };
 
-    // The admin aggregate backs three ports (profiles / MCP / webhooks) off one store.
+    // The admin aggregate backs three interfaces (profiles / MCP / webhooks) off one store.
     ensure_parent(&cfg.admin)?;
     let admin_profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>;
     let admin_webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>;
@@ -721,7 +717,7 @@ async fn open_management_stores(
         }
     };
 
-    Ok(ManagementStores {
+    Ok(DeploymentStores {
         workspace_root: Some(workspace_root),
         resource_plane,
         catalog,
@@ -740,16 +736,16 @@ async fn open_management_stores(
 }
 
 /// Local SQLite is a backend selection, not a second store assembly.
-async fn open_local_management_stores(
+async fn open_local_deployment_stores(
     dir: &std::path::Path,
     key: &[u8; 32],
-) -> Result<ManagementStores, String> {
+) -> Result<DeploymentStores, String> {
     let resource_plane = open_resource_plane(
         config::ResourcePlaneStoreBackend::Embedded(dir.to_path_buf()),
         PostgresSchemaMode::Migrate,
     )
     .await?;
-    open_management_stores(
+    open_deployment_stores(
         awaken_control::ControlStoreConfig::local(dir),
         resource_plane,
         dir.to_path_buf(),
@@ -759,40 +755,62 @@ async fn open_local_management_stores(
     .await
 }
 
-/// Serve the management plane from the standard typed deployment configuration.
-pub async fn build_management_router() -> Router {
-    build_management_router_with_composition(ManagementModelComposition::PublishedProviders).await
+/// Build all-in-one from the standard typed deployment configuration.
+pub async fn build_all_in_one_router() -> Router {
+    build_all_in_one_router_with_composition(PublicationModelComposition::PublishedProviders).await
 }
 
-/// Hermetic management composition for tests and embedders that explicitly want
+/// Hermetic all-in-one composition for tests and embedders that explicitly want
 /// volatile stores. It never consults the standard deployment config path.
-pub async fn build_ephemeral_management_router() -> Router {
-    management_router_over(
-        in_memory_management_stores(),
+pub async fn build_ephemeral_all_in_one_router() -> Router {
+    assemble_process_router(
+        in_memory_deployment_stores(),
         None,
         None,
         None,
-        ManagementModelComposition::PublishedProviders,
-        AssemblyOverrides::default(),
+        PublicationModelComposition::PublishedProviders,
+        ProcessAssemblyOptions::default(),
         None,
     )
     .await
 }
 
 /// Canonical product assembly from the command's one resolved configuration.
-pub async fn build_management_router_with_deployment(
+pub async fn build_all_in_one_router_with_deployment(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
 ) -> Result<Router, String> {
-    build_management_assembly_with_deployment(deployment, key)
+    build_all_in_one_assembly(deployment, key)
         .await
         .map(|assembly| assembly.router)
 }
 
-pub async fn build_management_assembly_with_deployment(
+pub async fn build_all_in_one_assembly(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
-) -> Result<ManagementAssembly, String> {
+) -> Result<ProcessAssembly, String> {
+    build_runtime_process_assembly(deployment, key, config::Role::AllInOne).await
+}
+
+/// Coordinator-only process assembly. It reuses the exact same Session, Run,
+/// Dispatch, and Worker-coordination construction as all-in-one, while the
+/// shared role selector keeps Control routes outside the exposed API.
+pub async fn build_coordinator_assembly(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+) -> Result<ProcessAssembly, String> {
+    build_runtime_process_assembly(deployment, key, config::Role::Coordinator).await
+}
+
+async fn build_runtime_process_assembly(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+    role: config::Role,
+) -> Result<ProcessAssembly, String> {
+    debug_assert!(matches!(
+        role,
+        config::Role::AllInOne | config::Role::Coordinator
+    ));
     let identity = identity_wiring(
         deployment.identity_mode,
         Some(&deployment.data_dir),
@@ -805,7 +823,7 @@ pub async fn build_management_assembly_with_deployment(
         config::OperatingMode::Server => PostgresSchemaMode::Verify,
     };
     let resource_plane = open_resource_plane(deployment.resources.clone(), postgres_schema).await?;
-    let stores = open_management_stores(
+    let stores = open_deployment_stores(
         deployment.control.clone(),
         resource_plane,
         deployment.data_dir.clone(),
@@ -815,17 +833,17 @@ pub async fn build_management_assembly_with_deployment(
     .await?;
     let hand_executors =
         awaken_server::placement::connect_declared_hands(&deployment.hand_connections).await?;
-    let router = management_router_over(
+    let router = assemble_process_router(
         stores,
         identity.iam,
         identity.remote_iam,
         identity.local_browser_auth,
-        ManagementModelComposition::PublishedProviders,
-        AssemblyOverrides {
+        PublicationModelComposition::PublishedProviders,
+        ProcessAssemblyOptions {
             deployment: Some(deployment.runtime.clone()),
             org_id: Some(deployment.org_id.clone()),
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
-            management_only: false,
+            role,
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
             cloud_models_enabled: deployment.cloud_models.is_enabled(),
             local_acp_observations: deployment.local_acp_observations.clone(),
@@ -836,7 +854,7 @@ pub async fn build_management_assembly_with_deployment(
         None,
     )
     .await;
-    Ok(ManagementAssembly {
+    Ok(ProcessAssembly {
         router,
         local_setup: identity.local_setup,
     })
@@ -845,13 +863,13 @@ pub async fn build_management_assembly_with_deployment(
 /// Explicit deployment migration phase for every management-owned store.
 /// Local SQLite startup retains its existing auto-migration behavior; managed
 /// PostgreSQL deployments invoke this command before starting application Pods.
-pub async fn migrate_management_schema_with_deployment(
+pub async fn migrate_deployment_schema(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
 ) -> Result<(), String> {
     let resource_plane =
         open_resource_plane(deployment.resources.clone(), PostgresSchemaMode::Migrate).await?;
-    open_management_stores(
+    open_deployment_stores(
         deployment.control.clone(),
         resource_plane,
         deployment.data_dir.clone(),
@@ -866,11 +884,11 @@ pub async fn migrate_management_schema_with_deployment(
 /// scenario executor. This is a dev/e2e composition, not a provider fallback:
 /// its exact host candidate is published by a dedicated resolver and no
 /// credential/provider materializer is installed.
-pub async fn build_management_router_with_scenario_model(
+pub async fn build_all_in_one_router_with_scenario_model(
     model: Arc<dyn LlmExecutor>,
     model_ref: String,
 ) -> Router {
-    build_management_router_with_composition(ManagementModelComposition::Host {
+    build_all_in_one_router_with_composition(PublicationModelComposition::Host {
         executor: model,
         binding: awaken_runtime_contract::resolved::ModelBinding::new(
             "default", model_ref, "default",
@@ -879,8 +897,8 @@ pub async fn build_management_router_with_scenario_model(
     .await
 }
 
-async fn build_management_router_with_composition(
-    model_composition: ManagementModelComposition,
+async fn build_all_in_one_router_with_composition(
+    model_composition: PublicationModelComposition,
 ) -> Router {
     let deployment = config::ResolvedDeployment::load(config::ConfigOverrides::default())
         .unwrap_or_else(|error| panic!("deployment configuration: {error}"));
@@ -903,7 +921,7 @@ async fn build_management_router_with_composition(
     let resource_plane = open_resource_plane(deployment.resources.clone(), postgres_schema)
         .await
         .unwrap_or_else(|error| panic!("open resource stores: {error}"));
-    let stores = open_management_stores(
+    let stores = open_deployment_stores(
         deployment.control.clone(),
         resource_plane,
         deployment.data_dir.clone(),
@@ -911,22 +929,22 @@ async fn build_management_router_with_composition(
         postgres_schema,
     )
     .await
-    .unwrap_or_else(|error| panic!("open management stores: {error}"));
+    .unwrap_or_else(|error| panic!("open deployment stores: {error}"));
     let hand_executors =
         awaken_server::placement::connect_declared_hands(&deployment.hand_connections)
             .await
             .unwrap_or_else(|error| panic!("declared Hand topology: {error}"));
-    management_router_over(
+    assemble_process_router(
         stores,
         identity.iam,
         identity.remote_iam,
         identity.local_browser_auth,
         model_composition,
-        AssemblyOverrides {
+        ProcessAssemblyOptions {
             deployment: Some(deployment.runtime),
             org_id: Some(deployment.org_id),
             mcp_bearer_token: deployment.mcp_bearer_token,
-            management_only: false,
+            role: config::Role::AllInOne,
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url),
             cloud_models_enabled: deployment.cloud_models.is_enabled(),
             local_acp_observations: deployment.local_acp_observations,
@@ -939,56 +957,56 @@ async fn build_management_router_with_composition(
     .await
 }
 
-/// [`build_management_router_with_model`] plus a last-mile hook on the assembled host
+/// [`build_all_in_one_router_with_model`] plus a last-mile hook on the assembled host
 /// (`customize_host`) — the seam a composition root uses to wire a runtime backend the
-/// management plane does not assemble itself, e.g. `host.with_acp(executor)` so `acp:*`
+/// standard process assembly does not provide, e.g. `host.with_acp(executor)` so `acp:*`
 /// threads run on an external CLI while the full managed plane (vault + MCP staging +
 /// config plane) is still in play. Keeps the ACP executor's crate out of this module.
-pub async fn build_management_router_with_host_customizer(
+pub async fn build_all_in_one_router_with_host_customizer(
     model: Arc<dyn LlmExecutor>,
     binding: awaken_runtime_contract::resolved::ModelBinding,
     customize_host: impl FnOnce(SharedHost) -> SharedHost + Send + 'static,
 ) -> Router {
-    management_router_over(
-        in_memory_management_stores(),
+    assemble_process_router(
+        in_memory_deployment_stores(),
         None,
         None,
         None,
-        ManagementModelComposition::Host {
+        PublicationModelComposition::Host {
             executor: model,
             binding,
         },
-        AssemblyOverrides::default(),
+        ProcessAssemblyOptions::default(),
         Some(Box::new(customize_host)),
     )
     .await
 }
 
-/// Durable counterpart of [`build_management_router_with_host_customizer`].
+/// Durable counterpart of [`build_all_in_one_router_with_host_customizer`].
 ///
 /// This is an explicit-input composition seam for restart tests and embeddings
 /// that need a real external runtime while retaining the same management and
 /// resource-plane state across host lifetimes. The sealing key and storage root
 /// are supplied by the caller, avoiding process-global environment races.
-pub async fn build_durable_management_router_with_host_customizer(
+pub async fn build_durable_all_in_one_router_with_host_customizer(
     dir: &std::path::Path,
     key: &[u8; 32],
     model: Arc<dyn LlmExecutor>,
     binding: awaken_runtime_contract::resolved::ModelBinding,
     customize_host: impl FnOnce(SharedHost) -> SharedHost + Send + 'static,
 ) -> Router {
-    management_router_over(
-        open_local_management_stores(dir, key)
+    assemble_process_router(
+        open_local_deployment_stores(dir, key)
             .await
-            .unwrap_or_else(|error| panic!("open local management stores: {error}")),
+            .unwrap_or_else(|error| panic!("open local deployment stores: {error}")),
         None,
         None,
         None,
-        ManagementModelComposition::Host {
+        PublicationModelComposition::Host {
             executor: model,
             binding,
         },
-        AssemblyOverrides::default(),
+        ProcessAssemblyOptions::default(),
         Some(Box::new(customize_host)),
     )
     .await
@@ -998,91 +1016,91 @@ pub async fn build_durable_management_router_with_host_customizer(
 /// model injected — a **test-only** seam so an integration test can drive the real
 /// management router with a deterministic (mock) model, keeping the mock out of the
 /// production assembly.
-pub async fn build_management_router_with_model(
+pub async fn build_all_in_one_router_with_model(
     model: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
 ) -> Router {
-    management_router_over(
-        in_memory_management_stores(),
+    assemble_process_router(
+        in_memory_deployment_stores(),
         None,
         None,
         None,
-        ManagementModelComposition::Host {
+        PublicationModelComposition::Host {
             executor: model,
             binding: awaken_runtime_contract::resolved::ModelBinding::new(
                 "default", model_ref, "genai",
             ),
         },
-        AssemblyOverrides::default(),
+        ProcessAssemblyOptions::default(),
         None,
     )
     .await
 }
 
-/// [`build_management_router`] with explicit persistence inputs (no environment
-/// read): the durable management plane over `dir`, sealing secrets under `key`.
+/// [`build_all_in_one_router`] with explicit persistence inputs (no environment
+/// read): durable all-in-one over `dir`, sealing secrets under `key`.
 /// Exposed so a restart test can rebuild a router over one directory across
 /// simulated process lifetimes without racing on process-global env vars.
-/// No IAM guard — the open (default) management plane.
-pub async fn build_durable_management_router(dir: &std::path::Path, key: &[u8; 32]) -> Router {
-    management_router_over(
-        open_local_management_stores(dir, key)
+/// No IAM guard — the open (default) all-in-one process.
+pub async fn build_durable_all_in_one_router(dir: &std::path::Path, key: &[u8; 32]) -> Router {
+    assemble_process_router(
+        open_local_deployment_stores(dir, key)
             .await
-            .unwrap_or_else(|error| panic!("open local management stores: {error}")),
+            .unwrap_or_else(|error| panic!("open local deployment stores: {error}")),
         None,
         None,
         None,
-        ManagementModelComposition::PublishedProviders,
-        AssemblyOverrides::default(),
+        PublicationModelComposition::PublishedProviders,
+        ProcessAssemblyOptions::default(),
         None,
     )
     .await
 }
 
-/// [`build_durable_management_router`] with the embedded IAM guard enabled — the
+/// [`build_durable_all_in_one_router`] with the embedded IAM guard enabled — the
 /// typed self-managed identity composition. Returns the
 /// [`ManagementAuthz`] handle too so a test (or an embedding) can mint further
 /// workspace tokens against the same policy state.
-pub async fn build_secured_management_router(
+pub async fn build_secured_all_in_one_router(
     dir: &std::path::Path,
     key: &[u8; 32],
 ) -> (Router, Arc<ManagementAuthz>) {
     let iam = embedded_iam(dir);
-    let router = management_router_over(
-        open_local_management_stores(dir, key)
+    let router = assemble_process_router(
+        open_local_deployment_stores(dir, key)
             .await
-            .unwrap_or_else(|error| panic!("open local management stores: {error}")),
+            .unwrap_or_else(|error| panic!("open local deployment stores: {error}")),
         Some(iam.clone()),
         None,
         None,
-        ManagementModelComposition::PublishedProviders,
-        AssemblyOverrides::default(),
+        PublicationModelComposition::PublishedProviders,
+        ProcessAssemblyOptions::default(),
         None,
     )
     .await;
     (router, iam)
 }
 
-/// Mount the management plane over an explicit store set, optionally gated by the
+/// Assemble a process over an explicit store set, optionally gated by the
 /// embedded IAM guard (`iam`). The authoring / authz half comes from
 /// [`awaken_control::control_router`] (guard wraps ONLY admin + vault); the data
 /// plane comes from [`awaken_server::mount_with_managed`]; this composition root
 /// weaves them and keeps the warm-load + inert no-model placeholder wired here.
-async fn management_router_over(
-    stores: ManagementStores,
+async fn assemble_process_router(
+    stores: DeploymentStores,
     iam: Option<Arc<ManagementAuthz>>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
     local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
-    model_composition: ManagementModelComposition,
-    assembly: AssemblyOverrides,
+    model_composition: PublicationModelComposition,
+    assembly: ProcessAssemblyOptions,
     // An optional last-mile hook on the assembled data-plane host, applied before it is
-    // shared. The composition root uses it to wire a runtime backend the management plane
+    // shared. The composition root uses it to wire a runtime backend the standard process
     // does not assemble itself (e.g. an ACP executor for `acp:*` threads) without this
     // module naming that backend's crate. `None` in production; `Some` in a scenario that
     // serves external-CLI sessions.
     customize_host: Option<Box<dyn FnOnce(SharedHost) -> SharedHost + Send>>,
 ) -> Router {
-    let management_only = assembly.management_only;
+    let role = assembly.role;
     let deployment = assembly.deployment;
     let hand_executors = assembly.hand_executors;
     let cloud_api_base_url = assembly.cloud_api_base_url;
@@ -1091,7 +1109,7 @@ async fn management_router_over(
     let managed_rate_limiter =
         Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization(org_id.clone()));
     let mcp_bearer_token = assembly.mcp_bearer_token;
-    let ManagementStores {
+    let DeploymentStores {
         workspace_root,
         resource_plane,
         catalog,
@@ -1194,7 +1212,7 @@ async fn management_router_over(
     let executor_model_capabilities =
         Arc::new(awaken_server::model_directory::installed_executor_model_capabilities());
     let model_wiring = match model_composition {
-        ManagementModelComposition::PublishedProviders => ManagementModelWiring {
+        PublicationModelComposition::PublishedProviders => PublicationModelWiring {
             executor: Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
             model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
             publication_resolver: Arc::new(
@@ -1218,13 +1236,13 @@ async fn management_router_over(
                 }
             })),
         },
-        ManagementModelComposition::HostedPublication { resolver } => ManagementModelWiring {
+        PublicationModelComposition::HostedPublication { resolver } => PublicationModelWiring {
             executor: Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
             model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
             publication_resolver: resolver,
             materializer: None,
         },
-        ManagementModelComposition::Host { executor, binding } => ManagementModelWiring {
+        PublicationModelComposition::Host { executor, binding } => PublicationModelWiring {
             executor,
             model_ref: binding.model_ref.clone(),
             publication_resolver: Arc::new(ExactHostModelPublicationResolver { binding }),
@@ -1375,42 +1393,43 @@ async fn management_router_over(
         credentials: credentials.clone(),
         workspace: platform_workspace.clone(),
     });
-    let (mgmt, webhook_sink) = awaken_control::control_router(awaken_control::ControlRouterInput {
-        platform_workspace: platform_workspace.clone(),
-        catalog: catalog.clone(),
-        credentials: credentials.clone(),
-        secrets: secrets.clone(),
-        profiles,
-        webhook_store,
-        sessions: sessions.clone(),
-        resource_store: resource_store.clone(),
-        probe: Arc::new(GenaiProbe),
-        model_discovery: Arc::new(awaken_server::model_discovery::GenaiModelDiscovery::new(
-            secrets.clone(),
-        )),
-        brokered_catalog: brokered_client
-            .clone()
-            .map(|client| client as Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>),
-        cloud_models_enabled,
-        vault_state: vault_state.clone(),
-        env_state: env_state.clone(),
-        deployment_state: deployment_state.clone(),
-        plane,
-        global_tools: global,
-        plugins: awaken_runtime_host::platform_plugin_capabilities_with_web_search(
-            &web_search_providers,
-        ),
-        runtimes: live_runtime_capabilities.clone(),
-        org_id: Some(org_id.clone()),
-        iam,
-        remote_iam,
-        local_browser_auth,
-        application_access: application_access.clone(),
-    });
+    let (control, webhook_sink) =
+        awaken_control::control_router(awaken_control::ControlRouterInput {
+            platform_workspace: platform_workspace.clone(),
+            catalog: catalog.clone(),
+            credentials: credentials.clone(),
+            secrets: secrets.clone(),
+            profiles,
+            webhook_store,
+            sessions: sessions.clone(),
+            resource_store: resource_store.clone(),
+            probe: Arc::new(GenaiProbe),
+            model_discovery: Arc::new(awaken_server::model_discovery::GenaiModelDiscovery::new(
+                secrets.clone(),
+            )),
+            brokered_catalog: brokered_client
+                .clone()
+                .map(|client| client as Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>),
+            cloud_models_enabled,
+            vault_state: vault_state.clone(),
+            env_state: env_state.clone(),
+            deployment_state: deployment_state.clone(),
+            plane,
+            global_tools: global,
+            plugins: awaken_runtime_host::platform_plugin_capabilities_with_web_search(
+                &web_search_providers,
+            ),
+            runtimes: live_runtime_capabilities.clone(),
+            org_id: Some(org_id.clone()),
+            iam,
+            remote_iam,
+            local_browser_auth,
+            application_access: application_access.clone(),
+        });
 
-    if management_only {
-        return management_surface::finish(
-            mgmt,
+    if role == config::Role::Control {
+        return process_surface::finish(
+            control,
             mcp_export,
             reconciler,
             platform_workspace,
@@ -1474,7 +1493,7 @@ async fn management_router_over(
         .await
         .with_acp_from_deployment(Some(credential_materializer.clone()))
         .await;
-    // Last-mile backend wiring the management plane does not assemble itself, injected
+    // Last-mile backend wiring the standard process does not assemble itself, injected
     // by the composition root (a scenario that serves external-CLI sessions).
     let host_builder = match customize_host {
         Some(customize) => customize(host_builder),
@@ -1604,8 +1623,13 @@ async fn management_router_over(
             awaken_control::authz::cloud_resource_guard,
         ));
     }
-    let flat = data.merge(mgmt);
-    management_surface::finish(
+    let (flat, mcp_export) = match role {
+        config::Role::AllInOne => (data.merge(control), mcp_export),
+        config::Role::Coordinator => (data, Router::new()),
+        config::Role::Control => unreachable!("Control returned before Coordinator assembly"),
+        config::Role::Worker => unreachable!("Worker has its own process composition"),
+    };
+    process_surface::finish(
         flat,
         mcp_export,
         reconciler,
@@ -1698,7 +1722,7 @@ mod runtime_session_store_tests {
     async fn runtime_storage_reopens_the_session_and_its_owner_fence() {
         let dir = tempfile::tempdir().expect("temporary runtime storage");
         {
-            let stores = management_stores_for_runtime_storage(Some(dir.path()));
+            let stores = deployment_stores_for_runtime_storage(Some(dir.path()));
             let value = session("sesn-restart");
             let payload_hash = stable_fingerprint(&value);
             stores
@@ -1716,7 +1740,7 @@ mod runtime_session_store_tests {
                 .unwrap();
         }
 
-        let reopened = management_stores_for_runtime_storage(Some(dir.path()));
+        let reopened = deployment_stores_for_runtime_storage(Some(dir.path()));
         assert_eq!(
             reopened.sessions.owner("sesn-restart").await.as_deref(),
             Some("workspace-a")
@@ -1780,7 +1804,7 @@ mod runtime_session_store_tests {
 }
 
 #[cfg(test)]
-mod management_only_surface_tests {
+mod process_role_surface_tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use axum::body::Body;
@@ -1791,20 +1815,24 @@ mod management_only_surface_tests {
 
     /// Cause/effect decision table:
     ///
-    /// | management-only | route owner | expected |
+    /// | role | Control API | Coordinator API |
     /// | --- | --- | --- |
-    /// | yes | authoring/control | mounted |
-    /// | yes | Session/runtime data plane | absent |
+    /// | Control | mounted | absent |
+    /// | Coordinator | absent | mounted |
+    ///
+    /// AllInOne merging is covered by the existing full-surface integration
+    /// suites; this test owns the two exclusion rules that those suites cannot
+    /// prove.
     #[tokio::test]
-    async fn management_only_mounts_control_and_omits_runtime_authority() {
-        let app = management_router_over(
-            in_memory_management_stores(),
+    async fn service_roles_expose_only_their_owned_api() {
+        let app = assemble_process_router(
+            in_memory_deployment_stores(),
             None,
             None,
             None,
-            ManagementModelComposition::PublishedProviders,
-            AssemblyOverrides {
-                management_only: true,
+            PublicationModelComposition::PublishedProviders,
+            ProcessAssemblyOptions {
+                role: config::Role::Control,
                 ..Default::default()
             },
             None,
@@ -1827,6 +1855,36 @@ mod management_only_surface_tests {
             .await
             .unwrap();
         assert_eq!(session.status(), StatusCode::NOT_FOUND);
+
+        let app = assemble_process_router(
+            in_memory_deployment_stores(),
+            None,
+            None,
+            None,
+            PublicationModelComposition::PublishedProviders,
+            ProcessAssemblyOptions {
+                role: config::Role::Coordinator,
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+        let control = app
+            .clone()
+            .oneshot(
+                Request::get("/v1/config/catalog")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(control.status(), StatusCode::NOT_FOUND);
+
+        let session = app
+            .oneshot(Request::get("/v1/sessions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(session.status(), StatusCode::OK);
     }
 
     #[derive(Debug)]
@@ -1864,18 +1922,18 @@ mod management_only_surface_tests {
     #[tokio::test]
     async fn hosted_control_uses_the_injected_publication_resolver() {
         let called = Arc::new(AtomicBool::new(false));
-        let app = management_router_over(
-            in_memory_management_stores(),
+        let app = assemble_process_router(
+            in_memory_deployment_stores(),
             None,
             None,
             None,
-            ManagementModelComposition::HostedPublication {
+            PublicationModelComposition::HostedPublication {
                 resolver: Arc::new(RecordingHostedResolver {
                     called: called.clone(),
                 }),
             },
-            AssemblyOverrides {
-                management_only: true,
+            ProcessAssemblyOptions {
+                role: config::Role::Control,
                 ..Default::default()
             },
             None,

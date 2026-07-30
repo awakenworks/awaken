@@ -14,7 +14,7 @@ evidence = "e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-cli acp_local_
 path = "crates/bin/awaken-cli/src/main.rs"
 ranges = ["151-152", "292-308"]
 reason = "Management-only startup selection and terminal outcomes of the co-located Worker task are process-composition boundaries. Once the listener is serving, an API request cannot switch command role or independently terminate the Worker future while retaining the same process to observe these caller-side arms."
-evidence = "e2e/console_start_e2e.mjs; e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-cli"
+evidence = "e2e/service_roles_e2e.ts; e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-cli"
 
 [[waiver]]
 path = "crates/control/awaken-config-service/src/publication.rs"

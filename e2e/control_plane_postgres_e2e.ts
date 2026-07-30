@@ -82,7 +82,7 @@ function awakenBin(): string {
 }
 
 function start(bin: string, directory: string, databaseUrl: string): ChildProcess {
-  return spawn(bin, ['serve', '--port', String(PORT)], {
+  return spawn(bin, ['all-in-one', '--port', String(PORT)], {
     env: {
       ...process.env,
       ...deploymentEnv(directory, {

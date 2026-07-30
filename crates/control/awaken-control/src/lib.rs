@@ -229,7 +229,7 @@ pub struct ControlRouterInput {
 /// present) wraps ONLY the admin + vault surfaces: an axum layer binds to the
 /// routes present when applied, so merging the guarded sub-router later leaves
 /// every other surface untouched (ADR-0043). Behavior is identical to the
-/// pre-split `management_router_over` authoring half.
+/// pre-split all-in-one authoring half.
 pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycleSink>) {
     let ControlRouterInput {
         platform_workspace,

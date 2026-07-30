@@ -18,33 +18,11 @@ use awaken_runtime_host::{
 };
 use serde::Deserialize;
 
+mod role;
+pub use role::Role;
+
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_WAKE_CHANNEL: &str = "awaken_dispatch_wake";
-
-/// The product process role. Execution-plane `hand` remains the separate
-/// `awaken-sandbox hand` binary and is deliberately not a control-plane role.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    Serve,
-    Worker,
-}
-
-impl Role {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "serve" | "server" | "coordinator" | "all-in-one" => Ok(Self::Serve),
-            "worker" => Ok(Self::Worker),
-            other => Err(format!("invalid role={other:?}: expected serve or worker")),
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Serve => "serve",
-            Self::Worker => "worker",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OperatingMode {
@@ -337,7 +315,7 @@ impl ResolvedDeployment {
         let role = overrides
             .role
             .or(file.role.as_deref().map(Role::parse).transpose()?)
-            .unwrap_or(Role::Serve);
+            .unwrap_or(Role::AllInOne);
         let worker_server = overrides.worker_server.or(file.worker_server.clone());
         if role == Role::Worker && worker_server.is_none() {
             return Err(
@@ -376,13 +354,16 @@ impl ResolvedDeployment {
                     .to_owned(),
             );
         }
-        if role == Role::Worker && file.run_local_pool.is_some() {
+        if role != Role::AllInOne && file.run_local_pool.is_some() {
             return Err(
-                "run_local_pool is a Serve-only setting; a Worker always runs its registered claim pool"
-                    .to_owned(),
+                "run_local_pool is an all-in-one-only setting; Control and Coordinator never own a local claim pool, and Worker always runs its registered claim pool".to_owned(),
             );
         }
-        let run_local_pool = file.run_local_pool.unwrap_or(true);
+        let run_local_pool = match role {
+            Role::AllInOne => file.run_local_pool.unwrap_or(true),
+            Role::Worker => true,
+            Role::Control | Role::Coordinator => false,
+        };
         let dispatch_url = file.runtime_database_url.clone();
         if dispatch_url
             .as_ref()
@@ -395,7 +376,13 @@ impl ResolvedDeployment {
         } else {
             DispatchBackend::Sqlite
         };
-        if !run_local_pool && dispatch_backend != DispatchBackend::Postgres {
+        if role == Role::Coordinator && dispatch_backend != DispatchBackend::Postgres {
+            return Err("Coordinator requires runtime_database_url".to_owned());
+        }
+        if role == Role::AllInOne
+            && !run_local_pool
+            && dispatch_backend != DispatchBackend::Postgres
+        {
             return Err("run_local_pool=false requires runtime_database_url".to_owned());
         }
         let sandbox_tier = match file.sandbox_tier.as_deref() {
@@ -1339,7 +1326,7 @@ mod tests {
         );
         assert!(config.runtime.durable);
         assert!(matches!(config.seal_key, SealKeySource::LocalFile(_)));
-        assert_eq!(config.role, Role::Serve);
+        assert_eq!(config.role, Role::AllInOne);
     }
 
     #[test]
@@ -1802,24 +1789,27 @@ mod tests {
     }
 
     #[test]
-    fn local_pool_setting_has_one_serve_only_meaning() {
+    fn process_role_owns_one_local_pool_meaning() {
         // Cause/effect graph:
-        // role + optional run_local_pool -> one process-role interpretation. Serve
-        // owns an optional co-located claim pool; Worker owns its mandatory registered
-        // claim pool. Accepting the same switch for both would let WorkerNode::build
-        // silently override resolved configuration and create two meanings.
+        // role + optional run_local_pool + shared Dispatch -> one process-role
+        // interpretation. AllInOne may own a co-located pool, Control owns none,
+        // Coordinator requires shared Dispatch and owns no pool, and Worker owns
+        // its mandatory registered pool.
         //
         // Decision table:
-        // | rule | role   | setting | dispatch DB | result |
-        // | P1   | Serve  | absent  | local       | co-located pool enabled |
-        // | P2   | Serve  | false   | local       | reject: remote drain needs Postgres |
-        // | P3   | Worker | absent  | local       | registered Worker pool enabled |
-        // | P4   | Worker | any     | any         | reject: setting is Serve-only |
-        let serve = resolve(FileConfig::default(), ConfigOverrides::default());
-        assert!(serve.run_local_pool, "P1");
-        assert!(!serve.runtime.disable_local_pool, "P1");
+        // | rule | role        | setting | shared Dispatch | result |
+        // | P1   | AllInOne    | absent  | no              | co-located pool enabled |
+        // | P2   | AllInOne    | false   | no              | reject |
+        // | P3   | Worker      | absent  | no              | registered pool enabled |
+        // | P4   | non-AllInOne| any     | any             | reject ambiguous setting |
+        // | P5   | Control     | absent  | no              | no pool |
+        // | P6   | Coordinator | absent  | no              | reject |
+        // | P7   | Coordinator | absent  | yes             | no co-located pool |
+        let all_in_one = resolve(FileConfig::default(), ConfigOverrides::default());
+        assert!(all_in_one.run_local_pool, "P1");
+        assert!(!all_in_one.runtime.disable_local_pool, "P1");
 
-        let serve_without_shared_dispatch = ResolvedDeployment::resolve_file(
+        let all_in_one_without_shared_dispatch = ResolvedDeployment::resolve_file(
             ConfigOverrides::default(),
             Some(PathBuf::from("/home/dev")),
             PathBuf::from("/home/dev/.awaken/config.toml"),
@@ -1830,7 +1820,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            serve_without_shared_dispatch.contains("runtime_database_url"),
+            all_in_one_without_shared_dispatch.contains("runtime_database_url"),
             "P2"
         );
 
@@ -1845,23 +1835,66 @@ mod tests {
         assert!(worker.run_local_pool, "P3");
         assert!(!worker.runtime.disable_local_pool, "P3");
 
-        for setting in [false, true] {
-            let error = ResolvedDeployment::resolve_file(
-                ConfigOverrides {
-                    role: Some(Role::Worker),
-                    worker_server: Some("http://coordinator".to_owned()),
-                    ..Default::default()
-                },
-                Some(PathBuf::from("/home/dev")),
-                PathBuf::from("/home/dev/.awaken/config.toml"),
-                FileConfig {
-                    run_local_pool: Some(setting),
-                    ..Default::default()
-                },
-            )
-            .unwrap_err();
-            assert!(error.contains("Serve-only"), "P4: {setting}");
+        for role in [Role::Control, Role::Coordinator, Role::Worker] {
+            for setting in [false, true] {
+                let error = ResolvedDeployment::resolve_file(
+                    ConfigOverrides {
+                        role: Some(role),
+                        worker_server: (role == Role::Worker)
+                            .then(|| "http://coordinator".to_owned()),
+                        ..Default::default()
+                    },
+                    Some(PathBuf::from("/home/dev")),
+                    PathBuf::from("/home/dev/.awaken/config.toml"),
+                    FileConfig {
+                        run_local_pool: Some(setting),
+                        ..Default::default()
+                    },
+                )
+                .unwrap_err();
+                assert!(error.contains("all-in-one-only"), "P4: {role:?}/{setting}");
+            }
         }
+
+        let control = resolve(
+            FileConfig::default(),
+            ConfigOverrides {
+                role: Some(Role::Control),
+                ..Default::default()
+            },
+        );
+        assert!(!control.run_local_pool, "P5");
+        assert!(control.runtime.disable_local_pool, "P5");
+
+        let coordinator_without_shared_dispatch = ResolvedDeployment::resolve_file(
+            ConfigOverrides {
+                role: Some(Role::Coordinator),
+                ..Default::default()
+            },
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            FileConfig::default(),
+        )
+        .unwrap_err();
+        assert!(
+            coordinator_without_shared_dispatch.contains("runtime_database_url"),
+            "P6"
+        );
+
+        let coordinator = resolve(
+            FileConfig {
+                runtime_database_url: Some("postgres://coordinator/db".to_owned()),
+                resource_database_url: Some("postgres://resource/db".to_owned()),
+                admin_db: Some("postgres://control/admin".to_owned()),
+                ..Default::default()
+            },
+            ConfigOverrides {
+                role: Some(Role::Coordinator),
+                ..Default::default()
+            },
+        );
+        assert!(!coordinator.run_local_pool, "P7");
+        assert!(coordinator.runtime.disable_local_pool, "P7");
     }
 
     #[test]

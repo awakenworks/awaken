@@ -1,27 +1,27 @@
-//! Release-contract projection for the product-owned Management authorization
+//! Release-contract projection for the product-owned Control authorization
 //! profile.
 //!
 //! Causal decision table:
 //! | invocation | config/storage/network | outcome |
 //! | --- | --- | --- |
-//! | `management iam profile` | unavailable | deterministic profile JSON |
-//! | `management iam profile resources` | unavailable | deterministic resource profile JSON |
-//! | `management iam profile runtime` | unavailable | deterministic Hosted lifecycle profile JSON |
+//! | `control iam profile` | unavailable | deterministic profile JSON |
+//! | `control iam profile resources` | unavailable | deterministic resource profile JSON |
+//! | `control iam profile runtime` | unavailable | deterministic Hosted lifecycle profile JSON |
 //! | same invocation twice | unavailable | byte-identical JSON |
 //! | extra argument | unavailable | usage failure, no profile |
 
 use std::process::Command;
 
 #[test]
-fn management_profile_is_a_side_effect_free_release_projection() {
+fn control_profile_is_a_side_effect_free_release_projection() {
     let binary = env!("CARGO_BIN_EXE_awaken");
     let first = Command::new(binary)
-        .args(["management", "iam", "profile"])
+        .args(["control", "iam", "profile"])
         .env("AWAKEN_CONFIG", "/does/not/exist")
         .output()
         .expect("run profile projection");
     let second = Command::new(binary)
-        .args(["management", "iam", "profile"])
+        .args(["control", "iam", "profile"])
         .env("AWAKEN_CONFIG", "/also/does/not/exist")
         .output()
         .expect("run profile projection again");
@@ -54,15 +54,15 @@ fn management_profile_is_a_side_effect_free_release_projection() {
 }
 
 #[test]
-fn management_resource_profile_is_a_side_effect_free_release_projection() {
+fn control_resource_profile_is_a_side_effect_free_release_projection() {
     let binary = env!("CARGO_BIN_EXE_awaken");
     let first = Command::new(binary)
-        .args(["management", "iam", "profile", "resources"])
+        .args(["control", "iam", "profile", "resources"])
         .env("AWAKEN_CONFIG", "/does/not/exist")
         .output()
         .expect("run resource profile projection");
     let second = Command::new(binary)
-        .args(["management", "iam", "profile", "resources"])
+        .args(["control", "iam", "profile", "resources"])
         .env("AWAKEN_CONFIG", "/also/does/not/exist")
         .output()
         .expect("run resource profile projection again");
@@ -102,7 +102,7 @@ fn hosted_runtime_profile_is_a_side_effect_free_release_projection() {
     let binary = env!("CARGO_BIN_EXE_awaken");
     let project = || {
         Command::new(binary)
-            .args(["management", "iam", "profile", "runtime"])
+            .args(["control", "iam", "profile", "runtime"])
             .env("AWAKEN_CONFIG", "/does/not/exist")
             .output()
             .expect("run Hosted Runtime profile projection")
@@ -124,9 +124,9 @@ fn hosted_runtime_profile_is_a_side_effect_free_release_projection() {
 }
 
 #[test]
-fn management_profile_rejects_an_ambiguous_invocation() {
+fn control_profile_rejects_an_ambiguous_invocation() {
     let output = Command::new(env!("CARGO_BIN_EXE_awaken"))
-        .args(["management", "iam", "profile", "extra"])
+        .args(["control", "iam", "profile", "extra"])
         .output()
         .expect("run invalid profile projection");
 
@@ -136,6 +136,6 @@ fn management_profile_rejects_an_ambiguous_invocation() {
         "usage output must not contain a profile"
     );
     assert!(String::from_utf8_lossy(&output.stderr).contains(
-        "management iam requires `profile`, `profile resources`, or `profile runtime` exactly"
+        "control iam requires `profile`, `profile resources`, or `profile runtime` exactly"
     ));
 }

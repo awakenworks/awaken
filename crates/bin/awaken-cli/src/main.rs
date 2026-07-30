@@ -1,4 +1,4 @@
-//! `awaken` — one product command and one serve composition.
+//! `awaken` — explicit process roles over one shared composition.
 
 mod console;
 
@@ -60,33 +60,33 @@ async fn run(command: console::Command) -> Result<(), String> {
         console::Command::DatabaseMigrate { config_path } => {
             let deployment = ResolvedDeployment::load(ConfigOverrides {
                 config_path,
-                role: Some(Role::Serve),
+                role: Some(Role::AllInOne),
                 ..Default::default()
             })?;
             warn_deprecations(&deployment);
             deployment.ensure_data_layout()?;
             let seal_key = deployment.seal_key.load_or_create()?;
-            awaken_cli::migrate_management_schema_with_deployment(&deployment, &seal_key).await
+            awaken_cli::migrate_deployment_schema(&deployment, &seal_key).await
         }
-        console::Command::ManagementIamProfile => {
+        console::Command::ControlIamProfile => {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&awaken_control::management_authorization_profile())
-                    .map_err(|error| format!("serialize Management IAM profile: {error}"))?
+                    .map_err(|error| format!("serialize Control IAM profile: {error}"))?
             );
             Ok(())
         }
-        console::Command::ManagementIamResourceProfile => {
+        console::Command::ControlIamResourceProfile => {
             println!(
                 "{}",
                 serde_json::to_string_pretty(
                     &awaken_control::management_resource_authorization_profile()
                 )
-                .map_err(|error| format!("serialize Management resource IAM profile: {error}"))?
+                .map_err(|error| format!("serialize Control resource IAM profile: {error}"))?
             );
             Ok(())
         }
-        console::Command::ManagementIamRuntimeProfile => {
+        console::Command::ControlIamRuntimeProfile => {
             println!(
                 "{}",
                 serde_json::to_string_pretty(
@@ -121,20 +121,26 @@ async fn run(command: console::Command) -> Result<(), String> {
             awaken_observability::shutdown();
             result
         }
-        console::Command::Start(args) => serve(args, Presentation::Interactive, false).await,
-        console::Command::Serve(args) => serve(args, Presentation::Headless, false).await,
-        console::Command::Management(args) => serve(args, Presentation::Headless, true).await,
+        console::Command::AllInOne(args) => {
+            run_service(args, Presentation::Interactive, Role::AllInOne).await
+        }
+        console::Command::Control(args) => {
+            run_service(args, Presentation::Headless, Role::Control).await
+        }
+        console::Command::Coordinator(args) => {
+            run_service(args, Presentation::Headless, Role::Coordinator).await
+        }
     }
 }
 
-async fn serve(
-    args: console::StartArgs,
+async fn run_service(
+    args: console::ServiceArgs,
     presentation: Presentation,
-    management_only: bool,
+    role: Role,
 ) -> Result<(), String> {
     let mut deployment = ResolvedDeployment::load(ConfigOverrides {
         config_path: args.config_path,
-        role: Some(Role::Serve),
+        role: Some(role),
         data_dir: args.data_dir,
         port: args.port,
         no_browser: args.no_browser.then_some(true),
@@ -142,32 +148,30 @@ async fn serve(
         cloud_models: args.cloud_models,
         ..Default::default()
     })?;
-    if management_only && deployment.mode != awaken_cli::config::OperatingMode::Server {
-        return Err("`awaken management` requires mode = \"server\" in config.toml".to_owned());
+    if matches!(role, Role::Control | Role::Coordinator)
+        && deployment.mode != awaken_cli::config::OperatingMode::Server
+    {
+        return Err(format!(
+            "`awaken {}` requires mode = \"server\" in config.toml",
+            role.as_str()
+        ));
     }
     warn_deprecations(&deployment);
     deployment.ensure_data_layout()?;
     let seal_key = deployment.seal_key.load_or_create()?;
-    let local_acp = if management_only {
-        None
-    } else {
+    let local_acp = if role == Role::AllInOne {
         awaken_cli::prepare_local_acp(&mut deployment, &seal_key).await?
+    } else {
+        None
     };
-    if !management_only
+    if role != Role::Control
         && let Some(error) = deployment.runtime.durable_needs_persistence_error(false)
     {
         return Err(error.to_owned());
     }
 
     awaken_observability::init(&deployment.observability);
-    let result = serve_resolved(
-        deployment,
-        seal_key,
-        presentation,
-        management_only,
-        local_acp,
-    )
-    .await;
+    let result = serve_resolved(deployment, seal_key, presentation, role, local_acp).await;
     awaken_observability::shutdown();
     result
 }
@@ -176,10 +180,11 @@ async fn serve_resolved(
     deployment: ResolvedDeployment,
     seal_key: [u8; 32],
     presentation: Presentation,
-    management_only: bool,
+    role: Role,
     local_acp: Option<awaken_cli::PreparedLocalAcp>,
 ) -> Result<(), String> {
-    let postgres_startup = !management_only
+    let runs_coordinator = matches!(role, Role::AllInOne | Role::Coordinator);
+    let postgres_startup = runs_coordinator
         && (deployment.runtime.dispatch_backend == awaken_runtime_host::DispatchBackend::Postgres
             || deployment.runtime.store == awaken_runtime_host::StoreKind::Postgres);
     let migration_lock = if postgres_startup {
@@ -195,7 +200,7 @@ async fn serve_resolved(
         None
     };
 
-    if !management_only
+    if runs_coordinator
         && deployment.runtime.dispatch_backend == awaken_runtime_host::DispatchBackend::Postgres
     {
         let url = deployment
@@ -210,7 +215,7 @@ async fn serve_resolved(
             .await
             .map_err(|error| format!("initialize Postgres worker registry: {error}"))?;
     }
-    if !management_only && deployment.runtime.store == awaken_runtime_host::StoreKind::Postgres {
+    if runs_coordinator && deployment.runtime.store == awaken_runtime_host::StoreKind::Postgres {
         let url = deployment
             .runtime
             .database_url
@@ -224,10 +229,11 @@ async fn serve_resolved(
         .map_err(|error| format!("initialize Postgres commit store: {error}"))?;
     }
 
-    let assembly = if management_only {
-        awaken_cli::build_control_assembly_with_deployment(&deployment, &seal_key).await?
-    } else {
-        awaken_cli::build_management_assembly_with_deployment(&deployment, &seal_key).await?
+    let assembly = match role {
+        Role::AllInOne => awaken_cli::build_all_in_one_assembly(&deployment, &seal_key).await?,
+        Role::Control => awaken_cli::build_control_assembly(&deployment, &seal_key).await?,
+        Role::Coordinator => awaken_cli::build_coordinator_assembly(&deployment, &seal_key).await?,
+        Role::Worker => unreachable!("Worker has its own process composition"),
     };
     let local_setup = assembly.local_setup;
     // The beta gate is a composition-edge concern: it wraps both Session and

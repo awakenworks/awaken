@@ -112,7 +112,7 @@ function start(binary, cli) {
     `acp_clis = [${JSON.stringify(cli)}]`,
     `acp_default_cli = ${JSON.stringify(cli)}`,
   ].join('\n'));
-  return spawn(binary, ['serve', '--config', configPath], {
+  return spawn(binary, ['all-in-one', '--config', configPath], {
     env: {
       ...environment,
       PATH: `${BIN_DIR}${path.delimiter}${environment.PATH ?? ''}`,

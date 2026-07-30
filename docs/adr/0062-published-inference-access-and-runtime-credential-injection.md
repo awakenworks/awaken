@@ -172,7 +172,7 @@ not a fallback list it could reinterpret.
 The final fallback cleanup also removes optional construction of `ConfigService`,
 `CatalogModelPublicationResolver::with_fallback_model`,
 `CredentialInferenceMaterializer::with_fallback_executor`, and the management
-router's `build_management_router_with_fallback` seam. Production composition is
+router's retired fallback assembly seam. Production composition is
 Catalog-only; deterministic Host composition is exact and disjoint.
 
 The later single-truth-source cleanup also removes runtime

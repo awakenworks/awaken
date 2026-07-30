@@ -188,7 +188,7 @@ function localEnvironment() {
 }
 
 function start(binary, config) {
-  const child = spawn(binary, ['serve', '--config', config], {
+  const child = spawn(binary, ['all-in-one', '--config', config], {
     env: localEnvironment(),
     stdio: ['ignore', 'ignore', 'inherit'],
   });

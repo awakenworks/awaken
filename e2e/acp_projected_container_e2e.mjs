@@ -217,7 +217,7 @@ async function main() {
     'acp_clis = ["gemini"]',
     'acp_default_cli = "gemini"',
   ].join('\n'));
-  const server = spawn(binary, ['serve', '--config', configPath], {
+  const server = spawn(binary, ['all-in-one', '--config', configPath], {
     env: {
       ...environment,
       // Ambient values are discovery hints only. The published endpoint, model,

@@ -1,4 +1,4 @@
-//! Hosted authoring/control composition over the canonical Management stores.
+//! Control process composition over the canonical deployment stores.
 //!
 //! This module owns only the control-only assembly choice. Router, IAM,
 //! ConfigService, publication persistence, and schema ownership remain in their
@@ -13,11 +13,11 @@ use super::*;
 /// Canonical hosted authoring/control assembly. It reuses the same stores,
 /// resolver, IAM PEP and routes as the full local product, but deliberately
 /// omits every Session/Run/protocol/Worker data-plane route.
-pub async fn build_control_router_with_deployment(
+pub async fn build_control_router(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
 ) -> Result<Router, String> {
-    build_control_assembly_with_deployment(deployment, key)
+    build_control_assembly(deployment, key)
         .await
         .map(|assembly| assembly.router)
 }
@@ -25,14 +25,14 @@ pub async fn build_control_router_with_deployment(
 /// Canonical hosted assembly, including the one-time local setup handoff owned
 /// by the shared identity wiring. The router-only entry point projects this
 /// value instead of maintaining a second composition path.
-pub async fn build_control_assembly_with_deployment(
+pub async fn build_control_assembly(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
-) -> Result<ManagementAssembly, String> {
+) -> Result<ProcessAssembly, String> {
     build_control_assembly_with_model_composition(
         deployment,
         key,
-        ManagementModelComposition::PublishedProviders,
+        PublicationModelComposition::PublishedProviders,
         None,
     )
     .await
@@ -44,7 +44,7 @@ pub async fn build_control_assembly_with_deployment(
 /// Awaken continues to own Agent authoring, compilation, fingerprinting, and
 /// publication persistence. A closed deployment supplies only the existing
 /// [`ModelPublicationResolver`](awaken_runtime_host::ModelPublicationResolver)
-/// port; it does not replace the router, config service, or publication store.
+/// interface; it does not replace the router, config service, or publication store.
 pub async fn build_control_router_with_publication_resolver(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
@@ -65,7 +65,7 @@ pub async fn build_control_router_with_publication_resolver(
 }
 
 /// Hosted control assembly with deployment-owned model and WebSearch
-/// publication adapters. This remains the same canonical Management assembly;
+/// publication adapters. This remains the same canonical Control assembly;
 /// the closed composition supplies only existing open SPIs and provider facts.
 pub async fn build_control_router_with_publication_resolver_and_web_search(
     deployment: &config::ResolvedDeployment,
@@ -77,7 +77,7 @@ pub async fn build_control_router_with_publication_resolver_and_web_search(
     build_control_assembly_with_model_composition(
         deployment,
         key,
-        ManagementModelComposition::HostedPublication { resolver },
+        PublicationModelComposition::HostedPublication { resolver },
         Some((web_search_providers, web_search_publication_resolver)),
     )
     .await
@@ -87,12 +87,12 @@ pub async fn build_control_router_with_publication_resolver_and_web_search(
 async fn build_control_assembly_with_model_composition(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
-    model_composition: ManagementModelComposition,
+    model_composition: PublicationModelComposition,
     web_search: Option<(
         awaken_runtime_host::WebSearchProviderRegistry,
         Arc<dyn awaken_runtime_host::PluginPublicationResolver>,
     )>,
-) -> Result<ManagementAssembly, String> {
+) -> Result<ProcessAssembly, String> {
     let identity = identity_wiring(
         deployment.identity_mode,
         Some(&deployment.data_dir),
@@ -100,9 +100,9 @@ async fn build_control_assembly_with_model_composition(
         &deployment.iam_workspaces,
         &deployment.cloud_iam,
     )?;
-    let stores = open_management_stores(
+    let stores = open_deployment_stores(
         deployment.control.clone(),
-        // Hosted Management exposes no File/Memory/Skill routes. This volatile
+        // Control exposes no File/Memory/Skill routes. This volatile
         // resource plane satisfies shared control-plane collaborators without
         // acquiring a second durable resource-plane authority.
         ephemeral_resource_plane(),
@@ -111,17 +111,17 @@ async fn build_control_assembly_with_model_composition(
         PostgresSchemaMode::Verify,
     )
     .await?;
-    let router = management_router_over(
+    let router = assemble_process_router(
         stores,
         identity.iam,
         identity.remote_iam,
         identity.local_browser_auth,
         model_composition,
-        AssemblyOverrides {
+        ProcessAssemblyOptions {
             deployment: None,
             org_id: Some(deployment.org_id.clone()),
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
-            management_only: true,
+            role: config::Role::Control,
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
             cloud_models_enabled: deployment.cloud_models.is_enabled(),
             local_acp_observations: Vec::new(),
@@ -132,7 +132,7 @@ async fn build_control_assembly_with_model_composition(
         None,
     )
     .await;
-    Ok(ManagementAssembly {
+    Ok(ProcessAssembly {
         router,
         local_setup: identity.local_setup,
     })

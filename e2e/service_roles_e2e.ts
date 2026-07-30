@@ -1,4 +1,4 @@
-// End-to-end coverage for the aggregated `awaken start` composition.
+// End-to-end coverage for the canonical Awaken process-role commands.
 //
 // The command adapter owns argument parsing and the build owns the one embedded
 // console distribution; the server adapter owns static delivery while preserving
@@ -14,8 +14,8 @@ import { execFileSync, execSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const PORT = Number(process.env.E2E_PORT ?? 39412);
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const PORT = Number(process.env.E2E_PORT ?? 39418);
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function awakenBin() {
   const output = execSync(
@@ -59,25 +59,36 @@ async function main() {
   const bin = awakenBin();
 
   // Cause graph for command selection:
-  // C1 command is `start`; C2 command is `serve`; C3 an unknown option is
-  // present. E1 starts the interactive surface, E2 starts headless, E3 rejects
-  // before binding a port or opening the data directory.
+  // C1 command is absent/all-in-one; C2 a retired overlapping name is used;
+  // C3 an unknown option is present; C4 Control uses local mode; C5 Control
+  // uses server mode. E1 selects the one combined process, E2/E3/E4 reject
+  // before binding, and E5 exposes Control without Coordinator routes.
   // Decision table:
   // | Rule | C1 | C2 | C3 | Expected effect |
   // | K1   | T  | F  | F  | E1              |
   // | K2   | F  | T  | F  | E2              |
-  // | K3   | -  | -  | T  | E3              |
+  // | K3   | F  | F  | T  | E3              |
+  // | K4   | Control/local | - | - | E4       |
+  // | K5   | Control/server| - | - | E5       |
 
   const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
   assert.equal(help.status, 0, help.stderr);
-  assert.match(help.stdout, /awaken start/);
+  assert.match(help.stdout, /all-in-one/);
+  assert.match(help.stdout, /control/);
+  assert.match(help.stdout, /coordinator/);
   assert.doesNotMatch(help.stdout, /AWAKEN_WEB_DIST/);
 
-  const startHelp = spawnSync(bin, ['start', '--help'], { encoding: 'utf8' });
-  assert.equal(startHelp.status, 0, startHelp.stderr);
-  assert.match(startHelp.stdout, /USAGE/);
+  const allInOneHelp = spawnSync(bin, ['all-in-one', '--help'], { encoding: 'utf8' });
+  assert.equal(allInOneHelp.status, 0, allInOneHelp.stderr);
+  assert.match(allInOneHelp.stdout, /USAGE/);
 
-  const badArgs = spawnSync(bin, ['serve', '--unknown-option'], { encoding: 'utf8' });
+  for (const retired of ['start', 'serve', 'management']) {
+    const result = spawnSync(bin, [retired], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0, `retired command ${retired} unexpectedly succeeded`);
+    assert.match(result.stderr, /unknown command/);
+  }
+
+  const badArgs = spawnSync(bin, ['all-in-one', '--unknown-option'], { encoding: 'utf8' });
   assert.notEqual(badArgs.status, 0);
   assert.match(badArgs.stderr, /unexpected argument/);
 
@@ -88,9 +99,17 @@ async function main() {
   fs.writeFileSync(path.join(configDir, 'config.toml'), [
     `data_dir = ${JSON.stringify(path.join(temp, 'data'))}`,
     `bind = ${JSON.stringify(`127.0.0.1:${PORT}`)}`,
+    'identity_mode = "no-login"',
     'acp_clis = ["gemini"]',
   ].join('\n'));
-  let server = spawn(bin, ['start', '--no-browser'], {
+  const localControl = spawnSync(bin, ['control', '--config', path.join(configDir, 'config.toml')], {
+    encoding: 'utf8',
+    env: { ...process.env, HOME: home },
+  });
+  assert.notEqual(localControl.status, 0, 'K4');
+  assert.match(localControl.stderr, /requires mode = "server"/, 'K4');
+
+  let server = spawn(bin, ['all-in-one', '--no-browser'], {
     cwd: temp,
     env: {
       ...process.env,
@@ -141,8 +160,29 @@ async function main() {
     response = await fetch(`${base}/v1/does-not-exist`);
     assert.equal(response.status, 404);
 
+    await stop();
+    fs.writeFileSync(path.join(configDir, 'config.toml'), [
+      `data_dir = ${JSON.stringify(path.join(temp, 'data'))}`,
+      `bind = ${JSON.stringify(`127.0.0.1:${PORT}`)}`,
+      'mode = "server"',
+      'identity_mode = "no-login"',
+      'control_seal_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"',
+    ].join('\n'));
+    server = spawn(bin, ['control', '--config', path.join(configDir, 'config.toml')], {
+      cwd: temp,
+      env: { ...process.env, HOME: home },
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
+    await waitForPort(PORT, server);
+    response = await fetch(`${base}/v1/config/catalog`);
+    assert.equal(response.status, 200, await response.text());
+    response = await fetch(`${base}/v1/sessions`, {
+      headers: { 'anthropic-beta': 'managed-agents-2026-04-01' },
+    });
+    assert.equal(response.status, 404, 'K5');
+
     console.log(
-      'CONSOLE START TS E2E PASS: command modes fail closed and the one embedded SPA source preserves the management API fallback.',
+      'SERVICE ROLES E2E PASS: canonical commands fail closed and all-in-one preserves the embedded console plus combined API.',
     );
   } finally {
     await stop();

@@ -43,7 +43,7 @@ async function rejected(bin, fields, expected) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-config-reject-'));
   try {
     const env = deploymentEnv(root, { fields });
-    const result = await runToExit(bin, ['serve', '--config', configPath(env)], env);
+    const result = await runToExit(bin, ['all-in-one', '--config', configPath(env)], env);
     assert.notEqual(result.code, 0, `configuration unexpectedly booted: ${result.output}`);
     assert.match(result.output, expected);
   } finally {
@@ -81,7 +81,7 @@ async function main() {
   const isolationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-config-isolation-'));
   try {
     const env = deploymentEnv(isolationRoot, {
-      fields: { bind: `127.0.0.1:${BASE_PORT}`, role: 'serve', run_local_pool: true },
+      fields: { bind: `127.0.0.1:${BASE_PORT}`, role: 'all-in-one', run_local_pool: true },
     });
     Object.assign(env, {
       AWAKEN_ROLE: 'worker',
@@ -93,7 +93,7 @@ async function main() {
     const result = await runToExit(bin, ['config', '--json', '--config', configPath(env)], env);
     assert.equal(result.code, 0, result.output);
     const report = JSON.parse(result.output);
-    assert.equal(report.role, 'serve');
+    assert.equal(report.role, 'all-in-one');
     assert.equal(report.bind, `127.0.0.1:${BASE_PORT}`);
     assert.equal(report.data_dir, isolationRoot);
     assert.equal(report.runtime_dispatch_backend, 'sqlite');
@@ -113,7 +113,7 @@ async function main() {
       admin_listen: `127.0.0.1:${adminPort}`,
     },
   });
-  const serve = spawn(bin, ['serve', '--config', configPath(env)], {
+  const serve = spawn(bin, ['all-in-one', '--config', configPath(env)], {
     env: { ...process.env, ...env, AWAKEN_HTTP_ADDR: '127.0.0.1:1' },
     stdio: ['ignore', 'ignore', 'inherit'],
   });

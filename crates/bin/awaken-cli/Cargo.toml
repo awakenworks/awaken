@@ -90,7 +90,7 @@ container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
 # The management integration tests moved here from awaken-server (they drive
-# build_management_router* over this composition root).
+# build_all_in_one_router* over this composition root).
 awaken-scenario-host = { workspace = true }
 awaken-runtime = { workspace = true }
 awaken-provisioning-contract = { workspace = true }

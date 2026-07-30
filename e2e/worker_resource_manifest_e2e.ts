@@ -395,7 +395,7 @@ async function main(): Promise<void> {
     SESSION_DEPLOYMENT_STORE: '',
     SESSION_DEPLOYMENT_DISPATCH_BACKEND: '',
   };
-  const management = spawn(buildAwaken(), ['serve', '--port', String(CONFIG_PORT)], {
+  const management = spawn(buildAwaken(), ['all-in-one', '--port', String(CONFIG_PORT)], {
     cwd: ROOT,
     env: {
       ...process.env,

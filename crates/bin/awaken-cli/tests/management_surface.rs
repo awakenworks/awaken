@@ -1,9 +1,9 @@
 //! One server, the whole management plane: the admin config CRUD and the Managed
-//! vault/credential front door are mounted together (`build_management_router`),
+//! vault/credential front door are mounted together (`build_all_in_one_router`),
 //! and a credential entered through the Managed vault surface is visible to
 //! resolution because both share one store.
 
-use awaken_cli::build_ephemeral_management_router as build_management_router;
+use awaken_cli::build_ephemeral_all_in_one_router as build_all_in_one_router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -35,11 +35,11 @@ async fn call(
     (status, value)
 }
 
-// Multi-thread flavor matches production `awaken serve`; model publication reads
+// Multi-thread flavor matches production `awaken all-in-one`; model publication reads
 // the catalog and credential repositories asynchronously.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_and_vault_surfaces_are_served_together() {
-    let app = build_management_router().await;
+    let app = build_all_in_one_router().await;
 
     // Admin config CRUD: author model metadata, read the catalog back.
     let (s, _) = call(

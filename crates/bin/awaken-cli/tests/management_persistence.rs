@@ -5,10 +5,10 @@
 //! MCP binding — reads back and still *resolves* (the credential materializes
 //! from the sealed blob store). A rebuild under the WRONG key fails closed at
 //! materialization (`Seal` → 422) while the secret-free config rows stay
-//! readable. Uses `build_durable_management_router` (explicit dir + key), not
+//! readable. Uses `build_durable_all_in_one_router` (explicit dir + key), not
 //! env vars, so the test cannot race other tests on process-global state.
 
-use awaken_cli::build_durable_management_router;
+use awaken_cli::build_durable_all_in_one_router;
 use awaken_config_store::{ScopeId, ScopedConfigRegistry, SqliteConfigStore};
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_model_catalog::{
@@ -91,7 +91,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
     // ---- lifetime A: author everything over HTTP --------------------------
     let cred_id;
     {
-        let app = build_durable_management_router(dir.path(), &KEY).await;
+        let app = build_durable_all_in_one_router(dir.path(), &KEY).await;
 
         let audit_probe_body = serde_json::to_vec(&json!({
             "context_window": 4096
@@ -216,7 +216,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
     } // drop router A: "process" ends
 
     // ---- lifetime B: same dir, same key — everything is still there -------
-    let app = build_durable_management_router(dir.path(), &KEY).await;
+    let app = build_durable_all_in_one_router(dir.path(), &KEY).await;
 
     let (s, catalog) = call(&app, "GET", "/v1/config/catalog", None).await;
     assert_eq!(s, StatusCode::OK);
@@ -296,7 +296,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
 
     // ---- lifetime C: same dir, WRONG key — fails closed, rows readable ----
     drop(app);
-    let app = build_durable_management_router(dir.path(), &WRONG_KEY).await;
+    let app = build_durable_all_in_one_router(dir.path(), &WRONG_KEY).await;
 
     // The secret-free config rows are untouched by the key...
     let (s, catalog) = call(&app, "GET", "/v1/config/catalog", None).await;

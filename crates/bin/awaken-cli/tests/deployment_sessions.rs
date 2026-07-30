@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use awaken_cli::build_management_router_with_model;
+use awaken_cli::build_all_in_one_router_with_model;
 use awaken_scenario_host::EchoModel;
 use axum::Router;
 use axum::body::Body;
@@ -38,7 +38,7 @@ async fn deployment_run_creates_session_and_executes_initial_events() {
     // C1 published Agent + valid Deployment -> Agent latest version is frozen;
     // C2 manual run -> ordinary Session with Deployment id;
     // C3 initial user Event -> ordinary Event executor commits the model response.
-    let app = build_management_router_with_model(Arc::new(EchoModel), "echo").await;
+    let app = build_all_in_one_router_with_model(Arc::new(EchoModel), "echo").await;
     let (status, agent) = call(
         &app,
         "POST",
