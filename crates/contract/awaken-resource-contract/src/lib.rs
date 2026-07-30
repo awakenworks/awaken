@@ -320,6 +320,9 @@ mod skill_bytes {
 /// Hard cap on a single memory's content (Anthropic parity, ADR-0057). Enforced on
 /// every create/update before any allocation.
 pub const MAX_MEMORY_BYTES: usize = 102_400;
+/// Hard cap on live memory heads in one store. Historical versions do not count;
+/// editing an existing head remains legal at capacity.
+pub const MAX_MEMORIES_PER_STORE: usize = 2_000;
 /// Hard cap on a memory path.
 pub const MAX_PATH_BYTES: usize = 1024;
 
@@ -402,6 +405,8 @@ pub enum MemErr {
     InvalidPath(String),
     #[error("content exceeds {MAX_MEMORY_BYTES} bytes")]
     TooLarge,
+    #[error("memory store contains the maximum {MAX_MEMORIES_PER_STORE} memories")]
+    AtCapacity,
     #[error("storage: {0}")]
     Storage(String),
 }
@@ -433,7 +438,7 @@ pub fn validate_path_len(path: &str) -> Result<(), MemErr> {
 pub trait MemoryRepository: Send + Sync {
     /// Atomically read every current file head, including content, from one
     /// store. The returned vector is path-ordered. This is the canonical frozen
-    /// input primitive for operations such as memory consolidation; callers must
+    /// input primitive for operations such as Dream; callers must
     /// not emulate it with `list` followed by per-path reads because concurrent
     /// writes could create a mixed-generation snapshot.
     async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr>;

@@ -462,6 +462,16 @@ impl MemoryRepository for SqliteMemoryRepository {
             if exists {
                 return Err(MemErr::PathConflict(path));
             }
+            let live_count: i64 = tx
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {NS}_memories WHERE store_id = ?1"),
+                    params![store],
+                    |row| row.get(0),
+                )
+                .map_err(mem_err)?;
+            if live_count >= crate::MAX_MEMORIES_PER_STORE as i64 {
+                return Err(MemErr::AtCapacity);
+            }
             let ordinal = next_counter(
                 &tx,
                 "memory_id",
@@ -1373,5 +1383,13 @@ mod memory_repository_tests {
             Some("src"),
             "the destination now holds the moved content"
         );
+    }
+
+    #[tokio::test]
+    async fn sqlite_store_enforces_the_shared_capacity_contract() {
+        crate::repository::tests::capacity_conformance(
+            &SqliteMemoryRepository::open_in_memory().unwrap(),
+        )
+        .await;
     }
 }

@@ -291,6 +291,13 @@ impl MemoryRepository for PostgresMemoryRepository {
         validate_path(path)?;
         validate_size(content)?;
         let mut tx = self.pool.begin().await.map_err(mem_err)?;
+        // One store-scoped transaction lock makes the 2,000-head admission
+        // atomic across nodes without inventing a separate capacity registry.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(store)
+            .execute(&mut *tx)
+            .await
+            .map_err(mem_err)?;
         let exists = sqlx::query(&format!(
             "SELECT 1 FROM {NS}_memories WHERE store_id = $1 AND path = $2"
         ))
@@ -302,6 +309,16 @@ impl MemoryRepository for PostgresMemoryRepository {
         .is_some();
         if exists {
             return Err(MemErr::PathConflict(path.to_string()));
+        }
+        let live_count: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {NS}_memories WHERE store_id = $1"
+        ))
+        .bind(store)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(mem_err)?;
+        if live_count >= crate::MAX_MEMORIES_PER_STORE as i64 {
+            return Err(MemErr::AtCapacity);
         }
         let ordinal = next_counter(
             &mut tx,

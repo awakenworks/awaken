@@ -376,6 +376,92 @@ async fn official_worker_header_and_heartbeat_cas_are_wired() {
     assert_eq!(status, StatusCode::PRECONDITION_FAILED);
 }
 
+#[tokio::test]
+async fn work_poll_honors_documented_blocking_partitions_and_boundaries() {
+    // Causes: empty queue and block_ms omitted, explicit null, 1..=999, or out of range.
+    // Constraints: null is the non-blocking partition; numeric values must be inclusive 1..=999.
+    // Effects: immediate null, bounded long-poll null, documented default wait, or atomic 400.
+    // Decision rule: self-hosted-sandboxes poll P1-P5.
+    let app = app();
+    let id = make_env(&app).await;
+
+    // Drain the seeded healthcheck using the SDK's `null` spelling (`block_ms=`),
+    // then stop it so every following poll observes an empty claimable queue.
+    let (status, leased) = call(
+        &app,
+        "GET",
+        &format!("/v1/environments/{id}/work/poll?block_ms="),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let work_id = leased["id"].as_str().unwrap();
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}/work/{work_id}/stop?force=true"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let started = tokio::time::Instant::now();
+    let (status, empty) = call(
+        &app,
+        "GET",
+        &format!("/v1/environments/{id}/work/poll?block_ms="),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(empty.is_null());
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(100),
+        "P1"
+    );
+
+    let started = tokio::time::Instant::now();
+    let (status, empty) = call(
+        &app,
+        "GET",
+        &format!("/v1/environments/{id}/work/poll?block_ms=40"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(empty.is_null());
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(35),
+        "P2"
+    );
+
+    let started = tokio::time::Instant::now();
+    let (status, empty) = call(
+        &app,
+        "GET",
+        &format!("/v1/environments/{id}/work/poll"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(empty.is_null());
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(900),
+        "P3"
+    );
+
+    for invalid in ["0", "1000", "not-a-number"] {
+        let (status, _) = call(
+            &app,
+            "GET",
+            &format!("/v1/environments/{id}/work/poll?block_ms={invalid}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "P4/P5: {invalid}");
+    }
+}
+
 /// The sole snapshot compiler normalizes all networking wire shapes. In
 /// particular, an empty limited allowlist is exactly `None`, not a parallel
 /// spelling that would demand an unsupported allowlist provider.

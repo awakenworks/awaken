@@ -81,6 +81,11 @@ async function main() {
       content: 'kept',
       betas: BETAS,
     });
+    await c.beta.memoryStores.memories.create(store.id, {
+      path: '/archive/deep/nested.md',
+      content: 'nested',
+      betas: BETAS,
+    });
     // retrieve by id round-trips the head content.
     const got = await c.beta.memoryStores.memories.retrieve(mem.id, {
       memory_store_id: store.id,
@@ -146,16 +151,44 @@ async function main() {
     );
     pass('compare-and-swap update: stale 409, fresh ok, version bumped');
 
-    // -- path_prefix drills into a subtree ------------------------------------
-    const drilled = await drain(
-      c.beta.memoryStores.memories.list(store.id, { path_prefix: '/archive', betas: BETAS }),
-    );
+    // Causes: segment-aligned path_prefix, depth 0/1, basic/full projection,
+    // page limit/cursor, and invalid prefix/depth values.
+    // Constraints: prefix ends `/`; depth is only 0 or 1; full pages cap at 20.
+    // Effects: recursive memories or immediate memory_prefix rollups in stable path
+    // order, content only in full view, and 400 before repository reads on invalid input.
+    // Decision rule: Memory-list ML1-ML7.
+    const drilled = await drain(c.beta.memoryStores.memories.list(store.id, {
+      path_prefix: '/archive/', depth: 0, betas: BETAS,
+    }));
     assert.deepEqual(
       drilled.map((m) => m.path),
-      ['/archive/old.md'],
-      'path_prefix returns only memories under the prefix',
+      ['/archive/deep/nested.md', '/archive/old.md'],
+      'ML1 path_prefix returns the recursive subtree in stable path order',
     );
-    pass('path_prefix listing');
+    assert.ok(drilled.every((memory) => memory.content == null), 'ML2 list defaults to basic');
+    const shallow = await drain(c.beta.memoryStores.memories.list(store.id, {
+      path_prefix: '/archive/', depth: 1, betas: BETAS,
+    }));
+    assert.deepEqual(
+      shallow.map((item) => [item.type, item.path]),
+      [['memory_prefix', '/archive/deep/'], ['memory', '/archive/old.md']],
+      'ML3 depth=1 rolls deeper paths into one prefix marker',
+    );
+    const full = await drain(c.beta.memoryStores.memories.list(store.id, {
+      path_prefix: '/archive/', depth: 0, view: 'full', limit: 100, betas: BETAS,
+    }));
+    assert.deepEqual(full.map((memory) => memory.content), ['nested', 'kept'], 'ML4 full populates content');
+    await rejectsStatus(
+      () => c.beta.memoryStores.memories.list(store.id, { path_prefix: '/archive', betas: BETAS }),
+      400,
+      'ML5 non-segment-aligned prefix rejects',
+    );
+    await rejectsStatus(
+      () => c.beta.memoryStores.memories.list(store.id, { path_prefix: '/', depth: 2, betas: BETAS }),
+      400,
+      'ML6 unsupported depth rejects',
+    );
+    pass('ML1-ML6 path/depth/view Memory listing contract');
 
     // -- error paths: invalid path 400, unknown memory 404, delete then 404 ---
     await assert.rejects(
@@ -326,7 +359,7 @@ async function main() {
 
     // The memories survive the process death — they were in the durable store of
     // record, not an in-memory registry.
-    const after = await drain(c.beta.memoryStores.memories.list(store.id, { betas: BETAS }));
+    const after = await drain(c.beta.memoryStores.memories.list(store.id, { view: 'full', betas: BETAS }));
     const byPath = Object.fromEntries(after.map((m) => [m.path, m.content]));
     assert.equal(
       byPath['/notes/replaced.md'],

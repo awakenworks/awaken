@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -493,6 +493,13 @@ fn not_found(what: &str) -> WireError {
     )
 }
 
+fn bad_request(message: impl Into<String>) -> WireError {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse::new("invalid_request_error", message)),
+    )
+}
+
 // ---- Environment routes ----------------------------------------------------
 
 async fn create_env(
@@ -747,29 +754,75 @@ async fn poll_work(
     State(state): State<Arc<EnvironmentState>>,
     Path(id): Path<String>,
     headers: HeaderMap,
-    Query(poll): Query<PollParams>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<Option<Work>>, WireError> {
     require_env(&state, &id).await?;
+    let poll = parse_poll_params(raw.as_deref())?;
     // The official SDK sends worker identity in `Anthropic-Worker-ID`, not in
-    // the query string. Keep the query-only fields parsed as well so the wire
-    // contract is explicit even where this open-tier queue is non-blocking.
+    // the query string. Long polling repeatedly drives the same authoritative
+    // atomic claim; it does not introduce a second queue or lease registry.
     let worker_id = worker_id(&headers);
-    let _ = poll.block_ms;
-    Ok(Json(
-        state
+    let started = tokio::time::Instant::now();
+    loop {
+        let claimed = state
             .work
             .claim_with_reclaim(&id, worker_id, now_ms(), poll.reclaim_older_than_ms)
-            .await
-            .as_ref()
-            .map(crate::work_queue::project_work),
-    ))
+            .await;
+        if let Some(work) = claimed {
+            return Ok(Json(Some(crate::work_queue::project_work(&work))));
+        }
+        let Some(wait) = poll.block_ms else {
+            return Ok(Json(None));
+        };
+        if started.elapsed() >= wait {
+            return Ok(Json(None));
+        }
+        tokio::time::sleep(
+            wait.saturating_sub(started.elapsed())
+                .min(std::time::Duration::from_millis(20)),
+        )
+        .await;
+    }
 }
 
-/// The poll query: the worker's identity for the `workers_polling` liveness count.
-#[derive(serde::Deserialize)]
+/// Parsed poll timing. `None` means the caller explicitly sent `block_ms=null`
+/// (serialized by the official SDK as an empty query value); omission uses the
+/// documented 999 ms default.
 struct PollParams {
-    block_ms: Option<u64>,
+    block_ms: Option<std::time::Duration>,
     reclaim_older_than_ms: Option<u64>,
+}
+
+fn parse_poll_params(raw: Option<&str>) -> Result<PollParams, WireError> {
+    let mut block_ms = Some(std::time::Duration::from_millis(999));
+    let mut reclaim_older_than_ms = None;
+    for (key, value) in form_urlencoded::parse(raw.unwrap_or_default().as_bytes()) {
+        match key.as_ref() {
+            "block_ms" if value.is_empty() => block_ms = None,
+            "block_ms" => {
+                let millis = value.parse::<u64>().map_err(|_| {
+                    bad_request("block_ms must be null or an integer from 1 through 999")
+                })?;
+                if !(1..=999).contains(&millis) {
+                    return Err(bad_request(
+                        "block_ms must be null or an integer from 1 through 999",
+                    ));
+                }
+                block_ms = Some(std::time::Duration::from_millis(millis));
+            }
+            "reclaim_older_than_ms" if value.is_empty() => reclaim_older_than_ms = None,
+            "reclaim_older_than_ms" => {
+                reclaim_older_than_ms = Some(value.parse::<u64>().map_err(|_| {
+                    bad_request("reclaim_older_than_ms must be a non-negative integer")
+                })?);
+            }
+            _ => {}
+        }
+    }
+    Ok(PollParams {
+        block_ms,
+        reclaim_older_than_ms,
+    })
 }
 
 #[derive(serde::Deserialize)]

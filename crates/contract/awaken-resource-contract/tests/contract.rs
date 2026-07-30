@@ -14,6 +14,7 @@
 //! | R2| `Memory.content = None` (a listing)     | `"content"` key omitted (skip_serializing_if) |
 //! | R3| JSON without `content` (a listing wire) | deserializes to `content = None` (serde default)|
 //! | R4| `MemErr::TooLarge`                      | message interpolates `MAX_MEMORY_BYTES`       |
+//! | R4b| `MemErr::AtCapacity`                   | message interpolates `MAX_MEMORIES_PER_STORE` |
 //! | R5| `MemErr::Conflict { current }`          | message embeds `current.path`                 |
 //! | R6| each error variant                      | stable `Display` prefix (adapter-facing)      |
 //! | R7| `MemoryEntry` field set / value round-trip | pinned (Clone/Eq)                          |
@@ -21,9 +22,9 @@
 //! | R8| `MAX_PATH_BYTES`                        | bare constant, no contract predicate (gap)    |
 
 use awaken_resource_contract::{
-    ConfigVersion, FileStoreError, MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryEntry,
-    MemoryStoreConfigVersion, RepositoryConfigVersion, ResourceCatalogError, ResourceCatalogRules,
-    ResourceState, SkillStoreError, validate_path_len,
+    ConfigVersion, FileStoreError, MAX_MEMORIES_PER_STORE, MAX_MEMORY_BYTES, MAX_PATH_BYTES,
+    MemErr, Memory, MemoryEntry, MemoryStoreConfigVersion, RepositoryConfigVersion,
+    ResourceCatalogError, ResourceCatalogRules, ResourceState, SkillStoreError, validate_path_len,
 };
 
 fn sample_memory(content: Option<&str>) -> Memory {
@@ -231,6 +232,18 @@ fn too_large_display_interpolates_the_cap() {
     let msg = MemErr::TooLarge.to_string();
     assert_eq!(msg, format!("content exceeds {MAX_MEMORY_BYTES} bytes"));
     assert!(msg.contains("102400"));
+}
+
+#[test]
+fn at_capacity_display_interpolates_the_store_cap() {
+    // Causes: a create reaches the first count beyond the live-head limit.
+    // Constraints: edits and historical versions are outside this error partition.
+    // Effects: adapters receive one typed error carrying the authoritative cap.
+    // Decision rule: R4b.
+    assert_eq!(
+        MemErr::AtCapacity.to_string(),
+        format!("memory store contains the maximum {MAX_MEMORIES_PER_STORE} memories")
+    );
 }
 
 // R5: a CAS conflict must carry (and render) the live path so a client can rebase.

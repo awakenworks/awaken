@@ -34,13 +34,26 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 
 #[tokio::test(flavor = "multi_thread")]
 async fn deployment_run_creates_session_and_executes_initial_events() {
+    // Production-composition cause/effect rules:
+    // C1 published Agent + valid Deployment -> Agent latest version is frozen;
+    // C2 manual run -> ordinary Session with Deployment id;
+    // C3 initial user Event -> ordinary Event executor commits the model response.
     let app = build_management_router_with_model(Arc::new(EchoModel), "echo").await;
+    let (status, agent) = call(
+        &app,
+        "POST",
+        "/v1/agents",
+        Some(json!({"name":"release-agent", "model":"echo"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "C1: {agent}");
+    let agent_id = agent["id"].as_str().unwrap();
     let (status, deployment) = call(
         &app,
         "POST",
         "/v1/deployments",
         Some(json!({
-            "agent": "assistant",
+            "agent": agent_id,
             "environment_id": "env_local",
             "name": "release-check",
             "initial_events": [{
@@ -50,7 +63,8 @@ async fn deployment_run_creates_session_and_executes_initial_events() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "C1: {deployment}");
+    assert_eq!(deployment["agent"]["version"], agent["version"], "C1");
 
     let deployment_id = deployment["id"].as_str().unwrap();
     let (status, run) = call(
@@ -60,25 +74,35 @@ async fn deployment_run_creates_session_and_executes_initial_events() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "C2");
     assert!(run["error"].is_null(), "launch failed: {run}");
     let session_id = run["session_id"]
         .as_str()
         .expect("a successful deployment run returns its Session");
 
     let (status, session) = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "C2");
     assert_eq!(session["deployment_id"], deployment_id);
 
-    let (status, events) = call(
-        &app,
-        "GET",
-        &format!("/v1/sessions/{session_id}/events"),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(events["data"].as_array().unwrap().iter().any(|event| {
-        event["type"] == "agent.message" && event["content"][0]["text"] == "Echo: verify release"
-    }));
+    let mut observed = None;
+    for _ in 0..200 {
+        let (status, events) = call(
+            &app,
+            "GET",
+            &format!("/v1/sessions/{session_id}/events"),
+            None,
+        )
+        .await;
+        if status == StatusCode::OK
+            && events["data"].as_array().unwrap().iter().any(|event| {
+                event["type"] == "agent.message"
+                    && event["content"][0]["text"] == "Echo: verify release"
+            })
+        {
+            observed = Some(events);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    assert!(observed.is_some(), "C3 initial Event eventually completes");
 }

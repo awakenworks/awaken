@@ -7,8 +7,8 @@
 //! remains in the backend-specific suite.
 
 use awaken_session_contract::{
-    IdempotencyRecord, ManagedSessionRepository, McpAttachmentDraft, McpAttachmentOrigin,
-    McpTarget, PersistedSession, ScopedPersistedSession, SessionLifecycleFact, SessionMutation,
+    IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, McpAttachmentDraft,
+    McpAttachmentOrigin, McpTarget, PersistedSession, ScopedPersistedSession, SessionMutation,
     SessionMutationPayload, SessionMutationResult, SessionRepositoryError, SessionRevision,
     SessionTombstone,
 };
@@ -103,10 +103,10 @@ fn session(id: &str, title: &str) -> PersistedSession {
     }
 }
 
-fn fact(id: &str, session_id: &str, event_type: &str) -> SessionLifecycleFact {
-    SessionLifecycleFact {
+fn fact(id: &str, session_id: &str, event_type: &str) -> ManagedLifecycleFact {
+    ManagedLifecycleFact {
         id: id.into(),
-        session_id: session_id.into(),
+        object_id: session_id.into(),
         workspace_id: Some("ws_a".into()),
         event_type: event_type.into(),
         timestamp: 1_700_000_000,
@@ -117,7 +117,7 @@ async fn create_session<R: ManagedSessionRepository>(
     repo: &R,
     owner: &str,
     mut value: PersistedSession,
-    facts: Vec<SessionLifecycleFact>,
+    facts: Vec<ManagedLifecycleFact>,
 ) -> PersistedSession {
     value.revision = SessionRevision(0);
     let payload = SessionMutationPayload::Replace(value.clone());
@@ -138,7 +138,7 @@ async fn replace_session<R: ManagedSessionRepository>(
     owner: &str,
     mut value: PersistedSession,
     key: &str,
-    facts: Vec<SessionLifecycleFact>,
+    facts: Vec<ManagedLifecycleFact>,
 ) -> PersistedSession {
     value.revision = repo
         .get(&value.session_id)

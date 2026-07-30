@@ -62,7 +62,8 @@ consistent vocabulary. This affects the documentation layers differently:
 | `design/remote-worker-protocol.md` | Boundary-only | Accepted P0/P1/P2 contract for recoverable, database-independent, embeddable remote Workers; PostgreSQL active-active execution is verified without sticky routing, while optional transfer optimizations remain deferred |
 | `application-authentication.md` | Product-owned | Integration guidance for service credentials, application tokens, and authenticated frontend transports |
 | `design/anthropic-alignment-and-sessions.md` | Product-owned | Downstream product adapter guidance |
-| `design/managed-dream-memory-consolidation.md` | Product-owned | Owns the Managed Dream API and Memory Consolidation job, frozen JSONL/session evidence, read-only source snapshot, required write-through result MemoryStore, restricted ordinary Agent execution, recovery, and test design |
+| `design/managed-dream.md` | Product-owned | Owns the Managed Dream API and Dream job, frozen JSONL/session evidence, read-only source snapshot, required write-through result MemoryStore, restricted ordinary Agent execution, recovery, and test design |
+| `design/managed-deployments.md` | Product-owned | Owns durable Managed Deployment/DeploymentRun scheduling, Workspace scope, Agent version freezing, occurrence claims, lifecycle facts, and Dream scheduler coordination |
 | `design/web-ui.md` | Product-owned | Web console blueprint: Oversight two-scope shell over the management plane, session surface, design tokens, contract-first frontend engineering plan |
 | `design/awaken-server-local-overview.md` | Product-owned | Single-machine assembly overview; navigation map linking component owners; sandbox/relay, managed adapter, and goal are to-build |
 | `design/credentials-and-vaults.md` | Product-owned | Credential/product concern; runtime sees opaque refs only |
@@ -112,7 +113,8 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/remote-worker-protocol.md` | Role owner | Required | self |
 | `application-authentication.md` | Product/downstream mapping | Not required | n/a |
 | `design/anthropic-alignment-and-sessions.md` | Product/downstream mapping | Not required | n/a |
-| `design/managed-dream-memory-consolidation.md` | Role owner | Required | self |
+| `design/managed-dream.md` | Role owner | Required | self |
+| `design/managed-deployments.md` | Role owner | Required | self |
 | `design/web-ui.md` | Product/downstream mapping | Not required | n/a |
 | `design/awaken-server-local-overview.md` | Product/downstream mapping | Not required | n/a |
 | `design/credentials-and-vaults.md` | Product/downstream mapping | Not required | n/a |
