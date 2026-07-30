@@ -219,7 +219,7 @@ impl crate::host::SharedHost {
     /// Model backend selection must not create a parallel sandbox-tier decision.
     pub async fn with_session_environment_from_deployment(
         self,
-        hand_factory: Arc<dyn crate::HandExecutorFactory>,
+        hand_factory: Option<Arc<dyn crate::HandExecutorFactory>>,
     ) -> Self {
         if self.session_provider_explicit {
             return self;
@@ -242,6 +242,9 @@ impl crate::host::SharedHost {
             ) {
             provider
         } else {
+            let hand_factory = hand_factory.unwrap_or_else(|| {
+                panic!("container Session environments require a hand executor factory")
+            });
             let (provider, extra_mounts) = crate::container_environment::build(
                 tier,
                 deployment.container_image.as_deref(),
@@ -271,7 +274,7 @@ impl crate::host::SharedHost {
         hand_factory: Arc<dyn crate::HandExecutorFactory>,
         source: crate::LaunchSource,
     ) -> Self {
-        self.with_session_environment_from_deployment(hand_factory)
+        self.with_session_environment_from_deployment(Some(hand_factory))
             .await
             .with_bound_acp(source, None)
     }

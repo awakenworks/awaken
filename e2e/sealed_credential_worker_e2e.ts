@@ -46,7 +46,7 @@ function workerBinary(): string {
   const output = execFileSync(
     'cargo',
     [
-      'build', '--quiet', '--message-format=json', '-p', 'awaken-worker',
+      'build', '--quiet', '--message-format=json', '-p', 'awaken-cli',
       '--example', 'sealed_credential_worker',
     ],
     { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
