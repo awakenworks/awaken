@@ -15,6 +15,7 @@ pub mod config;
 mod console_assets;
 mod control;
 mod credential_probe;
+mod deployment_session_launch;
 mod exact_host_model;
 mod executable_agent_registration;
 mod identity;
@@ -101,6 +102,7 @@ struct ProcessAssemblyOptions {
     web_search_publication_resolver:
         Option<Arc<dyn awaken_runtime_host::PluginPublicationResolver>>,
     executable_agent_wiring: Option<executable_agent_registration::ExecutableAgentWiring>,
+    deployment_session_launch: Option<config::DeploymentSessionLaunchConfig>,
 }
 
 /// Router plus the cleartext local setup handoff printed by the CLI once.
@@ -699,6 +701,7 @@ async fn build_runtime_process_assembly(
             web_search_providers: None,
             web_search_publication_resolver: None,
             executable_agent_wiring: Some(executable_agent_wiring),
+            deployment_session_launch: Some(deployment.deployment_session_launch.clone()),
         },
         None,
     )
@@ -802,6 +805,7 @@ async fn build_all_in_one_router_with_composition(
             web_search_providers: None,
             web_search_publication_resolver: None,
             executable_agent_wiring: None,
+            deployment_session_launch: Some(deployment.deployment_session_launch),
         },
         None,
     )
@@ -955,6 +959,7 @@ async fn assemble_process_router(
     let executable_agent_wiring = assembly
         .executable_agent_wiring
         .unwrap_or_else(executable_agent_registration::ExecutableAgentWiring::local);
+    let deployment_session_launch = assembly.deployment_session_launch;
     let deployment = assembly.deployment;
     let hand_executors = assembly.hand_executors;
     let cloud_api_base_url = assembly.cloud_api_base_url;
@@ -1251,6 +1256,12 @@ async fn assemble_process_router(
     // admin + vault only. Returns the webhook sink the data plane feeds.
     let deployment_state = Arc::new(awaken_protocol_managed::DeploymentState::new());
     deployment_state.bind_rate_limiter(managed_rate_limiter.clone());
+    if role == config::Role::Control
+        && let Some(config) = deployment_session_launch.as_ref()
+    {
+        deployment_session_launch::bind_control(deployment_state.clone(), config)
+            .unwrap_or_else(|error| panic!("Deployment Session launch configuration: {error}"));
+    }
     // Keep the IAM handles for the sibling resource PEP. The authoring router owns
     // its PEP; File/Memory/Skill routes are wrapped independently after the data
     // router is assembled, so neither plane depends on the other's services.
@@ -1440,9 +1451,13 @@ async fn assemble_process_router(
         eprintln!("reconciled {reconciled_mcp_attachments} durable Session MCP projection(s)");
     }
     let _ = managed_state.spawn_realization_lease_supervisor();
-    deployment_state.bind_launcher(Arc::new(
-        awaken_protocol_managed::LocalDeploymentSessionLauncher::new(managed_state.clone()),
-    ));
+    let deployment_session_private_router = deployment_session_launch::bind_runtime(
+        role,
+        deployment_state.clone(),
+        managed_state.clone(),
+        deployment_session_launch.as_ref(),
+    )
+    .unwrap_or_else(|error| panic!("Deployment Session launch configuration: {error}"));
     // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
     // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
@@ -1465,6 +1480,7 @@ async fn assemble_process_router(
             dream_repository,
         );
     data = data.merge(executable_agent_private_router);
+    data = data.merge(deployment_session_private_router);
     // One timer drives every Managed periodic trigger. Deployment remains the cron
     // authority; Dream policies submit the same durable DreamJob as manual create.
     let scheduled_deployments = deployment_state.clone();
@@ -1688,10 +1704,10 @@ mod process_role_surface_tests {
 
     /// Cause/effect decision table:
     ///
-    /// | role | Control API | Coordinator API | private registration API |
-    /// | --- | --- | --- | --- |
-    /// | Control | mounted | absent | absent |
-    /// | Coordinator | absent | mounted | mounted and independently authenticated |
+    /// | role | Control API | Coordinator API | registration API | launch API |
+    /// | --- | --- | --- | --- | --- |
+    /// | Control | mounted | absent | absent | absent |
+    /// | Coordinator | absent | mounted | authenticated | independently authenticated |
     ///
     /// AllInOne merging is covered by the existing full-surface integration
     /// suites; this test owns the two exclusion rules that those suites cannot
@@ -1736,12 +1752,34 @@ mod process_role_surface_tests {
             .unwrap();
         assert_eq!(registration.status(), StatusCode::NOT_FOUND);
 
+        let launch = app
+            .clone()
+            .oneshot(
+                Request::post(awaken_protocol_managed::DEPLOYMENT_SESSION_LAUNCH_PATH)
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer deployment-launch-token")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(launch.status(), StatusCode::NOT_FOUND);
+
         let session = app
             .oneshot(Request::get("/v1/sessions").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(session.status(), StatusCode::NOT_FOUND);
 
+        let token_dir = tempfile::tempdir().unwrap();
+        let launch_token_file = token_dir.path().join("deployment-launch-token");
+        std::fs::write(&launch_token_file, "deployment-launch-token\n").unwrap();
+        let launch_config = config::DeploymentSessionLaunchConfig::resolve(
+            config::Role::Coordinator,
+            None,
+            Some(launch_token_file),
+        )
+        .unwrap();
         let app = assemble_process_router(
             in_memory_deployment_stores(),
             None,
@@ -1755,6 +1793,7 @@ mod process_role_surface_tests {
                         "registration-token",
                     ),
                 ),
+                deployment_session_launch: Some(launch_config),
                 ..Default::default()
             },
             None,
@@ -1778,6 +1817,7 @@ mod process_role_surface_tests {
             .unwrap();
         assert_eq!(session.status(), StatusCode::OK);
         let registration = app
+            .clone()
             .oneshot(
                 Request::post(awaken_executable_agent_catalog::EXECUTABLE_AGENT_REGISTER_PATH)
                     .header("content-type", "application/json")
@@ -1788,6 +1828,31 @@ mod process_role_surface_tests {
             .await
             .unwrap();
         assert_eq!(registration.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let launch = app
+            .oneshot(
+                Request::post(awaken_protocol_managed::DEPLOYMENT_SESSION_LAUNCH_PATH)
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer wrong-token")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "deployment_id": "depl_role",
+                            "deployment_run_id": "drun_role",
+                            "workspace_id": "workspace-role",
+                            "agent": {"id": "agent-role", "type": "agent", "version": 1},
+                            "environment_id": "env_local",
+                            "metadata": {},
+                            "initial_events": [],
+                            "resources": [],
+                            "vault_ids": []
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(launch.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[derive(Debug)]

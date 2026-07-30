@@ -89,120 +89,9 @@ fn execution_jitter_ms(deployment_id: &str, scheduled_ms: u64, _interval_ms: u64
     hash % (MAX_JITTER_MS + 1)
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-struct DeploymentRecord {
-    created_at: String,
-    updated_at: String,
-    workspace_id: String,
-    agent: AgentReference,
-    environment_id: String,
-    name: String,
-    description: Option<String>,
-    metadata: BTreeMap<String, String>,
-    initial_events: Vec<DeploymentInitialEvent>,
-    resources: Vec<ResourceInput>,
-    schedule: Option<Schedule>,
-    vault_ids: Vec<String>,
-    /// `"active"` | `"paused"`.
-    status: String,
-    paused_reason: Option<PausedReason>,
-    archived_at: Option<String>,
-    /// RFC 3339 of the schedule's last fire (echoed into the schedule object).
-    last_run_at: Option<String>,
-    /// The next scheduled fire instant (epoch ms); lazily seeded on the first tick
-    /// so a just-created deployment doesn't fire retroactively.
-    next_fire_ms: Option<u64>,
-}
-
-impl DeploymentRecord {
-    fn project(&self, id: &str) -> Deployment {
-        Deployment {
-            id: id.to_string(),
-            object_type: "deployment",
-            agent: self.agent.clone(),
-            archived_at: self.archived_at.clone(),
-            created_at: self.created_at.clone(),
-            updated_at: self.updated_at.clone(),
-            description: self.description.clone(),
-            environment_id: self.environment_id.clone(),
-            initial_events: self.initial_events.clone(),
-            metadata: self.metadata.clone(),
-            name: self.name.clone(),
-            paused_reason: self.paused_reason.clone(),
-            resources: self.resources.clone(),
-            schedule: self.projected_schedule(),
-            status: if self.status == "active" {
-                "active"
-            } else {
-                "paused"
-            },
-            vault_ids: self.vault_ids.clone(),
-        }
-    }
-
-    /// The schedule object echoed back, with `last_run_at` reflecting the most
-    /// recent fire (the stored expression/timezone pass through unchanged).
-    fn projected_schedule(&self) -> Option<Schedule> {
-        self.schedule.as_ref().map(|schedule| {
-            let upcoming = if self.archived_at.is_some() {
-                Vec::new()
-            } else {
-                upcoming_occurrences(schedule, now_ms())
-            };
-            schedule.with_runtime(self.last_run_at.clone(), upcoming)
-        })
-    }
-
-    /// The parsed cron for an active, non-archived deployment; `None` when it has no
-    /// schedule, is paused/archived, or the expression doesn't parse (already
-    /// rejected at write time, so this is belt-and-suspenders).
-    fn active_cron(&self) -> Option<(crate::cron::Cron, Tz)> {
-        if self.status != "active" || self.archived_at.is_some() {
-            return None;
-        }
-        parsed_schedule(self.schedule.as_ref()?)
-    }
-
-    fn launch(&self, deployment_id: &str, deployment_run_id: &str) -> DeploymentLaunch {
-        DeploymentLaunch {
-            deployment_id: deployment_id.to_string(),
-            deployment_run_id: deployment_run_id.to_string(),
-            workspace_id: self.workspace_id.clone(),
-            agent: self.agent.clone(),
-            environment_id: self.environment_id.clone(),
-            metadata: self.metadata.clone(),
-            initial_events: self.initial_events.clone(),
-            resources: self.resources.clone(),
-            vault_ids: self.vault_ids.clone(),
-        }
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct RunRecord {
-    created_at: String,
-    deployment_id: String,
-    workspace_id: String,
-    agent: AgentReference,
-    trigger: TriggerContext,
-    session_id: Option<String>,
-    error: Option<RunError>,
-}
-
-impl RunRecord {
-    fn project(&self, id: &str) -> DeploymentRun {
-        DeploymentRun {
-            id: id.to_string(),
-            object_type: "deployment_run",
-            agent: self.agent.clone(),
-            created_at: self.created_at.clone(),
-            deployment_id: self.deployment_id.clone(),
-            error: self.error.clone(),
-            session_id: self.session_id.clone(),
-            trigger_context: self.trigger.clone(),
-        }
-    }
-}
+#[path = "deployments/records.rs"]
+mod records;
+use records::{DeploymentRecord, RunRecord};
 
 /// The deployments + deployment-runs state.
 pub struct DeploymentState {
@@ -254,8 +143,17 @@ pub struct DeploymentLaunch {
 /// a Session was created are Session lifecycle, not deployment-run truth.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DeploymentLaunchOutcome {
-    Created { session_id: String },
-    Failed { error: RunError },
+    Created {
+        session_id: String,
+    },
+    Failed {
+        error: RunError,
+    },
+    /// The boundary could not determine a terminal business outcome. Callers
+    /// retain the pending DeploymentRun and may retry this exact command.
+    Unavailable {
+        message: String,
+    },
 }
 
 #[async_trait::async_trait]
@@ -263,9 +161,14 @@ pub trait DeploymentSessionLauncher: Send + Sync {
     async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome;
 }
 
+pub use crate::types::deployment::RunError as DeploymentRunError;
+
 #[path = "deployments/launcher.rs"]
 mod launcher;
 pub use launcher::LocalDeploymentSessionLauncher;
+#[path = "deployments/http.rs"]
+mod http;
+pub use http::{DEPLOYMENT_SESSION_LAUNCH_PATH, deployment_session_launch_router};
 #[path = "deployments/scheduling.rs"]
 mod scheduling;
 #[cfg(test)]
@@ -1691,6 +1594,58 @@ mod tests {
             Some("sesn_deploy_schedule")
         );
         assert!(completed[0].error.is_none());
+    }
+
+    #[tokio::test]
+    async fn indeterminate_launch_keeps_the_durable_run_pending() {
+        // Cause/effect rule U1: a persisted started DeploymentRun followed by an
+        // unavailable launch boundary -> return retryable storage availability,
+        // retain `session_id=None,error=None`, and do not pause its Deployment.
+        // A transport fault is not rewritten as terminal business truth.
+        struct UnavailableLauncher;
+        #[async_trait::async_trait]
+        impl DeploymentSessionLauncher for UnavailableLauncher {
+            async fn launch(&self, _request: DeploymentLaunch) -> DeploymentLaunchOutcome {
+                DeploymentLaunchOutcome::Unavailable {
+                    message: "network response lost".into(),
+                }
+            }
+        }
+
+        let state = DeploymentState::new();
+        state.bind_launcher(Arc::new(UnavailableLauncher));
+        state
+            .deployments
+            .lock()
+            .unwrap()
+            .insert("deploy_pending".into(), deployment(None));
+        state.runs.lock().unwrap().insert(
+            "deprun_pending".into(),
+            RunRecord {
+                created_at: OBJECT_AT.into(),
+                deployment_id: "deploy_pending".into(),
+                workspace_id: "default".into(),
+                agent: AgentReference::new("coder", 1),
+                trigger: TriggerContext::Manual,
+                session_id: None,
+                error: None,
+            },
+        );
+        let launch = state
+            .deployments
+            .lock()
+            .unwrap()
+            .get("deploy_pending")
+            .unwrap()
+            .launch("deploy_pending", "deprun_pending");
+        assert!(state.launch_run("deprun_pending", launch).await.is_err());
+        let run = state.runs.lock().unwrap()["deprun_pending"].clone();
+        assert!(run.session_id.is_none() && run.error.is_none(), "U1");
+        assert_eq!(
+            state.deployments.lock().unwrap()["deploy_pending"].status,
+            "active",
+            "U1"
+        );
     }
 
     /// Deployment-run failure cause graph:

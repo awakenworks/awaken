@@ -60,8 +60,9 @@ pub use routes::agents_registry::{
     AgentRegistryState, ManagedAgentError, ManagedAgentRepository, agents_router,
 };
 pub use routes::deployments::{
-    DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher, DeploymentState,
-    LocalDeploymentSessionLauncher, deployments_router,
+    DEPLOYMENT_SESSION_LAUNCH_PATH, DeploymentLaunch, DeploymentLaunchOutcome, DeploymentRunError,
+    DeploymentSessionLauncher, DeploymentState, LocalDeploymentSessionLauncher,
+    deployment_session_launch_router, deployments_router,
 };
 pub use routes::environments::{EnvironmentState, environments_router};
 pub use routes::user_profiles::{UserProfileState, user_profiles_router};

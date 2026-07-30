@@ -21,6 +21,7 @@
 pub mod admin;
 pub mod brokered_inference;
 pub mod console;
+mod deployment_session_launcher;
 pub mod dynamic_placement;
 pub mod inference_materializer;
 mod legacy_resource_migration;
@@ -61,6 +62,7 @@ pub use awaken_runtime_host::{
     ThreadEventHub, UNCONFIGURED_MODEL_REF, VaultRefresher, advertised_tools, capabilities_router,
     config_router, content_fingerprint, durable_ops_router, parse_skill_md,
 };
+pub use deployment_session_launcher::HttpDeploymentSessionLauncher;
 pub use legacy_resource_migration::migrate_legacy_skill_registry;
 pub use relay_hand::relay_hand_executor_factory;
 pub use worker_registry::{

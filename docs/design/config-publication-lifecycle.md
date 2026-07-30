@@ -139,6 +139,12 @@ the same authoritative registrar path.
 No whole-catalog command, second publication model, generic RPC framework, or
 parallel compatibility path is added.
 
+Deployment Session launch uses a separate
+`deployment_session_launch_token_file`. It shares only
+`coordinator_internal_url` with registration; the credentials are distinct so
+publication authority cannot launch Sessions and launch authority cannot change
+the executable catalog.
+
 ## Recovery And Failure Rules
 
 Control never rolls back a durable publication because a remote registration

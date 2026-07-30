@@ -137,6 +137,9 @@ Transport unavailability before a conclusive launch outcome is retryable. It
 must not be persisted as a permanent business failure until the Coordinator can
 prove that no Session was created. This distinction prevents an ambiguous
 network timeout from becoming a duplicate Session or false terminal outcome.
+Control retries the authenticated private request with the unchanged
+`deployment_run_id`; after the bounded retry budget, the durable DeploymentRun
+remains pending. Authentication and typed Session rejection are not retried.
 
 ### Scheduled occurrence and replica claim
 

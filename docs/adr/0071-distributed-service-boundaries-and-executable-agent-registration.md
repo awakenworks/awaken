@@ -144,7 +144,7 @@ The local and remote registration-boundary slices are complete:
 - the superseded process-local catalog, runtime projection wrapper, and separate
   warm-install path have been removed.
 
-The local Deployment launch identity slice is also complete:
+The local and remote Deployment launch slices are also complete:
 
 - `DeploymentSessionLauncher` now carries the already-persisted
   `deployment_run_id` for manual and scheduled triggers;
@@ -155,10 +155,19 @@ The local Deployment launch identity slice is also complete:
   initial Event batch, while owner or payload reuse fails closed;
 - the earlier `ManagedDeploymentSessionLauncher` name was removed because it
   described the implementation technology rather than the adapter's local role.
+- split Control uses `HttpDeploymentSessionLauncher`; Coordinator mounts only
+  `deployment_session_launch_router`, backed by the same local adapter and
+  canonical Session state;
+- a dedicated file-projected bearer token keeps launch authority separate from
+  executable Agent registration, and Worker rejects either credential;
+- the HTTP client retries only network or explicit unavailable outcomes with the
+  unchanged command. Authentication and deterministic Session rejection do not
+  consume the transient retry budget;
+- an unavailable boundary leaves the already-persisted DeploymentRun pending
+  instead of recording a false terminal business failure.
 
-The authenticated HTTP Deployment launch adapter, exact Credential/Resource
-adapters, and the remaining Coordinator/Resource store-ownership separation
-remain subsequent ADR-0071 slices.
+Exact Credential/Resource adapters and the remaining Coordinator/Resource
+store-ownership separation remain subsequent ADR-0071 slices.
 
 ## Consequences
 
