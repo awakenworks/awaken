@@ -851,6 +851,9 @@ mod tests {
             .await
             .unwrap();
         let environment = SessionEnvironment::namespace(namespace);
+        #[cfg(target_os = "macos")]
+        assert_eq!(environment.handle().provider_kind, "seatbelt");
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(environment.handle().provider_kind, "bwrap");
 
         let mut native_command =

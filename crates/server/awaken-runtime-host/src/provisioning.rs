@@ -942,6 +942,7 @@ mod provisioning_registry_tests {
                     "environment-1".into(),
                 ),
                 sandbox: serde_json::json!({}),
+                sandbox_provisioning: Default::default(),
                 packages: Default::default(),
                 network: awaken_protocol_managed::SessionNetworkPolicy::None,
                 credential_realization:

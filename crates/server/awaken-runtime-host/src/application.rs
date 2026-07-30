@@ -1020,6 +1020,7 @@ mod network_policy_tests {
             revision: awaken_protocol_managed::EnvironmentRevision(3),
             config_fingerprint: awaken_protocol_managed::EnvironmentFingerprint("fp".into()),
             sandbox: serde_json::json!({}),
+            sandbox_provisioning: Default::default(),
             packages: awaken_protocol_managed::EnvironmentPackages {
                 npm: vec!["tsx@4".into()],
                 pip: vec!["httpx==0.28".into()],

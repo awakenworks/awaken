@@ -400,6 +400,7 @@ mod mutation_tests {
                         revision: crate::env_registry::EnvironmentRevision(1),
                         config_fingerprint: crate::EnvironmentFingerprint("config".into()),
                         sandbox: serde_json::json!({}),
+                        sandbox_provisioning: Default::default(),
                         packages: Default::default(),
                         network: crate::SessionNetworkPolicy::Unrestricted,
                         credential_realization: CredentialRealizationProfile {

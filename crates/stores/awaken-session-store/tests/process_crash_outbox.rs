@@ -22,6 +22,7 @@ fn session() -> PersistedSession {
         revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-1".into()),
         sandbox: serde_json::json!({}),
+        sandbox_provisioning: Default::default(),
         packages: Default::default(),
         network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
         credential_realization: awaken_credential_contract::CredentialRealizationProfile {

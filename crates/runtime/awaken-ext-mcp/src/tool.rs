@@ -198,6 +198,10 @@ mod tests {
         )
         .expect("builds");
         assert_eq!(tool.id(), "mcp__srv__echo");
+        assert_eq!(
+            tool.execution_target(),
+            awaken_runtime_contract::tool::ToolExecutionTarget::Brain
+        );
         let out = tool.invoke(call()).await.expect("invokes");
         assert!(!out.is_error);
         assert_eq!(out.content, "pong");

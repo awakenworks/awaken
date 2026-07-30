@@ -1624,6 +1624,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-credential-contract",
+ "awaken-provisioning-contract",
  "awaken-resource-contract",
  "http",
  "proptest",

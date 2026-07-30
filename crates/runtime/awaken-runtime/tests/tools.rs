@@ -26,7 +26,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::tool::{
-    RawTool, ToolError, ToolExecutor, ToolOutput, ToolOutputSpiller,
+    RawTool, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput, ToolOutputSpiller,
 };
 
 /// First inference asks for a tool call; the second ends with text.
@@ -123,6 +123,23 @@ impl RawTool for EchoTool {
             call.call_id,
             format!("echoed: {}", call.arguments),
         ))
+    }
+}
+
+struct SandboxEcho(EchoTool);
+
+#[async_trait::async_trait]
+impl RawTool for SandboxEcho {
+    fn id(&self) -> &str {
+        self.0.id()
+    }
+
+    fn execution_target(&self) -> ToolExecutionTarget {
+        ToolExecutionTarget::Sandbox
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.0.invoke(call).await
     }
 }
 
@@ -397,7 +414,7 @@ impl ToolExecutor for RecordingExecutor {
 }
 
 #[tokio::test]
-async fn a_wired_tool_executor_replaces_the_in_process_path() {
+async fn sandbox_tool_uses_the_wired_executor() {
     // The echo tool is registered and visible, but a run that wires a
     // `ToolExecutor` must route every call through it and never touch the
     // in-process registry (ADR-0044 D1).
@@ -405,9 +422,9 @@ async fn a_wired_tool_executor_replaces_the_in_process_path() {
     let remote_ran = Arc::new(AtomicUsize::new(0));
     let runtime = Runtime::new()
         .with_llm(Arc::new(ToolThenText::new()))
-        .with_tool(Arc::new(EchoTool {
+        .with_tool(Arc::new(SandboxEcho(EchoTool {
             ran: local_ran.clone(),
-        }))
+        })))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -437,6 +454,52 @@ async fn a_wired_tool_executor_replaces_the_in_process_path() {
             .any(|m| m.role == Role::Tool && m.text_content().contains("from remote executor")),
         "the executor's output is committed as the tool result"
     );
+}
+
+#[tokio::test]
+async fn brain_tool_bypasses_the_wired_sandbox_executor() {
+    let brain_ran = Arc::new(AtomicUsize::new(0));
+    let sandbox_ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(ToolThenText::new()))
+        .with_tool(Arc::new(EchoTool {
+            ran: brain_ran.clone(),
+        }))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+    let context = RuntimeRunContext::new().with_tool_executor(Arc::new(RecordingExecutor {
+        ran: sandbox_ran.clone(),
+    }));
+
+    runtime.execute(activation(), context).await.expect("runs");
+    assert_eq!(brain_ran.load(Ordering::SeqCst), 1);
+    assert_eq!(sandbox_ran.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn sandbox_tool_without_executor_fails_closed_instead_of_running_in_brain() {
+    let brain_ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(ToolThenText::new()))
+        .with_tool(Arc::new(SandboxEcho(EchoTool {
+            ran: brain_ran.clone(),
+        })))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+
+    runtime
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .expect("run records model-visible tool error");
+    assert_eq!(brain_ran.load(Ordering::SeqCst), 0);
+    assert!(commit.committed().messages.iter().any(|message| {
+        message.role == Role::Tool
+            && message
+                .text_content()
+                .contains("sandbox executor unavailable")
+    }));
 }
 
 #[tokio::test]

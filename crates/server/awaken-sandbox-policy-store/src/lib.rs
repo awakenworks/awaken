@@ -463,6 +463,7 @@ mod tests {
                 isolation: Some(isolation),
                 ..Default::default()
             },
+            provisioning: Default::default(),
             disabled: false,
         }
     }

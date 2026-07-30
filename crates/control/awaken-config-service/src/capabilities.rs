@@ -196,6 +196,12 @@ async fn get_capabilities(State(state): State<Arc<CapabilityState>>) -> Json<Val
 pub fn sandbox_execution_policy_capability() -> Value {
     json!({
         "config_schema": sandbox_config_schema(),
+        "provisioning_schema": {
+            "type": "string",
+            "enum": ["eager", "on_tool_use"],
+            "default": "eager",
+            "description": "Create during Session preparation, or block the first sandbox tool until Native Awaken creates it. on_tool_use is rejected for ACP runtimes."
+        },
         "presets": sandbox_presets(),
         "collection_path": "/v1/awaken/sandbox-execution-policies",
     })
@@ -423,6 +429,11 @@ mod tests {
         assert!(desc.contains("namespace") && desc.contains("Networking belongs"));
         assert!(schema["properties"].get("network").is_none());
         assert!(schema["properties"].get("mounts").is_none());
+        assert_eq!(sb["provisioning_schema"]["default"], "eager");
+        assert_eq!(
+            sb["provisioning_schema"]["enum"],
+            json!(["eager", "on_tool_use"])
+        );
         let presets = sb["presets"].as_array().unwrap();
         let preset_ids: Vec<&str> = presets.iter().map(|p| p["id"].as_str().unwrap()).collect();
         assert_eq!(preset_ids, ["standard", "locked-down"]);

@@ -26,6 +26,7 @@ fn session_environment(
         revision: awaken_protocol_managed::EnvironmentRevision(1),
         config_fingerprint,
         sandbox,
+        sandbox_provisioning: Default::default(),
         packages: Default::default(),
         network,
         credential_realization: native_credential_profile(),
@@ -730,6 +731,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
                         "env-fingerprint".into(),
                     ),
                     sandbox: serde_json::json!({}),
+                    sandbox_provisioning: Default::default(),
                     packages: Default::default(),
                     network: if with_environment_inputs {
                         awaken_protocol_managed::SessionNetworkPolicy::None
@@ -2191,6 +2193,7 @@ async fn prepare_session_is_lazy_and_first_turn_materializes_the_environment() {
                 workspace_id: host.local_workspace().into(),
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
+                toolsets: None,
                 resources: Default::default(),
                 model: None,
                 runtime: None,

@@ -7,10 +7,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_runtime_contract::tool::{RawTool, Tool, ToolError};
+use awaken_runtime_contract::tool::{RawTool, Tool, ToolError, ToolExecutionTarget};
 use serde::Deserialize;
 
-use crate::erase;
+use crate::erasure::erase_for;
 
 /// Read a UTF-8 file and return its contents.
 pub struct ReadTool;
@@ -331,14 +331,14 @@ fn platform_shell_command(command: &str) -> std::process::Command {
 /// network tools `web_fetch` and `web_search` are added by `web_hand_tools`.
 pub fn executable_hand_tools() -> Vec<Arc<dyn RawTool>> {
     vec![
-        erase(ReadTool),
-        erase(WriteTool),
-        erase(EditTool),
-        erase(MoveTool),
-        erase(DeleteTool),
-        erase(GlobTool),
-        erase(GrepTool),
-        erase(BashTool),
+        erase_for(ReadTool, ToolExecutionTarget::Sandbox),
+        erase_for(WriteTool, ToolExecutionTarget::Sandbox),
+        erase_for(EditTool, ToolExecutionTarget::Sandbox),
+        erase_for(MoveTool, ToolExecutionTarget::Sandbox),
+        erase_for(DeleteTool, ToolExecutionTarget::Sandbox),
+        erase_for(GlobTool, ToolExecutionTarget::Sandbox),
+        erase_for(GrepTool, ToolExecutionTarget::Sandbox),
+        erase_for(BashTool, ToolExecutionTarget::Sandbox),
     ]
 }
 

@@ -46,6 +46,7 @@ pub use approval::{ApprovalDecision, ApprovalPolicy, SandboxAction, decide as ap
 pub use execution_policy::{
     SandboxExecutionPolicy, SandboxExecutionPolicyError, SandboxExecutionPolicyId,
     SandboxExecutionPolicyRef, SandboxExecutionPolicyStore, SandboxExecutionPolicyVersion,
+    SandboxProvisioning,
 };
 pub use lease::{
     AdoptionPlan, LeaseGrant, LeaseLiveness, LivenessSignals, ReapCause, ReconcileOutcome,

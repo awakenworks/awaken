@@ -641,6 +641,10 @@ mod tests {
     #[tokio::test]
     async fn list_skills_returns_metadata_excluding_hidden_and_body() {
         let tool = ListSkillsTool::new(registry());
+        assert_eq!(
+            tool.execution_target(),
+            awaken_runtime_contract::tool::ToolExecutionTarget::Brain
+        );
         let out = tool
             .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
             .await

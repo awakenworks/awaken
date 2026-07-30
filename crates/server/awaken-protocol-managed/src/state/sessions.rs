@@ -61,6 +61,21 @@ fn validate_session_skill_total(
     Ok(())
 }
 
+fn validate_sandbox_provisioning_runtime(
+    provisioning: awaken_provisioning_contract::SandboxProvisioning,
+    runtime: Option<&str>,
+) -> Result<(), RunError> {
+    if provisioning == awaken_provisioning_contract::SandboxProvisioning::OnToolUse
+        && !matches!(runtime, None | Some("awaken"))
+    {
+        return Err(RunError::bad_request(format!(
+            "sandbox_provisioning_unsupported: `on_tool_use` requires the native awaken runtime, got `{}`",
+            runtime.unwrap_or_default()
+        )));
+    }
+    Ok(())
+}
+
 pub(super) fn mcp_generation_ref(
     session_id: &str,
     attachment: &awaken_session_contract::SessionMcpAttachment,
@@ -844,6 +859,11 @@ impl ManagedState {
                 published_backend_ref.as_deref(),
             ),
         };
+        validate_sandbox_provisioning_runtime(
+            environment.sandbox_provisioning,
+            req.awaken_runtime(),
+        )
+        .map_err(StateError::Run)?;
         // Sole protocol-neutral composition/resolution point. Runtime receives this
         // persisted, secret-free result and never re-opens Agent or Resource stores.
         let compiled_defaults = awaken_session_contract::SessionDefaultsCompiler::compile(
@@ -1966,5 +1986,29 @@ impl ManagedState {
             .await;
         }
         Ok(session)
+    }
+}
+
+#[cfg(test)]
+mod sandbox_provisioning_runtime_tests {
+    use super::*;
+    use awaken_provisioning_contract::SandboxProvisioning::{Eager, OnToolUse};
+
+    #[test]
+    fn native_only_lazy_provisioning_decision_table() {
+        for (case, provisioning, runtime, accepted) in [
+            ("C1 eager native", Eager, None, true),
+            ("C2 eager ACP", Eager, Some("acp:claude"), true),
+            ("C3 lazy implicit native", OnToolUse, None, true),
+            ("C4 lazy explicit native", OnToolUse, Some("awaken"), true),
+            ("C5 lazy ACP", OnToolUse, Some("acp:claude"), false),
+            ("C6 lazy unknown runtime", OnToolUse, Some("remote"), false),
+        ] {
+            assert_eq!(
+                validate_sandbox_provisioning_runtime(provisioning, runtime).is_ok(),
+                accepted,
+                "{case}"
+            );
+        }
     }
 }
