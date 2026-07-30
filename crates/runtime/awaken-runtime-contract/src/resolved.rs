@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+pub use awaken_agent_contract::AcpSessionConfiguration;
 use serde::{Deserialize, Serialize};
 
 fn is_default_delegation_limits(
@@ -17,22 +18,17 @@ fn is_default_delegation_limits(
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CatalogFingerprint(pub String);
 
-/// Adapter-native ACP Session intent frozen with one BackendOwned candidate.
-/// Omission preserves backend defaults; no discovered schema is copied here.
+/// Publication-pinned ACP execution evidence shared by provider-routed and
+/// backend-owned launches. One shape owns both capability proof and native
+/// Session intent so the two provisioning modes cannot drift.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct AcpSessionConfiguration {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub options: BTreeMap<String, String>,
-}
-
-impl AcpSessionConfiguration {
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.mode.is_none() && self.options.is_empty()
-    }
+pub struct AcpExecutionProfile {
+    #[serde(default)]
+    pub capability_fingerprint: String,
+    #[serde(default)]
+    pub capability_adapter_version: String,
+    #[serde(default, skip_serializing_if = "AcpSessionConfiguration::is_empty")]
+    pub session_configuration: AcpSessionConfiguration,
 }
 
 /// The one typed codec for the ACP-owned section of an Agent publication.
@@ -387,12 +383,8 @@ pub enum ModelProvisioning {
         model_selection: BackendModelSelection,
         /// Exact live ACP capability profile validated at publication. Empty
         /// legacy values fail closed in placement and launch.
-        #[serde(default)]
-        capability_fingerprint: String,
-        #[serde(default)]
-        capability_adapter_version: String,
-        #[serde(default, skip_serializing_if = "AcpSessionConfiguration::is_empty")]
-        session_configuration: AcpSessionConfiguration,
+        #[serde(flatten)]
+        acp: AcpExecutionProfile,
     },
     /// Exact provider route and credential delivery frozen by publication.
     Provider {
@@ -405,6 +397,10 @@ pub enum ModelProvisioning {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         credential: Option<Box<crate::CredentialAccess>>,
         endpoint: Box<crate::InferenceEndpoint>,
+        /// Present only when an external ACP executor consumes this Provider
+        /// route. Native execution leaves it absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        acp: Option<Box<AcpExecutionProfile>>,
     },
     /// Exact remote-counterparty credential delivery frozen by publication.
     ///
@@ -468,6 +464,30 @@ impl ResolvedModelCandidate {
                 scope_id: scope_id.into(),
                 credential: credential.map(Box::new),
                 endpoint: Box::new(endpoint),
+                acp: None,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn provider_with_acp(
+        binding: ModelBinding,
+        provider_ref: impl Into<String>,
+        route_ref: impl Into<String>,
+        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        credential: Option<crate::CredentialAccess>,
+        endpoint: crate::InferenceEndpoint,
+        acp: AcpExecutionProfile,
+    ) -> Self {
+        Self {
+            binding,
+            provisioning: ModelProvisioning::Provider {
+                provider_ref: provider_ref.into(),
+                route_ref: route_ref.into(),
+                scope_id: scope_id.into(),
+                credential: credential.map(Box::new),
+                endpoint: Box::new(endpoint),
+                acp: Some(Box::new(acp)),
             },
         }
     }
@@ -486,9 +506,11 @@ impl ResolvedModelCandidate {
             provisioning: ModelProvisioning::BackendOwned {
                 credential,
                 model_selection,
-                capability_adapter_version: capability_adapter_version.into(),
-                capability_fingerprint: capability_fingerprint.into(),
-                session_configuration,
+                acp: AcpExecutionProfile {
+                    capability_adapter_version: capability_adapter_version.into(),
+                    capability_fingerprint: capability_fingerprint.into(),
+                    session_configuration,
+                },
             },
         }
     }

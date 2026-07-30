@@ -6,6 +6,7 @@ use awaken_credential_vault::{
     CredentialStatus, SelectionPolicy,
 };
 use awaken_model_catalog::{Offering, ProviderCatalog};
+use awaken_runtime_contract::resolved::AcpExecutionProfile;
 use awaken_runtime_contract::resolved::{Backend, ModelBinding, ResolvedModelCandidate};
 use awaken_runtime_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
@@ -83,6 +84,7 @@ impl CatalogModelPublicationResolver {
             credential_binding,
             lookup,
             Some(offering.provider_id.as_str()),
+            Some(offering.protocol_endpoint_id.as_str()),
             Some(&binding.backend_ref),
             None,
             Some(workspace.as_str()),
@@ -155,6 +157,7 @@ impl CatalogModelPublicationResolver {
         binding: ModelBinding,
         offering: &Offering,
         access: PublicationAccess<'_>,
+        acp: Option<AcpExecutionProfile>,
     ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
         let unavailable = |reason| PublicationResolutionError::CandidateUnavailable {
             binding: binding.clone(),
@@ -223,21 +226,34 @@ impl CatalogModelPublicationResolver {
         } else {
             format!("{}@{}", offering.protocol_endpoint_id.0, endpoint.version)
         };
-        Ok(ResolvedModelCandidate::provider(
-            binding,
-            format!("{}@{}", offering.provider_id.0, provider.version),
-            route_ref,
-            workspace.clone(),
-            credential,
-            InferenceEndpoint {
-                adapter_kind: endpoint.dialect.adapter_kind().to_string(),
-                api_dialect: endpoint.dialect.as_str().to_string(),
-                base_url,
-                upstream_model: offering
-                    .upstream_model
-                    .clone()
-                    .unwrap_or_else(|| offering.model_id.clone()),
-            },
-        ))
+        let endpoint = InferenceEndpoint {
+            adapter_kind: endpoint.dialect.adapter_kind().to_string(),
+            api_dialect: endpoint.dialect.as_str().to_string(),
+            base_url,
+            upstream_model: offering
+                .upstream_model
+                .clone()
+                .unwrap_or_else(|| offering.model_id.clone()),
+        };
+        let provider_ref = format!("{}@{}", offering.provider_id.0, provider.version);
+        Ok(match acp {
+            Some(acp) => ResolvedModelCandidate::provider_with_acp(
+                binding,
+                provider_ref,
+                route_ref,
+                workspace.clone(),
+                credential,
+                endpoint,
+                acp,
+            ),
+            None => ResolvedModelCandidate::provider(
+                binding,
+                provider_ref,
+                route_ref,
+                workspace.clone(),
+                credential,
+                endpoint,
+            ),
+        })
     }
 }

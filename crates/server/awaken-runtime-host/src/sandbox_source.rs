@@ -395,6 +395,7 @@ mod tests {
                 model: "model".into(),
                 process_secret: None,
                 credential_artifact: None,
+                acp: None,
             })
         }
     }
@@ -441,6 +442,7 @@ mod tests {
                         ".codex/auth.json",
                     ),
                 ),
+                acp: None,
             })
         }
 
@@ -797,6 +799,10 @@ mod tests {
 
     #[tokio::test]
     async fn bound_codex_provisions_the_claimed_artifact_without_credential_environment() {
+        // Causes: C1 Codex consumes provider coordinates through its OpenAI
+        // dialect; C2 its credential delivery is an artifact. Effects: E1
+        // base/model enter process env; E2 credential bytes exist only at the
+        // claimed auth.json path, never OPENAI_API_KEY or Codex host-path env.
         let sandbox = Arc::new(CapturingAgentSandbox::default());
         let cli = *awaken_run_executor_acp::acp_cli("codex").expect("Codex ACP profile");
         let source = BoundLocalChannelSource {
@@ -842,11 +848,12 @@ mod tests {
                         value: SANDBOX_CONFIG_HOME.into(),
                     }
         }));
-        assert!(command.env.iter().all(|entry| {
-            !entry.name.starts_with("OPENAI_")
-                && entry.name != "CODEX_HOME"
-                && entry.name != "CODEX_CONFIG"
-        }));
+        let env = |name: &str| command.env.iter().find(|entry| entry.name == name);
+        assert!(env("OPENAI_BASE_URL").is_some(), "E1");
+        assert!(env("OPENAI_MODEL").is_some(), "E1");
+        assert!(env("OPENAI_API_KEY").is_none(), "E2");
+        assert!(env("CODEX_HOME").is_none(), "E2");
+        assert!(env("CODEX_CONFIG").is_none(), "E2");
     }
 
     #[tokio::test]

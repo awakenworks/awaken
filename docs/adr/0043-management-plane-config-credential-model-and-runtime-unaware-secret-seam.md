@@ -43,8 +43,8 @@ This ADR records **one decision**: the management/runtime boundary and the fact
 that only **resolved** secret values cross it (the resolution seam lives in the
 host, not the runtime). The concrete data model — goal's `AgentSpec`/`ModelSpec`
 plus the **`awaken-management-contract`** provider/routing/credential graph
-(`ProtocolEndpoint`, `Offering`, `ProviderCatalog`, `ProviderIdentity`,
-`CredentialBinding`, `InferenceProfile`, `InferenceTriple`, `model_ref`) reusing
+(`ProtocolEndpoint`, `Offering`, `ProviderCatalog`, `CredentialBinding`,
+`InferenceProfile`, `InferenceTriple`, `model_ref`) reusing
 the Managed wire via an ACL, `SecretStore` adapters, and the security layers —
 lives in the design docs above, because that model will churn (auth variants,
 pool/routing, validation, egress proxy) while this boundary must not.
@@ -107,8 +107,8 @@ vocabulary does **not** appear in `awaken-runtime-contract`.
   consume. No `SecretHandle`, no resolver, no `Literal`-vs-`Handle` union.
 - The **host / integration layer** (server/serverd/dispatch assembly, depends on
   `awaken-credential-vault`) owns the seam. It resolves the full routing graph —
-  an `InferenceProfile` entry's `CredentialBinding` (`Exact` or pool) →
-  `ProviderIdentity` → `CredentialSource` → `SecretStore` (see
+  an `InferenceProfile` candidate's exact target + `CredentialBinding` (`Exact`
+  or pool) → endpoint-compatible `CredentialSource` → `SecretStore` (see
   [credentials-and-vaults](../design/credentials-and-vaults.md),
   [model-provider-backend-binding](../design/model-provider-backend-binding.md)) —
   and **materializes the secret before building the runtime snapshot.**
@@ -224,7 +224,11 @@ defines a second credential-usage vocabulary.
 For API-key and OAuth authoring, the initiator supplies a stable idempotency key.
 The Credential/Vault context derives one command-owned source identity and its
 material reference, returns the durable winner on replay, and rejects conflicting
-non-secret facts. The application discovers before persistence, stages a newly
+non-secret facts. The resulting source records the exact canonical endpoint it
+proved; provider-wide credentials authored outside this connection flow keep no
+endpoint restriction. `InferenceProfile.disabled_endpoint_ids` remains routing
+policy and cannot widen that immutable proof scope. The application discovers
+before persistence, stages a newly
 entered source as disabled, atomically reconciles Catalog facts, then activates
 the source. Catalog rejection therefore leaves no executable offering and only a
 disabled, retryable credential source. Replaying a completed command reuses the

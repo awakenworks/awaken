@@ -370,6 +370,7 @@ mod tests {
                 model: "test".into(),
                 process_secret: None,
                 credential_artifact: None,
+                acp: None,
             })
         }
     }
@@ -435,9 +436,11 @@ mod tests {
                 revision: 1,
             },
             model_selection: awaken_runtime_contract::resolved::BackendModelSelection::Default,
-            capability_adapter_version: "test".into(),
-            capability_fingerprint: "sha256:test-capability".into(),
-            session_configuration: Default::default(),
+            acp: awaken_runtime_contract::resolved::AcpExecutionProfile {
+                capability_adapter_version: "test".into(),
+                capability_fingerprint: "sha256:test-capability".into(),
+                session_configuration: Default::default(),
+            },
         };
         let provider = awaken_runtime_contract::resolved::ModelProvisioning::Provider {
             provider_ref: "provider".into(),
@@ -450,6 +453,7 @@ mod tests {
                 base_url: "https://example.invalid".into(),
                 upstream_model: "model".into(),
             }),
+            acp: None,
         };
 
         assert!(

@@ -528,6 +528,10 @@ async fn provider_and_dialect_are_the_only_authored_endpoint_identity() {
     );
     assert_eq!(chat["endpoint"]["id"], "openai.open_ai_chat", "R2");
     assert_eq!(
+        chat["credential"]["protocol_endpoint_id"], "openai.open_ai_chat",
+        "the connection credential is scoped to the endpoint it proved"
+    );
+    assert_eq!(
         named_chat["endpoint"]["id"], "openai.open_ai_chat.regional",
         "R3"
     );
@@ -681,6 +685,62 @@ async fn existing_credential_connection_reuses_the_source_without_creating_a_dup
     assert_eq!(
         harness.credentials.list("workspace-a").await.unwrap().len(),
         1
+    );
+}
+
+#[tokio::test]
+async fn endpoint_scoped_connection_credential_cannot_be_reused_for_a_sibling_endpoint() {
+    // Cause/effect decision table:
+    // R1 connection-owned credential + the endpoint it proved -> accepted;
+    // R2 the same credential + a sibling endpoint under the same Provider ->
+    // rejected before discovery; R3 an ordinary provider-wide credential remains
+    // reusable (covered by `existing_credential_connection_reuses...`).
+    let harness = harness();
+    let (primary_status, primary) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        json!({
+            "idempotency_key":"primary-command",
+            "workspace_id":"workspace-a",
+            "provider_id":"openai",
+            "display_name":"OpenAI",
+            "dialect":"open_ai_chat",
+            "endpoint_name":"primary",
+            "secret":"endpoint-fixture" // awaken-allow: secret -- inert fixture
+        }),
+    )
+    .await;
+    assert_eq!(primary_status, StatusCode::CREATED, "R1: {primary}");
+    let credential_id = primary["credential"]["id"].as_str().unwrap();
+    let calls_before = harness.discovery.calls.lock().unwrap().len()
+        + harness.discovery.secret_calls.lock().unwrap().len();
+
+    let (sibling_status, sibling) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        json!({
+            "idempotency_key":"sibling-command",
+            "workspace_id":"workspace-a",
+            "provider_id":"openai",
+            "display_name":"OpenAI",
+            "dialect":"open_ai_chat",
+            "endpoint_name":"sibling",
+            "credential_source_id":credential_id
+        }),
+    )
+    .await;
+    assert_eq!(
+        sibling_status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "R2: {sibling}"
+    );
+    assert_eq!(
+        harness.discovery.calls.lock().unwrap().len()
+            + harness.discovery.secret_calls.lock().unwrap().len(),
+        calls_before,
+        "R2 fails before provider discovery"
     );
 }
 

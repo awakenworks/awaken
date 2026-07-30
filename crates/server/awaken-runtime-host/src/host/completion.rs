@@ -76,13 +76,21 @@ fn worker_acp_capabilities(
     std::iter::once(&models.model_binding)
         .chain(models.model_candidates.iter())
         .filter_map(|candidate| match &candidate.provisioning {
-            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
-                capability_fingerprint,
-                ..
-            } if !capability_fingerprint.trim().is_empty() => {
+            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { acp, .. }
+                if !acp.capability_fingerprint.trim().is_empty() =>
+            {
                 Some(awaken_run_ingress::WorkerAcpCapabilityRequirement {
                     backend_ref: candidate.binding.backend_ref.clone(),
-                    fingerprint: capability_fingerprint.clone(),
+                    fingerprint: acp.capability_fingerprint.clone(),
+                })
+            }
+            awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+                acp: Some(acp),
+                ..
+            } if !acp.capability_fingerprint.trim().is_empty() => {
+                Some(awaken_run_ingress::WorkerAcpCapabilityRequirement {
+                    backend_ref: candidate.binding.backend_ref.clone(),
+                    fingerprint: acp.capability_fingerprint.clone(),
                 })
             }
             _ => None,

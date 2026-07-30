@@ -25,6 +25,7 @@ fn source() -> CredentialSource {
         workspace_id: "ws".into(),
         kind: CredentialKind::Vault,
         provider_id: Some("anthropic".into()),
+        protocol_endpoint_id: None,
         env_key: None,
         material_ref: Some(SecretRef("sec:cred:ws:process-crash".into())),
         auxiliary_material_refs: Default::default(),

@@ -233,6 +233,13 @@ impl ProviderConnectionService {
                 {
                     return Err(CredentialError::NoCredential.into());
                 }
+                if credential
+                    .protocol_endpoint_id
+                    .as_deref()
+                    .is_some_and(|endpoint_id| endpoint_id != endpoint.id.as_str())
+                {
+                    return Err(CredentialError::NoCredential.into());
+                }
                 if credential.is_claude_code_setup_token() {
                     return Err(ProviderConnectionError::UnsupportedAuthentication {
                         provider: command.provider_id,
@@ -269,6 +276,7 @@ impl ProviderConnectionService {
                     workspace_id: command.workspace_id.clone(),
                     kind: CredentialKind::Oauth,
                     provider_id: Some(command.provider_id.clone()),
+                    protocol_endpoint_id: Some(endpoint.id.0.clone()),
                     env_key: None,
                     material_ref: None,
                     auxiliary_material_refs: Default::default(),
@@ -302,6 +310,7 @@ impl ProviderConnectionService {
                         secret: Some(secret),
                         oauth_command: None,
                     },
+                    Some(endpoint.id.0.clone()),
                     self.secrets.as_ref(),
                     self.credentials.as_ref(),
                 )
@@ -319,6 +328,7 @@ impl ProviderConnectionService {
                         secret: None,
                         oauth_command: Some(helper.command()),
                     },
+                    Some(endpoint.id.0.clone()),
                     self.secrets.as_ref(),
                     self.credentials.as_ref(),
                 )

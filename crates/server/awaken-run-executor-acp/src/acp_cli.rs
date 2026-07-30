@@ -14,6 +14,12 @@ use awaken_runtime_contract::{
     CredentialObservationState, CredentialUsage, resolved::BackendModelSelection,
 };
 
+mod managed_delivery;
+use managed_delivery::project_acp_session;
+pub use managed_delivery::{
+    CredentialArtifactCodec, CredentialArtifactSpec, ManagedCredentialDelivery,
+};
+
 /// How the local host obtains the ACP-serving executable. This is the sole local
 /// argv authority; discovery and launch both project it instead of inferring an
 /// install strategy from a command name.
@@ -167,47 +173,6 @@ pub enum McpInterface {
     ConfigFileToml { path: &'static str },
 }
 
-/// Provider-owned credential artifact codecs supported by the managed launch
-/// boundary. The codec is catalog data; generic Host code never branches on a
-/// CLI id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CredentialArtifactCodec {
-    CodexAuthJson,
-}
-
-/// One managed artifact selected from a CLI profile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CredentialArtifactSpec {
-    pub codec: CredentialArtifactCodec,
-    pub relative_path: &'static str,
-}
-
-/// How an isolated, Awaken-managed launch receives provider credentials. This
-/// does not describe backend-owned local login; that mutually exclusive mode
-/// never materializes provider material.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ManagedCredentialDelivery {
-    ProcessSecret,
-    Artifact(CredentialArtifactSpec),
-}
-
-impl ManagedCredentialDelivery {
-    /// Select an artifact only when this profile and the pinned credential shape
-    /// require one.
-    #[must_use]
-    pub fn credential_artifact(self, _has_refresh: bool) -> Option<CredentialArtifactSpec> {
-        match self {
-            Self::Artifact(spec) => Some(spec),
-            Self::ProcessSecret => None,
-        }
-    }
-
-    #[must_use]
-    pub fn allows_process_secret(self) -> bool {
-        matches!(self, Self::ProcessSecret)
-    }
-}
-
 /// The definition of one external ACP CLI: how to launch it and project config onto
 /// it. Referenced by `Backend::Acp { cli }` via [`AcpCli::id`].
 #[derive(Debug, Clone, Copy)]
@@ -265,11 +230,6 @@ pub struct AcpCli {
 }
 
 impl AcpCli {
-    #[must_use]
-    pub fn supports_model_api_dialect(self, dialect: &str) -> bool {
-        self.model_api_dialects.contains(&dialect)
-    }
-
     /// Operator remediation for one canonical discovery reason. The catalog row
     /// owns adapter-specific commands; diagnostics and capabilities merely
     /// project them and therefore cannot drift.
@@ -380,6 +340,7 @@ pub enum ResolvedModel {
         model: String,
         process_secret: Option<ProcessSecretRequirement>,
         credential_artifact: Option<CredentialArtifactRequirement>,
+        acp: Option<awaken_runtime_contract::resolved::AcpExecutionProfile>,
     },
     BackendOwned {
         model_selection: BackendModelSelection,
@@ -408,6 +369,7 @@ impl ResolvedModel {
             model: model.into(),
             process_secret: Some(ProcessSecretRequirement::new(lease_reference)),
             credential_artifact: None,
+            acp: None,
         }
     }
 
@@ -423,6 +385,24 @@ impl ResolvedModel {
             model: model.into(),
             process_secret,
             credential_artifact,
+            acp: None,
+        }
+    }
+
+    #[must_use]
+    pub fn managed_with_acp(
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        process_secret: Option<ProcessSecretRequirement>,
+        credential_artifact: Option<CredentialArtifactRequirement>,
+        acp: awaken_runtime_contract::resolved::AcpExecutionProfile,
+    ) -> Self {
+        Self::Managed {
+            base_url: base_url.into(),
+            model: model.into(),
+            process_secret,
+            credential_artifact,
+            acp: Some(acp),
         }
     }
 
@@ -603,11 +583,27 @@ impl AcpCli {
             model,
             process_secret,
             credential_artifact,
+            acp,
         } = model
         else {
             unreachable!("backend-owned launch returned above")
         };
         let d = self.model_delivery.as_ref();
+        let (session_mode, session_config_options, expected_capability) =
+            project_acp_session(self.id, acp.as_ref());
+        if process_secret.is_some() && !self.managed_credential_delivery.allows_process_secret() {
+            return Err(OpenError(format!(
+                "credential_delivery_mismatch: {} requires a managed artifact",
+                self.id
+            )));
+        }
+        if credential_artifact.is_some() && self.managed_credential_delivery.allows_process_secret()
+        {
+            return Err(OpenError(format!(
+                "credential_delivery_mismatch: {} requires a process secret",
+                self.id
+            )));
+        }
         if d.is_none() && credential_artifact.is_none() {
             return Err(OpenError(format!(
                 "credential_driver_required: {}",
@@ -619,9 +615,9 @@ impl AcpCli {
                 argv,
                 env: env.into_values().collect(),
                 identity: AcpLaunchIdentity::Managed,
-                session_mode: None,
-                session_config_options: Vec::new(),
-                expected_capability: None,
+                session_mode,
+                session_config_options,
+                expected_capability,
             });
         };
         if !base_url.is_empty() {
@@ -669,9 +665,9 @@ impl AcpCli {
             argv,
             env: env.into_values().collect(),
             identity: AcpLaunchIdentity::Managed,
-            session_mode: None,
-            session_config_options: Vec::new(),
-            expected_capability: None,
+            session_mode,
+            session_config_options,
+            expected_capability,
         })
     }
 
@@ -864,7 +860,12 @@ const CODEX: AcpCli = AcpCli {
         install_remediation: "Install Codex and Node.js/npm, then rerun discovery.",
     },
     container_argv: &["codex-acp"],
-    model_delivery: None,
+    model_delivery: Some(ModelDelivery {
+        base_url: "OPENAI_BASE_URL",
+        model: "OPENAI_MODEL",
+        credential_env: &["OPENAI_API_KEY"],
+        aliases: &[],
+    }),
     model_api_dialects: &["open_ai_chat"],
     backend_model_interface: BackendModelInterface::SessionConfigOption { config_id: "model" },
     managed_credential_delivery: ManagedCredentialDelivery::Artifact(CredentialArtifactSpec {
@@ -1074,6 +1075,7 @@ mod tests {
             model: "MiniMax-M3[1m]".to_string(),
             process_secret: Some(ProcessSecretRequirement::new("lease://test-model")),
             credential_artifact: None,
+            acp: None,
         }
     }
 
@@ -1313,10 +1315,9 @@ mod tests {
                 "{}: login rules can prove availability",
                 cli.id
             );
-            assert_eq!(
-                cli.config_home_env.is_some(),
-                cli.model_delivery.is_some(),
-                "{}: only driver-managed adapters omit a generic config home",
+            assert!(
+                cli.model_api_dialects.is_empty() || cli.model_delivery.is_some(),
+                "{}: an advertised Provider dialect has endpoint/model delivery",
                 cli.id
             );
         }
@@ -1332,6 +1333,10 @@ mod tests {
             unreachable!()
         };
         for cli in known_acp_clis() {
+            if !cli.managed_credential_delivery.allows_process_secret() {
+                assert!(cli.try_project(&m, None, &[]).is_err(), "{}", cli.id);
+                continue;
+            }
             let Some(d) = cli.model_delivery.as_ref() else {
                 assert!(cli.try_project(&m, None, &[]).is_err(), "{}", cli.id);
                 continue;
@@ -1377,6 +1382,10 @@ mod tests {
             unreachable!()
         };
         for cli in known_acp_clis() {
+            if !cli.managed_credential_delivery.allows_process_secret() {
+                assert!(cli.try_project(&m, None, &[]).is_err(), "{}", cli.id);
+                continue;
+            }
             let Some(d) = cli.model_delivery else {
                 assert!(cli.try_project(&m, None, &[]).is_err(), "{}", cli.id);
                 continue;
@@ -1415,6 +1424,7 @@ mod tests {
                 "CLAUDE_CODE_OAUTH_TOKEN",
             )),
             credential_artifact: None,
+            acp: None,
         };
         let claude = acp_cli("claude").unwrap();
         let launch = claude
@@ -1439,6 +1449,23 @@ mod tests {
         // cloud-managed launch carries only a lease requirement, never a raw provider key.
         let raw = "sk-RAW-PROVIDER-SECRET"; // awaken-allow: secret
         for cli in known_acp_clis() {
+            if !cli.managed_credential_delivery.allows_process_secret() {
+                assert!(
+                    cli.try_project(
+                        &ResolvedModel::cloud_managed_gateway(
+                            "https://gateway.awaken.internal",
+                            "some-model",
+                            "lease://gateway-123",
+                        ),
+                        None,
+                        &[],
+                    )
+                    .is_err(),
+                    "{}: artifact-only adapter rejects a process lease",
+                    cli.id
+                );
+                continue;
+            }
             let Some(delivery) = cli.model_delivery else {
                 assert!(
                     cli.try_project(&resolved(), None, &[]).is_err(),
@@ -1796,21 +1823,48 @@ mod tests {
     }
 
     #[test]
-    fn codex_requires_its_provider_credential_driver() {
+    fn managed_credential_delivery_mismatch_fails_closed_in_both_directions() {
+        // Causes: C1 CLI profile selects artifact/process delivery; C2 launch
+        // supplies the opposite credential shape. Effects: E1 model delivery
+        // remains available; E2 both mismatches fail before process launch.
+        //
+        // | Rule | CLI delivery | supplied | Effect |
+        // | D1 | artifact | process | E2 |
+        // | D2 | process | artifact | E2 |
         let cli = acp_cli("codex").unwrap();
-        assert!(cli.model_delivery.is_none());
+        assert!(cli.model_delivery.is_some(), "E1");
         assert!(cli.config_home_env.is_none());
         assert!(cli.session_export_excludes.is_empty());
         let error = cli.try_project(&resolved(), None, &[]).unwrap_err();
-        assert_eq!(error.0, "credential_driver_required: codex");
+        assert_eq!(
+            error.0, "credential_delivery_mismatch: codex requires a managed artifact",
+            "D1"
+        );
+        let claude = acp_cli("claude").unwrap();
+        let artifact = ResolvedModel::managed(
+            "https://anthropic.example/v1",
+            "claude-test",
+            None,
+            Some(CredentialArtifactRequirement::new(
+                "credential://artifact",
+                ".config/credential.json",
+            )),
+        );
+        assert_eq!(
+            claude.try_project(&artifact, None, &[]).unwrap_err().0,
+            "credential_delivery_mismatch: claude requires a process secret",
+            "D2"
+        );
     }
 
     #[test]
-    fn codex_artifact_launch_has_no_model_or_credential_environment_projection() {
+    fn codex_artifact_launch_projects_model_but_not_credential_environment() {
+        // C1 exact endpoint/model -> E1 model environment. C2 artifact-backed
+        // credential -> E2 no plaintext credential environment.
         let cli = acp_cli("codex").unwrap();
         let model = ResolvedModel::managed(
-            "https://api.minimaxi.com/anthropic",
-            "MiniMax-M3[1m]",
+            "https://openai-compatible.example/v1",
+            "qwen/qwen3-235b",
             None,
             Some(CredentialArtifactRequirement::new(
                 "awaken-credential-artifact://one-shot",
@@ -1818,12 +1872,59 @@ mod tests {
             )),
         );
         let launch = cli.try_project(&model, None, &[]).expect("artifact launch");
-        assert!(
-            launch
-                .env
-                .iter()
-                .all(|var| { !var.name.starts_with("OPENAI_") && !var.name.starts_with("CODEX_") })
+        assert_eq!(
+            env_of(&launch, "OPENAI_BASE_URL").as_deref(),
+            Some("https://openai-compatible.example/v1"),
+            "E1"
         );
+        assert_eq!(
+            env_of(&launch, "OPENAI_MODEL").as_deref(),
+            Some("qwen/qwen3-235b"),
+            "E1"
+        );
+        assert_eq!(secret_ref_of(&launch, "OPENAI_API_KEY"), None, "E2");
+    }
+
+    #[test]
+    fn provider_managed_acp_launch_projects_the_publication_pinned_session_profile() {
+        // Causes: C1 provider-managed coordinates; C2 artifact credential; C3
+        // publication-pinned ACP mode/options/capability. Effects: E1 model env;
+        // E2 exact native Session config; E3 handshake expectation uses the
+        // frozen adapter version/fingerprint.
+        let cli = acp_cli("codex").unwrap();
+        let model = ResolvedModel::managed_with_acp(
+            "https://openai-compatible.example/v1",
+            "qwen/qwen3-235b",
+            None,
+            Some(CredentialArtifactRequirement::new(
+                "awaken-credential-artifact://one-shot",
+                ".codex/auth.json",
+            )),
+            awaken_runtime_contract::resolved::AcpExecutionProfile {
+                capability_adapter_version: "1.2.3".into(),
+                capability_fingerprint: "sha256:profile".into(),
+                session_configuration: awaken_runtime_contract::resolved::AcpSessionConfiguration {
+                    mode: Some("plan".into()),
+                    options: [("reasoning_effort".into(), "high".into())]
+                        .into_iter()
+                        .collect(),
+                },
+            },
+        );
+        let launch = cli
+            .try_project(&model, None, &[])
+            .expect("published profile");
+        assert_eq!(launch.session_mode.as_deref(), Some("plan"), "E2");
+        assert_eq!(launch.session_config_options.len(), 1, "E2");
+        assert_eq!(
+            launch.session_config_options[0].config_id, "reasoning_effort",
+            "E2"
+        );
+        assert_eq!(launch.session_config_options[0].value, "high", "E2");
+        let expectation = launch.expected_capability.expect("E3");
+        assert_eq!(expectation.adapter_id, "codex", "E3");
+        assert_eq!(expectation.adapter_version, "1.2.3", "E3");
+        assert_eq!(expectation.fingerprint, "sha256:profile", "E3");
     }
 
     #[test]

@@ -1332,6 +1332,7 @@ pub(crate) mod resource_prompt_tests {
                 endpoint_name: Some("edge".into()),
             },
             backend_ref: "genai".into(),
+            configuration: Default::default(),
         };
         plane.put(&scope, &config).await.unwrap();
         plane.publish(&scope, &config.id).await.unwrap();
@@ -1876,6 +1877,7 @@ pub(crate) mod resource_prompt_tests {
                 endpoint_name: Some("warm".into()),
             },
             backend_ref: "genai".into(),
+            configuration: Default::default(),
         };
         author.put(&scope, &v2).await.unwrap();
         author.publish(&scope, "warm-agent").await.unwrap();

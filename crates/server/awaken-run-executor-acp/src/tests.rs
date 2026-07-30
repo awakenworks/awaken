@@ -1860,6 +1860,7 @@ fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
         model: "kimi-k2".to_string(),
         process_secret: Some(ProcessSecretRequirement::new("lease://projected-host")),
         credential_artifact: None,
+        acp: None,
     }));
     // The resolver supplies the config-home path as non-secret per-run env.
     let source = ProjectingChannelSource::new(cli, resolver);
@@ -1896,6 +1897,7 @@ impl LaunchResolver for ConfigHomeAt {
             model: "m".into(),
             process_secret: None,
             credential_artifact: None,
+            acp: None,
         })
     }
     fn extra_env(
@@ -2012,6 +2014,7 @@ async fn open_and_drive_inject_the_mcp_server_into_session_new_for_an_acp_sessio
             model: "m".into(),
             process_secret: None,
             credential_artifact: None,
+            acp: None,
         })),
     ));
     let e = AcpRunExecutor::new(source);
@@ -2071,6 +2074,7 @@ async fn retained_inline_mcp_credential_is_ignored_before_session_new() {
             model: "m".into(),
             process_secret: None,
             credential_artifact: None,
+            acp: None,
         })),
     ));
     let e = AcpRunExecutor::new(source);
@@ -2135,6 +2139,7 @@ async fn acp_session_id_is_carried_across_the_per_turn_relaunch() {
             model: "m".into(),
             process_secret: None,
             credential_artifact: None,
+            acp: None,
         })),
     ));
     let e = AcpRunExecutor::new(source);
@@ -2196,6 +2201,7 @@ async fn paused_run_resumes_after_executor_replacement_with_the_committed_sessio
             model: "m".into(),
             process_secret: None,
             credential_artifact: None,
+            acp: None,
         })),
     ));
     let committed = Arc::new(RecordingCoordinator::default());
@@ -2257,6 +2263,7 @@ fn projecting_source_reads_the_cli_compact_window_from_config() {
         model: "m".to_string(),
         process_secret: None,
         credential_artifact: None,
+        acp: None,
     }));
     let source = ProjectingChannelSource::new(cli, resolver);
 
@@ -2485,7 +2492,20 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
 
 /// A model resolver for the matrix: fixed coordinates, no per-run env (a plain
 /// turn declares no MCP, so no config-home is needed — keeping it row-agnostic).
-struct MatrixModel;
+struct MatrixModel {
+    artifact_path: Option<&'static str>,
+}
+
+impl MatrixModel {
+    fn for_cli(cli: &AcpCli) -> Self {
+        Self {
+            artifact_path: cli
+                .managed_credential_delivery
+                .credential_artifact(false)
+                .map(|artifact| artifact.relative_path),
+        }
+    }
+}
 
 struct MatrixSecretBroker;
 
@@ -2493,11 +2513,11 @@ struct MatrixSecretBroker;
 impl awaken_provisioning_contract::SecretBroker for MatrixSecretBroker {
     async fn materialize(
         &self,
-        _reference: &str,
+        reference: &str,
     ) -> std::result::Result<Vec<u8>, awaken_provisioning_contract::SandboxError> {
-        Err(awaken_provisioning_contract::SandboxError::new(
-            "matrix broker has no file credential",
-        ))
+        (reference == "lease://matrix")
+            .then(|| br#"{"OPENAI_API_KEY":"matrix-secret"}"#.to_vec()) // awaken-allow: secret
+            .ok_or_else(|| awaken_provisioning_contract::SandboxError::new("unknown lease"))
     }
 
     async fn materialize_process(
@@ -2529,8 +2549,14 @@ impl LaunchResolver for MatrixModel {
         Ok(ResolvedModel::Managed {
             base_url: "https://gateway.example/anthropic".to_string(),
             model: "MiniMax-M2".to_string(),
-            process_secret: Some(ProcessSecretRequirement::new("lease://matrix")),
-            credential_artifact: None,
+            process_secret: self
+                .artifact_path
+                .is_none()
+                .then(|| ProcessSecretRequirement::new("lease://matrix")),
+            credential_artifact: self
+                .artifact_path
+                .map(|path| CredentialArtifactRequirement::new("lease://matrix", path)),
+            acp: None,
         })
     }
 
@@ -2544,7 +2570,8 @@ fn every_backend_row_projects_a_launchable_process_through_the_source() {
     // The source seam (not just `AcpCli::project`) must be row-agnostic: for each
     // catalog CLI, `ProjectingChannelSource::plan` yields the row's own command as
     // argv[0] and delivers the resolved model under that row's env keys.
-    let model = MatrixModel
+    let reference_cli = &known_acp_clis()[0];
+    let model = MatrixModel::for_cli(reference_cli)
         .model(&activation(), &RuntimeRunContext::new())
         .unwrap();
     let ResolvedModel::Managed {
@@ -2556,7 +2583,7 @@ fn every_backend_row_projects_a_launchable_process_through_the_source() {
         unreachable!()
     };
     for cli in known_acp_clis() {
-        let source = ProjectingChannelSource::new(*cli, Arc::new(MatrixModel));
+        let source = ProjectingChannelSource::new(*cli, Arc::new(MatrixModel::for_cli(cli)));
         let planned = source.plan(&activation(), &RuntimeRunContext::new());
         let Some(d) = cli.model_delivery.as_ref() else {
             let error = planned.unwrap_err();
@@ -2583,14 +2610,23 @@ fn every_backend_row_projects_a_launchable_process_through_the_source() {
             "{}: model delivered",
             cli.id
         );
-        assert_eq!(
-            env(d
-                .default_credential_env()
-                .expect("catalog process-secret delivery has a default"),),
-            Some("lease://matrix"),
-            "{}: secret delivered by the host",
-            cli.id
-        );
+        if cli.managed_credential_delivery.allows_process_secret() {
+            assert_eq!(
+                env(d
+                    .default_credential_env()
+                    .expect("catalog process-secret delivery has a default"),),
+                Some("lease://matrix"),
+                "{}: process secret delivered by the host",
+                cli.id
+            );
+        } else {
+            assert!(
+                d.default_credential_env()
+                    .is_none_or(|key| env(key).is_none()),
+                "{}: artifact credentials never enter process env",
+                cli.id
+            );
+        }
     }
 }
 
@@ -2623,7 +2659,7 @@ const PONG_ECHO: &str = "while IFS= read -r line; do \
 async fn every_backend_row_drives_a_plain_turn_to_a_committed_reply() {
     for row in known_acp_clis() {
         if row.model_delivery.is_none() {
-            let error = ProjectingChannelSource::new(*row, Arc::new(MatrixModel))
+            let error = ProjectingChannelSource::new(*row, Arc::new(MatrixModel::for_cli(row)))
                 .plan(&activation(), &RuntimeRunContext::new())
                 .expect_err("driver-managed row must fail before spawn");
             assert_eq!(error.0, format!("credential_driver_required: {}", row.id));
@@ -2634,7 +2670,10 @@ async fn every_backend_row_drives_a_plain_turn_to_a_committed_reply() {
             executable: "/bin/sh",
             args: &["-c", PONG_ECHO],
         };
-        let source = Arc::new(ProjectingChannelSource::new(cli, Arc::new(MatrixModel)));
+        let source = Arc::new(ProjectingChannelSource::new(
+            cli,
+            Arc::new(MatrixModel::for_cli(row)),
+        ));
         let exec = AcpRunExecutor::new(source);
 
         // Reflect the scenario: the run binds this row's backend (acp:<id>).

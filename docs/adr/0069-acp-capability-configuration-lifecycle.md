@@ -264,14 +264,19 @@ The single ADR-0057 Agent aggregate gains one typed ACP selection:
 ```text
 AcpSessionConfiguration
   mode?: native session-mode id
-  options: map<native option id, typed native value>
+  options: map<native option id, native string value>
 ```
 
-It accompanies rather than duplicates `ModelSelection`.
+It is carried by the existing `ModelSelection::Target`, `BackendDefault`, or
+`BackendExact` variant; there is no parallel ACP selection record. The Managed
+Agents ACL projects the optional `model.x_awaken.acp` object into this value.
+Omission retains the official Managed model shape.
 
 - `BackendDefault` sends no exact-model override.
 - Exact ACP model selection uses the existing exact/pinned selection projected
   to `BackendModelSelection::Exact` and requires proven delivery.
+- `Target` combines the same configuration with a Provider-backed ACP route;
+  Provider and BackendOwned publication both freeze one `AcpExecutionProfile`.
 - An omitted mode or option means use the backend default; Awaken sends no
   override and never copies a reported default into the Agent.
 - The Agent stores no discovered option schema, choice list or availability.
@@ -296,7 +301,7 @@ Provider | BackendOwned provisioning
 BackendDefault | Exact model policy
 exact WorkerLocal CredentialRef/revision for BackendOwned
 selected native mode and option values
-capability fingerprint
+ACP adapter version and capability fingerprint in one `AcpExecutionProfile`
 SessionEnvironmentRequirement
 ```
 

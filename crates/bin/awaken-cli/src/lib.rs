@@ -1205,6 +1205,8 @@ async fn management_router_over(
     let web_search_providers = assembly
         .web_search_providers
         .unwrap_or_else(awaken_runtime_host::WebSearchProviderRegistry::builtins);
+    let executor_model_capabilities =
+        Arc::new(awaken_server::model_directory::installed_executor_model_capabilities());
     let model_wiring = match model_composition {
         ManagementModelComposition::PublishedProviders => ManagementModelWiring {
             executor: Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
@@ -1214,6 +1216,7 @@ async fn management_router_over(
                     catalog.clone(),
                     credentials.clone(),
                 )
+                .with_executor_capabilities(executor_model_capabilities.clone())
                 .with_profiles(profiles.clone())
                 .with_worker_directory(awaken_server::worker_directory())
                 .with_brokered_access(cloud_models_enabled),
@@ -1380,6 +1383,12 @@ async fn management_router_over(
     let resource_iam = iam.clone();
     let resource_remote_iam = remote_iam.clone();
     let application_access = Arc::new(awaken_authz_enforce::ApplicationAccessStore::new());
+    let live_runtime_capabilities = Arc::new(LiveRuntimeCapabilities {
+        initial: assembly.local_acp_observations.clone(),
+        workers: awaken_server::worker_directory(),
+        credentials: credentials.clone(),
+        workspace: platform_workspace.clone(),
+    });
     let (mgmt, webhook_sink) = awaken_control::control_router(awaken_control::ControlRouterInput {
         platform_workspace: platform_workspace.clone(),
         catalog: catalog.clone(),
@@ -1405,12 +1414,7 @@ async fn management_router_over(
         plugins: awaken_runtime_host::platform_plugin_capabilities_with_web_search(
             &web_search_providers,
         ),
-        runtimes: Arc::new(LiveRuntimeCapabilities {
-            initial: assembly.local_acp_observations.clone(),
-            workers: awaken_server::worker_directory(),
-            credentials: credentials.clone(),
-            workspace: platform_workspace.clone(),
-        }),
+        runtimes: live_runtime_capabilities.clone(),
         org_id: Some(org_id.clone()),
         iam,
         remote_iam,
@@ -1568,10 +1572,13 @@ async fn management_router_over(
     // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
     // routing. Flat requests fall through unchanged. The same assembly returns the
     // DreamState it mounted, so scheduling cannot target a parallel instance.
-    let model_directory = Arc::new(awaken_server::model_directory::CatalogModelDirectory::new(
-        catalog.clone(),
-        credentials.clone(),
-    ));
+    let model_directory = Arc::new(
+        awaken_server::model_directory::CatalogModelDirectory::with_source(
+            catalog.clone(),
+            credentials.clone(),
+            live_runtime_capabilities,
+        ),
+    );
     let (mut data, dream_state) =
         awaken_server::mount_with_managed_application_access_models_and_dreams(
             host,
@@ -1667,6 +1674,7 @@ mod runtime_session_store_tests {
                 },
                 agent_id: "assistant".into(),
                 model: "test-model".into(),
+                execution_model_ref: "test-model".into(),
                 runtime: None,
                 mcp_authoring: Default::default(),
                 delegate_ids: Vec::new(),

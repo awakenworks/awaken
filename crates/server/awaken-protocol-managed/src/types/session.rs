@@ -11,7 +11,7 @@
 //! domain state — projecting engine events into [`OutboundKind`], building a
 //! [`Session`] record — lives in `state` and `project`, kept deliberately apart.
 
-use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::{AcpSessionConfiguration, agent::content::ContentBlock};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -250,6 +250,11 @@ pub struct ModelConfig {
     pub speed: Option<ModelSpeed>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<ModelEffort>,
+    /// Optional Awaken behavior carried beside the fully compatible Managed
+    /// model fields. Official clients that do not need ACP-native options omit
+    /// it and retain the exact SDK shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x_awaken: Option<AwakenModelExtensions>,
 }
 
 impl ModelConfig {
@@ -258,8 +263,18 @@ impl ModelConfig {
             id: id.into(),
             speed: None,
             effort: None,
+            x_awaken: None,
         }
     }
+}
+
+/// Namespaced model extensions. Route identity remains exclusively in `id`;
+/// this object carries only executor-native configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AwakenModelExtensions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp: Option<AcpSessionConfiguration>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -326,6 +341,8 @@ pub struct ModelConfigParams {
     pub speed: Option<ModelSpeed>,
     #[serde(default)]
     pub effort: Option<ModelEffortInput>,
+    #[serde(default)]
+    pub x_awaken: Option<AwakenModelExtensions>,
 }
 
 impl ModelConfigParams {
@@ -334,6 +351,7 @@ impl ModelConfigParams {
             id: id.into(),
             speed: None,
             effort: None,
+            x_awaken: None,
         }
     }
 
@@ -343,6 +361,7 @@ impl ModelConfigParams {
             id: self.id,
             speed: self.speed,
             effort: self.effort.map(ModelEffortInput::resolved),
+            x_awaken: self.x_awaken,
         }
     }
 }

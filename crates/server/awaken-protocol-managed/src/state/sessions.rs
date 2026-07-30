@@ -916,6 +916,10 @@ impl ManagedState {
         let resolved_model = selected_model
             .clone()
             .unwrap_or_else(|| ModelConfig::new(self.runtime.model()));
+        let execution_model_ref = config_view
+            .as_ref()
+            .and_then(|view| view.execution_model_ref.clone())
+            .unwrap_or_else(|| resolved_model.id.clone());
         let application_required = req.application_contribution_required;
         let creation_intent = awaken_session_contract::SessionCreationIntent {
             control: awaken_session_contract::ControlSessionCreationInputs {
@@ -924,7 +928,8 @@ impl ManagedState {
                     ordered_vault_ids: req.vault_ids.clone(),
                 },
                 agent_id: agent_id.clone(),
-                model: execution_model_ref.unwrap_or_else(|| self.runtime.model()),
+                model: resolved_model.id.clone(),
+                execution_model_ref,
                 runtime: published_backend_ref,
                 delegate_ids: delegate_ids.clone(),
                 toolsets: effective_toolsets,
@@ -1572,7 +1577,7 @@ impl ManagedState {
                             delegate_ids: baseline.delegate_ids.clone(),
                             toolsets: Some(project::toolset_policies(&session.agent_tools)),
                             resources: session.resources.active.clone(),
-                            model: Some(baseline.model.clone()),
+                            model: Some(baseline.execution_model_ref.clone()),
                             runtime: baseline.runtime.clone(),
                             environment: baseline.environment.clone(),
                         },

@@ -246,6 +246,7 @@ mod tests {
             workspace_id: "ws1".into(),
             kind: CredentialKind::Vault,
             provider_id: None,
+            protocol_endpoint_id: None,
             env_key: None,
             material_ref: None,
             auxiliary_material_refs: Default::default(),

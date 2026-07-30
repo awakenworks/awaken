@@ -21,7 +21,6 @@
 use std::sync::Arc;
 
 use awaken_cli::build_management_router_with_model;
-use awaken_scenario_host::EchoModel;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -29,7 +28,11 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 async fn build_management_router() -> axum::Router {
-    build_management_router_with_model(Arc::new(EchoModel), "kimi").await
+    build_management_router_with_model(
+        Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
+        "kimi",
+    )
+    .await
 }
 
 async fn call(
@@ -54,7 +57,9 @@ async fn call(
     (status, value)
 }
 
-/// Author an agent under `ws` via the D3 path form; return its id.
+/// Author an agent under `ws` via the D3 path form; return its id. The router is
+/// composed with the existing exact-host publication seam so these tenancy
+/// tests exercise ownership only, without inventing an invalid Provider route.
 async fn author_agent(app: &axum::Router, ws: &str, name: &str) -> String {
     let (status, agent) = call(
         app,

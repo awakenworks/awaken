@@ -295,6 +295,7 @@ are encoded only when they are needed to disambiguate execution:
 | `acp:<cli>/<model>` | ACP CLI with an exact backend-owned model |
 | `acp:<cli>@<provider>/<model>` | ACP CLI using an Awaken-managed Provider route |
 | `acp:<cli>@<provider>@<endpoint>/<model>` | the same with an endpoint selector |
+| `a2a:<absolute-http-url>` | one remote A2A Agent; publication discovers and pins its Agent Card security |
 
 The model portion is the complete remainder after the route separator, so ids
 such as `anyrouter/qwen/qwen3-235b` mean provider `anyrouter`, model
@@ -309,6 +310,36 @@ dialects, discovery emits `<dialect>.<endpoint_name>` to keep the id unambiguous
 These qualifiers are returned by `/v1/models`; clients do not construct internal
 `ProtocolEndpointId` values.
 
+`/v1/models` associates each entry with its Provider through the canonical id.
+Different Providers may publish the same model name, so a bare `<model>` is
+returned only when globally unique; otherwise discovery returns
+`<provider>/<model>`. Multiple endpoints for the same Provider/model add
+`@<endpoint>`. The response retains the official `BetaModelInfo` fields rather
+than adding a second Provider field that could disagree with the id.
+
+ACP-native Session configuration is orthogonal to route identity. The optional
+namespaced extension on the official model object carries only that configuration:
+
+```json
+{
+  "id": "acp:codex@anyrouter/qwen/qwen3-235b",
+  "effort": "high",
+  "x_awaken": {
+    "acp": {
+      "mode": "plan",
+      "options": {"reasoning_effort": "high"}
+    }
+  }
+}
+```
+
+`id`, `speed`, and `effort` retain their Managed Agents meanings. Omitting
+`x_awaken` retains the official shape. An ACP extension on a native or A2A id
+fails immediately. Publication checks every mode, option id, and value against
+one fresh negotiated Worker profile, then freezes the adapter version,
+fingerprint, and exact configuration into the same candidate as the Provider
+route.
+
 `parse_managed_model_id` is the sole ACL. It creates a `ModelSelection::Target`
 intent rather than an incomplete `Pinned` binding. `select_offering` is the sole
 catalog selector. Publication then intersects:
@@ -321,6 +352,13 @@ Target
   × current Worker capability when the backend owns execution
   → immutable ResolvedModelCandidate
 ```
+
+For an ACP Provider route the candidate also contains one
+`AcpExecutionProfile`; Provider and BackendOwned provisioning reuse this type.
+Runtime Host projects it into the ACP Session, and the handshake checks the
+frozen capability fingerprint before a prompt. A2A does not enter the model
+planner: the existing remote candidate path validates its URL and same-origin
+Agent Card, then freezes transport security and any credential revision.
 
 Zero matches, multiple matches, unsupported dialects, incompatible credential
 material/usage, unavailable Worker capabilities, and incomplete endpoint
@@ -352,7 +390,17 @@ candidate and never renegotiates Provider, credential, dialect, or executor.
    stages a newly created credential as disabled, records the Provider, derived
    endpoint id, and Offerings, then activates that credential. A catalog-write
    failure therefore cannot expose an unverified credential/model route. A
-   second endpoint using the same dialect supplies `endpoint_name`.
+   second endpoint using the same dialect supplies `endpoint_name`. A credential
+   created by this command records that exact canonical endpoint as its immutable
+   proof scope; it cannot make a sibling endpoint executable. A separately
+   entered provider-wide credential has no endpoint restriction and may be bound
+   explicitly where the operator intends it.
+
+   Provider and dialect are separate axes. GLM may have an
+   `anthropic_messages` endpoint and an `open_ai_chat` endpoint under the same
+   `provider_id`; Qwen or AnyRouter may expose slash-bearing model ids without
+   changing the grammar. Credential kind and delivery usage are validated
+   independently from endpoint dialect.
 
 2. List the executable, Workspace-scoped Managed ids:
 
@@ -360,9 +408,11 @@ candidate and never renegotiates Provider, credential, dialect, or executor.
    GET /v1/models
    ```
 
-   The response is derived from live Catalog × Credential × executor capability;
-   it is not a static vendor list. Bare ids are returned only when unique;
-   provider and endpoint qualifiers are added only when required.
+   The response is derived from Catalog × Credential × the installed executor
+   capability matrix; it is not a static vendor list. Bare ids are returned only
+   when unique; provider and endpoint qualifiers are added only when required.
+   Agent publication revalidates the same matrix and, for ACP, requires fresh
+   negotiated Worker evidence before visibility.
 
 3. Create and publish an Agent using the ordinary Managed Agents field:
 
@@ -373,6 +423,31 @@ candidate and never renegotiates Provider, credential, dialect, or executor.
    {"name":"support","model":"acp:claude@glm/glm-5","tools":[]}
    ```
 
+   Adapter-native configuration stays in the same model field:
+
+   ```json
+   {
+     "name": "research",
+     "model": {
+       "id": "acp:codex@anyrouter/qwen/qwen3-235b",
+       "x_awaken": {
+         "acp": {
+           "mode": "plan",
+           "options": {"reasoning_effort": "high"}
+         }
+       }
+     },
+     "tools": []
+   }
+   ```
+
+   A backend-owned CLI login uses `acp:codex` for its default model or
+   `acp:codex/gpt-5` for an exact model. A remote Agent uses
+   `a2a:https://agent.example/a2a`; it is absent from `/v1/models` because it is
+   an Agent, not a model. Backend-owned ACP routes are runtime capabilities, so
+   clients discover their availability through `/v1/config/capabilities`;
+   `/v1/models` owns Provider-backed model routes only.
+
    Create/update dry-runs the complete publication first and returns `400` for an
    unsupported combination. The config authoring API may retain drafts; the
    Managed Agents API exposes only successfully published Agents.
@@ -382,6 +457,13 @@ candidate and never renegotiates Provider, credential, dialect, or executor.
    not an execution path. An official per-Session model override is accepted only
    when it names the Agent's already-published model; selecting another route
    requires creating or updating an Agent so model and backend pins cannot diverge.
+   The Session baseline keeps the public Managed id for API projection and a
+   separately fingerprinted execution `model_ref` from the publication. Runtime
+   consumes only the latter and never reparses Provider/endpoint/ACP syntax.
+
+This is the complete public flow: Provider connection and model discovery,
+Agent create/update, and Agent use require no internal catalog endpoint id,
+credential id, runtime id, or separate ACP execution API.
 
 ## Guardrails
 

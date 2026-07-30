@@ -77,10 +77,10 @@ single-provider flow is working.
 - No ambient environment fallback for missing credential refs.
 - No product policy in store/repository implementations.
 
-## Concrete Model (aligned to oversight-next)
+## Concrete Model
 
-This model mirrors oversight-next exactly. Two **orthogonal** axes — do not
-conflate them:
+This model retains the useful oversight-next separation while following Awaken's
+current authority graph. Two **orthogonal** axes must not be conflated:
 
 - **Materialization** — *where* a secret physically lives: `CredentialSource.kind`.
 - **Selection** — *which* source a run uses: `CredentialBinding` (+ `CredentialPool`).
@@ -97,7 +97,9 @@ Environment inspection may produce a secret-free UI proposal only. The runtime s
 struct CredentialSource {                     // supersedes this page's earlier `CredentialRecord`
     id, workspace_id,
     kind: CredentialKind,                     // Vault | Oauth (`Env` decodes legacy rows but cannot execute)
-    provider_id: Option<String>, adapter_registration_id: Option<String>,
+    provider_id: Option<String>,
+    protocol_endpoint_id: Option<String>,     // optional exact endpoint proof/scope
+    adapter_registration_id: Option<String>,
     auth: CredentialAuth,                     // neutral; ACL maps the managed wire tags
     material_ref: Option<SecretRef>,          // → SecretStore; None for OAuth helpers
     status, max_concurrency,
@@ -131,17 +133,27 @@ struct CredentialPoolMember { pool_id, credential_source_id, ordinal, enabled, s
 enum CredentialSelectionPolicy { OrderedFallback, LeastRecentlyUsed, Priority, CostWeighted }
 ```
 
-### Provider identity — binds a credential to a provider + per-endpoint toggle
+### Provider access and routing policy
 
 ```rust
-struct ProviderIdentity {
-    id, workspace_id, provider_id: Option<String>,
-    credential_binding: Option<CredentialBinding>,     // vault-backed, never inline
-    max_concurrency, refresh_model,                    // none | static | rotating
-    disabled_endpoint_ids: Vec<ProtocolEndpointId>,    // toggle (credential × interface) off
-    version,
+struct ProfileCandidate {
+    target: ModelTarget,                        // provider + optional exact endpoint + model
+    credential_binding: CredentialBinding,      // vault-backed, never inline
+}
+struct InferenceProfile {
+    workspace_id, primary: ProfileCandidate, fallbacks: Vec<ProfileCandidate>,
+    disabled_endpoint_ids: Vec<ProtocolEndpointId>,
 }
 ```
+
+There is no second persisted `ProviderIdentity` aggregate. `ProfileCandidate`
+owns the explicit target×credential selection and `InferenceProfile` owns
+operator routing/fallback and endpoint-disable policy. A
+`CredentialSource.protocol_endpoint_id` is narrower and immutable: a Provider
+connection records the exact endpoint on which that credential was proved. It
+may restrict selection but never enables or disables a route. A manually entered
+provider-wide source leaves it absent. This separates credential proof scope
+from routing policy without synchronizing two endpoint lists.
 
 The vault container and the public Managed wire are unchanged:
 
@@ -350,14 +362,14 @@ idempotency, compensation, outbox, and orphan cleanup.
 
 ## Staging
 
-Model the **full oversight-next entity graph** from the start (so no rework), but
-wire only a subset in P0:
+Keep one authority per responsibility and stage additional policy without adding
+parallel aggregates:
 
 - **P0 (single-machine):** `CredentialSource` (kind `Vault`) +
-  `SecretStore` (inmem/sealed durable adapter) + `CredentialBinding::Exact` only. No
-  pool, no multi-tier routing, no `ProviderIdentity` per-endpoint toggle.
+  `SecretStore` (inmem/sealed durable adapter) + `CredentialBinding::Exact` only.
 - **P1 (managed):** `CredentialPool` + `CredentialBinding::OneOfCredentialPool` +
-  `CredentialSelectionPolicy`; `ProviderIdentity.disabled_endpoint_ids`;
+  `CredentialSelectionPolicy`; `InferenceProfile.disabled_endpoint_ids` and
+  immutable `CredentialSource.protocol_endpoint_id` proof scope;
   sealed-AEAD `SecretStore`; Managed ACL; `credential.*` authz + workspace scope.
 - **P2:** generalized OAuth/background rotation beyond the existing MCP OAuth
   refresh/reseal path, `Networking.allowed_hosts` / `injection_location`

@@ -32,6 +32,9 @@ impl CatalogModelPublicationResolver {
             brokered_access_enabled: true,
             workers: None,
             a2a_cards: Arc::new(super::HttpA2aCardDiscovery),
+            executor_capabilities: Arc::new(
+                crate::model_directory::installed_executor_model_capabilities(),
+            ),
             credential_selection_sequences: Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -48,6 +51,9 @@ impl CatalogModelPublicationResolver {
             brokered_access_enabled: true,
             workers: None,
             a2a_cards: Arc::new(super::HttpA2aCardDiscovery),
+            executor_capabilities: Arc::new(
+                crate::model_directory::installed_executor_model_capabilities(),
+            ),
             credential_selection_sequences: Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -69,6 +75,18 @@ impl CatalogModelPublicationResolver {
         workers: Arc<dyn awaken_worker_registry::WorkerDirectory>,
     ) -> Self {
         self.workers = Some(workers);
+        self
+    }
+
+    /// Replace the executor-model planning facts. Product composition uses the
+    /// same snapshot for publication and `/v1/models`; tests may inject a
+    /// smaller matrix to prove fail-closed behavior.
+    #[must_use]
+    pub fn with_executor_capabilities(
+        mut self,
+        capabilities: Arc<Vec<awaken_config_resolver::ExecutorModelCapability>>,
+    ) -> Self {
+        self.executor_capabilities = capabilities;
         self
     }
 

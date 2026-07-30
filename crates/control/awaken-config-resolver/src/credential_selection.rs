@@ -13,15 +13,27 @@ use awaken_credential_vault::{
 
 /// May this credential authenticate the model provider?
 #[must_use]
-pub fn can_consume(offering_provider_id: &str, source: &CredentialSource) -> bool {
+pub fn can_consume(
+    offering_provider_id: &str,
+    offering_endpoint_id: Option<&str>,
+    source: &CredentialSource,
+) -> bool {
     if source.is_claude_code_setup_token() {
         return false;
     }
-    match (source.material_origin(), source.provider_id.as_deref()) {
+    if source.protocol_endpoint_id.is_some() && source.provider_id.is_none() {
+        return false;
+    }
+    let provider_matches = match (source.material_origin(), source.provider_id.as_deref()) {
         (CredentialMaterialOrigin::WorkerLocal, None) => false,
         (_, None) => true,
         (_, Some(scoped)) => scoped == offering_provider_id,
-    }
+    };
+    provider_matches
+        && source
+            .protocol_endpoint_id
+            .as_deref()
+            .is_none_or(|scoped| offering_endpoint_id == Some(scoped))
 }
 
 /// The resolver-owned provider/backend validity join used by both default
@@ -31,15 +43,20 @@ pub fn can_consume(offering_provider_id: &str, source: &CredentialSource) -> boo
 #[must_use]
 pub fn credential_can_supply(
     offering_provider_id: &str,
+    offering_endpoint_id: Option<&str>,
     backend_ref: &str,
     source: &CredentialSource,
 ) -> bool {
     if source.is_claude_code_setup_token() {
         return offering_provider_id == "anthropic"
+            && source
+                .protocol_endpoint_id
+                .as_deref()
+                .is_none_or(|scoped| offering_endpoint_id == Some(scoped))
             && backend_ref == "acp:claude"
             && source.provider_id.as_deref() == Some("anthropic");
     }
-    can_consume(offering_provider_id, source)
+    can_consume(offering_provider_id, offering_endpoint_id, source)
 }
 
 /// Derive the default, non-persisted vendor pool for one Workspace and
@@ -48,6 +65,7 @@ pub fn credential_can_supply(
 pub fn derive_vendor_pool(
     workspace_id: &str,
     offering_provider_id: &str,
+    offering_endpoint_id: Option<&str>,
     backend_ref: &str,
     sources: &[CredentialSource],
 ) -> CredentialPool {
@@ -57,7 +75,12 @@ pub fn derive_vendor_pool(
             source.workspace_id == workspace_id
                 && source.status == CredentialStatus::Active
                 && source.is_executable_origin()
-                && credential_can_supply(offering_provider_id, backend_ref, source)
+                && credential_can_supply(
+                    offering_provider_id,
+                    offering_endpoint_id,
+                    backend_ref,
+                    source,
+                )
         })
         .collect::<Vec<_>>();
     eligible.sort_by_key(|source| (!source.is_claude_code_setup_token(), source.id.0.as_str()));
@@ -117,6 +140,7 @@ pub fn credential_candidates<'a>(
     binding: &CredentialBinding,
     sources: &'a dyn SourceLookup,
     offering_provider: Option<&str>,
+    offering_endpoint: Option<&str>,
     backend_ref: Option<&str>,
     availability: Option<(&AvailabilityLedger, u64)>,
     expected_workspace: Option<&str>,
@@ -135,7 +159,12 @@ pub fn credential_candidates<'a>(
                 return Err(ResolveError::SourceMissing(credential_source_id.0.clone()));
             }
             if let Some(provider) = offering_provider
-                && !credential_can_supply(provider, backend_ref.unwrap_or("genai"), source)
+                && !credential_can_supply(
+                    provider,
+                    offering_endpoint,
+                    backend_ref.unwrap_or("genai"),
+                    source,
+                )
             {
                 return Err(ResolveError::IncompatibleCredential {
                     source_id: credential_source_id.0.clone(),
@@ -171,7 +200,12 @@ pub fn credential_candidates<'a>(
                 .filter(|source| source.workspace_id == pool.workspace_id)
                 .filter(|source| {
                     offering_provider.is_none_or(|provider| {
-                        credential_can_supply(provider, backend_ref.unwrap_or("genai"), source)
+                        credential_can_supply(
+                            provider,
+                            offering_endpoint,
+                            backend_ref.unwrap_or("genai"),
+                            source,
+                        )
                     })
                 })
                 .collect();
@@ -206,6 +240,7 @@ mod tests {
             workspace_id: workspace.into(),
             kind,
             provider_id: Some(provider.into()),
+            protocol_endpoint_id: None,
             env_key: env_key.map(str::to_string),
             material_ref: None,
             auxiliary_material_refs: Default::default(),
@@ -265,7 +300,7 @@ mod tests {
             ),
         ];
         let ids = |backend_ref| {
-            derive_vendor_pool("ws", "anthropic", backend_ref, &sources)
+            derive_vendor_pool("ws", "anthropic", None, backend_ref, &sources)
                 .selection_order()
                 .into_iter()
                 .map(|member| member.credential_source_id.0.clone())
@@ -273,5 +308,69 @@ mod tests {
         };
         assert_eq!(ids("acp:claude"), ["cred:setup", "cred:api"], "R1-R3");
         assert_eq!(ids("genai"), ["cred:api"], "R1/R2/R4");
+    }
+
+    #[test]
+    fn endpoint_scope_is_part_of_the_single_credential_validity_join() {
+        // Cause/effect decision table:
+        // R1 provider-wide source + matching provider + any endpoint -> eligible;
+        // R2 endpoint-scoped source + exact provider/endpoint -> eligible;
+        // R3 endpoint-scoped source + same provider/different or absent endpoint
+        // -> ineligible; R4 any provider mismatch -> ineligible; R5 malformed
+        // endpoint scope without a provider -> ineligible. This proves
+        // discovery and publication can reuse one provider×endpoint join without
+        // deriving dialect or credential-delivery policy from the endpoint.
+        let source = |provider: &str, endpoint: Option<&str>| CredentialSource {
+            id: awaken_credential_vault::CredentialSourceId("credential".into()),
+            workspace_id: "workspace".into(),
+            kind: CredentialKind::Vault,
+            provider_id: Some(provider.into()),
+            protocol_endpoint_id: endpoint.map(str::to_string),
+            env_key: None,
+            material_ref: None,
+            auxiliary_material_refs: Default::default(),
+            oauth_command: None,
+            worker_local_binding: None,
+            status: CredentialStatus::Active,
+            version: 1,
+        };
+        let provider_wide = source("openai", None);
+        let endpoint_scoped = source("openai", Some("openai.open_ai_chat.primary"));
+
+        assert!(can_consume("openai", Some("other"), &provider_wide), "R1");
+        assert!(
+            can_consume(
+                "openai",
+                Some("openai.open_ai_chat.primary"),
+                &endpoint_scoped,
+            ),
+            "R2"
+        );
+        assert!(
+            !can_consume(
+                "openai",
+                Some("openai.open_ai_chat.backup"),
+                &endpoint_scoped
+            ),
+            "R3"
+        );
+        assert!(!can_consume("openai", None, &endpoint_scoped), "R3");
+        assert!(
+            !can_consume(
+                "anthropic",
+                Some("openai.open_ai_chat.primary"),
+                &endpoint_scoped,
+            ),
+            "R4"
+        );
+        let malformed = source("openai", Some("openai.open_ai_chat.primary"));
+        let malformed = CredentialSource {
+            provider_id: None,
+            ..malformed
+        };
+        assert!(
+            !can_consume("openai", Some("openai.open_ai_chat.primary"), &malformed,),
+            "R5"
+        );
     }
 }

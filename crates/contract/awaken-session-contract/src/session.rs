@@ -188,8 +188,8 @@ pub struct SessionInit {
     /// files, memory stores, repos. The host realizes each into the run's sandbox and
     /// appends a prompt fragment to the system prompt (A3a). Empty = no mounts.
     pub resources: crate::ResolvedSessionResources,
-    /// The session's requested model (R2), staged so the run binds it; `None` →
-    /// the host default.
+    /// Exact publication-frozen runtime model coordinate. Public Managed model
+    /// syntax is retained in the Session baseline and never enters this port.
     pub model: Option<String>,
     /// Exact backend projected from the immutable Agent publication (R3). The
     /// Session baseline copies it for recovery; request metadata cannot override it.

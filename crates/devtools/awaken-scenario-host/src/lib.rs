@@ -1175,6 +1175,7 @@ pub async fn build_oauth_resolved_router() -> Router {
         workspace_id: "ws".into(),
         kind: CredentialKind::Oauth,
         provider_id: Some("anthropic".into()),
+        protocol_endpoint_id: None,
         env_key: None,
         material_ref: None,
         auxiliary_material_refs: Default::default(),

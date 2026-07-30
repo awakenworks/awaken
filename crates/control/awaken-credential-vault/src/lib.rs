@@ -235,6 +235,11 @@ pub struct CredentialSource {
     /// Provider namespace this credential authenticates (`anthropic`, `openai`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<String>,
+    /// Optional exact Provider protocol endpoint this credential may
+    /// authenticate. `None` means provider-wide material. This is an access
+    /// scope only: dialect and credential delivery remain executor-owned facts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_endpoint_id: Option<String>,
     /// Environment-variable name the secret is injected under (all kinds may set it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_key: Option<String>,
@@ -810,6 +815,7 @@ pub(crate) fn prepare_source_with_id(
             workspace_id: params.workspace_id,
             kind: params.kind,
             provider_id: params.provider_id,
+            protocol_endpoint_id: None,
             env_key: params.env_key,
             material_ref,
             auxiliary_material_refs: BTreeMap::new(),
@@ -977,6 +983,7 @@ mod tests {
             workspace_id: "ws1".into(),
             kind,
             provider_id: None,
+            protocol_endpoint_id: None,
             env_key: None,
             material_ref: None,
             auxiliary_material_refs: Default::default(),
@@ -985,6 +992,36 @@ mod tests {
             status: CredentialStatus::Active,
             version: 1,
         }
+    }
+
+    #[test]
+    fn endpoint_scope_is_backward_compatible_and_round_trips_when_present() {
+        // Cause/effect decision table: R1 a legacy serialized source omits the
+        // endpoint field -> decode as provider-wide; R2 a new endpoint-scoped
+        // source -> serialize and decode the exact immutable scope. No storage
+        // migration or inferred endpoint is allowed in either rule.
+        let legacy: CredentialSource = serde_json::from_value(serde_json::json!({
+            "id": "cred:workspace:legacy",
+            "workspace_id": "workspace",
+            "kind": "vault",
+            "provider_id": "openai",
+            "status": "active",
+            "version": 1
+        }))
+        .unwrap();
+        assert!(legacy.protocol_endpoint_id.is_none(), "R1");
+
+        let scoped = CredentialSource {
+            protocol_endpoint_id: Some("openai.open_ai_chat.primary".into()),
+            ..legacy
+        };
+        let decoded: CredentialSource =
+            serde_json::from_value(serde_json::to_value(&scoped).unwrap()).unwrap();
+        assert_eq!(
+            decoded.protocol_endpoint_id.as_deref(),
+            Some("openai.open_ai_chat.primary"),
+            "R2"
+        );
     }
 
     /// Cause-effect graph: the retained kind is a storage input; normalization

@@ -1,5 +1,6 @@
 //! Agent-domain contract for runtime truth, commits, facts, and neutral events.
 
+pub mod acp;
 pub mod agent;
 pub mod audit;
 pub mod event;
@@ -14,6 +15,7 @@ pub mod stream;
 pub mod thread;
 pub mod toolset;
 
+pub use acp::AcpSessionConfiguration;
 pub use agent::delegation::{DelegationId, DelegationOrigin};
 pub use agent::message::Message;
 pub use agent::run::{Id as RunId, Record as RunRecord};

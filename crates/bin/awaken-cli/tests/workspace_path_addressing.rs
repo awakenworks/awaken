@@ -6,7 +6,6 @@
 use std::sync::Arc;
 
 use awaken_cli::build_management_router_with_model;
-use awaken_scenario_host::EchoModel;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -14,7 +13,11 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 async fn build_management_router() -> axum::Router {
-    build_management_router_with_model(Arc::new(EchoModel), "kimi").await
+    build_management_router_with_model(
+        Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
+        "kimi",
+    )
+    .await
 }
 
 async fn call(

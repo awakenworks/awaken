@@ -1322,6 +1322,8 @@ pub struct CredentialSourceView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol_endpoint_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub env_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oauth_helper: Option<OAuthHelper>,
@@ -1340,6 +1342,7 @@ impl From<CredentialSource> for CredentialSourceView {
             workspace_id: source.workspace_id,
             kind: source.kind,
             provider_id: source.provider_id,
+            protocol_endpoint_id: source.protocol_endpoint_id,
             env_key: source.env_key,
             oauth_helper,
             status: source.status,

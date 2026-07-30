@@ -357,7 +357,7 @@ impl AgentConfigSource for AgentWithPublishedModel {
     fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
         (agent_id == "model-agent").then(|| AgentConfigView {
             model: Some("openai@edge/gpt-5".into()),
-            execution_model_ref: Some("gpt-5".into()),
+            execution_model_ref: Some("gpt-5-upstream".into()),
             ..empty_agent_view("genai")
         })
     }
@@ -366,10 +366,11 @@ impl AgentConfigSource for AgentWithPublishedModel {
 #[tokio::test]
 async fn session_model_override_cannot_change_a_published_execution_route() {
     // Causes: C1 published model id; C2 official override absent/equal/different.
-    // Effects: E1 inherit; E2 accept the same immutable route; E3 reject before
-    // Session persistence. Decision rules exercise equal and different; the
-    // inheritance rule is covered by ordinary published-Agent Session tests.
-    let state = ManagedState::new(AcceptingFake::default())
+    // Effects: E1 preserve the public id but prepare the exact publication model
+    // coordinate; E2 accept the same immutable route; E3 reject before Session
+    // persistence.
+    let runtime = AcceptingFake::default();
+    let state = ManagedState::new(runtime.clone())
         .with_config_source(std::sync::Arc::new(AgentWithPublishedModel));
     let equal = serde_json::from_value(json!({
         "agent": {
@@ -380,6 +381,11 @@ async fn session_model_override_cannot_change_a_published_execution_route() {
     }))
     .unwrap();
     assert!(state.create_session(equal, None).await.is_ok(), "E2");
+    assert_eq!(
+        runtime.prepared.lock().unwrap()[0].model.as_deref(),
+        Some("gpt-5-upstream"),
+        "E1"
+    );
 
     let different = serde_json::from_value(json!({
         "agent": {

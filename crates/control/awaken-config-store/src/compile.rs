@@ -1152,6 +1152,7 @@ mod tests {
                 endpoint_name: Some("primary".into()),
             },
             backend_ref: "acp:opencode".into(),
+            configuration: Default::default(),
         };
         let wire = serde_json::to_value(&target).unwrap();
         assert_eq!(

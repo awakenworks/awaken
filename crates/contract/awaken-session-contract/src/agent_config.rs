@@ -254,10 +254,12 @@ pub fn resolved_toolsets(policies: &[awaken_agent_contract::ToolsetPolicy]) -> V
 }
 
 pub struct AgentConfigView {
-    /// Managed/API-facing model id, including provider/endpoint qualification.
+    /// Canonical Managed model id exposed to clients and used only for equality
+    /// checks at the protocol boundary.
     pub model: Option<String>,
-    /// Exact `ResolvedModelCandidate.binding.model_ref` used by Runtime. Keeping
-    /// this separate prevents an API display id from becoming an execution override.
+    /// Exact `ResolvedModelCandidate.binding.model_ref` frozen in the executable
+    /// publication. Runtime preparation consumes this value and never reparses
+    /// `model`.
     pub execution_model_ref: Option<String>,
     /// Exact execution backend projected from the immutable publication. Session
     /// creation may copy this fact into its baseline but never author another one.
