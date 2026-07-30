@@ -1,12 +1,10 @@
-//! The shared credential-materialization store subset a shared-store **worker**
-//! opens, exactly as the Serve composition opens it.
+//! The credential-materialization store subset used by a trusted local
+//! composition.
 //!
 //! Publication has already pinned endpoint + credential access into the executable
-//! snapshot, so inference execution needs only the **credential** repo and sealed
-//! **secret** store. Resource-capable workers may additionally open the narrow
-//! Resource Catalog validation port; they never open config authoring or Session
-//! stores and never evaluate IAM policy. This is a transitional deployment
-//! composition, not strict process-level Credential authority isolation.
+//! snapshot, so local inference execution needs only the **credential** repo and
+//! sealed **secret** store. Distributed Workers use exact boundary adapters and
+//! never call this store-opening module.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -77,37 +75,6 @@ pub async fn open_inference_materialization_stores(
         credentials,
         secrets,
     }
-}
-
-/// Open only the shared Resource Catalog validation port required by a remote
-/// execution worker. The worker never opens authoring/session stores and never
-/// evaluates IAM policy; it checks intrinsic Workspace ownership, lifecycle state,
-/// and the config version already frozen in the dispatch manifest.
-/// Open the narrow Resource Catalog validation port from an explicitly
-/// resolved control-store backend.
-pub async fn open_shared_resource_validator(
-    backend: Option<&StoreBackend>,
-) -> Result<
-    Option<Arc<dyn awaken_protocol_managed::resource_plane::ResourceBindingValidator>>,
-    String,
-> {
-    let Some(backend) = backend else {
-        return Ok(None);
-    };
-    let StoreBackend::Postgres(url) = backend else {
-        return Err(
-            "a remote resource worker requires AWAKEN_ADMIN_DB to be a shared postgres URL"
-                .to_string(),
-        );
-    };
-    let url = url.clone();
-    let store = tokio::task::spawn_blocking(move || {
-        awaken_admin_config_api::PostgresAdminStore::connect(&url)
-    })
-    .await
-    .map_err(|error| format!("join shared Resource Catalog connect: {error}"))?
-    .map_err(|error| format!("connect shared Resource Catalog: {error}"))?;
-    Ok(Some(Arc::new(store)))
 }
 
 #[cfg(test)]

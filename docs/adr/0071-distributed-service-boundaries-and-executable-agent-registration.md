@@ -183,8 +183,90 @@ The exact Worker-private Credential boundary is also complete:
 - until the per-kind Resource clients are installed, the Worker omits Session
   Resource and Repository credential capabilities so placement fails closed.
 
-Per-kind Resource adapters and the remaining Coordinator/Resource
-store-ownership separation remain subsequent ADR-0071 slices.
+The immutable File boundary is complete:
+
+- `FileContentSource` is the single per-kind materialization port used by local
+  and distributed staging; the former direct `FileCatalog`/`FileStore` staging
+  branch was consolidated into `StoreFileContentSource`;
+- `HttpFileContentSource` sends the exact Workspace-scoped public `FileId` and
+  dispatch claim, never a guessed private blob key or database handle;
+- the handler authenticates the Worker, holds the authoritative claim-epoch
+  guard, proves the Workspace and File are present in that Run's frozen Session
+  manifest, and only then resolves the logical catalog record and immutable
+  bytes;
+- both sides validate the returned digest, and the Worker stages the result as
+  the existing read-only `InlineBytes` mount without introducing another mount
+  model or provider path;
+- the redundant post-staging direct `FileCatalog` liveness check was removed;
+  immutable File existence and integrity now have one authoritative
+  materialization path, so a database-less Worker cannot succeed remotely and
+  then fail by accidentally reopening a local catalog;
+- Worker composition replaces the embedded source with the HTTP adapter before
+  accepting work; missing/stale claims, cross-Workspace/File requests, missing
+  content, and substituted responses fail closed.
+
+The mutable Memory boundary is complete:
+
+- copy materialization, recovery, and Recall now share the repository's one
+  atomic `snapshot_heads` primitive; the former list-plus-read reconstructions
+  were removed so no local or remote path can observe a mixed generation;
+- `HttpMemorySnapshotSource` and `HttpMemoryWritebackClient` compose the existing
+  `MemoryRepository` port for a Worker without exposing authoring, history
+  redaction, retention, or lifecycle purge;
+- a process-local `materialization_reference` keeps the public `MemoryStoreId`
+  distinct from the exact Workspace, config version, access ceiling, and dispatch
+  claim used by the adapters; it is never persisted in the Session manifest;
+- the handler authenticates the current Worker incarnation, holds the claim epoch
+  guard, checks the frozen Workspace/store/config/access binding, validates live
+  Resource ownership, and denies every write through a read-only binding;
+- the existing copy/harvest mounter performs snapshot plus CAS create/update/
+  delete-if-match through the adapters, preserving concurrent durable heads and
+  returning typed conflicts; the Worker opens no Memory database;
+- `awaken-cli` owns the concrete registration-bound mounter factory, while
+  `awaken-worker` depends only on the neutral factory and `MemoryMounter` ports;
+  `SharedHost::new_worker_with_deployment` installs File/Memory clients before
+  store selection instead of opening and later replacing local databases;
+- the former full `WorkerResourcePlane` and transitional
+  `WorkerSessionResourceAdapters` compositions were removed; capability evidence
+  now comes from the installed per-kind adapters, not a database-bearing marker;
+- Memory timestamps use a transport-only decimal representation because JSON
+  cannot portably decode Rust `u128`; the existing domain type remains unchanged.
+
+The immutable Skill boundary is complete:
+
+- delivered-catalog refresh uses `SkillStore::snapshot_latest_versions`; the
+  former `list_definitions`-then-`version(latest)` reconstruction could mix
+  publication generations and is no longer an execution path;
+- `SkillBundleSource` is the sole exact custom-Skill realization port.
+  `StoreSkillBundleSource` reuses the authoritative `SkillStore`, while
+  `HttpSkillBundleSource` gives a Worker no authoring or catalog operations;
+- the Coordinator handler authenticates the current Worker incarnation, holds
+  the dispatch claim epoch, proves the Workspace and exact custom binding are in
+  the frozen Session manifest, and then reads the pinned version;
+- both local and HTTP adapters validate Skill id, version, frozen bundle hash,
+  and the digest recomputed from returned files. Built-in Anthropic Skills remain
+  runtime-owned and never cross this boundary;
+- Worker composition installs the HTTP adapter after registration and no longer
+  opens a filesystem or PostgreSQL Skill database. The redundant transitional
+  shared-Skill-store helper and test double were removed.
+
+The exact Repository guard and final Resource data-ownership slice are complete:
+
+- `RepositoryRealizer` remains the sole clone/publish port and the frozen
+  `RepositoryConfigVersion` plus exact credential pin remain the sole plan;
+- `RepositoryBindingVerifier` adds only the missing asynchronous live-binding
+  guard. Its local adapter delegates to the existing `ResourceBindingValidator`;
+  its HTTP adapter carries Workspace, Repository id, config version, and claim;
+- the Coordinator handler authenticates the current Worker incarnation, holds
+  the claim epoch, proves the exact Repository binding is present in the frozen
+  Session manifest, and then delegates to the authoritative Resource Catalog;
+- the Worker installs this HTTP verifier from its registration-bound upstream.
+  It no longer opens a Resource Catalog database or depends directly on the
+  Resource Catalog contract crate;
+- `WorkerSessionResourceAdapters` and the CLI's local/shared validator opening
+  path were deleted. Standard manifest Resource capability is derived from the
+  installed Memory mounter, and Repository credential capability additionally
+  requires the exact credential adapter.
 
 ## Consequences
 

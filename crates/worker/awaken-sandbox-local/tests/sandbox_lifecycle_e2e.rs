@@ -51,6 +51,7 @@ async fn full_lifecycle_harvests_memory_collects_outputs_then_shreds_and_reaps()
                 mount_id: "mem".into(),
                 source: pc::MountSource::MemoryStore {
                     store_id: "mem".into(),
+                    materialization_reference: None,
                     write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
                 },
                 mount_path: "/mnt/memory".into(),

@@ -81,6 +81,7 @@ impl SharedHost {
             llm,
             model_ref.into(),
             None,
+            None,
             crate::deployment_config::DeploymentConfig::ephemeral(),
         )
     }
@@ -92,7 +93,7 @@ impl SharedHost {
         model_ref: impl Into<String>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
-        Self::build(llm, model_ref.into(), None, deployment)
+        Self::build(llm, model_ref.into(), None, None, deployment)
     }
 
     /// Replace the environment-derived deployment value with the exact typed
@@ -144,6 +145,7 @@ impl SharedHost {
             llm,
             model_ref.into(),
             Some(resources),
+            None,
             crate::deployment_config::DeploymentConfig::ephemeral(),
         )
     }
@@ -156,13 +158,37 @@ impl SharedHost {
         resources: ResourcePlane,
         deployment: crate::DeploymentConfig,
     ) -> Self {
-        Self::build(llm, model_ref.into(), Some(resources), deployment)
+        Self::build(llm, model_ref.into(), Some(resources), None, deployment)
+    }
+
+    /// Construct an execution Worker with its exact remote content adapters
+    /// installed before any Resource data store is selected. The Worker keeps
+    /// only process-local placeholders for management-only File capabilities;
+    /// it never opens a File or Memory authority database.
+    pub fn new_worker_with_deployment(
+        llm: Arc<dyn LlmExecutor>,
+        model_ref: impl Into<String>,
+        file_content_source: Arc<dyn crate::FileContentSource>,
+        memory_repository: Arc<dyn awaken_memory_store::MemoryRepository>,
+        deployment: crate::DeploymentConfig,
+    ) -> Self {
+        Self::build(
+            llm,
+            model_ref.into(),
+            None,
+            Some((file_content_source, memory_repository)),
+            deployment,
+        )
     }
 
     fn build(
         llm: Arc<dyn LlmExecutor>,
         model_ref: String,
         resources: Option<ResourcePlane>,
+        worker_content: Option<(
+            Arc<dyn crate::FileContentSource>,
+            Arc<dyn awaken_memory_store::MemoryRepository>,
+        )>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
         // Composition root: the deployment axes are parsed once from the environment
@@ -178,12 +204,18 @@ impl SharedHost {
         // rule, owned by `MemoryStores::open` (durable under the dir; ephemeral
         // per-process otherwise). Resource identity/configuration is injected into
         // the server composition root through `ResourceCatalog`.
-        let memory_stores = resources.as_ref().map_or_else(
-            || crate::memory_stores::MemoryStores::open(store_dir.as_deref()),
-            |plane| {
-                crate::memory_stores::MemoryStores::with_repository(plane.memory_repository.clone())
-            },
-        );
+        let memory_stores = if let Some((_, repository)) = &worker_content {
+            crate::memory_stores::MemoryStores::with_repository(repository.clone())
+        } else {
+            resources.as_ref().map_or_else(
+                || crate::memory_stores::MemoryStores::open(store_dir.as_deref()),
+                |plane| {
+                    crate::memory_stores::MemoryStores::with_repository(
+                        plane.memory_repository.clone(),
+                    )
+                },
+            )
+        };
         let memory_catalog = Arc::new(AgentCatalog::new().with_agent(default_memory_agent(
             awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
                 awaken_runtime_contract::resolved::ModelBinding::new(
@@ -224,35 +256,52 @@ impl SharedHost {
         if let Some(plane) = &resources {
             skills.set_store(plane.skill_store.clone());
         }
-        let (file_store, file_catalog) = resources.as_ref().map_or_else(
-            || match store_dir.as_ref() {
-                Some(dir) => {
-                    let files = Arc::new(
-                        awaken_file_store::sqlite::SqliteFileStore::open(
-                            &dir.join("files.db").to_string_lossy(),
+        let (file_store, file_catalog) = if worker_content.is_some() {
+            let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+            (
+                files.clone() as Arc<dyn awaken_file_store::FileStore>,
+                files as Arc<dyn awaken_resource_contract::FileCatalog>,
+            )
+        } else {
+            resources.as_ref().map_or_else(
+                || match store_dir.as_ref() {
+                    Some(dir) => {
+                        let files = Arc::new(
+                            awaken_file_store::sqlite::SqliteFileStore::open(
+                                &dir.join("files.db").to_string_lossy(),
+                            )
+                            .expect("open durable file store"),
+                        );
+                        (
+                            files.clone() as Arc<dyn awaken_file_store::FileStore>,
+                            files as Arc<dyn awaken_resource_contract::FileCatalog>,
                         )
-                        .expect("open durable file store"),
-                    );
-                    (
-                        files.clone() as Arc<dyn awaken_file_store::FileStore>,
-                        files as Arc<dyn awaken_resource_contract::FileCatalog>,
-                    )
-                }
-                None => {
-                    let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-                    (
-                        files.clone() as Arc<dyn awaken_file_store::FileStore>,
-                        files as Arc<dyn awaken_resource_contract::FileCatalog>,
-                    )
-                }
-            },
-            |plane| (plane.file_store.clone(), plane.file_catalog.clone()),
-        );
+                    }
+                    None => {
+                        let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+                        (
+                            files.clone() as Arc<dyn awaken_file_store::FileStore>,
+                            files as Arc<dyn awaken_resource_contract::FileCatalog>,
+                        )
+                    }
+                },
+                |plane| (plane.file_store.clone(), plane.file_catalog.clone()),
+            )
+        };
         let resource_lifecycle = resources.as_ref().map(|plane| plane.lifecycle.clone());
         #[cfg(test)]
         let resource_lifecycle =
             resource_lifecycle.or_else(|| Some(super::tests::test_resource_lifecycle()));
         let session_slots = crate::session_slot::SessionRuntimeSlots::default();
+        let file_content_source: Arc<dyn crate::FileContentSource> = worker_content
+            .as_ref()
+            .map(|(source, _)| source.clone())
+            .unwrap_or_else(|| {
+                Arc::new(crate::StoreFileContentSource::new(
+                    file_catalog.clone(),
+                    file_store.clone(),
+                ))
+            });
         let capture_decision = crate::redact::capture_decision(deployment.content_capture, false);
         Self {
             llm,
@@ -305,6 +354,7 @@ impl SharedHost {
             mcp_relay: tokio::sync::OnceCell::new(),
             dispatch_session_runtime: std::sync::RwLock::new(None),
             file_store,
+            file_content_source,
             file_catalog,
             resource_lifecycle,
             memory_stores,
@@ -704,6 +754,13 @@ impl SharedHost {
         self
     }
 
+    /// Install only the exact immutable custom-Skill read port used by an
+    /// execution Worker. This does not grant authoring or catalog access.
+    pub fn with_skill_bundle_source(mut self, source: Arc<dyn crate::SkillBundleSource>) -> Self {
+        self.skills.set_bundle_source(source);
+        self
+    }
+
     /// Override the default tool-free Outcome Judge with the named Agent. The
     /// Judge runs through the same Run boundary in its own fresh context.
     pub fn with_judge(mut self, judge_agent_id: impl Into<String>) -> Self {
@@ -808,6 +865,27 @@ impl SharedHost {
         if let Some(provider) = &self.backend_owned_session_provider {
             provider.install_secret_broker(broker);
         }
+        self
+    }
+
+    /// Replace the embedded File adapter with the exact per-kind boundary selected
+    /// by the composition root. This does not change Files API authoring ownership.
+    #[must_use]
+    pub fn with_file_content_source(mut self, source: Arc<dyn crate::FileContentSource>) -> Self {
+        self.file_content_source = source;
+        self
+    }
+
+    /// Replace only the Memory content data-plane port. Distributed Workers use
+    /// the claim-fenced HTTP repository through
+    /// [`new_worker_with_deployment`](Self::new_worker_with_deployment), which
+    /// installs it before store selection and therefore opens no Resource DB.
+    #[must_use]
+    pub fn with_memory_repository(
+        mut self,
+        repository: Arc<dyn awaken_memory_store::MemoryRepository>,
+    ) -> Self {
+        self.memory_stores = crate::memory_stores::MemoryStores::with_repository(repository);
         self
     }
 

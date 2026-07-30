@@ -67,6 +67,7 @@ impl crate::ManagedHost {
         &self,
         workspace: &str,
         input: &awaken_session_contract::ResolvedInput,
+        claim: Option<&awaken_dispatch::RunClaim>,
     ) -> Result<crate::provisioning::StagedResources, awaken_session_contract::RunError> {
         use awaken_resource_contract::ResourceAccess;
         use awaken_session_contract::{ResolvedInputSource, RunError};
@@ -81,9 +82,10 @@ impl crate::ManagedHost {
 
         match &input.source {
             ResolvedInputSource::File { file_id } => {
-                let record = self
+                let (content_digest, bytes) = self
                     .host
-                    .file_record(workspace, file_id.as_str())
+                    .file_content_source
+                    .read(workspace, file_id.as_str(), claim)
                     .await
                     .map_err(|error| RunError::internal(error.to_string()))?
                     .ok_or_else(|| {
@@ -91,19 +93,8 @@ impl crate::ManagedHost {
                             "file resource `{file_id}` not found in this workspace"
                         ))
                     })?;
-                let bytes = self
-                    .host
-                    .file_store()
-                    .get(&record.blob_id)
-                    .await
-                    .map_err(|error| RunError::internal(error.to_string()))?
-                    .ok_or_else(|| {
-                        RunError::bad_request(format!(
-                            "file resource `{file_id}` references a missing blob"
-                        ))
-                    })?;
-                let actual = awaken_sandbox_local::content_fingerprint(&bytes);
-                if actual != record.blob_id {
+                let actual = awaken_file_store::content_id(&bytes);
+                if actual != content_digest {
                     return Err(RunError::bad_request(format!(
                         "file resource `{file_id}` content hash mismatch (realized `{actual}`)"
                     )));
@@ -115,37 +106,56 @@ impl crate::ManagedHost {
                         mount_id: file_id.to_string(),
                         source: awaken_provisioning_contract::MountSource::InlineBytes {
                             contents: bytes,
-                            content_hash: Some(record.blob_id),
+                            content_hash: Some(content_digest),
                         },
                         mount_path: managed_path,
                         access: awaken_provisioning_contract::MountAccess::ReadOnly,
                         lifetime: awaken_provisioning_contract::MountLifetime::PerRun,
                         required: true,
                     });
-                staged
-                    .binding_checks
-                    .push(crate::provisioning::ResourceBindingCheck::File {
-                        file_id: file_id.to_string(),
-                    });
             }
             ResolvedInputSource::MemoryStore {
                 memory_store_id,
                 config,
             } => {
-                let validator = self.resource_validator.as_ref().ok_or_else(|| {
-                    RunError::bad_request(
-                        "memory resources require a configured resource binding validator",
-                    )
-                })?;
-                validator
-                    .validate_memory_binding(workspace, memory_store_id.as_str(), config.version)
-                    .map_err(|error| RunError::bad_request(error.to_string()))?;
-                staged.binding_checks.push(
-                    crate::provisioning::ResourceBindingCheck::MemoryStore {
-                        memory_store_id: memory_store_id.to_string(),
-                        config_version: config.version,
-                    },
-                );
+                let materialization_reference = match (&self.host.upstream, claim) {
+                    (Some(_), Some(claim)) => Some(
+                        crate::memory_transport::memory_materialization_reference(
+                            workspace,
+                            memory_store_id.as_str(),
+                            config.version,
+                            input.access,
+                            claim,
+                        )
+                        .map_err(|error| RunError::internal(error.to_string()))?,
+                    ),
+                    (Some(_), None) => {
+                        return Err(RunError::bad_request(
+                            "remote Memory materialization requires a dispatch claim",
+                        ));
+                    }
+                    (None, _) => None,
+                };
+                if materialization_reference.is_none() {
+                    let validator = self.resource_validator.as_ref().ok_or_else(|| {
+                        RunError::bad_request(
+                            "memory resources require a configured resource binding validator",
+                        )
+                    })?;
+                    validator
+                        .validate_memory_binding(
+                            workspace,
+                            memory_store_id.as_str(),
+                            config.version,
+                        )
+                        .map_err(|error| RunError::bad_request(error.to_string()))?;
+                    staged.binding_checks.push(
+                        crate::provisioning::ResourceBindingCheck::MemoryStore {
+                            memory_store_id: memory_store_id.to_string(),
+                            config_version: config.version,
+                        },
+                    );
+                }
                 // The worker realizes one governed store directory through its
                 // MemoryMounter. The resource plane never receives a principal,
                 // role, API key, or policy: the outer authorization/ACL seam has
@@ -156,6 +166,7 @@ impl crate::ManagedHost {
                     mount_id: input.binding_id.to_string(),
                     source: awaken_provisioning_contract::MountSource::MemoryStore {
                         store_id: memory_store_id.to_string(),
+                        materialization_reference,
                         write_consistency:
                             awaken_provisioning_contract::MemoryWriteConsistency::ProviderDefault,
                     },
@@ -170,19 +181,21 @@ impl crate::ManagedHost {
                 config,
                 credential: credential_pin,
             } => {
-                let validator = self.resource_validator.as_ref().ok_or_else(|| {
+                let verifier = self.repository_binding_verifier.as_ref().ok_or_else(|| {
                     RunError::bad_request(
-                        "repository resources require a configured resource binding validator",
+                        "repository resources require a configured binding verifier",
                     )
                 })?;
-                validator
-                    .validate_repository_binding(workspace, repository_id.as_str(), config.version)
+                verifier
+                    .verify(workspace, repository_id.as_str(), config.version, claim)
+                    .await
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
                 staged
                     .binding_checks
                     .push(crate::provisioning::ResourceBindingCheck::Repository {
                         repository_id: repository_id.to_string(),
                         config_version: config.version,
+                        claim: claim.cloned(),
                     });
                 let credential = match (&config.credential_binding, credential_pin) {
                     (Some(binding), Some(pin)) => {

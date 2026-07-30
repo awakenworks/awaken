@@ -458,8 +458,14 @@ async fn stage_memory_binds(
         .filter_map(|mount| match &mount.source {
             pc::MountSource::MemoryStore {
                 store_id,
+                materialization_reference,
                 write_consistency,
-            } => Some((mount, store_id, write_consistency)),
+            } => Some((
+                mount,
+                store_id,
+                materialization_reference,
+                write_consistency,
+            )),
             _ => None,
         })
         .collect();
@@ -469,9 +475,15 @@ async fn stage_memory_binds(
     let mounter = mounter
         .ok_or_else(|| pc::SandboxError::new("container MemoryStore mount has no MemoryMounter"))?;
     let root = staging_dir(&mut staged.guard, &spec.scope)?;
-    for (mount, store_id, write_consistency) in memory {
+    for (mount, store_id, materialization_reference, write_consistency) in memory {
         let host_path = root.join(format!("memory-{}", stage_name(&mount.mount_path)));
-        let handle = mounter.mount(store_id, &host_path, mount.access).await?;
+        let handle = mounter
+            .mount(
+                materialization_reference.as_deref().unwrap_or(store_id),
+                &host_path,
+                mount.access,
+            )
+            .await?;
         if *write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
             && handle.realization() != pc::Realization::Fuse
         {

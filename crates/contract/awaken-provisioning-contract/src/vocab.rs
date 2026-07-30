@@ -62,6 +62,9 @@ pub enum MountSource {
     /// A persistent memory store, mounted for read/write (typically via FUSE).
     MemoryStore {
         store_id: String,
+        /// Process-local, claim-bound data-plane reference. `None` selects the
+        /// embedded repository by logical `store_id`; it is never a Resource id.
+        materialization_reference: Option<String>,
         write_consistency: MemoryWriteConsistency,
     },
     /// A **Cache Volume** (ADR-0056): a caller-supplied, node-local, ReadWriteOnce
@@ -139,6 +142,8 @@ enum KnownMountSource {
     },
     MemoryStore {
         store_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        materialization_reference: Option<String>,
         #[serde(default)]
         write_consistency: MemoryWriteConsistency,
     },
@@ -193,9 +198,11 @@ impl From<KnownMountSource> for MountSource {
             },
             KnownMountSource::MemoryStore {
                 store_id,
+                materialization_reference,
                 write_consistency,
             } => MountSource::MemoryStore {
                 store_id,
+                materialization_reference,
                 write_consistency,
             },
             KnownMountSource::CacheVolume { host_path, key } => {
@@ -241,9 +248,11 @@ impl MountSource {
             },
             MountSource::MemoryStore {
                 store_id,
+                materialization_reference,
                 write_consistency,
             } => KnownMountSource::MemoryStore {
                 store_id: store_id.clone(),
+                materialization_reference: materialization_reference.clone(),
                 write_consistency: *write_consistency,
             },
             MountSource::CacheVolume { host_path, key } => KnownMountSource::CacheVolume {
@@ -640,6 +649,7 @@ mod tests {
             },
             MountSource::MemoryStore {
                 store_id: "s".into(),
+                materialization_reference: Some("claim-bound".into()),
                 write_consistency: MemoryWriteConsistency::ProviderDefault,
             },
             MountSource::Secret {

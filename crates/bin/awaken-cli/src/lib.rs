@@ -41,7 +41,7 @@ pub use crate::brain_admin::{
 };
 pub use acp_local_credentials::{
     AcpLocalCredentialResolver, PreparedLocalAcp, build_configured_worker, local_acp_diagnostics,
-    prepare_local_acp,
+    prepare_local_acp, registered_memory_mounter_factory,
 };
 pub use console_assets::mount as mount_console;
 pub use console_assets::mount_with_navigation as mount_console_with_navigation;

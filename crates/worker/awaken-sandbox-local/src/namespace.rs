@@ -140,6 +140,7 @@ async fn realize_memory_mount(
 ) -> Result<Option<RealizedMemoryMount>, pc::SandboxError> {
     let pc::MountSource::MemoryStore {
         store_id,
+        materialization_reference,
         write_consistency,
     } = &req.source
     else {
@@ -155,7 +156,13 @@ async fn realize_memory_mount(
             req.mount_id
         )));
     };
-    let guard = mounter.mount(store_id, host, req.access).await?;
+    let guard = mounter
+        .mount(
+            materialization_reference.as_deref().unwrap_or(store_id),
+            host,
+            req.access,
+        )
+        .await?;
     if *write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
         && guard.realization() != pc::Realization::Fuse
     {
@@ -1384,6 +1391,7 @@ mod tests {
                 mount_id: "mem".into(),
                 source: pc::MountSource::MemoryStore {
                     store_id: "s1".into(),
+                    materialization_reference: None,
                     write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
                 },
                 mount_path: "/workspace/mem".into(),

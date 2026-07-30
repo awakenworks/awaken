@@ -274,15 +274,22 @@ process-local handle.
 | authorization PDP/PIP | External/shared authorization domain | IAM | decide principal/action/scope/resource facts under active policy | mounts, resource configuration, storage |
 | `SessionResourceCoordinator` | Existing in Managed Session application service | Session application/host | activation state, ordered provision/release, recovery handoff | Agent config loading, IAM policy language |
 | `FileStore` | Existing | File data plane | immutable content-addressed bytes | Workspace authorization; mutable overwrite |
-| `FileContentSource` | New boundary adapter | Worker/File boundary | retrieve one exact blob and verify its digest before read-only materialization | File ownership, mutable write-back, database access |
-| `MemoryRepository` | Existing canonical port | Memory data plane | scoped entries, CAS, atomic history, redaction, retention hooks | Agent/Session binding and IAM policy |
-| `MemorySnapshotSource` / `MemoryWritebackClient` | New boundary adapters | Worker/Memory boundary | obtain exact mutable content and apply claim-fenced CAS write-back | config selection, silent overwrite, Memory database access |
+| `FileContentSource` | Implemented boundary port | Worker/File boundary | resolve one exact Workspace-scoped public `FileId` under the current claim and verify the immutable digest before read-only materialization | File ownership, mutable write-back, private blob-id authority, database access |
+| `StoreFileContentSource` | Implemented local adapter | File data plane | reuse `FileCatalog` then `FileStore` as the sole logical-to-content resolution path | Worker identity, dispatch ownership, HTTP, a second catalog |
+| `HttpFileContentSource` / Worker File handler | Implemented network adapters | Worker/File boundary | carry Workspace, File, and exact claim; authenticate, prove the File belongs to the frozen dispatch manifest, hold the claim guard through the read, and verify the response digest again on Worker | authoring/list/delete, generic Resource dispatch, Worker database access |
+| `MemoryRepository` | Existing canonical port | Memory data plane | scoped entries, one atomic `snapshot_heads` primitive shared by copy materialization, recovery, and Recall, CAS, atomic history, redaction, retention hooks | Agent/Session binding and IAM policy; callers must not reconstruct a snapshot with list-plus-read |
+| `HttpMemorySnapshotSource` / `HttpMemoryWritebackClient` | Implemented network adapters | Worker/Memory boundary | obtain one atomic snapshot and apply claim-fenced CAS create/update/delete-if-match under the frozen Workspace/store/config/access binding | config selection, silent overwrite, authoring/history/purge, Worker database access |
 | `MemoryRuntime` | Existing, moving to extension ownership | `awaken-ext-memory` | recall Plugin, terminal extraction observer, selector/extractor capability, stable intent/receipt | resource identity, default store, IAM policy, Host lifecycle |
 | `BoundMemory` | Existing | Session Runtime | one resolved store handle + pinned policy + maximum access shared by recall/extraction | workspace lookup, current-config resolution, authorization |
 | `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct working tree, publish Agent-authored commits with ephemeral transport credentials | remote repository ownership, authorization policy, or commit pinning |
+| `RepositoryBindingVerifier` | Implemented boundary port | Worker/Repository boundary | verify one exact frozen Workspace/Repository/config binding before Git realization/use | configuration selection, Git transport, credential material, generic Resource dispatch |
+| `CatalogRepositoryBindingVerifier` | Implemented local adapter | Resource Catalog | delegate the exact live check to the existing `ResourceBindingValidator` | claim or HTTP policy, a second catalog |
+| `HttpRepositoryBindingVerifier` / Worker Repository handler | Implemented network adapters | Worker/Repository boundary | authenticate the current Worker, prove the exact binding belongs to the frozen dispatch manifest, and hold the claim guard through catalog validation | Git bytes, clone/publish behavior, plaintext credential, Worker database access |
 | Repository credential pin compiler | Existing in Managed Session application service | Session application/Vault ACL | compile a Repository config binding once into exact active source revision, canonical usage, `Forbidden` exposure, and selected Resource holder before persistence | material opening, Runtime lookup, generic Service state |
 | `CredentialMaterialResolver` | Existing canonical port | Credential execution boundary | validate and open one exact access/holder/Workspace/target-use binding for an installed adapter; shared by Model, MCP, and Repository | source enumeration, revision/holder/target selection, Agent prompt, persisted plaintext |
-| `SkillBundleSource` | New boundary adapter | Worker/Skill boundary | retrieve and verify one exact immutable capability bundle | generic Resource lifecycle, Skill policy selection, database access |
+| `SkillBundleSource` | Implemented boundary port | Worker/Skill boundary | retrieve and verify one exact immutable custom capability bundle under a live claim | generic Resource lifecycle, Skill policy selection, database access |
+| `StoreSkillBundleSource` | Implemented local adapter | Skill data plane | load the exact frozen version from the authoritative `SkillStore` and validate its identity and digest | Worker identity, dispatch ownership, HTTP, a second Skill catalog |
+| `HttpSkillBundleSource` / Worker Skill handler | Implemented network adapters | Worker/Skill boundary | authenticate the current Worker, prove the exact custom binding belongs to the frozen dispatch manifest, hold the claim guard through the read, and verify the returned bundle again on Worker | authoring/list/delete/purge, built-in Skill transport, Worker database access |
 | `SandboxProvider` | Existing | Environment provisioning | realize validated mounts/working trees and dispose them | product resource authoring and policy |
 | `ResourceReclaimer` | Existing, durable and per-resource | Product/session operations | reconcile crashed activations and purge intents; retention, reference checks, fenced claims, per-kind receipts | authorization decisions, remote Git deletion |
 | `ResourceReclamationFence` | Existing resource lifecycle port | Resource consistency | atomically prove zero physical references, fence `(kind, resource_id)`, and reject racing reference writes | principal, role, policy, API key, Org/Project/WorkUnit |
@@ -307,6 +314,49 @@ SessionResourceManifest
   |- Repository -> CredentialMaterialResolver -> RepositoryRealizer
   `- Skill      -> SkillBundleSource -> capability load
 ```
+
+The File branch is implemented. The Session manifest continues to carry its
+existing public `FileId`; it does not expose the private content-store key. In a
+distributed read, the File handler validates the authenticated Worker's exact
+claim, Workspace execution scope, and frozen File binding while holding the
+dispatch epoch guard. It then reuses `StoreFileContentSource`. The Worker stages
+the returned bytes through the existing `InlineBytes` mount path and independently
+checks the digest. This removes the earlier direct staging branch instead of
+maintaining local and remote materialization algorithms. It also removes the
+old post-staging direct catalog lookup: immutable File existence and integrity
+are decided once by the per-kind materialization port, while mutable/configured
+Resource kinds retain their operation-time binding checks.
+
+The Memory branch is implemented without a second content model. Copy
+materialization, recovered-copy reconciliation, and Recall all call the existing
+atomic `MemoryRepository::snapshot_heads`; list-plus-read snapshot emulation has
+been removed. Distributed staging adds a process-local
+`materialization_reference` to the provisioning requirement while preserving the
+logical `MemoryStoreId`. The reference binds Workspace, exact config version,
+maximum access, and `RunClaim`, but is not persisted in the Session manifest.
+`HttpMemorySnapshotSource` and `HttpMemoryWritebackClient` project only snapshot
+and runtime mutations. The handler authenticates the current Worker, holds the
+claim epoch guard, matches the frozen manifest, validates live Resource state,
+and rejects write-back for read-only input. The existing copy/harvest algorithm
+then supplies CAS conflict and delete-if-match behavior across the network.
+
+The Skill store's latest-version view is likewise one backend-owned atomic
+operation. `SkillCatalog` calls `snapshot_latest_versions`; it no longer rebuilds
+that view by listing definitions and fetching each mutable latest pointer in a
+separate operation. Exact custom bundles use the same `SkillBundleSource` port
+locally and remotely. The HTTP handler proves the current Worker incarnation,
+live claim, Workspace, and frozen kind/id/version/hash before it reads the store;
+the Worker recomputes the digest before activation. Built-in Anthropic Skills
+remain runtime-owned and never cross the Resource boundary.
+
+The Repository branch reuses the existing `RepositoryRealizer` and exact
+credential pin; it does not proxy Git content. `RepositoryBindingVerifier`
+supplies only the missing live invariant check. Its HTTP handler verifies the
+current Worker incarnation, claim, Workspace, Repository id, config version, and
+frozen manifest before delegating to the Resource Catalog. The Worker then calls
+the unchanged environment realizer with the frozen secret-free plan and
+ephemeral credential. The former direct Worker catalog connection and empty
+composition marker were removed.
 
 `ResourcePlane` selects local or remote implementations at the composition root;
 it does not own a Resource aggregate. A separately deployed provider retains its

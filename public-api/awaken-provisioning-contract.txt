@@ -80,6 +80,7 @@ pub awaken_provisioning_contract::MountSource::InlineBytes
 pub awaken_provisioning_contract::MountSource::InlineBytes::content_hash: core::option::Option<alloc::string::String>
 pub awaken_provisioning_contract::MountSource::InlineBytes::contents: alloc::vec::Vec<u8>
 pub awaken_provisioning_contract::MountSource::MemoryStore
+pub awaken_provisioning_contract::MountSource::MemoryStore::materialization_reference: core::option::Option<alloc::string::String>
 pub awaken_provisioning_contract::MountSource::MemoryStore::store_id: alloc::string::String
 pub awaken_provisioning_contract::MountSource::MemoryStore::write_consistency: awaken_provisioning_contract::MemoryWriteConsistency
 pub awaken_provisioning_contract::MountSource::Other(serde_json::value::Value)

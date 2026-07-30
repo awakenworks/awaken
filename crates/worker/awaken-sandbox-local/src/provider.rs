@@ -439,6 +439,7 @@ impl LocalProvider {
         // with an empty file that misleads the agent into thinking it has a store.
         if let pc::MountSource::MemoryStore {
             store_id,
+            materialization_reference,
             write_consistency,
         } = &req.source
         {
@@ -453,7 +454,13 @@ impl LocalProvider {
                     req.mount_id
                 )));
             };
-            let guard = mounter.mount(store_id, &host, req.access).await?;
+            let guard = mounter
+                .mount(
+                    materialization_reference.as_deref().unwrap_or(store_id),
+                    &host,
+                    req.access,
+                )
+                .await?;
             if *write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
                 && guard.realization() != pc::Realization::Fuse
             {
@@ -1140,6 +1147,7 @@ mod shred_tests {
         // A memory store is not byte-resolvable through this path.
         let mem = MountSource::MemoryStore {
             store_id: "m".into(),
+            materialization_reference: None,
             write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
         };
         assert_eq!(
@@ -1174,6 +1182,7 @@ mod shred_tests {
         assert_eq!(
             declared_hash(&MountSource::MemoryStore {
                 store_id: "m".into(),
+                materialization_reference: None,
                 write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
             }),
             None

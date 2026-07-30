@@ -31,6 +31,7 @@ mod deployment_config;
 mod dispatch_backend;
 mod dispatch_transport;
 mod durable_ops;
+mod file_content_transport;
 mod hand_placement;
 mod host;
 mod hub;
@@ -44,10 +45,12 @@ mod mcp;
 mod mcp_relay;
 mod memory;
 mod memory_stores;
+mod memory_transport;
 mod no_model;
 mod outcome_controller;
 mod provisioning;
 mod redact;
+mod repository_transport;
 mod resource_reclamation;
 pub use resource_reclamation::HostResourceReclamation;
 mod run_exec;
@@ -55,6 +58,7 @@ mod sandbox_source;
 mod session_environment;
 mod session_slot;
 pub use session_environment::HandExecutorFactory;
+mod skill_bundle_transport;
 mod skill_catalog;
 mod skills;
 mod store;
@@ -106,12 +110,29 @@ pub use crate::credential_materializer::{
     CredentialExtensionRegistryError, PinnedCredentialMaterializer,
 };
 pub use crate::dispatch_backend::init_shared_postgres_dispatch_with_config;
+pub use crate::file_content_transport::{
+    FileContentSource, FileContentSourceError, HttpFileContentSource, StoreFileContentSource,
+    WorkerFileContentService, worker_file_content_router,
+};
 pub use crate::host::{
     AttemptExecutorDecorator, HostResume, RemoteAttemptInstallation, ResourcePlane, SharedHost,
     remote_worker_placement, self_hosted_inference_holder,
 };
+pub use crate::memory_transport::{
+    HttpMemoryRepository, HttpMemorySnapshotSource, HttpMemoryWritebackClient, WorkerMemoryService,
+    memory_materialization_reference, worker_memory_router,
+};
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
 pub use crate::postgres_migration_lock::PostgresMigrationLock;
+pub use crate::repository_transport::{
+    CatalogRepositoryBindingVerifier, HttpRepositoryBindingVerifier, RepositoryBindingVerifier,
+    RepositoryBindingVerifierError, WorkerRepositoryBindingService,
+    worker_repository_binding_router,
+};
+pub use crate::skill_bundle_transport::{
+    HttpSkillBundleSource, SkillBundleSource, SkillBundleSourceError, StoreSkillBundleSource,
+    WorkerSkillBundleService, worker_skill_bundle_router,
+};
 pub use crate::web_search::WebSearchPublicationResolver;
 pub use crate::worker_control_client::WorkerControlClient;
 pub use awaken_config_service::PluginPublicationResolver;
@@ -275,6 +296,7 @@ pub struct ManagedHost {
     host: Arc<SharedHost>,
     credentials: Option<PinnedCredentialMaterializer>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
+    repository_binding_verifier: Option<Arc<dyn RepositoryBindingVerifier>>,
     mcp_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
 }
 
@@ -287,6 +309,7 @@ pub(crate) struct DispatchSessionRuntime {
     host: std::sync::Weak<SharedHost>,
     credentials: Option<PinnedCredentialMaterializer>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
+    repository_binding_verifier: Option<Arc<dyn RepositoryBindingVerifier>>,
     mcp_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
 }
 
@@ -300,6 +323,7 @@ impl DispatchSessionRuntime {
             host,
             credentials: self.credentials.clone(),
             resource_validator: self.resource_validator.clone(),
+            repository_binding_verifier: self.repository_binding_verifier.clone(),
             mcp_realizer: None,
         })
     }
@@ -308,6 +332,7 @@ impl DispatchSessionRuntime {
         &self,
         thread: &str,
         manifest: &awaken_session_contract::SessionResourceManifest,
+        claim: Option<&awaken_dispatch::RunClaim>,
     ) -> Result<(), RunError> {
         let managed = self.managed()?;
         let previous = managed.host.thread_resource_manifest(thread);
@@ -315,21 +340,23 @@ impl DispatchSessionRuntime {
             .as_ref()
             .is_some_and(|previous| previous != manifest)
         {
-            awaken_session_contract::SessionRuntime::apply_session_inputs(
-                &managed,
+            return Err(RunError::bad_request(
+                "a claimed Worker cannot replace the frozen Session Resource manifest",
+            ));
+        }
+        // Re-stage even when the manifest is unchanged: immutable File bytes,
+        // config-version integrity, and credential revocation are live-deny checks
+        // at every claimed operation. Worker projection never mutates the
+        // authority-side intrinsic Resource reference graph.
+        managed
+            .stage_resource_manifest(
                 thread,
                 &manifest.workspace_id,
                 &manifest.resources,
+                claim,
+                false,
             )
             .await?;
-        } else {
-            // Re-stage even when the manifest is unchanged: ownership/lifecycle,
-            // immutable File bytes, config-version integrity, and credential
-            // revocation are live-deny checks at every claimed operation.
-            managed
-                .stage_resource_manifest(thread, &manifest.workspace_id, &manifest.resources)
-                .await?;
-        }
         Ok(())
     }
 
@@ -387,6 +414,7 @@ impl SharedHost {
         &self,
         thread: &str,
         manifest: &awaken_session_contract::SessionResourceManifest,
+        claim: Option<&awaken_dispatch::RunClaim>,
     ) -> Result<(), RunError> {
         let preparer = self
             .dispatch_session_runtime
@@ -396,7 +424,7 @@ impl SharedHost {
             .ok_or_else(|| {
                 RunError::internal("durable resource dispatch has no Session Runtime")
             })?;
-        preparer.install(thread, manifest).await
+        preparer.install(thread, manifest, claim).await
     }
 
     fn dispatch_session_runtime(&self) -> Result<DispatchSessionRuntime, RunError> {
@@ -437,6 +465,7 @@ impl ManagedHost {
             host,
             credentials: None,
             resource_validator: None,
+            repository_binding_verifier: None,
             mcp_realizer: None,
         };
         managed.refresh_dispatch_session_runtime();
@@ -452,6 +481,7 @@ impl ManagedHost {
             host: Arc::downgrade(&self.host),
             credentials: self.credentials.clone(),
             resource_validator: self.resource_validator.clone(),
+            repository_binding_verifier: self.repository_binding_verifier.clone(),
             mcp_realizer: self.mcp_realizer.clone(),
         });
     }
@@ -493,7 +523,22 @@ impl ManagedHost {
         mut self,
         validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
     ) -> Self {
+        self.repository_binding_verifier = Some(Arc::new(CatalogRepositoryBindingVerifier::new(
+            validator.clone(),
+        )));
         self.resource_validator = Some(validator);
+        self.refresh_dispatch_session_runtime();
+        self
+    }
+
+    /// Install the Repository-specific live binding guard used by a distributed
+    /// Worker without granting it Resource Catalog database access.
+    #[must_use]
+    pub fn with_repository_binding_verifier(
+        mut self,
+        verifier: Arc<dyn RepositoryBindingVerifier>,
+    ) -> Self {
+        self.repository_binding_verifier = Some(verifier);
         self.refresh_dispatch_session_runtime();
         self
     }
@@ -508,6 +553,7 @@ impl ManagedHost {
         thread: &str,
         workspace: &str,
         inputs: &awaken_session_contract::ResolvedSessionResources,
+        claim: Option<&awaken_dispatch::RunClaim>,
     ) -> Result<
         (
             crate::provisioning::StagedResources,
@@ -519,7 +565,7 @@ impl ManagedHost {
         let mut bound_memory = None;
         let mut memory_seen = false;
         for input in &inputs.inputs {
-            let one = self.stage_resolved_input(workspace, input).await?;
+            let one = self.stage_resolved_input(workspace, input, claim).await?;
             all.mounts.extend(one.mounts);
             all.prompts.extend(one.prompts);
             all.binding_checks.extend(one.binding_checks);
@@ -536,19 +582,37 @@ impl ManagedHost {
                 }
                 memory_seen = true;
                 let writable = input.access == awaken_resource_contract::ResourceAccess::ReadWrite;
-                let handle = self
-                    .host
-                    .platform_memory_handle(memory_store_id.to_string(), writable);
-                let resource_validator = self.resource_validator.as_ref().ok_or_else(|| {
-                    RunError::bad_request(
-                        "Memory extraction requires a configured resource binding validator",
-                    )
-                })?;
+                let materialization_reference =
+                    all.mounts.iter().find_map(|mount| match &mount.source {
+                        awaken_provisioning_contract::MountSource::MemoryStore {
+                            store_id,
+                            materialization_reference,
+                            ..
+                        } if store_id == memory_store_id.as_str() => {
+                            materialization_reference.clone()
+                        }
+                        _ => None,
+                    });
+                let handle = self.host.platform_memory_handle(
+                    materialization_reference
+                        .clone()
+                        .unwrap_or_else(|| memory_store_id.to_string()),
+                    writable,
+                );
+                let resource_validator = if materialization_reference.is_some() {
+                    None
+                } else {
+                    Some(self.resource_validator.as_ref().ok_or_else(|| {
+                        RunError::bad_request(
+                            "Memory extraction requires a configured resource binding validator",
+                        )
+                    })?.clone())
+                };
                 bound_memory = Some(Arc::new(self.host.memory.bind(
                     thread,
                     workspace,
                     handle,
-                    resource_validator.clone(),
+                    resource_validator,
                     config,
                     writable,
                 )));
@@ -565,13 +629,16 @@ impl ManagedHost {
         inputs: &awaken_session_contract::ResolvedSessionResources,
         staged: crate::provisioning::StagedResources,
         bound_memory: Option<Arc<crate::memory::BoundMemory>>,
+        update_authority_references: bool,
     ) -> Result<(), RunError> {
         // The complete manifest replaces the prior projection. Register an empty
         // value too, so deleting the final input cannot leave a stale mount behind.
-        self.host
-            .replace_session_references(workspace, thread, inputs)
-            .await
-            .map_err(|error| RunError::internal(error.to_string()))?;
+        if update_authority_references {
+            self.host
+                .replace_session_references(workspace, thread, inputs)
+                .await
+                .map_err(|error| RunError::internal(error.to_string()))?;
+        }
         self.host.register_thread_resources(thread, staged);
         self.host.register_thread_resource_manifest(
             thread,
@@ -591,12 +658,21 @@ impl ManagedHost {
         thread: &str,
         workspace: &str,
         inputs: &awaken_session_contract::ResolvedSessionResources,
+        claim: Option<&awaken_dispatch::RunClaim>,
+        update_authority_references: bool,
     ) -> Result<(), RunError> {
         let (staged, bound_memory) = self
-            .compile_effective_inputs(thread, workspace, inputs)
+            .compile_effective_inputs(thread, workspace, inputs, claim)
             .await?;
-        self.install_effective_inputs(thread, workspace, inputs, staged, bound_memory)
-            .await
+        self.install_effective_inputs(
+            thread,
+            workspace,
+            inputs,
+            staged,
+            bound_memory,
+            update_authority_references,
+        )
+        .await
     }
 
     /// Install one already-resolved Session resource manifest. This is shared by
@@ -607,6 +683,8 @@ impl ManagedHost {
         thread: &str,
         workspace: &str,
         resources: &awaken_session_contract::ResolvedSessionResources,
+        claim: Option<&awaken_dispatch::RunClaim>,
+        update_authority_references: bool,
     ) -> Result<(), RunError> {
         self.host.register_thread_workspace(thread, workspace);
         match &resources.skills {
@@ -614,7 +692,7 @@ impl ManagedHost {
                 let versions = self
                     .host
                     .skills
-                    .load_pinned(workspace, bindings)
+                    .load_pinned(workspace, bindings, claim)
                     .await
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
                 self.host
@@ -634,8 +712,14 @@ impl ManagedHost {
                     .update(thread, |slot| slot.skills = None);
             }
         }
-        self.stage_effective_inputs(thread, workspace, resources)
-            .await
+        self.stage_effective_inputs(
+            thread,
+            workspace,
+            resources,
+            claim,
+            update_authority_references,
+        )
+        .await
     }
 
     async fn validate_thread_resource_bindings(&self, thread: &str) -> Result<(), RunError> {
@@ -652,19 +736,6 @@ impl ManagedHost {
         let workspace = self.host.thread_workspace(thread);
         for check in checks {
             match check {
-                ResourceBindingCheck::File { file_id } => {
-                    if self
-                        .host
-                        .file_record(&workspace, &file_id)
-                        .await
-                        .map_err(|error| RunError::internal(error.to_string()))?
-                        .is_none()
-                    {
-                        return Err(RunError::bad_request(format!(
-                            "file resource `{file_id}` is unavailable in this Workspace"
-                        )));
-                    }
-                }
                 ResourceBindingCheck::MemoryStore {
                     memory_store_id,
                     config_version,
@@ -681,15 +752,17 @@ impl ManagedHost {
                 ResourceBindingCheck::Repository {
                     repository_id,
                     config_version,
+                    claim,
                 } => self
-                    .resource_validator
+                    .repository_binding_verifier
                     .as_ref()
                     .ok_or_else(|| {
                         RunError::bad_request(
-                            "repository resources require a configured resource binding validator",
+                            "repository resources require a configured binding verifier",
                         )
                     })?
-                    .validate_repository_binding(&workspace, &repository_id, config_version)
+                    .verify(&workspace, &repository_id, config_version, claim.as_ref())
+                    .await
                     .map_err(|error| RunError::bad_request(error.to_string()))?,
             }
         }
@@ -1094,14 +1167,14 @@ impl SessionRuntime for ManagedHost {
             Some(bindings) => Some(
                 self.host
                     .skills
-                    .load_pinned(workspace_id, bindings)
+                    .load_pinned(workspace_id, bindings, None)
                     .await
                     .map_err(|error| RunError::bad_request(error.to_string()))?,
             ),
             None => None,
         };
         let (new, bound_memory) = self
-            .compile_effective_inputs(thread, workspace_id, inputs)
+            .compile_effective_inputs(thread, workspace_id, inputs, None)
             .await?;
         if let Some(environment) = &live_environment {
             environment
@@ -1171,7 +1244,7 @@ impl SessionRuntime for ManagedHost {
                 }
             }
         }
-        self.install_effective_inputs(thread, workspace_id, inputs, new, bound_memory)
+        self.install_effective_inputs(thread, workspace_id, inputs, new, bound_memory, true)
             .await?;
         self.host
             .session_slots
@@ -1220,7 +1293,7 @@ impl SessionRuntime for ManagedHost {
             .update(thread, |slot| slot.toolsets = init.toolsets.clone());
         // Stage only the already-resolved manifest. Runtime never reads the Agent
         // binding repository or composes defaults again.
-        self.stage_resource_manifest(thread, &init.workspace_id, &init.resources)
+        self.stage_resource_manifest(thread, &init.workspace_id, &init.resources, None, true)
             .await?;
         Ok(())
     }

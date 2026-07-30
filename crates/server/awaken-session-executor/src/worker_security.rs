@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use awaken_dispatch::{WorkerIdentity, WorkerRequestAuthorizer};
+use awaken_dispatch::{
+    RunClaim, WorkerDirectory, WorkerIdentity, WorkerRequestAuthorizer, WorkerSnapshot, WorkerState,
+};
 use axum::Json;
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, request::Parts};
@@ -51,6 +53,80 @@ pub(crate) async fn authenticate_worker_request(
             Json(serde_json::json!({ "error": error.to_string() })),
         )
             .into_response(),
+    }
+}
+
+/// Verify the authenticated transport identity against one exact registered
+/// Worker incarnation carried by an application request.
+pub(crate) fn verify_worker_identity(
+    worker: &VerifiedWorkerContext,
+    identity: &WorkerIdentity,
+) -> Result<(), String> {
+    if worker.worker_id() != identity.worker_id {
+        return Err("authenticated worker id does not match request identity".into());
+    }
+    if worker.credential_id().is_some() && worker.identity() != Some(identity) {
+        return Err("authenticated worker incarnation does not match request identity".into());
+    }
+    Ok(())
+}
+
+/// Resolve and verify the one live Coordinator-owned registration record.
+/// Dispatch, claimed commit, and per-kind Resource handlers reuse this check so
+/// registry state and signed/mTLS incarnation semantics cannot drift.
+pub(crate) async fn verify_current_worker_identity(
+    directory: &dyn WorkerDirectory,
+    worker: &VerifiedWorkerContext,
+    identity: &WorkerIdentity,
+    now_ms: u64,
+    require_ready: bool,
+) -> Result<WorkerSnapshot, String> {
+    verify_worker_identity(worker, identity)?;
+    let record = directory
+        .current(&identity.worker_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "worker is not registered".to_string())?;
+    if &record.snapshot.identity != identity {
+        return Err("worker incarnation is stale".into());
+    }
+    if (require_ready && record.snapshot.state != WorkerState::Ready)
+        || record.snapshot.expires_at_ms <= now_ms
+        || record.snapshot.state == WorkerState::Dead
+    {
+        return Err("worker is not ready or its registry lease expired".into());
+    }
+    Ok(record.snapshot)
+}
+
+/// Verify that one authenticated Worker is the exact current incarnation that
+/// owns a dispatch claim. Local compatibility routers may omit a directory;
+/// registered production Resource routers always provide one.
+pub(crate) async fn verify_claim_owner(
+    directory: Option<&dyn WorkerDirectory>,
+    worker: &VerifiedWorkerContext,
+    identity: Option<&WorkerIdentity>,
+    claim: &RunClaim,
+    now_ms: u64,
+) -> Result<(), String> {
+    if let Some(directory) = directory {
+        let identity =
+            identity.ok_or_else(|| "registered Worker identity is required".to_string())?;
+        verify_current_worker_identity(directory, worker, identity, now_ms, false).await?;
+        return (claim.owner == identity.lease_owner())
+            .then_some(())
+            .ok_or_else(|| "dispatch claim owner does not match Worker incarnation".to_string());
+    }
+    match identity {
+        Some(identity) => {
+            verify_worker_identity(worker, identity)?;
+            (claim.owner == identity.lease_owner())
+                .then_some(())
+                .ok_or_else(|| "dispatch claim owner does not match Worker incarnation".to_string())
+        }
+        None => (claim.owner == worker.worker_id())
+            .then_some(())
+            .ok_or_else(|| "dispatch claim owner does not match Worker".to_string()),
     }
 }
 

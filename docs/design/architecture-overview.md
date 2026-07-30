@@ -5,9 +5,11 @@ earlier product-first stack with bounded contexts that keep the Apache-licensed
 runtime protocol and public contract independent of server, config, admin, and
 product code.
 
-The context map below is the accepted ADR-0071 target. The current code still
-uses a process-local executable catalog; the flow documents mark that seam as
-modified and distinguish it from genuinely new network adapters.
+The context map below is the accepted ADR-0071 target. Executable Agent
+registration, Deployment launch, credential projection, and per-kind File,
+Memory, custom-Skill, and Repository realization now have local and distributed
+adapters over the same authorities. The Worker retains only ephemeral execution
+state and registration-bound clients; it receives no authority database handle.
 
 ---
 

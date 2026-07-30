@@ -119,6 +119,35 @@ impl SqliteSkillStore {
         }
         Ok(())
     }
+
+    async fn workspace_snapshot(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<SkillAggregate>, SkillStoreError> {
+        let ws = workspace_id.to_string();
+        with_conn(&self.conn, move |conn| {
+            let mut statement = conn
+                .prepare(&format!(
+                    "SELECT id, data FROM {NS}_aggregate WHERE workspace_id = ?1 ORDER BY id"
+                ))
+                .map_err(storage)?;
+            let rows = statement
+                .query_map(params![ws], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(storage)?;
+            let mut aggregates = Vec::new();
+            for row in rows {
+                let (id, data) = row.map_err(storage)?;
+                let aggregate = decode_aggregate(data.as_bytes(), &ws, &id)?;
+                if !aggregate.deleted {
+                    aggregates.push(aggregate);
+                }
+            }
+            Ok(aggregates)
+        })
+        .await
+    }
 }
 
 #[async_trait::async_trait]
@@ -222,29 +251,29 @@ impl SkillStore for SqliteSkillStore {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<SkillDefinition>, SkillStoreError> {
-        let ws = workspace_id.to_string();
-        with_conn(&self.conn, move |conn| {
-            let mut statement = conn
-                .prepare(&format!(
-                    "SELECT id, data FROM {NS}_aggregate WHERE workspace_id = ?1 ORDER BY id"
-                ))
-                .map_err(storage)?;
-            let rows = statement
-                .query_map(params![ws], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(storage)?;
-            let mut definitions = Vec::new();
-            for row in rows {
-                let (id, data) = row.map_err(storage)?;
-                let aggregate = decode_aggregate(data.as_bytes(), &ws, &id)?;
-                if !aggregate.deleted {
-                    definitions.push(aggregate.definition);
-                }
-            }
-            Ok(definitions)
-        })
-        .await
+        Ok(self
+            .workspace_snapshot(workspace_id)
+            .await?
+            .into_iter()
+            .map(|aggregate| aggregate.definition)
+            .collect())
+    }
+
+    async fn snapshot_latest_versions(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<SkillVersion>, SkillStoreError> {
+        self.workspace_snapshot(workspace_id)
+            .await?
+            .into_iter()
+            .map(|aggregate| {
+                aggregate
+                    .versions
+                    .get(&aggregate.definition.latest_version)
+                    .cloned()
+                    .ok_or_else(|| storage("Skill latest version is missing"))
+            })
+            .collect()
     }
 
     async fn version(

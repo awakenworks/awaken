@@ -118,6 +118,29 @@ impl PgSkillStore {
         }
         Ok(())
     }
+
+    async fn workspace_snapshot(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<SkillAggregate>, SkillStoreError> {
+        let rows = sqlx::query(&format!(
+            "SELECT id, data FROM {NS}_aggregate WHERE workspace_id = $1 ORDER BY id COLLATE \"C\""
+        ))
+        .bind(workspace_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        let mut aggregates = Vec::new();
+        for row in rows {
+            let id = row.try_get::<String, _>("id").map_err(storage)?;
+            let data = row.try_get::<String, _>("data").map_err(storage)?;
+            let aggregate = decode_aggregate(data.as_bytes(), workspace_id, &id)?;
+            if !aggregate.deleted {
+                aggregates.push(aggregate);
+            }
+        }
+        Ok(aggregates)
+    }
 }
 
 #[async_trait::async_trait]
@@ -209,23 +232,29 @@ impl SkillStore for PgSkillStore {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<SkillDefinition>, SkillStoreError> {
-        let rows = sqlx::query(&format!(
-            "SELECT id, data FROM {NS}_aggregate WHERE workspace_id = $1 ORDER BY id COLLATE \"C\""
-        ))
-        .bind(workspace_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(storage)?;
-        let mut definitions = Vec::new();
-        for row in rows {
-            let id = row.try_get::<String, _>("id").map_err(storage)?;
-            let data = row.try_get::<String, _>("data").map_err(storage)?;
-            let aggregate = decode_aggregate(data.as_bytes(), workspace_id, &id)?;
-            if !aggregate.deleted {
-                definitions.push(aggregate.definition);
-            }
-        }
-        Ok(definitions)
+        Ok(self
+            .workspace_snapshot(workspace_id)
+            .await?
+            .into_iter()
+            .map(|aggregate| aggregate.definition)
+            .collect())
+    }
+
+    async fn snapshot_latest_versions(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<SkillVersion>, SkillStoreError> {
+        self.workspace_snapshot(workspace_id)
+            .await?
+            .into_iter()
+            .map(|aggregate| {
+                aggregate
+                    .versions
+                    .get(&aggregate.definition.latest_version)
+                    .cloned()
+                    .ok_or_else(|| storage("Skill latest version is missing"))
+            })
+            .collect()
     }
 
     async fn version(

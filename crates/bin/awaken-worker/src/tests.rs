@@ -800,3 +800,21 @@ fn a_configured_zero_grace_exits_immediately_even_on_sigterm() {
         "grace of 0 means no wait, not the default"
     );
 }
+
+/// Cause/effect rule R1: only an installed registration-bound Memory projection
+/// is evidence for Session Resource support. Without it, the standard manifest
+/// must not advertise a capability backed only by a catalog handle.
+#[test]
+fn resource_capability_requires_the_registered_memory_projection() {
+    let worker = WorkerNodeBuilder::new(awaken_session_executor::WorkerUpstream::new("http://control"))
+        .with_standard_manifest(Default::default())
+        .build()
+        .expect("R1 no unsupported Resource claim");
+    assert!(
+        !worker
+            .manifest()
+            .capabilities
+            .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
+        "R1"
+    );
+}

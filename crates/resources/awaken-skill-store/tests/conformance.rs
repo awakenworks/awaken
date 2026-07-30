@@ -95,6 +95,13 @@ async fn aggregate_lifecycle(store: &dyn SkillStore) {
     );
     assert!(store.definition("ws-c", "skill-a").await.unwrap().is_none());
 
+    // Latest-snapshot cause/effect table:
+    // S1 visible v1 -> one v1 head; S2 append v2 -> one v2 head;
+    // S3 retire v2 -> one v1 head; S4 another Workspace -> excluded.
+    // Each rule is one store call, so no list/read interleaving can mix heads.
+    let latest = store.snapshot_latest_versions("ws-a").await.unwrap();
+    assert_eq!((latest.len(), latest[0].version), (1, 1), "S1/S4");
+
     store
         .append_version("ws-a", "skill-a", version("skill-a", 2, b"v2"))
         .await
@@ -102,10 +109,20 @@ async fn aggregate_lifecycle(store: &dyn SkillStore) {
     let definition = store.definition("ws-a", "skill-a").await.unwrap().unwrap();
     assert_eq!(definition.latest_version, 2);
     assert_eq!(
+        store.snapshot_latest_versions("ws-a").await.unwrap()[0].version,
+        2,
+        "S2"
+    );
+    assert_eq!(
         store.list_versions("ws-a", "skill-a").await.unwrap().len(),
         2
     );
     assert!(store.delete_version("ws-a", "skill-a", 2).await.unwrap());
+    assert_eq!(
+        store.snapshot_latest_versions("ws-a").await.unwrap()[0].version,
+        1,
+        "S3"
+    );
     assert_eq!(
         store
             .definition("ws-a", "skill-a")

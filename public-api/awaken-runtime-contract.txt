@@ -42,6 +42,7 @@ pub use awaken_runtime_contract::ModelExposurePolicy
 pub use awaken_runtime_contract::OAuthCredentialMaterial
 pub use awaken_runtime_contract::PlaintextBoundary
 pub use awaken_runtime_contract::PlaintextHolder
+pub use awaken_runtime_contract::RedactedString
 pub use awaken_runtime_contract::ResolvedCredentialMaterial
 pub use awaken_runtime_contract::ResumeTicket
 pub use awaken_runtime_contract::Role
