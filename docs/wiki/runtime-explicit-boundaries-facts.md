@@ -38,7 +38,7 @@ Owner: [packaging-enforcement-matrix.md](../design/packaging-enforcement-matrix.
 
 - Status: active
 - Owner: [Config publication lifecycle](../design/config-publication-lifecycle.md)
-- Fact: config publication uses versioned snapshots and atomic runtime catalog install; public durable projection derives from committed runtime truth.
+- Fact: Control publishes versioned immutable snapshots, Coordinator registers executable availability, and public durable projection derives from committed runtime truth.
 - Links: guardrails G3, G4, G23, and G29
 - Verification: publication transaction tests, rollback tests, and projection replay tests.
 

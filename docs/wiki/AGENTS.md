@@ -38,7 +38,8 @@ of truth.
 - Every fact has one owner: a design document, [INVARIANTS.md](../INVARIANTS.md),
   or [requirements-coverage.md](../requirements-coverage.md).
 - The owner is never the wiki page itself.
-- Use the current architecture guardrail ids (`G1` through `G32`) only.
+- Use only guardrail ids currently defined in [INVARIANTS.md](../INVARIANTS.md);
+  do not copy or freeze a numeric range here.
 - Use relative Markdown links for repo-local targets.
 - Lessons state durable engineering rules, not investigation notes.
 - Do not add per-edit process history. Use [maintenance-notes.md](maintenance-notes.md)

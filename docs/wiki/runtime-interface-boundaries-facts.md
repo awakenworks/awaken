@@ -98,19 +98,19 @@ Owner: [runtime-interface-boundaries.md](../design/runtime-interface-boundaries.
 - Links: [config flow facts](config-to-run-execution-flow-facts.md); guardrails G3, G4, and G28
 - Verification: snapshot fingerprint tests, resolver negative tests, and run activation contract tests.
 
-## FACT-BOUNDARY-011: Runtime receives catalog installs, not publication services
+## FACT-BOUNDARY-011: Runtime does not own publication registration
 
 - Status: active
 - Owner: [Publication roles outside runtime](../design/runtime-interface-boundaries.md#publication-roles-outside-runtime)
-- Fact: publication coordination, registry compilation, and durable publication identity remain outside the runtime role catalog; runtime validates and swaps only `RuntimeCatalogInstall`.
+- Fact: Control owns publication, Coordinator owns executable registration, and runtime validates only the immutable snapshot selected for execution.
 - Links: [D20](../design/key-design-decisions.md#d20---publication-coordination-is-outside-runtime); [config flow facts](config-to-run-execution-flow-facts.md); guardrails G18, G23, and G29
-- Verification: install rollback tests, dependency-direction checks, and runtime public API surface tests.
+- Verification: publication revision tests, dependency-direction checks, and runtime public API surface tests.
 
 ## FACT-BOUNDARY-012: Runtime configuration surface is minimal
 
 - Status: active
 - Owner: [Minimal runtime configuration surface](../design/runtime-interface-boundaries.md#minimal-runtime-configuration-surface)
-- Fact: runtime configuration operations are limited to catalog install, snapshot execution, snapshot lookup/listing, capability reporting, plugin config validation, and ordinary activation execution.
+- Fact: runtime configuration operations are limited to snapshot execution, snapshot lookup/listing, capability reporting, plugin config validation, and ordinary activation execution.
 - Links: [config flow facts](config-to-run-execution-flow-facts.md); guardrails G14, G18, G28, and G29
 - Verification: public API surface tests, dependency checks, and capability snapshot tests.
 

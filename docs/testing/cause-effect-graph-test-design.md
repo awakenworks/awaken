@@ -629,7 +629,7 @@ C77 → E67     C78 → E68(Quarantine)     C79 → (Indeterminate, 不判成功
 | ID | 果 | 锚点 |
 |---|---|---|
 | E71 | 进程内执行调度动作(fenced ctx) | worker.rs:175 |
-| E72 | 从匹配输入恢复 aawaiting run | worker.rs:285 |
+| E72 | resume an awaiting Run from matching input | worker.rs:285 |
 | E73 | settle Done(终态):移除派工 + 全部 pending | worker.rs:448 |
 | E74 | settle Awaiting(检查点):留行,`attempt_count=0`,仅弃 consumed | memory.rs:399 |
 | E75 | `Running` 结果→高声失败 `Error::Execution` | worker.rs:553 |

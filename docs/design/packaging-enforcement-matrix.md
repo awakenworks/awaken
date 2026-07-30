@@ -14,7 +14,7 @@ each class must satisfy — and does not redefine those crates.
 | Package class | May depend on | Must not depend on | Naming rule |
 |---|---|---|---|
 | runtime core | runtime contracts, agent-domain stores, neutral extension traits | server routes, product adapters, config CRUD, publication coordinators, registry compilers, admin tools, execution drivers | no product hosting vocabulary |
-| runtime contract/spec | neutral value objects, catalog install port, snapshot execution ports, capability query ports, schemas, conformance fixtures | product/admin/server implementation, config CRUD, publication coordinators, registry compilers, admin workflow | Apache-2.0 protocol/spec surface |
+| runtime contract/spec | neutral value objects, snapshot execution ports, capability query ports, schemas, conformance fixtures | product/admin/server implementation, config CRUD, publication or registration orchestration, admin workflow | Apache-2.0 protocol/spec surface |
 | runtime extension | runtime contracts and extension seams | server/admin/product internals | no concrete product protocol names |
 | builtin tools extension | runtime tool/plugin contracts, environment adapter interfaces | runtime internals, admin registry | concrete tool ids allowed only here |
 | config contract/domain | typed config records, config snapshots, publication values, registry compiler contracts | runtime loop internals, live control, product DTOs | config vocabulary, not hosted product vocabulary |
@@ -56,7 +56,7 @@ product/admin/protocol
   -> agent-domain store contracts
 
 config application/domain
-  -> runtime catalog install port
+  -> Coordinator executable registration port
   -> no runtime implementation internals
 
 orchestration layer above
@@ -87,8 +87,8 @@ protocol instead of redefining it.
    write ports.
 6. Add inline/by-id snapshot contract tests proving both paths converge before
    execution.
-7. Add a publication/install boundary test proving `ConfigPublicationCoordinator`
-   and `RegistryCompiler` are not runtime-core dependencies.
+7. Add a publication/registration boundary test proving `ConfigService` and
+   `ConfigRegistry` are not runtime-core dependencies.
 
 ## Guardrails
 

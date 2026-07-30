@@ -16,6 +16,11 @@ runtime small.
 > embedded use, and re-derives its fingerprint after local model edits. There is
 > no bundle, portable wrapper, SDK-specific Agent spec, or second execution path.
 
+> **Accepted service split.** ADR-0071 replaces the current process-local
+> publication-to-catalog write with Control-to-Coordinator registration. The
+> registrar, remote Deployment launcher adapter, and per-kind remote Resource
+> adapters below are target boundaries, not claims about already-landed code.
+
 ## Embedded Runtime SDK Boundary
 
 The SDK boundary is the existing `awaken-runtime` crate. It has no dependency on
@@ -71,7 +76,7 @@ authority map in
 | Plane | Contract owner | Runtime boundary implication |
 |---|---|---|
 | Agent truth | agent-domain contract | `RunRecord`, durable run lifecycle value, `ThreadCommit`, durable events/facts, `CommitCoordinator`, and `RuntimeResumeStore` are runtime truth vocabulary |
-| Catalog install | runtime contract/spec plus config publication value | `RuntimeCatalogInstall` and `RuntimeCatalogInstaller` form the runtime-facing install handoff; config-side `RegistryPublication` supplies publication identity and fingerprint data |
+| Executable Agent registration | Control and Coordinator contracts | `ExecutableAgentRegistrar` transfers one immutable published snapshot into the Coordinator-owned executable catalog; runtime is not the registration owner |
 | Snapshot execution and inspection | runtime contract/spec | `ExecutableAgentSnapshot`, `RunWithSnapshotCommand`, `AgentSnapshotResolver`, `AgentSnapshotCatalog`, `RuntimeCapabilitySource`, and `PluginManifest` (with `validate_section`) are internal runtime-facing contracts; they expose executable snapshot and capability data, not config CRUD |
 | Live execution | runtime implementation | `RunExecutor`, `LiveRunControl`, `RunResolver`, plugins, providers, and retry logic are implementation roles over agent vocabulary |
 | Durable delivery | run-ingress contract/implementation | `RunIngress`, input buffering, dispatch records, claims, leases, wake hints, and recovery do not become runtime loop vocabulary |
@@ -92,7 +97,7 @@ owns the role catalog; the flow document owns ordering and handoff rules.
 | Boundary | Owner | Crosses | Must not cross | Fail-closed rule |
 |---|---|---|---|---|
 | Product adapter -> run ingress | Product adapter and Dispatch / Server | neutral submit/control command, public ids already translated | public DTOs, product status names, auth grants | unsupported ingress operations return typed unsupported errors |
-| Config publication -> runtime catalog | Config Application plus Runtime Core adapter | `RuntimeCatalogInstall` containing publication identity, catalog fingerprint, and version | config CRUD workflow, admin DTOs, product route state, private admin tool registry, publication compiler state | invalid or conflicting publication does not replace the active runtime catalog |
+| Control publication -> Coordinator executable catalog | Control plus Coordinator boundary adapters | Workspace, Agent, source revision, fingerprint, and `ExecutableAgentSnapshot` | config CRUD workflow, admin DTOs, plaintext, live runtime handles | conflicting registration does not change the current executable snapshot |
 | Configuration surface -> snapshot execution contract | Config surface / Server plus Runtime Core adapter | inline `ExecutableAgentSnapshot`, `ExecutableAgentSnapshotId`, agent snapshot query, runtime capability catalog, plugin config validation request | config CRUD workflow, admin publication workflow, public DTOs, live registry handles | unknown, stale, mismatched, or unauthorized executable snapshot ids fail before activation |
 | Server route -> `RunIngress` | Dispatch / Server | `SubmitCommand`, cancellation, decision delivery, dispatch query | durable ingress internals or runtime internals | `RunIngressCapabilities` decides durable-only behavior |
 | Direct ingress -> runtime roles | Runtime Core adapter | `RunExecutor` and `LiveRunControl` | durable queue, recovery, replay, scheduled wake | direct ingress rejects durable-only operations |
@@ -104,7 +109,7 @@ owns the role catalog; the flow document owns ordering and handoff rules.
 | In-Run Plugin extension | Runtime Core extension seam | `Plugin::resolve` contributions merged into `ResolvedExecutionEnv` | cross-Run workflow ownership, direct store mutation, unregistered hooks, product labels | duplicate owners fail; hook output is validated and committed or rejected |
 | Committed-terminal extension | Runtime extension seam | `RunTerminalObserver` receives an already-committed `Ended` Run at least once | changing `RunResult`, treating Awaiting as terminal, non-idempotent direct side effects | stable intent/receipt and recovery redelivery are required |
 | Tool decision | Runtime Core plus permission extension | descriptor visibility, tool gate/policy decision, tool execution result | authorization hidden in visibility, selection, or backend location | visibility grants perception only; invocation still gates |
-| Wait/resume | Product adapter plus Runtime Core live control | neutral result for one pending aawaiting run (e.g. a client-executed tool call) | public tool-use DTOs, config/admin writes, global catalog mutation | unknown, duplicate, expired, thread-mismatched, or descriptor-mismatched results fail closed |
+| Wait/resume | Product adapter plus Runtime Core live control | neutral result for one pending awaiting run (e.g. a client-executed tool call) | public tool-use DTOs, config/admin writes, global catalog mutation | unknown, duplicate, expired, thread-mismatched, or descriptor-mismatched results fail closed |
 
 ## Role Split
 
@@ -123,7 +128,6 @@ seam is smaller when split by authority:
 | `RuntimeCapabilitySource` | report the runtime's installed plugin/tool/backend capability surface | config publication, authorization, execution |
 | `PluginManifest` | declare plugin id, config sections, and `CapabilityBound`, and validate config through the single `validate_section` | runtime handles, plugin behavior, a parallel validator |
 | `RunTerminalObserver` | react to an already-committed terminal Run through a stable extension intent | Run control, terminal commit authority, product projection |
-| `RuntimeCatalogInstaller` | atomically install a complete runtime catalog publication | config CRUD, registry compilation, live control, run execution |
 | `CommitCoordinatorSource` | expose the runtime commit coordinator for durable ingress construction | execution semantics |
 | `RunIngress` | server-facing delivery semantics and capability reporting | runtime internals or durable ingress internals |
 
@@ -154,8 +158,6 @@ design documents. API signatures and parameter details stay in Rustdoc.
 | `AgentSnapshotCatalog` | query port | list current executable snapshots for configuration surfaces | snapshot index and capability filters | run execution, config mutation, admin publication | UI reimplements runtime snapshot visibility or assumes agent id uniqueness | G14, G28; catalog query tests |
 | `RuntimeCapabilitySource` | query port | expose installed runtime capabilities such as plugins, tool descriptors, model capability profiles, and schema keys | runtime registry, resolved plugin manifests, model capability profiles | authorization grants, config writes, execution | configuration surface shows capabilities unrelated to the active runtime | G8, G21, G28; capability snapshot tests |
 | `PluginManifest` | identity/config contract value | declared plugin id, dependencies, config sections, and `CapabilityBound`; the single `validate_section` home shared by write-time and resolve-time validation | typed config schema, declared sections | runtime handles, plugin behavior, a parallel validator | config is validated differently by UI and runtime, or a plugin reads an undeclared section | G8, G14, G28, G30; schema-derived-from-type round-trip tests |
-| `RuntimeCatalogInstall` | command value | complete catalog install request with publication identity, fingerprint, source revisions, and runtime-visible catalog data | publication identity, compiled install payload | config CRUD workflow, compiler caches, admin route state, config publication semantics | runtime installs an incomplete or unauditable catalog | G3, G23, G29; install serde and fingerprint tests |
-| `RuntimeCatalogInstaller` | runtime-facing boundary port | validate and atomically install one complete runtime catalog publication | `RuntimeCatalogInstall`, active runtime catalog handle | config CRUD, registry compilation, live control, run execution | incomplete or conflicting publication replaces active runtime catalog | G18, G23, G29; install transaction and rollback tests |
 | `CommitCoordinatorSource` | commit-wiring role | expose the runtime commit coordinator needed by durable ingress construction | `CommitCoordinator`, optional staged commit coordinator | execution semantics, dispatch policy, input buffering | durable ingress reads and runtime commits diverge | G1, G13; same-source commit tests |
 | `ResolvedSpec` | data value crossing config edge | serializable resolved runtime input and catalog fingerprint | config-domain resolver output | live registry objects, factories, tenant scopes | replay cannot prove what the model saw | G3, G4; serde/fingerprint tests |
 | `StreamSink` | live stream output port | best-effort delivery of `StreamEvent` across the boundary | runtime execution, current caller/server connection | commit ownership, product protocol mapping, durable replay truth | live delivery is mistaken for durable truth or product-shaped events | G1, G10, G13; sink/projection tests |
@@ -177,21 +179,21 @@ staged commit coordinator; it does not own input buffering.
 
 ## Publication Roles Outside Runtime
 
-Publication coordination, compilation, and durable publication identity are
-deliberately absent from the runtime role catalog. They are config-side roles and
-values. The runtime-facing handoff is `RuntimeCatalogInstall`, consumed through
-`RuntimeCatalogInstaller`.
+Publication coordination, compilation, durable publication identity, and
+Coordinator registration are deliberately absent from the runtime role catalog.
+They are Control/Coordinator application boundaries. Runtime receives the exact
+immutable snapshot selected for the Session or carried by dispatch.
 
 | External role or value | Owner | Runtime relationship |
 |---|---|---|
-| `ConfigPublicationCoordinator` | Config Application / Server | orchestrates loading, discovery, compilation, versioned publish, install, and projection as one application transaction |
-| `RegistryCompiler` | Config Domain | validates a config snapshot and produces a complete `RegistryPublication` / install candidate |
-| `RegistryPublication` | Config Domain | immutable publication identity, version, source revisions, and fingerprint referenced by the install request |
-| `RuntimeCatalogInstaller` | Runtime Core adapter | the only runtime-facing install port the coordinator may call |
+| `ConfigService` publication command | Control | validates, compiles, and persists one `StoredPublication` before invoking registration |
+| `StoredPublication` | Control | durable publication identity, source revision, fingerprint, and immutable snapshot |
+| `ExecutableAgentRegistrar` | Control-to-Coordinator application port | registers one exact published snapshot for future Session resolution |
+| `ExecutableAgentCatalogRepository` | Coordinator | persists the rebuildable current, exact-revision, and fingerprint indexes |
 
-The first two roles must not import runtime loop internals or active-run control.
-The installer must not load config records or compile publications. This keeps a
-large `ConfigRuntimeManager` from becoming a second runtime controller.
+These roles must not import runtime loop internals or active-run control. Runtime
+must not load config records or register publications. This prevents a broad
+configuration/runtime manager from becoming a second authority.
 
 ## Activation Versus Runtime Context
 
@@ -212,13 +214,12 @@ tests should treat activation as data and context as wiring.
 
 ## Minimal Runtime Configuration Surface
 
-The runtime configuration surface is intentionally small. It has install,
-execution, lookup, listing, capability, and validation operations; it has no
-config authoring operation.
+The runtime configuration surface is intentionally small. It has execution,
+lookup, listing, capability, and validation operations; it has no config
+authoring or publication-registration operation.
 
 | Operation | Port | Input | Output | Authority |
 |---|---|---|---|---|
-| install catalog | `RuntimeCatalogInstaller` | `RuntimeCatalogInstall` | installed catalog version/fingerprint | atomically expose a complete catalog to future resolution |
 | run with snapshot | `RunWithSnapshotExecutor` | `RunWithSnapshotCommand` | run handle/result according to ingress mode | start execution from inline or by-id executable snapshot data |
 | resolve snapshot | `AgentSnapshotResolver` | `ExecutableAgentSnapshotId` or snapshot ref | `ExecutableAgentSnapshot` | read immutable executable configuration data |
 | list snapshots | `AgentSnapshotCatalog` | `AgentSnapshotQuery` | `AgentSnapshotPage` | expose read-only executable snapshot summaries |
@@ -319,7 +320,7 @@ answer different authority questions for every run:
 
 | Primary axis | Question answered | Owning boundary | Main ports |
 |---|---|---|---|
-| Configuration publication | What behavior is available to run? | Config Domain publishes; Runtime Core validates and consumes | external: `ConfigPublicationCoordinator`, `RegistryCompiler`, `RegistryPublication`; runtime: `RuntimeCatalogInstaller`, `RunResolver` |
+| Configuration publication | What behavior is available to run? | Control publishes; Coordinator registers; Runtime validates and consumes the exact snapshot | external: `StoredPublication`, `ExecutableAgentRegistrar`, `ExecutableAgentCatalogRepository`; runtime: `RunResolver` |
 | Live control | How may an active run be steered now? | Caller/ingress requests; active run observes at safe boundaries | `RunIngress`, `LiveRunControl`, `RuntimeInputHandle` |
 | Execution | How is the resolved plan performed? | Runtime Core orchestrates; model/tool ports invoke work in-process | `RunExecutor`, `LlmExecutor`, `ToolExecutor` |
 
@@ -362,7 +363,7 @@ the `ThreadCommit`.
 
 | Axis | Owns | Enters through | Produces | Must not own |
 |---|---|---|---|---|
-| Configuration publication | the behavior catalog available to future resolution | `RuntimeCatalogInstall` consumed by `RuntimeCatalogInstaller` | runtime-visible catalog, fingerprint, install result | config authoring, admin workflow, live control, execution |
+| Configuration publication | the exact executable Agent available to future Session resolution | `StoredPublication` registered through `ExecutableAgentRegistrar` | Coordinator executable catalog entry and acknowledgement | config authoring inside Coordinator, live control, execution |
 | Snapshot execution | the executable configuration identity for one run/thread scope | inline `ExecutableAgentSnapshot` or `ExecutableAgentSnapshotId` | validated executable snapshot input for activation and resolution | config CRUD, publication workflow, agent-id-only identity |
 | Activation | neutral runtime intent prepared for execution | submit/resume input translated by ingress or adapter code | `RunActivation` and optional runtime context | public DTOs, live registry handles, durable dispatch internals |
 | Resolution | materialized execution plan and environment | catalog data, snapshot data, backend/profile requirements | `ResolvedRun`, `ResolvedExecutionEnv`, selected backend/tool/hook set | running the loop, live steering, commit writes |
@@ -382,7 +383,7 @@ enters, where it changes hands, and which port is allowed to make the next value
 
 | Axis | Core flow | Authority handoff | Must stay explicit |
 |---|---|---|---|
-| Configuration publication | config records -> config snapshot -> `RegistryCompiler` -> `RegistryPublication` -> `RuntimeCatalogInstall` -> `RuntimeCatalogInstaller` -> runtime-visible catalog | config domain owns config authoring and compilation; runtime owns only install validation and catalog consumption | admin DTOs, private admin tools, live registries, compiler caches, and route state do not cross as runtime input |
+| Configuration publication | config revision -> compile -> `StoredPublication` -> `ExecutableAgentRegistrar` -> Coordinator executable catalog -> Session resolution | Control owns authoring and compilation; Coordinator owns registration; runtime validates only the selected immutable snapshot | admin DTOs, private admin tools, live registries, compiler caches, and route state do not cross as runtime input |
 | Snapshot execution | inline snapshot or `ExecutableAgentSnapshotId` -> `ExecutableAgentSnapshot` -> fingerprint/capability validation -> activation/resolution | caller or configuration surface selects the executable snapshot; resolver supplies data; runtime validates and executes | agent id is not treated as complete configuration identity; config CRUD and admin workflow do not cross the snapshot contract |
 | Activation | neutral submit/resume command -> `RunActivation` with intent, input, options, trace, control, persistence hints, and inherited resolver data -> optional `RuntimeRunContext` with commit coordinator, pinned registry set, thread context, and resolved plan -> `RunExecutor` | ingress or caller prepares data; runtime executes the owned activation | adapter DTOs and live registry handles do not enter `RunActivation`; per-run wiring stays in `RuntimeRunContext` |
 | Live control | cancel/decision/message/wake command -> `LiveRunControl` -> active run input channel or cancellation token -> loop consumes at a safe boundary | caller/ingress requests steering; active run decides when it can observe it | live delivery is best-effort; durable fallback belongs to `RunIngress` |
@@ -390,7 +391,7 @@ enters, where it changes hands, and which port is allowed to make the next value
 | Execution | resolved plan -> model capability check -> in-process loop -> LLM/tool calls -> stream output, state commands, event drafts, commit plan, final result | runtime owns loop orchestration; tool/model ports own invocation mechanics | execution ports do not grant authorization and do not own protocol projection |
 | State | registered keys -> seed/import persisted state -> hooks/tools return `StateCommand` -> `MutationBatch` -> live `StateStore` -> export `PersistedState` into commit | runtime owns live revisioned state; commit owns durability | product/shared state stays behind approved resource or product ports |
 | Event | execution emits `StreamEvent` to `StreamSink` -> optional `DurableEventSink` normalizes live events into `EventDraft` / `DurableEventDraft` values -> commit succeeds -> `EventRecord` / `DurableEvent` reaches `EventReader` or `EventSubscriber` for projection | stream sink owns live delivery; commit owns durable event visibility | live stream output cannot become replay truth |
-| Wait/resume | aawaiting run records pending id, fingerprint, deadline, and authorization state (e.g. a client-executed tool call) -> adapter projects a public wait after commit -> adapter maps public result to neutral resume -> `LiveRunControl` wakes the pending boundary | runtime owns pending-request validation; adapter owns public event/result names | public result ids do not become runtime truth; inbound results cannot mutate config/admin/catalog state |
+| Wait/resume | awaiting run records pending id, fingerprint, deadline, and authorization state (e.g. a client-executed tool call) -> adapter projects a public wait after commit -> adapter maps public result to neutral resume -> `LiveRunControl` wakes the pending boundary | runtime owns pending-request validation; adapter owns public event/result names | public result ids do not become runtime truth; inbound results cannot mutate config/admin/catalog state |
 | Commit | resume read via `RuntimeResumeStore` -> runtime resolves disabled/read-only/read-write persistence access -> stage `ThreadCommit` with messages, run projection, state export, and event drafts -> `CommitCoordinator` commits atomically -> facts/records become visible; durable ingress verifies same-source wiring at construction | runtime proposes a commit; coordinator owns the durable write mechanism; run ingress owns the same-source guard | read and write must come from the same commit source; no side writes |
 | Extension | selected plugin ids -> `Plugin::resolve` -> `Contributions` -> `ResolvedExecutionEnv` merge (uniqueness, declared order, `enforce_bound`) -> hooks, tools, guards, handlers, transforms, and keys run through declared surfaces -> outputs validate and stage | plugins declare behavior; runtime validates and stages the effects | plugins cannot mutate stores, bypass gates, exceed their bound, or introduce product labels |
 | Committed-terminal reaction | terminal `ThreadCommit` succeeds -> committed `RunState::Ended` is observable -> `RunTerminalObserver` creates/reuses a stable intent -> asynchronous work records a receipt -> recovery redelivers missing or pending work | commit owns terminal truth; extension owns its intent/effect/receipt; observer has no Run control authority | Awaiting never enters the path; observer failure does not rewrite `RunResult`; duplicate delivery is expected |
@@ -408,7 +409,7 @@ not copy).
 
 | Axis | Owning role(s) | Owning design (this corpus) |
 |---|---|---|
-| Configuration publication | `RuntimeCatalogInstall` / `RuntimeCatalogInstaller` | [config-publication-lifecycle.md](config-publication-lifecycle.md) |
+| Configuration publication | `StoredPublication` / `ExecutableAgentRegistrar` | [config-publication-lifecycle.md](config-publication-lifecycle.md) |
 | Snapshot / activation | `RunActivation` / `ExecutableAgentSnapshot` | [config-to-run-execution-flow.md](config-to-run-execution-flow.md) |
 | Resolution | `ResolvedRun`, `Resolver` / `RunResolver` | [ADR-0002](../adr/0002-resolver-role-demarcation.md) |
 | Live control | `LiveRunControl` | [run-ingress-message-delivery.md](run-ingress-message-delivery.md) |
@@ -438,7 +439,6 @@ authority.
 
 | Port | Direction | Primary axis | Crosses into | Allowed values/handles | Durability | Must not own |
 |---|---|---|---|---|---|---|
-| `RuntimeCatalogInstaller` | input | Resolution | active runtime catalog | `RuntimeCatalogInstall`, catalog fingerprint, source revisions, publication identity | config revision and publication version before execution | config CRUD, registry compilation, execution loop, public DTOs |
 | `RunWithSnapshotExecutor` | input | Activation + Resolution | runtime execution entry | `RunWithSnapshotCommand`, inline `ExecutableAgentSnapshot`, `ExecutableAgentSnapshotId` | snapshot identity may be durable; execution truth still commits normally | config CRUD, admin workflow, public protocol mapping |
 | `AgentSnapshotResolver` | dependency | Resolution | snapshot lookup | `ExecutableAgentSnapshotId`, `ExecutableAgentSnapshot` | source-specific; runtime treats output as immutable data | snapshot list policy, config mutation, runtime loop execution |
 | `AgentSnapshotCatalog` | output/dependency | Resolution | configuration surface | `AgentSnapshotQuery`, `AgentSnapshotPage`, executable snapshot summaries | read-only query surface | run execution, config mutation, admin publication |
@@ -469,7 +469,6 @@ interaction.
 
 | Port | Activation | Live Control | Resolution | Execution | State | Event | Commit | Extension |
 |---|---|---|---|---|---|---|---|---|
-| `RuntimeCatalogInstaller` | - | - | W | - | - | - | - | - |
 | `RunWithSnapshotExecutor` | W | - | R/W | R | - | - | - | - |
 | `AgentSnapshotResolver` | - | - | R | - | - | - | - | - |
 | `AgentSnapshotCatalog` | - | - | R | - | - | - | - | - |

@@ -5,39 +5,40 @@ earlier product-first stack with bounded contexts that keep the Apache-licensed
 runtime protocol and public contract independent of server, config, admin, and
 product code.
 
+The context map below is the accepted ADR-0071 target. The current code still
+uses a process-local executable catalog; the flow documents mark that seam as
+modified and distinguish it from genuinely new network adapters.
+
 ---
 
 ## 1. Context Map
 
 ```text
-  Product / Control Context
-  public DTOs, auth, tenant policy, vaults, resource data plane,
-  external product mappings, operator UX
+  Control Context
+  Agent/Resource authoring, publication history, IAM, credential metadata,
+  vaults, product mappings, operator UX
         |
-        | anti-corruption adapters, public events, opaque references
+        | immutable publications, exact references, boundary adapters
         v
-  Dispatch / Server Context
-  RunIngress, DirectRunIngress, DurableRunIngress, protocol replay,
-  config publication/materialization, snapshot contract adapters,
-  HTTP/SSE routes, admin console
+  Coordinator Context
+  executable Agent registration, Deployment, Session, durable dispatch,
+  committed truth, protocol replay, HTTP/SSE routes
         |
-        | gated runtime port: RunActivation, RuntimeRunContext, ResolvedSpec,
-        | StreamSink,
-        | RunExecutor, LiveRunControl, CommitCoordinator,
-        | Plugin, RunWithSnapshotExecutor,
-        | AgentSnapshotResolver, RuntimeCapabilitySource
+        | bidirectional dispatch/claim and commit/settle protocol
+        v
+  Worker / Sandbox Context
+  claim-fenced execution, per-kind Resource realization, exact credential
+  materialization, ephemeral processes and mounts
+        |
+        | gated runtime ports: RunActivation, RuntimeRunContext, ResolvedSpec,
+        | RunExecutor, LiveRunControl, CommitCoordinator, StreamSink,
+        | Plugin, RunWithSnapshotExecutor, AgentSnapshotResolver,
+        | RuntimeCapabilitySource
         v
   Runtime Core Context
-  AgentRuntime, agent loop, phases, tool abstractions, typed state/effects,
-  plugin hooks, backend profiles, cancellation/stop policy,
+  AgentRuntime, agent loop, phases, in-process tool abstractions,
+  typed state/effects, plugin hooks, backend profiles, cancellation/stop policy,
   continuation guards, goal extension, commit boundary, store contracts
-        ^
-        |
-        | tool invocation port (in-process)
-        |
-  (The runtime invokes tools in-process by id and owns their execution.
-   Credential mechanics and any future remote-agent execution stay out of
-   scope here.)
 ```
 
 The Runtime Core is the domain center. It runs tools in-process but must not know
@@ -45,10 +46,12 @@ public protocols, registry publication workflow, vault schemas, remote execution
 placement, or product-specific session names. Server and product code adapt into
 the runtime through explicit ports.
 
-Config publication is an adjacent config-side flow, not a runtime subsystem.
-`ConfigPublicationCoordinator` may live in a server/config application package,
-and `RegistryCompiler` belongs to the config domain. Their runtime-facing handoff
-is a complete catalog install request through `RuntimeCatalogInstaller`.
+Under the accepted target, config publication is a Control flow, not a runtime
+subsystem. Control persists one immutable `StoredPublication`, then invokes
+`ExecutableAgentRegistrar::register`. Coordinator stores a rebuildable
+`ExecutableAgentCatalog` projection for future Session resolution. The complete
+decision and transition plan is
+[ADR-0071](../adr/0071-distributed-service-boundaries-and-executable-agent-registration.md).
 
 Contract names follow authority, not implementation convenience. Agent-domain
 truth, run-ingress delivery, protocol projection, and concrete stores are
@@ -62,11 +65,11 @@ The detailed rule is
 
 | DDD concept | Runtime term | Development rule |
 |---|---|---|
-| Aggregate | `Thread`, `RunRecord`, published config set, durable dispatch | Mutate through one consistency boundary; do not update projections as truth |
+| Aggregate | `Thread`, `RunRecord`, Agent configuration, Deployment, Session, durable dispatch | Mutate through one consistency boundary; do not update projections as truth |
 | Entity | run, thread, message, config record, credential record | Identity is not authorization |
 | Value object | `ExecutableAgentSnapshot`, `RunActivation`, `ResolvedSpec`, `BackendProfile`, `StateKey`, effect payload, capability descriptor, content hash | Immutable, serializable where it crosses a boundary |
 | Live context | `RuntimeRunContext`, stream/input handles, commit-source wiring | Process-local wiring recreated by the host; never durable request data |
-| Domain/application service | resolver, continuation guard, Outcome controller, permission evaluator, plugin hook runner, terminal observer, registry materializer | Stateless or explicit state dependencies through ports; a bounded-context application service is not a Server Host owner |
+| Domain/application service | resolver, registrar, continuation guard, Outcome controller, permission evaluator, plugin hook runner, terminal observer | Stateless or explicit state dependencies through ports; an application service does not acquire another context's data authority |
 | Repository | store traits under the runtime/server contract boundary | No product policy inside repositories |
 | Domain event/fact | committed runtime facts and `EventRecord` values | Emitted after the commit boundary, then projected outward |
 | Anti-corruption layer | protocol adapters, external product bridges, A2A/ACP mappers | Translate public names at the edge only |
@@ -79,8 +82,9 @@ crate name.
 | Boundary | Owns | Examples |
 |---|---|---|
 | Agent-domain contract | replayable agent truth and runtime commit vocabulary | `RunRecord`, durable run lifecycle value, `ThreadCommit`, `CommitCoordinator`, `RuntimeResumeStore`, state/fact/event records |
-| Config publication contract | config-side records, snapshots, and publication values before runtime install | `ConfigStore`, `ConfigSnapshot`, `RegistryPublication`, `RegistryCompiler` contracts |
-| Runtime-facing contract | internal ports and immutable values used to enter, install, or inspect runtime execution | `RunnableConfig` (the bundled run input), `RuntimeCatalogInstaller`, `RuntimeCatalogInstall`, `RunWithSnapshotExecutor`, `ExecutableAgentSnapshot`, `AgentSnapshotResolver`, `AgentSnapshotCatalog`, `RuntimeCapabilitySource`, `PluginManifest` |
+| Config publication contract | Control-owned records and immutable publication values | `ConfigStore`, `StoredPublication`, `ExecutableAgentSnapshot`, `ExecutableAgentRegistrar` |
+| Coordinator execution catalog | rebuildable executable-Agent availability for new Sessions | `ExecutableAgentCatalogRepository`, current/exact-revision/fingerprint reads |
+| Runtime-facing contract | immutable values and ports used to prepare and execute one Run | `ExecutableAgentSnapshot`, `RunActivation`, `RuntimeRunContext`, `RunExecutor`, `RuntimeCapabilitySource`, `PluginManifest` |
 | Runtime implementation | live execution behavior over agent-domain vocabulary | agent loop, resolver implementation, provider routing, plugin execution, retry/backoff modules |
 | Run-ingress contract | durable delivery and dispatch vocabulary | submit/input records, dispatch records, claims, leases, wake hints, live-command delivery stores |
 | Run-ingress implementation | buffering, host supervision, recovery, and live delivery | `DurableRunIngress`, input buffer, dispatch coordinator, recovery replay |
@@ -88,10 +92,11 @@ crate name.
 | Concrete stores | backend implementations of multiple ports | SQL/in-memory adapters that implement both agent-truth and ingress stores |
 
 If a type describes durable agent truth, it belongs to the agent-domain contract.
-If it describes config records, snapshots, or publication identity before
-runtime install, it belongs to the config publication contract. If it describes
-internal runtime entry, catalog installation, or configuration-surface
-inspection, it belongs to the runtime-facing contract. If it describes delivery,
+If it describes config records, snapshots, or publication identity, it belongs
+to the config publication contract. If it describes Coordinator availability of
+an exact executable snapshot, it belongs to the execution catalog projection. If
+it describes runtime entry or configuration-surface inspection, it belongs to
+the runtime-facing contract. If it describes delivery,
 claim, lease, or wake mechanics, it belongs to run ingress. If it describes
 public names or protocol replay rows, it is a projection and stays out of the
 runtime contract.
@@ -107,8 +112,7 @@ AgentRuntime
 CommitCoordinator + contract::store traits
 ResolvedSpec (serializable config edge; ResolvedRun is runtime-internal — ADR-0002)
 RunExecutor / LiveRunControl / RunResolver / CommitCoordinatorSource
-RuntimeCatalogInstaller / RunWithSnapshotExecutor
-AgentSnapshotResolver / AgentSnapshotCatalog
+ExecutableAgentSnapshot / RunActivation / RuntimeRunContext
 RuntimeCapabilitySource / PluginManifest
 StreamSink
 Plugin / Contributions / ResolvedExecutionEnv
@@ -129,9 +133,10 @@ server/config/project layer. A runtime crate may not import
 dispatch/server/product contracts except through explicitly approved store
 implementation bridges.
 
-The config-to-kernel edge is data-only. The config domain produces serializable
-resolved data and executable snapshots with catalog fingerprints. The kernel
-builds live execution objects from its own catalog and validates the fingerprint.
+The config-to-execution edge is data-only. Control produces serializable resolved
+data and executable snapshots with fingerprints. Coordinator registers the exact
+snapshot and carries it into Session and dispatch data. The Worker builds live
+execution objects and validates the fingerprint.
 No `Arc<dyn ...>`, live registry set, config CRUD handle, admin workflow, or
 product DTO crosses into the runtime core. `AgentId` is not enough to identify
 the executable configuration for a run; `ExecutableAgentSnapshot` is the

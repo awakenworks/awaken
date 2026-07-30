@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0031, ADR-0029
+- Amended by: ADR-0071, which retires the whole-catalog bundle from the
+  distributed publication-to-execution seam
 
 ## Context
 
@@ -73,3 +75,11 @@ many runs follow.
 - [INVARIANTS.md](../INVARIANTS.md) — G3/G4 (neutral waist), G28 (resolution fail-closed).
 - ADR-0031 — the config store whose `compile()` now returns a `RunnableConfig`.
 - ADR-0029 — the built-in namespace the config store stores under.
+
+## Amendment (2026-07-30, ADR-0071)
+
+Directly building an immutable executable snapshot remains useful for embedded
+execution. The removed whole-catalog bundle and low-level install operation are
+not the distributed service boundary. Control publishes the snapshot,
+Coordinator registers it, and dispatch carries the selected immutable data. See
+[ADR-0071](0071-distributed-service-boundaries-and-executable-agent-registration.md).

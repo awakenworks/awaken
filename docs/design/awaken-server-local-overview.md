@@ -41,7 +41,7 @@ the doc that owns its authority.
 
 | Component | Owns | Does **not** know | Owner |
 |---|---|---|---|
-| `Runtime` + loop | consume `RunnableConfig`, run model/tool steps, invoke `RawTool` by id, await/resume, commit, terminate | relay, binding, placement, scheduling, protocol, session, outcome | [ADR-0034](../adr/0034-runtime-axis-model-and-orthogonality.md), [tool-and-capability.md](tool-and-capability.md) |
+| `Runtime` + loop | consume an `ExecutableAgentSnapshot`, run model/tool steps, invoke `RawTool` by id, await/resume, commit, terminate | relay, binding, placement, scheduling, protocol, session, outcome | [ADR-0034](../adr/0034-runtime-axis-model-and-orthogonality.md), [tool-and-capability.md](tool-and-capability.md) |
 | `RawTool` / `Tool` ports | the neutral tool call boundary; `Tool` is the typed authoring API, **erased** to `RawTool` before the kernel | *where/how* a call runs (encapsulated in the impl) | [tool-and-capability.md](tool-and-capability.md), [ADR-0007](../adr/0007-runtime-owns-tool-execution.md) |
 | `PermissionGate` / `ToolGateHook` | authorization: allow / deny / **suspend** | concrete rules; why a suspend was requested | [permission-policy-axis.md](permission-policy-axis.md) |
 | `ResumeTicket` / `ResumeCommand` / `validate_resume` | await correlation + fail-closed resume validation | who supplies the answer, or its meaning | [runtime-behavior.md](runtime-behavior.md) |

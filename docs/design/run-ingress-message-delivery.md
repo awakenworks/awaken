@@ -152,7 +152,7 @@ append-then-delete (no 2PC)
 is true ([ADR-0014](../adr/0014-scheduled-delivery.md)). A crash-retry budget
 dead-letters a poison run past `max_attempts` recoveries, with `dead_letters`/
 `requeue` ops ([ADR-0015](../adr/0015-crash-retry-budget-and-dead-letter.md)).
-A queued or aawaiting run is cancelled durably — the dispatch is removed and a
+A queued or awaiting run is cancelled durably — the dispatch is removed and a
 terminal `Cancelled` fact is committed through the one finish boundary
 ([ADR-0016](../adr/0016-durable-cancel.md)). The `send_message` builtin tool is
 backed by the outbox through a host adapter, addressed by thread
@@ -169,7 +169,7 @@ recovered from committed state for consistency, distinct from this layer's
 delayed *delivery*) is a `AwaitReason`, staged by a gate `Schedule` and
 performed in-process by the worker
 ([ADR-0020](../adr/0020-scheduled-action.md)). A message to a thread with no
-aawaiting run is staged as unbound input the thread's next run consumes
+awaiting run is staged as unbound input the thread's next run consumes
 ([ADR-0021](../adr/0021-idle-thread-delivery.md)). A submission can supersede a
 thread's prior pending/awaiting work by epoch, newest-wins
 ([ADR-0022](../adr/0022-epoch-supersession.md)). The daemon GCs dead-letters

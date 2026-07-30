@@ -9,7 +9,7 @@ code or long-form design.
 - [Design status](../STATUS.md) - document readiness and catalog policy
 - [Requirements coverage](../requirements-coverage.md) - whole-runtime coverage map
 - [Architecture overview](../design/architecture-overview.md) - bounded contexts and vocabulary
-- [Config to run execution flow](../design/config-to-run-execution-flow.md) - explicit model-provider/model/model-pool/agent graph, publication, catalog install, executable snapshot selection, activation/context split, resolution, execution, and commit flow
+- [Configuration-to-response flow](../design/config-to-run-execution-flow.md) - Control publication, Coordinator registration, Deployment/Session creation, dispatch, materialization, execution, commit, and response
 - [Key design decisions](../design/key-design-decisions.md) - load-bearing architecture decisions
 - [Runtime behavior](../design/runtime-behavior.md) - run lifecycle, live state apply, durable commit, effects, and events
 - [Runtime scenario validation](../design/runtime-scenario-validation.md) - GWT scenario ids, test mapping, and scenario organization
@@ -25,8 +25,8 @@ code or long-form design.
 ## Facts By Theme
 
 - [Neutral waist](neutral-waist-facts.md) - runtime execution ports and the data-only config edge
-- [Config to run execution flow](config-to-run-execution-flow-facts.md) - explicit config graph, configuration publication, external publication roles, catalog install, executable snapshot selection, activation/context split, resolution, execution, and commit handoffs
-- [Runtime interface boundaries](runtime-interface-boundaries-facts.md) - runtime role split, activation/context/snapshot split, catalog install boundary, executable snapshot contract, plugin seams, tool decision ladder, and simple-design checks
+- [Configuration-to-response flow](config-to-run-execution-flow-facts.md) - retrieval anchors for the two canonical end-to-end paths
+- [Runtime interface boundaries](runtime-interface-boundaries-facts.md) - runtime role split, activation/context/snapshot split, external registration boundary, executable snapshot contract, plugin seams, tool decision ladder, and simple-design checks
 - [Runtime behavior](runtime-behavior-facts.md) - run phases, live state apply, durable commit, state/effects, plugins, scheduled work, eval
 - [Tool and capability](tool-and-capability-facts.md) - descriptors, neutral ToolExecutor port, capability checks, permission boundaries
 - [Runtime explicit boundaries](runtime-explicit-boundaries-facts.md) - protocol adapters, permissions, binding, errors, and packaging checks

@@ -36,8 +36,8 @@ OwnedFact {
 - The owner is a local source document, not the wiki page itself.
 - Facts are short and reviewable. Link to source tables and guardrails instead
   of copying them.
-- Use current guardrail ids (`G1` through `G29`) from
-  [INVARIANTS.md](../INVARIANTS.md).
+- Use only guardrail ids currently defined in
+  [INVARIANTS.md](../INVARIANTS.md); this index does not duplicate their range.
 - Use relative Markdown links inside the repo.
 
 ## Index

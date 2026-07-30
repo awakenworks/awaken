@@ -85,7 +85,7 @@ configuration it must validate against.
 
 Graph resolution — model binding, plugin selection, tool merge, and overlay
 application — happens at compile time and is frozen into `ResolvedSpec`
-([`compile()`](../design/config-to-run-execution-flow.md#implemented-run-input-executableagentsnapshot)).
+([configuration graph](../design/config-to-run-execution-flow.md#config-graph-model)).
 Run-time resolution is a thin fingerprint gate plus live-object assembly from the
 kernel's own catalog. Heavy resolution must not move into the execution loop; the
 loop consumes an already-resolved plan.

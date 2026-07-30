@@ -59,8 +59,8 @@ or require non-Apache terms for implementing it.
 1. Read [design/architecture-overview.md](design/architecture-overview.md) for the
    context map and DDD vocabulary.
 2. Read [design/config-to-run-execution-flow.md](design/config-to-run-execution-flow.md)
-   for the end-to-end path from configuration publication and catalog install to
-   activation, resolution, execution, and commit.
+   for the canonical configuration-to-application and request-to-committed-response
+   paths.
 3. Read [design/key-design-decisions.md](design/key-design-decisions.md) before
    adding a new subsystem or public seam.
 4. Check [INVARIANTS.md](INVARIANTS.md) for the mechanical rule that must be
@@ -184,8 +184,8 @@ are checked separately by the OKF/wiki hooks.
 
 | Theme doc | Use for |
 |---|---|
-| `config-to-run-execution-flow.md` | End-to-end configuration, publication coordination, registry compilation, runtime catalog install, executable snapshot selection, activation, resolution, execution, and commit flow |
-| `config-publication-lifecycle.md` | Config snapshot, publication, atomic install, rollback, and runtime catalog swap lifecycle |
+| `config-to-run-execution-flow.md` | Control publication, Coordinator registration, Deployment/Session creation, dispatch, materialization, execution, commit, and response |
+| `config-publication-lifecycle.md` | Control publication and Coordinator executable-registration identity, idempotency, recovery, and failures |
 | `protocol-adapter-boundaries.md` | Public protocol adapters, conformance, replay, error mapping, and unsupported management APIs |
 | `permission-policy-axis.md` | Permission decisions, HITL tickets, authorization, and audit staging |
 | `model-provider-backend-binding.md` | Model/provider/backend binding validation and capability reconciliation |

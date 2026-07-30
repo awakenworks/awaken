@@ -3,6 +3,9 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0029, config-publication-lifecycle.md
+- Amended by: ADR-0071, which supersedes the whole-catalog handoff in D1/D4
+  with per-Agent executable registration while retaining compilation and durable
+  publication ownership
 
 ## Context
 
@@ -76,3 +79,12 @@ unchanged. See [ADR-0032](0032-runnable-config.md).
 - [INVARIANTS.md](../INVARIANTS.md) — G4, G22, G28 (resolution fail-closed).
 - [config-publication-lifecycle.md](../design/config-publication-lifecycle.md).
 - ADR-0029 — the built-in component namespace this reuses for `config`.
+
+## Amendment (2026-07-30, ADR-0071)
+
+The durable config and publication decisions remain authoritative. The former
+whole-catalog handoff is historical. The current implementation persists
+`StoredPublication` and updates a process-local catalog; the accepted target
+replaces that second step with `ExecutableAgentRegistrar::register` and a
+rebuildable Coordinator projection. See
+[ADR-0071](0071-distributed-service-boundaries-and-executable-agent-registration.md).

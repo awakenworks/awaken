@@ -10,11 +10,12 @@ different model provider inside the execution loop.
 ```text
 Config Domain model-provider/model records
   -> ConfigSnapshot
-  -> RegistryPublication
-  -> RuntimeCatalogInstall
-  -> RuntimeCatalogInstaller
+  -> StoredPublication with ExecutableAgentSnapshot
+  -> ExecutableAgentRegistrar
+  -> Coordinator ExecutableAgentCatalog
   -> ResolvedSpec model-provider/model/backend refs
-  -> RunResolver validates binding and capability profile
+  -> Session and dispatch freeze the exact snapshot
+  -> Worker validates binding and capability profile
   -> ResolvedRun / ResolvedExecutionEnv
   -> LlmExecutor invocation
 ```

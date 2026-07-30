@@ -98,7 +98,13 @@ pre-commit:
       glob: "docs/adr/*.md"
       run: python3 scripts/ci/check_adr.py
 
-    # 13. Crate dependency direction (layering) fitness function: a lower layer
+    # 13. Active architecture docs use the ADR-0071 service vocabulary and keep
+    #     the retired whole-catalog path historical. Canonical owners are English.
+    check-architecture-vocabulary:
+      glob: "{docs/**/*.md,scripts/ci/check_architecture_vocabulary.py}"
+      run: python3 scripts/ci/check_architecture_vocabulary.py
+
+    # 14. Crate dependency direction (layering) fitness function: a lower layer
     #    must not depend on a higher one (deny.toml; INVARIANTS G2/G18/G29).
     #    Skips with a hint if cargo-deny is not installed.
     check-dep-direction:

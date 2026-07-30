@@ -44,8 +44,8 @@ consistent vocabulary. This affects the documentation layers differently:
 | `INVARIANTS.md` | Ready | Guardrails are mechanical and reviewable |
 | `requirements-coverage.md` | Ready | Maps all required areas to bounded contexts and packaging rules |
 | `design/architecture-overview.md` | Ready | Uses DDD context map and approved runtime/server seams |
-| `design/config-to-run-execution-flow.md` | Ready | Defines the end-to-end handoff from explicit model-provider/model/model-pool/agent config graph through config-side publication coordination, registry compilation, runtime catalog install, executable snapshot selection, activation, resolution, execution, commit, and projection; keeps future integration evidence outside existing specs until a tested boundary exists |
-| `design/config-publication-lifecycle.md` | Ready | Makes publication states, config-side compilation, atomic runtime install, rollback, and publication failure rules explicit |
+| `design/config-to-run-execution-flow.md` | Ready | Owns the two canonical end-to-end paths: configuration through executable registration and Deployment/Session creation, then one request through dispatch, per-kind materialization, execution, commit, and HTTP/SSE response; labels existing, modified, and new boundary work |
+| `design/config-publication-lifecycle.md` | Ready | Owns Control publication and Coordinator executable-registration semantics, idempotency, recovery, and failure rules without a parallel whole-catalog install model |
 | `design/protocol-adapter-boundaries.md` | Product-owned | Defines public protocol adapter mapping, conformance, and unsupported management boundaries |
 | `design/permission-policy-axis.md` | Runtime-owned | Defines authorization flow, permission decisions, HITL tickets, and audit staging |
 | `design/model-provider-backend-binding.md` | Runtime-owned | Defines model-provider/model/model-pool/agent spec graph, selected binding validation, fallback ownership, capability reconciliation, and narrow `ModelProviderSpec` / `AgentSpec` responsibilities |
@@ -55,7 +55,7 @@ consistent vocabulary. This affects the documentation layers differently:
 | `design/runtime-behavior.md` | Runtime-owned | Covers run lifecycle, activation/context split, live state apply versus durable commit, state/effects/events, extensions, cancellation, scheduling, eval |
 | `design/auxiliary-context-windows.md` | Ready | Defines shared transcript windows, extension ownership, and asynchronous Memory, Compact, and Outcome behavior |
 | `design/runtime-scenario-validation.md` | Ready | Owns runtime GWT scenario ids, scenario text, executable-test mapping, and scenario test organization |
-| `design/runtime-interface-boundaries.md` | Runtime-owned | Makes runtime role traits, activation/context/snapshot split, catalog install boundary, external publication roles, executable snapshot contract, plugin contributions, tool decisions, and simple-design checks explicit |
+| `design/runtime-interface-boundaries.md` | Runtime-owned | Makes runtime role traits, activation/context/snapshot split, external publication-registration roles, executable snapshot contract, plugin contributions, tool decisions, and simple-design checks explicit |
 | `design/neutral-waist.md` | Runtime-owned | Runtime execution ports and extension points |
 | `design/tool-and-capability.md` | Runtime-owned | Capability segmentation, neutral ToolExecutor port, builtin-tools placement, unified delegation tool, and permission boundary |
 | `design/run-ingress-message-delivery.md` | Boundary-only | Dispatch/server boundary for run ingress, durable delivery, pending input, and message handoff |
@@ -199,15 +199,16 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0068-unified-prompt-and-skill-optimization.md` | Proposed decision record | Not required | n/a |
 | `adr/0069-acp-capability-configuration-lifecycle.md` | Proposed decision record | Not required | n/a |
 | `adr/0070-local-browser-session-bootstrap.md` | Decision record | Not required | n/a |
+| `adr/0071-distributed-service-boundaries-and-executable-agent-registration.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 
 | Area | Owner | Current guidance |
 |---|---|---|
 | Runtime protocol/license | Current repository | Protocol/specification, SDK-facing schemas, examples, and conformance tests use Apache-2.0; code packages may carry their own package/file license metadata |
-| Runtime core | Current repository | Keep runtime-owned crates/package open and neutral; use `RuntimeCatalogInstaller`, snapshot execution ports, serializable `ResolvedSpec`, and committed state/effect facts without owning config publication compilation |
+| Runtime core | Current repository | Keep runtime-owned crates/package open and neutral; consume immutable `ExecutableAgentSnapshot`/`RunActivation` data and commit state/effect facts without owning configuration publication or executable registration |
 | Dispatch/server | `awaken-run-ingress` (host crate) + adjacent server/config package | Use `RunIngress` with direct `DirectRunIngress` (runtime) and durable `DurableRunIngress` (`awaken-run-ingress`, [ADR-0009](adr/0009-durable-run-ingress-slice.md)); the host depends on runtime and the store adapter, never the reverse |
-| Config publication | Config domain / adjacent server-config package | Keep `ConfigPublicationCoordinator` and `RegistryCompiler` outside runtime core; hand runtime a complete catalog install request through `RuntimeCatalogInstaller` |
+| Config publication and executable availability | Control and Coordinator | Control persists `StoredPublication`; the accepted ADR-0071 target registers its immutable snapshot through `ExecutableAgentRegistrar`; Coordinator owns the rebuildable executable catalog; runtime only validates and executes selected immutable data |
 | Hosted product adapters | Downstream product package or repository | Implement public DTOs/events behind anti-corruption adapters; product hosting vocabulary does not enter neutral runtime/protocol/config code |
 | Hosted Management identity | `awaken-cli` + `awaken-control` over the pinned `awaken-iam-host` adapter | Server-mode Cloud identity requires a dedicated projected service-token file, reloads it for each PDP request, requires an explicit user bearer, and fails closed without reusing Flow identity or a cached local login (ADR-0061 amendment) |
 | Hosted PostgreSQL schema lifecycle | `awaken database migrate` plus each bounded-context store's canonical scoped bundle | The migration command is the sole DDL writer. Server-mode `connect_existing` verifies the exact ledger and fails closed without DDL for catalog, credential, admin, Session, config, Environment, work, Resource lifecycle/File/Memory/Skill, and Sandbox Policy. Sandbox Policy SQLite/Postgres now share one portable bundle rather than parallel raw DDL (ADR-0061 amendment) |
@@ -226,7 +227,7 @@ The following should not be implemented as broad subsystems from these docs alon
   `DirectRunIngress` plus durable `DurableRunIngress` (`awaken-run-ingress`,
   [ADR-0009](adr/0009-durable-run-ingress-slice.md)): a durable submit persists an
   accepted run, a worker claims and runs it under a single-owner lease, an expired
-  lease is recovered, and an aawaiting run resumes through delivered input — all over
+  lease is recovered, and an awaiting run resumes through delivered input — all over
   the durable `CommitCoordinator` backend ([ADR-0008](adr/0008-durable-postgres-commit-backend.md)).
   The originally minimal ADR-0009 slice has since gained scheduled wake, lease
   renewal, cross-thread outbox, query/maintenance, supersession, dead-letter, and
