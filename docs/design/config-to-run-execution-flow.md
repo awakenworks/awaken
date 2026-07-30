@@ -383,6 +383,11 @@ entry points are owned by the
 [K3D distributed test topology guide](../../deploy/k3d/README.md). Kustomize
 overlays reuse one Postgres fixture and one Direct brain/hand fixture so these
 verification rules cannot pass through a stale parallel deployment path.
+The dedicated ADR-0071 overlay crosses both canonical flows through the shipped
+Control and Coordinator composition roots, database-less Workers, authenticated
+registration and launch adapters, isolated component databases, an unavailable
+Coordinator, and forced authority-role restarts. Adapter and repository tests
+remain the owners of rule combinations that do not require a real cluster.
 
 ## Guardrails
 

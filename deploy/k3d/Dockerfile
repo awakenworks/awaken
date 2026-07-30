@@ -1,10 +1,12 @@
-# Runtime image for a brain/hand network-topology scenario (ADR-0044/0045).
+# Runtime image for K3D scenarios that need the scenario host plus one auxiliary
+# executable. The auxiliary executable defaults to the hand binary used by the
+# ADR-0044/0045 topologies; production-role scenarios select the shipped CLI.
 #
 # TWO binaries, TWO planes (the control/execution split):
 #   - BRAIN (control plane, the ENTRYPOINT `awaken-server`): the managed HTTP surface
 #     whose runs route every tool call to the hand over the cluster network. Selected
 #     by AWAKEN_MODEL_MODE=remote-hand + AWAKEN_REMOTE_HAND=hand:9000.
-#   - HAND  (execution plane, `awaken-sandbox hand`): the neutral tool-execution
+#   - AUXILIARY (by default `awaken-sandbox hand`): the neutral tool-execution
 #     endpoint. Hand Pods OVERRIDE the command to run it (listen / dial / nats),
 #     e.g. `command: [/usr/local/bin/awaken-sandbox, hand, --listen, 0.0.0.0:9000]`.
 #
@@ -15,11 +17,14 @@ FROM ubuntu:24.04
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libssl3 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/lib/awaken/control /var/lib/awaken/coordinator
 
 # The control-plane (brain) binary — the scenario host serving remote-hand mode.
 COPY awaken-server /usr/local/bin/awaken-server
-# The execution-plane (hand) binary — hand Pods override the command to run it.
-COPY awaken-sandbox /usr/local/bin/awaken-sandbox
+# Scenario-specific auxiliary executable. Callers that override the default
+# must provide a same-named host-built file in the build context.
+ARG AUXILIARY_EXECUTABLE=awaken-sandbox
+COPY ${AUXILIARY_EXECUTABLE} /usr/local/bin/${AUXILIARY_EXECUTABLE}
 
 ENTRYPOINT ["/usr/local/bin/awaken-server"]
