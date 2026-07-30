@@ -925,6 +925,7 @@ mod tests {
                 name: "docs".into(),
                 target: McpTarget::parse_http("https://mcp.example.test").unwrap(),
                 credential: None,
+                prompts_as_skills: false,
                 origin: McpAttachmentOrigin::Application,
             }],
             Some(holder()),

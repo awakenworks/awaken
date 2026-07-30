@@ -23,6 +23,12 @@ pub struct UrlMcpServer {
     pub url: String,
     #[serde(rename = "type")]
     pub kind: UrlMcpServerKind,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub prompts_as_skills: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

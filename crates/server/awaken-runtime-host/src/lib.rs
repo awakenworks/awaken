@@ -1500,9 +1500,16 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
         let server = crate::mcp::McpTransportMaterial {
             name: request.name,
             url: request.target.url,
+            prompts_as_skills: request.prompts_as_skills,
             bearer,
             refresh,
         };
+        if is_acp && server.prompts_as_skills {
+            return Err(RunError::classified(
+                "mcp_prompt_skills_unsupported",
+                "MCP prompts-as-skills requires the Native runtime; ACP does not expose a portable prompt-to-Skill projection",
+            ));
+        }
         let native_wiring = if is_acp {
             None
         } else {

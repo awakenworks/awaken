@@ -73,11 +73,19 @@ export default function AgentIntegrationsEditor({
                 value={typeof value.url === "string" ? value.url : ""}
                 onChange={(event) => setServer(index, { type: "url", url: event.target.value })}
               />
+              <label className="field" style={{ alignSelf: "center" }}>
+                <span>{app.t("Prompts as skills", "将 Prompt 作为 Skill")}</span>
+                <input
+                  type="checkbox"
+                  checked={value.prompts_as_skills === true}
+                  onChange={(event) => setServer(index, { prompts_as_skills: event.target.checked })}
+                />
+              </label>
               <Button variant="ghost" onClick={() => onChange({ mcp_servers: servers.filter((_, i) => i !== index) })}>✕</Button>
             </div>
           );
         })}
-        <Button onClick={() => onChange({ mcp_servers: [...servers, { type: "url", name: "", url: "" }] })}>
+        <Button onClick={() => onChange({ mcp_servers: [...servers, { type: "url", name: "", url: "", prompts_as_skills: false }] })}>
           + {app.t("MCP server", "MCP 服务器")}
         </Button>
       </Card>

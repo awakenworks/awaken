@@ -697,6 +697,7 @@ mod tests {
             name: name.to_string(),
             url: url.to_string(),
             credential: None,
+            prompts_as_skills: false,
         }
     }
 

@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 
 pub use awaken_agent_contract::{McpTarget, McpTargetError, McpTargetIdentity};
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct McpSetRevision(pub u64);
@@ -37,6 +41,8 @@ pub enum McpAttachmentOrigin {
 pub struct McpAttachmentDraft {
     pub name: String,
     pub target: McpTarget,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub prompts_as_skills: bool,
     pub credential: Option<CredentialAccess>,
     pub origin: McpAttachmentOrigin,
 }
@@ -74,6 +80,8 @@ pub struct SessionMcpAttachment {
     pub name: String,
     pub generation: McpGeneration,
     pub target: McpTarget,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub prompts_as_skills: bool,
     pub origin: McpAttachmentOrigin,
     pub credential: Option<CredentialAccess>,
     pub selected_plaintext_holder: Option<PlaintextHolder>,
@@ -130,6 +138,8 @@ pub struct StageMcpAttachment {
     pub stage_idempotency_key: String,
     pub name: String,
     pub target: McpTarget,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub prompts_as_skills: bool,
     pub credential: Option<CredentialAccess>,
     pub selected_plaintext_holder: Option<PlaintextHolder>,
 }
@@ -150,6 +160,21 @@ impl StageMcpAttachment {
     /// extension from a conflicting restage of the same generation.
     #[must_use]
     pub fn renewal_binding_fingerprint(&self) -> String {
+        if !self.prompts_as_skills {
+            return crate::stable_fingerprint(&(
+                &self.workspace_id,
+                &self.generation.session_id,
+                &self.generation.attachment_id,
+                self.generation.generation,
+                &self.generation.runtime_incarnation,
+                self.generation.lease_epoch,
+                &self.realization_id,
+                &self.name,
+                &self.target,
+                &self.credential,
+                &self.selected_plaintext_holder,
+            ));
+        }
         crate::stable_fingerprint(&(
             &self.workspace_id,
             &self.generation.session_id,
@@ -160,6 +185,7 @@ impl StageMcpAttachment {
             &self.realization_id,
             &self.name,
             &self.target,
+            self.prompts_as_skills,
             &self.credential,
             &self.selected_plaintext_holder,
         ))
@@ -291,6 +317,7 @@ impl SessionMcpAttachmentSet {
                 name: draft.name,
                 generation: McpGeneration(1),
                 target: draft.target,
+                prompts_as_skills: draft.prompts_as_skills,
                 origin: draft.origin,
                 selected_plaintext_holder: draft
                     .credential
@@ -409,6 +436,7 @@ impl SessionMcpAttachmentSet {
                                 | McpAttachmentState::Active
                         )
                         && attachment.target == draft.target
+                        && attachment.prompts_as_skills == draft.prompts_as_skills
                         && attachment.credential == draft.credential
                         && attachment.origin == draft.origin
                 })
@@ -449,6 +477,7 @@ impl SessionMcpAttachmentSet {
                     && !attachment.state.is_terminal()
                     && attachment.state != McpAttachmentState::Draining
                     && attachment.target == draft.target
+                    && attachment.prompts_as_skills == draft.prompts_as_skills
                     && attachment.credential == draft.credential
                     && attachment.origin == draft.origin
             });
@@ -482,6 +511,7 @@ impl SessionMcpAttachmentSet {
                 name: draft.name,
                 generation,
                 target: draft.target,
+                prompts_as_skills: draft.prompts_as_skills,
                 origin: draft.origin,
                 credential: draft.credential,
                 selected_plaintext_holder,
@@ -738,12 +768,29 @@ fn validate_drafts(
 }
 
 fn desired_fingerprint(drafts: &[McpAttachmentDraft]) -> McpDesiredSetFingerprint {
+    if drafts.iter().all(|draft| !draft.prompts_as_skills) {
+        let legacy = drafts
+            .iter()
+            .map(|draft| {
+                (
+                    draft.name.as_str(),
+                    (&draft.target, &draft.credential, draft.origin),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        return McpDesiredSetFingerprint(crate::stable_fingerprint(&legacy));
+    }
     let ordered = drafts
         .iter()
         .map(|draft| {
             (
                 draft.name.as_str(),
-                (&draft.target, &draft.credential, draft.origin),
+                (
+                    &draft.target,
+                    draft.prompts_as_skills,
+                    &draft.credential,
+                    draft.origin,
+                ),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -854,6 +901,7 @@ mod tests {
             name: "docs".into(),
             target: McpTarget::parse_http("https://mcp.example.test").unwrap(),
             credential: None,
+            prompts_as_skills: false,
             selected_plaintext_holder: Some(selected.clone()),
         };
         let exact = McpRealizationReceipt {
@@ -906,6 +954,7 @@ mod tests {
         McpAttachmentDraft {
             name: name.into(),
             target: McpTarget::parse_http(url).unwrap(),
+            prompts_as_skills: false,
             credential,
             origin: McpAttachmentOrigin::Session,
         }
@@ -915,6 +964,7 @@ mod tests {
         McpAttachmentDraft {
             name: name.into(),
             target: McpTarget::parse_http(url).unwrap(),
+            prompts_as_skills: false,
             credential: None,
             origin,
         }
@@ -1395,6 +1445,7 @@ mod tests {
         // | D5 | changed | present | T | Requested | adopt; no duplicate |
         // | D6 | equal | present | T | Failed | add retry generation N+1 |
         // | D7 | changed | remove+add | - | Active | keep old visible until switch |
+        // | D8 | changed | present | prompts flag changed | Active | add gen 2 |
         let mut add = SessionMcpAttachmentSet::default();
         let plan = add
             .request_full_replacement(vec![draft("a", "https://a.test/mcp", None)], None)
@@ -1414,6 +1465,26 @@ mod tests {
         assert_eq!(replaced.requested.len(), 1, "D3");
         assert_eq!(add.attachments[0].state, McpAttachmentState::Active, "D3");
         assert_eq!(add.attachments[1].generation, McpGeneration(2), "D3");
+
+        let mut prompt_policy = SessionMcpAttachmentSet::from_initial(
+            vec![draft("docs", "https://docs.test/mcp", None)],
+            None,
+        )
+        .expect("D8 initial");
+        prompt_policy.attachments[0].state = McpAttachmentState::Active;
+        let mut prompt_enabled = draft("docs", "https://docs.test/mcp", None);
+        prompt_enabled.prompts_as_skills = true;
+        let prompt_replaced = prompt_policy
+            .request_full_replacement(vec![prompt_enabled], None)
+            .expect("D8");
+        assert!(prompt_replaced.changed, "D8");
+        assert_eq!(prompt_policy.attachments.len(), 2, "D8");
+        assert_eq!(
+            prompt_policy.attachments[1].generation,
+            McpGeneration(2),
+            "D8"
+        );
+        assert!(prompt_policy.attachments[1].prompts_as_skills, "D8");
 
         let count = add.attachments.len();
         let adopted = add

@@ -397,6 +397,9 @@ impl SharedHost {
                 })?;
                 combined.plugins.extend(wiring.plugins.clone());
                 combined.tool_ids.extend(wiring.tool_ids.clone());
+                combined
+                    .skill_registries
+                    .extend(wiring.skill_registries.clone());
             }
             combined
         };
@@ -535,6 +538,7 @@ impl SharedHost {
         };
         if let Some(wiring) = crate::skills::wire_skills(
             &filtered_specs,
+            mcp.skill_registries.clone(),
             filtered_delivered,
             env.clone(),
             self.llm.clone(),

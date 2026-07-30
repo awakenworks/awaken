@@ -222,6 +222,7 @@ fn typed_mcp_servers(values: Vec<UrlMcpServer>) -> Vec<AgentMcpServerBinding> {
         .map(|server| AgentMcpServerBinding {
             name: server.name,
             url: server.url,
+            prompts_as_skills: server.prompts_as_skills,
             credential: None,
         })
         .collect()
@@ -508,6 +509,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
                 name: server.name,
                 url: server.url,
                 kind: UrlMcpServerKind::Url,
+                prompts_as_skills: server.prompts_as_skills,
             })
             .collect(),
         skills: config

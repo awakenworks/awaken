@@ -81,6 +81,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
                 name: "github".into(),
                 target: McpTarget::parse_http("https://mcp.example").unwrap(),
                 credential: Some(access),
+                prompts_as_skills: false,
                 origin: McpAttachmentOrigin::Agent,
             }],
             Some(holder),

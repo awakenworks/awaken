@@ -137,6 +137,7 @@ mod tests {
                     id: "cred:workspace-a:docs".into(),
                     revision: 3,
                 }),
+                prompts_as_skills: false,
             }],
             ..Default::default()
         }

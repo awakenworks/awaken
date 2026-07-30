@@ -8,6 +8,7 @@
 pub struct AgentMcpServerView {
     pub name: String,
     pub url: String,
+    pub prompts_as_skills: bool,
     /// Exact credential source selected by the published Agent snapshot.
     pub credential_source_id: Option<String>,
     /// Published source revision. It is checked again at materialization so a

@@ -1225,6 +1225,7 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
                 target: awaken_session_contract::McpTarget::parse_http("https://docs.example/mcp")
                     .unwrap(),
                 credential: None,
+                prompts_as_skills: false,
                 origin: awaken_session_contract::McpAttachmentOrigin::Session,
             }],
             None,
@@ -1332,6 +1333,7 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
                 target: awaken_session_contract::McpTarget::parse_http("https://retry.example/mcp")
                     .unwrap(),
                 credential: None,
+                prompts_as_skills: false,
                 origin: awaken_session_contract::McpAttachmentOrigin::Session,
             }],
             None,

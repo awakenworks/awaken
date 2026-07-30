@@ -1153,6 +1153,7 @@ mod tests {
                 name: "calc".into(),
                 target: awaken_session_contract::McpTarget::parse_http("https://x").unwrap(),
                 credential: None,
+                prompts_as_skills: false,
                 origin: awaken_session_contract::McpAttachmentOrigin::Session,
             }],
             None,

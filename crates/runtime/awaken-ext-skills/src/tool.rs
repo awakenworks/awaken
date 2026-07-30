@@ -240,7 +240,14 @@ pub fn skill_tool_descriptor() -> ToolDescriptor {
                 },
                 "args": {
                     "type": "string",
-                    "description": "Optional free-text arguments passed to the skill."
+                    "description": "Optional free-text argument. For an MCP skill with exactly one prompt argument."
+                },
+                "arguments": {
+                    "type": "object",
+                    "description": "Optional named arguments for parameterized skills such as MCP prompts.",
+                    "additionalProperties": {
+                        "type": ["string", "number", "boolean"]
+                    }
                 }
             },
             "required": ["skill"]
@@ -280,6 +287,7 @@ fn catalog_entry(skill: &SkillSpec) -> serde_json::Value {
         "argument_hint": skill.argument_hint,
         "category": skill.category,
         "provenance": skill.provenance,
+        "environment": skill.environment,
     })
 }
 
@@ -515,23 +523,38 @@ impl RawTool for SkillTool {
         };
         // A leading slash is a user-invocation affordance; accept it here too.
         let key = name.trim_start_matches('/');
-        let Some(skill) = self.registry.get(key) else {
+        let Some(metadata) = self.registry.get(key) else {
             return Ok(ToolOutput::error(
                 call.call_id,
                 format!("unknown skill: {name}"),
             ));
         };
-        if !skill.model_invocable {
+        if !metadata.model_invocable {
             return Ok(ToolOutput::error(
                 call.call_id,
                 format!("skill `{key}` cannot be activated by the model"),
             ));
         }
+        let raw_arguments = call
+            .arguments
+            .get("arguments")
+            .cloned()
+            .or_else(|| call.arguments.get("args").cloned());
         let args = call
             .arguments
             .get("args")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        let skill = match self.registry.resolve(key, raw_arguments).await {
+            Ok(Some(skill)) => skill,
+            Ok(None) => {
+                return Ok(ToolOutput::error(
+                    call.call_id,
+                    format!("unknown skill: {name}"),
+                ));
+            }
+            Err(error) => return Ok(ToolOutput::error(call.call_id, error)),
+        };
         let session = self.session_id.as_deref();
         if let Some(active_tools) = &self.active_tools {
             active_tools.narrow(&skill.allowed_tools);
@@ -629,6 +652,7 @@ mod tests {
         assert_eq!(skills[0]["id"], "commit");
         assert_eq!(skills[0]["when_to_use"], "recording changes");
         assert_eq!(skills[0]["provenance"], "delivered");
+        assert_eq!(skills[0]["environment"], "instruction_only");
         // tier-1 is metadata only — the body must not appear in discovery.
         assert!(!out.content.contains("SECRET-STEP"));
     }

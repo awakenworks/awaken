@@ -151,6 +151,7 @@ impl ManagedState {
                 .map(|server| crate::types::McpServer {
                     name: server.name,
                     url: server.url,
+                    prompts_as_skills: server.prompts_as_skills,
                 })
                 .collect::<Vec<_>>();
             let drafts = self

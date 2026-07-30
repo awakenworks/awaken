@@ -1209,6 +1209,7 @@ mod tests {
                     name: "calc".into(),
                     target: McpTarget::parse_http("https://x").unwrap(),
                     credential: None,
+                    prompts_as_skills: false,
                     origin: McpAttachmentOrigin::Session,
                 }],
                 None,

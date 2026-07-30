@@ -79,8 +79,11 @@ test("PermissionEditor authors a rule and persists it through save + reload", as
   const pattern = 'bash(command ~ "*rm -rf*")';
   await editor.getByPlaceholder(pattern).fill(pattern);
 
+  const initialSave = page.waitForResponse((response) =>
+    response.request().method() === "PUT"
+      && response.url().endsWith(`/v1/config/agents/${id}`));
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.locator(".ui-toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
+  expect((await initialSave).ok()).toBe(true);
   await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
 
   // Reload → the authored policy rehydrates from the stored config (round-trips).
@@ -91,9 +94,18 @@ test("PermissionEditor authors a rule and persists it through save + reload", as
 
 test("Agent editor persists and publishes a direct MCP binding plus MCP tool override", async ({ page, request }) => {
   const id = `mcp-agent-${Date.now()}`;
+  const provider = `mcp-provider-${Date.now()}`;
+  const endpoint = `${provider}-endpoint`;
+  const model = `${provider}-model`;
+  expect((await request.put(`/v1/config/providers/${provider}`, { data: { id: provider, slug: provider, display_name: "MCP E2E", version: 1 } })).ok()).toBe(true);
+  expect((await request.put(`/v1/config/endpoints/${endpoint}`, { data: { id: endpoint, provider_id: provider, dialect: "open_ai_chat", base_url: "https://model.example.test/v1/", timeout_secs: 60, display_name: "MCP E2E", version: 1 } })).ok()).toBe(true);
+  expect((await request.post("/v1/config/offerings", { data: { model_id: model, provider_id: provider, protocol_endpoint_id: endpoint, dialect: "open_ai_chat", upstream_model: null } })).ok()).toBe(true);
+  expect((await request.post("/v1/config/credentials", { data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: provider, secret: "sk-mcp-e2e" } })).ok()).toBe(true); // awaken-allow: secret (synthetic e2e fixture)
+
   await page.goto("/w/default/agents/new");
   await page.getByPlaceholder("coding-agent").fill(id);
   await page.getByLabel("System instructions").fill("Use the issue tracker when the goal requires it.");
+  await page.locator(".field", { hasText: "Model (references workspace catalog)" }).locator("select").selectOption(model);
 
   await page.getByRole("tab", { name: "Tools", exact: true }).click();
   await page.getByRole("button", { name: /override an MCP tool/ }).click();
@@ -107,16 +119,18 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   await page.getByRole("button", { name: "+ MCP server", exact: true }).click();
   await page.getByLabel("Server name").fill("issues");
   await page.getByLabel("URL").fill("https://mcp.example.test/issues");
-  await page.getByRole("button", { name: "+ Skill", exact: true }).click();
-  await page.getByLabel("Skill id").fill("issue-writing");
+  await page.getByLabel("Prompts as skills").check();
   await page.getByLabel("multiagent JSON").fill("{");
   await expect(page.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
   await expect(page.getByRole("alert")).toContainText("Invalid JSON");
   await page.getByLabel("multiagent JSON").fill("");
   await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
 
+  const initialMcpSave = page.waitForResponse((response) =>
+    response.request().method() === "PUT"
+      && response.url().endsWith(`/v1/config/agents/${id}`));
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.locator(".ui-toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
+  expect((await initialMcpSave).ok()).toBe(true);
   await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
 
   const response = await request.get(`/v1/config/agents/${id}`);
@@ -124,10 +138,8 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   const stored = await response.json();
   expect(stored.tools).not.toContain("mcp__issues__create_issue");
   expect(stored.mcp_servers).toEqual([
-    { name: "issues", url: "https://mcp.example.test/issues" },
+    { name: "issues", url: "https://mcp.example.test/issues", prompts_as_skills: true },
   ]);
-  expect(stored.skills).toEqual(["issue-writing"]);
-  expect(stored.multiagent).toBeNull();
   expect(stored.tool_overrides).toEqual([
     {
       target: "mcp__issues__create_issue",
@@ -144,20 +156,54 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   const rawConfig = JSON.parse(await rawEditor.inputValue());
   rawConfig.compaction = { window: 32000, keep_recent: 12 };
   await rawEditor.fill(JSON.stringify(rawConfig, null, 2));
+  const rawSave = page.waitForResponse((response) =>
+    response.request().method() === "PUT"
+      && response.url().endsWith(`/v1/config/agents/${id}`));
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.locator(".ui-toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
+  expect((await rawSave).ok()).toBe(true);
   const lossless = await (await request.get(`/v1/config/agents/${id}`)).json();
   expect(lossless.compaction).toEqual({ window: 32000, keep_recent: 12 });
 
   await page.getByRole("button", { name: "Publish", exact: false }).first().click();
-  const publishPreview = page.getByRole("heading", { name: /Publish changes|发布改动/ });
-  const canPublish = await publishPreview.waitFor({ state: "visible", timeout: 2_000 })
-    .then(() => true)
-    .catch(() => false);
-  if (canPublish) {
-    await page.locator(".modal").getByRole("button", { name: "Publish", exact: false }).click();
-    await expect(page.locator(".ui-toast").filter({ hasText: /Published|已发布/ })).toBeVisible();
-  }
+  const publication = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+      && response.url().endsWith(`/v1/config/agents/${id}/publish`));
+  await page.locator(".modal").getByRole("button", { name: "Publish", exact: false }).click();
+  expect((await publication).ok()).toBe(true);
+  expect((await request.get(`/v1/config/agents/${id}`)).ok()).toBe(true);
+});
+
+test("new session sends the inline MCP prompt-skill opt-in", async ({ page }) => {
+  let posted: Record<string, unknown> | undefined;
+  await page.route("**/v1/config/agents", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [{ id: "prompt-skill-agent", published: true }] }),
+    });
+  });
+  await page.route("**/v1/sessions", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    posted = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ id: "session-prompt-skill-e2e" }),
+    });
+  });
+  await page.goto("/w/default/sessions");
+  await page.getByRole("button", { name: /New session/ }).click();
+  await page.locator(".modal select").first().selectOption({ index: 1 });
+  await page.getByRole("button", { name: /add inline server/ }).click();
+  await page.getByPlaceholder("name").fill("docs");
+  await page.getByPlaceholder("https://…").fill("https://docs.test/mcp");
+  await page.getByLabel("Prompts as skills").check();
+  await page.locator(".modal").getByRole("button", { name: /Create/ }).click();
+  await expect.poll(() => posted).toBeTruthy();
+  expect(posted?.mcp_servers).toEqual([
+    { name: "docs", url: "https://docs.test/mcp", prompts_as_skills: true },
+  ]);
 });
 
 test("enabling a behavior renders a schema-driven form (not raw JSON)", async ({ page }) => {

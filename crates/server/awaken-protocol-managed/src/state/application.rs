@@ -23,6 +23,8 @@ struct ApplicationMcpInput {
     credential_source_id: Option<String>,
     #[serde(default)]
     credential_revision: Option<u64>,
+    #[serde(default)]
+    prompts_as_skills: bool,
 }
 
 impl ApplicationMcpInput {
@@ -48,6 +50,7 @@ impl ApplicationMcpInput {
             server: McpServer {
                 name: self.name,
                 url: self.url,
+                prompts_as_skills: self.prompts_as_skills,
             },
             published_credential,
             origin: awaken_session_contract::McpAttachmentOrigin::Application,
@@ -97,6 +100,7 @@ pub(super) fn initial_mcp_candidates(
                 server: McpServer {
                     name: server.name.clone(),
                     url: server.url.clone(),
+                    prompts_as_skills: server.prompts_as_skills,
                 },
                 published_credential: server
                     .credential_source_id
@@ -484,6 +488,7 @@ mod tests {
                     name: "control".into(),
                     target: awaken_session_contract::McpTarget::parse_http("https://same.example")
                         .unwrap(),
+                    prompts_as_skills: false,
                     credential: None,
                     origin: awaken_session_contract::McpAttachmentOrigin::Session,
                 })
@@ -621,6 +626,7 @@ mod tests {
         McpServer {
             name: name.into(),
             url: url.into(),
+            prompts_as_skills: false,
         }
     }
 
@@ -632,6 +638,7 @@ mod tests {
         awaken_session_contract::AgentMcpServerView {
             name: name.into(),
             url: url.into(),
+            prompts_as_skills: false,
             credential_source_id: credential.map(|(id, _)| id.to_string()),
             credential_revision: credential.map(|(_, revision)| revision),
         }

@@ -40,6 +40,9 @@ pub enum SkillProvenance {
     /// Authored by the agent this run in the writable workspace: usable this run
     /// (run-scoped), never pinned, never auto-promoted to the shared store.
     AgentCreated,
+    /// Discovered from a remote MCP server's prompt catalog. The server remains
+    /// the authority for the instruction body, which is resolved on activation.
+    Mcp,
 }
 
 /// How an activated skill executes: inline in the conversation, or forked into a
@@ -50,6 +53,18 @@ pub enum SkillContext {
     #[default]
     Inline,
     Fork,
+}
+
+/// The execution substrate a Skill requires. Instruction-only Skills are pure
+/// context expansion and therefore do not require a Hand or filesystem capability. A
+/// filesystem Skill may reference bundled files and must be materialized into
+/// the Session environment before activation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillEnvironment {
+    #[default]
+    InstructionOnly,
+    Filesystem,
 }
 
 /// One skill's model-facing identity and instruction body. Data-only: the
@@ -81,6 +96,10 @@ pub struct SkillSpec {
     pub model_override: Option<String>,
     /// Execution mode: inline expansion or a forked sub-agent.
     pub context: SkillContext,
+    /// Whether activation is pure instruction expansion or depends on files in a
+    /// filesystem-capable Session environment.
+    #[serde(default)]
+    pub environment: SkillEnvironment,
     /// Agent type for forked execution (host-resolved).
     pub agent: Option<String>,
     /// Glob patterns for conditional activation; empty means unconditional.
@@ -121,6 +140,7 @@ impl SkillSpec {
             arguments: Vec::new(),
             model_override: None,
             context: SkillContext::Inline,
+            environment: SkillEnvironment::InstructionOnly,
             agent: None,
             paths: Vec::new(),
             category: None,
@@ -170,7 +190,8 @@ impl SkillSpec {
 /// frontmatter block (`---` … `---`) with these keys (hyphen or underscore):
 /// `name`, `description`, `when-to-use`, `allowed-tools`, `disable-model-invocation`,
 /// `user-invocable`, `argument-hint`, `arguments`, `model`/`model-override`,
-/// `context` (`inline`|`fork`), `agent`, `paths`, `category`, `tags`, `version`.
+/// `context` (`inline`|`fork`), `environment` (`instruction-only`|`filesystem`),
+/// `agent`, `paths`, `category`, `tags`, `version`.
 /// Everything after the frontmatter is the instruction body; an absent
 /// frontmatter treats the whole input as body. Unknown keys are ignored
 /// (forward-compatible).
@@ -195,6 +216,16 @@ pub fn parse_skill_md(id: impl Into<String>, content: &str) -> SkillSpec {
                     SkillContext::Fork
                 } else {
                     SkillContext::Inline
+                }
+            }
+            "environment" => {
+                spec.environment = if matches!(
+                    value.to_ascii_lowercase().replace('_', "-").as_str(),
+                    "filesystem" | "hand"
+                ) {
+                    SkillEnvironment::Filesystem
+                } else {
+                    SkillEnvironment::InstructionOnly
                 }
             }
             "agent" => spec.agent = Some(value),
@@ -438,6 +469,17 @@ mod tests {
     }
 
     #[test]
+    fn skill_environment_defaults_to_instruction_only_and_can_require_filesystem() {
+        let pure = parse_skill_md("pure", "---\ndescription: pure guidance\n---\nthink");
+        assert_eq!(pure.environment, SkillEnvironment::InstructionOnly);
+        let filesystem = parse_skill_md(
+            "files",
+            "---\nenvironment: filesystem\n---\nread ${SKILL_DIR}/reference.md",
+        );
+        assert_eq!(filesystem.environment, SkillEnvironment::Filesystem);
+    }
+
+    #[test]
     fn a_bom_prefixed_crlf_frontmatter_block_is_parsed() {
         // A UTF-8 BOM before the opening fence and CRLF line endings must still
         // parse: BOM is stripped, `\r\n` fences and body separator are honored.
@@ -477,6 +519,7 @@ mod tests {
             arguments: vec!["env".into()],
             model_override: Some("opus".into()),
             context: SkillContext::Fork,
+            environment: SkillEnvironment::Filesystem,
             agent: Some("general-purpose".into()),
             paths: vec!["src/**".into()],
             category: Some("ops".into()),

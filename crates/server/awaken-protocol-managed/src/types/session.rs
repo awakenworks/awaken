@@ -226,15 +226,21 @@ pub struct SessionUpdateParams {
 pub struct McpServer {
     pub name: String,
     pub url: String,
+    #[serde(default)]
+    pub prompts_as_skills: bool,
 }
 
 impl Serialize for McpServer {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("McpServer", 3)?;
+        let mut s =
+            serializer.serialize_struct("McpServer", if self.prompts_as_skills { 4 } else { 3 })?;
         s.serialize_field("name", &self.name)?;
         s.serialize_field("type", "url")?;
         s.serialize_field("url", &self.url)?;
+        if self.prompts_as_skills {
+            s.serialize_field("prompts_as_skills", &true)?;
+        }
         s.end()
     }
 }
@@ -1496,6 +1502,34 @@ mod tests {
         assert!(
             projected.get("multiagent").is_none(),
             "the thread contract has no duplicate roster field"
+        );
+    }
+
+    #[test]
+    fn mcp_prompt_skill_switch_is_opt_in_and_wire_compatible() {
+        let omitted: McpServer = serde_json::from_value(serde_json::json!({
+            "name": "docs",
+            "type": "url",
+            "url": "https://docs.test/mcp"
+        }))
+        .unwrap();
+        assert!(!omitted.prompts_as_skills, "R1 omitted means disabled");
+        assert!(
+            serde_json::to_value(&omitted)
+                .unwrap()
+                .get("prompts_as_skills")
+                .is_none(),
+            "R1 false remains absent on the legacy wire shape"
+        );
+
+        let enabled = McpServer {
+            prompts_as_skills: true,
+            ..omitted
+        };
+        assert_eq!(
+            serde_json::to_value(enabled).unwrap()["prompts_as_skills"],
+            true,
+            "R2 explicit opt-in survives serialization"
         );
     }
 }

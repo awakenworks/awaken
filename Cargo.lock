@@ -702,6 +702,8 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-ext-mcp",
+ "awaken-mcp-wire",
  "awaken-runtime-contract",
  "glob",
  "serde",

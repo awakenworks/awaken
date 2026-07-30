@@ -806,6 +806,7 @@ mod tests {
             name: "calculator".into(),
             target: McpTarget::parse_http("https://mcp.example.test").unwrap(),
             credential: None,
+            prompts_as_skills: false,
             selected_plaintext_holder: None,
         };
 

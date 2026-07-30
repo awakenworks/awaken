@@ -402,6 +402,7 @@ async fn draft_agent_round_trips_mcp_skills_multiagent_and_metadata() {
                 name: "github".into(),
                 url: "https://mcp.example".into(),
                 credential: None,
+                prompts_as_skills: false,
             }
         ]
     );

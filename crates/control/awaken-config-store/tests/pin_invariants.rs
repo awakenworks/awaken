@@ -162,6 +162,7 @@ fn configs_round_trip_through_json_losslessly() {
             name: "gh".into(),
             url: "https://mcp.example".into(),
             credential: None,
+            prompts_as_skills: false,
         },
     ];
 

@@ -2176,6 +2176,51 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
     assert!(!host.sandbox_spec("t-bare").limits.is_set());
 }
 
+/// Session creation freezes configuration but does not synchronously provision a
+/// Hand/Sandbox. The first execution joins the per-Session lifecycle mutex and
+/// blocks until the one environment is ready.
+#[tokio::test]
+async fn prepare_session_is_lazy_and_first_turn_materializes_the_environment() {
+    use awaken_protocol_managed::{SessionInit, SessionRuntime};
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let managed = crate::ManagedHost::new(host.clone());
+    managed
+        .prepare_session(
+            "lazy-environment",
+            SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "assistant".into(),
+                delegate_ids: Vec::new(),
+                resources: Default::default(),
+                model: None,
+                runtime: None,
+                environment: session_environment(
+                    awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+                    serde_json::json!({}),
+                ),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        host.session_environment("lazy-environment").await.is_none(),
+        "preparation must not create a Hand/Sandbox"
+    );
+    host.run(
+        Some("assistant"),
+        "lazy-environment",
+        vec![Message::text(
+            MessageId("lazy-user".into()),
+            Role::User,
+            "hello",
+        )],
+    )
+    .await
+    .expect("first turn waits for environment readiness");
+    assert!(host.session_environment("lazy-environment").await.is_some());
+}
+
 /// Runtime stages the effective resources supplied by the Session control plane. It
 /// does not need the Agent binding repository, which keeps remote workers stateless.
 #[tokio::test]
@@ -2620,6 +2665,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
                 },
                 CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::VirtualOnly),
             )),
+            prompts_as_skills: false,
             selected_plaintext_holder: Some(holder.clone()),
         }
     };
@@ -2863,6 +2909,26 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let mut anonymous = request("mcp-acp-anonymous", "workspace-a", 1);
     anonymous.credential = None;
     anonymous.selected_plaintext_holder = None;
+    let mut prompt_skill = anonymous.clone();
+    prompt_skill.generation = generation("mcp-acp-prompt-skill");
+    prompt_skill.realization_id = "realize-mcp-acp-prompt-skill".into();
+    prompt_skill.stage_idempotency_key = "stage-mcp-acp-prompt-skill".into();
+    prompt_skill.prompts_as_skills = true;
+    assert_eq!(
+        acp_managed
+            .stage_mcp_attachment(prompt_skill)
+            .await
+            .unwrap_err()
+            .code,
+        "mcp_prompt_skills_unsupported",
+        "H19"
+    );
+    assert!(
+        acp_host
+            .mcp_projection(&generation("mcp-acp-prompt-skill"))
+            .is_none(),
+        "H19"
+    );
     acp_managed
         .stage_mcp_attachment(anonymous)
         .await
@@ -2961,6 +3027,7 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         name: "docs".into(),
         target: McpTarget::parse_http("https://mcp.example.test/sse").unwrap(),
         credential: None,
+        prompts_as_skills: false,
         selected_plaintext_holder: None,
     };
 
@@ -3030,12 +3097,14 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         server: Some(McpTransportMaterial {
             name: "docs".into(),
             url: format!("https://mcp-{number}.example.test"),
+            prompts_as_skills: false,
             bearer: Some(awaken_agent_contract::RedactedString::new(secret)),
             refresh: None,
         }),
         native_wiring: Some(McpWiring {
             plugins: Vec::new(),
             tool_ids: vec![format!("docs-generation-{number}")],
+            skill_registries: Vec::new(),
         }),
         state: McpProjectionState::Staged,
     };
@@ -3160,6 +3229,7 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
     let server = McpTransportMaterial {
         name: "docs".into(),
         url: "https://mcp.example.test".into(),
+        prompts_as_skills: false,
         bearer: Some(awaken_agent_contract::RedactedString::new("secret")),
         refresh: None,
     };
@@ -3252,6 +3322,7 @@ async fn worker_authority_loss_revokes_every_session_projection() {
     let server = McpTransportMaterial {
         name: "docs".into(),
         url: "https://mcp.example.test".into(),
+        prompts_as_skills: false,
         bearer: Some(awaken_agent_contract::RedactedString::new("secret")),
         refresh: None,
     };

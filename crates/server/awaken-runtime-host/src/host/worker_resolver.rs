@@ -804,6 +804,7 @@ mod tests {
                     )
                     .unwrap(),
                     credential: None,
+                    prompts_as_skills: false,
                     selected_plaintext_holder: None,
                 }
             });
