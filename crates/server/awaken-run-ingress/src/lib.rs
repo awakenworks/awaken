@@ -53,7 +53,7 @@ pub use awaken_run_ingress_contract::{
     PlacementRequirements, REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RecoveryRequest,
     RegisterWorkerRequest, RegisteredWorker, RegistryError, RegistryMutation, RenewRequest,
     RunDispatch, SESSION_RESOURCES_CAPABILITY, SessionResourceEnvelope, SettleRequest,
-    WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAcpCapabilityObservation,
+    SessionRuntimeEnvelope, WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAcpCapabilityObservation,
     WorkerAcpCapabilityRequirement, WorkerAssignment, WorkerCredentialObservation,
     WorkerCredentialRevision, WorkerCredentialState, WorkerDirectory, WorkerHeartbeat,
     WorkerIdentity, WorkerIdentityRequest, WorkerManifest, WorkerRecoveryMode, WorkerRegistration,

@@ -391,8 +391,13 @@ async fn dispatches(
     respond(host.list_dispatches(&thread).await.map(|rows| {
         let out: Vec<Value> = rows
             .into_iter()
-            .map(|(run_id, status, attempts)| {
-                json!({ "run_id": run_id, "status": status, "attempts": attempts })
+            .map(|(run_id, status, attempts, sandbox_bound)| {
+                json!({
+                    "run_id": run_id,
+                    "status": status,
+                    "attempts": attempts,
+                    "sandbox_bound": sandbox_bound,
+                })
             })
             .collect();
         json!({ "dispatches": out })

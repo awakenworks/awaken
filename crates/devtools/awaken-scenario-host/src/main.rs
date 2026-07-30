@@ -95,11 +95,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // deterministic MCP scenario model as an explicit HostExecutor composition;
         // env-driven store selection + IAM are identical to production.
         Ok("management") => {
-            awaken_cli::build_management_router_with_scenario_model(
+            let (model, model_ref) = awaken_scenario_host::scenario_model(
                 std::sync::Arc::new(awaken_scenario_host::McpToolModel),
-                "management".to_string(),
-            )
-            .await
+                "management",
+            );
+            awaken_cli::build_management_router_with_scenario_model(model, model_ref).await
         }
         Ok("management-agents") => {
             awaken_cli::build_management_router_with_scenario_model(

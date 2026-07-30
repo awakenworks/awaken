@@ -19,8 +19,8 @@ process.env.E2E_PORT ??= String(processPortBase);
 process.env.E2E_WORKER_PORT ??= String(processPortBase + 50);
 
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const E2E_HOME_ROOT = `/tmp/awaken-e2e-home-${process.pid}`;
-const E2E_HOME = `${E2E_HOME_ROOT}/home`;
+export const E2E_HOME_ROOT = `/tmp/awaken-e2e-home-${process.pid}`;
+export const E2E_HOME = `${E2E_HOME_ROOT}/home`;
 fs.rmSync(E2E_HOME_ROOT, { recursive: true, force: true });
 fs.mkdirSync(`${E2E_HOME}/.awaken`, { recursive: true });
 fs.writeFileSync(

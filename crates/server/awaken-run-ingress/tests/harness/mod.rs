@@ -1375,16 +1375,28 @@ pub async fn assert_list_dispatches<S: awaken_run_ingress::Dispatch>(store: &S) 
     assert_eq!(listed[0].run_id, RunId("r1".to_string()));
     assert_eq!(listed[0].state, DispatchState::Pending);
     assert_eq!(listed[0].attempt_count, 0);
+    assert!(!listed[0].sandbox_bound);
+
+    let claimed = store
+        .claim("w", 1_000, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("fresh run is claimable");
+    let listed = store.list_dispatches().await.unwrap();
+    assert_eq!(listed[0].state, DispatchState::Leased);
+    assert!(!listed[0].sandbox_bound);
 
     assert!(
         store
-            .claim("w", 1_000, 0, &Default::default())
+            .bind_sandbox(
+                &awaken_run_ingress::RunClaim::from(&claimed.lease),
+                "opaque"
+            )
             .await
             .unwrap()
-            .is_some()
+            .applied()
     );
-    let listed = store.list_dispatches().await.unwrap();
-    assert_eq!(listed[0].state, DispatchState::Leased);
+    assert!(store.list_dispatches().await.unwrap()[0].sandbox_bound);
 }
 
 /// Shared spec for the daemon's bulk lease renewal (ADR-0024): renewing an owner's

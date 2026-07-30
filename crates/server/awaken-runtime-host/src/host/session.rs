@@ -91,11 +91,11 @@ impl SharedHost {
                 .is_acp()
             });
         let selected_backend_is_acp = self
-            .acp
-            .as_ref()
-            .and_then(|acp| acp.adapter_for(thread))
-            .is_some_and(|adapter| {
-                awaken_runtime_contract::resolved::Backend::from_ref(&adapter).is_acp()
+            .session_slots
+            .read(thread, |slot| slot.backend_ref.clone())
+            .flatten()
+            .is_some_and(|backend_ref| {
+                awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref).is_acp()
             });
         slot_allows
             && !published_backend_is_acp
@@ -126,6 +126,32 @@ impl SharedHost {
             })?;
         }
         Ok(())
+    }
+
+    async fn bind_deferred_dispatch_before_publish(
+        &self,
+        thread: &str,
+        binding: &str,
+    ) -> Result<bool, HostError> {
+        let claim = self
+            .session_slots
+            .read(thread, |slot| slot.deferred_claim.clone())
+            .flatten();
+        let Some(claim) = claim else {
+            return Ok(false);
+        };
+        let outcome = self
+            .dispatch_store()
+            .map_err(|error| HostError::internal(error.to_string()))?
+            .bind_sandbox(&claim, binding)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        if !outcome.applied() {
+            return Err(HostError::internal(
+                "deferred sandbox binding was fenced by a replacement claim",
+            ));
+        }
+        Ok(true)
     }
 
     /// Materialize the deferred environment at the first Sandbox-target tool.
@@ -159,15 +185,34 @@ impl SharedHost {
             let _ = environment.dispose().await;
             return Err(error);
         }
+        let binding = serde_json::to_string(&environment.handle())
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        let dispatch_bound = match self
+            .bind_deferred_dispatch_before_publish(thread, &binding)
+            .await
+        {
+            Ok(bound) => bound,
+            Err(error) => {
+                let _ = environment.dispose().await;
+                return Err(error);
+            }
+        };
         if let Err(error) = self
             .persist_environment_before_publish(thread, environment.as_ref())
             .await
         {
-            let _ = environment.dispose().await;
+            // Once the durable claim owns this handle, keep the physical
+            // environment available for adoption. A retry repairs the Session
+            // aggregate before publishing it to the runtime.
+            if !dispatch_bound {
+                let _ = environment.dispose().await;
+            }
             return Err(error);
         }
-        self.session_slots
-            .update(thread, |slot| slot.environment = Some(environment.clone()));
+        self.session_slots.update(thread, |slot| {
+            slot.environment = Some(environment.clone());
+            slot.deferred_claim = None;
+        });
         Ok(environment)
     }
 
@@ -269,6 +314,7 @@ impl SharedHost {
         stream_checkpoint: Arc<dyn StreamCheckpointStore>,
         terminal_observers: &[Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>],
         session_plugins: &[Arc<dyn awaken_runtime_contract::plugin::Plugin>],
+        session_hand: Option<Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>,
     ) -> Result<
         (
             Arc<dyn RunIngress>,
@@ -312,6 +358,10 @@ impl SharedHost {
             run_context,
             awaken_runtime_contract::RuntimeRunContext::with_session_plugin,
         );
+        let run_context = match session_hand {
+            Some(hand) => run_context.with_tool_executor(hand),
+            None => run_context,
+        };
         let mut ingress = DurableRunIngress::with_owner_and_resolver(
             runtime,
             store,
@@ -400,22 +450,30 @@ impl SharedHost {
             .read(thread, |slot| slot.runtime.clone())
             .flatten()
         {
-            if let Some(adopted) = adopted {
-                if ctx.env.as_ref().map(|env| env.handle()) != Some(adopted.handle()) {
-                    return Err(HostError::internal(format!(
-                        "thread {thread} is already bound to a different sandbox"
-                    )));
+            if adopted.is_some() && ctx.env.is_none() {
+                // A deferred durable context can survive the crash gap after the
+                // dispatch claim bound a Sandbox but before Session persistence.
+                // Rebuild that sandbox-free context around the adopted handle.
+                self.session_slots
+                    .update(thread, |slot| slot.runtime = None);
+            } else {
+                if let Some(adopted) = adopted {
+                    if ctx.env.as_ref().map(|env| env.handle()) != Some(adopted.handle()) {
+                        return Err(HostError::internal(format!(
+                            "thread {thread} is already bound to a different sandbox"
+                        )));
+                    }
+                    // A concurrent cold resolver may have adopted while this context was
+                    // becoming resident. Stop only that wrapper's hand process; disposing
+                    // it would tear down the shared underlying sandbox.
+                    adopted.stop_bound_processes().await;
                 }
-                // A concurrent cold resolver may have adopted while this context was
-                // becoming resident. Stop only that wrapper's hand process; disposing
-                // it would tear down the shared underlying sandbox.
-                adopted.stop_bound_processes().await;
+                let _ = ctx
+                    .runtime
+                    .reconcile_delegation_cancellations(&ctx.thread_id, ctx.commit.as_ref())
+                    .await;
+                return Ok(ctx);
             }
-            let _ = ctx
-                .runtime
-                .reconcile_delegation_cancellations(&ctx.thread_id, ctx.commit.as_ref())
-                .await;
-            return Ok(ctx);
         }
         // Resolve the immutable publication before selecting an environment.
         // Environment identity is a consequence of provisioning, not of the ACP
@@ -506,6 +564,13 @@ impl SharedHost {
         }
         if needs_registration {
             let env = env.as_ref().expect("registered environment exists");
+            if !needs_provision {
+                // A dispatch-owned sandbox may be adopted after a crash between
+                // dispatch binding and Session aggregate persistence. Repair the
+                // aggregate before publishing the adopted wrapper to this runtime.
+                self.persist_environment_before_publish(thread, env.as_ref())
+                    .await?;
+            }
             self.session_slots
                 .update(thread, |slot| slot.environment = Some(env.clone()));
         }
@@ -941,17 +1006,6 @@ impl SharedHost {
             .await
             .into_iter()
             .collect();
-        let (ingress, durable_ingress) = self
-            .build_ingress(
-                runtime.clone(),
-                attempt_executor,
-                commit.clone(),
-                stream_checkpoint.clone(),
-                &terminal_observers,
-                &mcp.plugins,
-            )
-            .await?;
-        let durable = durable_ingress.is_some();
         let mut hand_placement = self.hand_placement.clone();
         if let Some(hand) = env.as_ref().and_then(|env| env.bound_tool_executor()) {
             hand_placement.bind_environment_hand(hand);
@@ -962,6 +1016,19 @@ impl SharedHost {
         {
             hand_placement.bind_environment_hand(hand);
         }
+        let session_hand = hand_placement.session_hand().cloned();
+        let (ingress, durable_ingress) = self
+            .build_ingress(
+                runtime.clone(),
+                attempt_executor,
+                commit.clone(),
+                stream_checkpoint.clone(),
+                &terminal_observers,
+                &mcp.plugins,
+                session_hand,
+            )
+            .await?;
+        let durable = durable_ingress.is_some();
         // No per-session dispatch daemon: the process-level `DispatchPool` (spawned
         // once by `mount`) is the sole claimer of the shared queue and drives this
         // session's runs by routing claimed work back to its worker (O2).

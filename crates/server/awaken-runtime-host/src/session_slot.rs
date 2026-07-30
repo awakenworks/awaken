@@ -67,6 +67,9 @@ pub(crate) struct SessionRuntimeSlot {
     pub runtime: Option<Arc<crate::host::SessionCtx>>,
     pub environment: Option<Arc<crate::session_environment::SessionEnvironment>>,
     pub deferred_executor: Option<Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>,
+    /// Current durable claim allowed to publish a deferred Sandbox binding.
+    /// Replaced at every resolve; the dispatch store remains the lease fence.
+    pub deferred_claim: Option<awaken_run_ingress::RunClaim>,
     pub workspace: Option<String>,
     pub model_ref: Option<String>,
     /// Process-local copy of the backend frozen in the Session baseline. It is
@@ -74,6 +77,10 @@ pub(crate) struct SessionRuntimeSlot {
     pub backend_ref: Option<String>,
     /// Exact Environment projection shared by Native and ACP realization.
     pub environment_projection: Option<FrozenEnvironmentRuntimeProjection>,
+    /// Original secret-free Control snapshot retained solely for durable
+    /// dispatch to another Worker. Runtime provisioning consumes the decoded
+    /// projection above; this value is never a second configuration authority.
+    pub environment_snapshot: Option<awaken_protocol_managed::EnvironmentSnapshot>,
     pub memory: Option<Arc<BoundMemory>>,
     pub mcp: Vec<McpGenerationProjection>,
     /// Current Control-issued projection authority. It is a live cache used to

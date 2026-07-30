@@ -310,6 +310,21 @@ export const BEHAVIORS = {
     }
     return text(`Echo: ${t}`);
   },
+  // HandBrainLazyModel: separate turns deliberately select one Brain tool and
+  // one Sandbox tool. The e2e observes the durable Session environment binding
+  // around each turn, proving placement rather than inferring it from output.
+  handBrainLazy(parsed) {
+    const results = toolResults(parsed);
+    const msgs = parsed.messages ?? [];
+    const last = msgs[msgs.length - 1];
+    if (last && Array.isArray(last.content) && last.content.some((b) => b.type === 'tool_result')) {
+      return text(`tool-result: ${toolResultText(results[results.length - 1])}`);
+    }
+    const prompt = lastUserText(parsed);
+    if (prompt === 'brain') return tool(`brain-${msgs.length}`, 'mcp__calc__add', { a: 20, b: 22 });
+    if (prompt === 'hand') return tool(`hand-${msgs.length}`, 'read', { path: 'missing-hand-e2e.txt' });
+    return text(`Echo: ${prompt}`);
+  },
   // FullChainModel (the native combined-chain e2e): one conversation that drives the
   // whole ADR-0038/0036 loop — discover+use a skill, write into the mounted memory
   // store, write into the cloned git repo, and produce an output artifact — plus its

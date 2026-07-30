@@ -38,6 +38,26 @@ impl SessionResourceEnvelope {
     }
 }
 
+/// Dispatch-neutral envelope for the immutable Session runtime projection.
+///
+/// Environment and tool-policy vocabulary remain owned by the Session bounded
+/// context. Dispatch persists only canonical, secret-free serialized data so a
+/// cold remote Worker can reconstruct the same eager/deferred provisioning
+/// decision without consulting mutable Control state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionRuntimeEnvelope {
+    pub projection_json: String,
+}
+
+impl SessionRuntimeEnvelope {
+    #[must_use]
+    pub fn new(projection_json: impl Into<String>) -> Self {
+        Self {
+            projection_json: projection_json.into(),
+        }
+    }
+}
+
 /// The durable, serializable record of an accepted run. It holds no `Arc<dyn ...>`,
 /// registry, or live handle (G3); the runtime builds live execution objects from
 /// the activation's pinned snapshot on each attempt (G4).
@@ -67,6 +87,11 @@ pub struct RunDispatch {
     /// the Session environment; it must never re-read current Agent bindings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_resources: Option<SessionResourceEnvelope>,
+    /// Frozen Environment and Session-local tool-policy projection used by a
+    /// cold Worker before context construction. Older rows omit it and retain
+    /// their historical eager behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_runtime: Option<SessionRuntimeEnvelope>,
     /// Exact Environment/deployment request for inference credential plaintext.
     /// Claim admission validates it against every selected published candidate
     /// and the selected Worker's installed capabilities before persisting the
@@ -92,6 +117,7 @@ impl RunDispatch {
             traceparent: None,
             execution_scope: None,
             session_resources: None,
+            session_runtime: None,
             inference_plaintext_holder: None,
             placement: PlacementRequirements::default(),
         }
@@ -121,6 +147,13 @@ impl RunDispatch {
     #[must_use]
     pub fn with_session_resources(mut self, resources: SessionResourceEnvelope) -> Self {
         self.session_resources = Some(resources);
+        self
+    }
+
+    /// Attach the exact runtime projection frozen at Session creation.
+    #[must_use]
+    pub fn with_session_runtime(mut self, runtime: SessionRuntimeEnvelope) -> Self {
+        self.session_runtime = Some(runtime);
         self
     }
 
@@ -258,6 +291,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn frozen_session_runtime_projection_round_trips_without_session_vocabulary() {
+        let runtime = SessionRuntimeEnvelope::new(
+            r#"{"environment":{"sandbox_provisioning":"on_tool_use"},"toolsets":[]}"#,
+        );
+        let request = RunDispatch::new(activation()).with_session_runtime(runtime.clone());
+
+        let json = serde_json::to_string(&request).expect("serializes");
+        let recovered: RunDispatch = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(recovered.session_runtime, Some(runtime));
+    }
+
     /// A `None` traceparent is omitted on the wire (`skip_serializing_if`), so a row
     /// written by an older writer (no trace) is byte-identical and deserializes back
     /// to `None` rather than dead-lettering — the documented forward/back-compat
@@ -277,6 +322,7 @@ mod tests {
         assert!(back.traceparent.is_none());
         assert!(back.execution_scope.is_none());
         assert!(back.session_resources.is_none());
+        assert!(back.session_runtime.is_none());
         assert!(back.placement.is_legacy_default());
     }
 

@@ -45,6 +45,39 @@ pub(crate) fn decode_session_resource_envelope(
     ))
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DispatchedSessionRuntimeProjection {
+    environment: awaken_protocol_managed::EnvironmentSnapshot,
+    /// `None` retains publication inheritance; `Some([])` is an explicit clear.
+    toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
+}
+
+pub(crate) fn encode_session_runtime_envelope(
+    environment: awaken_protocol_managed::EnvironmentSnapshot,
+    toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
+) -> Result<awaken_run_ingress::SessionRuntimeEnvelope, serde_json::Error> {
+    Ok(awaken_run_ingress::SessionRuntimeEnvelope::new(
+        serde_json::to_string(&DispatchedSessionRuntimeProjection {
+            environment,
+            toolsets,
+        })?,
+    ))
+}
+
+pub(crate) fn decode_session_runtime_envelope(
+    envelope: &awaken_run_ingress::SessionRuntimeEnvelope,
+) -> Result<
+    (
+        awaken_protocol_managed::EnvironmentSnapshot,
+        Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
+    ),
+    serde_json::Error,
+> {
+    let projection: DispatchedSessionRuntimeProjection =
+        serde_json::from_str(&envelope.projection_json)?;
+    Ok((projection.environment, projection.toolsets))
+}
+
 fn logical_file_reference(record: &FileRecord) -> ResourceReferenceRecord {
     ResourceReferenceRecord {
         target: ResourceTarget::new(&record.workspace_id, ResourceKind::File, &record.blob_id),

@@ -401,7 +401,7 @@ impl SharedHost {
     pub(crate) async fn list_dispatches(
         &self,
         thread: &str,
-    ) -> Result<Vec<(String, String, u64)>, HostError> {
+    ) -> Result<Vec<(String, String, u64, bool)>, HostError> {
         let rows = self
             .durable_ingress(thread)
             .await?
@@ -410,7 +410,14 @@ impl SharedHost {
             .map_err(|e| HostError::internal(e.to_string()))?;
         Ok(rows
             .into_iter()
-            .map(|d| (d.run_id.0, format!("{:?}", d.state), d.attempt_count))
+            .map(|d| {
+                (
+                    d.run_id.0,
+                    format!("{:?}", d.state),
+                    d.attempt_count,
+                    d.sandbox_bound,
+                )
+            })
             .collect())
     }
 

@@ -286,6 +286,26 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             None
         };
 
+        // Install the immutable Session runtime projection before resource
+        // staging or context construction. Without this envelope a cold Worker
+        // cannot distinguish eager from on-tool-use provisioning and would
+        // eagerly allocate an unbound Sandbox for a Brain-only run.
+        if let Some(envelope) = &claimed.request.session_runtime {
+            let (environment, toolsets) = crate::provisioning::decode_session_runtime_envelope(
+                envelope,
+            )
+            .map_err(|error| {
+                Self::execution_error(format!(
+                    "run {} has an invalid Session runtime projection: {error}",
+                    claimed.lease.run_id.0
+                ))
+            })?;
+            host.install_environment_projection(&thread_id.0, &environment)
+                .map_err(|error| Self::execution_error(error.to_string()))?;
+            host.session_slots
+                .update(&thread_id.0, |slot| slot.toolsets = toolsets);
+        }
+
         if let Some(provisioner) = &host.application_session_provisioner {
             let dispatch: Arc<dyn awaken_run_ingress::DispatchQueue> = host
                 .dispatch_store()
@@ -353,6 +373,32 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 .map_err(|error| Self::execution_error(error.to_string()))?;
         }
 
+        // A cold durable Worker installs the frozen projection directly rather
+        // than crossing ManagedHost::prepare_session. Reconstruct the lazy Hand
+        // executor from that immutable projection before SessionCtx is built.
+        let needs_deferred_executor = host
+            .session_slots
+            .read(&thread_id.0, |slot| {
+                slot.deferred_executor.is_none()
+                    && slot
+                        .environment_projection
+                        .as_ref()
+                        .is_some_and(|environment| {
+                            environment.provisioning
+                                == awaken_provisioning_contract::SandboxProvisioning::OnToolUse
+                        })
+            })
+            .unwrap_or(false);
+        if needs_deferred_executor {
+            let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> =
+                Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
+                    Arc::downgrade(&host),
+                    &thread_id.0,
+                ));
+            host.session_slots
+                .update(&thread_id.0, |slot| slot.deferred_executor = Some(executor));
+        }
+
         let (adopted, rebuild_binding) = adopt_bound_sandbox(
             &host,
             claimed.sandbox.as_deref(),
@@ -361,6 +407,14 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             claimed.request.placement.recovery,
         )
         .await?;
+
+        // A deferred Native Session carries the current lease fence into its
+        // first Sandbox-target tool. Brain-only runs never create or bind one.
+        host.session_slots.update(&thread_id.0, |slot| {
+            if slot.deferred_executor.is_some() {
+                slot.deferred_claim = Some(awaken_run_ingress::RunClaim::from(&claimed.lease));
+            }
+        });
 
         let worker = self
             .resolve(
@@ -376,10 +430,12 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         // process dies after this write, the next owner sees the handle and adopts
         // the same environment; a failed write leaves the run unexecuted/retryable.
         if claimed.sandbox.is_none() || rebuild_binding {
-            let environment = host
-                .session_environment(&thread_id.0)
-                .await
-                .ok_or_else(|| Self::execution_error("resolved session disappeared"))?;
+            let Some(environment) = host.session_environment(&thread_id.0).await else {
+                // `on_tool_use`: the deferred executor will bind this exact
+                // claim before publishing its first Sandbox. Returning the
+                // worker here lets Brain tools execute without a Sandbox.
+                return Ok(worker);
+            };
             let encoded = serde_json::to_string(&environment.handle())
                 .map_err(|e| Self::execution_error(e.to_string()))?;
             let outcome = host
@@ -454,6 +510,295 @@ mod tests {
             },
             Vec::new(),
         )
+    }
+
+    fn deferred_environment() -> awaken_protocol_managed::EnvironmentSnapshot {
+        awaken_protocol_managed::EnvironmentSnapshot {
+            environment_id: "lazy-env".into(),
+            revision: awaken_protocol_managed::EnvironmentRevision(1),
+            config_fingerprint: awaken_protocol_managed::EnvironmentFingerprint(
+                "lazy-env-v1".into(),
+            ),
+            sandbox: serde_json::json!({}),
+            sandbox_provisioning: awaken_provisioning_contract::SandboxProvisioning::OnToolUse,
+            packages: Default::default(),
+            network: awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+            credential_realization:
+                awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+        }
+    }
+
+    async fn prepare_deferred_session(host: Arc<SharedHost>, thread: &str) -> crate::ManagedHost {
+        use awaken_protocol_managed::SessionRuntime;
+        let managed = crate::ManagedHost::new(host.clone());
+        managed
+            .prepare_session(
+                thread,
+                awaken_protocol_managed::SessionInit {
+                    workspace_id: host.local_workspace().into(),
+                    agent_id: "agent-a".into(),
+                    delegate_ids: Vec::new(),
+                    toolsets: None,
+                    resources: Default::default(),
+                    model: None,
+                    runtime: None,
+                    environment: deferred_environment(),
+                },
+            )
+            .await
+            .expect("prepare deferred Session");
+        managed
+    }
+
+    struct ToggleBindingSink {
+        fail: std::sync::atomic::AtomicBool,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_protocol_managed::SessionEnvironmentBindingSink for ToggleBindingSink {
+        async fn persist(
+            &self,
+            _session_id: &str,
+            _binding: &str,
+        ) -> Result<(), awaken_protocol_managed::RunError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail.load(Ordering::SeqCst) {
+                Err(awaken_protocol_managed::RunError::internal(
+                    "injected Session binding failure",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    async fn claim(
+        store: &awaken_run_ingress::AnyDispatchStore,
+        thread: &str,
+        run: &str,
+        owner: &str,
+        now: u64,
+    ) -> awaken_run_ingress::Claimed {
+        use awaken_run_ingress::DispatchQueue;
+        store
+            .enqueue(awaken_run_ingress::RunDispatch::new(test_activation(
+                thread, run,
+            )))
+            .await
+            .expect("enqueue deferred run");
+        store
+            .claim(owner, 1_000, now, &Default::default())
+            .await
+            .expect("claim deferred run")
+            .expect("deferred run available")
+    }
+
+    /// C1-C3: a cold Worker must derive eager-vs-deferred provisioning only from
+    /// the immutable dispatch envelope. Legacy absence remains eager, an exact
+    /// on-tool-use projection stays sandbox-free during Brain resolution, and a
+    /// malformed projection fails before any Sandbox can be created.
+    #[tokio::test]
+    async fn cold_worker_runtime_projection_decision_table() {
+        use awaken_run_ingress::{Clock, DispatchQueue};
+
+        let now = awaken_run_ingress::SystemClock.now_ms();
+        let store = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+        );
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
+        );
+        let _managed = crate::ManagedHost::new(host.clone());
+        let resolver = HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        };
+
+        let legacy = claim(&store, "cold-legacy", "run-legacy", "worker-a", now).await;
+        resolver
+            .worker_for_claimed(&legacy)
+            .await
+            .expect("C1 legacy projection remains eager");
+        assert!(
+            host.session_environment("cold-legacy").await.is_some(),
+            "C1"
+        );
+
+        let runtime = crate::provisioning::encode_session_runtime_envelope(
+            deferred_environment(),
+            Some(Vec::new()),
+        )
+        .expect("encode runtime projection");
+        store
+            .enqueue(
+                awaken_run_ingress::RunDispatch::new(test_activation(
+                    "cold-deferred",
+                    "run-deferred",
+                ))
+                .with_session_runtime(runtime),
+            )
+            .await
+            .expect("enqueue deferred projection");
+        let deferred = store
+            .claim("worker-a", 1_000, now, &Default::default())
+            .await
+            .expect("claim deferred projection")
+            .expect("deferred projection available");
+        resolver
+            .worker_for_claimed(&deferred)
+            .await
+            .expect("C2 cold Brain resolution stays deferred");
+        assert!(
+            host.session_environment("cold-deferred").await.is_none(),
+            "C2"
+        );
+        assert!(
+            host.session_slots
+                .read("cold-deferred", |slot| slot.deferred_executor.is_some()
+                    && slot.toolsets.as_ref().is_some_and(Vec::is_empty))
+                .unwrap_or(false),
+            "C2"
+        );
+
+        store
+            .enqueue(
+                awaken_run_ingress::RunDispatch::new(test_activation(
+                    "cold-invalid",
+                    "run-invalid",
+                ))
+                .with_session_runtime(awaken_run_ingress::SessionRuntimeEnvelope::new("{")),
+            )
+            .await
+            .expect("enqueue invalid projection");
+        let invalid = store
+            .claim("worker-a", 1_000, now, &Default::default())
+            .await
+            .expect("claim invalid projection")
+            .expect("invalid projection available");
+        let error = match resolver.worker_for_claimed(&invalid).await {
+            Ok(_) => panic!("C3 malformed runtime projection must fail closed"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("invalid Session runtime projection")
+        );
+        assert!(
+            host.session_environment("cold-invalid").await.is_none(),
+            "C3"
+        );
+    }
+
+    /// D1-D5: durable lazy placement is fenced by the current dispatch claim.
+    /// Brain resolution stays sandbox-free; a replacement claim rejects stale
+    /// publication; and a crash gap after dispatch binding is repaired by adoption.
+    #[tokio::test]
+    async fn durable_deferred_sandbox_publication_decision_table() {
+        use awaken_protocol_managed::SessionRuntime;
+        use awaken_run_ingress::{Clock, DispatchQueue};
+
+        let now = awaken_run_ingress::SystemClock.now_ms();
+        let store = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+        );
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
+        );
+        let sink = Arc::new(ToggleBindingSink {
+            fail: std::sync::atomic::AtomicBool::new(false),
+            calls: AtomicUsize::new(0),
+        });
+        let managed = prepare_deferred_session(host.clone(), "durable-lazy").await;
+        managed.install_environment_binding_sink(sink.clone());
+        let claimed = claim(&store, "durable-lazy", "run-lazy", "worker-a", now).await;
+        let resolver = HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        };
+        resolver
+            .worker_for_claimed(&claimed)
+            .await
+            .expect("D1 resolves Brain worker without Sandbox");
+        assert!(
+            host.session_environment("durable-lazy").await.is_none(),
+            "D1"
+        );
+
+        let replacement = store
+            .claim("worker-b", 1_000, now + 2_000, &Default::default())
+            .await
+            .expect("replacement claim")
+            .expect("expired claim is recoverable");
+        let deferred = host
+            .session_slots
+            .read("durable-lazy", |slot| slot.deferred_executor.clone())
+            .flatten()
+            .expect("deferred executor");
+        let error = deferred
+            .invoke(&awaken_runtime_contract::tool::ToolCall {
+                call_id: "stale-read".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({"path": "missing"}),
+            })
+            .await
+            .expect_err("D3 stale claim is fenced");
+        assert!(
+            error.to_string().contains("replacement claim"),
+            "D3: {error}"
+        );
+        assert!(
+            host.session_environment("durable-lazy").await.is_none(),
+            "D3"
+        );
+
+        resolver
+            .worker_for_claimed(&replacement)
+            .await
+            .expect("install replacement claim");
+        sink.fail.store(true, Ordering::SeqCst);
+        let deferred = host
+            .session_slots
+            .read("durable-lazy", |slot| slot.deferred_executor.clone())
+            .flatten()
+            .expect("replacement deferred executor");
+        let error = deferred
+            .invoke(&awaken_runtime_contract::tool::ToolCall {
+                call_id: "crash-gap-read".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({"path": "missing"}),
+            })
+            .await
+            .expect_err("D4 Session binding failure");
+        assert!(
+            error
+                .to_string()
+                .contains("injected Session binding failure")
+        );
+        assert!(
+            host.session_environment("durable-lazy").await.is_none(),
+            "D4"
+        );
+
+        let adopted = store
+            .claim("worker-c", 1_000, now + 4_000, &Default::default())
+            .await
+            .expect("adoption claim")
+            .expect("dispatch-bound run is recoverable");
+        assert!(adopted.sandbox.is_some(), "D4 dispatch binding survived");
+        sink.fail.store(false, Ordering::SeqCst);
+        resolver
+            .worker_for_claimed(&adopted)
+            .await
+            .expect("D5 adopts and repairs Session binding");
+        assert!(
+            host.session_environment("durable-lazy").await.is_some(),
+            "D5"
+        );
+        assert_eq!(
+            sink.calls.load(Ordering::SeqCst),
+            2,
+            "D4 failure + D5 repair"
+        );
     }
 
     struct CountingProvisioner {
