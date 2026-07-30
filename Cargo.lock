@@ -1836,7 +1836,6 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-acp-contract",
- "awaken-credential-vault",
  "awaken-observability",
  "awaken-provisioning-contract",
  "awaken-resource-contract",

@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 # The single aggregated command + the single-machine composition root. Config
 # (AWAKEN_ROLE + the deployment axes) decides the deployment: single-machine all-in-one,
-# a coordinator, a database-less worker, or a hand executor endpoint. The Serve role
+# a coordinator, a registered execution worker, or a hand executor endpoint. The Serve role
 # weaves the authoring plane (awaken-control) and the data plane (awaken-server) — two
 # siblings that never depend on each other — into one management router here.
 [dependencies]
@@ -22,7 +22,8 @@ path = "src/main.rs"
 awaken-control = { workspace = true }
 awaken-server = { workspace = true }
 awaken-authz-enforce = { workspace = true }
-# The production database-less worker (Stage C): the Worker role delegates to it.
+# The production Worker executor: the Worker role delegates lifecycle to it while
+# this CLI composition still supplies the selected Credential/Resource adapters.
 awaken-worker = { workspace = true }
 # The service layer: SharedHost / ManagedHost / ConfigService / ConfigPlane and the
 # durable session repositories the composition opens.

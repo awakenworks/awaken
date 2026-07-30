@@ -1553,7 +1553,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-control",
         "awaken-server",
         "awaken-authz-enforce",
-        # Stage C: the Worker role delegates to the production database-less worker.
+        # The Worker role delegates lifecycle to the production execution worker.
         "awaken-worker",
         "awaken-runtime-host",
         "awaken-sandbox-policy-store",
@@ -1626,7 +1626,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # the memoryd-role test seeds + asserts a sqlite-backed store.
         "awaken-runtime-contract",
     },
-    # Database-less Worker SDK: lifecycle and neutral injected Host ports only.
+    # Authority-store-isolated Worker crate: lifecycle and neutral injected Host ports only.
     # Product store/server adapters are composed by awaken-cli.
     "awaken-worker": {
         "awaken-acp-contract",
@@ -1641,7 +1641,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-observability",
         "axum",
         "tower",
-        "awaken-credential-vault",
         "awaken-runtime-contract",
         "async-trait",
     },

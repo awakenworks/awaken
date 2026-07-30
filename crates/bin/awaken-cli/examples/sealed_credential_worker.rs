@@ -96,10 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         payload_fingerprint: std::env::var("AWAKEN_TEST_PAYLOAD_FINGERPRINT")?,
         material: std::env::var("AWAKEN_TEST_PROVIDER_SECRET")?,
     });
-    let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
-    let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
-    let credentials = awaken_runtime_host::PinnedCredentialMaterializer::new(credentials, secrets)
-        .with_external_material_resolver(resolver);
+    let credentials = awaken_runtime_host::PinnedCredentialMaterializer::external_only(resolver);
     let inference = Arc::new(
         awaken_server::inference_materializer::CredentialInferenceMaterializer::from_pinned(
             credentials.clone(),

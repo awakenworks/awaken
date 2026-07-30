@@ -50,8 +50,8 @@ struct RegisteredExtensionConsumer {
 /// Worker/host-side realization of one already-published credential reference.
 #[derive(Clone)]
 pub struct PinnedCredentialMaterializer {
-    credentials: Arc<dyn CredentialRepo>,
-    secrets: Arc<dyn SecretStore>,
+    credentials: Option<Arc<dyn CredentialRepo>>,
+    secrets: Option<Arc<dyn SecretStore>>,
     external_material_resolver: Option<Arc<dyn CredentialMaterialResolver>>,
     extension_consumers: Arc<BTreeMap<String, RegisteredExtensionConsumer>>,
     pending_process_secrets: Arc<Mutex<HashMap<String, PendingProcessSecret>>>,
@@ -62,9 +62,27 @@ impl PinnedCredentialMaterializer {
     #[must_use]
     pub fn new(credentials: Arc<dyn CredentialRepo>, secrets: Arc<dyn SecretStore>) -> Self {
         Self {
-            credentials,
-            secrets,
+            credentials: Some(credentials),
+            secrets: Some(secrets),
             external_material_resolver: None,
+            extension_consumers: Arc::new(BTreeMap::new()),
+            pending_process_secrets: Arc::new(Mutex::new(HashMap::new())),
+            pending_credential_artifacts: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Construct the same exact materialization adapter without a local Vault.
+    ///
+    /// Authority-store-isolated Workers use this path for sources supported by
+    /// the installed resolver. No locally backed `ControlPlaneReference` is
+    /// advertised; callers do not need an empty repository or secret-store
+    /// placeholder merely to install the neutral resolver port.
+    #[must_use]
+    pub fn external_only(resolver: Arc<dyn CredentialMaterialResolver>) -> Self {
+        Self {
+            credentials: None,
+            secrets: None,
+            external_material_resolver: Some(resolver),
             extension_consumers: Arc::new(BTreeMap::new()),
             pending_process_secrets: Arc::new(Mutex::new(HashMap::new())),
             pending_credential_artifacts: Arc::new(Mutex::new(HashMap::new())),
@@ -133,8 +151,10 @@ impl PinnedCredentialMaterializer {
     pub fn material_source_capabilities(
         &self,
     ) -> (std::collections::BTreeSet<CredentialMaterialSource>, bool) {
-        let mut sources =
-            std::collections::BTreeSet::from([CredentialMaterialSource::ControlPlaneReference]);
+        let mut sources = std::collections::BTreeSet::new();
+        if self.credentials.is_some() && self.secrets.is_some() {
+            sources.insert(CredentialMaterialSource::ControlPlaneReference);
+        }
         let envelopes = self
             .external_material_resolver
             .as_ref()
@@ -613,8 +633,17 @@ impl PinnedCredentialMaterializer {
         if let Some(envelope) = &access.envelope {
             envelope.validate_for_holder(selected_holder, unix_time_ms())?;
         }
+        let external_supports_source =
+            self.external_material_resolver
+                .as_ref()
+                .is_some_and(|resolver| {
+                    resolver
+                        .supported_material_sources()
+                        .contains(&access.material_source)
+                });
         if access.envelope.is_some()
             || access.material_source == CredentialMaterialSource::WorkerReference
+            || (self.credentials.is_none() && self.secrets.is_none() && external_supports_source)
         {
             let resolver = self
                 .external_material_resolver
@@ -641,6 +670,9 @@ impl PinnedCredentialMaterializer {
             return Ok(resolved);
         }
         if access.material_source != CredentialMaterialSource::ControlPlaneReference {
+            return Err(CredentialMaterialError::Unavailable);
+        }
+        if self.credentials.is_none() || self.secrets.is_none() {
             return Err(CredentialMaterialError::Unavailable);
         }
         let source = self.load_active_source(&access.credential.id).await?;
@@ -673,6 +705,8 @@ impl PinnedCredentialMaterializer {
             }
             let refresh_token = self
                 .secrets
+                .as_ref()
+                .ok_or(CredentialMaterialError::Unavailable)?
                 .get(&SecretRef(refresh.refresh_token_ref.clone()))
                 .await
                 .map_err(|_| CredentialMaterialError::Unavailable)?;
@@ -765,6 +799,8 @@ impl PinnedCredentialMaterializer {
     ) -> Result<CredentialSource, CredentialMaterialError> {
         let source = self
             .credentials
+            .as_ref()
+            .ok_or(CredentialMaterialError::Unavailable)?
             .get(&CredentialSourceId(reference.to_string()))
             .await
             .map_err(|_| CredentialMaterialError::Unavailable)?;
@@ -778,17 +814,17 @@ impl PinnedCredentialMaterializer {
         &self,
         source: &CredentialSource,
     ) -> Result<RedactedString, CredentialMaterialError> {
-        awaken_credential_vault::materialize(source, self.secrets.as_ref())
+        let secrets = self
+            .secrets
+            .as_ref()
+            .ok_or(CredentialMaterialError::Unavailable)?;
+        awaken_credential_vault::materialize(source, secrets.as_ref())
             .await
             .map_err(|_| CredentialMaterialError::Unavailable)
     }
 
-    pub(crate) fn secret_store(&self) -> Arc<dyn SecretStore> {
-        self.secrets.clone()
-    }
-
-    pub(crate) fn credential_repo(&self) -> Arc<dyn CredentialRepo> {
-        self.credentials.clone()
+    pub(crate) fn local_stores(&self) -> Option<(Arc<dyn CredentialRepo>, Arc<dyn SecretStore>)> {
+        Some((self.credentials.clone()?, self.secrets.clone()?))
     }
 }
 
@@ -972,11 +1008,16 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
                 "credential write-back is not valid UTF-8",
             )
         })?;
+        let (credentials, secrets) = self.local_stores().ok_or_else(|| {
+            awaken_provisioning_contract::SandboxError::new(
+                "credential write-back requires a local credential authority",
+            )
+        })?;
         awaken_credential_vault::repo::rotate_credential(
             &source.id,
             RedactedString::new(material),
-            self.secrets.as_ref(),
-            self.credentials.as_ref(),
+            secrets.as_ref(),
+            credentials.as_ref(),
         )
         .await
         .map(|_| ())
@@ -1366,6 +1407,7 @@ mod tests {
     /// | S7 | T | F(recipient) | - | - | - | envelope | recipient mismatch |
     /// | S8 | T | - | T | - | T | worker reference | material |
     /// | S9 | T | T | T | T | T | inference envelope | material |
+    /// | S10 | T | - | T | - | T | external-only Worker ref | material, no local stores |
     #[tokio::test]
     async fn external_resolution_tests_are_generated_from_the_decision_table() {
         let credentials = Arc::new(InMemoryCredentialRepo::new());
@@ -1508,7 +1550,7 @@ mod tests {
             exact_access.policy.clone(),
         );
         let worker_resolved = exact
-            .resolve_validated(&worker_access, &holder, binding, None)
+            .resolve_validated(&worker_access, &holder, binding.clone(), None)
             .await
             .expect("S8 WorkerReference delegates through the same port");
         assert_eq!(
@@ -1518,6 +1560,24 @@ mod tests {
                 .unwrap()
                 .expose_secret(),
             "external-sealed-material"
+        );
+        let external_only = PinnedCredentialMaterializer::external_only(resolver(
+            binding.clone(),
+            "sha256:unused-for-worker-reference",
+            holder.clone(),
+        ));
+        assert!(external_only.local_stores().is_none(), "S10");
+        assert_eq!(
+            external_only
+                .resolve_validated(&worker_access, &holder, binding, None)
+                .await
+                .expect("S10 external-only resolver")
+                .material
+                .single_secret()
+                .unwrap()
+                .expose_secret(),
+            "external-sealed-material",
+            "S10"
         );
 
         let provider_access = CredentialAccess::new(

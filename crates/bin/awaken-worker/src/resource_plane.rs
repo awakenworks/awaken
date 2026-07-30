@@ -1,9 +1,10 @@
-//! Explicit data-plane dependencies used by a database-less Worker.
+//! Explicit Resource dependencies used by an execution Worker.
 
-/// Resource-plane wiring for a database-less Worker.
+/// Resource-plane wiring for an execution Worker.
 ///
-/// The ports remain authoritative data-plane dependencies; the Worker only
-/// materializes their already-authorized bindings for an attempt.
+/// These broad ports currently support shared-store composition. They remain
+/// Resource-owned capabilities; their presence must not be described as
+/// process-level authority-store isolation.
 pub struct WorkerResourcePlane {
     pub(crate) ports: awaken_runtime_host::ResourcePlanePorts,
     pub(crate) validator: std::sync::Arc<dyn awaken_resource_contract::ResourceBindingValidator>,

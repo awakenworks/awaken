@@ -1,11 +1,12 @@
-//! The shared credential-materialization store subset a database-less **worker**
+//! The shared credential-materialization store subset a shared-store **worker**
 //! opens, exactly as the Serve composition opens it.
 //!
 //! Publication has already pinned endpoint + credential access into the executable
 //! snapshot, so inference execution needs only the **credential** repo and sealed
 //! **secret** store. Resource-capable workers may additionally open the narrow
 //! Resource Catalog validation port; they never open config authoring or Session
-//! stores and never evaluate IAM policy.
+//! stores and never evaluate IAM policy. This is a transitional deployment
+//! composition, not strict process-level Credential authority isolation.
 
 use std::path::Path;
 use std::sync::Arc;

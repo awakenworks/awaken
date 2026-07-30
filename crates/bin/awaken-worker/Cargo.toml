@@ -8,7 +8,7 @@ license.workspace = true
 name = "awaken_worker"
 path = "src/lib.rs"
 
-# The PRODUCTION database-less worker (Stage C): a peer of the control / data planes.
+# The production authority-store-isolated executor crate: a peer of the control/data planes.
 # It drains runs over the dispatch transport and resolves EACH run's model_ref (from
 # its activation snapshot) to the real DB-configured provider via
 # snapshot-pinned model candidates over the SAME credential store `awaken-cli`
@@ -19,7 +19,7 @@ path = "src/lib.rs"
 # plus the narrow ResourceBindingValidator; it still owns no authoring/Session store.
 [features]
 # Container sandbox tiers (AWAKEN_SANDBOX_TIER=docker|podman|k8s), passed directly
-# to the shared host so a database-less worker can realize its ACP
+# to the shared host so a remote execution worker can realize its ACP
 # sessions inside containers/Pods. Off by default (bwrap namespace tier).
 container-docker = ["awaken-runtime-host/container-docker"]
 container-podman = ["awaken-runtime-host/container-podman"]
@@ -30,7 +30,6 @@ container-k8s = ["awaken-runtime-host/container-k8s"]
 # store that routes the drain over HTTP to the cell server.
 awaken-runtime-host = { workspace = true }
 awaken-runtime-contract = { workspace = true }
-awaken-credential-vault = { workspace = true }
 awaken-resource-contract = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util"] }
 # The cloud-native admin surface (readyz / livez / metrics / drain) on a separate

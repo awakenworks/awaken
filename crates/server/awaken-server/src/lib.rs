@@ -388,9 +388,9 @@ fn local_managed_state_over(
     managed
 }
 
-// The database-less **worker** role moved to the production `awaken-worker` crate
-// (Stage C): it resolves EACH drained run's model from the DB-configured catalog +
-// vault via `CredentialInferenceMaterializer`; its `NoModelConfiguredExecutor` is
+// The **worker** lifecycle moved to the production `awaken-worker` crate. In the
+// current shared-store composition it resolves each drained run's model from the
+// DB-configured catalog + vault via `CredentialInferenceMaterializer`; its `NoModelConfiguredExecutor` is
 // only an inert construction placeholder and is never a materialization fallback.
 // The `awaken` binary's Worker role delegates to `awaken_worker::run`. The
 // test-only echo-draining worker (for the worker-pool e2e) lives in
@@ -505,7 +505,7 @@ fn mount_with_managed_over_and_models(
     // session resolver needs.
     //
     // A coordinator-only cell server (`DeploymentConfig::disable_local_pool=1`) skips its
-    // co-located pool so remote database-less workers are the sole drainers, claiming
+    // co-located pool so registered remote workers are the sole drainers, claiming
     // and settling over the dispatch transport.
     if host.runs_local_dispatch_pool() {
         host.ensure_dispatch_pool();
@@ -576,7 +576,7 @@ fn mount_with_managed_over_and_models(
     // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
     // (supersede / reconcile / reap / dead-letter GC) over the same shared host.
     let durable_ops = durable_ops_router(host.clone());
-    // The worker-facing cross-node seam: a database-less worker claims/settles runs
+    // The Worker-facing cross-node seam: a dispatch-store-isolated Worker claims/settles runs
     // over the dispatch transport and pushes committed facts to the commit ingest.
     let worker_transport = awaken_runtime_host::registered_worker_transport_router(
         host.clone(),

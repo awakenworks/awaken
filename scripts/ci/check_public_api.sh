@@ -49,7 +49,7 @@ crates=$(cargo metadata --no-deps --format-version 1 \
 # resolver/bridge/admin-api that build on them inherit it). All five are excluded
 # for the same nightly-toolchain reason and reviewed in code (ADR-0043).
 #
-# The composed deployables — awaken-cli (composition root), awaken-worker (db-less
+# The composed deployables — awaken-cli (composition root), awaken-worker (execution
 # worker), awaken-scenario-host (test-only), and awaken-control (authoring plane,
 # pulls scoped-migration via admin-config-api/model-catalog/credential-vault) — are
 # product binaries / assembly crates, not stable neutral contracts, exactly like

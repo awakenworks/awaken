@@ -1,11 +1,12 @@
-//! `awaken-worker` — the PRODUCTION database-less worker (Stage C).
+//! `awaken-worker` — the production authority-store-isolated executor.
 //!
 //! A peer of the control and data planes. It owns no Run, Session, or authoring
 //! store: it drains runs
 //! from a Control Node over the typed dispatch transport and sends claim-fenced
 //! commit operations back through the same Worker boundary. A resource-capable
-//! worker may open shared data-plane and Resource Catalog validation ports; those
-//! remain platform truth, not worker-owned state.
+//! worker may currently be composed with shared Credential and Resource authority
+//! adapters. That shared-store deployment is not process-level authority isolation;
+//! the strict remote adapters remain a separate acceptance boundary.
 //!
 //! **Real per-run model resolution, no mocks.** A drained run arrives as a
 //! `RunActivation` carrying its own `ExecutableAgentSnapshot`, whose
@@ -80,7 +81,7 @@ impl std::fmt::Display for WorkerNodeBuildError {
 
 impl std::error::Error for WorkerNodeBuildError {}
 
-/// Public assembly boundary for a recoverable database-less Worker.
+/// Public assembly boundary for a recoverable execution Worker.
 pub struct WorkerNodeBuilder {
     upstream: WorkerUpstream,
     manifest: ManifestSelection,
@@ -92,8 +93,6 @@ pub struct WorkerNodeBuilder {
     credential_materializer: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
     remote_attempt: Option<awaken_runtime_host::RemoteAttemptInstallation>,
     hand_executor_factory: Option<Arc<dyn awaken_runtime_host::HandExecutorFactory>>,
-    external_credential_resolver:
-        Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
     worker_local_credential_resolver:
         Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
     acp_capability_observation_source:
@@ -122,7 +121,6 @@ impl WorkerNodeBuilder {
             credential_materializer: None,
             remote_attempt: None,
             hand_executor_factory: None,
-            external_credential_resolver: None,
             worker_local_credential_resolver: None,
             acp_capability_observation_source: None,
             session_container_provider: None,
@@ -297,19 +295,6 @@ impl WorkerNodeBuilder {
         self
     }
 
-    /// Install the one exact non-local credential material resolver used for
-    /// Worker-private references and recipient-bound sealed envelopes. It is
-    /// composed into the canonical materializer at `build()` and is never a
-    /// fallback credential selector.
-    #[must_use]
-    pub fn with_external_credential_resolver(
-        mut self,
-        resolver: Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>,
-    ) -> Self {
-        self.external_credential_resolver = Some(resolver);
-        self
-    }
-
     /// Install the liveness-only adapter for host-owned credential identities.
     /// This port cannot materialize Provider secrets.
     #[must_use]
@@ -397,20 +382,10 @@ impl WorkerNodeBuilder {
             ));
         }
         let credential_observation_resolver = self.worker_local_credential_resolver.clone();
-        if let Some(resolver) = self.external_credential_resolver.take() {
-            let Some(materializer) = self.credential_materializer.take() else {
-                return Err(WorkerNodeBuildError(
-                    "external credential resolver requires an installed credential materializer"
-                        .to_string(),
-                ));
-            };
-            let materializer = materializer.with_external_material_resolver(resolver);
-            self.credential_materializer = Some(materializer);
-        }
-        // A WorkerNode is, by definition, the database-less remote drain of the
-        // Control Node's durable queue. Product deployment input may still carry
-        // coordinator defaults; normalize those two process-role axes here so a
-        // successfully registered Worker cannot report Ready without a claim pool.
+        // `disable_local_pool` names the Serve process's co-located executor pool.
+        // A WorkerNode instead owns one mandatory registered remote claim pool, so
+        // normalize the host-level switch here. The CLI rejects run_local_pool for
+        // Role::Worker rather than giving this field two public meanings.
         self.deployment.durable = true;
         self.deployment.disable_local_pool = false;
         let resource_support = ResourceManifestSupport::from((
@@ -622,12 +597,9 @@ async fn build_secretless_worker(
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
     let mut builder = WorkerNodeBuilder::new(upstream).with_process_config(process);
     if let Some(resolver) = material_resolver {
-        builder = builder
-            .with_credential_materializer(awaken_runtime_host::PinnedCredentialMaterializer::new(
-                Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
-                Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-            ))
-            .with_external_credential_resolver(resolver);
+        builder = builder.with_credential_materializer(
+            awaken_runtime_host::PinnedCredentialMaterializer::external_only(resolver),
+        );
     }
     if let Some(resolver) = local_resolver {
         builder = builder.with_worker_local_credential_resolver(resolver);

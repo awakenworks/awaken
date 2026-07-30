@@ -230,43 +230,33 @@ fn standard_builder_derives_from_its_installed_materializer() {
     assert!(worker.manifest().capabilities.contains("test-access/v1"));
 }
 
-/// Cause-effect graph: an external resolver without the canonical materializer
-/// is meaningless and fails build; stores + resolver compose once, while a
-/// resolver without an installed consuming adapter cannot advertise realization.
+/// Cause-effect graph: the canonical materializer owns external credential
+/// resolution. Installing its external-only constructor adds no local Vault and
+/// does not invent a plaintext realization mechanism; Worker has no second
+/// resolver-composition path.
 ///
-/// | Rule | Stores | External resolver | Result |
+/// | Rule | Local Vault | External resolver | Result |
 /// |---|---|---|---|
-/// | X1 | F | T | build error |
-/// | X2 | T | T | build succeeds; no invented realization evidence |
+/// | X1 | F | T | build succeeds through `external_only` |
+/// | X2 | F | T | no invented realization evidence |
 #[test]
-fn external_credential_resolver_composes_with_the_canonical_materializer() {
-    let missing =
-        WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new("http://control"))
-            .with_external_credential_resolver(Arc::new(ExternalCredentialResolver))
-            .with_standard_manifest(Default::default())
-            .build()
-            .err()
-            .expect("X1 resolver without a materializer is invalid");
-    assert!(missing.to_string().contains("credential materializer"));
-
-    let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
-    let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+fn external_credential_resolver_has_one_canonical_composition_path() {
     let worker = WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new("http://control"))
-        .with_credential_materializer(awaken_runtime_host::PinnedCredentialMaterializer::new(
-            credentials,
-            secrets,
-        ))
-        .with_external_credential_resolver(Arc::new(ExternalCredentialResolver))
+        .with_credential_materializer(
+            awaken_runtime_host::PinnedCredentialMaterializer::external_only(Arc::new(
+                ExternalCredentialResolver,
+            )),
+        )
         .with_worker_local_credential_resolver(Arc::new(ExternalCredentialResolver))
         .with_standard_manifest(Default::default())
         .build()
-        .expect("X2 exact resolver topology");
+        .expect("X1 exact resolver topology");
     assert!(
         worker
             .manifest()
             .capabilities
             .contains(awaken_worker_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY),
-        "X2 exact observation/revalidation capability"
+        "X1 exact observation/revalidation capability"
     );
     let evidence =
         awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
