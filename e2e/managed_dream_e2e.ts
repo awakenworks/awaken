@@ -18,7 +18,7 @@
 // |------|--------------|---------------------|-------------------|
 // | P0 | official SDK + Managed/Dream betas | create | accepted typed Dream |
 // | P1 | source store + one completed Session | execute | completed with output/session refs |
-// | P2 | committed transcript text | export | downloadable valid JSONL preserves text |
+// | P2 | committed transcript text | export/cleanup | transient JSONL is purged after use |
 // | P3 | prepared result | complete | source unchanged; output has a distinct id and cloned content |
 // | P4 | auxiliary execution | terminal | ordinary Session is terminated and marked Dream origin |
 // | P5 | terminal Dream | list/archive/cancel | filters/archive work; completed cancel is 400 |
@@ -28,7 +28,7 @@
 // committed Session state; Dream lifecycle state; terminal mutations.
 // Constraints: one source store, one non-running Session, an independently
 // addressable output store, and no raw HTTP request for a Dream operation.
-// Effects: typed asynchronous creation, frozen downloadable JSONL, an ordinary
+// Effects: typed asynchronous creation, transient frozen JSONL, an ordinary
 // auxiliary Session, isolated output content, and correct list/cancel/archive
 // projections.
 // Decision rules: P0-P6 above jointly cover the successful cross-module path
@@ -155,12 +155,8 @@ async function main() {
 
     const files = await drain(client.beta.files.list({ betas: MANAGED_BETAS }));
     const transcript = files.find((file) => file.filename === `${sourceSession.id}.jsonl`);
-    assert.ok(transcript, 'P2 one JSONL File exists for the selected Session');
-    const response = await client.beta.files.download(transcript.id, { betas: MANAGED_BETAS });
-    const jsonl = await response.text();
-    assert.match(jsonl, /Remember that Project Atlas uses Rust\./, 'P2 committed text is retained');
-    for (const line of jsonl.trimEnd().split('\n')) assert.doesNotThrow(() => JSON.parse(line));
-    pass('P2 exported transcript is downloadable, valid JSONL and preserves committed evidence');
+    assert.equal(transcript, undefined, 'P2 transient JSONL is purged after terminal cleanup');
+    pass('P2 transcript Files follow the bounded Dream input lifecycle');
 
     const completed = await drain(client.beta.dreams.list({
       statuses: ['completed'],

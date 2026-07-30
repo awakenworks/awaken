@@ -2,7 +2,7 @@
 //!
 //! A peer of the control and data planes. It owns no Run, Session, or authoring
 //! store: it drains runs
-//! from a Control Node over the typed dispatch transport and sends claim-fenced
+//! from a Coordinator cell over the typed dispatch transport and sends claim-fenced
 //! commit operations back through the same Worker boundary. A resource-capable
 //! worker may currently be composed with shared Credential and Resource authority
 //! adapters. That shared-store deployment is not process-level authority isolation;

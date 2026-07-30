@@ -13,8 +13,8 @@ mod web;
 
 pub use erasure::{Erased, erase};
 pub use hand::{
-    BashArgs, BashTool, EditArgs, EditTool, GlobArgs, GlobTool, GrepArgs, GrepTool, ReadArgs,
-    ReadTool, WriteArgs, WriteTool, executable_hand_tools,
+    BashArgs, BashTool, DeleteArgs, DeleteTool, EditArgs, EditTool, GlobArgs, GlobTool, GrepArgs,
+    GrepTool, MoveArgs, MoveTool, ReadArgs, ReadTool, WriteArgs, WriteTool, executable_hand_tools,
 };
 pub use task::{
     CancelTaskArgs, CancelTaskTool, MessageRecovery, MessageSender, RecoverFailedMessagesArgs,
@@ -67,6 +67,12 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
         ),
         hand_tool("write", "Write a file", write_args()),
         hand_tool("edit", "Edit a file by replacing text", edit_args()),
+        hand_tool("move", "Move or rename a file", move_args()),
+        hand_tool(
+            "delete",
+            "Delete one file",
+            path_arg("path", "absolute file path to delete"),
+        ),
         hand_tool(
             "glob",
             "Find files matching a glob",
@@ -161,6 +167,17 @@ fn edit_args() -> serde_json::Value {
             "new": { "type": "string" },
         },
         "required": ["path", "old", "new"],
+    })
+}
+
+fn move_args() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "source": { "type": "string", "description": "absolute source file path" },
+            "destination": { "type": "string", "description": "absolute destination file path" },
+        },
+        "required": ["source", "destination"],
     })
 }
 

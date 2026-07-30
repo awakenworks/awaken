@@ -1,5 +1,5 @@
-//! In-process hand tools (ADR-0007). `read`, `write`, `edit`, `glob`, `grep`,
-//! and `bash` run directly in the runtime process and render results as text.
+//! In-process hand tools (ADR-0007). `read`, `write`, `edit`, `move`, `delete`,
+//! `glob`, `grep`, and `bash` run directly in the runtime process and render results as text.
 //! Their ids match the descriptors in [`crate::builtin_tools`], so a run that
 //! makes a descriptor model-visible can register the matching implementation.
 //! The network tools `web_fetch`/`web_search` live in [`crate::web`].
@@ -178,6 +178,76 @@ impl Tool for EditTool {
     }
 }
 
+/// Move or rename one file. Directory trees are intentionally unsupported so
+/// callers cannot turn a narrowly-scoped file operation into a recursive move.
+pub struct MoveTool;
+
+#[derive(Deserialize)]
+pub struct MoveArgs {
+    pub source: String,
+    pub destination: String,
+}
+
+#[async_trait]
+impl Tool for MoveTool {
+    type Args = MoveArgs;
+    type Output = String;
+    fn id(&self) -> &str {
+        "move"
+    }
+    async fn call(&self, args: MoveArgs) -> Result<String, ToolError> {
+        if !std::path::Path::new(&args.source).is_file() {
+            return Err(ToolError::Execution(format!(
+                "move {}: source is not a file",
+                args.source
+            )));
+        }
+        if let Some(parent) = std::path::Path::new(&args.destination).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                ToolError::Execution(format!("move {}: {error}", args.destination))
+            })?;
+        }
+        std::fs::rename(&args.source, &args.destination).map_err(|error| {
+            ToolError::Execution(format!(
+                "move {} to {}: {error}",
+                args.source, args.destination
+            ))
+        })?;
+        Ok(format!("moved {} to {}", args.source, args.destination))
+    }
+}
+
+/// Delete exactly one regular file. Directories are rejected; recursive deletion
+/// remains outside the model-callable capability surface.
+pub struct DeleteTool;
+
+#[derive(Deserialize)]
+pub struct DeleteArgs {
+    pub path: String,
+}
+
+#[async_trait]
+impl Tool for DeleteTool {
+    type Args = DeleteArgs;
+    type Output = String;
+    fn id(&self) -> &str {
+        "delete"
+    }
+    async fn call(&self, args: DeleteArgs) -> Result<String, ToolError> {
+        if !std::path::Path::new(&args.path).is_file() {
+            return Err(ToolError::Execution(format!(
+                "delete {}: path is not a file",
+                args.path
+            )));
+        }
+        std::fs::remove_file(&args.path)
+            .map_err(|error| ToolError::Execution(format!("delete {}: {error}", args.path)))?;
+        Ok(format!("deleted {}", args.path))
+    }
+}
+
 /// Run a command via the platform shell and return its output. A non-zero exit
 /// is a model-visible error result carrying stdout/stderr, not a run abort.
 pub struct BashTool;
@@ -264,6 +334,8 @@ pub fn executable_hand_tools() -> Vec<Arc<dyn RawTool>> {
         erase(ReadTool),
         erase(WriteTool),
         erase(EditTool),
+        erase(MoveTool),
+        erase(DeleteTool),
         erase(GlobTool),
         erase(GrepTool),
         erase(BashTool),
@@ -290,6 +362,51 @@ mod write_tests {
             .expect("write into a missing dir tree");
         assert!(out.contains("wrote"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "artifact-bytes");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn move_and_delete_are_single_file_operations() {
+        // Causes: M1 a regular source file and nested destination; M2 a regular
+        // destination file; M3 a directory passed to delete.
+        // Constraints: move/delete operate on one file and never recurse.
+        // Effects: M1 preserves bytes at the new path, M2 removes that file, and
+        // M3 fails without changing the directory tree.
+        // Decision rules: M1 move success; M2 delete success; M3 directory reject.
+        let base = std::env::temp_dir().join(format!("awaken-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let source = base.join("source.md");
+        let destination = base.join("nested/destination.md");
+        std::fs::write(&source, "durable").unwrap();
+        MoveTool
+            .call(MoveArgs {
+                source: source.to_string_lossy().into_owned(),
+                destination: destination.to_string_lossy().into_owned(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            "durable",
+            "M1"
+        );
+        DeleteTool
+            .call(DeleteArgs {
+                path: destination.to_string_lossy().into_owned(),
+            })
+            .await
+            .unwrap();
+        assert!(!destination.exists(), "M2");
+        assert!(
+            DeleteTool
+                .call(DeleteArgs {
+                    path: base.to_string_lossy().into_owned(),
+                })
+                .await
+                .is_err(),
+            "M3"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 }

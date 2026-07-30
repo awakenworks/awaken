@@ -658,7 +658,9 @@ pub async fn enforce_managed_beta(
         )
             .into_response();
     }
-    if (is_family("/v1/dreams") || is_family("/v1/dream_policies"))
+    if (is_family("/v1/dreams")
+        || is_family("/v1/dream_policies")
+        || is_family("/v1/dream_agent_configuration"))
         && !has_beta(&req, super::dreams::DREAMING_BETA)
     {
         return (
@@ -682,6 +684,7 @@ pub async fn enforce_managed_beta(
         "/v1/vaults",
         "/v1/dreams",
         "/v1/dream_policies",
+        "/v1/dream_agent_configuration",
     ]
     .into_iter()
     .any(is_family);

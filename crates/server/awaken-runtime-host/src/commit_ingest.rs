@@ -1,9 +1,9 @@
-//! The write-plane half of the Control/Worker seam: a database-less Worker sends
-//! one versioned [`CommitOperation`] under its current claim. The Control Node
+//! The write-plane half of the Coordinator/Worker seam: a database-less Worker sends
+//! one versioned [`CommitOperation`] under its current claim. The Coordinator cell
 //! validates the claim and applies the operation through the authoritative
 //! [`OperationCoordinator`].
 //!
-//! Paired with the dispatch transport (control plane): a worker claims a run over
+//! Paired with the dispatch transport: a worker claims a run over
 //! the dispatch transport, drives it, then commits its facts here.
 
 use std::sync::Arc;
@@ -21,8 +21,8 @@ use awaken_agent_contract::thread::commit::coordinator::{
 use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_run_ingress::{
-    ClaimedCommitCommand, ClaimedRunCommit, DispatchQueue, RunClaim, WorkerDirectory,
-    WorkerIdentity, WorkerRequestAuthorizer, WorkerState, commit_payload_hash,
+    ClaimedCommitCommand, ClaimedCommitRequest, ClaimedRunCommit, DispatchQueue, RunClaim,
+    WorkerDirectory, WorkerIdentity, WorkerRequestAuthorizer, WorkerState, commit_payload_hash,
 };
 
 use crate::host::HostError;
@@ -71,7 +71,7 @@ impl CommitApplier for HostCommitApplier {
 /// Explicit application service for the claim-fenced commit boundary.
 ///
 /// The injected coordinator is the committed-truth authority used by the
-/// embedding Control Node. The service never constructs a [`SharedHost`] or
+/// embedding Coordinator cell. The service never constructs a [`SharedHost`] or
 /// selects a storage backend.
 pub struct ClaimedCommitService {
     dispatch: Arc<dyn DispatchQueue>,
@@ -171,13 +171,6 @@ async fn authenticate_commit_worker(
     }
 }
 
-#[derive(serde::Deserialize)]
-struct ClaimedCommitRequest {
-    claim: RunClaim,
-    operation: CommitOperation,
-    identity: WorkerIdentity,
-}
-
 /// Atomically validate a remote worker's claim and apply its ThreadCommit while
 /// the dispatch authority guard is live. Reclaim/settle/cancel cannot enter the
 /// store between the validation and the commit.
@@ -247,7 +240,7 @@ const CLAIMED_COMMIT_TRANSPORT_ATTEMPTS: usize = 3;
 const CLAIMED_COMMIT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
 impl RemoteClaimedRunCommit {
-    /// Create the private Worker-to-Control commit client. The default does not
+    /// Create the private Worker-to-Coordinator commit client. The default does not
     /// inherit ambient egress proxies; use [`Self::with_client`] when a proxy or
     /// mTLS identity is intentionally part of the deployment.
     pub fn new(base_url: impl Into<String>, identity: WorkerIdentity) -> Self {
@@ -308,17 +301,13 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
         command: ClaimedCommitCommand,
     ) -> Result<CommitReceipt, CommitError> {
         let path = "/v1/worker/commit-claimed";
-        let body = json!({
-            "claim": command.claim,
-            "operation": command.operation,
-            "identity": &self.identity
-        });
+        let request_body = ClaimedCommitRequest::new(command, self.identity.clone());
         let mut last_transport_error = None;
         for attempt in 1..=CLAIMED_COMMIT_TRANSPORT_ATTEMPTS {
             let request = self.client.post(format!("{}{path}", self.base_url));
             let response = match self
                 .authorize(path, &self.identity.worker_id, request)?
-                .json(&body)
+                .json(&request_body)
                 .send()
                 .await
             {

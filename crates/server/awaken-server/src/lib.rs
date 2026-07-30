@@ -91,11 +91,13 @@ pub async fn prepare_local_acp(
 pub fn install_platform_memory_data_plane(host: &SharedHost) {
     // Prefer the canonical write-through FUSE projection and retain the existing
     // portable copy/harvest fallback for ordinary Session bindings. A mount that
-    // explicitly requires write-through (Memory Consolidation output) observes
+    // explicitly requires write-through (Dream output) observes
     // the realized kind and fails closed before launch when only copy is possible.
-    host.install_memory_mounter(Arc::new(awaken_sandbox_memoryd::MemoryStoreMounter::new(
-        host.memory_repository(),
-    )));
+    if !host.has_memory_mounter() {
+        host.install_memory_mounter(Arc::new(awaken_sandbox_memoryd::MemoryStoreMounter::new(
+            host.memory_repository(),
+        )));
+    }
 }
 
 /// Open one embedded resource persistence family for a durable local composition.
@@ -356,7 +358,7 @@ fn local_managed_state_over(
     let session_repo = host.storage_dir().map(|root| {
         std::fs::create_dir_all(root).expect("create durable session repository directory");
         Arc::new(
-            awaken_runtime_host::SqliteManagedSessionRepository::open(
+            awaken_session_store::SqliteManagedSessionRepository::open(
                 &root.join("sessions.db").to_string_lossy(),
             )
             .expect("open durable managed session repository"),
@@ -453,6 +455,7 @@ pub fn mount_with_managed_and_application_access_and_models(
         resource_catalog,
         Some(application_access),
         Some(model_directory),
+        None,
     )
     .0
 }
@@ -466,6 +469,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
     resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
     model_directory: Arc<dyn awaken_managed_routers::ModelDirectory>,
+    dream_repository: Arc<dyn awaken_protocol_managed::DreamRepository>,
 ) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
     mount_with_managed_over_and_models(
         host,
@@ -473,6 +477,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
         resource_catalog,
         Some(application_access),
         Some(model_directory),
+        Some(dream_repository),
     )
 }
 
@@ -488,6 +493,7 @@ fn mount_with_managed_over(
         resource_catalog,
         application_access,
         None,
+        None,
     )
 }
 
@@ -497,6 +503,7 @@ fn mount_with_managed_over_and_models(
     resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
     model_directory: Option<Arc<dyn awaken_managed_routers::ModelDirectory>>,
+    dream_repository: Option<Arc<dyn awaken_protocol_managed::DreamRepository>>,
 ) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
     install_platform_memory_data_plane(&host);
     // Spawn the process-level dispatch pool once when durable ingress is enabled
@@ -516,20 +523,26 @@ fn mount_with_managed_over_and_models(
         host.memory_repository(),
         resource_catalog.clone(),
     ));
-    let dream_state = match host.storage_dir() {
-        Some(root) => Arc::new(
-            awaken_protocol_managed::DreamState::with_repository(
-                dream_worker,
-                Arc::new(
-                    awaken_runtime_host::SqliteManagedSessionRepository::open(
-                        &root.join("sessions.db").to_string_lossy(),
-                    )
-                    .expect("open durable Memory Consolidation repository"),
-                ),
-            )
-            .expect("load durable Dream jobs"),
+    let dream_state = match dream_repository {
+        Some(repository) => Arc::new(
+            awaken_protocol_managed::DreamState::with_repository(dream_worker, repository)
+                .expect("load durable Dream jobs"),
         ),
-        None => Arc::new(awaken_protocol_managed::DreamState::new(dream_worker)),
+        None => match host.storage_dir() {
+            Some(root) => Arc::new(
+                awaken_protocol_managed::DreamState::with_repository(
+                    dream_worker,
+                    Arc::new(
+                        awaken_session_store::SqliteManagedSessionRepository::open(
+                            &root.join("sessions.db").to_string_lossy(),
+                        )
+                        .expect("open durable Dream repository"),
+                    ),
+                )
+                .expect("load durable Dream jobs"),
+            ),
+            None => Arc::new(awaken_protocol_managed::DreamState::new(dream_worker)),
+        },
     };
     dream_state.bind_session_source(managed_state.clone());
     dream_state.resume_incomplete();

@@ -33,8 +33,8 @@ transaction atomic and isolated, but they do not refresh another process's
 in-memory projection, make a response-loss retry idempotent, or prove that a
 snapshot assembled by several reads is one committed prefix. The required
 authority is therefore a **logical committed-truth protocol**, not necessarily
-one physical Control Node. SQLite uses one physical writer; PostgreSQL may later
-run several Control Nodes if every node implements the same protocol and reads
+one physical Coordinator process. SQLite uses one physical writer; PostgreSQL may later
+run several Coordinator replicas if every replica implements the same protocol and reads
 authoritative state.
 
 ## Decision
@@ -42,7 +42,7 @@ authoritative state.
 ### D1: The coordinator owns committed truth; Workers own execution caches
 
 Every remote `ThreadCommit` is submitted through a claim-fenced coordinator
-endpoint. A Worker never opens or writes the Control Node's agent-truth or
+endpoint. A Worker never opens or writes the Coordinator cell's agent-truth or
 dispatch database. The coordinator validates ownership and versions, performs
 the durable commit, and returns a receipt. A Worker may keep a local
 `RecoveryProjection`, but that projection is read-only execution context and is
@@ -50,10 +50,10 @@ never authoritative.
 
 “Coordinator-owned” is logical:
 
-- SQLite has one physical Control Node/writer per cell.
+- SQLite has one physical Coordinator writer per cell.
 - PostgreSQL initially uses the same deployment shape, but the protocol does not
   rely on sticky routing or one process-local projection.
-- Multiple active Control Nodes are allowed only after authoritative recovery
+- Multiple active Coordinator replicas are allowed only after authoritative recovery
   reads, durable idempotency receipts, and cross-node conformance are complete.
 
 ### D2: Claim and recovery are separate correctness steps
@@ -104,7 +104,7 @@ that service and does not manufacture a private `SharedHost` commit path.
 A public `WorkerNodeBuilder` assembles registration, heartbeat, claim, recovery,
 lease renewal, commit, settle/abandon, drain, quiesce, and deregistration. The
 application supplies one registration-time application factory. After the
-Control Node allocates the exact Worker incarnation, the factory receives an
+Coordinator allocates the exact Worker incarnation, the factory receives an
 immutable `RegisteredWorkerContext` carrying that registration and the same
 identity-bound transport used by Worker control. It returns one
 `RegisteredWorkerApplication`: an optional claim-time
@@ -128,7 +128,7 @@ manifest sources are mutually exclusive and share contract validation.
 The provisioner returns only a frozen, secret-free `ApplicationSessionPlan` of
 neutral mounts, environment values, prompt context, MCP inputs, and a network
 restriction. Because it is produced after claim, the Worker submits the complete
-plan as one claim-fenced `ApplicationSessionContribution` to the Control-owned
+plan as one claim-fenced `ApplicationSessionContribution` to the Coordinator-owned
 Session application service while the Session is `Preparing`. The Control edge
 verifies the claim/epoch and fingerprint; the one Session creation compiler then
 consumes Control and application inputs, freezes the baseline, and creates
@@ -165,7 +165,7 @@ elapsed-time projections reuse the claim/settle authority instead of creating
 a parallel Worker lifecycle. Timestamp-free legacy rows remain readable for
 state reconstruction but cannot authorize a fabricated duration.
 
-P2 permits PostgreSQL active-active Control Nodes and makes their asynchronous
+P2 permits PostgreSQL active-active Coordinator replicas and makes their asynchronous
 recovery and lifecycle reads authoritative. Versioned recovery caches/deltas,
 snapshot compaction, further configuration cleanup, and streaming transports
 are optional follow-up optimizations: they may reduce cost, but are not allowed
@@ -181,7 +181,7 @@ to weaken or redefine the P0 protocol invariants.
 - Embedding systems such as Flow supply only their registered application
   projection and execution decorator; they do not own generic Session
   realization, registration, claim, lease, recovery, or settlement.
-- Commit latency includes the Control Node/coordinator hop, and recovery adds a
+- Commit latency includes the Worker-to-Coordinator hop, and recovery adds a
   snapshot read after claim. Batching, deltas, and streaming may optimize those
   costs only after correctness is closed.
 - A database transaction remains necessary but not sufficient: protocol-level
@@ -199,10 +199,10 @@ claim-bound Session plan, neutral ownership verification, and the separated
 lifecycle/dispatch feeds described in the detailed design.
 
 The P2 active-active boundary is covered by a real PostgreSQL test that launches
-two independent Control processes over one schema and deliberately routes
-registration-independent protocol calls across both. Control A exits after
+two independent Coordinator processes over one schema and deliberately routes
+registration-independent protocol calls across both. Coordinator A exits after
 durably applying a claimed commit but before delivering its HTTP receipt;
-Control B returns the durable duplicate receipt, serves authoritative recovery,
+Coordinator B returns the durable duplicate receipt, serves authoritative recovery,
 and settles the same claim. The test asserts one receipt, one message, and one
 completion tombstone and runs in `scripts/ci/pg_tests.sh`, which provisions an
 ephemeral PostgreSQL instance so the case cannot silently self-skip.

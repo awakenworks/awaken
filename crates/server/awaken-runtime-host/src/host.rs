@@ -219,7 +219,7 @@ pub struct SharedHost {
     /// once from the environment at construction. The runtime reads this typed
     /// config instead of reaching into process env at each call site.
     pub(crate) deployment: crate::deployment_config::DeploymentConfig,
-    /// Explicit Worker-side dispatch transport. Control Nodes leave this empty
+    /// Explicit Worker-side dispatch transport. Coordinator processes leave this empty
     /// and resolve the configured durable backend; Workers inject their HTTP
     /// transport here so no process-global compatibility slot becomes a second
     /// composition authority.

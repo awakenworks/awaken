@@ -39,16 +39,16 @@ mod worker_context;
 pub use any::AnyDispatchStore;
 pub use capability::RunIngressCapabilities;
 // The database-less worker's HTTP dispatch client (drives claim/settle over the wire
-// to the Control Node's registered Worker router), extracted from awaken-runtime-host.
+// to the Coordinator's registered Worker router), extracted from awaken-runtime-host.
 pub use awaken_run_ingress_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, LeaseLossReason,
 };
 pub use awaken_run_ingress_contract::{
     AssignmentRejection, BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest,
-    ClaimRunRequest, ClaimWorkerRequest, ClaimedCommitCommand, CredentialRealizationRequest,
-    DeliverAndClaimRequest, EnqueueRequest, ExecutionLocation, ExecutionScopeRef,
-    HOST_EXECUTOR_CAPABILITY, HeartbeatWorkerRequest, LeastLoadedPolicy,
+    ClaimRunRequest, ClaimWorkerRequest, ClaimedCommitCommand, ClaimedCommitRequest,
+    CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest, ExecutionLocation,
+    ExecutionScopeRef, HOST_EXECUTOR_CAPABILITY, HeartbeatWorkerRequest, LeastLoadedPolicy,
     PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext, PlacementError, PlacementPolicy,
     PlacementRequirements, REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RecoveryRequest,
     RegisterWorkerRequest, RegisteredWorker, RegistryError, RegistryMutation, RenewRequest,

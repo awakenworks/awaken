@@ -497,7 +497,7 @@ pub struct WorkerUpstream {
 }
 
 impl WorkerUpstream {
-    /// Connect to the private Worker-to-Control plane without inheriting
+    /// Connect to the private Worker-to-Coordinator plane without inheriting
     /// workstation or container egress proxies. Deployments that intentionally
     /// proxy this channel can still supply an explicit client with
     /// [`Self::with_client`].

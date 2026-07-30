@@ -1,62 +1,13 @@
 //! Deterministic Dream scenario composition shared by Rust and TypeScript E2E.
 //!
-//! Production requires a real write-through FUSE mount. The conformance scenario
-//! replaces only that infrastructure port so orchestration can run on CI hosts
-//! without `/dev/fuse`; write-through enforcement itself remains covered by the
-//! provisioning decision-table tests.
+//! The scenario uses the production MemoryStore mounter and a scripted model that
+//! performs a real output-file write through the ordinary tool loop.
 
-use std::path::Path;
 use std::sync::Arc;
 
-use awaken_memory_store::{MemErr, MemoryRepository};
-use awaken_runtime_host::{MemoryMount, MemoryMounter, MountAccess, Realization, SandboxError};
 use axum::Router;
 
-use crate::{EchoModel, SharedHost, build_router_and_host};
-
-struct ScenarioDreamMemoryMounter {
-    memory: Arc<dyn MemoryRepository>,
-}
-
-struct ScenarioDreamMemoryMount;
-
-#[async_trait::async_trait]
-impl MemoryMount for ScenarioDreamMemoryMount {
-    fn realization(&self) -> Realization {
-        Realization::Fuse
-    }
-
-    async fn teardown(self: Box<Self>) {}
-}
-
-fn sandbox_error(error: impl std::fmt::Display) -> SandboxError {
-    SandboxError::new(error.to_string())
-}
-
-#[async_trait::async_trait]
-impl MemoryMounter for ScenarioDreamMemoryMounter {
-    async fn mount(
-        &self,
-        store_id: &str,
-        host_path: &Path,
-        _access: MountAccess,
-    ) -> Result<Box<dyn MemoryMount>, SandboxError> {
-        std::fs::create_dir_all(host_path).map_err(sandbox_error)?;
-        let memories = self
-            .memory
-            .snapshot_heads(store_id)
-            .await
-            .map_err(|error: MemErr| sandbox_error(error))?;
-        for memory in memories {
-            let path = host_path.join(memory.path.trim_start_matches('/'));
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(sandbox_error)?;
-            }
-            std::fs::write(path, memory.content.unwrap_or_default()).map_err(sandbox_error)?;
-        }
-        Ok(Box::new(ScenarioDreamMemoryMount))
-    }
-}
+use crate::{SharedHost, build_router_and_host};
 
 /// Build the one Dream scenario router used by process-level SDK E2E.
 pub fn build_dream_router() -> Router {
@@ -65,9 +16,50 @@ pub fn build_dream_router() -> Router {
 
 /// Return the same router plus its Host for focused cross-module assertions.
 pub fn build_dream_router_and_host() -> (Router, Arc<SharedHost>) {
-    let (router, host) = build_router_and_host(Arc::new(EchoModel), "claude-sonnet-5");
-    host.install_memory_mounter(Arc::new(ScenarioDreamMemoryMounter {
-        memory: host.memory_repository(),
-    }));
-    (router, host)
+    build_router_and_host(Arc::new(DreamScenarioModel), "claude-sonnet-5")
+}
+
+struct DreamScenarioModel;
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::llm::LlmExecutor for DreamScenarioModel {
+    async fn infer(
+        &self,
+        request: awaken_runtime_contract::llm::ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse> {
+        use awaken_agent_contract::agent::message::Role;
+        use awaken_runtime_contract::llm::{AssistantOutput, ChatResponse, ToolCall};
+
+        let is_dream = request.messages.iter().any(|message| {
+            message.role == Role::User
+                && awaken_runtime_host::block_text(&message.content).contains("[dream-job:")
+        });
+        if !is_dream {
+            return awaken_runtime_contract::llm::LlmExecutor::infer(&crate::EchoModel, request)
+                .await;
+        }
+        if request
+            .messages
+            .last()
+            .is_some_and(|message| message.role == Role::Tool)
+        {
+            return Ok(ChatResponse {
+                output: AssistantOutput::text("Dream consolidation written."),
+                usage: None,
+                stop_reason: None,
+            });
+        }
+        Ok(ChatResponse {
+            output: AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "dream-write-through-1".into(),
+                tool_id: "write".into(),
+                arguments: serde_json::json!({
+                    "path": "/mnt/dream/output-memory/MEMORY.md",
+                    "content": "# Dream\n- Consolidated by the Dream Agent.\n"
+                }),
+            }]),
+            usage: None,
+            stop_reason: None,
+        })
+    }
 }

@@ -45,7 +45,7 @@ path.
 | Managed Session/Event application | `awaken-protocol-managed::ManagedState` | validates Sessions, reads committed Messages, creates and archives the auxiliary Session |
 | ordinary Agent execution | `awaken-runtime-host::SessionRuntime` | executes the Dream Agent through the normal Run path |
 | Memory file truth | `awaken-resource-contract::MemoryRepository` | reads and commits path-addressed Memory content |
-| Files data plane | `awaken-server::SharedHost` | stores downloadable JSONL artifacts using the canonical File record path |
+| Files data plane | `awaken-server::SharedHost` | stores transient JSONL artifacts using the canonical File record and purge lifecycle |
 | Resource catalog | `ResourceCatalog` | validates source ownership and gates the output store while Dream owns it |
 | mount realization | provisioning and sandbox providers | realizes InlineBytes and MemoryStore inputs for the ordinary Session |
 
@@ -58,7 +58,7 @@ path.
 | local, namespace, and container providers | reject copy realization for `WriteThroughRequired` | no silent copy/harvest downgrade before Agent launch |
 | Managed beta middleware and rate-limit classifier | Dreams family and both beta capabilities | wire compatibility and existing Managed request governance |
 | Managed Session application | exact built-in-origin exception and public realization seam | the built-in auxiliary Agent still uses one canonical Session path |
-| Memory extension and Managed Session store | add the `DreamRepository` port plus scoped job/override tables | Dream durability reuses the auxiliary-work repository family instead of embedding a database in the protocol adapter |
+| Memory extension and Managed Session store | add the `DreamRepository` port plus scoped job/override/policy tables and SQLite/Postgres CAS adapters | Dream durability reuses the auxiliary-work repository family instead of embedding a database in the protocol adapter |
 | server assembly | FUSE-preferred Memory mounter and one Dream composition root | ordinary mounts may fall back; Dream output may not |
 | Managed periodic driver | evaluate opt-in Dream policies beside cron Deployments | one timer and one trigger path; policies never execute an Agent directly |
 
@@ -99,7 +99,7 @@ BuiltInDreamAgent
     |---- ResourceCatalog: source validation + output availability fence
     |---- MemoryRepository.snapshot_heads: frozen source and independent clone
     |---- ManagedState: committed transcript + ordinary auxiliary Session
-    |---- SharedHost Files: downloadable JSONL evidence
+    |---- SharedHost Files: transient JSONL evidence
     `---- provisioning: RO input/transcripts + strict write-through output
                     |
                     v
@@ -122,6 +122,7 @@ struct DreamRequest {
 struct DreamPreparation {
     result_memory_store_id: String,
     session_id: String,
+    transcript_file_ids: Vec<String>,
 }
 ```
 
@@ -170,6 +171,8 @@ The supported model ids follow the current Dreams documentation:
 the original inputs/model/instructions, lifecycle timestamps, error, usage,
 `outputs[]`, and the auxiliary `session_id`. Output and Session references appear
 after preparation commits and remain present on failure or cancellation.
+`speed: "fast"` is rejected at create time because the installed inference
+adapter does not support that option; it is never accepted and silently ignored.
 
 List is newest-first, defaults to 20, caps `limit` at 100, excludes archived
 jobs by default, and supports `page`, repeated `statuses`, `include_archived`,
@@ -189,6 +192,18 @@ therefore affects only later Dreams. Request `model` overrides the selected
 Agent's model for this Session, while request `instructions` is appended as
 bounded guidance and cannot widen mounts, tools, network, or credentials.
 
+The explicit Awaken extension exposes the effective selection without creating
+a duplicate default Agent row:
+
+```text
+GET  /v1/dream_agent_configuration
+POST /v1/dream_agent_configuration  {"agent_id":"agent_id"}
+POST /v1/dream_agent_configuration  {"agent_id":null}  # clear override
+```
+
+An override is validated against the active Workspace Agent catalog before the
+durable row or cache changes.
+
 ## Automatic Dream policy
 
 The scheduling key is exactly `(workspace_id, memory_store_id)`. Absence is the
@@ -205,12 +220,13 @@ next_due_ms              durable cursor
 last_completed_cutoff_ms durable successful-evidence cutoff
 ```
 
-At a due tick, the Session source selects non-running, non-Dream auxiliary
+At a due tick, the Session source selects the most recently updated non-running, non-Dream auxiliary
 Sessions in the Workspace whose `updated_at` is newer than the last successful
 cutoff. If fewer than `min_new_sessions` exist, only `next_due_ms` advances. If a
 job for the same policy is already pending/running, no duplicate is submitted.
-Otherwise the selected set is capped at `max_sessions` and passed to the ordinary
-Dream create path. Only successful completion advances the evidence cutoff;
+Otherwise the selected set is capped at `max_sessions`. Advancing the exact
+policy version and inserting its ordinary DreamJob is one repository transaction,
+so multiple scheduler replicas cannot claim the same occurrence. Only successful completion advances the evidence cutoff;
 failure/cancel therefore permits a later retry over the same evidence.
 
 Deployment cron and Dream interval policies intentionally have different domain
@@ -249,10 +265,12 @@ tool-use inputs and tool-result payloads are retained in order; uncommitted
 streaming deltas and provider-hidden data are not part of this read model and
 are not exported. An empty Session produces an empty JSONL file.
 
-Exports are canonical Files artifacts (`application/x-ndjson`) and are mounted
+Exports are canonical transient Files artifacts (`application/x-ndjson`) and are mounted
 as `InlineBytes` under `/mnt/dream/session-transcripts`. They are not injected
 into the initial model context, so the Agent can `Glob`, `Grep`, and `Read` only
-the evidence it needs.
+the evidence it needs. Their File ids are stored with the durable preparation and
+deleted through the ordinary File lifecycle after terminal/cancel cleanup; a
+crash leaves `cleanup_pending` so restart retries that same cleanup.
 
 ## Mount and Agent capability contract
 
@@ -270,7 +288,7 @@ fails before Agent launch. Ordinary non-Dream Memory mounts retain their existin
 copy fallback.
 
 The built-in Session disables every tool by default and enables only
-`read`, `write`, `edit`, `glob`, and `grep`; network policy is `None`. Writes are
+`read`, `write`, `edit`, `move`, `delete`, `glob`, and `grep`; network policy is `None`. Writes are
 therefore limited to the only writable mount. MCP, shell, delegation, credential
 access, extraction, and nested Dream capabilities are absent.
 
@@ -305,18 +323,22 @@ worker
   -> export JSONL Files
   -> create/realize ordinary auxiliary Session with strict mounts
   -> persist output and Session references
-  -> execute one ordinary user event
-  -> archive auxiliary Session, activate result, purge hidden snapshot
-  -> persist Completed and usage, or Failed and error
+  -> execute one idempotently identified ordinary user event
+  -> revalidate every input (archive/delete during execution is a typed failure)
+  -> durably record terminal outcome with cleanup_pending
+  -> archive auxiliary Session, activate result, purge hidden snapshot and JSONL Files
+  -> clear cleanup_pending; only now publish Completed or Failed
 ```
 
-With host storage configured, jobs and Workspace overrides are stored beside the
-ordinary Session aggregate in `sessions.db` through the canonical
-`SqliteManagedSessionRepository`. Startup resets durable `pending`/`running`
+Jobs, policies, and Workspace overrides use the exact Session-store backend
+selected by the production composition root: `SqliteManagedSessionRepository`
+or `PostgresManagedSessionRepository`. Startup CAS-resets durable `pending`/`running`
 jobs to `pending` and
 redispatches them. Deterministic lower-resource ids make preparation idempotent:
-an existing result and Session are adopted; a clone left before its catalog
+an existing result and Session are adopted, and an already committed Dream trigger
+is not sent twice; a clone left before its catalog
 commit is purged and rebuilt. Terminal jobs are loaded without redispatch.
+Terminal jobs with `cleanup_pending` redispatch cleanup only.
 
 Dream policies and their due/success cursors are stored in the same repository.
 The composition root's single 15-second Managed timer first claims due Deployment
@@ -332,8 +354,8 @@ Repeated cancel is idempotent. Canceling `completed` or `failed` returns 400;
 late worker completion cannot overwrite `canceled`.
 
 Archive is terminal-only and idempotent. It sets `archived_at` without changing
-status and does not delete the output MemoryStore, JSONL Files, or auxiliary
-Session history.
+status and does not delete the output MemoryStore or auxiliary Session history.
+Transient JSONL Files have already been purged at the terminal cleanup boundary.
 
 ## Failure and consistency boundaries
 
@@ -343,7 +365,7 @@ Session history.
 - A result mount is write-through or the Agent never starts.
 - Failed/canceled Dreams retain a result that was successfully prepared and all writes already committed through it.
 - Dream state, Memory content, File bytes, and Session events each have one non-overlapping authority.
-- SQLite transition persistence occurs after each visible lifecycle change; persistence failure never creates a second in-memory authority.
+- SQLite/Postgres transitions use exact-version CAS; persistence failure or a concurrent replica never creates a second in-memory authority.
 - Workspace ownership is checked without revealing cross-Workspace resources.
 
 Public execution error types are `timeout`, `internal_error`,
@@ -360,17 +382,21 @@ oracle.
 |---|---|---|
 | API-1 | valid create and successful/failed worker | compatible projection, usage, error, partial output; `official_create_retrieve_list_archive_and_failure_shapes` |
 | API-2 | invalid input cardinality/count/uniqueness/instructions/model/resource | 400 and no valid job; `validation_and_terminal_mutation_decision_table` |
+| API-2b | input archived/deleted after create | typed failure before terminal publication; `input_deleted_after_create_fails_before_terminal_publication` |
 | API-3 | running job cancel/repeat/late completion | immediate idempotent canceled, output retained, no overwrite; `cancellation_is_immediate_idempotent_and_retains_prepared_output` |
 | API-4 | neither/one/both beta capabilities | only both reach Dream route; `dream_routes_require_managed_and_dreaming_betas` |
 | API-5 | limit/cursor/repeated status/date bounds | SDK-compatible newest-first pages or 400; `list_supports_official_repeated_status_filters_and_cursor_pages` |
 | REC-1 | terminal SQLite job and restart | same status/output/usage restored; `sqlite_repository_restores_terminal_dreams_after_restart` |
+| REC-2 | process loss during Running | CAS reset and canonical redispatch; `resume_incomplete_cas_resets_and_executes_a_durable_running_job` |
+| REC-3 | terminal decision plus cleanup failure | public Running until cleanup-only restart succeeds; `restart_retries_terminal_cleanup_before_publishing_completion` |
 | SEL-1 | default/override Workspace policy | effective selection frozen without copied default rows; `workspace_agent_selection_uses_effective_default_and_freezes_override` |
 | SCH-1 | disabled / below threshold / due / completed cutoff | no job, threshold gating, one ordinary DreamJob, no unchanged reprocessing; `automatic_policy_is_opt_in_thresholded_and_reuses_the_dream_job_path` |
 | SCH-2 | absent / invalid / configured / restart | default projection, atomic 400, durable cursor/config restore; `dream_policy_api_projects_defaults_validates_and_survives_restart` |
+| SCH-3 | two replicas claim one due policy version | one atomic policy/job winner and one benign loser; `concurrent_policy_ticks_claim_one_dream_across_replicas` |
 | MEM-1 | snapshot then source update | frozen heads unchanged and path ordered; `snapshot_heads_conformance` |
 | MNT-1 | strict output with copy-only mounter | teardown and fail before Agent launch; `write_through_required_rejects_copy_before_agent_launch` |
 | JSONL-1 | committed text/tool-use/tool-result/empty history | exact ordered payload or empty file; `jsonl_export_preserves_every_committed_message_and_tool_payload_in_order` |
-| E2E-1 | Agent + Session + Events + Files + MemoryStore + Dream | one runtime/data plane, JSONL readable on demand, ordinary auxiliary Session, independent output/source unchanged; `agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane` |
+| E2E-1 | Agent + Session + Events + Files + MemoryStore + Dream | one runtime/data plane, real restricted write tool call, transient JSONL cleanup, ordinary auxiliary Session, independent output/source; `agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane` |
 | E2E-2 | official TypeScript SDK + Session + Files + MemoryStore + Dream | typed SDK creation/poll/list/cancel/archive across one process boundary; `managed_dream_e2e.ts` |
 
 ### P0-P6 completion evidence
@@ -384,7 +410,7 @@ cross-module acceptance design.
 |---|---|---|
 | P0 | current official SDK can create and decode a typed asynchronous Dream with the Managed and Dreaming capabilities | SDK `0.115.0`; `managed_dream_e2e.ts`; SDK-surface conformance gate |
 | P1 | one frozen source and selected committed Sessions produce a terminal Dream with stable output and auxiliary Session references | `DreamState`; `BuiltInDreamAgent`; Rust and TypeScript Dream E2Es |
-| P2 | each committed transcript is exported as valid, downloadable JSONL and remains file input read on demand | `SessionTranscriptJsonlExporter`; `jsonl_export_preserves_every_committed_message_and_tool_payload_in_order`; TypeScript Files assertion |
+| P2 | each committed transcript is exported as valid JSONL, remains file input read on demand during execution, and is purged afterward | `SessionTranscriptJsonlExporter`; `jsonl_export_preserves_every_committed_message_and_tool_payload_in_order`; transient Files assertion |
 | P3 | input Dream store is read-only and unchanged; output Dream store is a distinct clone and the sole strict write-through target | `MemoryStoreContentSnapshot`; `WriteThroughRequired`; mount decision-table tests; both cross-module E2Es |
 | P4 | Dream execution is an ordinary restricted auxiliary Session, not an alternate Agent state | `ManagedState`; `BuiltInDreamAgent`; auxiliary Session origin/terminal assertions |
 | P5 | retrieve/list/filter/cancel/archive, durable recovery, Workspace selection, automatic policy, and shared periodic scheduling obey their state rules | protocol cause/decision-table tests; SQLite recovery tests; policy tests |
@@ -393,13 +419,12 @@ cross-module acceptance design.
 ## Required versus deferred work
 
 Implemented required behavior is the explicit Anthropic-compatible Dream API,
-durable local lifecycle/recovery, frozen JSONL evidence, independent Memory
+durable SQLite/Postgres lifecycle/recovery, frozen JSONL evidence, independent Memory
 output, strict mount semantics, auxiliary Agent execution, Workspace selection,
 and cross-module E2E.
 
-Deferred work is automatic replacement of an Agent's bound MemoryStore,
-personal-to-team promotion, multi-source Memory merge, and a distributed
-Postgres Dream-job repository for coordinator-only deployments. Those features
+Deferred product behavior is automatic replacement of an Agent's bound MemoryStore,
+personal-to-team promotion, and multi-source Memory merge. Those features
 must submit or store the same `DreamJob`; they may not add another executor or
 state machine.
 

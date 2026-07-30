@@ -283,7 +283,9 @@ struct ManagementStores {
     webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>,
     /// Durable home for the Managed session aggregate (its own `sessions.db`), so a
     /// rehydrated session reports its real config across a restart / peer process.
-    sessions: Arc<dyn awaken_protocol_managed::ManagedSessionRepository>,
+    sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
+    /// The same physical Session store viewed through the Dream repository port.
+    dream_repository: Arc<dyn awaken_protocol_managed::DreamRepository>,
     /// Same Session application repository viewed through the extraction-work
     /// port; kept separate from MemoryRepository and from IAM.
     memory_extractions: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>,
@@ -438,7 +440,7 @@ fn spawn_credential_mutation_reconciliation(
 /// Ephemeral management stores: everything in process memory (dev / e2e default).
 fn in_memory_management_stores() -> ManagementStores {
     let sessions = Arc::new(
-        awaken_protocol_managed::SqliteManagedSessionRepository::open_in_memory()
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("open ephemeral managed Session repository"),
     );
     let admin = Arc::new(
@@ -456,7 +458,8 @@ fn in_memory_management_stores() -> ManagementStores {
         resource_catalog: admin.clone(),
         webhooks: admin,
         sessions: sessions.clone(),
-        memory_extractions: sessions,
+        memory_extractions: sessions.clone(),
+        dream_repository: sessions,
         config: Arc::new(
             awaken_config_store::SqliteConfigStore::open_in_memory().expect("open config store"),
         ),
@@ -477,7 +480,13 @@ fn management_stores_for_runtime_storage(
         return stores;
     };
     stores.workspace_root = Some(dir.to_path_buf());
-    stores.sessions = awaken_runtime_host::local_managed_session_repository(Some(dir));
+    std::fs::create_dir_all(dir).expect("create runtime storage directory");
+    stores.sessions = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open(
+            &dir.join("sessions.db").to_string_lossy(),
+        )
+        .expect("open sessions.db under runtime storage directory"),
+    );
     stores
 }
 
@@ -621,31 +630,34 @@ async fn open_management_stores(
     }
 
     ensure_parent(&cfg.sessions)?;
-    let (sessions, memory_extractions): (
-        Arc<dyn awaken_protocol_managed::ManagedSessionRepository>,
+    let (sessions, memory_extractions, dream_repository): (
+        Arc<dyn awaken_session_contract::ManagedSessionRepository>,
         Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>,
+        Arc<dyn awaken_protocol_managed::DreamRepository>,
     ) = match &cfg.sessions {
         StoreBackend::Sqlite(p) => {
             let repository = Arc::new(
-                awaken_runtime_host::SqliteManagedSessionRepository::open(&path(p))
+                awaken_session_store::SqliteManagedSessionRepository::open(&path(p))
                     .map_err(|error| format!("open sessions SQLite {}: {error}", p.display()))?,
             );
-            (repository.clone(), repository)
+            (repository.clone(), repository.clone(), repository)
         }
         StoreBackend::Postgres(url) => {
             let repository = Arc::new(
                 match postgres_schema {
                     PostgresSchemaMode::Migrate => {
-                        awaken_runtime_host::PostgresManagedSessionRepository::connect(url).await
+                        awaken_session_store::PostgresManagedSessionRepository::connect(url).await
                     }
                     PostgresSchemaMode::Verify => {
-                        awaken_runtime_host::PostgresManagedSessionRepository::connect_existing(url)
-                            .await
+                        awaken_session_store::PostgresManagedSessionRepository::connect_existing(
+                            url,
+                        )
+                        .await
                     }
                 }
                 .map_err(|error| format!("connect sessions Postgres: {error}"))?,
             );
-            (repository.clone(), repository)
+            (repository.clone(), repository.clone(), repository)
         }
     };
 
@@ -742,6 +754,7 @@ async fn open_management_stores(
         webhooks: admin_webhooks,
         sessions,
         memory_extractions,
+        dream_repository,
         config,
         environments,
     })
@@ -1113,6 +1126,7 @@ async fn management_router_over(
         webhooks: webhook_store,
         sessions,
         memory_extractions,
+        dream_repository,
         config,
         environments,
     } = stores;
@@ -1586,6 +1600,7 @@ async fn management_router_over(
             resource_catalog,
             application_access,
             model_directory,
+            dream_repository,
         );
     // One timer drives every Managed periodic trigger. Deployment remains the cron
     // authority; Dream policies submit the same durable DreamJob as manual create.

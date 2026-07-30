@@ -6,8 +6,11 @@ use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use serde::Deserialize;
 
-use crate::dream::{DreamApiError, DreamPolicy, DreamPolicyConfig, DreamState};
+use crate::dream::{
+    DreamAgentConfiguration, DreamApiError, DreamPolicy, DreamPolicyConfig, DreamState,
+};
 use crate::routes::{ManagedJson, WorkspaceScope};
 use crate::types::{
     Dream, DreamCreateParams, DreamListParams, DreamPage, DreamStatus, ErrorResponse,
@@ -22,10 +25,40 @@ pub fn dreams_router(state: Arc<DreamState>) -> Router {
         .route("/v1/dreams/{id}/cancel", post(cancel))
         .route("/v1/dreams/{id}/archive", post(archive))
         .route(
+            "/v1/dream_agent_configuration",
+            get(retrieve_agent_configuration).post(update_agent_configuration),
+        )
+        .route(
             "/v1/dream_policies/{memory_store_id}",
             get(retrieve_policy).post(update_policy),
         )
         .with_state(state)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DreamAgentConfigurationUpdate {
+    agent_id: Option<String>,
+}
+
+async fn retrieve_agent_configuration(
+    State(state): State<Arc<DreamState>>,
+    workspace: Option<axum::Extension<WorkspaceScope>>,
+) -> Json<DreamAgentConfiguration> {
+    Json(state.workspace_agent_configuration(&scope(workspace)))
+}
+
+async fn update_agent_configuration(
+    State(state): State<Arc<DreamState>>,
+    workspace: Option<axum::Extension<WorkspaceScope>>,
+    ManagedJson(update): ManagedJson<DreamAgentConfigurationUpdate>,
+) -> Result<Json<DreamAgentConfiguration>, (StatusCode, Json<ErrorResponse>)> {
+    let workspace = scope(workspace);
+    state
+        .set_workspace_agent_override(&workspace, update.agent_id.as_deref())
+        .await
+        .map_err(error_response)?;
+    Ok(Json(state.workspace_agent_configuration(&workspace)))
 }
 
 fn scope(workspace: Option<axum::Extension<WorkspaceScope>>) -> String {

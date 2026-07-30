@@ -1932,10 +1932,21 @@ impl ManagedState {
         // Archive is terminal (no further turns run on this session), so reap its
         // sandbox — but only on the transition, so a re-archive (idempotent) does
         // not re-dispose. The record survives as a tombstone; only the sandbox goes.
-        if newly_terminated {
-            let _ = self
+        let release_required = newly_terminated
+            || self.sessions_repo.get(id).await.is_some_and(|persisted| {
+                persisted.resources.pending.is_some()
+                    || persisted.resources.activations.iter().any(|activation| {
+                        activation.state == awaken_session_contract::ActivationState::Active
+                    })
+            });
+        if release_required
+            && !self
                 .release_terminal_resources(id, owner.as_deref(), &child_threads)
-                .await;
+                .await
+        {
+            return Err(StateError::Run(RunError::internal(format!(
+                "Session `{id}` terminal resources could not be released"
+            ))));
         }
         // Project the terminal transition as a lifecycle fact, mirroring create's
         // `session.status_idled`. The owning workspace is resolved from the session's

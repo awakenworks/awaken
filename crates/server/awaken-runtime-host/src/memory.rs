@@ -871,10 +871,23 @@ impl crate::host::SharedHost {
         self.provider.install_memory_mounter(mounter.clone());
         self.session_provider
             .install_memory_mounter(mounter.clone());
+        if let Some(provider) = &self.backend_owned_session_provider {
+            provider.install_memory_mounter(mounter.clone());
+        }
         *self
             .memory_mounter
             .write()
             .expect("memory mounter lock poisoned") = Some(mounter);
+    }
+
+    /// Whether an outer composition root already selected the Memory mount
+    /// adapter. Default platform wiring must preserve an explicit selection.
+    #[must_use]
+    pub fn has_memory_mounter(&self) -> bool {
+        self.memory_mounter
+            .read()
+            .expect("memory mounter lock poisoned")
+            .is_some()
     }
 
     pub(crate) fn memory_mounter(

@@ -1,5 +1,5 @@
 //! The database-less worker's dispatch client: a `Dispatch` implementation whose
-//! claim/settle verbs are HTTP calls to the Control Node's registered Worker router,
+//! claim/settle verbs are HTTP calls to the Coordinator's registered Worker router,
 //! so a worker drives runs without ever opening the store.
 //!
 //! Only the worker verbs cross the wire — `enqueue`, `claim_new_run`, `claim`,
@@ -38,7 +38,7 @@ use awaken_runtime_contract::resume::ResumeResult;
 const IDEMPOTENT_TRANSPORT_ATTEMPTS: usize = 3;
 const IDEMPOTENT_TRANSPORT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
-/// Client-side counterpart of the Control Node's worker authenticator.
+/// Client-side counterpart of the Coordinator's worker authenticator.
 ///
 /// One implementation decorates every lifecycle, dispatch, recovery, and commit
 /// request. The path is the absolute HTTP path (without origin or query) so

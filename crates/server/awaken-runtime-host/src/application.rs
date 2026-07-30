@@ -203,7 +203,7 @@ pub struct ApplicationSessionControlReceipt {
     pub realization: awaken_protocol_managed::SessionRealizationDirective,
 }
 
-/// Worker-side outbound port to the authenticated Control-owned Session
+/// Worker-side outbound port to the authenticated Coordinator-owned Session
 /// application service. Contribution and realization phases cannot be wired to
 /// different authorities.
 #[async_trait::async_trait]

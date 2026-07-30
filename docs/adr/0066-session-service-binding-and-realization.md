@@ -277,7 +277,7 @@ bearer, relay handle, connection, or realized transport. The frozen application
 plan remains fingerprint-idempotent. Because the plan is produced only after a
 remote Worker owns a Run claim, it does not participate in the earlier Session
 insert transaction. Instead the Worker submits one `ApplicationSessionContribution`
-to the Control-owned Session application service while the Session is still
+to the Coordinator-owned Session application service while the Session is still
 `Preparing`:
 
 ```rust
@@ -890,7 +890,7 @@ causal implementation order and the evidence expected when those paths change.
   envelope;
 - fix Environment revision, snapshot, fingerprint, and realization-profile
   ownership;
-- fix application contribution timing and Worker-to-Control claim fencing;
+- fix application contribution timing and Worker-to-Coordinator claim fencing;
 - fix Session realization lease, per-generation claim, and remote command/receipt
   semantics;
 - fix root delete/tombstone/idempotency and public full-replacement CAS mapping;

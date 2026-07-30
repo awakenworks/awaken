@@ -179,13 +179,10 @@ pub use crate::worker_security::{
 // composition roots keep using the typed `awaken_runtime_host::HttpDispatchQueue`.
 pub use crate::durable_ops::durable_ops_router;
 pub use awaken_env_store::{PostgresEnvRegistry, SqliteEnvRegistry};
-// The durable session-repository backends now live in `awaken-session-store` (a
-// stores/ leaf); re-exported so composition roots keep their import paths.
 pub use awaken_run_ingress::{
     HOST_EXECUTOR_CAPABILITY, HttpDispatchQueue, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
     WorkerRequestAuthorizer,
 };
-pub use awaken_session_store::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 // Neutral sandbox vocabulary surfaced to the outer composition root. Runtime Host
 // remains the only server-layer owner that depends on the provisioning contract.
 pub use awaken_provisioning_contract::{
@@ -193,26 +190,6 @@ pub use awaken_provisioning_contract::{
     MountRequirement, MountSource, Realization, SandboxError,
 };
 
-/// Select the local Managed Session repository from the runtime durability root.
-/// Session configuration and its owner fence must survive whenever committed Run
-/// facts survive; otherwise restart rehydration would recover execution without
-/// recovering the authority that governs it.
-pub fn local_managed_session_repository(
-    storage_dir: Option<&std::path::Path>,
-) -> Arc<dyn awaken_protocol_managed::ManagedSessionRepository> {
-    let Some(dir) = storage_dir else {
-        return Arc::new(
-            SqliteManagedSessionRepository::open_in_memory()
-                .expect("open ephemeral Managed Session repository"),
-        );
-    };
-    std::fs::create_dir_all(dir).expect("create runtime storage directory");
-    let path = dir.join("sessions.db");
-    Arc::new(
-        SqliteManagedSessionRepository::open(&path.to_string_lossy())
-            .expect("open sessions.db under runtime storage directory"),
-    )
-}
 // The durable WorkQueue backends now live in `awaken-work-store` (a stores/ leaf);
 // re-exported so composition roots keep using `awaken_runtime_host::{Sqlite,Postgres}WorkQueue`.
 pub use awaken_work_store::{PostgresWorkQueue, SqliteWorkQueue};

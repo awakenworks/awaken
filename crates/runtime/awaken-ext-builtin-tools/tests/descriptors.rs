@@ -8,10 +8,14 @@ use std::collections::BTreeSet;
 
 /// The `hand` toolset's model-visible descriptors and the registered
 /// implementations (`executable_hand_tools` + `web_hand_tools`) must name exactly
-/// the same 7 tool ids — a descriptor with no implementation (or vice versa) would
+/// the same 9 tool ids — a descriptor with no implementation (or vice versa) would
 /// be a model-callable tool that never runs, or an unreachable implementation.
 #[test]
 fn hand_descriptors_exactly_cover_the_erased_hand_tool_implementations() {
+    // Registry cause/effect rules: C1 every visible hand descriptor -> E1 one
+    // executable implementation; C2 every implementation -> E2 one descriptor;
+    // C3 the two single-file lifecycle tools are installed -> E3 the canonical
+    // registry contains 8 local tools plus the one web fetch implementation.
     let descriptor_ids: BTreeSet<String> = builtin_tools()
         .into_iter()
         .filter(|tool| tool.toolset == Toolset::Hand)
@@ -26,15 +30,15 @@ fn hand_descriptors_exactly_cover_the_erased_hand_tool_implementations() {
 
     assert_eq!(
         descriptor_ids.len(),
-        7,
-        "the hand toolset is exactly the 7 in-process descriptors"
+        9,
+        "the hand toolset is exactly the 9 in-process descriptors"
     );
     assert_eq!(
         descriptor_ids, implementation_ids,
         "every hand descriptor has a matching erased implementation and vice versa"
     );
-    // Search has one configurable plugin owner; the static split is 6 local + fetch.
-    assert_eq!(executable_hand_tools().len(), 6);
+    // Search has one configurable plugin owner; the static split is 8 local + fetch.
+    assert_eq!(executable_hand_tools().len(), 8);
     assert_eq!(web_hand_tools().len(), 1);
 }
 

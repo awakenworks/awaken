@@ -7,7 +7,7 @@ use awaken_runtime_host::{
 };
 use awaken_worker_contract::{RegisteredWorker, WorkerIdentity, WorkerSnapshot};
 
-/// Immutable application assembly context created only after the Control Node
+/// Immutable application assembly context created only after the Coordinator
 /// allocates this process's Worker identity.
 #[derive(Clone)]
 pub struct RegisteredWorkerContext {

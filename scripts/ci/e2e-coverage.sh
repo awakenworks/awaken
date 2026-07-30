@@ -139,6 +139,7 @@ run_coverage_suites() {
   # Exercise the production cross-node worker-pool path as part of the same
   # changed-line evidence instead of leaving scenario-host worker code uncovered.
   node worker_pool_e2e.mjs
+  npm run test:coordinator-authority
   # Cross-process worker/credential-reference, sandbox, MCP and PostgreSQL stage
   # scenarios are part of the changed runtime surface and must contribute real
   # process coverage (including the exact anonymous-worker 401 contract).
