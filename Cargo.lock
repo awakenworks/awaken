@@ -750,7 +750,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-client"
 version = "0.1.1"
-source = "git+https://github.com/awakenworks/awaken-iam?rev=90c6f2d9c6fe2eaa6f4b7a518b307a030b0242d7#90c6f2d9c6fe2eaa6f4b7a518b307a030b0242d7"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=aeea7ee105a2b4a1d9109392122f63e14eecedd3#aeea7ee105a2b4a1d9109392122f63e14eecedd3"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -763,7 +763,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-contract"
 version = "0.1.1"
-source = "git+https://github.com/awakenworks/awaken-iam?rev=90c6f2d9c6fe2eaa6f4b7a518b307a030b0242d7#90c6f2d9c6fe2eaa6f4b7a518b307a030b0242d7"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=aeea7ee105a2b4a1d9109392122f63e14eecedd3#aeea7ee105a2b4a1d9109392122f63e14eecedd3"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -774,7 +774,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-core"
 version = "0.1.1"
-source = "git+https://github.com/awakenworks/awaken-iam?rev=90c6f2d9c6fe2eaa6f4b7a518b307a030b0242d7#90c6f2d9c6fe2eaa6f4b7a518b307a030b0242d7"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=aeea7ee105a2b4a1d9109392122f63e14eecedd3#aeea7ee105a2b4a1d9109392122f63e14eecedd3"
 dependencies = [
  "argon2",
  "awaken-iam-contract",
@@ -790,7 +790,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-host"
 version = "0.1.1"
-source = "git+https://github.com/awakenworks/awaken-iam?rev=90c6f2d9c6fe2eaa6f4b7a518b307a030b0242d7#90c6f2d9c6fe2eaa6f4b7a518b307a030b0242d7"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=aeea7ee105a2b4a1d9109392122f63e14eecedd3#aeea7ee105a2b4a1d9109392122f63e14eecedd3"
 dependencies = [
  "awaken-iam-client",
  "awaken-iam-contract",
@@ -809,7 +809,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-preset"
 version = "0.1.1"
-source = "git+https://github.com/awakenworks/awaken-iam?rev=90c6f2d9c6fe2eaa6f4b7a518b307a030b0242d7#90c6f2d9c6fe2eaa6f4b7a518b307a030b0242d7"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=aeea7ee105a2b4a1d9109392122f63e14eecedd3#aeea7ee105a2b4a1d9109392122f63e14eecedd3"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -818,7 +818,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-server"
 version = "0.1.1"
-source = "git+https://github.com/awakenworks/awaken-iam?rev=90c6f2d9c6fe2eaa6f4b7a518b307a030b0242d7#90c6f2d9c6fe2eaa6f4b7a518b307a030b0242d7"
+source = "git+https://github.com/awakenworks/awaken-iam?rev=aeea7ee105a2b4a1d9109392122f63e14eecedd3#aeea7ee105a2b4a1d9109392122f63e14eecedd3"
 dependencies = [
  "async-trait",
  "awaken-iam-client",
@@ -2668,7 +2668,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3999,7 +3999,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4672,7 +4672,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5051,7 +5051,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5132,7 +5132,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5990,7 +5990,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6879,7 +6879,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
