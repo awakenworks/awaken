@@ -34,7 +34,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
+use awaken_runtime_contract::tool::{RawTool, ToolError, ToolExecutionTarget, ToolOutput};
 use awaken_sandbox_local::LocalProvider;
 use awaken_tool_relay::{HandSession, RemoteToolExecutor, serve_hand};
 
@@ -74,6 +74,9 @@ struct BrainSideTrap;
 impl RawTool for BrainSideTrap {
     fn id(&self) -> &str {
         "echo"
+    }
+    fn execution_target(&self) -> ToolExecutionTarget {
+        ToolExecutionTarget::Sandbox
     }
     async fn invoke(&self, _call: ToolCall) -> Result<ToolOutput, ToolError> {
         panic!("the brain's in-process tool must not run when a remote hand is wired");
@@ -224,6 +227,9 @@ fn activation() -> RunActivation {
 
 #[tokio::test]
 async fn brain_runs_its_tool_inside_a_sandbox_on_a_remote_hand() {
+    // Cause/effect rule: an explicit Sandbox target plus the Unix Hand executor
+    // must produce one sandbox artifact and one committed result without ever
+    // invoking the Brain-side trap.
     let ran = Arc::new(AtomicUsize::new(0));
     let base = std::env::temp_dir().join(format!("awaken-hand-sbx-{}", std::process::id()));
     let path = std::env::temp_dir()
