@@ -11,6 +11,7 @@ import _provider_env_fitness
 import _resource_plane_fitness
 from _sandbox_policy_boundary import SANDBOX_POLICY_ALLOWED_DEPS
 from _crate_boundary_workspace import iter_crate_manifests, load_manifest, package_name, text_files
+from _managed_routers_boundary import MANAGED_ROUTERS_ALLOWED_DEPS
 from _managed_protocol_boundary import MANAGED_PROTOCOL_ALLOWED_DEPS
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CRATES = REPO_ROOT / "crates"
@@ -20,6 +21,7 @@ CRATES = REPO_ROOT / "crates"
 # is deliberately NOT in this set for any neutral crate; only provider adapters use it.
 ALLOWED_DEPS: dict[str, set[str]] = {
     **SANDBOX_POLICY_ALLOWED_DEPS,
+    **MANAGED_ROUTERS_ALLOWED_DEPS,
     **MANAGED_PROTOCOL_ALLOWED_DEPS,
     # zeroize backs RedactedString's zero-on-drop (ADR-0043); a leaf crypto-hygiene
     # primitive, not a model/provider SDK.
@@ -1250,23 +1252,15 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "tokio",
     },
-    # Extracted managed-agents SERVICE layer: the protocol-neutral SharedHost +
-    # the two port adapters (ManagedHost / ProtocolHost) + every host module.
-    # server-local composes it; nothing below the agents bucket depends on it.
-    # The per-plane HTTP router adapters (files/models/memory-stores/skills/data-subject):
-    # a driving adapter over the host's public API, extracted from awaken-runtime-host so
-    # the host stays the substrate and the wire surface stays thin (Step 3b).
-    "awaken-managed-routers": {
-        "awaken-runtime-host",
-        # File ownership is selected by the same neutral WorkspaceScope used by
-        # every other platform resource adapter.
-        "awaken-tenancy",
-        "axum",
-        "serde_json",
-    },
     "awaken-runtime-host": {
         "awaken-agent-contract",
         "awaken-runtime-contract",
+        # Session facts and APIs are consumed from their canonical owner; the
+        # host must not obtain them through the Managed protocol facade.
+        "awaken-session-contract",
+        # Resource facts and lifecycle SPIs are consumed from their canonical
+        # owner; the host must not obtain them through the Managed facade.
+        "awaken-resource-contract",
         "awaken-runtime",
         "tower",
         # dev-only: the files/models routers were extracted to this sibling adapter;
@@ -1323,9 +1317,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-run-executor-acp",
         "awaken-config-resolver",
         "awaken-credential-vault",
-        # ADR-0050: consent read/write router over the data-subject aggregate.
-        "awaken-data-subject",
-        "awaken-protocol-managed",
         "awaken-protocol-transport",
         "awaken-protocol-a2a",
         "async-trait",
@@ -1422,12 +1413,13 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: transport conformance exercises dispatch + Worker registry.
         "awaken-run-ingress", "awaken-runtime-host",
         "awaken-session-store",
-        # Outer composition owns Hand topology/relay; runtime-host exposes only ports.
+        "awaken-session-contract", "awaken-resource-contract",
+        # Outer composition owns Hand topology/relay; runtime-host exposes only APIs/SPIs.
         "awaken-connection-plan", "awaken-tool-relay", "awaken-worker-registry", "awaken-managed-routers",
         # dev-only: A2A loopback wraps mocks in the remote-Agent adapter.
         "awaken-run-executor-a2a",
         # ADR-0052: the management assistant's descriptors seed the scope-keyed tool
-        # catalog, and its executables/ports are wired at assembly.
+        # catalog, and its executables/SPIs are wired at assembly.
         "awaken-admin-assistant",
         # ADR-0051/0052: the opaque scope id the reserved-scope seeding is keyed by.
         "awaken-tenancy",

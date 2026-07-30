@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     }
     // Environment-managed Sessions always carry a (possibly empty) frozen
-    // resource envelope. Install the real resource-plane ports and validator so
+    // resource envelope. Install the real Resource plane and validator so
     // the standard manifest may honestly advertise session-resources/v1; the
     // coordinator will otherwise reject this Worker before it can claim.
     let resources = awaken_worker::WorkerResourcePlane::new(

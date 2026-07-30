@@ -272,7 +272,7 @@ pub struct ManagementAssembly {
 struct ManagementStores {
     /// Durable installation root used to persist the platform Workspace id.
     workspace_root: Option<std::path::PathBuf>,
-    resource_plane: ResourcePlaneStores,
+    resource_plane: awaken_runtime_host::ResourcePlane,
     catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo>,
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
@@ -298,102 +298,80 @@ struct ManagementStores {
     environments: Arc<awaken_protocol_managed::EnvironmentState>,
 }
 
-/// Backend-neutral resource ports selected together at the composition root.
-/// This is wiring, not an aggregate and not an authorization context.
-struct ResourcePlaneStores {
-    lifecycle: Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
-    files: Arc<dyn awaken_file_store::FileStore>,
-    file_catalog: Arc<dyn awaken_runtime_host::FileCatalog>,
-    memory: Arc<dyn awaken_memory_store::MemoryRepository>,
-    skills: Arc<dyn awaken_skill_store::SkillStore>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PostgresSchemaMode {
     Migrate,
     Verify,
 }
 
-impl ResourcePlaneStores {
-    fn ephemeral() -> Self {
-        let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-        Self {
-            lifecycle: Arc::new(
-                awaken_resource_store::SqliteResourceStore::in_memory()
-                    .expect("open ephemeral resource lifecycle sqlite"),
-            ),
-            files: files.clone(),
-            file_catalog: files,
-            memory: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
-            skills: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
-        }
-    }
+fn ephemeral_resource_plane() -> awaken_runtime_host::ResourcePlane {
+    let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+    awaken_runtime_host::ResourcePlane::new(
+        files.clone(),
+        files,
+        Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
+        Arc::new(awaken_skill_store::InMemorySkillStore::new()),
+        Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .expect("open ephemeral resource lifecycle sqlite"),
+        ),
+    )
+}
 
-    fn embedded(root: &std::path::Path) -> Self {
-        let (files, file_catalog, memory, skills, lifecycle) =
-            awaken_server::embedded_resource_plane(root).into_parts();
-        Self {
-            lifecycle,
-            files,
-            file_catalog,
-            memory,
-            skills,
+async fn open_resource_plane(
+    backend: config::ResourcePlaneStoreBackend,
+    postgres_schema: PostgresSchemaMode,
+) -> Result<awaken_runtime_host::ResourcePlane, String> {
+    match backend {
+        config::ResourcePlaneStoreBackend::Embedded(root) => {
+            Ok(awaken_server::embedded_resource_plane(&root))
         }
-    }
-
-    async fn open(
-        backend: config::ResourcePlaneStoreBackend,
-        postgres_schema: PostgresSchemaMode,
-    ) -> Result<Self, String> {
-        match backend {
-            config::ResourcePlaneStoreBackend::Embedded(root) => Ok(Self::embedded(&root)),
-            config::ResourcePlaneStoreBackend::Postgres(url) => {
-                let lifecycle = match postgres_schema {
-                    PostgresSchemaMode::Migrate => {
-                        awaken_resource_store::PostgresResourceStore::connect(&url).await
-                    }
-                    PostgresSchemaMode::Verify => {
-                        awaken_resource_store::PostgresResourceStore::connect_existing(&url).await
-                    }
+        config::ResourcePlaneStoreBackend::Postgres(url) => {
+            let lifecycle = match postgres_schema {
+                PostgresSchemaMode::Migrate => {
+                    awaken_resource_store::PostgresResourceStore::connect(&url).await
                 }
-                .map_err(|error| format!("connect resource lifecycle Postgres: {error}"))?;
-                let files = Arc::new(
-                    match postgres_schema {
-                        PostgresSchemaMode::Migrate => {
-                            awaken_file_store::postgres::PgFileStore::connect(&url).await
-                        }
-                        PostgresSchemaMode::Verify => {
-                            awaken_file_store::postgres::PgFileStore::connect_existing(&url).await
-                        }
-                    }
-                    .map_err(|error| format!("connect resource file Postgres: {error}"))?,
-                );
-                let memory = match postgres_schema {
-                    PostgresSchemaMode::Migrate => {
-                        awaken_memory_store::PostgresMemoryRepository::connect(&url).await
-                    }
-                    PostgresSchemaMode::Verify => {
-                        awaken_memory_store::PostgresMemoryRepository::connect_existing(&url).await
-                    }
+                PostgresSchemaMode::Verify => {
+                    awaken_resource_store::PostgresResourceStore::connect_existing(&url).await
                 }
-                .map_err(|error| format!("connect resource memory Postgres: {error}"))?;
-                let skills = match postgres_schema {
-                    PostgresSchemaMode::Migrate => {
-                        awaken_skill_store::PgSkillStore::connect(&url).await
-                    }
-                    PostgresSchemaMode::Verify => {
-                        awaken_skill_store::PgSkillStore::connect_existing(&url).await
-                    }
-                }
-                .map_err(|error| format!("connect resource skill Postgres: {error}"))?;
-                Ok(Self {
-                    lifecycle: Arc::new(lifecycle),
-                    files: files.clone(),
-                    file_catalog: files,
-                    memory: Arc::new(memory),
-                    skills: Arc::new(skills),
-                })
             }
+            .map_err(|error| format!("connect resource lifecycle Postgres: {error}"))?;
+            let files = Arc::new(
+                match postgres_schema {
+                    PostgresSchemaMode::Migrate => {
+                        awaken_file_store::postgres::PgFileStore::connect(&url).await
+                    }
+                    PostgresSchemaMode::Verify => {
+                        awaken_file_store::postgres::PgFileStore::connect_existing(&url).await
+                    }
+                }
+                .map_err(|error| format!("connect resource file Postgres: {error}"))?,
+            );
+            let memory = match postgres_schema {
+                PostgresSchemaMode::Migrate => {
+                    awaken_memory_store::PostgresMemoryRepository::connect(&url).await
+                }
+                PostgresSchemaMode::Verify => {
+                    awaken_memory_store::PostgresMemoryRepository::connect_existing(&url).await
+                }
+            }
+            .map_err(|error| format!("connect resource memory Postgres: {error}"))?;
+            let skills = match postgres_schema {
+                PostgresSchemaMode::Migrate => {
+                    awaken_skill_store::PgSkillStore::connect(&url).await
+                }
+                PostgresSchemaMode::Verify => {
+                    awaken_skill_store::PgSkillStore::connect_existing(&url).await
+                }
+            }
+            .map_err(|error| format!("connect resource skill Postgres: {error}"))?;
+            Ok(awaken_runtime_host::ResourcePlane::new(
+                files.clone(),
+                files,
+                Arc::new(memory),
+                Arc::new(skills),
+                Arc::new(lifecycle),
+            ))
         }
     }
 }
@@ -450,7 +428,7 @@ fn in_memory_management_stores() -> ManagementStores {
     );
     ManagementStores {
         workspace_root: None,
-        resource_plane: ResourcePlaneStores::ephemeral(),
+        resource_plane: ephemeral_resource_plane(),
         catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
         credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
@@ -499,7 +477,7 @@ fn management_stores_for_runtime_storage(
 /// (Option A, shared-DB).
 async fn open_management_stores(
     cfg: awaken_control::ControlStoreConfig,
-    resource_plane: ResourcePlaneStores,
+    resource_plane: awaken_runtime_host::ResourcePlane,
     workspace_root: std::path::PathBuf,
     key: &[u8; 32],
     postgres_schema: PostgresSchemaMode,
@@ -766,7 +744,7 @@ async fn open_local_management_stores(
     dir: &std::path::Path,
     key: &[u8; 32],
 ) -> Result<ManagementStores, String> {
-    let resource_plane = ResourcePlaneStores::open(
+    let resource_plane = open_resource_plane(
         config::ResourcePlaneStoreBackend::Embedded(dir.to_path_buf()),
         PostgresSchemaMode::Migrate,
     )
@@ -826,8 +804,7 @@ pub async fn build_management_assembly_with_deployment(
         config::OperatingMode::Local => PostgresSchemaMode::Migrate,
         config::OperatingMode::Server => PostgresSchemaMode::Verify,
     };
-    let resource_plane =
-        ResourcePlaneStores::open(deployment.resources.clone(), postgres_schema).await?;
+    let resource_plane = open_resource_plane(deployment.resources.clone(), postgres_schema).await?;
     let stores = open_management_stores(
         deployment.control.clone(),
         resource_plane,
@@ -873,8 +850,7 @@ pub async fn migrate_management_schema_with_deployment(
     key: &[u8; 32],
 ) -> Result<(), String> {
     let resource_plane =
-        ResourcePlaneStores::open(deployment.resources.clone(), PostgresSchemaMode::Migrate)
-            .await?;
+        open_resource_plane(deployment.resources.clone(), PostgresSchemaMode::Migrate).await?;
     open_management_stores(
         deployment.control.clone(),
         resource_plane,
@@ -924,7 +900,7 @@ async fn build_management_router_with_composition(
         config::OperatingMode::Local => PostgresSchemaMode::Migrate,
         config::OperatingMode::Server => PostgresSchemaMode::Verify,
     };
-    let resource_plane = ResourcePlaneStores::open(deployment.resources.clone(), postgres_schema)
+    let resource_plane = open_resource_plane(deployment.resources.clone(), postgres_schema)
         .await
         .unwrap_or_else(|error| panic!("open resource stores: {error}"));
     let stores = open_management_stores(
@@ -1131,13 +1107,8 @@ async fn management_router_over(
         config,
         environments,
     } = stores;
-    let ResourcePlaneStores {
-        lifecycle: resource_lifecycle,
-        files: file_store,
-        file_catalog,
-        memory: memory_store,
-        skills: skill_store,
-    } = resource_plane;
+    let (file_store, file_catalog, memory_store, skill_store, resource_lifecycle) =
+        resource_plane.into_parts();
     // Resolve the installation's Workspace exactly once, then inject the same
     // coordinate into every adapter assembled below. Durable roots persist it;
     // ephemeral roots receive a process-local generated coordinate.
@@ -1453,7 +1424,7 @@ async fn management_router_over(
     // Resource Catalog the capability inventory reads, so a skill or memory store the
     // host serves is exactly what the assistant enumerates, and identity survives a
     // restart.
-    let resource_ports = awaken_runtime_host::ResourcePlanePorts::new(
+    let resource_plane = awaken_runtime_host::ResourcePlane::new(
         file_store,
         file_catalog,
         memory_store,
@@ -1464,13 +1435,13 @@ async fn management_router_over(
         Some(deployment) => SharedHost::new_with_resource_plane_and_deployment(
             model_wiring.executor,
             model_wiring.model_ref,
-            resource_ports,
+            resource_plane,
             deployment,
         ),
         None => SharedHost::new_with_resource_plane(
             model_wiring.executor,
             model_wiring.model_ref,
-            resource_ports,
+            resource_plane,
         ),
     };
     host_builder = host_builder

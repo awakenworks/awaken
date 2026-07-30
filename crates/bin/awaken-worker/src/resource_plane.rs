@@ -2,11 +2,11 @@
 
 /// Resource-plane wiring for an execution Worker.
 ///
-/// These broad ports currently support shared-store composition. They remain
-/// Resource-owned capabilities; their presence must not be described as
+/// These Resource-owned capabilities support shared-store composition; their
+/// presence must not be described as
 /// process-level authority-store isolation.
 pub struct WorkerResourcePlane {
-    pub(crate) ports: awaken_runtime_host::ResourcePlanePorts,
+    pub(crate) plane: awaken_runtime_host::ResourcePlane,
     pub(crate) validator: std::sync::Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
     pub(crate) memory_mounter:
         Option<std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>>,
@@ -15,11 +15,11 @@ pub struct WorkerResourcePlane {
 impl WorkerResourcePlane {
     #[must_use]
     pub fn new(
-        ports: awaken_runtime_host::ResourcePlanePorts,
+        plane: awaken_runtime_host::ResourcePlane,
         validator: std::sync::Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
     ) -> Self {
         Self {
-            ports,
+            plane,
             validator,
             memory_mounter: None,
         }

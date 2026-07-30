@@ -6,18 +6,18 @@ use super::*;
 struct WorkerProjectionSynchronizer<'a>(&'a SharedHost);
 
 #[async_trait::async_trait]
-impl awaken_protocol_managed::SessionProjectionSynchronizer for WorkerProjectionSynchronizer<'_> {
+impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjectionSynchronizer<'_> {
     async fn synchronize_session_projection(
         &self,
         session_id: &str,
-        projection: &awaken_protocol_managed::FrozenSessionProjection,
-        lease: &awaken_protocol_managed::SessionRealizationLease,
+        projection: &awaken_session_contract::FrozenSessionProjection,
+        lease: &awaken_session_contract::SessionRealizationLease,
         _prepare_session: bool,
-    ) -> Result<(), awaken_protocol_managed::RunError> {
+    ) -> Result<(), awaken_session_contract::RunError> {
         self.0
             .install_frozen_session_projection(session_id, projection.clone())
             .await
-            .map_err(|error| awaken_protocol_managed::RunError::internal(error.to_string()))?;
+            .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
         self.0
             .install_session_realization_lease(session_id, lease.clone());
         Ok(())
@@ -27,26 +27,26 @@ impl awaken_protocol_managed::SessionProjectionSynchronizer for WorkerProjection
 struct WorkerMcpEffects<'a>(&'a SharedHost);
 
 #[async_trait::async_trait]
-impl awaken_protocol_managed::McpAttachmentRealizer for WorkerMcpEffects<'_> {
+impl awaken_session_contract::McpAttachmentRealizer for WorkerMcpEffects<'_> {
     async fn stage_mcp_attachment(
         &self,
-        request: awaken_protocol_managed::StageMcpAttachment,
-    ) -> Result<awaken_protocol_managed::McpRealizationReceipt, awaken_protocol_managed::RunError>
+        request: awaken_session_contract::StageMcpAttachment,
+    ) -> Result<awaken_session_contract::McpRealizationReceipt, awaken_session_contract::RunError>
     {
         self.0.stage_dispatched_mcp(request).await
     }
 
     async fn publish_mcp_generation(
         &self,
-        generation: awaken_protocol_managed::McpGenerationRef,
-    ) -> Result<(), awaken_protocol_managed::RunError> {
+        generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), awaken_session_contract::RunError> {
         self.0.publish_dispatched_mcp(generation).await
     }
 
     async fn drain_mcp_generation(
         &self,
-        generation: awaken_protocol_managed::McpGenerationRef,
-    ) -> Result<(), awaken_protocol_managed::RunError> {
+        generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), awaken_session_contract::RunError> {
         self.0.drain_dispatched_mcp(generation).await
     }
 }
@@ -93,9 +93,9 @@ impl HostWorkerResolver {
         host: &SharedHost,
         control: &Arc<dyn crate::ApplicationSessionControlClient>,
         session_id: &str,
-        directive: awaken_protocol_managed::SessionRealizationDirective,
+        directive: awaken_session_contract::SessionRealizationDirective,
     ) -> Result<(), awaken_run_ingress::Error> {
-        awaken_protocol_managed::drive_session_realization(
+        awaken_session_contract::drive_session_realization(
             session_id,
             control.as_ref(),
             &WorkerProjectionSynchronizer(host),
@@ -321,8 +321,8 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                     claimed.lease.run_id.0
                 ))
             })?;
-            let plan = provisioner
-                .prepare(&claimed.request.activation, ownership.clone())
+            let contribution = provisioner
+                .prepare(&claimed.request.activation, &thread_id.0, ownership.clone())
                 .await
                 .map_err(|error| {
                     Self::execution_error(format!(
@@ -343,7 +343,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             })?;
             let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
             let receipt = control
-                .contribute(&thread_id.0, &claim, plan)
+                .contribute(&claim, contribution)
                 .await
                 .map_err(|error| {
                     Self::execution_error(format!(
@@ -385,7 +385,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                         .as_ref()
                         .is_some_and(|environment| {
                             environment.provisioning
-                                == awaken_protocol_managed::SandboxProvisioning::OnToolUse
+                                == awaken_session_contract::SandboxProvisioning::OnToolUse
                         })
             })
             .unwrap_or(false);
@@ -512,29 +512,29 @@ mod tests {
         )
     }
 
-    fn deferred_environment() -> awaken_protocol_managed::EnvironmentSnapshot {
-        awaken_protocol_managed::EnvironmentSnapshot {
+    fn deferred_environment() -> awaken_session_contract::EnvironmentSnapshot {
+        awaken_session_contract::EnvironmentSnapshot {
             environment_id: "lazy-env".into(),
-            revision: awaken_protocol_managed::EnvironmentRevision(1),
-            config_fingerprint: awaken_protocol_managed::EnvironmentFingerprint(
+            revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+            config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                 "lazy-env-v1".into(),
             ),
             sandbox: serde_json::json!({}),
-            sandbox_provisioning: awaken_protocol_managed::SandboxProvisioning::OnToolUse,
+            sandbox_provisioning: awaken_session_contract::SandboxProvisioning::OnToolUse,
             packages: Default::default(),
-            network: awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+            network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
             credential_realization:
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
         }
     }
 
     async fn prepare_deferred_session(host: Arc<SharedHost>, thread: &str) -> crate::ManagedHost {
-        use awaken_protocol_managed::SessionRuntime;
+        use awaken_session_contract::SessionRuntime;
         let managed = crate::ManagedHost::new(host.clone());
         managed
             .prepare_session(
                 thread,
-                awaken_protocol_managed::SessionInit {
+                awaken_session_contract::SessionInit {
                     workspace_id: host.local_workspace().into(),
                     agent_id: "agent-a".into(),
                     delegate_ids: Vec::new(),
@@ -556,15 +556,15 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_protocol_managed::SessionEnvironmentBindingSink for ToggleBindingSink {
+    impl awaken_session_contract::SessionEnvironmentBindingSink for ToggleBindingSink {
         async fn persist(
             &self,
             _session_id: &str,
             _binding: &str,
-        ) -> Result<(), awaken_protocol_managed::RunError> {
+        ) -> Result<(), awaken_session_contract::RunError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail.load(Ordering::SeqCst) {
-                Err(awaken_protocol_managed::RunError::internal(
+                Err(awaken_session_contract::RunError::internal(
                     "injected Session binding failure",
                 ))
             } else {
@@ -695,8 +695,8 @@ mod tests {
     /// publication; and a crash gap after dispatch binding is repaired by adoption.
     #[tokio::test]
     async fn durable_deferred_sandbox_publication_decision_table() {
-        use awaken_protocol_managed::SessionRuntime;
         use awaken_run_ingress::{Clock, DispatchQueue};
+        use awaken_session_contract::SessionRuntime;
 
         let now = awaken_run_ingress::SystemClock.now_ms();
         let store = Arc::new(
@@ -808,8 +808,8 @@ mod tests {
     struct RecordingContributor {
         calls: Arc<AtomicUsize>,
         phases: Arc<std::sync::Mutex<Vec<&'static str>>>,
-        projection: Arc<std::sync::Mutex<Option<awaken_protocol_managed::FrozenSessionProjection>>>,
-        mcp_stage: Option<awaken_protocol_managed::StageMcpAttachment>,
+        projection: Arc<std::sync::Mutex<Option<awaken_session_contract::FrozenSessionProjection>>>,
+        mcp_stage: Option<awaken_session_contract::StageMcpAttachment>,
     }
 
     #[derive(Default)]
@@ -819,20 +819,20 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_protocol_managed::McpAttachmentRealizer for RecordingMcpRealizer {
+    impl awaken_session_contract::McpAttachmentRealizer for RecordingMcpRealizer {
         async fn stage_mcp_attachment(
             &self,
-            request: awaken_protocol_managed::StageMcpAttachment,
-        ) -> Result<awaken_protocol_managed::McpRealizationReceipt, awaken_protocol_managed::RunError>
+            request: awaken_session_contract::StageMcpAttachment,
+        ) -> Result<awaken_session_contract::McpRealizationReceipt, awaken_session_contract::RunError>
         {
             self.calls.lock().unwrap().push("stage");
             if self.fail_stage.load(Ordering::SeqCst) {
-                return Err(awaken_protocol_managed::RunError::classified(
+                return Err(awaken_session_contract::RunError::classified(
                     "test_mcp_stage_failed",
                     "test MCP stage failed",
                 ));
             }
-            Ok(awaken_protocol_managed::McpRealizationReceipt {
+            Ok(awaken_session_contract::McpRealizationReceipt {
                 receipt_fingerprint: request.fingerprint(),
                 generation: request.generation,
                 realization_id: request.realization_id,
@@ -843,16 +843,16 @@ mod tests {
 
         async fn publish_mcp_generation(
             &self,
-            _generation: awaken_protocol_managed::McpGenerationRef,
-        ) -> Result<(), awaken_protocol_managed::RunError> {
+            _generation: awaken_session_contract::McpGenerationRef,
+        ) -> Result<(), awaken_session_contract::RunError> {
             self.calls.lock().unwrap().push("publish");
             Ok(())
         }
 
         async fn drain_mcp_generation(
             &self,
-            _generation: awaken_protocol_managed::McpGenerationRef,
-        ) -> Result<(), awaken_protocol_managed::RunError> {
+            _generation: awaken_session_contract::McpGenerationRef,
+        ) -> Result<(), awaken_session_contract::RunError> {
             self.calls.lock().unwrap().push("drain");
             Ok(())
         }
@@ -862,9 +862,8 @@ mod tests {
     impl crate::ApplicationSessionControlClient for RecordingContributor {
         async fn contribute(
             &self,
-            _session_id: &str,
             _claim: &awaken_run_ingress::RunClaim,
-            plan: crate::ApplicationSessionPlan,
+            contribution: awaken_session_contract::ApplicationSessionContribution,
         ) -> Result<crate::ApplicationSessionControlReceipt, crate::ApplicationSessionError>
         {
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -873,25 +872,19 @@ mod tests {
                 awaken_runtime_contract::PlaintextBoundary::Worker,
                 "test.worker",
             );
-            let input = awaken_protocol_managed::ApplicationSessionInput {
-                mounts: Vec::new(),
-                env: Vec::new(),
-                prompts: plan.prompts,
-                mcp_inputs: plan.mcp_inputs,
-                network_restriction: plan.network_restriction,
-            };
-            let baseline = awaken_protocol_managed::SessionBaseline::compile(
-                awaken_protocol_managed::SessionBaselineInputs {
-                    environment: awaken_protocol_managed::EnvironmentSnapshot {
+            let input = contribution.input;
+            let baseline = awaken_session_contract::SessionBaseline::compile(
+                awaken_session_contract::SessionBaselineInputs {
+                    environment: awaken_session_contract::EnvironmentSnapshot {
                         environment_id: "env".into(),
-                        revision: awaken_protocol_managed::EnvironmentRevision(1),
-                        config_fingerprint: awaken_protocol_managed::EnvironmentFingerprint(
+                        revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+                        config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                             "env-fingerprint".into(),
                         ),
                         sandbox: serde_json::json!({}),
                         sandbox_provisioning: Default::default(),
                         packages: Default::default(),
-                        network: awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+                        network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
                         credential_realization:
                             awaken_runtime_contract::CredentialRealizationProfile {
                                 inference_holder: holder.clone(),
@@ -904,8 +897,8 @@ mod tests {
                     model: "model".into(),
                     runtime: None,
                     application: Some(
-                        awaken_protocol_managed::ApplicationContributionReceipt::from_input(
-                            plan.fingerprint,
+                        awaken_session_contract::ApplicationContributionReceipt::from_input(
+                            contribution.application_fingerprint,
                             &input,
                         ),
                     ),
@@ -935,16 +928,16 @@ mod tests {
                     .expect("test MCP projection"),
                 ]
             });
-            let projection = awaken_protocol_managed::FrozenSessionProjection {
+            let projection = awaken_session_contract::FrozenSessionProjection {
                 workspace_id: "workspace".into(),
-                revision: awaken_protocol_managed::SessionRevision(2),
+                revision: awaken_session_contract::SessionRevision(2),
                 baseline,
                 resources: Default::default(),
                 mcp,
                 toolsets: Vec::new(),
             };
             *self.projection.lock().unwrap() = Some(projection.clone());
-            let lease = awaken_protocol_managed::SessionRealizationLease {
+            let lease = awaken_session_contract::SessionRealizationLease {
                 owner: "worker-a".into(),
                 runtime_incarnation: "worker-a".into(),
                 epoch: 1,
@@ -954,14 +947,14 @@ mod tests {
                     .map_or(u64::MAX, |stage| stage.generation.lease_expires_at_unix_ms),
             };
             Ok(crate::ApplicationSessionControlReceipt {
-                contribution: awaken_protocol_managed::ApplicationSessionContributionReceipt {
-                    outcome: awaken_protocol_managed::ApplicationContributionOutcome::Committed,
+                contribution: awaken_session_contract::ApplicationSessionContributionReceipt {
+                    outcome: awaken_session_contract::ApplicationContributionOutcome::Committed,
                     projection: projection.clone(),
                 },
-                realization: awaken_protocol_managed::SessionRealizationDirective {
+                realization: awaken_session_contract::SessionRealizationDirective {
                     projection,
                     lease,
-                    action: awaken_protocol_managed::SessionRealizationAction::Stage {
+                    action: awaken_session_contract::SessionRealizationAction::Stage {
                         prepare_session: true,
                         mcp_stages: self.mcp_stage.clone().into_iter().collect(),
                     },
@@ -971,13 +964,13 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_protocol_managed::SessionRealizationControl for RecordingContributor {
+    impl awaken_session_contract::SessionRealizationControl for RecordingContributor {
         async fn begin_session_realization(
             &self,
-            command: awaken_protocol_managed::BeginSessionRealization,
+            command: awaken_session_contract::BeginSessionRealization,
         ) -> Result<
-            awaken_protocol_managed::SessionRealizationDirective,
-            awaken_protocol_managed::SessionRealizationControlFailure,
+            awaken_session_contract::SessionRealizationDirective,
+            awaken_session_contract::SessionRealizationControlFailure,
         > {
             self.phases.lock().unwrap().push("begin");
             let projection = self
@@ -985,23 +978,23 @@ mod tests {
                 .lock()
                 .unwrap()
                 .clone()
-                .ok_or(awaken_protocol_managed::SessionRealizationControlFailure::NotReady)?;
+                .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
             let mut stage = self
                 .mcp_stage
                 .clone()
-                .ok_or(awaken_protocol_managed::SessionRealizationControlFailure::NotReady)?;
+                .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
             stage.generation.lease_expires_at_unix_ms = command.target.lease_expires_at_unix_ms;
             stage.stage_idempotency_key =
                 format!("renew:{}", command.target.lease_expires_at_unix_ms);
-            Ok(awaken_protocol_managed::SessionRealizationDirective {
+            Ok(awaken_session_contract::SessionRealizationDirective {
                 projection,
-                lease: awaken_protocol_managed::SessionRealizationLease {
+                lease: awaken_session_contract::SessionRealizationLease {
                     owner: command.target.owner,
                     runtime_incarnation: command.target.runtime_incarnation,
                     epoch: 1,
                     expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
                 },
-                action: awaken_protocol_managed::SessionRealizationAction::Stage {
+                action: awaken_session_contract::SessionRealizationAction::Stage {
                     prepare_session: false,
                     mcp_stages: vec![stage],
                 },
@@ -1010,13 +1003,13 @@ mod tests {
 
         async fn activate_session_realization(
             &self,
-            command: awaken_protocol_managed::ActivateSessionRealization,
+            command: awaken_session_contract::ActivateSessionRealization,
         ) -> Result<
-            awaken_protocol_managed::SessionRealizationDirective,
-            awaken_protocol_managed::SessionRealizationControlFailure,
+            awaken_session_contract::SessionRealizationDirective,
+            awaken_session_contract::SessionRealizationControlFailure,
         > {
             self.phases.lock().unwrap().push("activate");
-            Ok(awaken_protocol_managed::SessionRealizationDirective {
+            Ok(awaken_session_contract::SessionRealizationDirective {
                 projection: self
                     .projection
                     .lock()
@@ -1024,7 +1017,7 @@ mod tests {
                     .clone()
                     .expect("contribution projection"),
                 lease: command.lease,
-                action: awaken_protocol_managed::SessionRealizationAction::Publish {
+                action: awaken_session_contract::SessionRealizationAction::Publish {
                     publish: command
                         .mcp_receipts
                         .into_iter()
@@ -1037,13 +1030,13 @@ mod tests {
 
         async fn acknowledge_session_realization(
             &self,
-            command: awaken_protocol_managed::AcknowledgeSessionRealization,
+            command: awaken_session_contract::AcknowledgeSessionRealization,
         ) -> Result<
-            awaken_protocol_managed::SessionRealizationDirective,
-            awaken_protocol_managed::SessionRealizationControlFailure,
+            awaken_session_contract::SessionRealizationDirective,
+            awaken_session_contract::SessionRealizationControlFailure,
         > {
             self.phases.lock().unwrap().push("acknowledge");
-            Ok(awaken_protocol_managed::SessionRealizationDirective {
+            Ok(awaken_session_contract::SessionRealizationDirective {
                 projection: self
                     .projection
                     .lock()
@@ -1051,14 +1044,14 @@ mod tests {
                     .clone()
                     .expect("contribution projection"),
                 lease: command.lease,
-                action: awaken_protocol_managed::SessionRealizationAction::Complete,
+                action: awaken_session_contract::SessionRealizationAction::Complete,
             })
         }
 
         async fn fail_session_realization(
             &self,
-            _command: awaken_protocol_managed::FailSessionRealization,
-        ) -> Result<(), awaken_protocol_managed::SessionRealizationControlFailure> {
+            _command: awaken_session_contract::FailSessionRealization,
+        ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
             self.phases.lock().unwrap().push("fail");
             Ok(())
         }
@@ -1069,17 +1062,25 @@ mod tests {
         async fn prepare(
             &self,
             activation: &RunActivation,
+            session_id: &str,
             ownership: Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>,
-        ) -> Result<crate::ApplicationSessionPlan, crate::ApplicationSessionError> {
+        ) -> Result<
+            awaken_session_contract::ApplicationSessionContribution,
+            crate::ApplicationSessionError,
+        > {
             ownership
                 .verify_current()
                 .await
                 .map_err(|error| crate::ApplicationSessionError::new(error.to_string()))?;
             self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(crate::ApplicationSessionPlan::empty(format!(
-                "application:{}",
-                activation.snapshot.fingerprint.0
-            )))
+            Ok(awaken_session_contract::ApplicationSessionContribution {
+                session_id: session_id.to_owned(),
+                application_fingerprint: format!(
+                    "application:{}",
+                    activation.snapshot.fingerprint.0
+                ),
+                input: Default::default(),
+            })
         }
     }
 
@@ -1131,21 +1132,21 @@ mod tests {
                 .as_millis() as u64
                 + 1_000;
             let mcp_stage = with_initial_mcp.then(|| {
-                let generation = awaken_protocol_managed::McpGenerationRef {
+                let generation = awaken_session_contract::McpGenerationRef {
                     session_id: format!("thread-application-{rule}"),
-                    attachment_id: awaken_protocol_managed::McpAttachmentId("mcp-docs".into()),
-                    generation: awaken_protocol_managed::McpGeneration(1),
+                    attachment_id: awaken_session_contract::McpAttachmentId("mcp-docs".into()),
+                    generation: awaken_session_contract::McpGeneration(1),
                     runtime_incarnation: "worker-a".into(),
                     lease_epoch: 1,
                     lease_expires_at_unix_ms: initial_mcp_expiry,
                 };
-                awaken_protocol_managed::StageMcpAttachment {
+                awaken_session_contract::StageMcpAttachment {
                     workspace_id: "workspace".into(),
                     generation,
                     realization_id: "realize-docs-1".into(),
                     stage_idempotency_key: "stage-docs-1".into(),
                     name: "docs".into(),
-                    target: awaken_protocol_managed::McpTarget::parse_http(
+                    target: awaken_session_contract::McpTarget::parse_http(
                         "https://mcp.example.test/sse",
                     )
                     .unwrap(),
@@ -1419,20 +1420,16 @@ mod tests {
             .await
             .expect("create file")
             .id;
-        let manifest = awaken_protocol_managed::SessionResourceManifest::new(
+        let manifest = awaken_session_contract::SessionResourceManifest::new(
             "workspace-a",
-            awaken_protocol_managed::ResolvedSessionResources {
-                inputs: vec![awaken_protocol_managed::ResolvedInput {
-                    binding_id: awaken_protocol_managed::resource_plane::BindingId::new(
-                        "file-binding",
-                    ),
-                    source: awaken_protocol_managed::ResolvedInputSource::File {
-                        file_id: awaken_protocol_managed::resource_plane::FileId::from(
-                            file_id.as_str(),
-                        ),
+            awaken_session_contract::ResolvedSessionResources {
+                inputs: vec![awaken_session_contract::ResolvedInput {
+                    binding_id: awaken_resource_contract::BindingId::new("file-binding"),
+                    source: awaken_session_contract::ResolvedInputSource::File {
+                        file_id: awaken_resource_contract::FileId::from(file_id.as_str()),
                     },
                     mount_path: "/uploads/input.bin".to_string(),
-                    access: awaken_protocol_managed::resource_plane::ResourceAccess::ReadOnly,
+                    access: awaken_resource_contract::ResourceAccess::ReadOnly,
                     instructions: None,
                 }],
                 skills: Some(Vec::new()),

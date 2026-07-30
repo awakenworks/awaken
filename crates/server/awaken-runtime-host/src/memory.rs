@@ -336,7 +336,7 @@ pub struct BoundMemory {
     session_id: String,
     store: Arc<dyn MemoryStoreHandle>,
     platform: Arc<PlatformMemoryHandle>,
-    resource_validator: Arc<dyn awaken_protocol_managed::resource_plane::ResourceBindingValidator>,
+    resource_validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
     workspace_id: String,
     memory_store_id: String,
     memory_config_version: u64,
@@ -352,7 +352,7 @@ struct BoundMemoryTerminalExtraction {
 }
 
 /// Adapter from the Memory bounded context's durable claim to the common
-/// attempt-credential ports. It owns no materialization logic: it only proves
+/// attempt-credential SPIs. It owns no materialization logic: it only proves
 /// the exact extraction claim and stores the common secret-free receipt back in
 /// that same aggregate.
 struct MemoryExtractionCredentialAuthority {
@@ -502,10 +502,8 @@ impl MemoryRuntime {
         session_id: impl Into<String>,
         workspace_id: impl Into<String>,
         platform: Arc<PlatformMemoryHandle>,
-        resource_validator: Arc<
-            dyn awaken_protocol_managed::resource_plane::ResourceBindingValidator,
-        >,
-        config: &awaken_protocol_managed::resource_plane::MemoryStoreConfigVersion,
+        resource_validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
+        config: &awaken_resource_contract::MemoryStoreConfigVersion,
         writable: bool,
     ) -> BoundMemory {
         let bounds = RecallBounds {
@@ -654,7 +652,7 @@ impl BoundMemory {
             .validate_memory_binding(
                 &self.workspace_id,
                 &self.memory_store_id,
-                awaken_protocol_managed::resource_plane::ConfigVersion(self.memory_config_version),
+                awaken_resource_contract::ConfigVersion(self.memory_config_version),
             )
             .map_err(|error| error.to_string())
     }
@@ -985,13 +983,11 @@ impl crate::host::SharedHost {
         &self,
         thread: &str,
         workspace_id: &str,
-        config: &awaken_protocol_managed::resource_plane::MemoryStoreConfigVersion,
-        access: awaken_protocol_managed::resource_plane::ResourceAccess,
-        resource_validator: Arc<
-            dyn awaken_protocol_managed::resource_plane::ResourceBindingValidator,
-        >,
+        config: &awaken_resource_contract::MemoryStoreConfigVersion,
+        access: awaken_resource_contract::ResourceAccess,
+        resource_validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
     ) {
-        let writable = access == awaken_protocol_managed::resource_plane::ResourceAccess::ReadWrite;
+        let writable = access == awaken_resource_contract::ResourceAccess::ReadWrite;
         let handle = self.platform_memory_handle(config.memory_store_id.to_string(), writable);
         let bound = self.memory.bind(
             thread,
@@ -1150,9 +1146,9 @@ mod tests {
             Arc::new(BackgroundRuns::new()),
             extractions.clone(),
         ));
-        let config = awaken_protocol_managed::resource_plane::MemoryStoreConfigVersion {
+        let config = awaken_resource_contract::MemoryStoreConfigVersion {
             memory_store_id: "test-store".into(),
-            version: awaken_protocol_managed::resource_plane::ConfigVersion::INITIAL,
+            version: awaken_resource_contract::ConfigVersion::INITIAL,
             recall_policy: Default::default(),
             extraction_policy: Default::default(),
             retention_policy: Default::default(),
@@ -1179,15 +1175,13 @@ mod tests {
 
     struct TestResourceBindingValidator;
 
-    impl awaken_protocol_managed::resource_plane::ResourceBindingValidator
-        for TestResourceBindingValidator
-    {
+    impl awaken_resource_contract::ResourceBindingValidator for TestResourceBindingValidator {
         fn validate_memory_binding(
             &self,
             _workspace_id: &str,
             _id: &str,
-            _version: awaken_protocol_managed::resource_plane::ConfigVersion,
-        ) -> Result<(), awaken_protocol_managed::resource_plane::ResourceCatalogError> {
+            _version: awaken_resource_contract::ConfigVersion,
+        ) -> Result<(), awaken_resource_contract::ResourceCatalogError> {
             Ok(())
         }
 
@@ -1195,8 +1189,8 @@ mod tests {
             &self,
             _workspace_id: &str,
             _id: &str,
-            _version: awaken_protocol_managed::resource_plane::ConfigVersion,
-        ) -> Result<(), awaken_protocol_managed::resource_plane::ResourceCatalogError> {
+            _version: awaken_resource_contract::ConfigVersion,
+        ) -> Result<(), awaken_resource_contract::ResourceCatalogError> {
             Ok(())
         }
     }

@@ -51,13 +51,15 @@ use axum::Router;
 pub use awaken_acp_application::{
     LocalAcpPreparation, PreparedAcpCapabilities, ensure_workspace_bindings,
 };
-pub use awaken_managed_routers::{default_models, files_router, models_router};
+pub use awaken_managed_routers::{
+    consent_router, default_models, erasure_router, files_router,
+    memory_stores_router_with_catalog, models_router, skills_router,
+};
 pub use awaken_runtime_host::{
     ConfigService, ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost,
     NoModelConfiguredExecutor, ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent,
     ThreadEventHub, UNCONFIGURED_MODEL_REF, VaultRefresher, advertised_tools, capabilities_router,
-    config_router, content_fingerprint, durable_ops_router, memory_stores_router_with_catalog,
-    parse_skill_md, skills_router,
+    config_router, content_fingerprint, durable_ops_router, parse_skill_md,
 };
 pub use legacy_resource_migration::migrate_legacy_skill_registry;
 pub use relay_hand::relay_hand_executor_factory;
@@ -104,7 +106,7 @@ pub fn install_platform_memory_data_plane(host: &SharedHost) {
 /// Keeping this factory at the data-plane composition edge prevents the runtime
 /// substrate from depending on concrete resource stores and prevents independent
 /// roots from drifting on filenames or backend selection.
-pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_runtime_host::ResourcePlanePorts {
+pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_runtime_host::ResourcePlane {
     std::fs::create_dir_all(root).expect("create resource-plane directory");
     let memory = awaken_memory_store::SqliteMemoryRepository::open(
         root.join("memory_fs.db")
@@ -123,7 +125,7 @@ pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_runtime_host::R
         )
         .expect("open resource file sqlite"),
     );
-    awaken_runtime_host::ResourcePlanePorts::new(
+    awaken_runtime_host::ResourcePlane::new(
         files.clone(),
         files,
         Arc::new(memory),
@@ -148,11 +150,11 @@ pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_runtime_host::R
     )
 }
 
-/// Open a remote Worker's shared resource ports from an explicitly resolved
+/// Open a remote Worker's shared Resource plane from an explicitly resolved
 /// backend URL. `None` means that Worker is resource-ineligible.
 pub async fn shared_worker_resource_plane(
     url: Option<&str>,
-) -> Result<Option<awaken_runtime_host::ResourcePlanePorts>, String> {
+) -> Result<Option<awaken_runtime_host::ResourcePlane>, String> {
     let Some(url) = url else {
         return Ok(None);
     };
@@ -167,7 +169,7 @@ pub async fn shared_worker_resource_plane(
             .await
             .map_err(|error| format!("connect shared FileStore: {error}"))?,
     );
-    Ok(Some(awaken_runtime_host::ResourcePlanePorts::new(
+    Ok(Some(awaken_runtime_host::ResourcePlane::new(
         files.clone(),
         files,
         Arc::new(
@@ -353,7 +355,7 @@ fn local_managed_state_over(
         credentials.clone(),
     ));
     // Keep the Session aggregate and its extraction intents in the same concrete
-    // repository. The two application ports remain separate, while their local
+    // repository. The two application SPIs remain separate, while their local
     // durability boundary is shared at this composition root.
     let session_repo = host.storage_dir().map(|root| {
         std::fs::create_dir_all(root).expect("create durable session repository directory");
@@ -629,8 +631,8 @@ fn mount_with_managed_over_and_models(
         resolver = resolver.with_eraser(session_blobs);
     }
     let resolver: Arc<dyn awaken_runtime_contract::DataSubjectResolver> = Arc::new(resolver);
-    let erasure = awaken_runtime_host::erasure_router(resolver);
-    let consent = awaken_runtime_host::consent_router(ds_repo, host.content_capture_ceiling());
+    let erasure = awaken_managed_routers::erasure_router(resolver);
+    let consent = awaken_managed_routers::consent_router(ds_repo, host.content_capture_ceiling());
     let local_workspace = host.local_workspace().to_string();
     let router = managed
         .merge(ai_sdk)

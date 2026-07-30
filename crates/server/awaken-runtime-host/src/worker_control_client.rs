@@ -109,7 +109,7 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         claim: &RunClaim,
-        contribution: awaken_protocol_managed::ApplicationSessionContribution,
+        contribution: awaken_session_contract::ApplicationSessionContribution,
     ) -> Result<crate::ApplicationSessionControlReceipt, String> {
         let body = self
             .post(
@@ -136,8 +136,8 @@ impl WorkerControlClient {
     pub async fn activate_session_realization(
         &self,
         identity: &WorkerIdentity,
-        command: awaken_protocol_managed::ActivateSessionRealization,
-    ) -> Result<awaken_protocol_managed::SessionRealizationDirective, String> {
+        command: awaken_session_contract::ActivateSessionRealization,
+    ) -> Result<awaken_session_contract::SessionRealizationDirective, String> {
         self.realization_phase("/v1/worker/session/realization/activate", identity, command)
             .await
     }
@@ -145,8 +145,8 @@ impl WorkerControlClient {
     pub async fn begin_session_realization(
         &self,
         identity: &WorkerIdentity,
-        command: awaken_protocol_managed::BeginSessionRealization,
-    ) -> Result<awaken_protocol_managed::SessionRealizationDirective, String> {
+        command: awaken_session_contract::BeginSessionRealization,
+    ) -> Result<awaken_session_contract::SessionRealizationDirective, String> {
         self.realization_phase("/v1/worker/session/realization/begin", identity, command)
             .await
     }
@@ -154,8 +154,8 @@ impl WorkerControlClient {
     pub async fn acknowledge_session_realization(
         &self,
         identity: &WorkerIdentity,
-        command: awaken_protocol_managed::AcknowledgeSessionRealization,
-    ) -> Result<awaken_protocol_managed::SessionRealizationDirective, String> {
+        command: awaken_session_contract::AcknowledgeSessionRealization,
+    ) -> Result<awaken_session_contract::SessionRealizationDirective, String> {
         self.realization_phase(
             "/v1/worker/session/realization/acknowledge",
             identity,
@@ -167,7 +167,7 @@ impl WorkerControlClient {
     pub async fn fail_session_realization(
         &self,
         identity: &WorkerIdentity,
-        command: awaken_protocol_managed::FailSessionRealization,
+        command: awaken_session_contract::FailSessionRealization,
     ) -> Result<(), String> {
         self.post(
             "/v1/worker/session/realization/fail",
@@ -182,7 +182,7 @@ impl WorkerControlClient {
         path: &str,
         identity: &WorkerIdentity,
         command: T,
-    ) -> Result<awaken_protocol_managed::SessionRealizationDirective, String> {
+    ) -> Result<awaken_session_contract::SessionRealizationDirective, String> {
         let body = self
             .post(path, json!({ "identity": identity, "command": command }))
             .await?;

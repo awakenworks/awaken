@@ -1910,7 +1910,7 @@ async fn application_required_creation_is_generated_from_the_decision_table() {
             input: Default::default(),
         };
         let outcome =
-            awaken_protocol_managed::ApplicationSessionContributionPort::contribute_application(
+            awaken_session_contract::ApplicationSessionContributionApi::contribute_application(
                 &state,
                 contribution,
             )
@@ -1982,7 +1982,7 @@ async fn preparing_session_can_be_cancelled_without_runtime_realization() {
         state.get_session(&session.id),
         Err(awaken_protocol_managed::StateError::NotFound)
     ));
-    let late = awaken_protocol_managed::ApplicationSessionContributionPort::contribute_application(
+    let late = awaken_session_contract::ApplicationSessionContributionApi::contribute_application(
         &state,
         awaken_protocol_managed::ApplicationSessionContribution {
             session_id: session.id,

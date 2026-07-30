@@ -8,8 +8,9 @@
 use std::sync::Arc;
 
 use awaken_managed_routers::{default_models, files_router, models_router};
+use awaken_managed_routers::{memory_stores_router_with_catalog, skills_router};
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult};
-use awaken_runtime_host::{SharedHost, memory_stores_router_with_catalog, skills_router};
+use awaken_runtime_host::SharedHost;
 use awaken_tenancy::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
@@ -35,8 +36,7 @@ async fn status(app: &Router, uri: &str) -> StatusCode {
 #[tokio::test]
 async fn the_resource_planes_merge_over_one_host_without_route_conflicts() {
     let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
-    let purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler> =
-        host.clone();
+    let purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> = host.clone();
 
     // Merge the same way the assembly binary does: every plane's router over the one
     // shared host, plus the static model directory.

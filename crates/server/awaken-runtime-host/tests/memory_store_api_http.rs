@@ -10,9 +10,10 @@
 
 use std::sync::Arc;
 
-use awaken_protocol_managed::WorkspaceScope;
+use awaken_managed_routers::memory_stores_router_with_catalog;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult};
-use awaken_runtime_host::{SharedHost, memory_stores_router_with_catalog};
+use awaken_runtime_host::SharedHost;
+use awaken_tenancy::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

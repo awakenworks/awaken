@@ -31,13 +31,13 @@ RESOURCE_APPLICATION_SOURCES = (
     "crates/server/awaken-managed-routers/src/files.rs",
     "crates/server/awaken-protocol-managed/src/state/resource.rs",
     "crates/server/awaken-protocol-managed/src/state/resources.rs",
-    "crates/server/awaken-runtime-host/src/memory_store_api.rs",
+    "crates/server/awaken-managed-routers/src/memory_stores.rs",
     "crates/server/awaken-runtime-host/src/memory_stores.rs",
     "crates/server/awaken-runtime-host/src/provisioning.rs",
     "crates/server/awaken-runtime-host/src/resource_reclamation.rs",
-    "crates/server/awaken-runtime-host/src/resource_scope.rs",
+    "crates/server/awaken-managed-routers/src/resource_scope.rs",
     "crates/server/awaken-runtime-host/src/skill_catalog.rs",
-    "crates/server/awaken-runtime-host/src/skills_api.rs",
+    "crates/server/awaken-managed-routers/src/skills.rs",
 )
 
 # HTTP adapters are PEP consumers, not Workspace selectors. Every handler must
@@ -45,8 +45,8 @@ RESOURCE_APPLICATION_SOURCES = (
 # fall back to a Host-local tenant.
 RESOURCE_HTTP_SOURCES = (
     "crates/server/awaken-managed-routers/src/files.rs",
-    "crates/server/awaken-runtime-host/src/memory_store_api.rs",
-    "crates/server/awaken-runtime-host/src/skills_api.rs",
+    "crates/server/awaken-managed-routers/src/memory_stores.rs",
+    "crates/server/awaken-managed-routers/src/skills.rs",
 )
 
 # Recovery already reads a durably persisted Workspace envelope. Re-selecting a

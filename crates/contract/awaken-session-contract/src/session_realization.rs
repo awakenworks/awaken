@@ -290,12 +290,12 @@ pub async fn drive_session_realization(
 /// supertrait prevents contribution and realization from being accidentally
 /// wired to different Session authorities.
 pub trait ApplicationSessionControl:
-    crate::ApplicationSessionContributionPort + SessionRealizationControl
+    crate::ApplicationSessionContributionApi + SessionRealizationControl
 {
 }
 
 impl<T> ApplicationSessionControl for T where
-    T: crate::ApplicationSessionContributionPort + SessionRealizationControl
+    T: crate::ApplicationSessionContributionApi + SessionRealizationControl
 {
 }
 

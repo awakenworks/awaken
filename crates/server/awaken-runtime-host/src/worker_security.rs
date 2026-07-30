@@ -1,4 +1,4 @@
-//! Neutral security and timing ports for the worker-facing HTTP boundary.
+//! Neutral security and timing SPIs for the worker-facing HTTP boundary.
 //!
 //! The open runtime defines what must be trusted; a deployment decides how that
 //! trust is established. The default header authenticator is suitable for local

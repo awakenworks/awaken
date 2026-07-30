@@ -8,7 +8,7 @@ use super::*;
 use crate::types::McpServer;
 use awaken_session_contract::{
     ApplicationContributionError, ApplicationSessionContribution,
-    ApplicationSessionContributionFailure, ApplicationSessionContributionPort,
+    ApplicationSessionContributionApi, ApplicationSessionContributionFailure,
     ApplicationSessionContributionReceipt, FrozenSessionProjection,
 };
 
@@ -214,7 +214,7 @@ impl ManagedState {
 }
 
 #[async_trait::async_trait]
-impl ApplicationSessionContributionPort for ManagedState {
+impl ApplicationSessionContributionApi for ManagedState {
     async fn contribute_application(
         &self,
         contribution: ApplicationSessionContribution,

@@ -11,7 +11,7 @@
 //! [`VaultRefresher`] (the `CredentialRefresher` the HTTP transport consults on
 //! a 401/403 — it runs the RFC 6749 `refresh_token` grant and reseals the
 //! rotated secrets back into the vault) and [`ExtMcpProbe`] (the
-//! `awaken_protocol_managed::McpProbe` port the `mcp_oauth_validate` route
+//! `awaken_session_contract::McpProbe` port the `mcp_oauth_validate` route
 //! drives — a connect + `initialize` handshake as the live credential check).
 
 use std::collections::BTreeMap;
@@ -27,9 +27,9 @@ use awaken_credential_vault::{
 };
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher, HttpTransportBuilder};
 use awaken_ext_skills::SkillRegistry as _;
-use awaken_protocol_managed::{McpProbe, McpProbeStatus};
 use awaken_runtime_contract::plugin::Plugin;
 use awaken_runtime_contract::{CredentialRefreshAccess, TokenEndpointAuth};
+use awaken_session_contract::{McpProbe, McpProbeStatus};
 use base64::Engine as _;
 
 use crate::host::HostError;
@@ -55,7 +55,7 @@ pub(crate) struct McpTransportMaterial {
 /// Worker retains plaintext.
 pub(crate) fn project_mcp_transport(
     prepared: &McpTransportMaterial,
-    generation: &awaken_protocol_managed::McpGenerationRef,
+    generation: &awaken_session_contract::McpGenerationRef,
     relay: Option<&crate::mcp_relay::McpRelay>,
 ) -> Result<awaken_run_executor_acp::McpServerConfig, HostError> {
     use awaken_run_executor_acp::{McpServerConfig, McpTransport};
@@ -341,7 +341,7 @@ impl CredentialRefresher for ChallengeCapture {
 }
 
 /// The live MCP credential probe (ADR-0043), implementing the
-/// [`awaken_protocol_managed::McpProbe`] port over `awaken-ext-mcp`: connect +
+/// [`awaken_session_contract::McpProbe`] port over `awaken-ext-mcp`: connect +
 /// MCP `initialize` handshake with the materialized bearer. Handshake success →
 /// `Valid`; an auth challenge (401/403) → `Invalid` with the HTTP status;
 /// anything else (unreachable, protocol error) → `Unknown`. This is the only
@@ -401,7 +401,7 @@ impl crate::SharedHost {
 
     pub(crate) fn mcp_projection(
         &self,
-        generation: &awaken_protocol_managed::McpGenerationRef,
+        generation: &awaken_session_contract::McpGenerationRef,
     ) -> Option<crate::session_slot::McpGenerationProjection> {
         self.session_slots
             .read(&generation.session_id, |slot| {
@@ -438,8 +438,8 @@ impl crate::SharedHost {
     /// identical and only the expiry/idempotency attempt may advance.
     pub(crate) fn renew_mcp_projection(
         &self,
-        request: &awaken_protocol_managed::StageMcpAttachment,
-    ) -> Result<Option<awaken_protocol_managed::McpRealizationReceipt>, HostError> {
+        request: &awaken_session_contract::StageMcpAttachment,
+    ) -> Result<Option<awaken_session_contract::McpRealizationReceipt>, HostError> {
         let binding = request.renewal_binding_fingerprint();
         self.session_slots
             .update(&request.generation.session_id, |slot| {
@@ -463,7 +463,7 @@ impl crate::SharedHost {
                         "MCP lease renewal conflicts with the active realization",
                     ));
                 }
-                let receipt = awaken_protocol_managed::McpRealizationReceipt {
+                let receipt = awaken_session_contract::McpRealizationReceipt {
                     generation: request.generation.clone(),
                     realization_id: request.realization_id.clone(),
                     selected_plaintext_holder: request.selected_plaintext_holder.clone(),
@@ -479,7 +479,7 @@ impl crate::SharedHost {
 
     pub(crate) async fn publish_mcp_projection(
         &self,
-        generation: &awaken_protocol_managed::McpGenerationRef,
+        generation: &awaken_session_contract::McpGenerationRef,
     ) -> Result<(), HostError> {
         if let Some(projection) = self.mcp_projection(generation) {
             if matches!(
@@ -544,7 +544,7 @@ impl crate::SharedHost {
 
     pub(crate) async fn drain_mcp_projection(
         &self,
-        generation: &awaken_protocol_managed::McpGenerationRef,
+        generation: &awaken_session_contract::McpGenerationRef,
     ) -> Result<(), HostError> {
         let result = self.session_slots.modify(&generation.session_id, |slot| {
             let Some(projection) = slot
@@ -656,11 +656,11 @@ mod acp_projection_tests {
         }
     }
 
-    fn generation() -> awaken_protocol_managed::McpGenerationRef {
-        awaken_protocol_managed::McpGenerationRef {
+    fn generation() -> awaken_session_contract::McpGenerationRef {
+        awaken_session_contract::McpGenerationRef {
             session_id: "t1".into(),
-            attachment_id: awaken_protocol_managed::McpAttachmentId("mcp-gh".into()),
-            generation: awaken_protocol_managed::McpGeneration(3),
+            attachment_id: awaken_session_contract::McpAttachmentId("mcp-gh".into()),
+            generation: awaken_session_contract::McpGeneration(3),
             runtime_incarnation: "runtime-1".into(),
             lease_epoch: 2,
             lease_expires_at_unix_ms: u64::MAX,

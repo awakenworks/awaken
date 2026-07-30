@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use awaken_managed_routers::files_router;
-use awaken_protocol_managed::resource_plane::{
+use awaken_resource_contract::{
     AcquireResourceReclamationOutcome, FileRecord, PutResourcePurgeOutcome, ResourceKind,
     ResourceLifecycleRepository, ResourcePurgeError, ResourcePurgeIntent, ResourcePurgeRepository,
     ResourceReclamationFence, ResourceReference, ResourceReferenceIndex, ResourceReferenceKind,

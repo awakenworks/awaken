@@ -4,18 +4,19 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use awaken_memory_store::{Memory, MemoryRepository};
-use awaken_protocol_managed::ResourceCatalog;
-use awaken_protocol_managed::resource_plane::{
-    ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, MemoryStoreId, ResourceState,
-    ResourceTimestamps,
-};
 use awaken_protocol_managed::types::{DreamUsage, InboundEvent, SendEventsRequest};
 use awaken_protocol_managed::{
-    ApplicationSessionContribution, ApplicationSessionContributionPort, ApplicationSessionInput,
     DreamCancellation, DreamFailure, DreamPreparation, DreamRequest, DreamWorker, ManagedState,
+};
+use awaken_resource_contract::{
+    ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, MemoryStoreId, ResourceCatalog,
+    ResourceState, ResourceTimestamps,
 };
 use awaken_runtime_host::{
     MemoryWriteConsistency, MountAccess, MountLifetime, MountRequirement, MountSource,
+};
+use awaken_session_contract::{
+    ApplicationSessionContribution, ApplicationSessionContributionApi, ApplicationSessionInput,
 };
 
 use crate::SharedHost;

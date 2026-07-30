@@ -4,37 +4,25 @@
 use super::*;
 use awaken_runtime_contract::delegation::RunDelegationService;
 
-/// Backend-neutral resource ports selected atomically by an outer composition
-/// root. This is a wiring value, not a resource aggregate or authorization
+/// Backend-neutral Resource plane selected atomically by an outer composition
+/// root. This is a composition value, not a resource aggregate or authorization
 /// context; it contains no principal, credential, role, policy, or PDP result.
 #[derive(Clone)]
-pub struct ResourcePlanePorts {
+pub struct ResourcePlane {
     file_store: Arc<dyn awaken_file_store::FileStore>,
-    file_catalog: Arc<dyn awaken_protocol_managed::resource_plane::FileCatalog>,
+    file_catalog: Arc<dyn awaken_resource_contract::FileCatalog>,
     memory_repository: Arc<dyn awaken_memory_store::MemoryRepository>,
     skill_store: Arc<dyn awaken_skill_store::SkillStore>,
-    lifecycle: Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
+    lifecycle: Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>,
 }
 
-/// The five backend-neutral ports exposed when a composition root needs to
-/// mount the resource APIs beside the runtime host. `FileStore` and
-/// `FileCatalog` are two capabilities of the same opened File aggregate, not two
-/// independently selected persistence tracks.
-pub type ResourcePlanePortSet = (
-    Arc<dyn awaken_file_store::FileStore>,
-    Arc<dyn awaken_protocol_managed::resource_plane::FileCatalog>,
-    Arc<dyn awaken_memory_store::MemoryRepository>,
-    Arc<dyn awaken_skill_store::SkillStore>,
-    Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
-);
-
-impl ResourcePlanePorts {
+impl ResourcePlane {
     pub fn new(
         file_store: Arc<dyn awaken_file_store::FileStore>,
-        file_catalog: Arc<dyn awaken_protocol_managed::resource_plane::FileCatalog>,
+        file_catalog: Arc<dyn awaken_resource_contract::FileCatalog>,
         memory_repository: Arc<dyn awaken_memory_store::MemoryRepository>,
         skill_store: Arc<dyn awaken_skill_store::SkillStore>,
-        lifecycle: Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
+        lifecycle: Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>,
     ) -> Self {
         Self {
             file_store,
@@ -46,8 +34,16 @@ impl ResourcePlanePorts {
     }
 
     /// Decompose the wiring value at an outer composition root that also mounts
-    /// the resource APIs. All returned ports still refer to the same opened family.
-    pub fn into_parts(self) -> ResourcePlanePortSet {
+    /// the resource APIs. Every capability still refers to the same opened family.
+    pub fn into_parts(
+        self,
+    ) -> (
+        Arc<dyn awaken_file_store::FileStore>,
+        Arc<dyn awaken_resource_contract::FileCatalog>,
+        Arc<dyn awaken_memory_store::MemoryRepository>,
+        Arc<dyn awaken_skill_store::SkillStore>,
+        Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>,
+    ) {
         (
             self.file_store,
             self.file_catalog,
@@ -57,9 +53,8 @@ impl ResourcePlanePorts {
         )
     }
 
-    /// Clone the one Memory repository port so an outer composition root can
-    /// build the matching worker-side mounter before moving this complete port
-    /// set into the Host.
+    /// Clone the Memory repository so an outer composition root can build the
+    /// matching worker-side mounter before moving this complete plane into the Host.
     pub fn memory_repository(&self) -> Arc<dyn awaken_memory_store::MemoryRepository> {
         self.memory_repository.clone()
     }
@@ -143,7 +138,7 @@ impl SharedHost {
     pub fn new_with_resource_plane(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        resources: ResourcePlanePorts,
+        resources: ResourcePlane,
     ) -> Self {
         Self::build(
             llm,
@@ -158,7 +153,7 @@ impl SharedHost {
     pub fn new_with_resource_plane_and_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        resources: ResourcePlanePorts,
+        resources: ResourcePlane,
         deployment: crate::DeploymentConfig,
     ) -> Self {
         Self::build(llm, model_ref.into(), Some(resources), deployment)
@@ -167,7 +162,7 @@ impl SharedHost {
     fn build(
         llm: Arc<dyn LlmExecutor>,
         model_ref: String,
-        resources: Option<ResourcePlanePorts>,
+        resources: Option<ResourcePlane>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
         // Composition root: the deployment axes are parsed once from the environment
@@ -185,8 +180,8 @@ impl SharedHost {
         // the server composition root through `ResourceCatalog`.
         let memory_stores = resources.as_ref().map_or_else(
             || crate::memory_stores::MemoryStores::open(store_dir.as_deref()),
-            |ports| {
-                crate::memory_stores::MemoryStores::with_repository(ports.memory_repository.clone())
+            |plane| {
+                crate::memory_stores::MemoryStores::with_repository(plane.memory_repository.clone())
             },
         );
         let memory_catalog = Arc::new(AgentCatalog::new().with_agent(default_memory_agent(
@@ -197,7 +192,7 @@ impl SharedHost {
             ),
             DEFAULT_MEMORY_INSTRUCTIONS,
         )));
-        let extraction_repository: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository> =
+        let extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository> =
             match store_dir.as_ref() {
                 Some(dir) => {
                     std::fs::create_dir_all(dir)
@@ -226,8 +221,8 @@ impl SharedHost {
             &model_ref,
         )) as Arc<dyn awaken_ext_memory::RecallSelector>);
         let mut skills = crate::skill_catalog::SkillCatalog::new();
-        if let Some(ports) = &resources {
-            skills.set_store(ports.skill_store.clone());
+        if let Some(plane) = &resources {
+            skills.set_store(plane.skill_store.clone());
         }
         let (file_store, file_catalog) = resources.as_ref().map_or_else(
             || match store_dir.as_ref() {
@@ -240,20 +235,20 @@ impl SharedHost {
                     );
                     (
                         files.clone() as Arc<dyn awaken_file_store::FileStore>,
-                        files as Arc<dyn awaken_protocol_managed::resource_plane::FileCatalog>,
+                        files as Arc<dyn awaken_resource_contract::FileCatalog>,
                     )
                 }
                 None => {
                     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
                     (
                         files.clone() as Arc<dyn awaken_file_store::FileStore>,
-                        files as Arc<dyn awaken_protocol_managed::resource_plane::FileCatalog>,
+                        files as Arc<dyn awaken_resource_contract::FileCatalog>,
                     )
                 }
             },
-            |ports| (ports.file_store.clone(), ports.file_catalog.clone()),
+            |plane| (plane.file_store.clone(), plane.file_catalog.clone()),
         );
-        let resource_lifecycle = resources.as_ref().map(|ports| ports.lifecycle.clone());
+        let resource_lifecycle = resources.as_ref().map(|plane| plane.lifecycle.clone());
         #[cfg(test)]
         let resource_lifecycle =
             resource_lifecycle.or_else(|| Some(super::tests::test_resource_lifecycle()));
@@ -469,7 +464,7 @@ impl SharedHost {
     #[must_use]
     pub fn with_resource_lifecycle(
         mut self,
-        repository: Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
+        repository: Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>,
     ) -> Self {
         self.resource_lifecycle = Some(repository);
         self
@@ -477,7 +472,7 @@ impl SharedHost {
 
     pub fn resource_lifecycle(
         &self,
-    ) -> Option<Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>> {
+    ) -> Option<Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>> {
         self.resource_lifecycle.clone()
     }
 

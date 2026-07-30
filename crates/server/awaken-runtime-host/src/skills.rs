@@ -5,7 +5,7 @@
 //! sub-run capability (for `context: fork`), and the base permission gate (to
 //! observe touched paths). Everything skill-*behavioral* lives in
 //! `awaken-ext-skills`; this module only wires those host-owned pieces to the
-//! extension's ports and assembles the two tools for a thread.
+//! extension's SPIs and assembles the two tools for a thread.
 
 use std::path::PathBuf;
 use std::sync::Arc;

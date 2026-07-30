@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use awaken_memory_store::{MemErr, MemoryVersion, MemoryVersionOperation};
-use awaken_protocol_managed::resource_plane::{
+use awaken_resource_contract::{
     ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalogError,
     ResourceKind, ResourceState, ResourceTarget,
 };
@@ -30,7 +30,9 @@ use serde_json::{Value, json};
 use crate::resource_scope::RequiredWorkspaceScope;
 
 fn timestamp(nanos: u128) -> String {
-    awaken_protocol_managed::cron::to_rfc3339((nanos / 1_000_000).min(u64::MAX as u128) as u64)
+    awaken_protocol_transport::epoch_millis_to_rfc3339(
+        (nanos / 1_000_000).min(u64::MAX as u128) as u64
+    )
 }
 
 fn now_nanos() -> u64 {
@@ -120,8 +122,8 @@ struct MemoryStoreApi {
     memories: Arc<dyn awaken_memory_store::MemoryRepository>,
     /// Unified resource definition/configuration/lifecycle repository consumed by
     /// both this API and Session resolution. It contains no authorization policy.
-    catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
-    purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
 }
 
 /// Mount the Memory API over the same Resource Catalog used by Session
@@ -129,8 +131,8 @@ struct MemoryStoreApi {
 /// create/archive/delete and activation share one lifecycle truth.
 pub fn memory_stores_router_with_catalog(
     memories: Arc<dyn awaken_memory_store::MemoryRepository>,
-    catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
-    purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
 ) -> Router {
     let state = Arc::new(MemoryStoreApi {
         memories,
@@ -267,7 +269,7 @@ async fn create_store(
             .unwrap_or_default(),
         state: ResourceState::Active,
         current_config_version: ConfigVersion::INITIAL,
-        timestamps: awaken_protocol_managed::resource_plane::ResourceTimestamps::created(at),
+        timestamps: awaken_resource_contract::ResourceTimestamps::created(at),
     };
     let projected = project_def(&def);
     if let Err(error) = state.catalog.create_memory_store(

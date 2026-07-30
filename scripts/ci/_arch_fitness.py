@@ -64,15 +64,16 @@ def _selftest_contract_purity() -> None:
 
 # ── Phase 0.2: protocol-* adapters are leaves ────────────────────────────────────
 # A `protocol-*` crate is a pure wire translator. Nothing may depend on it except a
-# composition root, the service layer that assembles the managed adapter, the control
-# plane (mounts managed routes + reuses the wire error envelope), a sibling protocol
+# composition root, a driving HTTP adapter, the control plane (mounts managed routes
+# + reuses the wire error envelope), a sibling protocol
 # adapter over the shared transport base, or a run-executor adapter implementing a
 # neutral port over the protocol. Any OTHER depender means a neutral port has leaked into
 # an adapter (the root disease) — the fix is to move the port inward to a contract/ leaf.
 PROTOCOL_LEAF_CONSUMERS: frozenset[str] = frozenset(
     {
         "awaken-cli", "awaken-server", "awaken-scenario-host",  # composition roots
-        "awaken-runtime-host",  # the service layer assembling the managed adapter
+        "awaken-managed-routers",  # driving HTTP adapters over neutral host APIs/SPIs
+        "awaken-runtime-host",  # implements the neutral ProtocolRuntime transport seam
         "awaken-control",  # mounts the managed routes + reuses its wire ErrorResponse
     }
 )
@@ -108,7 +109,8 @@ def _selftest_protocol_leaves() -> None:
     `awaken-protocol-*`; C4 = `awaken-run-executor-*`. Effects: E1 = one per dep; E2 = none."""
     v = protocol_leaf_violations("awaken-config-store", frozenset({"awaken-protocol-managed", "serde"}))
     assert len(v) == 1 and "awaken-protocol-managed" in v[0], v  # T1 C1∧¬C2..4 -> E1
-    assert protocol_leaf_violations("awaken-runtime-host", frozenset({"awaken-protocol-managed"})) == []  # T2 C2
+    assert protocol_leaf_violations("awaken-runtime-host", frozenset({"awaken-protocol-transport"})) == []  # T2 service seam allowed
+    assert protocol_leaf_violations("awaken-managed-routers", frozenset({"awaken-protocol-transport"})) == []  # T2 adapter allowed
     assert protocol_leaf_violations("awaken-server", frozenset({"awaken-protocol-a2a"})) == []  # T2
     assert protocol_leaf_violations("awaken-protocol-a2a", frozenset({"awaken-protocol-transport"})) == []  # T3 C3
     assert protocol_leaf_violations("awaken-run-executor-a2a", frozenset({"awaken-protocol-a2a"})) == []  # T4 C4

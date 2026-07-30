@@ -60,9 +60,19 @@ async function stop(child) {
 }
 
 async function expectMissingWorkspace(method, pathname, body, contentType = 'application/json') {
+  // Cause/effect graph: protocol beta validation is an outer, independent
+  // condition; this scenario supplies it so the Resource boundary is reached.
+  // R1 beta valid + Workspace missing -> 404 workspace_not_found.
+  const beta = pathname.startsWith('/v1/memory_stores')
+    ? 'agent-memory-2026-07-22'
+    : pathname.startsWith('/v1/skills')
+      ? 'skills-2025-10-02'
+      : undefined;
+  const headers = body === undefined ? {} : { 'content-type': contentType };
+  if (beta) headers['anthropic-beta'] = beta;
   const response = await fetch(`http://127.0.0.1:${PORT}${pathname}`, {
     method,
-    headers: body === undefined ? {} : { 'content-type': contentType },
+    headers,
     body,
   });
   assert.equal(response.status, 404, `${method} ${pathname}`);

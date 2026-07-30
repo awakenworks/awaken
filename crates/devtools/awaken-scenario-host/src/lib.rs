@@ -46,12 +46,14 @@ use axum::Router;
 // The managed-agents service layer (`awaken-runtime-host`): the neutral host,
 // the two port adapters, the per-plane routers, and the authoring/transport
 // re-exports a composition root (and the integration tests) drive directly.
-pub use awaken_managed_routers::{default_models, files_router, models_router};
+pub use awaken_managed_routers::{
+    default_models, files_router, memory_stores_router_with_catalog, models_router, skills_router,
+};
 pub use awaken_runtime_host::{
     ConfigService, ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost,
     ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent, ThreadEventHub, VaultRefresher,
     advertised_tools, capabilities_router, config_router, content_fingerprint, durable_ops_router,
-    memory_stores_router_with_catalog, parse_skill_md, skills_router,
+    parse_skill_md,
 };
 
 /// An [`InferenceExecutorMaterializer`] mapping a model ref to a labeled executor, so a

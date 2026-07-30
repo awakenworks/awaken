@@ -71,9 +71,10 @@ impl awaken_runtime_host::ApplicationSessionProvisioner for ApplicationProvision
     async fn prepare(
         &self,
         _activation: &awaken_runtime_contract::activation::RunActivation,
+        session_id: &str,
         ownership: Arc<dyn AttemptOwnershipVerifier>,
     ) -> Result<
-        awaken_runtime_host::ApplicationSessionPlan,
+        awaken_session_contract::ApplicationSessionContribution,
         awaken_runtime_host::ApplicationSessionError,
     > {
         // The provisioner participates in the same claim boundary as the Host;
@@ -86,21 +87,39 @@ impl awaken_runtime_host::ApplicationSessionProvisioner for ApplicationProvision
                 "AWAKEN_TEST_MCP_URL is required: {error}"
             ))
         })?;
-        let mut plan = awaken_runtime_host::ApplicationSessionPlan::empty(format!(
-            "application-session-e2e-v2:{mcp_url}"
-        ))
-        .with_mcp_url("application-calc", mcp_url.clone())
-        .with_mcp_url("application-only", mcp_url)
-        .with_network_restriction(awaken_provisioning_contract::NetworkPolicy::Unrestricted);
-        plan.prompts.push(APPLICATION_PROMPT.to_string());
-        plan.env.push(awaken_provisioning_contract::EnvVar {
+        let env = awaken_provisioning_contract::EnvVar {
             name: "APPLICATION_CONTRIBUTION_VISIBLE".into(),
             value: awaken_provisioning_contract::EnvValue::Inline {
                 value: "yes".into(),
             },
             visibility: awaken_provisioning_contract::EnvVisibility::Process,
-        });
-        Ok(plan)
+        };
+        Ok(awaken_session_contract::ApplicationSessionContribution {
+            session_id: session_id.to_owned(),
+            application_fingerprint: format!("application-session-e2e-v2:{mcp_url}"),
+            input: awaken_session_contract::ApplicationSessionInput {
+                env: vec![serde_json::to_value(env).map_err(|error| {
+                    awaken_runtime_host::ApplicationSessionError::new(error.to_string())
+                })?],
+                prompts: vec![APPLICATION_PROMPT.to_string()],
+                mcp_inputs: vec![
+                    serde_json::json!({
+                        "name": "application-calc",
+                        "type": "url",
+                        "url": mcp_url.clone(),
+                    }),
+                    serde_json::json!({
+                        "name": "application-only",
+                        "type": "url",
+                        "url": mcp_url,
+                    }),
+                ],
+                network_restriction: Some(
+                    awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                ),
+                ..Default::default()
+            },
+        })
     }
 }
 

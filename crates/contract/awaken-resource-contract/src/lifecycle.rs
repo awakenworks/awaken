@@ -524,7 +524,7 @@ pub trait ResourceReferenceIndex: Send + Sync {
 }
 
 /// Composition convenience for one adapter implementing both durable lifecycle
-/// ports. It adds no behavior and keeps callers dependent on the two segregated
+/// SPIs. It adds no behavior and keeps callers dependent on the two segregated
 /// interfaces above.
 pub trait ResourceLifecycleRepository: ResourcePurgeRepository + ResourceReferenceIndex {}
 

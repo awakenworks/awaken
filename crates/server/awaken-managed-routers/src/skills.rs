@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use awaken_protocol_managed::resource_plane::{ResourceKind, ResourceTarget};
+use awaken_resource_contract::{ResourceKind, ResourceTarget};
 use awaken_skill_store::{
     CanonicalSkillBundle, MAX_SKILL_ARCHIVE_BYTES, MAX_SKILL_FILES, SkillDefinition,
     SkillStoreError, SkillVersion, UploadedSkillBundleFile, canonicalize_skill_bundle,
@@ -36,7 +36,7 @@ fn now_nanos() -> u64 {
 }
 
 fn timestamp(nanos: u64) -> String {
-    awaken_protocol_managed::cron::to_rfc3339(nanos / 1_000_000)
+    awaken_protocol_transport::epoch_millis_to_rfc3339(nanos / 1_000_000)
 }
 
 fn project_definition(definition: &SkillDefinition) -> Value {
@@ -75,7 +75,7 @@ fn project_version(version: &SkillVersion) -> Value {
 /// deliberately no HTTP-local registry or authorization data here.
 struct SkillsApi {
     store: Option<Arc<dyn awaken_skill_store::SkillStore>>,
-    purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler>,
+    purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
 }
 
 impl SkillsApi {
@@ -146,7 +146,7 @@ impl SkillsApi {
 /// Mount the skills API over the host's durable skill catalog.
 pub fn skills_router(
     store: Option<Arc<dyn awaken_skill_store::SkillStore>>,
-    purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler>,
+    purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
 ) -> Router {
     let state = Arc::new(SkillsApi { store, purge });
     Router::new()
@@ -353,7 +353,7 @@ async fn create_skill(
             display_title,
             latest_version: 1,
             last_version: 1,
-            timestamps: awaken_protocol_managed::resource_plane::ResourceTimestamps::created(
+            timestamps: awaken_resource_contract::ResourceTimestamps::created(
                 version.created_unix_nanos,
             ),
         };
@@ -399,7 +399,7 @@ async fn create_skill(
         display_title: None,
         latest_version: 1,
         last_version: 1,
-        timestamps: awaken_protocol_managed::resource_plane::ResourceTimestamps::created(
+        timestamps: awaken_resource_contract::ResourceTimestamps::created(
             version.created_unix_nanos,
         ),
     };
@@ -656,8 +656,8 @@ async fn version_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SharedHost;
     use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
+    use awaken_runtime_host::SharedHost;
     use awaken_tenancy::WorkspaceScope;
     use axum::body::Body;
     use axum::http::Request;
@@ -700,19 +700,52 @@ mod tests {
         (status, String::from_utf8_lossy(&bytes).to_string())
     }
 
+    async fn persist_directly(host: &SharedHost, workspace: &str, id: &str, content: &str) {
+        let bundle = canonicalize_skill_bundle(vec![UploadedSkillBundleFile {
+            path: "SKILL.md".into(),
+            content: content.as_bytes().to_vec(),
+            executable: false,
+        }])
+        .unwrap();
+        let version = build_version(id, content, 1, bundle);
+        host.skill_store()
+            .expect("test Skill store")
+            .create(
+                SkillDefinition {
+                    id: id.into(),
+                    workspace_id: workspace.into(),
+                    display_title: None,
+                    latest_version: 1,
+                    last_version: 1,
+                    timestamps: Default::default(),
+                },
+                version,
+            )
+            .await
+            .unwrap();
+    }
+
+    /// Cause/effect graph: identical Skill ids in distinct Workspaces are
+    /// distinct aggregates. A selected Workspace may read its value and list;
+    /// another Workspace receives no identity or content disclosure.
+    ///
+    /// | Rule | Stored in A | Selected Workspace | Effect |
+    /// |---|---|---|---|
+    /// | S1 | yes | A | retrieve succeeds |
+    /// | S2 | yes | B | retrieve 404; list omits id |
     #[tokio::test]
     async fn the_same_skill_id_is_isolated_by_workspace() {
         let dir = tempfile::tempdir().unwrap();
         let host = Arc::new(
             SharedHost::new(Arc::new(NoLlm), "test").with_skill_store(dir.path().join("skills")),
         );
-        host.skills
-            .persist_authored(
-                "ws_a",
-                "private",
-                "---\nname: private\ndescription: a\n---\nsecret-a",
-            )
-            .await;
+        persist_directly(
+            &host,
+            "ws_a",
+            "private",
+            "---\nname: private\ndescription: a\n---\nsecret-a",
+        )
+        .await;
         let router = skills_router(host.skill_store(), host);
         let id = "private";
         assert_eq!(
@@ -731,11 +764,14 @@ mod tests {
         );
     }
 
-    // A skill delivered to the durable store OUTSIDE the SDK `/v1/skills` create
-    // route (harvested authored skills, or any skill after a restart clears the
-    // in-memory registry) must still resolve by its advertised catalog id — the
-    // A-1 fallback the happy-path e2e (which always creates via `/v1/skills`) never
-    // exercises.
+    /// Cause/effect graph: a Skill committed directly to the authoritative
+    /// repository, without HTTP-local state, must remain retrievable/listable by
+    /// the same stable id; an unknown id remains 404.
+    ///
+    /// | Rule | Durable aggregate | Requested id | Effect |
+    /// |---|---|---|---|
+    /// | D1 | present | exact/latest | metadata and content returned |
+    /// | D2 | present | unknown | 404 |
     #[tokio::test]
     async fn a_durable_only_skill_resolves_by_its_catalog_id() {
         let dir = std::env::temp_dir().join(format!("awaken-skillsapi-{}", std::process::id()));
@@ -744,13 +780,13 @@ mod tests {
         );
         let workspace = host.local_workspace().to_string();
         // Deliver straight to the durable repository — the API reads the same truth.
-        host.skills
-            .persist_authored(
-                &workspace,
-                "Greeter",
-                "---\nname: Greeter\ndescription: hi\n---\nsay hello",
-            )
-            .await;
+        persist_directly(
+            &host,
+            &workspace,
+            "Greeter",
+            "---\nname: Greeter\ndescription: hi\n---\nsay hello",
+        )
+        .await;
         let router = skills_router(host.skill_store(), host);
         let cid = "Greeter";
 

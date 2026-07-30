@@ -27,7 +27,7 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_file_store::FileStore;
-use awaken_protocol_managed::resource_plane::FileCatalog;
+use awaken_resource_contract::FileCatalog;
 use awaken_run_ingress::{
     AnyDispatchStore, CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue,
     DispatchServiceConfig, DurableRunIngress, RunDispatch, SubmitOptions, SystemClock,
@@ -46,8 +46,8 @@ use awaken_runtime_contract::tool::{ToolExecutor, ToolExecutorProvider, ToolOutp
 // The Workdir-tier sandbox realized through the neutral provisioning contract:
 // `LocalProvider::create_sandbox` yields a `LocalSandbox` whose host-tier helpers
 // (rooted tools, repos, artifacts) the host composes into each session's runtime.
-use awaken_protocol_managed::DelegatedRun;
 use awaken_sandbox_local::LocalProvider;
+use awaken_session_contract::DelegatedRun;
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
@@ -112,7 +112,7 @@ pub(crate) fn now_ms() -> u64 {
 }
 
 mod build;
-pub use build::ResourcePlanePorts;
+pub use build::ResourcePlane;
 mod completion;
 pub use completion::remote_worker_placement;
 pub use completion::self_hosted_inference_holder;
@@ -258,7 +258,7 @@ pub struct SharedHost {
     /// raw token never enters the sandbox. See [`crate::mcp_relay`].
     pub(crate) mcp_relay: tokio::sync::OnceCell<crate::mcp_relay::McpRelay>,
     /// Cold-Worker adapter over the configured Session Runtime. It owns only weak
-    /// host wiring plus Resource/credential ports, so installing it cannot create
+    /// host wiring plus Resource/credential SPIs, so installing it cannot create
     /// an `Arc<SharedHost>` cycle or a second Vault/materialization path.
     pub(crate) dispatch_session_runtime: std::sync::RwLock<Option<crate::DispatchSessionRuntime>>,
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
@@ -271,7 +271,7 @@ pub struct SharedHost {
     /// Durable resource-plane lifecycle/reference state. It contains intrinsic
     /// Workspace/resource edges only and is independent of the IAM deployment.
     pub(crate) resource_lifecycle:
-        Option<Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>>,
+        Option<Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>>,
     /// The memory resource plane's path-addressed content backend shared by API,
     /// mounts, recall, and extraction. See [`crate::memory_stores`].
     pub(crate) memory_stores: crate::memory_stores::MemoryStores,
@@ -301,7 +301,7 @@ pub struct SharedHost {
     /// `SessionCtx`. See [`crate::hand_placement`].
     pub(crate) hand_placement: crate::hand_placement::HandPlacement,
     pub(crate) environment_binding_sink:
-        std::sync::RwLock<Option<Arc<dyn awaken_protocol_managed::SessionEnvironmentBindingSink>>>,
+        std::sync::RwLock<Option<Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>>>,
     /// The one Host-owned subject-tagged captured-content sink (ADR-0050).
     /// Composition may install it after the shared Host is assembled; sessions
     /// snapshot the current sink when they are created. `None` = spans only.

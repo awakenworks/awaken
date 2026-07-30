@@ -1,5 +1,4 @@
 pub mod awaken_provisioning_contract
-pub use awaken_provisioning_contract::SandboxProvisioning
 pub enum awaken_provisioning_contract::AdmissionError
 pub awaken_provisioning_contract::AdmissionError::EmptySummary
 pub awaken_provisioning_contract::AdmissionError::MissingRequiredField

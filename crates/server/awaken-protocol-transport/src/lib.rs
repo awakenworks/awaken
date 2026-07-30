@@ -11,6 +11,7 @@ mod convert;
 mod page;
 mod port;
 mod stream;
+mod time;
 
 pub use convert::blocks_text;
 pub use page::paginate_history;
@@ -20,3 +21,4 @@ pub use awaken_agent_contract::page::{
 };
 pub use port::{DriverError, Pending, ProtocolRuntime, Resume, StepFailure, StepOutcome, Terminal};
 pub use stream::ChannelStreamSink;
+pub use time::epoch_millis_to_rfc3339;

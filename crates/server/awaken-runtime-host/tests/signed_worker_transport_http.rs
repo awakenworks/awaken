@@ -25,24 +25,24 @@ use awaken_runtime_host::{
 
 #[derive(Default)]
 struct RecordingApplicationContributions {
-    contributions: Mutex<Vec<awaken_protocol_managed::ApplicationSessionContribution>>,
-    projection: Mutex<Option<awaken_protocol_managed::FrozenSessionProjection>>,
+    contributions: Mutex<Vec<awaken_session_contract::ApplicationSessionContribution>>,
+    projection: Mutex<Option<awaken_session_contract::FrozenSessionProjection>>,
     activations: Mutex<usize>,
     acknowledgements: Mutex<usize>,
     failures: Mutex<usize>,
-    begins: Mutex<Vec<awaken_protocol_managed::BeginSessionRealization>>,
+    begins: Mutex<Vec<awaken_session_contract::BeginSessionRealization>>,
 }
 
 #[async_trait::async_trait]
-impl awaken_protocol_managed::ApplicationSessionContributionPort
+impl awaken_session_contract::ApplicationSessionContributionApi
     for RecordingApplicationContributions
 {
     async fn contribute_application(
         &self,
-        contribution: awaken_protocol_managed::ApplicationSessionContribution,
+        contribution: awaken_session_contract::ApplicationSessionContribution,
     ) -> Result<
-        awaken_protocol_managed::ApplicationSessionContributionReceipt,
-        awaken_protocol_managed::ApplicationSessionContributionFailure,
+        awaken_session_contract::ApplicationSessionContributionReceipt,
+        awaken_session_contract::ApplicationSessionContributionFailure,
     > {
         self.contributions
             .lock()
@@ -52,22 +52,22 @@ impl awaken_protocol_managed::ApplicationSessionContributionPort
             awaken_runtime_contract::PlaintextBoundary::Worker,
             "test.worker",
         );
-        let input_receipt = awaken_protocol_managed::ApplicationContributionReceipt::from_input(
+        let input_receipt = awaken_session_contract::ApplicationContributionReceipt::from_input(
             contribution.application_fingerprint,
             &contribution.input,
         );
-        let baseline = awaken_protocol_managed::SessionBaseline::compile(
-            awaken_protocol_managed::SessionBaselineInputs {
-                environment: awaken_protocol_managed::EnvironmentSnapshot {
+        let baseline = awaken_session_contract::SessionBaseline::compile(
+            awaken_session_contract::SessionBaselineInputs {
+                environment: awaken_session_contract::EnvironmentSnapshot {
                     environment_id: "env".into(),
-                    revision: awaken_protocol_managed::EnvironmentRevision(1),
-                    config_fingerprint: awaken_protocol_managed::EnvironmentFingerprint(
+                    revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+                    config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                         "env-fingerprint".into(),
                     ),
                     sandbox: serde_json::json!({}),
                     sandbox_provisioning: Default::default(),
                     packages: Default::default(),
-                    network: awaken_protocol_managed::SessionNetworkPolicy::Unrestricted,
+                    network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
                     credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
                         inference_holder: holder.clone(),
                         mcp_holder: holder.clone(),
@@ -86,9 +86,9 @@ impl awaken_protocol_managed::ApplicationSessionContributionPort
                 prompts: contribution.input.prompts,
             },
         );
-        let projection = awaken_protocol_managed::FrozenSessionProjection {
+        let projection = awaken_session_contract::FrozenSessionProjection {
             workspace_id: "workspace".into(),
-            revision: awaken_protocol_managed::SessionRevision(2),
+            revision: awaken_session_contract::SessionRevision(2),
             baseline,
             resources: Default::default(),
             mcp: Vec::new(),
@@ -96,8 +96,8 @@ impl awaken_protocol_managed::ApplicationSessionContributionPort
         };
         *self.projection.lock().unwrap() = Some(projection.clone());
         Ok(
-            awaken_protocol_managed::ApplicationSessionContributionReceipt {
-                outcome: awaken_protocol_managed::ApplicationContributionOutcome::Committed,
+            awaken_session_contract::ApplicationSessionContributionReceipt {
+                outcome: awaken_session_contract::ApplicationContributionOutcome::Committed,
                 projection,
             },
         )
@@ -105,13 +105,13 @@ impl awaken_protocol_managed::ApplicationSessionContributionPort
 }
 
 #[async_trait::async_trait]
-impl awaken_protocol_managed::SessionRealizationControl for RecordingApplicationContributions {
+impl awaken_session_contract::SessionRealizationControl for RecordingApplicationContributions {
     async fn begin_session_realization(
         &self,
-        command: awaken_protocol_managed::BeginSessionRealization,
+        command: awaken_session_contract::BeginSessionRealization,
     ) -> Result<
-        awaken_protocol_managed::SessionRealizationDirective,
-        awaken_protocol_managed::SessionRealizationControlFailure,
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
     > {
         self.begins.lock().unwrap().push(command.clone());
         let projection = self
@@ -119,25 +119,25 @@ impl awaken_protocol_managed::SessionRealizationControl for RecordingApplication
             .lock()
             .unwrap()
             .clone()
-            .ok_or(awaken_protocol_managed::SessionRealizationControlFailure::NotReady)?;
-        Ok(awaken_protocol_managed::SessionRealizationDirective {
+            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
+        Ok(awaken_session_contract::SessionRealizationDirective {
             projection,
-            lease: awaken_protocol_managed::SessionRealizationLease {
+            lease: awaken_session_contract::SessionRealizationLease {
                 owner: command.target.owner,
                 runtime_incarnation: command.target.runtime_incarnation,
                 epoch: 1,
                 expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
             },
-            action: awaken_protocol_managed::SessionRealizationAction::Complete,
+            action: awaken_session_contract::SessionRealizationAction::Complete,
         })
     }
 
     async fn activate_session_realization(
         &self,
-        command: awaken_protocol_managed::ActivateSessionRealization,
+        command: awaken_session_contract::ActivateSessionRealization,
     ) -> Result<
-        awaken_protocol_managed::SessionRealizationDirective,
-        awaken_protocol_managed::SessionRealizationControlFailure,
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
     > {
         *self.activations.lock().unwrap() += 1;
         let projection = self
@@ -145,20 +145,20 @@ impl awaken_protocol_managed::SessionRealizationControl for RecordingApplication
             .lock()
             .unwrap()
             .clone()
-            .ok_or(awaken_protocol_managed::SessionRealizationControlFailure::NotReady)?;
-        Ok(awaken_protocol_managed::SessionRealizationDirective {
+            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
+        Ok(awaken_session_contract::SessionRealizationDirective {
             projection,
             lease: command.lease,
-            action: awaken_protocol_managed::SessionRealizationAction::Complete,
+            action: awaken_session_contract::SessionRealizationAction::Complete,
         })
     }
 
     async fn acknowledge_session_realization(
         &self,
-        command: awaken_protocol_managed::AcknowledgeSessionRealization,
+        command: awaken_session_contract::AcknowledgeSessionRealization,
     ) -> Result<
-        awaken_protocol_managed::SessionRealizationDirective,
-        awaken_protocol_managed::SessionRealizationControlFailure,
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
     > {
         *self.acknowledgements.lock().unwrap() += 1;
         let projection = self
@@ -166,18 +166,18 @@ impl awaken_protocol_managed::SessionRealizationControl for RecordingApplication
             .lock()
             .unwrap()
             .clone()
-            .ok_or(awaken_protocol_managed::SessionRealizationControlFailure::NotReady)?;
-        Ok(awaken_protocol_managed::SessionRealizationDirective {
+            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
+        Ok(awaken_session_contract::SessionRealizationDirective {
             projection,
             lease: command.lease,
-            action: awaken_protocol_managed::SessionRealizationAction::Complete,
+            action: awaken_session_contract::SessionRealizationAction::Complete,
         })
     }
 
     async fn fail_session_realization(
         &self,
-        _command: awaken_protocol_managed::FailSessionRealization,
-    ) -> Result<(), awaken_protocol_managed::SessionRealizationControlFailure> {
+        _command: awaken_session_contract::FailSessionRealization,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
         *self.failures.lock().unwrap() += 1;
         Ok(())
     }
@@ -444,10 +444,10 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | T11 | exact/live | implicit/non-renew begin | - | reject before control |
     // | T12 | exact/live | renewal beyond registry lease | - | reject before control |
     let client = WorkerControlClient::new(upstream.clone());
-    let contribution = awaken_protocol_managed::ApplicationSessionContribution {
+    let contribution = awaken_session_contract::ApplicationSessionContribution {
         session_id: "signed-thread".into(),
         application_fingerprint: "plan-a".into(),
-        input: awaken_protocol_managed::ApplicationSessionInput::default(),
+        input: awaken_session_contract::ApplicationSessionInput::default(),
     };
     let receipt = client
         .contribute_application(&registered.snapshot.identity, &claim, contribution.clone())
@@ -455,7 +455,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .expect("T1 exact signed claim contributes");
     assert_eq!(
         receipt.contribution.outcome,
-        awaken_protocol_managed::ApplicationContributionOutcome::Committed
+        awaken_session_contract::ApplicationContributionOutcome::Committed
     );
     assert_eq!(contributions.contributions.lock().unwrap().len(), 1, "T1");
     let mut wrong_owner = claim.clone();
@@ -486,9 +486,9 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "T2/T3"
     );
     let realization_lease = receipt.realization.lease.clone();
-    let renewal = awaken_protocol_managed::BeginSessionRealization {
+    let renewal = awaken_session_contract::BeginSessionRealization {
         session_id: "signed-thread".into(),
-        target: awaken_protocol_managed::SessionRealizationTarget {
+        target: awaken_session_contract::SessionRealizationTarget {
             owner: registered.snapshot.identity.worker_id.clone(),
             runtime_incarnation: registered.snapshot.identity.lease_owner(),
             lease_expires_at_unix_ms: realization_lease.expires_at_unix_ms,
@@ -522,7 +522,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     client
         .activate_session_realization(
             &registered.snapshot.identity,
-            awaken_protocol_managed::ActivateSessionRealization {
+            awaken_session_contract::ActivateSessionRealization {
                 session_id: "signed-thread".into(),
                 lease: realization_lease.clone(),
                 mcp_receipts: Vec::new(),
@@ -537,7 +537,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         client
             .activate_session_realization(
                 &wrong_identity,
-                awaken_protocol_managed::ActivateSessionRealization {
+                awaken_session_contract::ActivateSessionRealization {
                     session_id: "signed-thread".into(),
                     lease: realization_lease.clone(),
                     mcp_receipts: Vec::new(),
@@ -555,7 +555,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         client
             .activate_session_realization(
                 &registered.snapshot.identity,
-                awaken_protocol_managed::ActivateSessionRealization {
+                awaken_session_contract::ActivateSessionRealization {
                     session_id: "signed-thread".into(),
                     lease: expired_lease,
                     mcp_receipts: Vec::new(),
@@ -570,7 +570,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     client
         .acknowledge_session_realization(
             &registered.snapshot.identity,
-            awaken_protocol_managed::AcknowledgeSessionRealization {
+            awaken_session_contract::AcknowledgeSessionRealization {
                 session_id: "signed-thread".into(),
                 lease: realization_lease.clone(),
                 published: Vec::new(),
@@ -584,7 +584,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     client
         .fail_session_realization(
             &registered.snapshot.identity,
-            awaken_protocol_managed::FailSessionRealization {
+            awaken_session_contract::FailSessionRealization {
                 session_id: "signed-thread".into(),
                 lease: realization_lease,
                 reason: "test failure".into(),

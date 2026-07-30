@@ -766,7 +766,7 @@ impl WorkerNode {
             Some(resources) => SharedHost::new_with_resource_plane_and_deployment(
                 Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
                 "worker",
-                resources.ports,
+                resources.plane,
                 self.deployment,
             ),
             None => SharedHost::new_with_deployment(

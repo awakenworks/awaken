@@ -8,12 +8,12 @@ use std::sync::Arc;
 
 use crate::host::SharedHost;
 use awaken_file_store::FileStore;
-use awaken_protocol_managed::resource_plane::{
+use awaken_provisioning_contract as pc;
+use awaken_resource_contract::{
     CreateFileRecordOutcome, FileCatalog, FileCatalogError, FileRecord, PutResourcePurgeOutcome,
     ResourceKind, ResourcePurgeError, ResourcePurgeIntent, ResourcePurgeScheduler,
     ResourceReference, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
-use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 
 /// The sandbox-absolute outputs dir (must be absolute for `prepare_environment`);
@@ -26,7 +26,7 @@ pub const MAX_WORKSPACE_FILE_BYTES: u64 = 500 * 1024 * 1024 * 1024;
 /// opaque envelope. This one ACL keeps durable ingress independent of Session
 /// vocabulary while preserving a lossless, secret-free payload.
 pub(crate) fn encode_session_resource_envelope(
-    manifest: &awaken_protocol_managed::SessionResourceManifest,
+    manifest: &awaken_session_contract::SessionResourceManifest,
 ) -> Result<awaken_run_ingress::SessionResourceEnvelope, serde_json::Error> {
     Ok(awaken_run_ingress::SessionResourceEnvelope::new(
         manifest.workspace_id.clone(),
@@ -38,8 +38,8 @@ pub(crate) fn encode_session_resource_envelope(
 /// resource validation or sandbox creation.
 pub(crate) fn decode_session_resource_envelope(
     envelope: &awaken_run_ingress::SessionResourceEnvelope,
-) -> Result<awaken_protocol_managed::SessionResourceManifest, serde_json::Error> {
-    Ok(awaken_protocol_managed::SessionResourceManifest::new(
+) -> Result<awaken_session_contract::SessionResourceManifest, serde_json::Error> {
+    Ok(awaken_session_contract::SessionResourceManifest::new(
         envelope.workspace_id.clone(),
         serde_json::from_str(&envelope.resolved_resources_json)?,
     ))
@@ -47,13 +47,13 @@ pub(crate) fn decode_session_resource_envelope(
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct DispatchedSessionRuntimeProjection {
-    environment: awaken_protocol_managed::EnvironmentSnapshot,
+    environment: awaken_session_contract::EnvironmentSnapshot,
     /// `None` retains publication inheritance; `Some([])` is an explicit clear.
     toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
 }
 
 pub(crate) fn encode_session_runtime_envelope(
-    environment: awaken_protocol_managed::EnvironmentSnapshot,
+    environment: awaken_session_contract::EnvironmentSnapshot,
     toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
 ) -> Result<awaken_run_ingress::SessionRuntimeEnvelope, serde_json::Error> {
     Ok(awaken_run_ingress::SessionRuntimeEnvelope::new(
@@ -68,7 +68,7 @@ pub(crate) fn decode_session_runtime_envelope(
     envelope: &awaken_run_ingress::SessionRuntimeEnvelope,
 ) -> Result<
     (
-        awaken_protocol_managed::EnvironmentSnapshot,
+        awaken_session_contract::EnvironmentSnapshot,
         Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
     ),
     serde_json::Error,
@@ -201,11 +201,11 @@ pub(crate) enum ResourceBindingCheck {
     },
     MemoryStore {
         memory_store_id: String,
-        config_version: awaken_protocol_managed::resource_plane::ConfigVersion,
+        config_version: awaken_resource_contract::ConfigVersion,
     },
     Repository {
         repository_id: String,
-        config_version: awaken_protocol_managed::resource_plane::ConfigVersion,
+        config_version: awaken_resource_contract::ConfigVersion,
     },
 }
 
@@ -301,7 +301,7 @@ impl SharedHost {
     pub(crate) fn register_thread_resource_manifest(
         &self,
         thread: &str,
-        manifest: awaken_protocol_managed::SessionResourceManifest,
+        manifest: awaken_session_contract::SessionResourceManifest,
     ) {
         self.session_slots
             .update(thread, |slot| slot.manifest = Some(manifest));
@@ -310,7 +310,7 @@ impl SharedHost {
     pub(crate) fn thread_resource_manifest(
         &self,
         thread: &str,
-    ) -> Option<awaken_protocol_managed::SessionResourceManifest> {
+    ) -> Option<awaken_session_contract::SessionResourceManifest> {
         self.session_slots
             .read(thread, |slot| slot.manifest.clone())
             .flatten()
@@ -406,7 +406,7 @@ impl SharedHost {
             filename,
             mime_type,
             size_bytes: bytes.len() as u64,
-            created_at: awaken_protocol_managed::cron::to_rfc3339(now_unix_ms()),
+            created_at: awaken_protocol_transport::epoch_millis_to_rfc3339(now_unix_ms()),
             downloadable,
             scope_id,
             logical_path,
@@ -535,10 +535,8 @@ impl SharedHost {
 
     pub(crate) fn required_resource_lifecycle(
         &self,
-    ) -> Result<
-        &Arc<dyn awaken_protocol_managed::resource_plane::ResourceLifecycleRepository>,
-        ResourcePurgeError,
-    > {
+    ) -> Result<&Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>, ResourcePurgeError>
+    {
         self.resource_lifecycle.as_ref().ok_or_else(|| {
             ResourcePurgeError::Storage(
                 "resource lifecycle repository is not configured by the composition root".into(),
@@ -581,9 +579,9 @@ impl SharedHost {
         &self,
         workspace: &str,
         thread: &str,
-        resources: &awaken_protocol_managed::ResolvedSessionResources,
+        resources: &awaken_session_contract::ResolvedSessionResources,
     ) -> Result<(), ResourcePurgeError> {
-        use awaken_protocol_managed::ResolvedInputSource;
+        use awaken_session_contract::ResolvedInputSource;
 
         let reference = |target| ResourceReferenceRecord {
             target,
@@ -968,16 +966,16 @@ mod provisioning_registry_tests {
 
         host.install_environment_projection(
             "t",
-            &awaken_protocol_managed::EnvironmentSnapshot {
+            &awaken_session_contract::EnvironmentSnapshot {
                 environment_id: "environment".into(),
-                revision: awaken_protocol_managed::EnvironmentRevision(1),
-                config_fingerprint: awaken_protocol_managed::EnvironmentFingerprint(
+                revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+                config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                     "environment-1".into(),
                 ),
                 sandbox: serde_json::json!({}),
                 sandbox_provisioning: Default::default(),
                 packages: Default::default(),
-                network: awaken_protocol_managed::SessionNetworkPolicy::None,
+                network: awaken_session_contract::SessionNetworkPolicy::None,
                 credential_realization:
                     awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
             },
@@ -1065,7 +1063,7 @@ mod provisioning_registry_tests {
 
     #[tokio::test]
     async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal() {
-        use awaken_protocol_managed::SessionRuntime;
+        use awaken_session_contract::SessionRuntime;
         // Cause/effect decision table:
         // R1 output present + live Sandbox => harvest creates one scoped File.
         // R2 identical retry => same File id, no duplicate manifest row/reference.
@@ -1170,7 +1168,7 @@ mod provisioning_registry_tests {
 
     #[tokio::test]
     async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
-        use awaken_protocol_managed::SessionRuntime;
+        use awaken_session_contract::SessionRuntime;
 
         // Rule R4: output present + durable catalog write fails → end_session
         // fails and the environment/output remain available; disposal is forbidden.

@@ -2,9 +2,9 @@
 //! prompt fragments. Keeping this boundary separate prevents protocol path rules
 //! from being reimplemented by individual Sandbox adapters.
 
-pub(super) fn resolved_resource_prompt(input: &awaken_protocol_managed::ResolvedInput) -> String {
-    use crate::awaken_resource_contract::ResourceAccess;
-    use awaken_protocol_managed::ResolvedInputSource;
+pub(super) fn resolved_resource_prompt(input: &awaken_session_contract::ResolvedInput) -> String {
+    use awaken_resource_contract::ResourceAccess;
+    use awaken_session_contract::ResolvedInputSource;
 
     let access = match input.access {
         ResourceAccess::ReadOnly => "read-only",
@@ -66,10 +66,10 @@ impl crate::ManagedHost {
     pub(super) async fn stage_resolved_input(
         &self,
         workspace: &str,
-        input: &awaken_protocol_managed::ResolvedInput,
-    ) -> Result<crate::provisioning::StagedResources, awaken_protocol_managed::RunError> {
-        use crate::awaken_resource_contract::ResourceAccess;
-        use awaken_protocol_managed::{ResolvedInputSource, RunError};
+        input: &awaken_session_contract::ResolvedInput,
+    ) -> Result<crate::provisioning::StagedResources, awaken_session_contract::RunError> {
+        use awaken_resource_contract::ResourceAccess;
+        use awaken_session_contract::{ResolvedInputSource, RunError};
 
         let mut staged = crate::provisioning::StagedResources::default();
         let logical = input.mount_path.trim_start_matches('/').to_string();

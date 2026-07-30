@@ -1,7 +1,7 @@
 //! Authenticated worker-facing dispatch transport.
 //!
 //! Wire callers submit only business data. Worker ownership, time, and lease
-//! duration are derived from trusted server-side ports before the neutral
+//! duration are derived from trusted server-side SPIs before the neutral
 //! `DispatchQueue` is called.
 
 use std::sync::Arc;
@@ -65,7 +65,7 @@ pub struct WorkerDispatchService {
     recovery: Option<Arc<dyn RunRecoverySource>>,
     completion: Option<Arc<dyn CompletionSink>>,
     application_session_control:
-        Option<Arc<dyn awaken_protocol_managed::ApplicationSessionControl>>,
+        Option<Arc<dyn awaken_session_contract::ApplicationSessionControl>>,
     local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
 }
 
@@ -119,7 +119,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_application_session_control(
         mut self,
-        control: Arc<dyn awaken_protocol_managed::ApplicationSessionControl>,
+        control: Arc<dyn awaken_session_contract::ApplicationSessionControl>,
     ) -> Self {
         self.application_session_control = Some(control);
         self
@@ -222,7 +222,7 @@ fn registered_dispatch_router(
     host: Arc<SharedHost>,
     directory: Arc<dyn WorkerDirectory>,
     policy: Arc<dyn PlacementPolicy>,
-    application_session_control: Arc<dyn awaken_protocol_managed::ApplicationSessionControl>,
+    application_session_control: Arc<dyn awaken_session_contract::ApplicationSessionControl>,
 ) -> Router {
     let dispatch = host
         .dispatch_store()
@@ -256,7 +256,7 @@ pub fn registered_worker_transport_router(
     host: Arc<SharedHost>,
     directory: Arc<dyn WorkerDirectory>,
     policy: Arc<dyn PlacementPolicy>,
-    application_session_control: Arc<dyn awaken_protocol_managed::ApplicationSessionControl>,
+    application_session_control: Arc<dyn awaken_session_contract::ApplicationSessionControl>,
 ) -> Router {
     let dispatch = host
         .dispatch_store()
@@ -280,7 +280,7 @@ pub fn registered_worker_transport_router(
 /// application services.
 ///
 /// Embedding Coordinator processes use this entry after selecting their authoritative
-/// dispatch, commit, directory, authentication, recovery, and checkpoint ports.
+/// dispatch, commit, directory, authentication, recovery, and checkpoint SPIs.
 /// Keeping the merge here prevents a product composition root from mounting
 /// claims without the matching claim-fenced commit surface.
 pub fn registered_worker_transport_router_with_services(
@@ -381,7 +381,7 @@ fn checkpoint_store(
 struct ApplicationContributionReq {
     claim: RunClaim,
     identity: WorkerIdentity,
-    contribution: awaken_protocol_managed::ApplicationSessionContribution,
+    contribution: awaken_session_contract::ApplicationSessionContribution,
 }
 
 async fn application_contribution(
@@ -441,9 +441,9 @@ async fn application_contribution(
             .saturating_add(authority.lease_ms)
             .min(registry_expiry);
         let realization = control
-            .begin_session_realization(awaken_protocol_managed::BeginSessionRealization {
+            .begin_session_realization(awaken_session_contract::BeginSessionRealization {
                 session_id: dispatch.thread_id().0.clone(),
-                target: awaken_protocol_managed::SessionRealizationTarget {
+                target: awaken_session_contract::SessionRealizationTarget {
                     owner: request.identity.worker_id.clone(),
                     runtime_incarnation: request.identity.lease_owner(),
                     lease_expires_at_unix_ms: realization_expiry,
@@ -471,13 +471,13 @@ async fn verify_session_realization_authority(
     service: &WorkerDispatchService,
     worker: &VerifiedWorkerContext,
     identity: &WorkerIdentity,
-    lease: &awaken_protocol_managed::SessionRealizationLease,
+    lease: &awaken_session_contract::SessionRealizationLease,
 ) -> Result<(), HostError> {
     verify_worker_identity(worker, identity)?;
     let authority = claim_authority(service, worker, Some(identity), false).await?;
     if lease.owner != identity.worker_id
         || lease.runtime_incarnation != identity.lease_owner()
-        || !awaken_protocol_managed::realization_lease_is_live_at(
+        || !awaken_session_contract::realization_lease_is_live_at(
             lease.expires_at_unix_ms,
             authority.now_ms,
         )
@@ -491,7 +491,7 @@ async fn verify_session_realization_authority(
 
 fn application_session_control(
     service: &WorkerDispatchService,
-) -> Result<&Arc<dyn awaken_protocol_managed::ApplicationSessionControl>, HostError> {
+) -> Result<&Arc<dyn awaken_session_contract::ApplicationSessionControl>, HostError> {
     service
         .application_session_control
         .as_ref()
@@ -501,7 +501,7 @@ fn application_session_control(
 async fn begin_session_realization(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
-    Json(request): Json<SessionRealizationReq<awaken_protocol_managed::BeginSessionRealization>>,
+    Json(request): Json<SessionRealizationReq<awaken_session_contract::BeginSessionRealization>>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         verify_worker_identity(&worker, &request.identity)?;
@@ -515,7 +515,7 @@ async fn begin_session_realization(
         if !target.renew_existing_lease
             || target.owner != request.identity.worker_id
             || target.runtime_incarnation != request.identity.lease_owner()
-            || !awaken_protocol_managed::realization_lease_is_live_at(
+            || !awaken_session_contract::realization_lease_is_live_at(
                 target.lease_expires_at_unix_ms,
                 authority.now_ms,
             )
@@ -538,7 +538,7 @@ async fn begin_session_realization(
 async fn activate_session_realization(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
-    Json(request): Json<SessionRealizationReq<awaken_protocol_managed::ActivateSessionRealization>>,
+    Json(request): Json<SessionRealizationReq<awaken_session_contract::ActivateSessionRealization>>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         verify_session_realization_authority(
@@ -562,7 +562,7 @@ async fn acknowledge_session_realization(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
     Json(request): Json<
-        SessionRealizationReq<awaken_protocol_managed::AcknowledgeSessionRealization>,
+        SessionRealizationReq<awaken_session_contract::AcknowledgeSessionRealization>,
     >,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
@@ -586,7 +586,7 @@ async fn acknowledge_session_realization(
 async fn fail_session_realization(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
-    Json(request): Json<SessionRealizationReq<awaken_protocol_managed::FailSessionRealization>>,
+    Json(request): Json<SessionRealizationReq<awaken_session_contract::FailSessionRealization>>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         verify_session_realization_authority(

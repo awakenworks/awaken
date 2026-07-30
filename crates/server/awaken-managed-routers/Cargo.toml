@@ -8,9 +8,28 @@ license.workspace = true
 # The host substrate these HTTP adapters drive: they call only its public API
 # (`SharedHost` file methods, or nothing at all) — thin driving adapters, not core.
 awaken-runtime-host = { workspace = true }
+awaken-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-resource-contract.workspace = true
+awaken-memory-store.workspace = true
+awaken-skill-store.workspace = true
+awaken-ext-skills.workspace = true
+awaken-data-subject.workspace = true
+awaken-protocol-transport.workspace = true
 awaken-tenancy.workspace = true
 axum = { version = "0.8", features = ["multipart"] }
+async-trait.workspace = true
+base64 = "0.22"
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+awaken-run-executor-acp.workspace = true
+tempfile = "3"
+tokio = { workspace = true, features = ["rt", "macros"] }
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true

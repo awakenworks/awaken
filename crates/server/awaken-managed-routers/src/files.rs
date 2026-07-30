@@ -4,13 +4,15 @@
 
 use std::sync::Arc;
 
-use awaken_runtime_host::{FileRecord, RequiredWorkspaceScope, ResourcePurgeError, SharedHost};
+use awaken_runtime_host::{FileRecord, ResourcePurgeError, SharedHost};
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
+
+use crate::resource_scope::RequiredWorkspaceScope;
 
 const DEFAULT_PAGE_SIZE: usize = 20;
 const MAX_PAGE_SIZE: usize = 1_000;

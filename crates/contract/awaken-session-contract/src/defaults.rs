@@ -19,7 +19,7 @@ pub struct SessionDefaultsCompiler;
 
 impl SessionDefaultsCompiler {
     /// Freeze the already-selected Environment together with the effective
-    /// Resource bindings. Environment selection and authorization remain ports of
+    /// Resource bindings. Environment selection and authorization remain responsibilities of
     /// the calling application service; Resource composition has exactly one
     /// implementation in [`SessionInputResolver`].
     pub fn compile(

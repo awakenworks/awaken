@@ -75,6 +75,7 @@ wrappers = [
     "awaken-worker",
     "awaken-credential-vault",
     "awaken-data-subject",
+    "awaken-managed-routers",
     "awaken-config-resolver",
     "awaken-managed-bridge",
     "awaken-admin-config-api",
@@ -148,6 +149,7 @@ wrappers = [
     "awaken-cli",
     "awaken-config-resolver",
     "awaken-data-subject",
+    "awaken-managed-routers",
     # Worker-side ACP discovery/binding application service consumes credential
     # liveness values from the runtime contract without implementing execution.
     "awaken-acp-application",
@@ -214,9 +216,9 @@ reason = "extensions sit on top; the runtime core must stay extension-agnostic (
 # A `protocol-*` crate is a pure wire translator (DTOs + routes + one neutral→wire
 # projection). Nothing may depend on it except a composition root that mounts it, the
 # service layer that assembles the managed adapter, or a sibling adapter over a shared
-# protocol base. Freezing the depender set here makes the ROOT DISEASE — a neutral port
+# protocol base. Freezing the depender set here makes the ROOT DISEASE — a neutral API/SPI
 # living inside a protocol adapter, then consumed workspace-wide — fail the build: a new
-# reverse edge onto an adapter forces the port to move inward to a contract/ leaf first.
+# reverse edge onto an adapter forces the API/SPI to move inward to a contract/ leaf first.
 
 # The shared transport base other protocol adapters build on (a `ProtocolRuntime` seam),
 # plus the composition roots + service layer that mount them.
@@ -226,6 +228,8 @@ wrappers = [
     "awaken-protocol-a2a",
     "awaken-protocol-ag-ui",
     "awaken-protocol-ai-sdk",
+    "awaken-protocol-managed",
+    "awaken-managed-routers",
     "awaken-runtime-host",
     "awaken-server",
     "awaken-scenario-host",

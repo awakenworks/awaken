@@ -11,8 +11,9 @@
 
 use std::sync::Arc;
 
+use awaken_managed_routers::skills_router;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult};
-use awaken_runtime_host::{SharedHost, skills_router};
+use awaken_runtime_host::SharedHost;
 use awaken_tenancy::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
