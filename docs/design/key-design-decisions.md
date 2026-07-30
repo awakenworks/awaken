@@ -5,8 +5,8 @@ read as: use the existing domain language first, add a new abstraction only when
 current port cannot express the behavior, and make the enforcement mechanical.
 
 Each decision here owns its rationale and boundary; the mechanical enforcer and
-the test that proves it live as a guardrail in [INVARIANTS.md](../INVARIANTS.md)
-(G1–G29). Decisions are not restated as guardrails, and guardrails do not restate
+the test that proves it live as a guardrail in [INVARIANTS.md](../INVARIANTS.md).
+Decisions are not restated as guardrails, and guardrails do not restate
 the rationale.
 
 ---
@@ -499,7 +499,7 @@ separate primary runtime-facing axes:
 
 | Axis | Authority | Boundary |
 |---|---|---|
-| Configuration publication | publish and version behavior data | Config Domain -> `RegistryPublication` -> `RuntimeCatalogInstaller` -> `RunResolver` |
+| Configuration publication | publish and version behavior data | Control -> `StoredPublication` -> `ExecutableAgentRegistrar` -> Coordinator executable catalog |
 | Live control | steer one active run at safe boundaries | `RunIngress` / `LiveRunControl` / `RuntimeInputHandle` |
 | Execution | run the resolved loop and stage runtime truth | `RunExecutor`, backend/model/tool ports, `CommitCoordinator` |
 
@@ -539,12 +539,11 @@ data by id, without knowing where the snapshot was stored or which config/admin
 workflow created it. `AgentId` remains a domain identifier, but
 `ExecutableAgentSnapshot` is the complete run/thread configuration identity.
 
-> **Amendment (2026-06-30, ADR-0032).** The snapshot and its catalog install are
-> bundled as one run input, `RunnableConfig` (built directly or by `compile()`);
-> `Runtime::run` installs and executes it in one call. The snapshot stays the
-> configuration identity — `RunnableConfig` carries it with the catalog it was
-> built against. See
-> [config-to-run-execution-flow.md](config-to-run-execution-flow.md#implemented-run-input-executableagentsnapshot).
+> **Amendment (2026-07-30, ADR-0071).** The accepted distributed seam is the
+> immutable `ExecutableAgentSnapshot`: Control publishes it, Coordinator
+> registers it, Session resolution freezes it, and dispatch carries it to the
+> Worker. The removed whole-catalog bundle is not a second execution identity.
+> See [ADR-0071](../adr/0071-distributed-service-boundaries-and-executable-agent-registration.md).
 
 ---
 
@@ -555,18 +554,18 @@ runtime catalogs, steers active runs, and executes loops becomes a hidden
 runtime controller. It also makes config/admin code appear to own runtime
 behavior.
 
-**Decision.** `ConfigPublicationCoordinator` and `RegistryCompiler` are
-config-side roles. They may live in a server/config package, but not in runtime
-core. The coordinator orders a publish transaction. The compiler validates a
-`ConfigSnapshot` and produces a complete `RegistryPublication` / install
-candidate. Runtime exposes only `RuntimeCatalogInstaller` for the install
-handoff, plus the snapshot execution and inspection ports used after install.
+**Decision.** Publication coordination and compilation are Control-owned.
+Control persists `StoredPublication`, then invokes
+`ExecutableAgentRegistrar::register` with the existing immutable snapshot.
+Coordinator owns the rebuildable executable catalog used by Session resolution.
+Runtime owns only execution and validation of the snapshot it receives.
 
-**Consequence.** Runtime remains a consumer of complete publications. It can
-reject an install, resolve executable snapshots, execute runs, and commit facts,
-but it cannot load config records, publish versions, or own admin workflow. No
-single runtime-facing role may combine config loading, registry compilation,
-catalog install, live control, and execution authority.
+**Consequence.** Runtime remains a consumer of immutable executable data. It can
+validate snapshots, execute Runs, and commit facts, but cannot load config
+records, publish versions, register Coordinator availability, or own admin
+workflow. No single role combines config loading, compilation, registration,
+live control, and execution authority. ADR-0071 supersedes the former
+whole-catalog handoff terminology.
 
 ---
 
@@ -615,9 +614,9 @@ AgentSpec -> ToolSpec / SkillSpec / plugin refs
 `ModelSpec` describes a configured model and its capability metadata.
 `ModelPoolSpec` describes explicit selection, routing, fallback, weighting, and
 downgrade policy. `AgentSpec` assembles behavior by reference.
-`RegistryCompiler` validates and freezes this graph into a publication;
-`ExecutableAgentSnapshot` carries the resolved graph identity for one run/thread
-scope.
+The `ConfigService` publication compiler validates and freezes this graph into a
+`StoredPublication`; `ExecutableAgentSnapshot` carries the resolved graph
+identity for one run/thread scope.
 
 **Consequence.** Runtime validates selected model-provider/model/backend bindings
 and capability requirements, but it does not search for fallback model providers

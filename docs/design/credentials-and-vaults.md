@@ -278,6 +278,14 @@ current-Vault rediscovery. Target binding, streaming lifecycle, and
 sandbox-facing MCP route projection remain Runtime Host adapter
 responsibilities. Failure never authorizes plaintext in another trust domain.
 
+In a split deployment, `ControlCredentialMaterialResolver` is the Worker-side
+network adapter for that same port. The Control/Vault-side handler validates the
+exact id, revision, access, target use, Workspace, allowed holder, and live claim
+before opening material. This is an adapter name, not a second resolver contract.
+AllInOne injects the local implementation through the same port. Neither adapter
+may enumerate credentials, choose another revision or holder, or fall back after
+a transport failure.
+
 Credential material and last-mile consumers are open to external extensions
 without adding protocol variants to the core enum. A structured Vault document
 contains a namespaced, versioned `type_id` plus opaque named secret fields;

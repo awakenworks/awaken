@@ -15,7 +15,10 @@ Deployment API -> DeploymentState -> DeploymentRepository
                          |                    `- exact occurrence claim
                          |                    `- ManagedLifecycleFact outbox
                          v
-                DeploymentSessionLauncher -> ManagedState.create_session
+                DeploymentSessionLauncher
+                    |- local adapter (AllInOne)
+                    `- Coordinator client -> launch handler
+                                           -> canonical Session create command
 ```
 
 The production periodic driver evaluates both cron Deployments and opt-in Dream
@@ -33,7 +36,7 @@ modified, or genuinely new before describing the dependency graph.
 |---|---|---|
 | POSIX cron and IANA timezone calculation | `awaken-protocol-managed::cron` | exact wall-clock occurrences, including DST behavior |
 | Agent authoring/version truth | `ManagedAgentRepository` | validates and freezes the requested latest or pinned Agent version |
-| Session creation and initial Event admission | `ManagedState::create_session` | the only Deployment-to-execution path |
+| Session creation and initial Event admission | `ManagedState::create_session_with_initial_events` | the only Deployment-to-execution path |
 | organization create admission | `ManagedRateLimiter` | shares the ordinary Session-create bucket |
 | webhook delivery and retry | `WebhookLifecycleSink` | drains the sole Managed lifecycle outbox |
 
@@ -44,6 +47,7 @@ modified, or genuinely new before describing the dependency graph.
 | `DeploymentState` | repository restore, Workspace checks, persistent cursor, exact occurrence claim, Agent version resolution | restart-safe and replica-safe aggregate projection |
 | Managed Session store | Deployment, DeploymentRun, occurrence-claim migrations and SQLite/Postgres adapters | business row and lifecycle fact commit atomically |
 | control/server composition | shares the Agent repository and binds the ordinary Session launcher | no duplicate Agent lookup or execution path |
+| `DeploymentSessionLauncher` request | add the existing stable `deployment_run_id` | remote retries resolve to at most one Session |
 | Agent archive operation | cascades terminal archive to live primary-Agent Deployments | no later scheduled run |
 | Managed periodic driver | evaluates Deployment then Dream policies every 15 seconds | one production timer |
 
@@ -53,9 +57,12 @@ modified, or genuinely new before describing the dependency graph.
 |---|---|---|
 | `DeploymentRepository` | `awaken-deployment-contract` | opaque durable records plus atomic scheduled-occurrence claim |
 | `DeploymentRecord` / `DeploymentRunRecord` store adapters | `awaken-session-store` | SQLite/Postgres persistence without protocol DTO dependency |
+| `CoordinatorDeploymentSessionClient` | Deployment adapter | invoke the same Session launch port across a process boundary |
+| `DeploymentSessionLaunchHandler` | Coordinator adapter | idempotently lower one DeploymentRun into the canonical Session command |
 
 There is no second cron parser, Session launcher, Agent registry, Deployment
-cache authority, webhook outbox, or scheduler loop.
+cache authority, webhook outbox, scheduler loop, or remote-only Session domain
+model. The local and remote launch adapters implement the same port.
 
 ## Static structure and contracts
 
@@ -66,7 +73,10 @@ HTTP adapter (official DTOs)
        |- DeploymentRepository (durability + occurrence claim + lifecycle fact)
        |- ManagedRateLimiter (create admission)
        `- DeploymentSessionLauncher
-            `- ManagedState (ordinary Session/Event authority)
+            |- LocalManagedDeploymentSessionLauncher (AllInOne)
+            `- CoordinatorDeploymentSessionClient
+                 `- DeploymentSessionLaunchHandler
+                      `- ManagedState (ordinary Session/Event authority)
 
 ManagedLifecycleFact outbox
   `- WebhookLifecycleSink -> official deployment.* / deployment_run.* events
@@ -78,6 +88,11 @@ authority. Stored payloads are opaque JSON at the port, so storage adapters do
 not depend on Managed wire DTOs. `claim_id` is the stable pair
 `(deployment_id, scheduled_at)`; a unique row makes exactly one replica the
 winner.
+
+The launcher input includes `deployment_run_id`; this is an existing durable
+business identity, not a new aggregate. The Coordinator handler records or reads
+the one Session associated with that identity before returning. A retry after an
+ambiguous transport failure returns the original `session_id`.
 
 The Agent input boundary accepts a bare id or `{type:"agent", id, version?}`.
 A bare id or omitted version resolves through the same Agent repository used by
@@ -106,8 +121,10 @@ occurrence and never backfills missed occurrences.
 ```text
 POST .../run
   -> reject only missing/archived Deployment
-  -> persist DeploymentRun(started) + lifecycle fact
-  -> call ordinary Session create with initial_events in the create command
+  -> persist DeploymentRun with stable deployment_run_id
+  -> call DeploymentSessionLauncher with deployment_run_id
+  -> local adapter or Coordinator client reaches the same Session command
+  -> create or return the one Session for deployment_run_id
   -> persist succeeded(session_id) or failed(error) + lifecycle fact
   -> return the terminal DeploymentRun projection
 ```
@@ -115,6 +132,11 @@ POST .../run
 Initial Events are never sent through a second best-effort call after Session
 creation. A request-level Session creation failure is DeploymentRun truth;
 subsequent Session execution remains Session truth.
+
+Transport unavailability before a conclusive launch outcome is retryable. It
+must not be persisted as a permanent business failure until the Coordinator can
+prove that no Session was created. This distinction prevents an ambiguous
+network timeout from becoming a duplicate Session or false terminal outcome.
 
 ### Scheduled occurrence and replica claim
 

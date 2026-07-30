@@ -70,7 +70,7 @@ Lessons are retrieval hooks. The linked owner remains authoritative.
 
 - Status: active
 - Owner: [D20 - Publication Coordination Is Outside Runtime](../design/key-design-decisions.md#d20---publication-coordination-is-outside-runtime)
-- Fact: config publish ordering and registry compilation should live in config-side services; runtime should expose a catalog install port and continue with snapshot resolution and execution after install.
+- Fact: Control owns publication ordering and compilation, Coordinator owns executable registration, and runtime owns only immutable-snapshot validation and execution.
 - Links: guardrails G18, G23, and G29; [config flow facts](config-to-run-execution-flow-facts.md)
 - Verification: dependency-direction checks, runtime public API checks, and publication/install transaction tests.
 

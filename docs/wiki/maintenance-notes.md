@@ -14,7 +14,8 @@ compact: facts point to owners, owners carry the full design.
 ## Current Scope
 
 - Source documents remain authoritative; wiki pages carry retrieval facts only.
-- Current guardrails are `G1` through `G29`.
+- The current guardrail set is owned exclusively by
+  [INVARIANTS.md](../INVARIANTS.md); downstream wiki pages do not copy its range.
 - The wiki indexes the config-to-run flow, runtime interface boundaries, runtime
   behavior, tool/capability policy, deployment boundaries, resources, credentials,
   and downstream product adapters.
