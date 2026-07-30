@@ -1555,6 +1555,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # it weaves the authoring plane (awaken-control) and the data plane (awaken-server)
     # into one management router. A composition root, so it may name them all.
     "awaken-cli": {
+        # Neutral HTTP DTOs shared with composed distributions. Keeping the
+        # projection in Foundation avoids a second Awaken-only wire shape.
+        "awaken-api-contract",
         "awaken-control",
         "awaken-server",
         "awaken-authz-enforce",
@@ -1609,6 +1612,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "http-body-util",
         "tower",
         "serde_json", "serde", "toml",  # bootstrap TOML is decoded only at this root
+        # Deployment-owned absolute URLs are validated once at this composition
+        # root before they are projected to the browser.
+        "url",
     },
     # The EXECUTION-plane binary (the sandbox side): the ACP stdio<->TCP bridge, and
     # (later slices) the hand tool-executor + memoryd sidecar. A leaf that names no
