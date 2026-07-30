@@ -40,6 +40,137 @@ impl SharedHost {
         }
     }
 
+    fn can_defer_session_environment(
+        &self,
+        thread: &str,
+        agent: Option<&str>,
+        published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+    ) -> bool {
+        let slot_allows = self
+            .session_slots
+            .read(thread, |slot| {
+                slot.deferred_executor.is_some()
+                    && slot
+                        .environment_projection
+                        .as_ref()
+                        .is_some_and(|projection| {
+                            projection.provisioning
+                                == awaken_provisioning_contract::SandboxProvisioning::OnToolUse
+                        })
+                    && slot.delegates.is_empty()
+                    && slot.memory.is_none()
+                    && slot.resources.mounts.is_empty()
+                    && slot.resources.repositories.is_empty()
+                    && slot.baseline.as_ref().is_none_or(|baseline| {
+                        baseline.mounts.is_empty() && baseline.env.is_empty()
+                    })
+                    && slot.skills.as_ref().is_none_or(|versions| {
+                        versions
+                            .iter()
+                            .all(|version| !crate::skills::version_requires_environment(version))
+                    })
+            })
+            .unwrap_or(false);
+        let workspace = self.thread_workspace(thread);
+        let published_backend_is_acp = published_snapshot
+            .cloned()
+            .or_else(|| {
+                self.agent_publications.as_ref().and_then(|source| {
+                    source.current(
+                        &workspace,
+                        &awaken_runtime_contract::snapshot::AgentId(
+                            agent.unwrap_or("assistant").to_string(),
+                        ),
+                    )
+                })
+            })
+            .is_some_and(|snapshot| {
+                awaken_runtime_contract::resolved::Backend::from_ref(
+                    &snapshot.resolved_spec.model_binding.backend_ref,
+                )
+                .is_acp()
+            });
+        let selected_backend_is_acp = self
+            .acp
+            .as_ref()
+            .and_then(|acp| acp.adapter_for(thread))
+            .is_some_and(|adapter| {
+                awaken_runtime_contract::resolved::Backend::from_ref(&adapter).is_acp()
+            });
+        slot_allows
+            && !published_backend_is_acp
+            && !selected_backend_is_acp
+            && self.skills.specs().iter().all(|skill| {
+                skill.environment == awaken_ext_skills::SkillEnvironment::InstructionOnly
+                    && skill.context == awaken_ext_skills::SkillContext::Inline
+            })
+    }
+
+    async fn persist_environment_before_publish(
+        &self,
+        thread: &str,
+        env: &crate::session_environment::SessionEnvironment,
+    ) -> Result<(), HostError> {
+        let binding = serde_json::to_string(&env.handle())
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        let sink = self
+            .environment_binding_sink
+            .read()
+            .expect("environment binding sink lock poisoned")
+            .clone();
+        if let Some(sink) = sink {
+            sink.persist(thread, &binding).await.map_err(|error| {
+                HostError::internal(format!(
+                    "persist Session environment binding before use: {error}"
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Materialize the deferred environment at the first Sandbox-target tool.
+    /// The same lifecycle mutex used by context construction guarantees one
+    /// creator, and publication follows resource realization + durable binding.
+    pub(crate) async fn ensure_session_environment_for_tool(
+        &self,
+        thread: &str,
+    ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
+        let lifecycle = self
+            .session_slots
+            .update(thread, |slot| slot.lifecycle.clone());
+        let _lifecycle = lifecycle.lock().await;
+        if let Some(environment) = self
+            .session_slots
+            .read(thread, |slot| slot.environment.clone())
+            .flatten()
+        {
+            return Ok(environment);
+        }
+        let environment = Arc::new(
+            self.session_provider
+                .create(&self.sandbox_spec(thread))
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?,
+        );
+        if let Err(error) = self
+            .realize_thread_repositories(thread, environment.as_ref())
+            .await
+        {
+            let _ = environment.dispose().await;
+            return Err(error);
+        }
+        if let Err(error) = self
+            .persist_environment_before_publish(thread, environment.as_ref())
+            .await
+        {
+            let _ = environment.dispose().await;
+            return Err(error);
+        }
+        self.session_slots
+            .update(thread, |slot| slot.environment = Some(environment.clone()));
+        Ok(environment)
+    }
+
     /// Evict only the rebuildable runtime context while retaining the
     /// independently-owned Session environment and its live resource projection.
     /// Terminal cleanup remains the single responsibility of [`Self::end_session`].
@@ -270,7 +401,7 @@ impl SharedHost {
             .flatten()
         {
             if let Some(adopted) = adopted {
-                if ctx.env.handle() != adopted.handle() {
+                if ctx.env.as_ref().map(|env| env.handle()) != Some(adopted.handle()) {
                     return Err(HostError::internal(format!(
                         "thread {thread} is already bound to a different sandbox"
                     )));
@@ -328,6 +459,9 @@ impl SharedHost {
             .session_slots
             .read(thread, |slot| slot.environment.clone())
             .flatten();
+        let deferred = retained.is_none()
+            && adopted.is_none()
+            && self.can_defer_session_environment(thread, agent, published_snapshot.as_ref());
         let (env, needs_provision, needs_registration) = match (retained, adopted) {
             (Some(existing), Some(adopted)) => {
                 if existing.handle() != adopted.handle() {
@@ -336,32 +470,42 @@ impl SharedHost {
                     )));
                 }
                 adopted.stop_bound_processes().await;
-                (existing, false, false)
+                (Some(existing), false, false)
             }
-            (Some(existing), None) => (existing, false, false),
+            (Some(existing), None) => (Some(existing), false, false),
             // The adopted environment already contains its Session workspace and
             // repositories. Re-cloning would both fail and destroy continuity.
-            (None, Some(adopted)) => (Arc::new(adopted), false, true),
+            (None, Some(adopted)) => (Some(Arc::new(adopted)), false, true),
+            (None, None) if deferred => (None, false, false),
             (None, None) => (
-                Arc::new(
+                Some(Arc::new(
                     environment_provider
                         .create(&self.sandbox_spec(thread))
                         .await
                         .map_err(|e| HostError::internal(e.to_string()))?,
-                ),
+                )),
                 true,
                 true,
             ),
         };
         if needs_provision {
+            let env = env.as_ref().expect("new environment exists");
             // Clone staged repositories only for a physically new environment.
             // Rebuilding SessionCtx must not re-clone over a live Session workspace.
             if let Err(error) = self.realize_thread_repositories(thread, env.as_ref()).await {
                 let _ = env.dispose().await;
                 return Err(error);
             }
+            if let Err(error) = self
+                .persist_environment_before_publish(thread, env.as_ref())
+                .await
+            {
+                let _ = env.dispose().await;
+                return Err(error);
+            }
         }
         if needs_registration {
+            let env = env.as_ref().expect("registered environment exists");
             self.session_slots
                 .update(thread, |slot| slot.environment = Some(env.clone()));
         }
@@ -461,7 +605,10 @@ impl SharedHost {
         // Resolving per run — not once at session build — means a per-turn model
         // switch needs no session rebuild, and a database-less worker runs the
         // configured model without a session-level registry.
-        let mut runtime = build_runtime(self.llm.clone(), env.as_ref());
+        let mut runtime = match env.as_ref() {
+            Some(env) => build_runtime(self.llm.clone(), env.as_ref()),
+            None => build_runtime(self.llm.clone(), &crate::config::DeferredHandToolSource),
+        };
         if apply_base_gate {
             runtime = runtime.with_gate(base_gate.clone());
         }
@@ -472,13 +619,23 @@ impl SharedHost {
         }
         // Delegation is a runtime concern: inject the executor so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.
-        if let Some(service) = self.run_delegation(
-            thread,
-            env.clone(),
-            permission.clone(),
-            commit.clone(),
-            installed.as_ref(),
-        )? {
+        let has_published_delegates = installed
+            .as_ref()
+            .is_some_and(|snapshot| !snapshot.resolved_spec.plugin_config.agent.delegates.is_empty());
+        if has_published_delegates && env.is_none() {
+            return Err(HostError::internal(
+                "deferred Session environment cannot host delegate targets",
+            ));
+        }
+        if let Some(env) = env.clone()
+            && let Some(service) = self.run_delegation(
+                thread,
+                env,
+                permission.clone(),
+                commit.clone(),
+                installed.as_ref(),
+            )?
+        {
             runtime = runtime.with_run_delegation(service);
         }
         // Skills are fronted by two stable tools (ADR-0036); all skill behavior is
@@ -739,7 +896,7 @@ impl SharedHost {
             state.awaiting_run = Some(run_id);
         }
         let runtime = Arc::new(runtime);
-        let acp_executor = self.acp.as_ref().map(|acp| {
+        let acp_executor = self.acp.as_ref().zip(env.clone()).map(|(acp, env)| {
             acp.executor_for(
                 env.clone(),
                 permission,
@@ -796,7 +953,13 @@ impl SharedHost {
             .await?;
         let durable = durable_ingress.is_some();
         let mut hand_placement = self.hand_placement.clone();
-        if let Some(hand) = env.bound_tool_executor() {
+        if let Some(hand) = env.as_ref().and_then(|env| env.bound_tool_executor()) {
+            hand_placement.bind_environment_hand(hand);
+        } else if let Some(hand) = self
+            .session_slots
+            .read(thread, |slot| slot.deferred_executor.clone())
+            .flatten()
+        {
             hand_placement.bind_environment_hand(hand);
         }
         // No per-session dispatch daemon: the process-level `DispatchPool` (spawned
@@ -981,11 +1144,10 @@ impl SharedHost {
                     return None;
                 }
                 let removed = slot.environment.take();
-                if slot.runtime.as_ref().is_some_and(|ctx| {
-                    Arc::ptr_eq(&ctx.env, expected) && ctx.env.handle() == expected.handle()
-                }) {
-                    slot.runtime = None;
-                }
+                // Both eager contexts (which retain `env`) and deferred contexts
+                // (which retain only the lazy executor) are coupled to this exact
+                // slot environment once it is published.
+                slot.runtime = None;
                 removed
             })
             .flatten();
@@ -1014,7 +1176,8 @@ impl SharedHost {
         let (ctx, env) = self.session_slots.update(thread, |slot| {
             (slot.runtime.take(), slot.environment.take())
         });
-        let dispose_result = if let Some(env) = env.or_else(|| ctx.map(|ctx| ctx.env.clone())) {
+        let dispose_result = if let Some(env) = env.or_else(|| ctx.and_then(|ctx| ctx.env.clone()))
+        {
             if env.needs_recovered_memory_reconciliation() {
                 let mounter = self.memory_mounter().ok_or_else(|| {
                     HostError::internal("recovered Memory copy has no MemoryMounter")

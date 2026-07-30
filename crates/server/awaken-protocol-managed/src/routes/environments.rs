@@ -56,6 +56,7 @@ pub(crate) fn default_environment_snapshot(
         )
     };
     let sandbox = serde_json::json!({});
+    let sandbox_provisioning = awaken_provisioning_contract::SandboxProvisioning::Eager;
     let packages = awaken_session_contract::env_registry::EnvironmentPackages::default();
     let network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
     let credential_realization = awaken_credential_contract::CredentialRealizationProfile {
@@ -75,12 +76,14 @@ pub(crate) fn default_environment_snapshot(
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
             awaken_session_contract::stable_fingerprint(&(
                 &sandbox,
+                &sandbox_provisioning,
                 &packages,
                 &network,
                 &credential_realization,
             )),
         ),
         sandbox,
+        sandbox_provisioning,
         packages,
         network,
         credential_realization,
@@ -195,23 +198,33 @@ impl EnvironmentState {
         };
         // Anthropic Environment config owns cloud networking/packages and
         // self-hosted routing only. Awaken sandbox policy has a separate owner.
-        let sandbox = match &self.sandbox_policies {
+        let (sandbox, sandbox_provisioning) = match &self.sandbox_policies {
             Some(store) => match store.environment_binding(env_id).await {
                 Ok(Some(reference)) => {
                     let policy = store.get_exact(&reference).await.ok()?;
                     if policy.disabled {
                         return None;
                     }
-                    serde_json::to_value(policy.config).ok()?
+                    (
+                        serde_json::to_value(policy.config).ok()?,
+                        policy.provisioning,
+                    )
                 }
-                Ok(None) => serde_json::json!({}),
+                Ok(None) => (
+                    serde_json::json!({}),
+                    awaken_provisioning_contract::SandboxProvisioning::Eager,
+                ),
                 Err(_) => return None,
             },
-            None => serde_json::json!({}),
+            None => (
+                serde_json::json!({}),
+                awaken_provisioning_contract::SandboxProvisioning::Eager,
+            ),
         };
         let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
             awaken_session_contract::stable_fingerprint(&(
                 &sandbox,
+                &sandbox_provisioning,
                 &packages,
                 &network,
                 &credential_realization,
@@ -222,6 +235,7 @@ impl EnvironmentState {
             revision: item.revision,
             config_fingerprint,
             sandbox,
+            sandbox_provisioning,
             packages,
             network,
             credential_realization,
@@ -347,6 +361,8 @@ struct SandboxPolicyCreate {
     id: String,
     config: awaken_provisioning_contract::SandboxOverride,
     #[serde(default)]
+    provisioning: awaken_provisioning_contract::SandboxProvisioning,
+    #[serde(default)]
     disabled: bool,
 }
 
@@ -355,6 +371,8 @@ struct SandboxPolicyCreate {
 struct SandboxPolicyPublish {
     expected_current: u64,
     config: awaken_provisioning_contract::SandboxOverride,
+    #[serde(default)]
+    provisioning: awaken_provisioning_contract::SandboxProvisioning,
     #[serde(default)]
     disabled: bool,
 }
@@ -396,6 +414,7 @@ async fn create_sandbox_policy(
         id: awaken_provisioning_contract::SandboxExecutionPolicyId(input.id),
         version: awaken_provisioning_contract::SandboxExecutionPolicyVersion::INITIAL,
         config: input.config,
+        provisioning: input.provisioning,
         disabled: input.disabled,
     };
     policy_store(&state)?
@@ -418,6 +437,7 @@ async fn publish_sandbox_policy(
         id: awaken_provisioning_contract::SandboxExecutionPolicyId(id),
         version: awaken_provisioning_contract::SandboxExecutionPolicyVersion(next),
         config: input.config,
+        provisioning: input.provisioning,
         disabled: input.disabled,
     };
     policy_store(&state)?
@@ -1192,6 +1212,7 @@ mod tests {
                 isolation: Some(IsolationClass::Namespace),
                 ..Default::default()
             },
+            provisioning: awaken_provisioning_contract::SandboxProvisioning::OnToolUse,
             disabled: false,
         };
         policies.create(v1.clone()).await.unwrap();
@@ -1215,6 +1236,7 @@ mod tests {
                         isolation: Some(IsolationClass::Container),
                         ..Default::default()
                     },
+                    provisioning: awaken_provisioning_contract::SandboxProvisioning::Eager,
                     disabled: false,
                 },
             )
@@ -1224,5 +1246,51 @@ mod tests {
         let snapshot = state.snapshot(&environment_id, None).await.unwrap();
         let frozen: SandboxOverride = serde_json::from_value(snapshot.sandbox).unwrap();
         assert_eq!(frozen.isolation, Some(IsolationClass::Namespace));
+        assert_eq!(
+            snapshot.sandbox_provisioning,
+            awaken_provisioning_contract::SandboxProvisioning::OnToolUse
+        );
+    }
+
+    #[tokio::test]
+    async fn environment_snapshot_defaults_to_eager_and_fingerprints_provisioning() {
+        use awaken_provisioning_contract::{
+            SandboxExecutionPolicy, SandboxExecutionPolicyId, SandboxExecutionPolicyRef,
+            SandboxExecutionPolicyStore, SandboxExecutionPolicyVersion, SandboxOverride,
+            SandboxProvisioning,
+        };
+
+        let policies =
+            Arc::new(awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default());
+        let state = EnvironmentState::new().with_sandbox_policies(policies.clone());
+        let environment_id = state
+            .author("timing", json!({"type": "self_hosted"}))
+            .await
+            .unwrap();
+        let eager = state.snapshot(&environment_id, None).await.unwrap();
+        assert_eq!(eager.sandbox_provisioning, SandboxProvisioning::Eager);
+
+        let policy = SandboxExecutionPolicy {
+            id: SandboxExecutionPolicyId("lazy".into()),
+            version: SandboxExecutionPolicyVersion::INITIAL,
+            config: SandboxOverride::default(),
+            provisioning: SandboxProvisioning::OnToolUse,
+            disabled: false,
+        };
+        policies.create(policy.clone()).await.unwrap();
+        policies
+            .bind_environment(
+                &environment_id,
+                SandboxExecutionPolicyRef {
+                    id: policy.id,
+                    version: policy.version,
+                },
+            )
+            .await
+            .unwrap();
+
+        let lazy = state.snapshot(&environment_id, None).await.unwrap();
+        assert_eq!(lazy.sandbox_provisioning, SandboxProvisioning::OnToolUse);
+        assert_ne!(lazy.config_fingerprint, eager.config_fingerprint);
     }
 }

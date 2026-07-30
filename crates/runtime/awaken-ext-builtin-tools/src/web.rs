@@ -11,12 +11,12 @@ use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, IdBound, Plugin, PluginConfigError, PluginManifest,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{RawTool, Tool, ToolError};
+use awaken_runtime_contract::tool::{RawTool, Tool, ToolError, ToolExecutionTarget};
 use awaken_runtime_contract::{CredentialMaterial, CredentialRef, CredentialUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::erase;
+use crate::erasure::erase_for;
 
 pub const WEB_SEARCH_PLUGIN_ID: &str = "web_search";
 pub const WEB_SEARCH_TOOL_ID: &str = "web_search";
@@ -699,6 +699,14 @@ impl WebSearchProvider for BraveSearchProvider {
         })
         .await
     }
+}
+
+/// The network hand tools, erased for `Runtime::with_tool` registration.
+pub fn web_hand_tools() -> Vec<Arc<dyn RawTool>> {
+    vec![
+        erase_for(WebFetchTool, ToolExecutionTarget::Sandbox),
+        erase_for(WebSearchTool, ToolExecutionTarget::Sandbox),
+    ]
 }
 
 #[cfg(test)]

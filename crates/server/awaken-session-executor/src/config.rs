@@ -398,6 +398,14 @@ pub(crate) trait RuntimeToolSource {
     fn runtime_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>;
 }
 
+pub(crate) struct DeferredHandToolSource;
+
+impl RuntimeToolSource for DeferredHandToolSource {
+    fn runtime_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+        awaken_ext_builtin_tools::executable_hand_tools()
+    }
+}
+
 impl RuntimeToolSource for LocalSandbox {
     fn runtime_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
         self.rooted_tools()

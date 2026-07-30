@@ -377,6 +377,7 @@ mod tests {
                         "env-fingerprint".into(),
                     ),
                     sandbox: serde_json::json!({"isolation": "namespace"}),
+                    sandbox_provisioning: Default::default(),
                     packages: Default::default(),
                     network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
                     credential_realization: CredentialRealizationProfile {

@@ -262,12 +262,28 @@ pub enum ToolExecutorSelectionError {
     Policy(String),
 }
 
+/// Authoritative execution location for one tool implementation.
+///
+/// The safe extension default is `Brain`: MCP, Skills and orchestration tools
+/// remain beside the model/runtime. Tools that touch the workload filesystem,
+/// process or network must explicitly opt into `Sandbox`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExecutionTarget {
+    #[default]
+    Brain,
+    Sandbox,
+}
+
 /// Schema-erased tool: the dynamic call boundary used by the runtime and by
 /// MCP/server/client adapters. Concrete implementations live in
 /// extension/adapter crates, never in neutral crates.
 #[async_trait]
 pub trait RawTool: Send + Sync {
     fn id(&self) -> &str;
+    fn execution_target(&self) -> ToolExecutionTarget {
+        ToolExecutionTarget::Brain
+    }
     fn recovery_capability(&self) -> ToolRecoveryCapability {
         ToolRecoveryCapability::NonRecoverable
     }

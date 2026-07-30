@@ -116,8 +116,8 @@ pub use snapshot::{
 pub use snapshot_builder::ExecutableAgentSnapshotBuilder;
 pub use tokio_util::sync::CancellationToken;
 pub use tool::{
-    RawTool, Tool, ToolExecutor, ToolOutput, ToolRecoveryCapability, ToolRecoveryMode,
-    ToolRecoveryPolicy,
+    RawTool, Tool, ToolExecutionTarget, ToolExecutor, ToolOutput, ToolRecoveryCapability,
+    ToolRecoveryMode, ToolRecoveryPolicy,
 };
 pub use tool_batch::{
     ActiveToolBatch, ToolBatch, ToolBatchId, ToolBatchPhase, ToolCallPhase, ToolWait, ToolWaitKind,

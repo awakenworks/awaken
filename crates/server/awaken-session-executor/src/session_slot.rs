@@ -55,6 +55,7 @@ pub(crate) struct FrozenEnvironmentRuntimeProjection {
     pub network: awaken_provisioning_contract::NetworkPolicy,
     pub packages: awaken_provisioning_contract::PackageRequirements,
     pub sandbox: Option<awaken_provisioning_contract::SandboxOverride>,
+    pub provisioning: awaken_provisioning_contract::SandboxProvisioning,
     pub credential_realization: awaken_runtime_contract::CredentialRealizationProfile,
 }
 
@@ -65,6 +66,7 @@ pub(crate) struct SessionRuntimeSlot {
     pub lifecycle: Arc<tokio::sync::Mutex<()>>,
     pub runtime: Option<Arc<crate::host::SessionCtx>>,
     pub environment: Option<Arc<crate::session_environment::SessionEnvironment>>,
+    pub deferred_executor: Option<Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>,
     pub workspace: Option<String>,
     pub model_ref: Option<String>,
     /// Process-local copy of the backend frozen in the Session baseline. It is
