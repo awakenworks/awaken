@@ -59,7 +59,7 @@ async function req(base, method, uri, body) {
 }
 
 async function main() {
-  const upstream = await startFakeAnthropic(FAKE_KEY);
+  const upstream = await startFakeAnthropic(FAKE_KEY, { models: [MODEL] });
   const bundle = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-bundle-'));
   const other = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-other-'));
   const catalogDb = path.join(other, 'my-catalog.db');

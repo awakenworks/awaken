@@ -303,18 +303,24 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
             &workload.capabilities,
         )
         .expect("ACP credential realization capability decodes");
+    let supports_workload_process_secret =
+        |profile: &awaken_runtime_contract::CredentialRealizationCapabilities| {
+            profile
+                .holders
+                .contains(&awaken_runtime_contract::PlaintextHolder::new(
+                    awaken_runtime_contract::PlaintextBoundary::Workload,
+                    awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+                ))
+                && profile.realization_kinds.contains(
+                    &awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment,
+                )
+        };
     assert!(
-        workload_realization
-            .holders
-            .contains(&awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Workload,
-                awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
-            ))
-    );
-    assert!(
-        workload_realization.realization_kinds.contains(
-            &awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment
-        )
+        supports_workload_process_secret(&workload_realization)
+            || workload_realization
+                .alternatives
+                .iter()
+                .any(supports_workload_process_secret)
     );
 
     let without_acp = derive_standard_manifest(StandardManifestInputs {

@@ -1602,6 +1602,8 @@ pub fn build_schedule_router() -> Router {
 pub fn build_remote_delegation_router() -> Router {
     let url = std::env::var("AWAKEN_REMOTE_AGENT_URL")
         .expect("AWAKEN_REMOTE_AGENT_URL must be set for delegate-remote mode");
+    let security_fingerprint = std::env::var("AWAKEN_REMOTE_AGENT_SECURITY_FINGERPRINT")
+        .expect("AWAKEN_REMOTE_AGENT_SECURITY_FINGERPRINT must be set for delegate-remote mode");
     let (model, model_ref) = scenario_model(Arc::new(DelegatingModel), "delegate-remote");
     // Both parent and child are ordinary immutable publications. The child's
     // resolved backend selects the shared A2A attempt executor; delegation owns
@@ -1625,7 +1627,7 @@ pub fn build_remote_delegation_router() -> Router {
             ModelBinding::new("remote", "", format!("a2a:{url}")),
             awaken_tenancy::ScopeId::from("default"),
             None,
-            "scenario-http-transport",
+            security_fingerprint,
         ))
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([assistant, researcher])
