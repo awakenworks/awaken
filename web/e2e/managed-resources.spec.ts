@@ -25,6 +25,30 @@ test("Environment: create in the UI and see it listed", async ({ page }) => {
   await expect(page.getByText(name)).toBeVisible();
 });
 
+test("Environment: configure native Sandbox creation on the first Hand tool", async ({ page, request }) => {
+  const name = `lazy-env-${Date.now()}`;
+  await page.goto("/w/default/environments");
+  await page.getByRole("button", { name: /New environment/ }).click();
+  await page.getByPlaceholder("claude-sandbox-github").fill(name);
+  await page.getByRole("button", { name: /self-hosted|自管/ }).click();
+  await page.getByRole("button", { name: /on first Hand tool|首次 Hand 工具时/ }).click();
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+
+  const row = page.locator("tr", { hasText: name });
+  await expect(row).toContainText(/first Hand tool|首次 Hand 工具/);
+  const environmentId = (await row.locator("td").first().textContent())?.trim();
+  expect(environmentId).toBeTruthy();
+  const bindingResponse = await request.get(
+    `/v1/awaken/environments/${environmentId}/sandbox-execution-policy`,
+  );
+  expect(bindingResponse.ok()).toBeTruthy();
+  expect(await bindingResponse.json()).toMatchObject({
+    environment_id: environmentId,
+    provisioning: "on_tool_use",
+    version: 1,
+  });
+});
+
 test("Environment work queue: a fresh env shows its seeded healthcheck queued", async ({ page }) => {
   // Creating an environment seeds one `healthcheck` work item into its durable queue
   // (EnvRegistry + WorkQueue). The env row's Queue cell projects GET …/work/stats, so

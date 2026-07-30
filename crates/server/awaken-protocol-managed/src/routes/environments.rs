@@ -389,6 +389,24 @@ struct SandboxPolicyBindingOutput {
     environment_id: String,
     policy_id: String,
     version: u64,
+    provisioning: awaken_provisioning_contract::SandboxProvisioning,
+}
+
+async fn project_policy_binding(
+    state: &EnvironmentState,
+    environment_id: String,
+    reference: awaken_provisioning_contract::SandboxExecutionPolicyRef,
+) -> Result<SandboxPolicyBindingOutput, StatusCode> {
+    let policy = policy_store(state)?
+        .get_exact(&reference)
+        .await
+        .map_err(map_policy_error)?;
+    Ok(SandboxPolicyBindingOutput {
+        environment_id,
+        policy_id: reference.id.0,
+        version: reference.version.0,
+        provisioning: policy.provisioning,
+    })
 }
 
 fn policy_store(
@@ -466,11 +484,9 @@ async fn bind_environment_sandbox_policy(
         .bind_environment(&environment_id, reference.clone())
         .await
         .map_err(map_policy_error)?;
-    Ok(Json(SandboxPolicyBindingOutput {
-        environment_id,
-        policy_id: reference.id.0,
-        version: reference.version.0,
-    }))
+    Ok(Json(
+        project_policy_binding(&state, environment_id, reference).await?,
+    ))
 }
 
 async fn get_environment_sandbox_policy(
@@ -482,11 +498,9 @@ async fn get_environment_sandbox_policy(
         .await
         .map_err(map_policy_error)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(SandboxPolicyBindingOutput {
-        environment_id,
-        policy_id: reference.id.0,
-        version: reference.version.0,
-    }))
+    Ok(Json(
+        project_policy_binding(&state, environment_id, reference).await?,
+    ))
 }
 
 fn map_policy_error(
@@ -1278,19 +1292,21 @@ mod tests {
             disabled: false,
         };
         policies.create(policy.clone()).await.unwrap();
+        let reference = SandboxExecutionPolicyRef {
+            id: policy.id.clone(),
+            version: policy.version,
+        };
         policies
-            .bind_environment(
-                &environment_id,
-                SandboxExecutionPolicyRef {
-                    id: policy.id,
-                    version: policy.version,
-                },
-            )
+            .bind_environment(&environment_id, reference.clone())
             .await
             .unwrap();
 
         let lazy = state.snapshot(&environment_id, None).await.unwrap();
         assert_eq!(lazy.sandbox_provisioning, SandboxProvisioning::OnToolUse);
         assert_ne!(lazy.config_fingerprint, eager.config_fingerprint);
+        let projected = project_policy_binding(&state, environment_id, reference)
+            .await
+            .unwrap();
+        assert_eq!(projected.provisioning, SandboxProvisioning::OnToolUse);
     }
 }

@@ -5,7 +5,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, ws } from "../lib/api/client";
-import type { Environment, EnvironmentConfig, Page, WorkQueueStats } from "../lib/api/types";
+import type {
+  Environment,
+  EnvironmentConfig,
+  Page,
+  SandboxExecutionPolicy,
+  SandboxPolicyBinding,
+  SandboxProvisioning,
+  WorkQueueStats,
+} from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { Button, Card, Modal, Pill, Segmented, TextField } from "../components/ui";
 
@@ -32,6 +40,21 @@ function EnvQueue({ id }: { id: string }) {
   );
 }
 
+function SandboxTiming({ id }: { id: string }) {
+  const app = useApp();
+  const binding = useQuery({
+    queryKey: ["environment-sandbox-policy", id],
+    queryFn: () => api.get<SandboxPolicyBinding>(ws(`/v1/awaken/environments/${id}/sandbox-execution-policy`)),
+    retry: false,
+  });
+  const deferred = binding.data?.provisioning === "on_tool_use";
+  return (
+    <Pill tone={deferred ? "info" : "neutral"}>
+      {deferred ? app.t("first Hand tool", "首次 Hand 工具") : app.t("eager", "预先创建")}
+    </Pill>
+  );
+}
+
 function CreateModal({ onClose }: { onClose: () => void }) {
   const app = useApp();
   const workspace = app.workspaceId;
@@ -40,10 +63,21 @@ function CreateModal({ onClose }: { onClose: () => void }) {
   const [placement, setPlacement] = useState<"cloud" | "self_hosted">("cloud");
   const [net, setNet] = useState<"unrestricted" | "limited">("unrestricted");
   const [hosts, setHosts] = useState("");
+  const [provisioning, setProvisioning] = useState<SandboxProvisioning>("eager");
   const create = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const config = buildEnvironmentConfig(placement, net, hosts);
-      return api.post<Environment>(ws("/v1/environments"), { name: name || "environment", config });
+      assertSandboxProvisioningPlacement(placement, provisioning);
+      const environment = await api.post<Environment>(ws("/v1/environments"), { name: name || "environment", config });
+      const policy = buildDeferredSandboxPolicy(environment.id, placement, provisioning);
+      if (policy) {
+        const created = await api.post<SandboxExecutionPolicy>(ws("/v1/awaken/sandbox-execution-policies"), policy);
+        await api.post<SandboxPolicyBinding>(
+          ws(`/v1/awaken/environments/${environment.id}/sandbox-execution-policy`),
+          { policy_id: created.id, version: created.version },
+        );
+      }
+      return environment;
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["environments", workspace] });
@@ -87,6 +121,31 @@ function CreateModal({ onClose }: { onClose: () => void }) {
                 <input className="input mono" placeholder="api.example.com, *.foo.com" value={hosts} onChange={(e) => setHosts(e.target.value)} />
               )}
             </div>
+        )}
+
+        {placement === "self_hosted" && (
+          <div className="field">
+            <label>{app.t("Sandbox creation", "Sandbox 创建时机")}</label>
+            <Segmented
+              options={[
+                { value: "eager", label: app.t("before first turn", "首次运行前") },
+                { value: "on_tool_use", label: app.t("on first Hand tool", "首次 Hand 工具时") },
+              ]}
+              value={provisioning}
+              onChange={setProvisioning}
+            />
+            <span className="mut">
+              {provisioning === "on_tool_use"
+                ? app.t(
+                    "Native Awaken can answer with text, MCP, and instruction-only Skills without creating a Sandbox. The first filesystem, process, or sandbox-network tool waits for it to become ready.",
+                    "原生 Awaken 可在不创建 Sandbox 的情况下完成文本、MCP 和纯指令 Skill；首次使用文件、进程或 Sandbox 网络工具时会等待其就绪。",
+                  )
+                : app.t(
+                    "Create the Sandbox while the Session runtime is prepared.",
+                    "在准备 Session 运行时创建 Sandbox。",
+                  )}
+            </span>
+          </div>
         )}
 
         {create.error instanceof Error && <div className="err">{create.error.message}</div>}
@@ -138,6 +197,7 @@ export default function EnvironmentsSurface() {
               <th>{app.t("Name", "名称")}</th>
               <th>{app.t("Placement", "运行位置")}</th>
               <th>{app.t("Networking", "网络")}</th>
+              <th>{app.t("Sandbox creation", "Sandbox 创建")}</th>
               <th>{app.t("Queue", "队列")}</th>
               <th />
             </tr>
@@ -153,6 +213,7 @@ export default function EnvironmentsSurface() {
                   </Pill>
                 </td>
                 <td className="mut">{isolationLabel(e.config)}</td>
+                <td><SandboxTiming id={e.id} /></td>
                 <td>{e.archived_at ? <span className="mut">—</span> : <EnvQueue id={e.id} />}</td>
                 <td style={{ textAlign: "right" }}>
                   {e.archived_at ? (
@@ -172,7 +233,7 @@ export default function EnvironmentsSurface() {
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={6} className="mut">
+                <td colSpan={7} className="mut">
                   {envs.isLoading ? "…" : app.t("No environments yet.", "还没有运行环境。")}
                 </td>
               </tr>
@@ -183,6 +244,30 @@ export default function EnvironmentsSurface() {
       {creating && <CreateModal onClose={() => setCreating(false)} />}
     </>
   );
+}
+
+export function buildDeferredSandboxPolicy(
+  environmentId: string,
+  placement: "cloud" | "self_hosted",
+  provisioning: SandboxProvisioning,
+): Pick<SandboxExecutionPolicy, "id" | "config" | "provisioning" | "disabled"> | null {
+  if (provisioning !== "on_tool_use") return null;
+  assertSandboxProvisioningPlacement(placement, provisioning);
+  return {
+    id: `environment-${environmentId}-sandbox`,
+    config: {},
+    provisioning: "on_tool_use",
+    disabled: false,
+  };
+}
+
+function assertSandboxProvisioningPlacement(
+  placement: "cloud" | "self_hosted",
+  provisioning: SandboxProvisioning,
+): void {
+  if (provisioning === "on_tool_use" && placement !== "self_hosted") {
+    throw new Error("on_tool_use Sandbox provisioning requires a self-hosted native Awaken Environment");
+  }
 }
 
 export function isolationLabel(config: EnvironmentConfig): string {
