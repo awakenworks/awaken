@@ -167,6 +167,7 @@ pub(crate) struct StandardManifestInputs<'a> {
 
 #[derive(Clone)]
 pub(crate) struct CredentialMaterializerSupport {
+    pub(crate) provider_adapter: awaken_runtime_contract::CredentialRealizationCapabilities,
     pub(crate) process_secret: awaken_runtime_contract::CredentialRealizationCapabilities,
     pub(crate) worker_relay: awaken_runtime_contract::CredentialRealizationCapabilities,
 }
@@ -174,6 +175,7 @@ pub(crate) struct CredentialMaterializerSupport {
 impl From<&awaken_runtime_host::PinnedCredentialMaterializer> for CredentialMaterializerSupport {
     fn from(materializer: &awaken_runtime_host::PinnedCredentialMaterializer) -> Self {
         Self {
+            provider_adapter: materializer.provider_adapter_capabilities(),
             process_secret: materializer.process_secret_capabilities(),
             worker_relay: materializer.worker_relay_capabilities(),
         }
@@ -216,6 +218,9 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
     }
     if let Some(remote) = inputs.remote_credential_realization {
         credential_profiles.push(remote.clone());
+    }
+    if let Some(materializer) = inputs.credential_materializer.as_ref() {
+        credential_profiles.push(materializer.provider_adapter.clone());
     }
     if let Some(materializer) = inputs
         .credential_materializer

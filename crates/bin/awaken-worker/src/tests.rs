@@ -123,6 +123,21 @@ fn credential_support() -> CredentialMaterializerSupport {
         awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
     ]);
     CredentialMaterializerSupport {
+        provider_adapter: awaken_runtime_contract::CredentialRealizationCapabilities {
+            holders: [awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Worker,
+                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            )]
+            .into_iter()
+            .collect(),
+            material_sources: material_sources.clone(),
+            realization_kinds: [
+                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        },
         process_secret: awaken_runtime_contract::CredentialRealizationCapabilities {
             holders: [awaken_runtime_contract::PlaintextHolder::new(
                 awaken_runtime_contract::PlaintextBoundary::Workload,
@@ -231,14 +246,14 @@ fn standard_builder_derives_from_its_installed_materializer() {
 }
 
 /// Cause-effect graph: the canonical materializer owns external credential
-/// resolution. Installing its external-only constructor adds no local Vault and
-/// does not invent a plaintext realization mechanism; Worker has no second
-/// resolver-composition path.
+/// resolution. Installing its external-only constructor adds no local Vault,
+/// while the same pinned adapter remains the installed Native provider
+/// realization mechanism; Worker has no second resolver-composition path.
 ///
 /// | Rule | Local Vault | External resolver | Result |
 /// |---|---|---|---|
 /// | X1 | F | T | build succeeds through `external_only` |
-/// | X2 | F | T | no invented realization evidence |
+/// | X2 | F | T | exact external source + Worker provider-adapter evidence |
 #[test]
 fn external_credential_resolver_has_one_canonical_composition_path() {
     let worker = WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new("http://control"))
@@ -263,23 +278,34 @@ fn external_credential_resolver_has_one_canonical_composition_path() {
             &worker.manifest().capabilities,
         )
         .expect("X2 evidence decodes");
+    assert_eq!(
+        evidence.material_sources,
+        std::collections::BTreeSet::from([
+            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+            awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
+        ]),
+        "X2 source evidence comes only from the installed resolver"
+    );
     assert!(
-        evidence.is_empty(),
-        "X2 a material source is not itself an installed realization mechanism"
+        evidence
+            .realization_kinds
+            .contains(&awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,),
+        "X2 the canonical pinned adapter proves its actual Native mechanism"
     );
 }
 
 /// Credential capability derivation cause graph:
 ///
-/// inference materializer -> Worker provider adapter; exact credential
-/// materializer + installed ACP profile -> Workload process-secret delivery.
-/// Missing either ACP cause advertises neither half of that workload tuple.
+/// inference materializer or exact credential materializer -> its independent
+/// Worker provider-adapter profile; exact credential materializer + installed
+/// ACP profile -> an additional Workload process-secret profile. Missing ACP
+/// never removes the installed Native adapter evidence.
 ///
 /// | Rule | materializer | credential store | ACP | Result |
 /// |---|---|---|---|---|
 /// | C1 | credential-aware | - | - | Worker/provider-adapter |
-/// | C2 | - | T | T | Workload/process-secret |
-/// | C3 | - | T | F | no Workload/process-secret |
+/// | C2 | - | T | T | Worker/provider-adapter + Workload/process-secret |
+/// | C3 | - | T | F | Worker/provider-adapter only |
 #[test]
 fn standard_manifest_advertises_only_installed_credential_mechanisms() {
     let mut acp = deployment();
@@ -315,12 +341,31 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
                     &awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment,
                 )
         };
+    let supports_worker_provider_adapter =
+        |profile: &awaken_runtime_contract::CredentialRealizationCapabilities| {
+            profile
+                .holders
+                .contains(&awaken_runtime_contract::PlaintextHolder::new(
+                    awaken_runtime_contract::PlaintextBoundary::Worker,
+                    awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+                ))
+                && profile.realization_kinds.contains(
+                    &awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+                )
+        };
     assert!(
         supports_workload_process_secret(&workload_realization)
             || workload_realization
                 .alternatives
                 .iter()
                 .any(supports_workload_process_secret)
+    );
+    assert!(
+        supports_worker_provider_adapter(&workload_realization)
+            || workload_realization
+                .alternatives
+                .iter()
+                .any(supports_worker_provider_adapter)
     );
 
     let without_acp = derive_standard_manifest(StandardManifestInputs {
@@ -334,12 +379,23 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         application_capabilities: Default::default(),
         config: &StandardManifestConfig::default(),
     });
-    assert!(
+    let native =
         awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
             &without_acp.capabilities,
         )
-        .expect("empty credential realization capability decodes")
-        .is_empty()
+        .expect("Native credential realization capability decodes");
+    assert!(
+        native
+            .holders
+            .contains(&awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Worker,
+                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+            ))
+    );
+    assert!(
+        native
+            .realization_kinds
+            .contains(&awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,)
     );
 }
 
@@ -390,10 +446,15 @@ fn standard_manifest_requires_complete_provider_evidence_for_worker_relay() {
                 &manifest.capabilities,
             )
             .expect("credential evidence decodes");
+        let supports_worker_relay =
+            |profile: &awaken_runtime_contract::CredentialRealizationCapabilities| {
+                profile
+                    .realization_kinds
+                    .contains(&awaken_runtime_contract::CredentialRealizationKind::WorkerRelay)
+            };
         assert_eq!(
-            realization
-                .realization_kinds
-                .contains(&awaken_runtime_contract::CredentialRealizationKind::WorkerRelay),
+            supports_worker_relay(&realization)
+                || realization.alternatives.iter().any(supports_worker_relay),
             expected_relay,
             "credentials={credential_materializer}, substitution={substitution}, no_bypass={no_bypass}"
         );
