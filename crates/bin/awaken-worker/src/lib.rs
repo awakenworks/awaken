@@ -97,6 +97,7 @@ pub struct WorkerNodeBuilder {
         Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
     acp_capability_observation_source:
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
+    enclosing_sandbox_boundary: Option<InstalledSandboxBoundary>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
     mcp_attachment_realizer: Option<Arc<dyn awaken_runtime_host::McpAttachmentRealizer>>,
     web_search_providers: awaken_runtime_host::WebSearchProviderRegistry,
@@ -123,6 +124,7 @@ impl WorkerNodeBuilder {
             hand_executor_factory: None,
             worker_local_credential_resolver: None,
             acp_capability_observation_source: None,
+            enclosing_sandbox_boundary: None,
             session_container_provider: None,
             mcp_attachment_realizer: None,
             web_search_providers: awaken_runtime_host::WebSearchProviderRegistry::builtins(),
@@ -337,6 +339,25 @@ impl WorkerNodeBuilder {
         self
     }
 
+    /// Publish an isolation boundary enforced around this Worker process.
+    ///
+    /// Platform compositions use this when the Worker already runs inside a
+    /// sandboxed Pod/VM and executes children locally within that boundary. It
+    /// affects standard manifest evidence only; it does not install a second
+    /// Session container provider or change runtime realization.
+    #[must_use]
+    pub fn with_enclosing_sandbox_boundary(
+        mut self,
+        backend: impl Into<String>,
+        capabilities: awaken_provisioning_contract::SandboxCapabilities,
+    ) -> Self {
+        self.enclosing_sandbox_boundary = Some(InstalledSandboxBoundary {
+            backend: backend.into(),
+            capabilities,
+        });
+        self
+    }
+
     /// Install the one exact-generation MCP realization adapter used by remote
     /// Session commands. Downstream platforms implement the public Session port;
     /// the Worker retains no parallel gateway or credential-selection contract.
@@ -373,6 +394,21 @@ impl WorkerNodeBuilder {
                 "Session container provider backend must not be empty".to_string(),
             ));
         }
+        if self
+            .enclosing_sandbox_boundary
+            .as_ref()
+            .is_some_and(|installed| installed.backend.trim().is_empty())
+        {
+            return Err(WorkerNodeBuildError(
+                "enclosing sandbox backend must not be empty".to_string(),
+            ));
+        }
+        if self.session_container_provider.is_some() && self.enclosing_sandbox_boundary.is_some() {
+            return Err(WorkerNodeBuildError(
+                "Session container provider and enclosing sandbox boundary are mutually exclusive"
+                    .to_string(),
+            ));
+        }
         if (self.session_container_provider.is_some()
             || self.deployment.sandbox_tier.is_container())
             && self.hand_executor_factory.is_none()
@@ -392,6 +428,20 @@ impl WorkerNodeBuilder {
             self.resources.as_ref(),
             self.credential_materializer.as_ref(),
         ));
+        let sandbox_override = self
+            .session_container_provider
+            .as_ref()
+            .map(|installed| {
+                (
+                    installed.provider.sandbox_capabilities(),
+                    installed.backend.as_str(),
+                )
+            })
+            .or_else(|| {
+                self.enclosing_sandbox_boundary
+                    .as_ref()
+                    .map(|installed| (installed.capabilities.clone(), installed.backend.as_str()))
+            });
         let manifest = match self.manifest {
             ManifestSelection::Selected(ManifestSource::Explicit(manifest)) => *manifest,
             ManifestSelection::Selected(ManifestSource::Standard {
@@ -413,12 +463,7 @@ impl WorkerNodeBuilder {
                         .remote_attempt
                         .as_ref()
                         .map(|remote| &remote.credential_realization),
-                    sandbox_override: self.session_container_provider.as_ref().map(|installed| {
-                        (
-                            installed.provider.sandbox_capabilities(),
-                            installed.backend.as_str(),
-                        )
-                    }),
+                    sandbox_override,
                     resource_support,
                     application_capabilities,
                     config: &self.standard_manifest_config,
@@ -510,6 +555,11 @@ pub struct WorkerNode {
 struct InstalledSessionContainerProvider {
     backend: String,
     provider: Arc<dyn awaken_runtime_host::ContainerEnvironmentProvider>,
+}
+
+struct InstalledSandboxBoundary {
+    backend: String,
+    capabilities: awaken_provisioning_contract::SandboxCapabilities,
 }
 
 /// Run a genuinely secretless worker with a deployment-provided materializer.

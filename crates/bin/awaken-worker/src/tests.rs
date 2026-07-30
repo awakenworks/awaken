@@ -12,6 +12,35 @@ struct SchemeMaterializer;
 
 struct ExternalCredentialResolver;
 
+struct UnusedContainerProvider;
+
+#[async_trait::async_trait]
+impl awaken_runtime_host::ContainerEnvironmentProvider for UnusedContainerProvider {
+    async fn create_environment(
+        &self,
+        _spec: &awaken_provisioning_contract::SandboxSpec,
+    ) -> Result<
+        Arc<dyn awaken_runtime_host::ContainerEnvironment>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError(
+            "unused test provider".to_string(),
+        ))
+    }
+
+    async fn adopt_environment(
+        &self,
+        _handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<
+        Arc<dyn awaken_runtime_host::ContainerEnvironment>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError(
+            "unused test provider".to_string(),
+        ))
+    }
+}
+
 #[async_trait::async_trait]
 impl awaken_runtime_contract::CredentialMaterialResolver for ExternalCredentialResolver {
     fn supported_material_sources(
@@ -243,6 +272,72 @@ fn standard_builder_derives_from_its_installed_materializer() {
         .expect("installed standard topology is valid");
 
     assert!(worker.manifest().capabilities.contains("test-access/v1"));
+}
+
+#[test]
+fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
+    // Cause-effect graph / decision table:
+    //
+    // | Enclosing boundary | Backend | Effect |
+    // | absent | n/a | deployment-derived sandbox evidence |
+    // | present | non-empty | exact enclosing evidence, no container provider |
+    // | present | empty | build fails closed |
+    // | present + Session provider | any | ambiguous composition fails closed |
+    //
+    // R2 proves a Pod/VM composition can describe its already-enforced outer
+    // boundary without constructing a duplicate Session container path. R3
+    // prevents an unaddressable boundary from entering placement evidence.
+    let capabilities = awaken_provisioning_contract::SandboxCapabilities {
+        isolation: awaken_provisioning_contract::IsolationClass::Container,
+        tool_transparent: true,
+        path_fidelity: true,
+        enforced_readonly: true,
+        network_isolation: true,
+        enforced_network_allowlist: true,
+        secret_egress_substitution: false,
+        resource_limits: true,
+        custom_rootfs: true,
+        package_provisioning: false,
+    };
+    let worker = WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new(
+        "https://control.test",
+    ))
+    .with_enclosing_sandbox_boundary("kubernetes-pod", capabilities.clone())
+    .with_standard_manifest(Default::default())
+    .build()
+    .expect("enclosing boundary is valid without a Session container provider");
+    assert_eq!(worker.manifest().sandbox, capabilities);
+    assert_eq!(
+        worker.manifest().sandbox_backends,
+        ["kubernetes-pod".to_string()].into_iter().collect()
+    );
+
+    let error = WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new(
+        "https://control.test",
+    ))
+    .with_enclosing_sandbox_boundary(" ", worker.manifest().sandbox.clone())
+    .with_standard_manifest(Default::default())
+    .build()
+    .err()
+    .expect("blank enclosing backend must fail closed");
+    assert_eq!(
+        error.to_string(),
+        "enclosing sandbox backend must not be empty"
+    );
+
+    let error = WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new(
+        "https://control.test",
+    ))
+    .with_enclosing_sandbox_boundary("kubernetes-pod", worker.manifest().sandbox.clone())
+    .with_session_container_provider("per-session", Arc::new(UnusedContainerProvider))
+    .with_standard_manifest(Default::default())
+    .build()
+    .err()
+    .expect("two sandbox capability sources must fail closed");
+    assert_eq!(
+        error.to_string(),
+        "Session container provider and enclosing sandbox boundary are mutually exclusive"
+    );
 }
 
 /// Cause-effect graph: the canonical materializer owns external credential
