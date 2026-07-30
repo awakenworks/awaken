@@ -283,7 +283,7 @@ process-local handle.
 | `SandboxProvider` | Existing | Environment provisioning | realize validated mounts/working trees and dispose them | product resource authoring and policy |
 | `ResourceReclaimer` | Existing, durable and per-resource | Product/session operations | reconcile crashed activations and purge intents; retention, reference checks, fenced claims, per-kind receipts | authorization decisions, remote Git deletion |
 | `ResourceReclamationFence` | Existing resource lifecycle port | Resource consistency | atomically prove zero physical references, fence `(kind, resource_id)`, and reject racing reference writes | principal, role, policy, API key, Org/Project/WorkUnit |
-| `ResourcePlaneStores` / `ResourcePlanePorts` | Existing composition bundle/Host wiring value | Composition root | select File, Memory, Skill, and lifecycle adapters together and inject them atomically before local stores open | aggregate behavior, IAM/PDP data, authorization decisions |
+| `ResourcePlane` | Existing canonical composition value | Composition root | select File, Memory, Skill, and lifecycle implementations together and inject them atomically before local stores open | aggregate behavior, IAM/PDP data, authorization decisions |
 | `SqliteResourceStore` / `PostgresResourceStore` | Existing adapters | Resource consistency persistence | persist purge intents, intrinsic references, and reclamation fences for embedded or multi-node deployment | IAM/PDP data and File/Memory/Skill content |
 
 The catalog names roles rather than forcing them into one crate. Local mode may

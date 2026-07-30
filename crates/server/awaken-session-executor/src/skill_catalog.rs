@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::{AgentSkillBinding, AgentSkillKind};
 use awaken_ext_skills::SkillSpec;
-use awaken_protocol_managed::ResolvedSkillBinding;
+use awaken_session_contract::ResolvedSkillBinding;
 use awaken_skill_store::{SkillDefinition, SkillStore, SkillStoreError, SkillVersion};
 
 fn anthropic_skill(id: &str) -> Option<SkillVersion> {
@@ -198,10 +198,9 @@ impl SkillCatalog {
                         display_title: None,
                         latest_version: 1,
                         last_version: 1,
-                        timestamps:
-                            awaken_protocol_managed::resource_plane::ResourceTimestamps::created(
-                                created_unix_nanos,
-                            ),
+                        timestamps: awaken_resource_contract::ResourceTimestamps::created(
+                            created_unix_nanos,
+                        ),
                     },
                     version,
                 )

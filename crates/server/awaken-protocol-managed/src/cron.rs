@@ -163,31 +163,8 @@ fn parse_field(spec: &str, min: u32, max: u32) -> Result<BTreeSet<u32>, String> 
     Ok(out)
 }
 
-/// Format an epoch-ms instant as an RFC 3339 UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`),
-/// the shape the schedule wire uses for `scheduled_at` / `last_run_at` / occurrences.
-pub fn to_rfc3339(ts_ms: u64) -> String {
-    let secs = (ts_ms / 1000) as i64;
-    let days = secs.div_euclid(86_400);
-    let sod = secs.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let (h, m, s) = (sod / 3_600, (sod / 60) % 60, sod % 60);
-    format!("{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{s:02}Z")
-}
-
-/// Convert a day count since 1970-01-01 into `(year, month, day)` — Howard
-/// Hinnant's `civil_from_days`, exact across the proleptic Gregorian calendar.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (y + i64::from(m <= 2), m, d)
-}
+/// Compatibility name for the shared protocol/HTTP timestamp projection.
+pub use awaken_protocol_transport::epoch_millis_to_rfc3339 as to_rfc3339;
 
 #[cfg(test)]
 mod tests {

@@ -58,7 +58,7 @@ pub enum ApplicationSessionContributionFailure {
 /// Control-owned application service port. Claim fencing must be completed and
 /// held by the caller for the duration of this command.
 #[async_trait]
-pub trait ApplicationSessionContributionPort: Send + Sync {
+pub trait ApplicationSessionContributionApi: Send + Sync {
     async fn contribute_application(
         &self,
         contribution: ApplicationSessionContribution,

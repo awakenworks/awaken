@@ -26,7 +26,6 @@ mod config;
 mod container_environment;
 mod credential_artifact;
 mod credential_materializer;
-mod data_subject_api;
 mod delegate;
 mod deployment_config;
 mod dispatch_backend;
@@ -44,16 +43,13 @@ mod managed_resource_projection;
 mod mcp;
 mod mcp_relay;
 mod memory;
-mod memory_store_api;
 mod memory_stores;
 mod no_model;
 mod outcome_controller;
 mod provisioning;
 mod redact;
 mod resource_reclamation;
-mod resource_scope;
 pub use resource_reclamation::HostResourceReclamation;
-pub use resource_scope::RequiredWorkspaceScope;
 mod run_exec;
 mod sandbox_source;
 mod session_environment;
@@ -61,7 +57,6 @@ mod session_slot;
 pub use session_environment::HandExecutorFactory;
 mod skill_catalog;
 mod skills;
-mod skills_api;
 mod store;
 #[cfg(test)]
 mod test_mcp;
@@ -84,18 +79,17 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, RunState};
-use awaken_protocol_managed::resource_plane as awaken_resource_contract;
-pub use awaken_protocol_managed::resource_plane::{FileCatalog, FileRecord, ResourcePurgeError};
-use awaken_protocol_managed::{
-    AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
-    LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
-    StepOutcome, ToolPermissionDecision,
-};
 use awaken_protocol_transport::{
     DriverError, Pending as PortPending, ProtocolRuntime, Resume as PortResume,
     StepFailure as PortStepFailure, StepOutcome as PortStepOutcome, Terminal,
 };
+pub use awaken_resource_contract::{FileCatalog, FileRecord, ResourcePurgeError};
 use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, MessageOrigin, Offer};
+use awaken_session_contract::{
+    AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
+    LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
+    StepOutcome, ToolPermissionDecision,
+};
 
 use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
 mod postgres_migration_lock;
@@ -105,7 +99,7 @@ mod worker_control_client;
 pub use crate::acp_tool_export::{AcpToolExport, AcpToolExporter};
 pub use crate::application::{
     ApplicationSessionControlClient, ApplicationSessionControlReceipt, ApplicationSessionError,
-    ApplicationSessionPlan, ApplicationSessionProvisioner, WorkerControlApplicationSessionClient,
+    ApplicationSessionProvisioner, WorkerControlApplicationSessionClient,
 };
 pub use crate::commit_backend::init_shared_postgres_commit;
 pub use crate::credential_materializer::{
@@ -113,8 +107,8 @@ pub use crate::credential_materializer::{
 };
 pub use crate::dispatch_backend::init_shared_postgres_dispatch_with_config;
 pub use crate::host::{
-    AttemptExecutorDecorator, HostResume, RemoteAttemptInstallation, ResourcePlanePorts,
-    SharedHost, remote_worker_placement, self_hosted_inference_holder,
+    AttemptExecutorDecorator, HostResume, RemoteAttemptInstallation, ResourcePlane, SharedHost,
+    remote_worker_placement, self_hosted_inference_holder,
 };
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
 pub use crate::postgres_migration_lock::PostgresMigrationLock;
@@ -126,16 +120,13 @@ pub use awaken_ext_builtin_tools::{
     WebSearchProviderDescriptor, WebSearchProviderRegistry, WebSearchRegistryError,
     WebSearchRequest, WebSearchResult,
 };
-pub use awaken_protocol_managed::McpAttachmentRealizer;
 pub use awaken_sandbox_container::{ContainerEnvironment, ContainerEnvironmentProvider};
+pub use awaken_session_contract::McpAttachmentRealizer;
 // ACP launch projection consumes the Session environment selected by the host.
-pub use crate::data_subject_api::{consent_router, erasure_router};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
-pub use crate::memory_store_api::memory_stores_router_with_catalog;
 pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{AcpLaunchRegistry, LaunchSource, resolve_sandbox_tier};
 pub use crate::skills::SkillForkPlacement;
-pub use crate::skills_api::skills_router;
 // The config data plane (ADR-0036/slice A): the service + its router + the
 // advertised-tools helper the composition root builds a config host from.
 pub use crate::acp_provision::PublishedAcpLaunchResolver;
@@ -279,26 +270,26 @@ fn to_step_outcome(result: RunResult) -> Result<StepOutcome, RunError> {
 }
 
 /// The Managed Agents `SessionRuntime` port implemented over the shared host.
-/// Holds only an `Arc<SharedHost>` plus runtime-side materialization ports, so it
+/// Holds only an `Arc<SharedHost>` plus runtime-side materialization SPIs, so it
 /// composes with any other adapter bound to the same host.
 #[derive(Clone)]
 pub struct ManagedHost {
     host: Arc<SharedHost>,
     credentials: Option<PinnedCredentialMaterializer>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
-    mcp_realizer: Option<Arc<dyn awaken_protocol_managed::McpAttachmentRealizer>>,
+    mcp_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
 }
 
 /// Weak, cloneable Worker-side adapter over the same configured Managed
 /// `SessionRuntime`. Durable dispatch carries only secret-free projections; this
-/// object reuses the installed Resource validator and credential ports for
+/// object reuses the installed Resource validator and credential SPIs for
 /// Resource and MCP realization without constructing a parallel vault path.
 #[derive(Clone)]
 pub(crate) struct DispatchSessionRuntime {
     host: std::sync::Weak<SharedHost>,
     credentials: Option<PinnedCredentialMaterializer>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
-    mcp_realizer: Option<Arc<dyn awaken_protocol_managed::McpAttachmentRealizer>>,
+    mcp_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
 }
 
 impl DispatchSessionRuntime {
@@ -318,7 +309,7 @@ impl DispatchSessionRuntime {
     async fn install(
         &self,
         thread: &str,
-        manifest: &awaken_protocol_managed::SessionResourceManifest,
+        manifest: &awaken_session_contract::SessionResourceManifest,
     ) -> Result<(), RunError> {
         let managed = self.managed()?;
         let previous = managed.host.thread_resource_manifest(thread);
@@ -326,7 +317,7 @@ impl DispatchSessionRuntime {
             .as_ref()
             .is_some_and(|previous| previous != manifest)
         {
-            awaken_protocol_managed::SessionRuntime::apply_session_inputs(
+            awaken_session_contract::SessionRuntime::apply_session_inputs(
                 &managed,
                 thread,
                 &manifest.workspace_id,
@@ -346,12 +337,12 @@ impl DispatchSessionRuntime {
 
     async fn stage_mcp(
         &self,
-        request: awaken_protocol_managed::StageMcpAttachment,
-    ) -> Result<awaken_protocol_managed::McpRealizationReceipt, RunError> {
+        request: awaken_session_contract::StageMcpAttachment,
+    ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
         match &self.mcp_realizer {
             Some(realizer) => realizer.stage_mcp_attachment(request).await,
             None => {
-                awaken_protocol_managed::McpAttachmentRealizer::stage_mcp_attachment(
+                awaken_session_contract::McpAttachmentRealizer::stage_mcp_attachment(
                     &self.managed()?,
                     request,
                 )
@@ -362,12 +353,12 @@ impl DispatchSessionRuntime {
 
     async fn publish_mcp(
         &self,
-        generation: awaken_protocol_managed::McpGenerationRef,
+        generation: awaken_session_contract::McpGenerationRef,
     ) -> Result<(), RunError> {
         match &self.mcp_realizer {
             Some(realizer) => realizer.publish_mcp_generation(generation).await,
             None => {
-                awaken_protocol_managed::McpAttachmentRealizer::publish_mcp_generation(
+                awaken_session_contract::McpAttachmentRealizer::publish_mcp_generation(
                     &self.managed()?,
                     generation,
                 )
@@ -378,12 +369,12 @@ impl DispatchSessionRuntime {
 
     async fn drain_mcp(
         &self,
-        generation: awaken_protocol_managed::McpGenerationRef,
+        generation: awaken_session_contract::McpGenerationRef,
     ) -> Result<(), RunError> {
         match &self.mcp_realizer {
             Some(realizer) => realizer.drain_mcp_generation(generation).await,
             None => {
-                awaken_protocol_managed::McpAttachmentRealizer::drain_mcp_generation(
+                awaken_session_contract::McpAttachmentRealizer::drain_mcp_generation(
                     &self.managed()?,
                     generation,
                 )
@@ -397,7 +388,7 @@ impl SharedHost {
     pub(crate) async fn install_dispatched_resources(
         &self,
         thread: &str,
-        manifest: &awaken_protocol_managed::SessionResourceManifest,
+        manifest: &awaken_session_contract::SessionResourceManifest,
     ) -> Result<(), RunError> {
         let preparer = self
             .dispatch_session_runtime
@@ -420,14 +411,14 @@ impl SharedHost {
 
     pub(crate) async fn stage_dispatched_mcp(
         &self,
-        request: awaken_protocol_managed::StageMcpAttachment,
-    ) -> Result<awaken_protocol_managed::McpRealizationReceipt, RunError> {
+        request: awaken_session_contract::StageMcpAttachment,
+    ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
         self.dispatch_session_runtime()?.stage_mcp(request).await
     }
 
     pub(crate) async fn publish_dispatched_mcp(
         &self,
-        generation: awaken_protocol_managed::McpGenerationRef,
+        generation: awaken_session_contract::McpGenerationRef,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()?
             .publish_mcp(generation)
@@ -436,7 +427,7 @@ impl SharedHost {
 
     pub(crate) async fn drain_dispatched_mcp(
         &self,
-        generation: awaken_protocol_managed::McpGenerationRef,
+        generation: awaken_session_contract::McpGenerationRef,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()?.drain_mcp(generation).await
     }
@@ -518,7 +509,7 @@ impl ManagedHost {
         &self,
         thread: &str,
         workspace: &str,
-        inputs: &awaken_protocol_managed::ResolvedSessionResources,
+        inputs: &awaken_session_contract::ResolvedSessionResources,
     ) -> Result<
         (
             crate::provisioning::StagedResources,
@@ -535,7 +526,7 @@ impl ManagedHost {
             all.prompts.extend(one.prompts);
             all.binding_checks.extend(one.binding_checks);
             all.repositories.extend(one.repositories);
-            if let awaken_protocol_managed::ResolvedInputSource::MemoryStore {
+            if let awaken_session_contract::ResolvedInputSource::MemoryStore {
                 memory_store_id,
                 config,
             } = &input.source
@@ -573,7 +564,7 @@ impl ManagedHost {
         &self,
         thread: &str,
         workspace: &str,
-        inputs: &awaken_protocol_managed::ResolvedSessionResources,
+        inputs: &awaken_session_contract::ResolvedSessionResources,
         staged: crate::provisioning::StagedResources,
         bound_memory: Option<Arc<crate::memory::BoundMemory>>,
     ) -> Result<(), RunError> {
@@ -586,7 +577,7 @@ impl ManagedHost {
         self.host.register_thread_resources(thread, staged);
         self.host.register_thread_resource_manifest(
             thread,
-            awaken_protocol_managed::SessionResourceManifest::new(workspace, inputs.clone()),
+            awaken_session_contract::SessionResourceManifest::new(workspace, inputs.clone()),
         );
         // Every Session records an explicit selection (including none). There is
         // no Host-global or directory fallback.
@@ -601,7 +592,7 @@ impl ManagedHost {
         &self,
         thread: &str,
         workspace: &str,
-        inputs: &awaken_protocol_managed::ResolvedSessionResources,
+        inputs: &awaken_session_contract::ResolvedSessionResources,
     ) -> Result<(), RunError> {
         let (staged, bound_memory) = self
             .compile_effective_inputs(thread, workspace, inputs)
@@ -617,7 +608,7 @@ impl ManagedHost {
         &self,
         thread: &str,
         workspace: &str,
-        resources: &awaken_protocol_managed::ResolvedSessionResources,
+        resources: &awaken_session_contract::ResolvedSessionResources,
     ) -> Result<(), RunError> {
         self.host.register_thread_workspace(thread, workspace);
         match &resources.skills {
@@ -737,7 +728,7 @@ impl ManagedHost {
     #[must_use]
     pub fn with_mcp_attachment_realizer(
         mut self,
-        realizer: Arc<dyn awaken_protocol_managed::McpAttachmentRealizer>,
+        realizer: Arc<dyn awaken_session_contract::McpAttachmentRealizer>,
     ) -> Self {
         self.mcp_realizer = Some(realizer);
         self.refresh_dispatch_session_runtime();
@@ -749,7 +740,7 @@ impl ManagedHost {
 impl SessionRuntime for ManagedHost {
     fn install_environment_binding_sink(
         &self,
-        sink: Arc<dyn awaken_protocol_managed::SessionEnvironmentBindingSink>,
+        sink: Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
     ) {
         *self
             .host
@@ -1040,7 +1031,7 @@ impl SessionRuntime for ManagedHost {
         &self,
         workspace_id: &str,
         skills: &[awaken_agent_contract::AgentSkillBinding],
-    ) -> Result<Vec<awaken_protocol_managed::ResolvedSkillBinding>, RunError> {
+    ) -> Result<Vec<awaken_session_contract::ResolvedSkillBinding>, RunError> {
         if skills.is_empty() {
             return Ok(Vec::new());
         }
@@ -1055,7 +1046,7 @@ impl SessionRuntime for ManagedHost {
         &self,
         thread: &str,
         workspace_id: &str,
-        inputs: &awaken_protocol_managed::ResolvedSessionResources,
+        inputs: &awaken_session_contract::ResolvedSessionResources,
     ) -> Result<(), RunError> {
         self.host.register_thread_workspace(thread, workspace_id);
         let old = self.host.thread_resources_snapshot(thread);
@@ -1076,7 +1067,7 @@ impl SessionRuntime for ManagedHost {
             .inputs
             .iter()
             .filter_map(|input| match &input.source {
-                awaken_protocol_managed::ResolvedInputSource::MemoryStore {
+                awaken_session_contract::ResolvedInputSource::MemoryStore {
                     memory_store_id,
                     ..
                 } => Some((
@@ -1194,7 +1185,7 @@ impl SessionRuntime for ManagedHost {
     async fn prepare_session(
         &self,
         thread: &str,
-        init: awaken_protocol_managed::SessionInit,
+        init: awaken_session_contract::SessionInit,
     ) -> Result<(), RunError> {
         // R2: bind the session's requested model to the thread (independent of MCP),
         // consumed at the thread's first turn to resolve its executor + model name.
@@ -1210,7 +1201,7 @@ impl SessionRuntime for ManagedHost {
             .install_environment_projection(thread, &init.environment)
             .map_err(to_run_error)?;
         if init.environment.sandbox_provisioning
-            == awaken_protocol_managed::SandboxProvisioning::OnToolUse
+            == awaken_session_contract::SandboxProvisioning::OnToolUse
         {
             let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> =
                 Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
@@ -1287,11 +1278,11 @@ impl SessionRuntime for ManagedHost {
         self.host.committed_messages(thread).await
     }
 
-    async fn session_usage(&self, thread: &str) -> awaken_protocol_managed::SessionUsage {
+    async fn session_usage(&self, thread: &str) -> awaken_session_contract::SessionUsage {
         // Map the runtime's per-model tally onto the managed wire's session-level total
         // (the host is the context boundary; the managed crate never sees TokenUsage).
         let total = self.host.thread_usage(thread).await.total();
-        awaken_protocol_managed::SessionUsage {
+        awaken_session_contract::SessionUsage {
             input_tokens: total.prompt_tokens,
             output_tokens: total.completion_tokens,
             cache_read_tokens: total.cache_read_tokens,
@@ -1322,11 +1313,11 @@ impl SessionRuntime for ManagedHost {
 }
 
 #[async_trait::async_trait]
-impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
+impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
     async fn stage_mcp_attachment(
         &self,
-        request: awaken_protocol_managed::StageMcpAttachment,
-    ) -> Result<awaken_protocol_managed::McpRealizationReceipt, RunError> {
+        request: awaken_session_contract::StageMcpAttachment,
+    ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
         use awaken_runtime_contract::{
             CredentialRealizationCapabilities, CredentialRealizationKind, PlaintextBoundary,
         };
@@ -1347,7 +1338,7 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
             .unwrap_or_default();
-        if !awaken_protocol_managed::realization_lease_is_live_at(
+        if !awaken_session_contract::realization_lease_is_live_at(
             request.generation.lease_expires_at_unix_ms,
             now_unix_ms,
         ) {
@@ -1571,7 +1562,7 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
         } else {
             None
         };
-        let receipt = awaken_protocol_managed::McpRealizationReceipt {
+        let receipt = awaken_session_contract::McpRealizationReceipt {
             generation: request.generation.clone(),
             realization_id: request.realization_id.clone(),
             selected_plaintext_holder: request.selected_plaintext_holder,
@@ -1603,13 +1594,13 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
 
     async fn publish_mcp_generation(
         &self,
-        generation: awaken_protocol_managed::McpGenerationRef,
+        generation: awaken_session_contract::McpGenerationRef,
     ) -> Result<(), RunError> {
         let now_unix_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
             .unwrap_or_default();
-        if !awaken_protocol_managed::realization_lease_is_live_at(
+        if !awaken_session_contract::realization_lease_is_live_at(
             generation.lease_expires_at_unix_ms,
             now_unix_ms,
         ) {
@@ -1626,7 +1617,7 @@ impl awaken_protocol_managed::McpAttachmentRealizer for ManagedHost {
 
     async fn drain_mcp_generation(
         &self,
-        generation: awaken_protocol_managed::McpGenerationRef,
+        generation: awaken_session_contract::McpGenerationRef,
     ) -> Result<(), RunError> {
         self.host
             .drain_mcp_projection(&generation)
