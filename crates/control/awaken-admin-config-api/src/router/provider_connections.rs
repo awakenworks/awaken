@@ -5,9 +5,7 @@
 //! avoiding frontend-derived connection and executable-model state.
 
 use awaken_credential_vault::CredentialStatus;
-use awaken_model_catalog::{
-    CatalogSyncResult, OfferingSource, OfferingStatus, ProtocolEndpoint, Provider, ProviderCatalog,
-};
+use awaken_model_catalog::{CatalogSyncResult, OfferingStatus, ProtocolEndpoint, Provider};
 use awaken_tenancy::WorkspaceScope as ResourceWorkspace;
 use axum::Json;
 use axum::extract::{Extension, Query, State};
@@ -52,67 +50,9 @@ pub struct ProviderConnectionSummary {
     pub last_seen_at_unix_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum ExecutableModelReadiness {
-    Ready,
-    OfferingUnavailable,
-    CredentialUnavailable,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ExecutableModelOption {
-    pub provider_id: String,
-    pub model_id: String,
-    pub endpoint_id: String,
-    pub readiness: ExecutableModelReadiness,
-}
-
-/// One authoritative, secret-free projection of catalog admission joined with
-/// credential compatibility. Browsers and embedding products must not rebuild
-/// `can_consume` independently.
-pub fn project_executable_models(
-    catalog: &ProviderCatalog,
-    credentials: &[awaken_credential_vault::CredentialSource],
-) -> Vec<ExecutableModelOption> {
-    let mut options = catalog
-        .offerings
-        .iter()
-        .map(|offering| {
-            let readiness = if offering.status != OfferingStatus::Active {
-                ExecutableModelReadiness::OfferingUnavailable
-            } else if offering.source == OfferingSource::Brokered
-                || credentials.iter().any(|credential| {
-                    credential.status == CredentialStatus::Active
-                        && awaken_config_resolver::can_consume(
-                            offering.provider_id.as_str(),
-                            credential,
-                        )
-                })
-            {
-                ExecutableModelReadiness::Ready
-            } else {
-                ExecutableModelReadiness::CredentialUnavailable
-            };
-            ExecutableModelOption {
-                provider_id: offering.provider_id.0.clone(),
-                model_id: offering.model_id.clone(),
-                endpoint_id: offering.protocol_endpoint_id.0.clone(),
-                readiness,
-            }
-        })
-        .collect::<Vec<_>>();
-    options.sort_by(|left, right| {
-        (&left.model_id, &left.provider_id, &left.endpoint_id).cmp(&(
-            &right.model_id,
-            &right.provider_id,
-            &right.endpoint_id,
-        ))
-    });
-    options
-}
+pub use awaken_config_resolver::{
+    ExecutableModelOption, ExecutableModelReadiness, project_executable_models,
+};
 
 #[derive(serde::Deserialize)]
 pub(super) struct ListProviderConnectionsQuery {
@@ -140,10 +80,24 @@ pub(super) async fn list_provider_connections(
         .await
         .map_err(|error| cred_problem(&error, &rid))?;
     let now = unix_time_ms();
-    let summaries = awaken_model_catalog::provider_driver_descriptors()
+    let descriptors = awaken_model_catalog::provider_driver_descriptors()
         .into_iter()
-        .map(|descriptor| {
-            let provider_id = descriptor.provider_kind;
+        .map(|descriptor| (descriptor.provider_kind.clone(), descriptor))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let provider_ids = descriptors
+        .keys()
+        .cloned()
+        .chain(catalog.providers.keys().cloned())
+        .chain(
+            credentials
+                .iter()
+                .filter_map(|source| source.provider_id.clone()),
+        )
+        .collect::<std::collections::BTreeSet<_>>();
+    let summaries = provider_ids
+        .into_iter()
+        .map(|provider_id| {
+            let descriptor = descriptors.get(&provider_id);
             let provider = catalog.providers.get(&provider_id);
             let mut endpoint_ids = catalog
                 .endpoints
@@ -196,11 +150,18 @@ pub(super) async fn list_provider_connections(
             } else {
                 ProviderConnectionStatus::Ready
             };
+            let display_name = provider.map_or_else(
+                || {
+                    descriptor.map_or_else(
+                        || provider_id.clone(),
+                        |descriptor| descriptor.display_name.clone(),
+                    )
+                },
+                |provider| provider.display_name.clone(),
+            );
             ProviderConnectionSummary {
                 provider_id,
-                display_name: provider.map_or(descriptor.display_name, |provider| {
-                    provider.display_name.clone()
-                }),
+                display_name,
                 status,
                 endpoint_ids,
                 active_credentials,
@@ -231,14 +192,18 @@ pub(super) async fn list_executable_models(
         .list(&workspace_id)
         .await
         .map_err(|error| cred_problem(&error, &rid))?;
-    Ok(Json(project_executable_models(&catalog, &credentials)))
+    Ok(Json(project_executable_models(
+        &catalog,
+        &credentials,
+        "genai",
+    )))
 }
 
 #[cfg(test)]
 mod tests {
     use awaken_credential_vault::{CredentialKind, CredentialSource, CredentialSourceId};
     use awaken_model_catalog::{
-        ApiDialect, Offering, OfferingSource, ProtocolEndpointId, ProviderId,
+        ApiDialect, Offering, OfferingSource, ProtocolEndpointId, ProviderCatalog, ProviderId,
     };
 
     use super::*;
@@ -280,7 +245,8 @@ mod tests {
         // R1 active BYOK + compatible active credential -> ready;
         // R2 active BYOK + only another provider's credential -> credential_unavailable;
         // R3 inactive offering -> offering_unavailable regardless of credential;
-        // R4 active brokered offering -> ready without a local credential.
+        // R4 active brokered offering without an explicit brokered Profile ->
+        // credential_unavailable on this ordinary Managed-model path.
         let mut unavailable = offering("anthropic", "retired", OfferingSource::Manual);
         unavailable.status = OfferingStatus::Unavailable;
         let catalog = ProviderCatalog {
@@ -292,7 +258,7 @@ mod tests {
             ],
             ..ProviderCatalog::default()
         };
-        let options = project_executable_models(&catalog, &[credential("anthropic")]);
+        let options = project_executable_models(&catalog, &[credential("anthropic")], "genai");
         let readiness = options
             .into_iter()
             .map(|option| (option.model_id, option.readiness))
@@ -306,6 +272,9 @@ mod tests {
             readiness["retired"],
             ExecutableModelReadiness::OfferingUnavailable
         );
-        assert_eq!(readiness["managed"], ExecutableModelReadiness::Ready);
+        assert_eq!(
+            readiness["managed"],
+            ExecutableModelReadiness::CredentialUnavailable
+        );
     }
 }

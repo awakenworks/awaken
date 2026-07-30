@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::AgentSkillBinding;
-use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
+use awaken_config_service::{
+    ConfigPlane, RESERVED_ADMIN_SCOPE, parse_managed_model_id, render_managed_model_id,
+};
 use awaken_config_store::{
     AgentConfig, AgentConfigRevision, AgentLifecycle, ConfigWrite, ModelSelection,
     MultiagentConfig, MultiagentTarget,
@@ -83,15 +85,28 @@ impl ConfigPlaneManagedAgentRepository {
             .get_versioned(&Self::scope(workspace_id), id)
             .await
             .map_err(ManagedAgentError::Storage)?;
-        if current.is_some()
-            || workspace_id != self.platform_workspace
+        if let Some(current) = current {
+            let visible = current.config.lifecycle() != AgentLifecycle::Published
+                || self
+                    .plane
+                    .service()
+                    .installed_in(workspace_id, id)
+                    .is_some()
+                || self
+                    .plane
+                    .has_published_revision(&Self::scope(workspace_id), id, current.revision)
+                    .await
+                    .map_err(ManagedAgentError::Storage)?;
+            return Ok(visible.then_some(current));
+        }
+        if workspace_id != self.platform_workspace
             || self
                 .plane
                 .service()
                 .installed_in(workspace_id, id)
                 .is_none()
         {
-            return Ok(current);
+            return Ok(None);
         }
         self.plane
             .get_versioned(&ScopeId::from(RESERVED_ADMIN_SCOPE), id)
@@ -104,6 +119,10 @@ impl ConfigPlaneManagedAgentRepository {
             .plane
             .service()
             .installed_in(workspace_id, &revision.config.id)
+            && matches!(
+                &revision.config.model_binding,
+                ModelSelection::Auto | ModelSelection::Profile { .. }
+            )
         {
             let binding = snapshot.resolved_spec.model_binding.binding;
             revision.config.model_binding = ModelSelection::Pinned(binding);
@@ -111,22 +130,18 @@ impl ConfigPlaneManagedAgentRepository {
         project(revision)
     }
 
-    async fn publish_if_resolvable(
-        &self,
-        scope: &ScopeId,
-        id: &str,
-    ) -> Result<(), ManagedAgentError> {
-        match self.plane.publish(scope, id).await {
-            Ok(_) => Ok(()),
-            // A Managed Agent is also an authoring resource. It remains a durable
-            // draft when its model/tool inputs cannot yet be resolved; a later
-            // config publish activates the same aggregate.
-            Err(
-                awaken_config_service::PublishError::Unresolvable(_)
-                | awaken_config_service::PublishError::Compile(_),
-            ) => Ok(()),
-            Err(error) => Err(ManagedAgentError::Storage(error.to_string())),
-        }
+    async fn publish_strict(&self, scope: &ScopeId, id: &str) -> Result<(), ManagedAgentError> {
+        self.plane
+            .publish(scope, id)
+            .await
+            .map(|_| ())
+            .map_err(|error| match error {
+                awaken_config_service::PublishError::Unresolvable(message)
+                | awaken_config_service::PublishError::Compile(message) => {
+                    ManagedAgentError::Invalid(message)
+                }
+                other => ManagedAgentError::Storage(other.to_string()),
+            })
     }
 
     async fn resolve_multiagent_references(
@@ -245,7 +260,8 @@ fn config_from_create(
         instructions: params.system.unwrap_or_default(),
         max_steps: 8,
         delegation_limits: Default::default(),
-        model_binding: ModelSelection::pinned("", model.id, ""),
+        model_binding: parse_managed_model_id(&model.id)
+            .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?,
         inference,
         tool_ids: Vec::new(),
         toolsets: awaken_protocol_managed::project::toolset_policies(&params.tools),
@@ -435,11 +451,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
     let revision_number = revision.revision;
     let config = revision.config;
     let id = config.id.clone();
-    let model = config
-        .model_binding
-        .resolved()
-        .map(|binding| binding.model_ref.clone())
-        .unwrap_or_default();
+    let model = render_managed_model_id(&config.model_binding).unwrap_or_default();
     let tools = wire_tools(&config.toolsets, &config.client_tools);
     let status = match config.lifecycle() {
         AgentLifecycle::Published => AgentStatus::Published,
@@ -519,6 +531,12 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         let mut config = config_from_create(id.clone(), params)?;
         self.resolve_multiagent_references(workspace_id, &mut config)
             .await?;
+        self.plane
+            .validate(&scope, &config)
+            .await
+            .map_err(|issue| {
+                ManagedAgentError::Invalid(format!("{}: {}", issue.path, issue.message))
+            })?;
         match self
             .plane
             .put_if_revision(&scope, &config, 0)
@@ -526,8 +544,15 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .map_err(ManagedAgentError::Storage)?
         {
             ConfigWrite::Applied { revision } => {
-                self.publish_if_resolvable(&scope, &id).await?;
-                Ok(project(AgentConfigRevision { config, revision }))
+                self.publish_strict(&scope, &id).await?;
+                let current = self
+                    .versioned_for_read(workspace_id, &id)
+                    .await?
+                    .ok_or_else(|| {
+                        ManagedAgentError::Storage("published Agent is not readable".into())
+                    })?;
+                let _ = revision;
+                Ok(self.project_current(workspace_id, current))
             }
             ConfigWrite::Conflict { .. } => Err(ManagedAgentError::Conflict(
                 "generated Agent id already exists".into(),
@@ -577,6 +602,20 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                 .await
                 .map_err(ManagedAgentError::Storage)?
                 .ok_or_else(|| ManagedAgentError::Storage("listed Agent disappeared".into()))?;
+            if versioned.config.lifecycle() == AgentLifecycle::Published
+                && self
+                    .plane
+                    .service()
+                    .installed_in(workspace_id, &config.id)
+                    .is_none()
+                && !self
+                    .plane
+                    .has_published_revision(&scope, &config.id, versioned.revision)
+                    .await
+                    .map_err(ManagedAgentError::Storage)?
+            {
+                continue;
+            }
             let agent = self.project_current(workspace_id, versioned);
             if !params.include_archived && agent.archived_at.is_some() {
                 continue;
@@ -639,19 +678,17 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         }
         if let Some(model) = params.model {
             let model = model.into_config();
-            let current_model = config
-                .model_binding
-                .resolved()
-                .map(|binding| binding.model_ref.as_str());
+            let current_model = render_managed_model_id(&config.model_binding).ok();
             let preserve_effort =
-                current_model == Some(model.id.as_str()) && model.effort.is_none();
+                current_model.as_deref() == Some(model.id.as_str()) && model.effort.is_none();
             let prior_effort = config.inference.effort;
             config.inference =
                 inference_from_wire(model.speed, model.effort.map(|value| value.resolved()));
             if preserve_effort {
                 config.inference.effort = prior_effort;
             }
-            config.model_binding = ModelSelection::pinned("", model.id, "");
+            config.model_binding = parse_managed_model_id(&model.id)
+                .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?;
         }
         if let Some(description) = params.description {
             config.description = description;
@@ -694,6 +731,12 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         validate_managed_agent_config(&config)?;
         self.resolve_multiagent_references(workspace_id, &mut config)
             .await?;
+        self.plane
+            .validate(&scope, &config)
+            .await
+            .map_err(|issue| {
+                ManagedAgentError::Invalid(format!("{}: {}", issue.path, issue.message))
+            })?;
         if config == current.config {
             return Ok(project(current));
         }
@@ -704,8 +747,15 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .map_err(ManagedAgentError::Storage)?
         {
             ConfigWrite::Applied { revision } => {
-                self.publish_if_resolvable(&scope, id).await?;
-                Ok(project(AgentConfigRevision { config, revision }))
+                self.publish_strict(&scope, id).await?;
+                let current = self
+                    .versioned_for_read(workspace_id, id)
+                    .await?
+                    .ok_or_else(|| {
+                        ManagedAgentError::Storage("published Agent is not readable".into())
+                    })?;
+                let _ = revision;
+                Ok(self.project_current(workspace_id, current))
             }
             ConfigWrite::Conflict { current_revision } => Err(ManagedAgentError::Conflict(
                 format!("Agent changed concurrently (current version: {current_revision:?})"),
@@ -834,6 +884,8 @@ mod tests {
 
     struct TestModelResolver;
 
+    struct RejectModelResolver;
+
     #[async_trait::async_trait]
     impl ModelPublicationResolver for TestModelResolver {
         async fn resolve_models(
@@ -846,6 +898,15 @@ mod tests {
             let primary = selection
                 .resolved()
                 .cloned()
+                .or_else(|| {
+                    selection.target().map(|(target, backend_ref)| {
+                        ModelBinding::new(
+                            target.provider_id.as_deref().unwrap_or_default(),
+                            &target.model_id,
+                            backend_ref,
+                        )
+                    })
+                })
                 .ok_or_else(|| "test requires a pinned model".to_string())?;
             Ok(ResolvedPublicationModels::host(
                 primary,
@@ -853,6 +914,19 @@ mod tests {
                 None,
                 None,
             ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ModelPublicationResolver for RejectModelResolver {
+        async fn resolve_models(
+            &self,
+            _workspace: &awaken_tenancy::ScopeId,
+            _selection: &ModelSelection,
+            _candidates: &[ModelBinding],
+        ) -> Result<ResolvedPublicationModels, awaken_config_service::PublicationResolutionError>
+        {
+            Err(awaken_config_service::PublicationResolutionError::MissingPrimary)
         }
     }
 
@@ -910,6 +984,40 @@ mod tests {
             Arc::new(SqliteConfigStore::open(path).expect("config store")),
             Arc::new(StaticToolCatalog(Vec::new())),
         )
+    }
+
+    fn rejecting_plane(path: &str) -> ConfigPlane {
+        ConfigPlane::new(
+            Arc::new(ConfigService::new(Arc::new(RejectModelResolver))),
+            Arc::new(SqliteConfigStore::open(path).expect("config store")),
+            Arc::new(StaticToolCatalog(Vec::new())),
+        )
+    }
+
+    #[tokio::test]
+    async fn managed_create_fails_fast_and_never_exposes_an_unpublished_draft() {
+        // Causes: C1 valid Managed request; C2 model planning rejects before
+        // persistence; C3 a race could reject again after a staged CAS write.
+        // Effects: E1 create returns Invalid; E2 retrieve/list expose no Agent;
+        // E3 config-authoring may retain an internal draft without becoming a
+        // second Managed aggregate. The rejecting resolver covers C2; E2 also
+        // protects the C3 staged-write boundary.
+        let temp = tempfile::tempdir().unwrap();
+        let plane = rejecting_plane(temp.path().join("config.sqlite").to_str().unwrap());
+        let repository = ConfigPlaneManagedAgentRepository::new(plane, "workspace-a");
+        let error = repository
+            .create("workspace-a", create_params("invalid"))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ManagedAgentError::Invalid(_)), "E1");
+        assert!(
+            repository
+                .list("workspace-a", &AgentListParams::default())
+                .await
+                .unwrap()
+                .is_empty(),
+            "E2"
+        );
     }
 
     #[test]

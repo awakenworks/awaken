@@ -231,6 +231,10 @@ pub struct AcpCli {
     /// Environment projection used only by legacy API-key adapters. `None`
     /// means the adapter requires its provider-specific credential driver.
     pub model_delivery: Option<ModelDelivery>,
+    /// Model API dialects this executor can consume when Awaken supplies a
+    /// provider route. Stable protocol tokens keep this runtime catalog
+    /// independent from the control-plane catalog crate.
+    pub model_api_dialects: &'static [&'static str],
     /// Exact-model interface for backend-owned local login. Default-model
     /// selection never consumes it.
     pub backend_model_interface: BackendModelInterface,
@@ -261,6 +265,11 @@ pub struct AcpCli {
 }
 
 impl AcpCli {
+    #[must_use]
+    pub fn supports_model_api_dialect(self, dialect: &str) -> bool {
+        self.model_api_dialects.contains(&dialect)
+    }
+
     /// Operator remediation for one canonical discovery reason. The catalog row
     /// owns adapter-specific commands; diagnostics and capabilities merely
     /// project them and therefore cannot drift.
@@ -793,6 +802,7 @@ const CLAUDE: AcpCli = AcpCli {
             "ANTHROPIC_HAIKU_MODEL",
         ],
     }),
+    model_api_dialects: &["anthropic_messages"],
     backend_model_interface: BackendModelInterface::ConfigOverride {
         flag: "-c",
         key: "model",
@@ -855,6 +865,7 @@ const CODEX: AcpCli = AcpCli {
     },
     container_argv: &["codex-acp"],
     model_delivery: None,
+    model_api_dialects: &["open_ai_chat"],
     backend_model_interface: BackendModelInterface::SessionConfigOption { config_id: "model" },
     managed_credential_delivery: ManagedCredentialDelivery::Artifact(CredentialArtifactSpec {
         codec: CredentialArtifactCodec::CodexAuthJson,
@@ -918,6 +929,7 @@ const GEMINI: AcpCli = AcpCli {
         credential_env: &["GEMINI_API_KEY"],
         aliases: &[],
     }),
+    model_api_dialects: &["gemini"],
     backend_model_interface: BackendModelInterface::Flag { flag: "--model" },
     managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
     auth_method_id: None,
@@ -982,6 +994,7 @@ const OPENCODE: AcpCli = AcpCli {
         credential_env: &["OPENAI_API_KEY"],
         aliases: &[],
     }),
+    model_api_dialects: &["open_ai_chat"],
     backend_model_interface: BackendModelInterface::Unsupported,
     managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
     auth_method_id: None,
@@ -1035,6 +1048,25 @@ pub(crate) fn legacy_config_file_cli() -> AcpCli {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_executor_row_owns_its_model_api_dialect_capability() {
+        // Causes: C1 selected ACP row; C2 offered API dialect. Effects: E1
+        // compatible route; E2 fail-fast rejection. Decision rules cover every
+        // production row and both matching/non-matching dialects, preventing a
+        // second resolver-side adapter table from reappearing.
+        let cases = [
+            ("claude", "anthropic_messages"),
+            ("codex", "open_ai_chat"),
+            ("gemini", "gemini"),
+            ("opencode", "open_ai_chat"),
+        ];
+        for (cli, dialect) in cases {
+            let row = acp_cli(cli).unwrap();
+            assert!(row.supports_model_api_dialect(dialect), "{cli}");
+            assert!(!row.supports_model_api_dialect("unsupported"), "{cli}");
+        }
+    }
 
     fn resolved() -> ResolvedModel {
         ResolvedModel::Managed {

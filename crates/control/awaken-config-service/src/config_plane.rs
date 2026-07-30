@@ -296,6 +296,7 @@ impl ConfigService {
             id,
             source_revision,
             snapshot,
+            resolved.authored_model_selection,
             resolved.config.hand.clone(),
         );
         Ok(publication)
@@ -525,6 +526,29 @@ impl ConfigPlane {
         self.registry_for(scope)
             .get_publication(fingerprint)
             .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Whether one exact authoring revision completed publication durably.
+    /// Managed protocol adapters use this to distinguish a restart (durable
+    /// publication exists but the process-local install is not warm yet) from a
+    /// failed staged write that must remain invisible.
+    pub async fn has_published_revision(
+        &self,
+        scope: &ScopeId,
+        agent_id: &str,
+        revision: u64,
+    ) -> Result<bool, String> {
+        self.store
+            .list_published_scoped(scope)
+            .await
+            .map(|publications| {
+                publications.into_iter().any(|publication| {
+                    publication.agent_id == agent_id
+                        && publication.source_revision == revision
+                        && publication.state == awaken_config_store::PublicationState::Published
+                })
+            })
             .map_err(|error| error.to_string())
     }
 
@@ -1291,6 +1315,35 @@ pub(crate) mod resource_prompt_tests {
     }
 
     #[tokio::test]
+    async fn managed_projection_preserves_the_published_authoring_model_id() {
+        // Causes: C1 a Target carries a user-facing endpoint name while the
+        // executable binding carries only the resolved provider identity; C2
+        // Auto/Profile has no public authored id. Effects: E1 Target projection
+        // round-trips the authored id exactly; E2 policy selection falls back to
+        // the immutable resolved binding. This case exercises decision rule C1.
+        let plane = static_plane(Some(Arc::new(FakeResolver)));
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+        let mut config = agent_config("managed-target");
+        config.model_binding = ModelSelection::Target {
+            target: awaken_config_store::ModelTarget {
+                model_id: "m-first".into(),
+                provider_id: Some("openai".into()),
+                protocol_endpoint_id: None,
+                endpoint_name: Some("edge".into()),
+            },
+            backend_ref: "genai".into(),
+        };
+        plane.put(&scope, &config).await.unwrap();
+        plane.publish(&scope, &config.id).await.unwrap();
+
+        use awaken_session_contract::AgentConfigSource as _;
+        let view = crate::ConfigServiceAgentSource(plane.service().clone())
+            .agent_view_in(DEFAULT_SCOPE, &config.id)
+            .unwrap();
+        assert_eq!(view.model.as_deref(), Some("openai@edge/m-first"), "E1");
+    }
+
+    #[tokio::test]
     async fn reconcile_re_publishes_auto_but_skips_pinned() {
         let plane = static_plane(Some(Arc::new(FakeResolver)));
         let scope = ScopeId::from(DEFAULT_SCOPE);
@@ -1810,6 +1863,15 @@ pub(crate) mod resource_prompt_tests {
 
         let mut v2 = agent_config("warm-agent");
         v2.instructions = "version two".into();
+        v2.model_binding = ModelSelection::Target {
+            target: awaken_config_store::ModelTarget {
+                model_id: "m-first".into(),
+                provider_id: Some("openai".into()),
+                protocol_endpoint_id: None,
+                endpoint_name: Some("warm".into()),
+            },
+            backend_ref: "genai".into(),
+        };
         author.put(&scope, &v2).await.unwrap();
         author.publish(&scope, "warm-agent").await.unwrap();
 
@@ -1823,6 +1885,15 @@ pub(crate) mod resource_prompt_tests {
         assert_eq!(
             installed.resolved_spec.instructions, "version two",
             "the latest publication wins on rehydrate"
+        );
+        use awaken_session_contract::AgentConfigSource as _;
+        let view = crate::ConfigServiceAgentSource(Arc::new(cold))
+            .agent_view_in(scope.as_str(), "warm-agent")
+            .unwrap();
+        assert_eq!(
+            view.model.as_deref(),
+            Some("openai@warm/m-first"),
+            "warm install must pair the snapshot with its exact source revision"
         );
 
         // A store whose list fails → 0 installed (fail-closed rehydrate seam).

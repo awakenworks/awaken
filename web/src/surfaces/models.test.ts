@@ -7,9 +7,9 @@ import {
 } from "./provider-connection-panel";
 
 // UI cause/effect rules kept beside the executable tests:
-// T1: C1 descriptor has a preferred endpoint -> E1 form uses its protocol, URL,
-// and stable endpoint id. T2: C2 descriptor has no fixed endpoint -> E2 form
-// stays editable with a deterministic placeholder id; it never invents a URL.
+// T1: C1 descriptor has a preferred endpoint -> E1 form uses its protocol and URL;
+// endpoint identity remains server-derived. T2: C2 descriptor has no fixed endpoint
+// -> E2 the URL stays empty and the dialect remains selectable.
 // Cloud capability decision table:
 // T7 unknown capabilities -> E7 no cloud action while loading.
 // T8 cloud models off (regardless of Cloud login) -> E8 local/BYOK-only UI.
@@ -23,7 +23,6 @@ const openai: ProviderDriverDescriptor = {
   configuration_fields: [],
   default_endpoints: [
     {
-      id_suffix: "responses",
       dialect: "open_ai_responses",
       base_url: "https://api.openai.com/v1",
     },
@@ -35,7 +34,7 @@ describe("providerDraftDefaults", () => {
   it("uses the backend descriptor's preferred protocol and endpoint", () => {
     expect(providerDraftDefaults(openai)).toEqual({
       provider: "openai",
-      endpoint: "openai-responses",
+      endpointName: "",
       baseUrl: "https://api.openai.com/v1",
       dialect: "open_ai_responses",
     });
@@ -50,7 +49,7 @@ describe("providerDraftDefaults", () => {
         default_endpoints: [],
       }),
     ).toMatchObject({
-      endpoint: "vertex-endpoint",
+      endpointName: "",
       baseUrl: "",
       dialect: "vertex_gemini",
     });

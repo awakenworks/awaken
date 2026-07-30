@@ -33,7 +33,6 @@ async function configureKimi(request: APIRequestContext) {
       workspace_id: "wrkspc_default",
       provider_id: "kimi",
       display_name: "Kimi",
-      endpoint_id: "kimi-ep",
       dialect: "anthropic_messages",
       base_url: "https://api.kimi.com/coding/v1/",
       ...(KIMI ? { secret: KIMI } : { credential_source_id: existing?.id }),

@@ -23,7 +23,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     **MANAGED_PROTOCOL_ALLOWED_DEPS,
     # zeroize backs RedactedString's zero-on-drop (ADR-0043); a leaf crypto-hygiene
     # primitive, not a model/provider SDK.
-    "awaken-agent-contract": {"serde", "serde_json", "thiserror", "async-trait", "tokio", "zeroize", "http"},
+    "awaken-agent-contract": {"serde", "serde_json", "thiserror", "async-trait", "tokio", "zeroize", "http", "schemars"},
     # Cross-context, secret-free credential execution values and the exact
     # material-resolution port (ADR-0067). Vault/storage and runtime adapters
     # depend inward on this leaf; the leaf names neither implementation.

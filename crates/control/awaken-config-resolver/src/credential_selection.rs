@@ -3,48 +3,13 @@
 //! This module is the single secret-free selection authority shared by
 //! publication and permitted management materialization.
 
+use crate::{ResolveError, SourceLookup};
 #[cfg(test)]
 use awaken_credential_vault::CredentialKind;
 use awaken_credential_vault::{
     AvailabilityLedger, CredentialBinding, CredentialMaterialOrigin, CredentialPool,
     CredentialPoolId, CredentialPoolMember, CredentialSource, CredentialStatus, SelectionPolicy,
 };
-use awaken_model_catalog::ApiDialect;
-
-use crate::{ResolveError, SourceLookup};
-
-/// Resolver-owned projection from executor identity to model API dialect.
-///
-/// This table joins two independent axes. It intentionally does not live on
-/// the ACP executor catalog: that leaf consumes resolved model strings and
-/// must not depend on `awaken-model-catalog`.
-#[must_use]
-pub fn expected_acp_dialect(backend_ref: &str) -> Option<ApiDialect> {
-    match backend_ref {
-        "acp:claude" => Some(ApiDialect::AnthropicMessages),
-        "acp:codex" => Some(ApiDialect::OpenAiChat),
-        "acp:gemini" => Some(ApiDialect::Gemini),
-        _ => None,
-    }
-}
-
-/// Assert that an ACP executor can speak one catalog Offering's model API
-/// dialect. Native/A2A coordinates are outside this join and pass unchanged.
-pub fn validate_acp_dialect(backend_ref: &str, actual: ApiDialect) -> Result<(), ResolveError> {
-    if !backend_ref.starts_with("acp:") {
-        return Ok(());
-    }
-    let expected = expected_acp_dialect(backend_ref)
-        .ok_or_else(|| ResolveError::AcpDialectUnknown(backend_ref.to_string()))?;
-    if expected != actual {
-        return Err(ResolveError::DialectIncompatible {
-            backend_ref: backend_ref.to_string(),
-            expected: expected.as_str(),
-            actual: actual.as_str(),
-        });
-    }
-    Ok(())
-}
 
 /// May this credential authenticate the model provider?
 #[must_use]
@@ -223,35 +188,6 @@ pub fn credential_candidates<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Cause/effect decision table for executor×model-dialect reconciliation:
-    // R1 non-ACP backend + any dialect -> outside the join, accept;
-    // R2 known ACP + expected dialect -> accept;
-    // R3 known ACP + different dialect -> DialectIncompatible;
-    // R4 unknown/bare ACP mapping -> AcpDialectUnknown.
-    #[test]
-    fn acp_executor_and_model_api_dialect_are_reconciled_independently() {
-        assert!(
-            validate_acp_dialect("genai", ApiDialect::Gemini).is_ok(),
-            "R1"
-        );
-        assert!(
-            validate_acp_dialect("acp:claude", ApiDialect::AnthropicMessages).is_ok(),
-            "R2"
-        );
-        assert!(matches!(
-            validate_acp_dialect("acp:claude", ApiDialect::OpenAiChat),
-            Err(ResolveError::DialectIncompatible {
-                backend_ref,
-                expected: "anthropic_messages",
-                actual: "open_ai_chat",
-            }) if backend_ref == "acp:claude"
-        ));
-        assert!(matches!(
-            validate_acp_dialect("acp:opencode", ApiDialect::OpenAiChat),
-            Err(ResolveError::AcpDialectUnknown(backend)) if backend == "acp:opencode"
-        ));
-    }
 
     // Cause/effect decision table for D5 default vendor-pool derivation:
     // R1 same Workspace + Active persisted material + matching provider -> member;

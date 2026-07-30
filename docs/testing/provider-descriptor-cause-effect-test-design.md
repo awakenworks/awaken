@@ -11,7 +11,7 @@ source cards and forms. Reading them must never author catalog or vault state.
 | --- | --- |
 | C1 | Client reads the descriptor endpoint |
 | C2 | Descriptor has multiple supported protocols |
-| C3 | Descriptor publishes a default endpoint |
+| C3 | Descriptor publishes a default URL for a dialect |
 | C4 | Descriptor publishes form fields |
 | C5 | Descriptor endpoint is read without prior configuration |
 
@@ -19,7 +19,7 @@ source cards and forms. Reading them must never author catalog or vault state.
 | --- | --- |
 | E1 | A secret-free descriptor list is returned |
 | E2 | Protocol order is stable and OpenAI prefers Responses while retaining Chat |
-| E3 | Every default endpoint uses one of that driver's declared protocols |
+| E3 | Every default URL uses one declared dialect and carries no parallel endpoint-id suffix |
 | E4 | Provider kinds and field keys are unique |
 | E5 | Provider, endpoint, offering, and credential stores remain unchanged |
 

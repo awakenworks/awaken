@@ -85,7 +85,6 @@ async function main() {
       workspace_id: 'wrkspc_default',
       provider_id: 'anthropic',
       display_name: 'Anthropic',
-      endpoint_id: 'ep1',
       dialect: 'anthropic_messages',
       base_url: `${upstream.url}/v1/`,
       timeout_secs: 300,
@@ -176,7 +175,10 @@ async function main() {
     // The DOMAIN state persisted: every admin GET returns the authored object.
     r = await req(base, 'GET', '/v1/config/catalog');
     assert.equal(r.status, 200);
-    assert.ok('anthropic' in r.json.providers && 'ep1' in r.json.endpoints);
+    assert.ok(
+      'anthropic' in r.json.providers
+        && 'anthropic.anthropic_messages' in r.json.endpoints,
+    );
 
     r = await req(base, 'GET', `/v1/config/credentials?workspace_id=${vault.id}`);
     assert.equal(r.status, 200);

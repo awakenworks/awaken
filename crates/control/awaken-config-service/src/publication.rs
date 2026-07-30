@@ -38,6 +38,10 @@ pub struct ValidationIssue {
 #[derive(Debug)]
 pub(crate) struct AgentPublicationDraft {
     pub(crate) source: awaken_runtime_contract::AgentConfigRevisionRef,
+    /// The public authoring intent that produced this publication. Resolution
+    /// replaces `config.model_binding` with the immutable runtime pin, so this
+    /// value must travel separately to keep protocol projections exact.
+    pub(crate) authored_model_selection: ModelSelection,
     pub(crate) config: AgentConfig,
     pub(crate) manifest: ResolutionManifest,
     pub(crate) models: ResolvedPublicationModels,
@@ -52,6 +56,7 @@ pub(crate) async fn prepare_agent_publication(
 ) -> Result<AgentPublicationDraft, PublishError> {
     let source_revision = source.revision;
     let mut config = source.config;
+    let authored_model_selection = config.model_binding.clone();
     let models = model_resolver
         .resolve_models(workspace, &config.model_binding, &config.model_fallbacks)
         .await
@@ -192,6 +197,7 @@ pub(crate) async fn prepare_agent_publication(
             agent_id: awaken_runtime_contract::snapshot::AgentId(config.id.clone()),
             revision: source_revision,
         },
+        authored_model_selection,
         config,
         manifest,
         models,
@@ -202,10 +208,7 @@ fn resolved_binding_matches_authored(
     resolved: &awaken_runtime_contract::resolved::ModelBinding,
     authored: &awaken_runtime_contract::resolved::ModelBinding,
 ) -> bool {
-    resolved.model_ref == authored.model_ref
-        && (authored.provider_identity_ref.is_empty()
-            || resolved.provider_identity_ref == authored.provider_identity_ref)
-        && (authored.backend_ref.is_empty() || resolved.backend_ref == authored.backend_ref)
+    resolved == authored
 }
 
 pub(crate) fn snapshot_metadata(
@@ -284,13 +287,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolver_may_complete_unspecified_provider_and_backend_axes() {
+    async fn resolver_cannot_complete_an_incomplete_pinned_binding() {
+        // Causes: C1 Pinned claims to be complete; C2 its provider/backend axes
+        // are absent; C3 a resolver returns a completed binding. Effect: reject
+        // instead of creating a second public selection path beside Target.
         let resolved = ModelBinding::new("provider", "primary", "genai");
         let resolver = FixedResolver {
             expected_workspace: "workspace-a",
             output: ResolvedPublicationModels::host(resolved.clone(), vec![], None, None),
         };
-        let draft = prepare_agent_publication(
+        let error = prepare_agent_publication(
             &resolver,
             &awaken_tenancy::ScopeId::from("workspace-a"),
             revision(
@@ -299,9 +305,9 @@ mod tests {
             ),
         )
         .await
-        .unwrap();
+        .unwrap_err();
 
-        assert_eq!(draft.config.model_binding.resolved(), Some(&resolved));
+        assert!(error.to_string().contains("pinned authoring binding"));
     }
 
     #[tokio::test]

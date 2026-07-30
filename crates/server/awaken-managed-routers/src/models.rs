@@ -4,15 +4,16 @@
 //! [`Page`](https://docs.anthropic.com/en/api/models-list) (`data` + `has_more` +
 //! `first_id` / `last_id`), NOT the vault family's cursor page.
 //!
-//! The directory is injected by the composition root: a gateway backs it from its
-//! model catalog, the single-machine open build from the models it is configured
-//! to serve (see [`default_models`]). No stub — every entry here is a model the
-//! server will actually accept as an agent's `model`.
+//! The directory is injected by the composition root. Production uses a live,
+//! Workspace-aware executable projection; [`default_models`] remains only for
+//! bare-host fixtures that have no configuration plane.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -38,7 +39,7 @@ pub struct ModelEntry {
 }
 
 impl ModelEntry {
-    fn new(id: &str, display_name: &str) -> Self {
+    pub fn new(id: &str, display_name: &str) -> Self {
         Self {
             id: id.to_string(),
             display_name: display_name.to_string(),
@@ -49,7 +50,7 @@ impl ModelEntry {
 
     /// Attach the model's published token limits (context window + output ceiling).
     #[must_use]
-    fn with_limits(mut self, context_window: u32, max_output_tokens: u32) -> Self {
+    pub fn with_limits(mut self, context_window: u32, max_output_tokens: u32) -> Self {
         self.context_window = Some(context_window);
         self.max_output_tokens = Some(max_output_tokens);
         self
@@ -72,10 +73,24 @@ impl ModelEntry {
     }
 }
 
-/// The current Claude model reference set the platform serves (ids per the
-/// project's model catalog). Used by the open single-machine build as its Models
-/// API directory; a gateway deployment supplies its own catalog-derived list
-/// instead.
+/// Rebuildable deployment model directory. Implementations derive entries from
+/// executable configuration; the HTTP adapter owns no catalog or fallback list.
+pub type ModelDirectoryFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Vec<ModelEntry>, String>> + Send + 'a>>;
+
+pub trait ModelDirectory: Send + Sync {
+    fn list<'a>(&'a self, workspace_id: &'a str) -> ModelDirectoryFuture<'a>;
+}
+
+struct StaticModelDirectory(Vec<ModelEntry>);
+
+impl ModelDirectory for StaticModelDirectory {
+    fn list<'a>(&'a self, _workspace_id: &'a str) -> ModelDirectoryFuture<'a> {
+        Box::pin(async { Ok(self.0.clone()) })
+    }
+}
+
+/// Deterministic model fixture for bare-host tests without a configuration plane.
 #[must_use]
 pub fn default_models() -> Vec<ModelEntry> {
     vec![
@@ -91,16 +106,31 @@ pub fn default_models() -> Vec<ModelEntry> {
 
 /// Mount the Models API over a fixed model directory.
 pub fn models_router(models: Arc<Vec<ModelEntry>>) -> Router {
+    models_router_with_directory(Arc::new(StaticModelDirectory(models.as_ref().clone())))
+}
+
+/// Mount the Models API over a live Workspace-aware directory.
+pub fn models_router_with_directory(directory: Arc<dyn ModelDirectory>) -> Router {
     Router::new()
         .route("/v1/models", get(list_models))
-        .route("/v1/models/{id}", get(get_model))
-        .with_state(models)
+        .route("/v1/models/{*id}", get(get_model))
+        .with_state(directory)
 }
 
 /// `GET /v1/models` — the full directory as a `Page<BetaModelInfo>` (one page:
 /// `has_more:false`). `first_id` / `last_id` bracket the page for the SDK's
 /// id-cursor paginator; both `null` when the directory is empty.
-async fn list_models(State(models): State<Arc<Vec<ModelEntry>>>) -> impl IntoResponse {
+async fn list_models(
+    State(directory): State<Arc<dyn ModelDirectory>>,
+    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+) -> impl IntoResponse {
+    let workspace = scope.map_or_else(|| "default".into(), |Extension(scope)| scope.0);
+    let Ok(models) = directory.list(&workspace).await else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({ "error": "model directory unavailable" })),
+        );
+    };
     let data: Vec<_> = models.iter().map(ModelEntry::to_json).collect();
     let first_id = models.first().map(|m| m.id.clone());
     let last_id = models.last().map(|m| m.id.clone());
@@ -118,9 +148,18 @@ async fn list_models(State(models): State<Arc<Vec<ModelEntry>>>) -> impl IntoRes
 /// `GET /v1/models/{id}` — one model as `BetaModelInfo`, or `404`. Doubles as the
 /// SDK's alias-resolution endpoint (an exact id here resolves to itself).
 async fn get_model(
-    State(models): State<Arc<Vec<ModelEntry>>>,
+    State(directory): State<Arc<dyn ModelDirectory>>,
+    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    let workspace = scope.map_or_else(|| "default".into(), |Extension(scope)| scope.0);
+    let Ok(models) = directory.list(&workspace).await else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({ "error": "model directory unavailable" })),
+        )
+            .into_response();
+    };
     match models.iter().find(|m| m.id == id) {
         Some(entry) => (StatusCode::OK, axum::Json(entry.to_json())).into_response(),
         None => (

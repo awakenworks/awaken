@@ -25,6 +25,7 @@ pub mod dynamic_placement;
 pub mod inference_materializer;
 mod legacy_resource_migration;
 pub mod mcp_export;
+pub mod model_directory;
 pub mod model_discovery;
 pub mod model_resolver;
 pub mod no_model;
@@ -493,11 +494,44 @@ pub fn mount_with_managed_and_application_access(
     )
 }
 
+/// Production data plane with a live executable model directory.
+pub fn mount_with_managed_and_application_access_and_models(
+    host: Arc<SharedHost>,
+    managed_state: Arc<ManagedState>,
+    resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
+    model_directory: Arc<dyn awaken_managed_routers::ModelDirectory>,
+) -> Router {
+    mount_with_managed_over_and_models(
+        host,
+        managed_state,
+        resource_catalog,
+        Some(application_access),
+        Some(model_directory),
+    )
+}
+
 fn mount_with_managed_over(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
     resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
+) -> Router {
+    mount_with_managed_over_and_models(
+        host,
+        managed_state,
+        resource_catalog,
+        application_access,
+        None,
+    )
+}
+
+fn mount_with_managed_over_and_models(
+    host: Arc<SharedHost>,
+    managed_state: Arc<ManagedState>,
+    resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
+    model_directory: Option<Arc<dyn awaken_managed_routers::ModelDirectory>>,
 ) -> Router {
     install_platform_memory_data_plane(&host);
     // Spawn the process-level dispatch pool once when durable ingress is enabled
@@ -576,7 +610,10 @@ fn mount_with_managed_over(
     // The skills API (`/v1/skills`) over the host's durable delivered-skill catalog.
     let skills = skills_router(host.skill_store(), resource_purge);
     // The Models API (`/v1/models`) over the deployment's model directory.
-    let models = models_router(std::sync::Arc::new(default_models()));
+    let models = model_directory.map_or_else(
+        || models_router(std::sync::Arc::new(default_models())),
+        awaken_managed_routers::models_router_with_directory,
+    );
     // ADR-0050: install the Host-owned captured-content sink and expose the
     // erasure + consent routes over the SAME store, so content a run captures is
     // erasable within this one server (the run→capture→store→erase loop). Durable

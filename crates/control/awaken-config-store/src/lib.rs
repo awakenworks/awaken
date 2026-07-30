@@ -16,7 +16,7 @@ mod store;
 mod postgres;
 mod sqlite;
 
-pub use awaken_agent_contract::AgentSkillBinding;
+pub use awaken_agent_contract::{AgentSkillBinding, ModelTarget};
 pub use awaken_runtime_contract::{ExecutableAgentSnapshot, ExecutableAgentSnapshotBuilder};
 pub use awaken_tenancy::ScopeId;
 pub use compile::{CompileError, compile_published, compile_resolved};

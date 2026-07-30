@@ -309,6 +309,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "http",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -399,7 +400,6 @@ version = "1.0.0-dev"
 dependencies = [
  "awaken-agent-contract",
  "awaken-credential-vault",
- "awaken-managed-bridge",
  "awaken-model-catalog",
  "awaken-provider-genai",
  "awaken-resource-contract",
@@ -837,10 +837,8 @@ version = "1.0.0-dev"
 dependencies = [
  "awaken-agent-contract",
  "awaken-credential-vault",
- "awaken-model-catalog",
  "serde",
  "serde_json",
- "thiserror 2.0.19",
  "tokio",
 ]
 

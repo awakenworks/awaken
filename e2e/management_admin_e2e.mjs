@@ -41,7 +41,16 @@ async function req(base, method, uri, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
-  const json = text ? JSON.parse(text) : null;
+  let json = null;
+  if (text) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      // Axum's extractor rejects malformed request shapes before the API error
+      // mapper runs and intentionally returns plain text.
+      json = text;
+    }
+  }
   return { status: res.status, json };
 }
 
@@ -132,10 +141,10 @@ async function main() {
       assert.equal(r.json.find((item) => item.provider_id === 'anthropic').status, 'not_configured');
 
       const connection = {
+        idempotency_key: 'management-admin-provider-connection',
         workspace_id: 'ws',
         provider_id: 'anthropic',
         display_name: 'Anthropic E2E',
-        endpoint_id: 'connection-ep',
         dialect: 'anthropic_messages',
         base_url: `${directory.url}/v1/`,
         timeout_secs: 30,
@@ -403,7 +412,7 @@ async function main() {
       r = await req(base, 'PUT', '/v1/config/inference-profiles/prof1', {
         primary: {
           target: {
-            model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: 'connection-ep',
+            model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: 'anthropic.anthropic_messages',
           },
           credential_binding: { type: 'exact', credential_source_id: credId },
         },
@@ -437,7 +446,7 @@ async function main() {
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
         workspace_id: 'ws',
         target: {
-          model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: 'connection-ep',
+          model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: 'anthropic.anthropic_messages',
         },
         binding: { type: 'exact', credential_source_id: credId },
       });
@@ -449,7 +458,7 @@ async function main() {
       r = await req(base, 'POST', '/v1/config/inference/resolve', {
         workspace_id: 'ws',
         target: {
-          model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: 'connection-ep',
+          model_id: 'connection-model-a', provider_id: 'anthropic', protocol_endpoint_id: 'anthropic.anthropic_messages',
         },
         binding: { type: 'none' },
       });

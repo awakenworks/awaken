@@ -7,10 +7,8 @@ license.workspace = true
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-credential-vault.workspace = true
-awaken-model-catalog.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

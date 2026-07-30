@@ -160,13 +160,12 @@ async function request(base, method, route, body) {
 
 async function publishProviderAgent(base, definition) {
   const {
-    agent, backend, provider, endpoint, model, baseUrl, secret, dialect,
+    agent, backend, provider, model, baseUrl, secret, dialect,
   } = definition;
   await request(base, 'POST', '/v1/config/provider-connections', {
     workspace_id: WORKSPACE,
     provider_id: provider,
     display_name: provider,
-    endpoint_id: endpoint,
     dialect,
     base_url: baseUrl,
     timeout_secs: 30,
@@ -221,7 +220,6 @@ async function main() {
       agent: GEMINI_AGENT,
       backend: 'acp:gemini',
       provider: 'gemini',
-      endpoint: 'gemini-endpoint',
       model: 'gemini-upstream',
       dialect: 'gemini',
       baseUrl: `${directory.url}/gemini/v1beta/`,
@@ -231,7 +229,6 @@ async function main() {
       agent: CODEX_AGENT,
       backend: 'acp:codex',
       provider: 'openai',
-      endpoint: 'codex-endpoint',
       model: 'codex-upstream',
       dialect: 'open_ai_chat',
       baseUrl: `${directory.url}/openai/v1/`,

@@ -36,7 +36,6 @@ export async function configureLiveModel(page) {
   const location = process.env.GEMINI_LOCATION ?? "global";
   if (!project) throw new Error("this runtime-effect story requires GEMINI_PROJECT");
   const provider = "vertex";
-  const endpoint = "vertex-endpoint";
 
   const credentials = await (await page.request.get(`${BACKEND}/v1/config/credentials?workspace_id=wrkspc_default`)).json();
   const existing = credentials.find(
@@ -52,7 +51,6 @@ export async function configureLiveModel(page) {
       workspace_id: "wrkspc_default",
       provider_id: provider,
       display_name: "Vertex AI",
-      endpoint_id: endpoint,
       dialect: "vertex_gemini",
       configuration: { project_id: project, location },
       timeout_secs: 60,
@@ -77,7 +75,6 @@ export async function configureLiveModel(page) {
 export async function configureSyntheticModel(page, id) {
   syntheticModel = id;
   const provider = "anthropic";
-  const endpoint = `${id}-endpoint`;
   const directory = await ensureSyntheticDirectory();
   const credentials = await (await page.request.get(
     `${BACKEND}/v1/config/credentials?workspace_id=wrkspc_default`,
@@ -91,7 +88,6 @@ export async function configureSyntheticModel(page, id) {
       workspace_id: "wrkspc_default",
       provider_id: provider,
       display_name: "Recording fixture",
-      endpoint_id: endpoint,
       dialect: "anthropic_messages",
       base_url: `${directory}/v1/`,
       timeout_secs: 60,

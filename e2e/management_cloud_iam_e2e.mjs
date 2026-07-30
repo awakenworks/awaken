@@ -117,7 +117,7 @@ async function startIamFixture() {
       response.end(JSON.stringify({ data: cloudModels }));
       return;
     }
-    if (request.method === 'GET' && request.url === '/v1/models') {
+    if (request.method === 'GET' && request.url.startsWith('/v1/models')) {
       response.setHeader('content-type', 'application/json');
       response.end(JSON.stringify({ data: [{ id: 'direct-publication-e2e' }] }));
       return;
@@ -256,7 +256,17 @@ async function req(base, method, uri, token, { apiKey = false, body } = {}) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
-  return { status: response.status, body: text ? JSON.parse(text) : null };
+  let responseBody = null;
+  if (text) {
+    try {
+      responseBody = JSON.parse(text);
+    } catch {
+      // Request extractors reject malformed shapes before the structured API
+      // error mapper and therefore return plain text.
+      responseBody = text;
+    }
+  }
+  return { status: response.status, body: responseBody };
 }
 
 async function main() {
@@ -426,14 +436,14 @@ async function main() {
     const directTarget = {
       model_id: 'direct-publication-e2e',
       provider_id: 'openai',
-      protocol_endpoint_id: 'direct-e2e-primary',
+      protocol_endpoint_id: 'openai.open_ai_chat',
     };
     result = await req(base, 'POST', '/v1/config/provider-connections', cachedToken, {
       body: {
+        idempotency_key: 'cloud-iam-direct-primary',
         workspace_id: localWorkspace,
         provider_id: 'openai',
         display_name: 'Direct E2E',
-        endpoint_id: 'direct-e2e-primary',
         dialect: 'open_ai_chat',
         base_url: `${iam.url}/v1/`,
         timeout_secs: 30,
@@ -535,11 +545,12 @@ async function main() {
 
     result = await req(base, 'POST', '/v1/config/provider-connections', cachedToken, {
       body: {
+        idempotency_key: 'cloud-iam-direct-secondary',
         workspace_id: localWorkspace,
         provider_id: 'openai',
         display_name: 'Direct E2E',
-        endpoint_id: 'direct-e2e-secondary',
         dialect: 'open_ai_chat',
+        endpoint_name: 'secondary',
         base_url: `${iam.url}/v1/`,
         timeout_secs: 30,
         credential_source_id: directCredentialId,

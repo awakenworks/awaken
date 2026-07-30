@@ -2,6 +2,10 @@
 
 - Status: Proposed
 - Date: 2026-07-16
+- Amended 2026-07-30: each declarative `AcpCli` row owns its supported model API
+  dialect tokens. The resolver-side CLI→dialect table and its parallel error
+  vocabulary are retired; publication intersects an Offering with that one
+  capability catalog.
 - Implemented foundation (2026-07-22): `/v1/agents` and
   `/v1/config/agents` now adapt the same Workspace-scoped `AgentConfig`
   aggregate in ConfigPlane. Managed writes use revision CAS, immutable history is
@@ -105,7 +109,7 @@ projection *across* contexts is architecture to keep.
 |---|---|---|---|---|
 | 1 | Selection axis | `AxisBinding` semantics: Pin/Pool + `SelectionPolicy` + `AvailabilityLedger` | model axis (`ModelSelection`+`model_fallbacks`) and credential axis (`CredentialBinding` + the resolver's default vendor-pool derivation) are two instances of one shape | `Auto` collapses to Pin at publish; the default derivation expands to a Pool at resolve. No fourth shape may be added |
 | 2 | Executor axis | one concept, three context forms | `AgentKind` (authoring) ⇌ `backend_ref` (published language) ⇌ `Backend` (runtime ACL) → `DispatchRunExecutor` routing | projection + parse, round-trip tested; `LaunchSource` cli-match re-asserts it at worker open |
-| 3 | Model speech | `Offering.dialect` is the *only* dialect source | `ApiDialect` (wire protocol), `ModelDelivery` (dialect projected onto env keys), a resolver-side CLI-id→dialect table (executor stays dialect-unaware), vendor (`provider_id`, ⊥ dialect) | check A joins ②↔③-dialect; check B joins vendor↔credential; `ResolvedModel` is the runtime terminal form |
+| 3 | Model speech | `Offering.dialect` is the selected route's dialect source; each `AcpCli` row owns the stable protocol tokens it can consume | `ApiDialect` (control-plane wire protocol), `AcpCli::model_api_dialects` (executor capability tokens), `ModelDelivery` (credential delivery), vendor (`provider_id`, ⊥ dialect) | publication intersects the Offering token with the selected executor row; vendor↔credential is checked independently; `ResolvedModel` is the runtime terminal form |
 | 4 | Credential lifecycle | declare → select → materialize → realize at the permitted boundary | `CredentialSource` (secret-free row) → family 1 selection → pinned realization → model client, process-secret broker, or mediated transport; ADR 67 removes the former ACP `McpCredential` reference/inline exits | selection collapses to ONE path (`resolve_credential`); ACP receives no MCP credential channel; `config_executor` inline `.find` retired |
 | 5 | External dependency auth | ONE declare table: `CredentialSource` keyed by *counterparty* (vendor slug or endpoint origin); optional refinements `McpServerDef` (referenced) / `InferenceProfile` (model override) | plane-local MCP projections stay (runtime plugin, ACP `McpDelivery`/`SessionMcpServer`, managed wire); the two overlapping protocol-managed shapes collapse to one | declare → select → materialize → inject (only the exit differs per kind) |
 | 6 | Session continuity (ACP) | intent × mechanism × facility | intent = `SessionReuse`/`session_mode`/`compact_window` (config); mechanism = `SessionPersistence`/`ModelSwitch::Relaunch` (catalog row); facility = `ConfigHome`/`SessionHome` (host) | `Warm ∧ LocalDir` → restore/harvest; `Gateway` → skip |
@@ -274,7 +278,7 @@ header name) comes from the discovered `AgentCard.security_schemes` — discover
 data, not config; default Bearer. No counterparty-tagged credential = anonymous
 (today's behavior); a card that demands auth with none fails closed.
 
-### D4 — Two independent resolve-time checks, both in the resolver (NOT on the executor's `AcpCli`)
+### D4 — Two independent publication checks with one owner per fact
 
 The resolver enforces dialect compatibility (① ↔ ②) and vendor match (③ ↔ model)
 separately.
@@ -282,19 +286,17 @@ separately.
 **Placement correction (verified against the crate graph):** `awaken-run-executor-acp`
 does **not** depend on `awaken-model-catalog`, and must not — the executor is a
 neutral leaf that consumes already-resolved strings (friction #11: dependency
-direction). So `speaks_dialect` can NOT be an `ApiDialect` field on `AcpCli` (that
-would pull the catalog into the executor). The CLI-id→expected-dialect mapping
-lives in the **resolver** (`awaken-config-resolver`, which already imports
-`ApiDialect`), as a small table keyed by the `acp:<cli>` id parsed from
-`backend_ref`. The executor stays dialect-unaware; it only receives the
-`ModelDelivery` env family the resolver already selected.
+direction). The executor therefore stores stable protocol tokens rather than
+importing the control-plane `ApiDialect` type. `AcpCli::model_api_dialects` is the
+one declarative capability row; publication compares
+`Offering.dialect.as_str()` to it. This keeps dependency direction intact without
+introducing a second resolver-side CLI table.
 
 ```rust
-// awaken-config-resolver — a table, not a field on AcpCli:
-//   "claude" → AnthropicMessages   "codex" → OpenAiChat   "gemini" → Gemini
-// Check A (dialect compatibility, ① ↔ ②):
-//   for an acp:<cli> backend, Offering.dialect must match the cli's expected
-//   dialect, else ResolveError::DialectIncompatible. Selects the env family.
+// awaken-run-executor-acp — declarative AcpCli rows:
+//   claude:["anthropic_messages"], codex:["open_ai_chat"], ...
+// Publication check A (dialect compatibility, ① ↔ ②):
+//   Offering.dialect must be present in the selected row's capability list.
 // Check B (vendor match, ③ ↔ model):
 //   CredentialSource.provider_id == Offering.provider_id (existing can_consume).
 //   Independent of dialect, so minimax × anthropic-messages × claude is legal.
@@ -627,13 +629,12 @@ the collision, and the containment.
     **Containment:** `AgentConfig` references those planes only by opaque id/ref
     (`skill_ids`, `mcp_server_ids`, `credential: Option<CredentialOverride>`); the
     downstream resolver owns every typed join (it already holds `InferenceProfile`,
-    `McpServerDef`, `CredentialBinding`, `ApiDialect`). The dialect-compat table
-    (CLI id → expected `ApiDialect`) lives in the **resolver**, NOT on the
-    executor's `AcpCli` — verified: `awaken-run-executor-acp` does not (and must
-    not) depend on `awaken-model-catalog`; it stays a neutral leaf consuming
-    resolved strings (D4). This is the single most important constraint on the
-    shape: it is why D5 extends `CredentialBinding` in the vault rather than adding
-    a credential enum to config-store, and why the dialect check is resolver-side.
+    `McpServerDef`, `CredentialBinding`, `ApiDialect`). The executor catalog owns
+    only stable dialect capability tokens on each `AcpCli`; it does not import
+    `awaken-model-catalog`. Publication performs the typed Offering-to-token join
+    once, so there is no resolver-side duplicate table. This is the single most
+    important constraint on the shape: it is why D5 extends `CredentialBinding`
+    in the vault rather than adding a credential enum to config-store.
 
 ## Reuse of existing types (normative — do not re-invent)
 
@@ -769,13 +770,13 @@ has an unambiguous configured default.
 
 **D `one-resolution-path`** — *Complete (2026-07-28).* Exactly one counterparty resolution; dialect
 checked; vendor keys auto-pool.*
-Adds: a resolver CLI-id→`ApiDialect` table + check A (`DialectIncompatible`); `AcpCli` fields → `Cow`; `derive_vendor_pool`
+Adds: `AcpCli::model_api_dialects` + publication check A; `derive_vendor_pool`
 default + check B; `LaunchResolver` as adapter over `resolve_inference`.
 Retires: the inline `.find(first Active)` at `config_executor.rs:69` and
 `EnvLaunchResolver` entirely; database-less workers fail closed instead of acquiring
 ambient provider configuration.
-Guard: single-key behavior-identity test (`FirstHealthy` ≡ today); dialect
-mismatch → `ResolveError::DialectIncompatible`.
+Guard: single-key behavior-identity test (`FirstHealthy` ≡ today); unsupported
+dialect is a publication candidate rejection.
 Completion evidence is maintained in ADR-0069: the existing pool owns policy
 ordering, resolver owns default/Exact/Pool selection, publication freezes the
 chosen revision, and all three former Server selectors are absent.

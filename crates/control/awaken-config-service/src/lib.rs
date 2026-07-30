@@ -19,6 +19,7 @@ mod config_routes;
 mod credential_reference;
 mod installed_catalog;
 mod managed_agent;
+mod managed_model_id;
 mod plugin_validation;
 mod publication;
 mod runtime_snapshot_source;
@@ -41,6 +42,7 @@ pub use config_plane::{ConfigPlane, ConfigService};
 pub use config_routes::config_router;
 pub use credential_reference::CredentialReferenceValidator;
 pub use managed_agent::{agent_config_from_managed, managed_from_agent_config};
+pub use managed_model_id::{ManagedModelIdError, parse_managed_model_id, render_managed_model_id};
 pub use plugin_validation::PluginPublicationResolver;
 pub use publication::{PublishError, ValidationIssue};
 pub use tool_catalog::{

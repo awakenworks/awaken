@@ -1381,7 +1381,7 @@ async fn management_router_over(
     let application_access = Arc::new(awaken_authz_enforce::ApplicationAccessStore::new());
     let (mgmt, webhook_sink) = awaken_control::control_router(awaken_control::ControlRouterInput {
         platform_workspace: platform_workspace.clone(),
-        catalog,
+        catalog: catalog.clone(),
         credentials: credentials.clone(),
         secrets: secrets.clone(),
         profiles,
@@ -1578,11 +1578,16 @@ async fn management_router_over(
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
     // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
     // routing. Flat requests fall through unchanged.
-    let mut data = awaken_server::mount_with_managed_and_application_access(
+    let model_directory = Arc::new(awaken_server::model_directory::CatalogModelDirectory::new(
+        catalog.clone(),
+        credentials.clone(),
+    ));
+    let mut data = awaken_server::mount_with_managed_and_application_access_and_models(
         host,
         managed_state,
         resource_catalog,
         application_access,
+        model_directory,
     );
     if let Some(iam) = resource_iam {
         data = data.layer(axum::middleware::from_fn_with_state(

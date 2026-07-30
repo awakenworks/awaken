@@ -42,10 +42,15 @@ impl ConfigService {
         let mut installed = 0;
         for publication in publications {
             let config = registry
-                .get_config_scoped(configuration_scope, &publication.agent_id)
+                .list_config_revisions_scoped(configuration_scope, &publication.agent_id)
                 .await
                 .ok()
-                .flatten();
+                .and_then(|revisions| {
+                    revisions
+                        .into_iter()
+                        .find(|revision| revision.revision == publication.source_revision)
+                })
+                .map(|revision| revision.config);
             let Some(config) = config.filter(|config| {
                 config.lifecycle() == awaken_config_store::AgentLifecycle::Published
             }) else {
@@ -56,6 +61,7 @@ impl ConfigService {
                 &publication.agent_id,
                 publication.source_revision,
                 publication.snapshot,
+                config.model_binding,
                 config.hand,
             );
             installed += 1;

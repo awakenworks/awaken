@@ -94,7 +94,6 @@ async function main() {
         workspace_id: 'ws',
         provider_id: 'anthropic',
         display_name: 'Anthropic',
-        endpoint_id: 'ep1',
         dialect: 'anthropic_messages',
         base_url: `${upstream.url}/v1/`,
         timeout_secs: 300,

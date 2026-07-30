@@ -57,8 +57,10 @@ pub struct ConnectProviderCommand {
     pub workspace_id: String,
     pub provider_id: String,
     pub display_name: String,
-    pub endpoint_id: String,
     pub dialect: ApiDialect,
+    /// Optional qualifier only when this Provider exposes more than one
+    /// endpoint speaking the same dialect.
+    pub endpoint_name: Option<String>,
     pub base_url: Option<String>,
     /// Descriptor-owned non-secret configuration. Provider-specific endpoint
     /// construction stays in this application service, never in a UI client.
@@ -76,8 +78,6 @@ pub struct ProviderConnectionResult {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderConnectionError {
-    #[error("provider `{0}` has no installed descriptor")]
-    UnsupportedProvider(String),
     #[error("provider `{provider}` does not support {dialect:?}")]
     UnsupportedDialect {
         provider: String,
@@ -135,16 +135,20 @@ impl ProviderConnectionService {
         }
         let descriptor = awaken_model_catalog::provider_driver_descriptors()
             .into_iter()
-            .find(|descriptor| descriptor.provider_kind == command.provider_id)
-            .ok_or_else(|| {
-                ProviderConnectionError::UnsupportedProvider(command.provider_id.clone())
-            })?;
-        if !descriptor.supported_dialects.contains(&command.dialect) {
+            .find(|descriptor| descriptor.provider_kind == command.provider_id);
+        if descriptor
+            .as_ref()
+            .is_some_and(|descriptor| !descriptor.supported_dialects.contains(&command.dialect))
+        {
             return Err(ProviderConnectionError::UnsupportedDialect {
-                provider: command.provider_id,
+                provider: command.provider_id.clone(),
                 dialect: command.dialect,
             });
         }
+        let auth_methods = descriptor.as_ref().map_or_else(
+            || installed_dialect_auth_methods(command.dialect),
+            |descriptor| descriptor.auth_methods.clone(),
+        );
         match &command.authentication {
             ProviderConnectionAuthentication::ApiKey(secret) => {
                 if secret.expose_secret().trim().is_empty() {
@@ -152,10 +156,7 @@ impl ProviderConnectionService {
                         "vault secret is required".into(),
                     ));
                 }
-                if !descriptor
-                    .auth_methods
-                    .contains(&awaken_model_catalog::ProviderAuthMethod::ApiKey)
-                {
+                if !auth_methods.contains(&awaken_model_catalog::ProviderAuthMethod::ApiKey) {
                     return Err(ProviderConnectionError::UnsupportedAuthentication {
                         provider: command.provider_id,
                         method: "API keys",
@@ -163,10 +164,7 @@ impl ProviderConnectionService {
                 }
             }
             ProviderConnectionAuthentication::OAuth(_) => {
-                if !descriptor
-                    .auth_methods
-                    .contains(&awaken_model_catalog::ProviderAuthMethod::OAuth)
-                {
+                if !auth_methods.contains(&awaken_model_catalog::ProviderAuthMethod::OAuth) {
                     return Err(ProviderConnectionError::UnsupportedAuthentication {
                         provider: command.provider_id,
                         method: "an OAuth helper",
@@ -176,21 +174,36 @@ impl ProviderConnectionService {
             ProviderConnectionAuthentication::Existing(_) => {}
         }
 
-        let base_url = provider_base_url(&command, &descriptor)?;
-        let credential_id = provider_credential_id(&command);
+        let endpoint_name = command
+            .endpoint_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned);
+        if let Some(name) = endpoint_name.as_deref() {
+            validate_provider_segment("endpoint_name", name)?;
+        }
+        let base_url = provider_base_url(&command, descriptor.as_ref())?;
+        let provider_id = ProviderId::new(command.provider_id.clone());
+        let endpoint_id = ProtocolEndpointId::for_surface(
+            &provider_id,
+            command.dialect,
+            endpoint_name.as_deref(),
+        );
+        let credential_id = provider_credential_id(&command, &endpoint_id);
         let provider = Provider {
-            id: ProviderId::new(command.provider_id.clone()),
+            id: provider_id,
             slug: command.provider_id.clone(),
             display_name: command.display_name,
             version: 1,
         };
         let endpoint = ProtocolEndpoint {
-            id: ProtocolEndpointId::new(command.endpoint_id),
+            id: endpoint_id,
             provider_id: provider.id.clone(),
             dialect: command.dialect,
             base_url,
             timeout_secs: command.timeout_secs,
-            display_name: format!("{} · {:?}", provider.display_name, command.dialect),
+            display_name: endpoint_name.unwrap_or_else(|| command.dialect.as_str().to_owned()),
             version: 1,
         };
 
@@ -224,6 +237,22 @@ impl ProviderConnectionService {
                     return Err(ProviderConnectionError::UnsupportedAuthentication {
                         provider: command.provider_id,
                         method: "a Claude Code setup token",
+                    });
+                }
+                let existing_method = match credential.kind {
+                    CredentialKind::Oauth => awaken_model_catalog::ProviderAuthMethod::OAuth,
+                    _ => awaken_model_catalog::ProviderAuthMethod::ApiKey,
+                };
+                if !auth_methods.contains(&existing_method) {
+                    return Err(ProviderConnectionError::UnsupportedAuthentication {
+                        provider: command.provider_id,
+                        method: if existing_method
+                            == awaken_model_catalog::ProviderAuthMethod::OAuth
+                        {
+                            "an OAuth credential"
+                        } else {
+                            "an API-key credential"
+                        },
                     });
                 }
                 ConnectionCredential::Existing(Box::new(credential))
@@ -326,12 +355,15 @@ impl ProviderConnectionService {
     }
 }
 
-fn provider_credential_id(command: &ConnectProviderCommand) -> CredentialSourceId {
+fn provider_credential_id(
+    command: &ConnectProviderCommand,
+    endpoint_id: &ProtocolEndpointId,
+) -> CredentialSourceId {
     let fingerprint = awaken_agent_contract::stable_fingerprint(&(
         "provider-connection/v1",
         &command.workspace_id,
         &command.provider_id,
-        &command.endpoint_id,
+        endpoint_id,
         &command.idempotency_key,
     ));
     CredentialSourceId(format!("cred:{}:{fingerprint}", command.workspace_id))
@@ -339,9 +371,9 @@ fn provider_credential_id(command: &ConnectProviderCommand) -> CredentialSourceI
 
 fn provider_base_url(
     command: &ConnectProviderCommand,
-    descriptor: &awaken_model_catalog::ProviderDriverDescriptor,
+    descriptor: Option<&awaken_model_catalog::ProviderDriverDescriptor>,
 ) -> Result<Option<String>, ProviderConnectionError> {
-    if descriptor.provider_kind == "vertex" {
+    if descriptor.is_some_and(|descriptor| descriptor.provider_kind == "vertex") {
         let project = required_provider_segment(&command.configuration, "project_id")?;
         let location = command
             .configuration
@@ -360,18 +392,36 @@ fn provider_base_url(
         )));
     }
 
-    Ok(command
+    let base_url = command
         .base_url
         .as_ref()
         .filter(|url| !url.trim().is_empty())
         .cloned()
         .or_else(|| {
-            descriptor
+            descriptor?
                 .default_endpoints
                 .iter()
                 .find(|endpoint| endpoint.dialect == command.dialect)
                 .map(|endpoint| endpoint.base_url.clone())
-        }))
+        });
+    if descriptor.is_none() && base_url.is_none() {
+        return Err(ProviderConnectionError::Invalid(
+            "base_url is required for a provider without a built-in template".into(),
+        ));
+    }
+    Ok(base_url)
+}
+
+fn installed_dialect_auth_methods(
+    dialect: ApiDialect,
+) -> Vec<awaken_model_catalog::ProviderAuthMethod> {
+    match dialect {
+        ApiDialect::VertexGemini => vec![awaken_model_catalog::ProviderAuthMethod::OAuth],
+        ApiDialect::AnthropicMessages
+        | ApiDialect::OpenAiChat
+        | ApiDialect::OpenAiResponses
+        | ApiDialect::Gemini => vec![awaken_model_catalog::ProviderAuthMethod::ApiKey],
+    }
 }
 
 fn required_provider_segment<'a>(
@@ -409,4 +459,74 @@ fn unix_time_ms() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command(
+        provider_id: &str,
+        dialect: ApiDialect,
+        base_url: Option<&str>,
+    ) -> ConnectProviderCommand {
+        ConnectProviderCommand {
+            idempotency_key: "test".into(),
+            workspace_id: "workspace".into(),
+            provider_id: provider_id.into(),
+            display_name: provider_id.into(),
+            dialect,
+            endpoint_name: None,
+            base_url: base_url.map(str::to_string),
+            configuration: Default::default(),
+            timeout_secs: 30,
+            authentication: ProviderConnectionAuthentication::ApiKey(RedactedString::new("key")),
+        }
+    }
+
+    #[test]
+    fn templates_supply_defaults_but_do_not_gate_provider_identity() {
+        // Causes: C1 built-in template exists; C2 custom identity; C3 explicit
+        // base URL; C4 dialect auth contract. Effects: E1 template default;
+        // E2 custom endpoint accepted; E3 missing custom endpoint rejected;
+        // E4 dialect-specific auth methods. This separates identity, dialect,
+        // endpoint, and credential acquisition instead of coupling them in one row.
+        let openai = awaken_model_catalog::provider_driver_descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.provider_kind == "openai")
+            .unwrap();
+        assert_eq!(
+            provider_base_url(
+                &command("openai", ApiDialect::OpenAiChat, None),
+                Some(&openai)
+            )
+            .unwrap()
+            .as_deref(),
+            Some("https://api.openai.com/v1"),
+            "E1"
+        );
+        assert_eq!(
+            provider_base_url(
+                &command(
+                    "glm",
+                    ApiDialect::AnthropicMessages,
+                    Some("https://api.example/v1")
+                ),
+                None,
+            )
+            .unwrap()
+            .as_deref(),
+            Some("https://api.example/v1"),
+            "E2"
+        );
+        assert!(
+            provider_base_url(&command("glm", ApiDialect::OpenAiChat, None), None).is_err(),
+            "E3"
+        );
+        assert_eq!(
+            installed_dialect_auth_methods(ApiDialect::VertexGemini),
+            vec![awaken_model_catalog::ProviderAuthMethod::OAuth],
+            "E4"
+        );
+    }
 }

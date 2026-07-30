@@ -2,7 +2,6 @@
 //! Mirrors the preview/probe chain:
 //!
 //!   admin config (CatalogRepo) → 录入 credential (enter_credential) →
-//!   Managed 建 agent (model string → decode_model_axis) →
 //!   resolve_inference → InferenceTriple + resolved credential → provider seam.
 //!
 //! The hermetic test proves the whole chain and the secret-free property; the
@@ -17,7 +16,6 @@ use awaken_credential_vault::{
     CredentialBinding, CredentialCreateParams, CredentialKind, CredentialSource,
     CredentialSourceId, InMemorySecretStore,
 };
-use awaken_managed_bridge::decode_model_axis;
 use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
 use awaken_model_catalog::{
     ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
@@ -119,10 +117,9 @@ async fn run_full_chain(
     .await
     .unwrap();
 
-    // 3. Managed 建 agent: the public `model` string is decoded to a model ref.
-    let model_ref = decode_model_axis(Some(model_id), None).unwrap();
-    assert_eq!(model_ref.model_id, model_id);
-    let snapshot = snapshot_for(&model_ref.model_id);
+    // 3. The resolved config snapshot consumes the selected catalog model. The
+    // Managed string ACL is tested by its sole owner, awaken-config-service.
+    let snapshot = snapshot_for(model_id);
 
     // 4. resolve: query the catalog + credential stores (single direction).
     let catalog = catalog_repo.snapshot().await.unwrap();

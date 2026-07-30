@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use awaken_agent_contract::ModelTarget;
 use awaken_runtime_contract::agent_bindings::InferenceOptions;
 use awaken_runtime_contract::agent_bindings::ToolsetPolicy;
 use awaken_runtime_contract::delegation::DelegationLimits;
@@ -30,6 +31,13 @@ pub enum ModelSelection {
     /// Resolve the explicitly named Workspace inference profile. Profiles are
     /// reusable policies, never an implicit Workspace-wide default.
     Profile { profile_id: String },
+    /// Select one catalog model route without pretending it is already a
+    /// publication-time binding. Qualifiers narrow catalog discovery; the
+    /// backend names the executor that must consume the selected Offering.
+    Target {
+        target: ModelTarget,
+        backend_ref: String,
+    },
     /// Use this exact external backend and let it retain its own configured
     /// default model. Publication must resolve an exact Worker-local binding;
     /// this is never a fallback to [`Auto`](Self::Auto).
@@ -58,6 +66,7 @@ impl ModelSelection {
     pub fn backend_ref(&self) -> Option<&str> {
         match self {
             Self::Auto | Self::Profile { .. } => None,
+            Self::Target { backend_ref, .. } => Some(backend_ref),
             Self::BackendDefault { backend_ref, .. } | Self::BackendExact { backend_ref, .. } => {
                 Some(backend_ref)
             }
@@ -87,6 +96,7 @@ impl ModelSelection {
             ModelSelection::Pinned(binding) => Some(binding),
             ModelSelection::Auto
             | ModelSelection::Profile { .. }
+            | ModelSelection::Target { .. }
             | ModelSelection::BackendDefault { .. }
             | ModelSelection::BackendExact { .. } => None,
         }
@@ -107,6 +117,7 @@ impl ModelSelection {
             self,
             Self::Auto
                 | Self::Profile { .. }
+                | Self::Target { .. }
                 | Self::BackendDefault { .. }
                 | Self::BackendExact { .. }
         )
@@ -117,7 +128,11 @@ impl ModelSelection {
     pub fn backend_default_ref(&self) -> Option<&str> {
         match self {
             Self::BackendDefault { backend_ref, .. } => Some(backend_ref),
-            Self::Auto | Self::Profile { .. } | Self::BackendExact { .. } | Self::Pinned(_) => None,
+            Self::Auto
+            | Self::Profile { .. }
+            | Self::Target { .. }
+            | Self::BackendExact { .. }
+            | Self::Pinned(_) => None,
         }
     }
 
@@ -127,9 +142,22 @@ impl ModelSelection {
         match self {
             Self::Profile { profile_id } => Some(profile_id),
             Self::Auto
+            | Self::Target { .. }
             | Self::BackendDefault { .. }
             | Self::BackendExact { .. }
             | Self::Pinned(_) => None,
+        }
+    }
+
+    /// The unresolved catalog target and requested executor.
+    #[must_use]
+    pub fn target(&self) -> Option<(&ModelTarget, &str)> {
+        match self {
+            Self::Target {
+                target,
+                backend_ref,
+            } => Some((target, backend_ref)),
+            _ => None,
         }
     }
 
@@ -224,6 +252,17 @@ impl Serialize for ModelSelection {
                 map.serialize_entry("profile_id", profile_id)?;
                 map.end()
             }
+            ModelSelection::Target {
+                target,
+                backend_ref,
+            } => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(3))?;
+                map.serialize_entry("mode", "target")?;
+                map.serialize_entry("target", target)?;
+                map.serialize_entry("backend_ref", backend_ref)?;
+                map.end()
+            }
             ModelSelection::BackendDefault {
                 backend_ref,
                 configuration,
@@ -266,6 +305,21 @@ impl<'de> Deserialize<'de> for ModelSelection {
             ModelSelectionWire::Profile { .. } => {
                 Err(serde::de::Error::custom("profile_id must not be empty"))
             }
+            ModelSelectionWire::Target {
+                target,
+                backend_ref,
+            } if !target.model_id.trim().is_empty()
+                && !backend_ref.trim().is_empty()
+                && !(target.protocol_endpoint_id.is_some() && target.endpoint_name.is_some()) =>
+            {
+                Ok(Self::Target {
+                    target,
+                    backend_ref,
+                })
+            }
+            ModelSelectionWire::Target { .. } => Err(serde::de::Error::custom(
+                "target requires model_id and backend_ref and cannot combine endpoint_name with protocol_endpoint_id",
+            )),
             ModelSelectionWire::BackendDefault {
                 backend_ref,
                 configuration,
@@ -298,6 +352,10 @@ enum ModelSelectionWire {
     Auto,
     Profile {
         profile_id: String,
+    },
+    Target {
+        target: ModelTarget,
+        backend_ref: String,
     },
     BackendDefault {
         backend_ref: String,
