@@ -1,0 +1,37 @@
+# NATS is a best-effort cross-node wake provider. Postgres remains the queue and
+# commit authority through the shared durable-brain base.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  labels: { app: nats }
+spec:
+  selector: { app: nats }
+  ports:
+    - { name: client, port: 4222, targetPort: 4222 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats
+  labels: { app: nats }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: nats }
+  template:
+    metadata:
+      labels: { app: nats }
+    spec:
+      containers:
+        - name: nats
+          image: nats:2
+          imagePullPolicy: Never
+          args: ["-p", "4222"]
+          ports:
+            - containerPort: 4222
+          readinessProbe:
+            tcpSocket: { port: 4222 }
+            initialDelaySeconds: 1
+            periodSeconds: 2

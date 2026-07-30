@@ -1,0 +1,10 @@
+# Cross-node owner failure: terminate quickly so the replacement can warm-load
+# the same thread from the canonical shared Postgres truth on another node.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: brain
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 2
