@@ -110,6 +110,7 @@ fn empty_agent_view(backend_ref: &str) -> AgentConfigView {
     AgentConfigView {
         environment: None,
         model: None,
+        execution_model_ref: None,
         backend_ref: backend_ref.into(),
         system: None,
         tool_ids: Vec::new(),
@@ -344,6 +345,7 @@ impl AgentConfigSource for AgentWithPublishedModel {
     fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
         (agent_id == "model-agent").then(|| AgentConfigView {
             model: Some("openai@edge/gpt-5".into()),
+            execution_model_ref: Some("gpt-5".into()),
             ..empty_agent_view("genai")
         })
     }

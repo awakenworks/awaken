@@ -114,6 +114,7 @@ container-k8s = ["awaken-runtime-host/container-k8s"]
 [dev-dependencies]
 awaken-scenario-host = { workspace = true }
 awaken-run-ingress = { workspace = true }
+awaken-session-store = { workspace = true }
 http-body-util = "0.1"
 awaken-agent-contract = { workspace = true }
 # mcp_sessions test: drives the VaultRefresher's RFC 6749 refresh grant and

@@ -16,6 +16,7 @@ use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_host::{ManagedHost, SharedHost};
 use awaken_server::webhooks;
+use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_webhook::{generate_secret, verify};
 use axum::body::Body;
 use axum::extract::State;
@@ -60,6 +61,7 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     // vault, exactly the shape the CRUD front door writes.
     let store = Arc::new(InMemoryWebhookStore::new());
     let secrets = Arc::new(InMemorySecretStore::new());
+    let sessions = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
     let secret = generate_secret();
     secrets
         .put(
@@ -83,12 +85,16 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         .unwrap();
     // The guarded production posture would refuse this loopback receiver (SSRF
     // pin/admission), so use the loopback assembly for the in-process e2e.
-    let (sink, _crud) = webhooks::assemble_loopback(store, secrets, None);
+    let (sink, _crud) = webhooks::assemble_loopback(store, secrets, None, sessions.clone());
 
     // 3. A managed surface with the sink, wrapped: guard (resolves + publishes the
     // owning workspace) → stamp_workspace_scope (maps it to WorkspaceScope).
     let host = Arc::new(SharedHost::new(Arc::new(DeadModel), "test"));
-    let managed = Arc::new(ManagedState::new(ManagedHost::new(host)).with_lifecycle_sink(sink));
+    let managed = Arc::new(
+        ManagedState::new(ManagedHost::new(host))
+            .with_session_repo(sessions)
+            .with_lifecycle_sink(sink),
+    );
     let engine = Arc::new(EnforceEngine::seeded());
     let token = engine
         .mint(TokenSpec {

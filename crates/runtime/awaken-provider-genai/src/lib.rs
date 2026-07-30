@@ -13,6 +13,7 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error, LlmExecutor, Result, StopReason, TokenUsage,
     ToolCall,
 };
+use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
 use genai::Client;
 use genai::chat::{
     Binary, ChatMessage, ChatRequest as GenaiChatRequest, ContentPart, MessageContent,
@@ -204,6 +205,40 @@ pub struct GenaiExecutor {
 }
 
 impl GenaiExecutor {
+    /// Construct the canonical provider adapter from an existing snapshot
+    /// candidate and caller-owned credential material.
+    pub fn from_snapshot_candidate(
+        candidate: &ResolvedModelCandidate,
+        credential: impl Into<String>,
+    ) -> std::result::Result<Self, String> {
+        let endpoint = match &candidate.provisioning {
+            ModelProvisioning::Provider { endpoint, .. } => endpoint,
+            _ => {
+                return Err(format!(
+                    "snapshot candidate `{}` has no provider endpoint",
+                    candidate.binding.model_ref
+                ));
+            }
+        };
+        let adapter = match endpoint.adapter_kind.trim().to_ascii_lowercase().as_str() {
+            "anthropic" => AdapterKind::Anthropic,
+            "openai" => AdapterKind::OpenAI,
+            "gemini" => AdapterKind::Gemini,
+            "vertex" => AdapterKind::Vertex,
+            _ => {
+                return Err(format!(
+                    "unsupported snapshot model adapter `{}`",
+                    endpoint.adapter_kind
+                ));
+            }
+        };
+        Ok(Self::from_resolved(
+            adapter,
+            (!endpoint.base_url.trim().is_empty()).then(|| endpoint.base_url.clone()),
+            credential,
+        ))
+    }
+
     /// Use an explicitly configured client. Product composition must prefer
     /// [`Self::from_resolved`]; this constructor exists for adapters/tests with
     /// another explicit `ServiceTargetResolver`. There is intentionally no
@@ -847,7 +882,9 @@ pub fn map_usage(usage: &Usage) -> TokenUsage {
 
 #[cfg(test)]
 mod classify_tests {
-    use super::classify_error;
+    use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
+
+    use super::{GenaiExecutor, classify_error};
 
     #[test]
     fn a_hard_usage_limit_is_recognised_and_not_retryable() {
@@ -883,6 +920,51 @@ mod classify_tests {
         }
         // A plain 401 with no re-auth phrasing stays a generic unauthorized.
         assert_eq!(classify_error("401 Unauthorized").code(), "unauthorized");
+    }
+
+    /// Cause/effect rules for snapshot adapter construction: R1 an existing
+    /// Provider candidate with a supported adapter => executor construction;
+    /// R2 HostExecutor/no endpoint => explicit error; R3 unknown adapter => error.
+    #[test]
+    fn snapshot_candidate_is_the_only_sdk_model_configuration() {
+        let provider: ResolvedModelCandidate = serde_json::from_value(serde_json::json!({
+            "provider_identity_ref": "local",
+            "model_ref": "model-a",
+            "backend_ref": "genai",
+            "provisioning": {
+                "type": "provider",
+                "provider_ref": "local",
+                "route_ref": "local",
+                "scope_id": "local",
+                "endpoint": {
+                    "adapter_kind": "openai",
+                    "api_dialect": "chat_completions",
+                    "base_url": "https://gateway.example/v1",
+                    "upstream_model": "model-a"
+                }
+            }
+        }))
+        .unwrap();
+        assert!(GenaiExecutor::from_snapshot_candidate(&provider, "key").is_ok());
+
+        let host = ResolvedModelCandidate::host(provider.binding.clone());
+        assert!(
+            GenaiExecutor::from_snapshot_candidate(&host, "key")
+                .err()
+                .unwrap()
+                .contains("no provider endpoint")
+        );
+
+        let mut unknown = provider;
+        if let ModelProvisioning::Provider { endpoint, .. } = &mut unknown.provisioning {
+            endpoint.adapter_kind = "unknown".into();
+        }
+        assert!(
+            GenaiExecutor::from_snapshot_candidate(&unknown, "key")
+                .err()
+                .unwrap()
+                .contains("unsupported snapshot model adapter")
+        );
     }
 }
 

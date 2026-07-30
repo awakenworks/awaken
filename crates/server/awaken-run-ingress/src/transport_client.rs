@@ -15,7 +15,13 @@
 //! `AnyDispatchStore::from_dispatch` to hand it to the pool.
 
 use async_trait::async_trait;
-use serde_json::json;
+use serde::Serialize;
+
+use awaken_run_ingress_contract::{
+    BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest,
+    CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest, RecoveryRequest,
+    RenewRequest, SettleRequest,
+};
 
 use crate::dispatch::installed_worker_credential_capabilities;
 use crate::{
@@ -98,10 +104,10 @@ impl HttpDispatchQueue {
         self
     }
 
-    async fn post(
+    async fn post<T: Serialize + ?Sized>(
         &self,
         path: &str,
-        body: serde_json::Value,
+        body: &T,
         worker_id: &str,
     ) -> Result<serde_json::Value, DispatchError> {
         let request = self.client.post(format!("{}{}", self.base_url, path));
@@ -132,10 +138,10 @@ impl HttpDispatchQueue {
     /// idempotent. This is intentionally separate from `post`: claim/admission
     /// responses cannot be replayed safely after an ambiguous receipt, while an
     /// exact-claim sandbox bind writes the same opaque reference each time.
-    async fn post_idempotent(
+    async fn post_idempotent<T: Serialize + ?Sized>(
         &self,
         path: &str,
-        body: serde_json::Value,
+        body: &T,
         worker_id: &str,
     ) -> Result<serde_json::Value, DispatchError> {
         let mut last_retryable_error = None;
@@ -215,7 +221,10 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/dispatch/claim_is_current",
-                json!({ "claim": claim, "identity": &self.worker_identity }),
+                &RecoveryRequest {
+                    claim: claim.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                },
                 self.worker_id(),
             )
             .await?;
@@ -233,11 +242,11 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/dispatch/credential_realization",
-                json!({
-                    "claim": claim,
-                    "receipt": receipt,
-                    "identity": &self.worker_identity
-                }),
+                &CredentialRealizationRequest {
+                    claim: claim.clone(),
+                    receipt,
+                    identity: Some(self.worker_identity.clone()),
+                },
                 self.worker_id(),
             )
             .await?;
@@ -275,7 +284,11 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/checkpoint/get",
-                json!({ "claim": claim, "identity": &self.worker_identity }),
+                &CheckpointRequest {
+                    claim: claim.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                    checkpoint: None,
+                },
                 self.worker_id(),
             )
             .await?;
@@ -291,7 +304,11 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/checkpoint/put",
-                json!({ "claim": claim, "checkpoint": checkpoint, "identity": &self.worker_identity }),
+                &CheckpointRequest {
+                    claim: claim.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                    checkpoint: Some(checkpoint),
+                },
                 self.worker_id(),
             )
             .await?;
@@ -311,7 +328,11 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/checkpoint/delete",
-                json!({ "claim": claim, "identity": &self.worker_identity }),
+                &CheckpointRequest {
+                    claim: claim.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                    checkpoint: None,
+                },
                 self.worker_id(),
             )
             .await?;
@@ -332,7 +353,10 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post_idempotent(
                 "/v1/worker/recovery/snapshot",
-                json!({ "claim": claim, "identity": &self.worker_identity }),
+                &RecoveryRequest {
+                    claim: claim.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                },
                 self.worker_id(),
             )
             .await?;
@@ -348,11 +372,11 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post_idempotent(
                 "/v1/worker/dispatch/bind_sandbox",
-                json!({
-                    "claim": claim,
-                    "sandbox_ref": sandbox_ref,
-                    "identity": &self.worker_identity
-                }),
+                &BindSandboxRequest {
+                    claim: claim.clone(),
+                    sandbox_ref: sandbox_ref.to_string(),
+                    identity: Some(self.worker_identity.clone()),
+                },
                 self.worker_id(),
             )
             .await?;
@@ -372,7 +396,10 @@ impl DispatchQueue for HttpDispatchQueue {
     ) -> Result<(), DispatchError> {
         self.post(
             "/v1/worker/dispatch/enqueue",
-            json!({ "request": request, "options": options }),
+            &EnqueueRequest {
+                request,
+                options: Some(options),
+            },
             self.worker_id(),
         )
         .await?;
@@ -390,7 +417,10 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/dispatch/claim_new_run",
-                json!({ "request": request, "identity": &self.worker_identity }),
+                &ClaimNewRunRequest {
+                    request,
+                    identity: Some(self.worker_identity.clone()),
+                },
                 self.worker_id(),
             )
             .await?;
@@ -434,7 +464,10 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/dispatch/deliver_and_claim",
-                json!({ "input": input, "identity": &self.worker_identity }),
+                &DeliverAndClaimRequest {
+                    input,
+                    identity: Some(self.worker_identity.clone()),
+                },
                 self.worker_id(),
             )
             .await?;
@@ -477,7 +510,9 @@ impl DispatchQueue for HttpDispatchQueue {
         let v = self
             .post(
                 "/v1/worker/dispatch/claim",
-                json!({ "identity": &self.worker_identity }),
+                &ClaimWorkerRequest {
+                    identity: Some(self.worker_identity.clone()),
+                },
                 self.worker_id(),
             )
             .await?;
@@ -515,7 +550,10 @@ impl DispatchQueue for HttpDispatchQueue {
         let value = self
             .post(
                 "/v1/worker/dispatch/claim_run",
-                json!({ "run_id": run_id.0, "identity": &self.worker_identity }),
+                &ClaimRunRequest {
+                    run_id: run_id.0.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                },
                 self.worker_id(),
             )
             .await?;
@@ -558,7 +596,10 @@ impl DispatchQueue for HttpDispatchQueue {
         let v = self
             .post(
                 "/v1/worker/dispatch/renew",
-                json!({ "run_id": run_id.0, "identity": &self.worker_identity }),
+                &RenewRequest {
+                    run_id: run_id.0.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                },
                 self.worker_id(),
             )
             .await?;
@@ -575,7 +616,9 @@ impl DispatchQueue for HttpDispatchQueue {
         let v = self
             .post(
                 "/v1/worker/dispatch/renew_owned",
-                json!({ "identity": &self.worker_identity }),
+                &ClaimWorkerRequest {
+                    identity: Some(self.worker_identity.clone()),
+                },
                 self.worker_id(),
             )
             .await?;
@@ -593,7 +636,13 @@ impl DispatchQueue for HttpDispatchQueue {
         let v = self
             .post_idempotent(
                 "/v1/worker/dispatch/settle",
-                json!({ "run_id": run_id.0, "epoch": epoch, "outcome": outcome, "consumed": consumed, "identity": &self.worker_identity }),
+                &SettleRequest {
+                    run_id: run_id.0.clone(),
+                    epoch,
+                    outcome,
+                    consumed: consumed.to_vec(),
+                    identity: Some(self.worker_identity.clone()),
+                },
                 self.worker_id(),
             )
             .await?;

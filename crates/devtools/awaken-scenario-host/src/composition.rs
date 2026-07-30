@@ -152,6 +152,7 @@ impl awaken_protocol_managed::AgentConfigSource for FixedAgentPublication {
         let snapshot = self.current(workspace_id, &AgentId(agent_id.to_string()))?;
         Some(awaken_protocol_managed::AgentConfigView {
             model: Some(snapshot.resolved_spec.model_binding.model_ref.clone()),
+            execution_model_ref: Some(snapshot.resolved_spec.model_binding.model_ref.clone()),
             backend_ref: snapshot.resolved_spec.model_binding.backend_ref.clone(),
             system: None,
             tool_ids: Vec::new(),

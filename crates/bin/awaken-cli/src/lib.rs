@@ -1019,7 +1019,7 @@ pub async fn build_management_router_with_model(
         ManagementModelComposition::Host {
             executor: model,
             binding: awaken_runtime_contract::resolved::ModelBinding::new(
-                "default", model_ref, "default",
+                "default", model_ref, "genai",
             ),
         },
         AssemblyOverrides::default(),

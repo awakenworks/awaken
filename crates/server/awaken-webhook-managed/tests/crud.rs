@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
-use awaken_config_resolver::{WebhookEndpointDef, WebhookOutboxEvent, WebhookStore};
+use awaken_config_resolver::{WebhookEndpointDef, WebhookStore};
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
 use awaken_session_contract::{
     ManagedSessionRepository, PersistedSession, SessionLifecycleFact, SessionLifecycleSink,
@@ -28,10 +28,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 #[derive(Default)]
-struct MemStore(
-    Mutex<HashMap<String, WebhookEndpointDef>>,
-    Mutex<HashMap<String, WebhookOutboxEvent>>,
-);
+struct MemStore(Mutex<HashMap<String, WebhookEndpointDef>>);
 
 #[derive(Default)]
 struct SessionOutbox(Mutex<HashMap<String, SessionLifecycleFact>>);
@@ -75,20 +72,6 @@ impl MemStore {
     fn delete(&self, id: &str) -> bool {
         self.0.lock().unwrap().remove(id).is_some()
     }
-    fn enqueue_outbox(&self, event: WebhookOutboxEvent) -> bool {
-        let mut rows = self.1.lock().unwrap();
-        if rows.contains_key(&event.id) {
-            return false;
-        }
-        rows.insert(event.id.clone(), event);
-        true
-    }
-    fn pending_outbox(&self) -> Vec<WebhookOutboxEvent> {
-        self.1.lock().unwrap().values().cloned().collect()
-    }
-    fn complete_outbox(&self, event_id: &str) -> bool {
-        self.1.lock().unwrap().remove(event_id).is_some()
-    }
 }
 
 impl WebhookStore for MemStore {
@@ -113,23 +96,6 @@ impl WebhookStore for MemStore {
     }
     fn delete(&self, id: &str) -> Result<bool, awaken_config_resolver::ConfigRepositoryError> {
         Ok(MemStore::delete(self, id))
-    }
-    fn enqueue_outbox(
-        &self,
-        event: WebhookOutboxEvent,
-    ) -> Result<bool, awaken_config_resolver::ConfigRepositoryError> {
-        Ok(MemStore::enqueue_outbox(self, event))
-    }
-    fn pending_outbox(
-        &self,
-    ) -> Result<Vec<WebhookOutboxEvent>, awaken_config_resolver::ConfigRepositoryError> {
-        Ok(MemStore::pending_outbox(self))
-    }
-    fn complete_outbox(
-        &self,
-        event_id: &str,
-    ) -> Result<bool, awaken_config_resolver::ConfigRepositoryError> {
-        Ok(MemStore::complete_outbox(self, event_id))
     }
 }
 
@@ -576,7 +542,11 @@ async fn emit_without_a_workspace_owner_does_not_fan_out() {
         Arc::new(CountingSource(calls.clone())),
         Arc::new(NoopSender),
     ));
-    let sink = WebhookLifecycleSink::new(dispatcher, None);
+    let sink = WebhookLifecycleSink::new(
+        dispatcher,
+        None,
+        Arc::new(SessionOutbox::default()) as Arc<dyn ManagedSessionRepository>,
+    );
     // No owner → the sink returns before spawning any dispatch (deterministic:
     // no owner means no spawn, so the source is never consulted).
     sink.emit("sesn_1", None, "session.created").await;
@@ -650,7 +620,19 @@ async fn wait_for_calls(calls: &AtomicUsize, expected: usize) {
 
 #[tokio::test]
 async fn a_stable_fact_id_is_enqueued_and_delivered_only_once_per_pending_row() {
-    let store = Arc::new(MemStore::default());
+    // Decision rule R1: one transactionally committed lifecycle fact (C1),
+    // followed by duplicate drain notifications (C2), yields one delivery (E1)
+    // and retirement of the canonical session-outbox row (E2).
+    let outbox = Arc::new(SessionOutbox::default());
+    outbox
+        .append_lifecycle(SessionLifecycleFact {
+            id: "session:sesn_1:created".into(),
+            session_id: "sesn_1".into(),
+            workspace_id: Some("ws_a".into()),
+            event_type: "session.created".into(),
+            timestamp: 1_768_780_800,
+        })
+        .await;
     let calls = Arc::new(AtomicUsize::new(0));
     let dispatcher = Arc::new(WebhookDispatcher::new(
         Arc::new(OneSubSource(awaken_webhook::generate_secret())),
@@ -659,8 +641,11 @@ async fn a_stable_fact_id_is_enqueued_and_delivered_only_once_per_pending_row() 
             status: Ok(200),
         }),
     ));
-    let sink =
-        WebhookLifecycleSink::with_outbox(dispatcher, None, store.clone() as Arc<dyn WebhookStore>);
+    let sink = WebhookLifecycleSink::new(
+        dispatcher,
+        None,
+        outbox.clone() as Arc<dyn ManagedSessionRepository>,
+    );
 
     sink.emit_fact(
         "session:sesn_1:created",
@@ -681,14 +666,25 @@ async fn a_stable_fact_id_is_enqueued_and_delivered_only_once_per_pending_row() 
 
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(
-        store.pending_outbox().is_empty(),
+        outbox.pending_lifecycle().await.is_empty(),
         "successful delivery retires the row"
     );
 }
 
 #[tokio::test]
 async fn failed_delivery_keeps_the_stable_fact_pending_for_recovery() {
-    let store = Arc::new(MemStore::default());
+    // Decision rule R2: a committed fact (C1) plus exhausted delivery retries
+    // (C2) keeps that exact fact pending (E1) for later reconciliation.
+    let outbox = Arc::new(SessionOutbox::default());
+    outbox
+        .append_lifecycle(SessionLifecycleFact {
+            id: "session:sesn_1:archived".into(),
+            session_id: "sesn_1".into(),
+            workspace_id: Some("ws_a".into()),
+            event_type: "session.archived".into(),
+            timestamp: 1_768_780_800,
+        })
+        .await;
     let calls = Arc::new(AtomicUsize::new(0));
     let dispatcher = Arc::new(WebhookDispatcher::new(
         Arc::new(OneSubSource(awaken_webhook::generate_secret())),
@@ -697,8 +693,11 @@ async fn failed_delivery_keeps_the_stable_fact_pending_for_recovery() {
             status: Err("injected outage".into()),
         }),
     ));
-    let sink =
-        WebhookLifecycleSink::with_outbox(dispatcher, None, store.clone() as Arc<dyn WebhookStore>);
+    let sink = WebhookLifecycleSink::new(
+        dispatcher,
+        None,
+        outbox.clone() as Arc<dyn ManagedSessionRepository>,
+    );
 
     sink.emit_fact(
         "session:sesn_1:archived",
@@ -710,24 +709,26 @@ async fn failed_delivery_keeps_the_stable_fact_pending_for_recovery() {
     wait_for_calls(&calls, 3).await;
     tokio::task::yield_now().await;
 
-    let pending = store.pending_outbox();
+    let pending = outbox.pending_lifecycle().await;
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].id, "session:sesn_1:archived");
-    assert_eq!(pending[0].object_id, "sesn_1");
+    assert_eq!(pending[0].session_id, "sesn_1");
 }
 
 #[tokio::test]
 async fn rebuilding_the_sink_drains_rows_left_by_the_prior_process() {
-    let store = Arc::new(MemStore::default());
-    store.enqueue_outbox(WebhookOutboxEvent {
-        id: "session:sesn_1:deleted".into(),
-        created_at: "2026-07-19T00:00:00Z".into(),
-        event_type: "session.deleted".into(),
-        object_id: "sesn_1".into(),
-        workspace_id: "ws_a".into(),
-        organization_id: None,
-        timestamp: 1_768_780_800,
-    });
+    // Decision rule R3: a lifecycle fact left pending before process start
+    // (C1) is recovered by sink construction (E1) and retired after success (E2).
+    let outbox = Arc::new(SessionOutbox::default());
+    outbox
+        .append_lifecycle(SessionLifecycleFact {
+            id: "session:sesn_1:deleted".into(),
+            session_id: "sesn_1".into(),
+            workspace_id: Some("ws_a".into()),
+            event_type: "session.deleted".into(),
+            timestamp: 1_768_780_800,
+        })
+        .await;
     let calls = Arc::new(AtomicUsize::new(0));
     let dispatcher = Arc::new(WebhookDispatcher::new(
         Arc::new(OneSubSource(awaken_webhook::generate_secret())),
@@ -737,13 +738,16 @@ async fn rebuilding_the_sink_drains_rows_left_by_the_prior_process() {
         }),
     ));
 
-    let _rebuilt =
-        WebhookLifecycleSink::with_outbox(dispatcher, None, store.clone() as Arc<dyn WebhookStore>);
+    let _rebuilt = WebhookLifecycleSink::new(
+        dispatcher,
+        None,
+        outbox.clone() as Arc<dyn ManagedSessionRepository>,
+    );
     wait_for_calls(&calls, 1).await;
     tokio::task::yield_now().await;
 
     assert!(
-        store.pending_outbox().is_empty(),
+        outbox.pending_lifecycle().await.is_empty(),
         "startup recovery retires a successfully redelivered row"
     );
 }
@@ -769,7 +773,7 @@ async fn session_local_outbox_is_drained_after_commit_before_notify_crash() {
             status: Ok(200),
         }),
     ));
-    let _restarted = WebhookLifecycleSink::with_session_outbox(
+    let _restarted = WebhookLifecycleSink::new(
         dispatcher,
         None,
         outbox.clone() as Arc<dyn ManagedSessionRepository>,
@@ -829,7 +833,11 @@ async fn emit_with_a_workspace_owner_fans_out_a_stamped_monotonic_event() {
         Arc::new(OneSubSource(awaken_webhook::generate_secret())),
         Arc::new(RecordingSender(tx)),
     ));
-    let sink = WebhookLifecycleSink::new(dispatcher, Some("org_root".into()));
+    let sink = WebhookLifecycleSink::new(
+        dispatcher,
+        Some("org_root".into()),
+        Arc::new(SessionOutbox::default()) as Arc<dyn ManagedSessionRepository>,
+    );
 
     sink.emit("sesn_1", Some("ws_a"), "session.status_idled")
         .await;
@@ -989,7 +997,7 @@ async fn drive(router: Router, method: &str, uri: &str, ws: &str, body: Value) -
     router.oneshot(req).await.unwrap().status()
 }
 
-/// `assemble` is the production composition: it pairs `ReqwestSender::guarded()`
+/// `assemble_with_session_repo` is the production composition: it pairs `ReqwestSender::guarded()`
 /// with `strict_endpoint_url_policy()`. The guarded-sender + strict-policy pairing
 /// is only covered downstream, so drive the CRUD router `assemble` returns and prove
 /// the STRICT policy is wired — a loopback endpoint is rejected at admission (400).
@@ -999,10 +1007,11 @@ async fn drive(router: Router, method: &str, uri: &str, ws: &str, body: Value) -
 async fn assemble_wires_the_strict_ssrf_policy_and_returns_a_working_sink() {
     let store = Arc::new(MemStore::default());
     let secrets = Arc::new(MemSecrets::ok());
-    let (sink, router) = awaken_webhook_managed::assemble(
+    let (sink, router) = awaken_webhook_managed::assemble_with_session_repo(
         store.clone() as Arc<dyn WebhookStore>,
         secrets as Arc<dyn SecretStore>,
         Some("org_root".into()),
+        Arc::new(SessionOutbox::default()) as Arc<dyn ManagedSessionRepository>,
     );
 
     // Strict policy wired: a loopback endpoint is rejected, and no row is stored.
@@ -1041,6 +1050,7 @@ async fn assemble_loopback_admits_a_loopback_endpoint_the_strict_path_rejects() 
         store.clone() as Arc<dyn WebhookStore>,
         secrets as Arc<dyn SecretStore>,
         None,
+        Arc::new(SessionOutbox::default()) as Arc<dyn ManagedSessionRepository>,
     );
 
     let status = drive(

@@ -7,8 +7,6 @@
 //! these same ports and provides the durable SQLite backend for them; the
 //! runtime host reads *through* them at session-prepare time.
 
-use serde::{Deserialize, Serialize};
-
 use crate::{AgentInputConfig, InferenceProfile, WebhookEndpointDef};
 
 /// Infrastructure failure from a synchronous authored-config repository.
@@ -72,24 +70,6 @@ pub trait WebhookStore: Send + Sync {
     fn list(&self, workspace_id: &str) -> Result<Vec<WebhookEndpointDef>, ConfigRepositoryError>;
     /// Remove by id; `true` if a row was removed (idempotent unsubscribe).
     fn delete(&self, id: &str) -> Result<bool, ConfigRepositoryError>;
-    /// Insert one logical lifecycle event if absent. The stable event id is the
-    /// idempotency key across dispatcher retries and process restarts.
-    fn enqueue_outbox(&self, event: WebhookOutboxEvent) -> Result<bool, ConfigRepositoryError>;
-    fn pending_outbox(&self) -> Result<Vec<WebhookOutboxEvent>, ConfigRepositoryError>;
-    fn complete_outbox(&self, event_id: &str) -> Result<bool, ConfigRepositoryError>;
-}
-
-/// Secret-free durable webhook outbox row. Subscription secrets are resolved
-/// only at dispatch time; this row is safe to persist in the admin database.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WebhookOutboxEvent {
-    pub id: String,
-    pub created_at: String,
-    pub event_type: String,
-    pub object_id: String,
-    pub workspace_id: String,
-    pub organization_id: Option<String>,
-    pub timestamp: i64,
 }
 
 /// Repository for an Agent's default input bindings. Workspace is mandatory on

@@ -334,60 +334,6 @@ impl WebhookStore for PostgresAdminStore {
                 > 0)
         })
     }
-    fn enqueue_outbox(
-        &self,
-        event: awaken_config_resolver::WebhookOutboxEvent,
-    ) -> Result<bool, ConfigRepositoryError> {
-        let sql = format!(
-            "INSERT INTO {NS}_webhook_outbox (event_id, data) VALUES ($1, $2) \
-             ON CONFLICT (event_id) DO NOTHING"
-        );
-        let pool = self.pool.clone();
-        block(&self.handle, move || async move {
-            Ok(sqlx::query(&sql)
-                .bind(&event.id)
-                .bind(sqlx::types::Json(&event))
-                .execute(&pool)
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
-                .rows_affected()
-                > 0)
-        })
-    }
-    fn pending_outbox(
-        &self,
-    ) -> Result<Vec<awaken_config_resolver::WebhookOutboxEvent>, ConfigRepositoryError> {
-        let sql = format!("SELECT data FROM {NS}_webhook_outbox ORDER BY created_at, event_id");
-        let pool = self.pool.clone();
-        block(&self.handle, move || async move {
-            sqlx::query(&sql)
-                .fetch_all(&pool)
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
-                .into_iter()
-                .map(|row| {
-                    let sqlx::types::Json(event) = row
-                        .try_get::<sqlx::types::Json<awaken_config_resolver::WebhookOutboxEvent>, _>("data")
-                        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-                    Ok(event)
-                })
-                .collect()
-        })
-    }
-    fn complete_outbox(&self, event_id: &str) -> Result<bool, ConfigRepositoryError> {
-        let sql = format!("DELETE FROM {NS}_webhook_outbox WHERE event_id = $1");
-        let pool = self.pool.clone();
-        let event_id = event_id.to_string();
-        block(&self.handle, move || async move {
-            Ok(sqlx::query(&sql)
-                .bind(event_id)
-                .execute(&pool)
-                .await
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
-                .rows_affected()
-                > 0)
-        })
-    }
 }
 
 impl InferenceProfileStore for PostgresAdminStore {

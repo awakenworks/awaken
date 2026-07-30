@@ -249,59 +249,6 @@ impl WebhookStore for SqliteAdminStore {
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         Ok(n > 0)
     }
-    fn enqueue_outbox(
-        &self,
-        event: awaken_config_resolver::WebhookOutboxEvent,
-    ) -> Result<bool, ConfigRepositoryError> {
-        let data = serde_json::to_string(&event)
-            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-        Ok(self
-            .conn
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?
-            .execute(
-                &format!(
-                    "INSERT OR IGNORE INTO {NS}_webhook_outbox (event_id, data) VALUES (?1, ?2)"
-                ),
-                params![event.id, data],
-            )
-            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
-            > 0)
-    }
-    fn pending_outbox(
-        &self,
-    ) -> Result<Vec<awaken_config_resolver::WebhookOutboxEvent>, ConfigRepositoryError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?;
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT data FROM {NS}_webhook_outbox ORDER BY created_at, event_id"
-            ))
-            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-        let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-        rows.map(|data| {
-            let data = data.map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-            serde_json::from_str(&data)
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
-        })
-        .collect()
-    }
-    fn complete_outbox(&self, event_id: &str) -> Result<bool, ConfigRepositoryError> {
-        Ok(self
-            .conn
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?
-            .execute(
-                &format!("DELETE FROM {NS}_webhook_outbox WHERE event_id = ?1"),
-                params![event_id],
-            )
-            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
-            > 0)
-    }
 }
 
 #[cfg(test)]

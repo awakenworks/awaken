@@ -358,9 +358,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # Poison-free mutexes for the in-memory registries + circuit breaker.
         "parking_lot",
         "tracing",
+        "tempfile",
     },
-    # In-memory reference store backend (ADR-0039 2.2): the neutral commit/read
-    # ports over `RwLock`/`HashMap`, dependency-free apart from the contract.
+    # In-memory reference store backend: neutral commit/read ports (ADR-0039 2.2).
     "awaken-store-inmem": {
         "awaken-agent-contract",
         "awaken-store-conformance",
@@ -368,8 +368,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "tokio",
     },
-    # Filesystem store backend (ADR-0039 2.3): a durable append-only commit log
-    # with crash recovery, reusing the in-memory read model as its cache.
+    # Filesystem backend: durable crash-safe append log (ADR-0039 2.3).
     "awaken-store-fs": {
         "awaken-agent-contract",
         "awaken-store-inmem",
@@ -1418,6 +1417,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-scenario-host",
         # dev-only: transport conformance exercises dispatch + Worker registry.
         "awaken-run-ingress", "awaken-runtime-host",
+        "awaken-session-store",
         # Outer composition owns Hand topology/relay; runtime-host exposes only ports.
         "awaken-connection-plan", "awaken-tool-relay", "awaken-worker-registry", "awaken-managed-routers",
         # dev-only: A2A loopback wraps mocks in the remote-Agent adapter.

@@ -45,16 +45,19 @@ pub use awaken_run_ingress_contract::operational::{
     DispatchPage, LeaseLossReason,
 };
 pub use awaken_run_ingress_contract::{
-    AssignmentRejection, ClaimedCommitCommand, ExecutionLocation, ExecutionScopeRef,
-    HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
-    PlacementContext, PlacementError, PlacementPolicy, PlacementRequirements,
-    REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RegisteredWorker, RegistryError,
-    RegistryMutation, RunDispatch, SESSION_RESOURCES_CAPABILITY, SessionResourceEnvelope,
+    AssignmentRejection, BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest,
+    ClaimRunRequest, ClaimWorkerRequest, ClaimedCommitCommand, CredentialRealizationRequest,
+    DeliverAndClaimRequest, EnqueueRequest, ExecutionLocation, ExecutionScopeRef,
+    HOST_EXECUTOR_CAPABILITY, HeartbeatWorkerRequest, LeastLoadedPolicy,
+    PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext, PlacementError, PlacementPolicy,
+    PlacementRequirements, REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RecoveryRequest,
+    RegisterWorkerRequest, RegisteredWorker, RegistryError, RegistryMutation, RenewRequest,
+    RunDispatch, SESSION_RESOURCES_CAPABILITY, SessionResourceEnvelope, SettleRequest,
     WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAcpCapabilityObservation,
     WorkerAcpCapabilityRequirement, WorkerAssignment, WorkerCredentialObservation,
     WorkerCredentialRevision, WorkerCredentialState, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerManifest, WorkerRecoveryMode, WorkerRegistration, WorkerSnapshot,
-    WorkerState, can_assign, can_claim, can_claim_locally, place_assignment,
+    WorkerIdentity, WorkerIdentityRequest, WorkerManifest, WorkerRecoveryMode, WorkerRegistration,
+    WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally, place_assignment,
     worker_credential_realization_capabilities,
 };
 pub use clock::{Clock, ManualClock, SystemClock};

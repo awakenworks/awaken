@@ -56,6 +56,51 @@ async fn run_registers_and_executes_one_snapshot_in_one_call() {
     );
 }
 
+/// End-to-end cause/effect rule R1: an exported native snapshot file (C1), with
+/// an edited existing model binding (C2) and an injected SDK model port (C3), is
+/// loaded with a new consistent fingerprint (E1) and reaches the unchanged
+/// `Runtime::run` terminal path (E2), without any server/config-store dependency.
+#[tokio::test]
+async fn snapshot_file_loads_and_runs_as_an_embedded_sdk() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("agent.snapshot.json");
+    let snapshot = ExecutableAgentSnapshot::builder("assistant")
+        .instructions("be concise")
+        .model(ModelBinding::new("local", "model-a", "genai"))
+        .build();
+    Runtime::save_snapshot_file(&snapshot, &path).unwrap();
+    let mut value: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(&path).unwrap()).unwrap();
+    value["resolved_spec"]["model_binding"]["model_ref"] = "model-b".into();
+    serde_json::to_writer_pretty(std::fs::File::create(&path).unwrap(), &value).unwrap();
+
+    let loaded = Runtime::load_snapshot_file(path).unwrap();
+    assert_eq!(
+        loaded.resolved_spec.model_binding.binding.model_ref,
+        "model-b"
+    );
+    assert_eq!(loaded.fingerprint, loaded.resolved_spec.catalog_fingerprint);
+
+    let runtime = Runtime::new().with_llm(Arc::new(TextLlm("offline reply")));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let state = runtime
+        .run(
+            &loaded,
+            "offline input",
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .any(|message| message.text_content() == "offline reply")
+    );
+}
+
 #[tokio::test]
 async fn per_run_model_executor_override_wins_over_the_runtime_default() {
     // ADR-0004: a run whose context carries a `model_executor` (the executor the host

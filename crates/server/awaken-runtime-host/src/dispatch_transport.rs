@@ -16,15 +16,20 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
+use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
 use awaken_run_ingress::{
-    AnyDispatchStore, CompletionSink, CredentialRealizationReceipt, Dispatch, DispatchOutcome,
-    DispatchQueue, HttpDispatchQueue, PendingInput, PlacementPolicy, RunClaim, RunDispatch,
-    SubmitOptions, WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerRegistration,
-    WorkerSnapshot, WorkerState,
+    AnyDispatchStore, BindSandboxRequest as BindSandboxReq, CheckpointRequest as CheckpointReq,
+    ClaimNewRunRequest as ClaimNewRunReq, ClaimRunRequest as ClaimRunReq,
+    ClaimWorkerRequest as ClaimWorkerReq, CompletionSink,
+    CredentialRealizationRequest as CredentialRealizationReq,
+    DeliverAndClaimRequest as DeliverAndClaimReq, Dispatch, DispatchQueue,
+    EnqueueRequest as EnqueueReq, HeartbeatWorkerRequest as HeartbeatWorkerReq, HttpDispatchQueue,
+    PlacementPolicy, RecoveryRequest as RecoveryReq, RegisterWorkerRequest as RegisterWorkerReq,
+    RenewRequest as RenewReq, RunClaim, SettleRequest as SettleReq, WorkerDirectory,
+    WorkerIdentity, WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot, WorkerState,
 };
 
 use crate::host::{HostError, SharedHost};
@@ -373,30 +378,6 @@ fn checkpoint_store(
 }
 
 #[derive(Deserialize)]
-struct CheckpointReq {
-    claim: RunClaim,
-    #[serde(default)]
-    identity: Option<WorkerIdentity>,
-    #[serde(default)]
-    checkpoint: Option<StreamCheckpoint>,
-}
-
-#[derive(Deserialize)]
-struct RecoveryReq {
-    claim: RunClaim,
-    #[serde(default)]
-    identity: Option<WorkerIdentity>,
-}
-
-#[derive(Deserialize)]
-struct CredentialRealizationReq {
-    claim: RunClaim,
-    #[serde(default)]
-    identity: Option<WorkerIdentity>,
-    receipt: CredentialRealizationReceipt,
-}
-
-#[derive(Deserialize)]
 struct ApplicationContributionReq {
     claim: RunClaim,
     identity: WorkerIdentity,
@@ -712,14 +693,6 @@ async fn recovery_snapshot(
     respond(result)
 }
 
-#[derive(Deserialize)]
-struct BindSandboxReq {
-    claim: RunClaim,
-    #[serde(default)]
-    identity: Option<WorkerIdentity>,
-    sandbox_ref: String,
-}
-
 async fn bind_sandbox(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
@@ -864,11 +837,6 @@ fn verify_worker_identity(
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct RegisterWorkerReq {
-    registration: WorkerRegistration,
-}
-
 async fn register_worker(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
@@ -895,12 +863,6 @@ async fn register_worker(
     respond(result)
 }
 
-#[derive(Deserialize)]
-struct HeartbeatWorkerReq {
-    identity: WorkerIdentity,
-    heartbeat: WorkerHeartbeat,
-}
-
 async fn heartbeat_worker(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
@@ -921,13 +883,6 @@ async fn heartbeat_worker(
     }
     .await;
     respond(result)
-}
-
-#[derive(Deserialize)]
-struct WorkerIdentityReq {
-    identity: WorkerIdentity,
-    #[serde(default)]
-    deadline_ms: Option<u64>,
 }
 
 async fn drain_worker(
@@ -1007,13 +962,6 @@ async fn authenticate_worker(
     }
 }
 
-#[derive(Deserialize)]
-struct EnqueueReq {
-    request: RunDispatch,
-    #[serde(default)]
-    options: Option<SubmitOptions>,
-}
-
 async fn enqueue(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(_worker): Extension<VerifiedWorkerContext>,
@@ -1029,13 +977,6 @@ async fn enqueue(
     }
     .await;
     respond(result)
-}
-
-#[derive(Deserialize)]
-struct ClaimNewRunReq {
-    request: RunDispatch,
-    #[serde(default)]
-    identity: Option<WorkerIdentity>,
 }
 
 async fn claim_new_run(
@@ -1072,13 +1013,6 @@ async fn claim_new_run(
     }
     .await;
     respond(result)
-}
-
-#[derive(Deserialize)]
-struct DeliverAndClaimReq {
-    input: PendingInput,
-    #[serde(default)]
-    identity: Option<WorkerIdentity>,
 }
 
 async fn deliver_and_claim(
@@ -1167,19 +1101,6 @@ async fn claim(
     respond(result)
 }
 
-#[derive(Default, Deserialize)]
-struct ClaimWorkerReq {
-    #[serde(default)]
-    identity: Option<WorkerIdentity>,
-}
-
-#[derive(Deserialize)]
-struct ClaimRunReq {
-    run_id: String,
-    #[serde(default)]
-    identity: Option<WorkerIdentity>,
-}
-
 async fn claim_run(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
@@ -1210,13 +1131,6 @@ async fn claim_run(
     }
     .await;
     respond(result)
-}
-
-#[derive(Deserialize)]
-struct RenewReq {
-    run_id: String,
-    #[serde(default)]
-    identity: Option<WorkerIdentity>,
 }
 
 async fn renew(
@@ -1260,18 +1174,6 @@ async fn renew_owned(
     }
     .await;
     respond(result)
-}
-
-#[derive(Deserialize)]
-struct SettleReq {
-    run_id: String,
-    #[serde(default)]
-    epoch: u64,
-    outcome: DispatchOutcome,
-    #[serde(default)]
-    consumed: Vec<String>,
-    #[serde(default)]
-    identity: Option<WorkerIdentity>,
 }
 
 async fn settle(

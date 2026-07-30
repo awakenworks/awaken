@@ -1340,7 +1340,12 @@ pub(crate) mod resource_prompt_tests {
         let view = crate::ConfigServiceAgentSource(plane.service().clone())
             .agent_view_in(DEFAULT_SCOPE, &config.id)
             .unwrap();
+        // Cause/effect rule: a provider-qualified Managed target (C1) projects
+        // its full display id for the API (E1) and the already-published exact
+        // candidate model_ref for execution (E2); neither string substitutes for
+        // the other at Session preparation.
         assert_eq!(view.model.as_deref(), Some("openai@edge/m-first"), "E1");
+        assert_eq!(view.execution_model_ref.as_deref(), Some("m-first"), "E2");
     }
 
     #[tokio::test]

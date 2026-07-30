@@ -40,8 +40,8 @@ pub use reference_stores::{
 };
 pub use stores::{
     AgentInputBindingRepository, AgentInputRepositoryError, ConfigRepositoryError,
-    InferenceProfileStore, WebhookOutboxEvent, WebhookStore, get_workspace_profile,
-    put_workspace_profile, validate_agent_input_revision, workspace_profile_key,
+    InferenceProfileStore, WebhookStore, get_workspace_profile, put_workspace_profile,
+    validate_agent_input_revision, workspace_profile_key,
 };
 pub use telemetry::{RedactionMode, TelemetryCeiling};
 

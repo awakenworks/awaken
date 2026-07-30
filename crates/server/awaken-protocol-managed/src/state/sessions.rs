@@ -552,6 +552,10 @@ impl ManagedState {
                 .and_then(|view| view.model.clone())
                 .map(ModelConfig::new),
         };
+        let execution_model_ref = config_view
+            .as_ref()
+            .and_then(|view| view.execution_model_ref.clone())
+            .or_else(|| selected_model.as_ref().map(|model| model.id.clone()));
         // Echo the agent version the client pinned (or overrode over), defaulting to 1.
         let agent_version = req.agent.version().unwrap_or(1);
         let delegate_ids = config_view
@@ -829,7 +833,7 @@ impl ManagedState {
                     ordered_vault_ids: req.vault_ids.clone(),
                 },
                 agent_id: agent_id.clone(),
-                model: resolved_model.id.clone(),
+                model: execution_model_ref.unwrap_or_else(|| self.runtime.model()),
                 runtime: published_backend_ref,
                 delegate_ids: delegate_ids.clone(),
                 toolsets: effective_toolsets,

@@ -12,6 +12,7 @@ use awaken_config_resolver::InMemoryWebhookStore;
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_protocol_managed::WorkspaceScope;
 use awaken_server::webhooks;
+use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_webhook::verify;
 use axum::Router;
 use axum::body::Body;
@@ -88,9 +89,10 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
     // workspace onto the CRUD router as the guarded edge would.
     let store = Arc::new(InMemoryWebhookStore::new());
     let secrets = Arc::new(InMemorySecretStore::new());
+    let sessions = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
     // The guarded production posture would refuse this loopback receiver (SSRF
     // pin/admission), so use the loopback assembly for the in-process e2e.
-    let (sink, crud) = webhooks::assemble_loopback(store, secrets, None);
+    let (sink, crud) = webhooks::assemble_loopback(store, secrets, None, sessions);
     let crud = crud.layer(axum::middleware::from_fn(stamp_local));
 
     // 3. Register a subscription through the REAL CRUD route; the secret comes back once.
@@ -188,7 +190,8 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
 async fn cross_tenant_access_to_a_webhook_id_is_fenced() {
     let store = Arc::new(InMemoryWebhookStore::new());
     let secrets = Arc::new(InMemorySecretStore::new());
-    let (_sink, crud) = webhooks::assemble(store, secrets, None);
+    let sessions = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let (_sink, crud) = webhooks::assemble_with_session_repo(store, secrets, None, sessions);
     let owner = crud.clone().layer(axum::middleware::from_fn(stamp_local));
     let intruder = crud.layer(axum::middleware::from_fn(stamp_intruder));
 

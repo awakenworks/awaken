@@ -3,12 +3,19 @@
 //! the flat handler AND fences cross-tenant access through the resource's
 //! ownership guard. Driven over the real assembled management router.
 
-use awaken_cli::build_ephemeral_management_router as build_management_router;
+use std::sync::Arc;
+
+use awaken_cli::build_management_router_with_model;
+use awaken_scenario_host::EchoModel;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+async fn build_management_router() -> axum::Router {
+    build_management_router_with_model(Arc::new(EchoModel), "kimi").await
+}
 
 async fn call(
     app: &axum::Router,
@@ -43,7 +50,7 @@ async fn workspace_path_addresses_and_isolates_the_agent_registry() {
         &app,
         "POST",
         "/v1/workspaces/ws_a/agents",
-        Some(json!({ "name": "a", "model": "kimi" })),
+        Some(json!({ "name": "a", "model": "default/kimi" })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{agent:?}");
@@ -94,7 +101,7 @@ async fn a_flat_management_request_is_untouched_by_the_path_middleware() {
         &app,
         "POST",
         "/v1/agents",
-        Some(json!({ "name": "flat", "model": "kimi" })),
+        Some(json!({ "name": "flat", "model": "default/kimi" })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{agent:?}");
