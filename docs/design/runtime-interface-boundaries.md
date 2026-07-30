@@ -189,7 +189,7 @@ immutable snapshot selected for the Session or carried by dispatch.
 | `ConfigService` publication command | Control | validates, compiles, and persists one `StoredPublication` before invoking registration |
 | `StoredPublication` | Control | durable publication identity, source revision, fingerprint, and immutable snapshot |
 | `ExecutableAgentRegistrar` | Control-to-Coordinator application port | registers one exact published snapshot for future Session resolution |
-| `ExecutableAgentCatalogRepository` | Coordinator | persists the rebuildable current, exact-revision, and fingerprint indexes |
+| `ExecutableAgentCatalog` | Coordinator | owns the rebuildable current, exact-revision, and fingerprint indexes; a durable adapter is pending |
 
 These roles must not import runtime loop internals or active-run control. Runtime
 must not load config records or register publications. This prevents a broad
@@ -320,7 +320,7 @@ answer different authority questions for every run:
 
 | Primary axis | Question answered | Owning boundary | Main ports |
 |---|---|---|---|
-| Configuration publication | What behavior is available to run? | Control publishes; Coordinator registers; Runtime validates and consumes the exact snapshot | external: `StoredPublication`, `ExecutableAgentRegistrar`, `ExecutableAgentCatalogRepository`; runtime: `RunResolver` |
+| Configuration publication | What behavior is available to run? | Control publishes; Coordinator registers; Runtime validates and consumes the exact snapshot | external: `StoredPublication`, `ExecutableAgentRegistrar`, `ExecutableAgentCatalog`; runtime: `RunResolver` |
 | Live control | How may an active run be steered now? | Caller/ingress requests; active run observes at safe boundaries | `RunIngress`, `LiveRunControl`, `RuntimeInputHandle` |
 | Execution | How is the resolved plan performed? | Runtime Core orchestrates; model/tool ports invoke work in-process | `RunExecutor`, `LlmExecutor`, `ToolExecutor` |
 

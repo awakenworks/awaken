@@ -16,19 +16,17 @@ mod capabilities;
 mod compaction;
 mod config_plane;
 mod config_routes;
+mod config_service;
 mod credential_reference;
-mod installed_catalog;
 mod managed_agent;
 mod managed_model_id;
 mod plugin_validation;
 mod publication;
-mod runtime_snapshot_source;
+mod registration_reconciliation;
 mod service_access;
 mod service_wiring;
 mod tool_catalog;
-mod warm_install;
 
-pub use agent_projection::ConfigServiceAgentSource;
 pub use binding_resolver::{
     ConfigServiceReconciler, ModelPublicationResolver, PublicationBindingReconciler,
     PublicationResolutionError, ResolvedPublicationModels,
@@ -38,8 +36,9 @@ pub use capabilities::{
     capabilities_router_with_source, sandbox_execution_policy_capability,
     static_runtime_capabilities,
 };
-pub use config_plane::{ConfigPlane, ConfigService};
+pub use config_plane::ConfigPlane;
 pub use config_routes::config_router;
+pub use config_service::ConfigService;
 pub use credential_reference::CredentialReferenceValidator;
 pub use managed_agent::{agent_config_from_managed, managed_from_agent_config};
 pub use managed_model_id::{ManagedModelIdError, parse_managed_model_id, render_managed_model_id};

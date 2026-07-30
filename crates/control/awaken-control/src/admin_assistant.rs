@@ -544,6 +544,7 @@ mod tests {
         ScopedToolCatalog, StaticToolCatalog,
     };
     use awaken_config_store::{DEFAULT_SCOPE, ModelSelection, SqliteConfigStore};
+    use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
     use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
     use awaken_model_catalog::{
         ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog,
@@ -655,7 +656,23 @@ mod tests {
     }
 
     fn test_config_service() -> ConfigService {
-        ConfigService::new(Arc::new(FirstOfferingResolver(catalog("m-1"))))
+        ConfigService::new(
+            Arc::new(FirstOfferingResolver(catalog("m-1"))),
+            Arc::new(LocalExecutableAgentRegistrar::new(Arc::new(
+                ExecutableAgentCatalog::new(),
+            ))),
+        )
+    }
+
+    fn test_config_service_with_catalog() -> (ConfigService, Arc<ExecutableAgentCatalog>) {
+        let executable = Arc::new(ExecutableAgentCatalog::new());
+        (
+            ConfigService::new(
+                Arc::new(FirstOfferingResolver(catalog("m-1"))),
+                Arc::new(LocalExecutableAgentRegistrar::new(executable.clone())),
+            ),
+            executable,
+        )
     }
 
     #[tokio::test]
@@ -705,7 +722,8 @@ mod tests {
             RESERVED_ADMIN_SCOPE,
             awaken_admin_assistant::admin_tool_descriptors(),
         ));
-        let service = Arc::new(test_config_service());
+        let (service, executable) = test_config_service_with_catalog();
+        let service = Arc::new(service);
         let plane = ConfigPlane::new(service.clone(), store, tools);
 
         let execution_workspace = "wrkspc_live";
@@ -717,14 +735,14 @@ mod tests {
         // while the executable is installed only in the real resource/credential
         // Workspace. The reserved namespace never becomes a synthetic Workspace.
         assert!(
-            service
-                .installed_in(RESERVED_ADMIN_SCOPE, ADMIN_ASSISTANT_AGENT_ID)
+            executable
+                .current(RESERVED_ADMIN_SCOPE, ADMIN_ASSISTANT_AGENT_ID)
                 .is_none()
         );
-        let installed = service
-            .installed_in(execution_workspace, ADMIN_ASSISTANT_AGENT_ID)
+        let installed = executable
+            .current(execution_workspace, ADMIN_ASSISTANT_AGENT_ID)
             .expect("installed");
-        let spec = &installed.resolved_spec;
+        let spec = &installed.snapshot.resolved_spec;
         assert_eq!(spec.model_binding.model_ref, "m-1");
         // It carries the admin tool descriptors (nameable because it published in
         // the reserved scope): capabilities/draft/patch/validate/explain + draft-environment.
@@ -949,9 +967,12 @@ mod tests {
         ));
         // An EMPTY catalog: the Auto assistant cannot resolve a model, so publish
         // is Unresolvable and seed returns the error.
-        let service = Arc::new(ConfigService::new(Arc::new(FirstOfferingResolver(
-            ProviderCatalog::default(),
-        ))));
+        let service = Arc::new(ConfigService::new(
+            Arc::new(FirstOfferingResolver(ProviderCatalog::default())),
+            Arc::new(LocalExecutableAgentRegistrar::new(Arc::new(
+                ExecutableAgentCatalog::new(),
+            ))),
+        ));
         let plane = ConfigPlane::new(service, store, tools);
         let err = seed_admin_assistant(&plane, DEFAULT_SCOPE, ModelSelection::Auto)
             .await
@@ -968,22 +989,25 @@ mod tests {
             RESERVED_ADMIN_SCOPE,
             awaken_admin_assistant::admin_tool_descriptors(),
         ));
-        let service = Arc::new(test_config_service());
+        let (service, executable) = test_config_service_with_catalog();
+        let service = Arc::new(service);
         let plane = ConfigPlane::new(service.clone(), store, tools);
 
         seed_admin_assistant(&plane, DEFAULT_SCOPE, ModelSelection::Auto)
             .await
             .expect("first seed");
-        let first_model = service
-            .installed_in(DEFAULT_SCOPE, ADMIN_ASSISTANT_AGENT_ID)
+        let first_model = executable
+            .current(DEFAULT_SCOPE, ADMIN_ASSISTANT_AGENT_ID)
             .unwrap()
+            .snapshot
             .resolved_spec
             .model_binding
             .model_ref
             .clone();
-        let first_tools = service
-            .installed_in(DEFAULT_SCOPE, ADMIN_ASSISTANT_AGENT_ID)
+        let first_tools = executable
+            .current(DEFAULT_SCOPE, ADMIN_ASSISTANT_AGENT_ID)
             .unwrap()
+            .snapshot
             .resolved_spec
             .tool_descriptors
             .len();
@@ -991,10 +1015,10 @@ mod tests {
         seed_admin_assistant(&plane, DEFAULT_SCOPE, ModelSelection::Auto)
             .await
             .expect("re-seed is idempotent");
-        let handle = service
-            .installed_in(DEFAULT_SCOPE, ADMIN_ASSISTANT_AGENT_ID)
+        let handle = executable
+            .current(DEFAULT_SCOPE, ADMIN_ASSISTANT_AGENT_ID)
             .unwrap();
-        let second = handle;
+        let second = handle.snapshot;
         assert_eq!(second.resolved_spec.model_binding.model_ref, first_model);
         assert_eq!(second.resolved_spec.tool_descriptors.len(), first_tools);
     }

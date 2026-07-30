@@ -1,0 +1,18 @@
+[package]
+name = "awaken-executable-agent-catalog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-executable-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-session-contract.workspace = true
+awaken-resource-contract.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

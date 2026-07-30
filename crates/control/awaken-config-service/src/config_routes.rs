@@ -4,6 +4,7 @@
 //! only binds request scope, maps wire JSON, and translates outcomes to HTTP.
 
 use awaken_config_store::{ConfigWrite, DEFAULT_SCOPE};
+use awaken_executable_agent_contract::ExecutableAgentRegistrationError;
 use awaken_tenancy::{ExecutionWorkspace, ScopeId};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -115,16 +116,33 @@ async fn list_configs(
     let execution = publication_workspace(&scope, execution.as_ref());
     match plane.list(&scope).await {
         Ok(configs) => {
-            let data: Vec<Value> = configs
-                .into_iter()
-                .map(|config| {
-                    let published = plane
-                        .service()
-                        .installed_in(execution.unwrap_or(scope.as_str()), &config.id)
-                        .is_some();
-                    managed_from_agent_config(&config, published)
-                })
-                .collect();
+            let _execution_workspace = execution.unwrap_or(scope.as_str());
+            let mut data = Vec::with_capacity(configs.len());
+            for config in configs {
+                let versioned = match plane.get_versioned(&scope, &config.id).await {
+                    Ok(Some(versioned)) => versioned,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({ "error": error })),
+                        );
+                    }
+                };
+                let published = match plane
+                    .has_published_revision(&scope, &config.id, versioned.revision)
+                    .await
+                {
+                    Ok(published) => published,
+                    Err(error) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({ "error": error })),
+                        );
+                    }
+                };
+                data.push(managed_from_agent_config(&config, published));
+            }
             (StatusCode::OK, Json(json!({ "data": data })))
         }
         Err(error) => (
@@ -143,11 +161,19 @@ pub(crate) async fn get_config(
     let scope = request_scope(scope);
     match plane.get_versioned(&scope, &id).await {
         Ok(Some(versioned)) => {
-            let execution = publication_workspace(&scope, execution.as_ref());
-            let published = plane
-                .service()
-                .installed_in(execution.unwrap_or(scope.as_str()), &id)
-                .is_some();
+            let _execution_workspace = publication_workspace(&scope, execution.as_ref());
+            let published = match plane
+                .has_published_revision(&scope, &id, versioned.revision)
+                .await
+            {
+                Ok(published) => published,
+                Err(error) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": error })),
+                    );
+                }
+            };
             let mut body = managed_from_agent_config(&versioned.config, published);
             body.as_object_mut()
                 .expect("managed config is an object")
@@ -276,6 +302,24 @@ pub(crate) async fn publish(
             StatusCode::CONFLICT,
             Json(json!({ "error": error.to_string() })),
         ),
+        Err(
+            error @ PublishError::Registration(
+                ExecutableAgentRegistrationError::Unavailable(_)
+                | ExecutableAgentRegistrationError::Storage(_),
+            ),
+        ) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": error.to_string() })),
+        ),
+        Err(
+            error @ PublishError::Registration(
+                ExecutableAgentRegistrationError::Invalid(_)
+                | ExecutableAgentRegistrationError::Conflict(_),
+            ),
+        ) => (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": error.to_string() })),
+        ),
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": error.to_string() })),
@@ -299,7 +343,7 @@ mod publication_projection_tests {
     use awaken_config_store::SqliteConfigStore;
 
     use super::*;
-    use crate::config_plane::resource_prompt_tests::{
+    use crate::config_service::resource_prompt_tests::{
         agent_config, failing_scoped_plane, test_service,
     };
 

@@ -32,6 +32,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Role;
+use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
 use awaken_protocol_managed::ManagedState;
 use awaken_provider_genai::{AdapterKind, GenaiExecutor};
 use awaken_runtime_contract::StaticPublishedAgentSnapshots;
@@ -1782,9 +1783,15 @@ pub async fn build_config_router() -> Router {
         .expect("put offering");
     // The service is scope-free (ADR-0051); `ConfigPlane` is the scope edge that binds
     // the request scope (a `ScopedConfig` registry + the scope's tool catalog) onto it.
-    let service = Arc::new(ConfigService::new(Arc::new(
-        model_publication::ScenarioHostModelResolver::new(catalog_repo.clone()),
-    )));
+    let executable_agent_catalog = Arc::new(ExecutableAgentCatalog::new());
+    let service = Arc::new(ConfigService::new(
+        Arc::new(model_publication::ScenarioHostModelResolver::new(
+            catalog_repo.clone(),
+        )),
+        Arc::new(LocalExecutableAgentRegistrar::new(
+            executable_agent_catalog.clone(),
+        )),
+    ));
     let plane = awaken_runtime_host::ConfigPlane::new(service.clone(), store, tools);
     // The management tool executables, backed by real ports (D3/D4): the capability
     // reader reads the shared catalog + advertised tools; the validator runs the same
@@ -1824,7 +1831,8 @@ pub async fn build_config_router() -> Router {
     );
     let host = resource_host_with_deployment(model, model_ref, deployment)
         .with_local_workspace(platform_workspace.clone())
-        .with_config_service(service.clone())
+        .with_agent_publications(executable_agent_catalog.clone())
+        .with_agent_resource_references(executable_agent_catalog.clone())
         .with_admin_tools(admin_execs)
         .with_remote_attempt_executor(awaken_server::a2a_attempt_executor(None));
     // The reserved value owns only configuration/tool visibility. Install the
@@ -1849,15 +1857,12 @@ pub async fn build_config_router() -> Router {
     // Workspace-path addressing (ADR-0048/0052 D2): `/v1/workspaces/{ws}/config/...`
     // is rewritten to the flat config route and stamped with `{ws}` as the scope, so
     // the reserved admin scope is reachable and the tenant/default scope is fenced.
-    // Build the managed state explicitly (as `mount` does) but wire the config-plane
-    // agent source — the SAME `ConfigServiceAgentSource(service)` that `/v1/agents`
-    // projects from — so a session inheriting a published agent's model reads that one
-    // config truth rather than the host default (reuse, no second source).
+    // Build the managed state explicitly (as `mount` does) and use the same
+    // Coordinator catalog for Session configuration and runtime publication reads.
     let host = Arc::new(host);
     let managed_state = Arc::new(
-        ManagedState::new(ManagedHost::new(host.clone())).with_config_source(Arc::new(
-            awaken_runtime_host::ConfigServiceAgentSource(service.clone()),
-        )),
+        ManagedState::new(ManagedHost::new(host.clone()))
+            .with_config_source(executable_agent_catalog),
     );
     let flat = mount_with_managed(host, managed_state)
         .merge(config_router(plane))

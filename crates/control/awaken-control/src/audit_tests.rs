@@ -6,6 +6,7 @@ use awaken_config_service::{
     StaticToolCatalog,
 };
 use awaken_config_store::{ModelSelection, SqliteConfigStore};
+use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_tenancy::{ScopeId, WorkspaceScope};
 use axum::middleware::Next;
@@ -40,7 +41,12 @@ impl ModelPublicationResolver for TestModelResolver {
 
 fn audit_plane() -> ConfigPlane {
     ConfigPlane::new(
-        Arc::new(ConfigService::new(Arc::new(TestModelResolver))),
+        Arc::new(ConfigService::new(
+            Arc::new(TestModelResolver),
+            Arc::new(LocalExecutableAgentRegistrar::new(Arc::new(
+                ExecutableAgentCatalog::new(),
+            ))),
+        )),
         Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
         Arc::new(StaticToolCatalog(vec![])),
     )

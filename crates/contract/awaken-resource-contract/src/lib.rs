@@ -35,8 +35,8 @@ pub use input::{
     SkillId, SkillVersionId,
 };
 pub use lifecycle::{
-    AcquireResourceReclamationOutcome, PutResourcePurgeOutcome, ResourceKind,
-    ResourceLifecycleRepository, ResourcePhysicalReclaimer, ResourcePurgeError,
+    AcquireResourceReclamationOutcome, AgentResourceReferenceSource, PutResourcePurgeOutcome,
+    ResourceKind, ResourceLifecycleRepository, ResourcePhysicalReclaimer, ResourcePurgeError,
     ResourcePurgeEvidence, ResourcePurgeGuard, ResourcePurgeIntent, ResourcePurgeReceipt,
     ResourcePurgeRepository, ResourcePurgeScheduler, ResourcePurgeStatus, ResourceReclamationFence,
     ResourceReference, ResourceReferenceIndex, ResourceReferenceKind, ResourceReferenceRecord,

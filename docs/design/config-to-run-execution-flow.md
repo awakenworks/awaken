@@ -69,13 +69,15 @@ flowchart TD
     I["Return validation or conflict error; no executable change"]
     J["Existing: persist StoredPublication"]
 
-    K["New boundary: ExecutableAgentRegistrar.register"]
-    L["New boundary: CoordinatorExecutableAgentClient"]
-    M["New boundary: RegisterExecutableAgentHandler"]
-    N["Modified: Coordinator ExecutableAgentCatalogRepository"]
-    O{"Registration acknowledged?"}
-    P["Return publication success with id and fingerprint"]
-    Q["Return retryable unavailability; publication remains durable"]
+    K["Added: ExecutableAgentRegistrar.register"]
+    KA{"Composition mode"}
+    KB["Added: LocalExecutableAgentRegistrar"]
+    KC["Pending: CoordinatorExecutableAgentClient"]
+    KD["Pending: RegisterExecutableAgentHandler"]
+    KE["Added: ExecutableAgentCatalog; durable adapter pending"]
+    KF{"Registration acknowledged?"}
+    KG["Return publication success with id and fingerprint"]
+    KH["Return retryable unavailability; publication remains durable"]
 
     R["Client creates Deployment"]
     S["Existing: resolve and freeze exact published Agent version"]
@@ -102,21 +104,25 @@ flowchart TD
     B --> E
     F --> G --> H
     H -- No --> I
-    H -- Yes --> J --> K --> L --> M --> N --> O
-    O -- Yes --> P
-    O -- No --> Q
-    Q -. idempotent retry or reconciliation .-> K
-    P --> R --> S --> T --> U --> V --> W --> X --> Y --> Z --> AA
+    H -- Yes --> J --> K --> KA
+    KA -- AllInOne --> KB --> KE
+    KA -- Distributed --> KC --> KD --> KE
+    KE --> KF
+    KF -- Yes --> KG
+    KF -- No --> KH
+    KH -. idempotent retry or reconciliation .-> K
+    KG --> R --> S --> T --> U --> V --> W --> X --> Y --> Z --> AA
     AA --> AB --> AC --> AD --> AE --> AF
     AE --> AG --> AH
 ```
 
 ### Publication and registration
 
-The current publication compiler, revision fence, `StoredPublication`, and
-`ExecutableAgentSnapshot` are reused. The current direct write into
-`InstalledAgentCatalog` is the seam being replaced. Control calls one registrar;
-Coordinator persists the rebuildable executable projection and acknowledges it.
+The publication compiler, revision fence, `StoredPublication`, and
+`ExecutableAgentSnapshot` are reused. The former Config Service-owned catalog
+write has been removed. Control now calls one registrar; the AllInOne adapter
+updates the single Coordinator catalog. The distributed client, handler, and
+durable catalog adapter remain pending.
 
 Registration identity is `(workspace_id, agent_id, source_revision)` with the
 snapshot fingerprint as the conflict check. The same registration may be
@@ -162,8 +168,8 @@ flowchart TD
     J["Existing: enqueue RunDispatch with snapshot and secret-free envelopes"]
 
     K["Existing: authenticated Worker claim with lease epoch"]
-    L["New boundary: per-kind Resource realization"]
-    M["New boundary: exact credential materialization"]
+    L["Pending boundary: per-kind Resource realization"]
+    M["Pending boundary: exact credential materialization"]
     N["Existing: Sandbox creation and repository realization"]
     O["Existing: Runtime model, tool, child Run, and HITL execution"]
     P["Existing: best-effort preview frames"]
@@ -267,20 +273,31 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - authenticated Worker registration, claim, recovery, commit, and settle;
 - committed-event projection and HTTP/SSE response behavior.
 
-### Modified
+### Modified (implemented)
 
 - publication calls a registrar rather than a process-local catalog write;
-- executable catalog storage moves to Coordinator ownership and becomes durable;
+- executable catalog reads move to one Coordinator-owned projection;
 - startup publication recovery reuses registration;
+- Runtime Host Resource-reference, snapshot, Session-view, and Hand reads no
+  longer depend on Config Service;
+- disable/archive emits a monotonic withdrawal while exact history remains
+  addressable;
+- registration availability/storage failures return HTTP 503 after durable
+  publication persistence.
+
+### New boundary code (implemented)
+
+- `ExecutableAgentRegistrar`, its command/outcome/error values, and withdrawal;
+- `ExecutableAgentCatalog` and `LocalExecutableAgentRegistrar`;
+- `AgentResourceReferenceSource` as a narrow read port.
+
+### Required remaining ADR-0071 work
+
+- Coordinator registration client, handler, and durable catalog adapter;
 - Deployment launch carries `deployment_run_id` and supports a remote adapter;
 - Worker resource composition uses per-kind network adapters rather than shared
   authority-store implementations;
-- deployment configuration and startup checks enforce data ownership.
-
-### New boundary code
-
-- `ExecutableAgentRegistrar`, local adapter, Coordinator client, and handler;
-- Coordinator-backed `ExecutableAgentCatalogRepository` adapter;
+- deployment configuration and startup checks enforce data ownership;
 - Coordinator Deployment Session client and handler;
 - per-kind File, Memory, Skill, and credential clients/handlers;
 - service-data-ownership and architecture-vocabulary fitness checks.

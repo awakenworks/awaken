@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
 use awaken_protocol_managed::{EnvironmentState, ManagedState, VaultState};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_host::{
@@ -249,9 +250,9 @@ struct ProcessAssemblyOptions {
         Option<Arc<dyn awaken_runtime_host::PluginPublicationResolver>>,
 }
 
-struct ConfigDeclaredHandSource(Arc<ConfigService>);
+struct CatalogDeclaredHandSource(Arc<ExecutableAgentCatalog>);
 
-impl awaken_server::placement::DeclaredHandSource for ConfigDeclaredHandSource {
+impl awaken_server::placement::DeclaredHandSource for CatalogDeclaredHandSource {
     fn declared_hand(&self, agent_id: &str) -> Result<Option<String>, String> {
         self.0.declared_hand_for_agent(agent_id)
     }
@@ -1265,25 +1266,36 @@ async fn assemble_process_router(
                 web_search_providers.clone(),
             ))
         });
+    // One Coordinator-owned executable projection serves every execution read.
+    // The local registrar is the explicit AllInOne transport adapter; distributed
+    // composition replaces only this adapter, not the catalog or publication path.
+    let executable_agent_catalog = Arc::new(ExecutableAgentCatalog::new());
+    let executable_agent_registrar = Arc::new(LocalExecutableAgentRegistrar::new(
+        executable_agent_catalog.clone(),
+    ));
     let config_service = Arc::new(
-        ConfigService::new(model_wiring.publication_resolver)
-            .with_credential_reference_validator(Arc::new(
-                awaken_control::CredentialRevisionValidator::new(credentials.clone()),
-            ))
-            .with_plugin_publication_resolver(web_search_publication_resolver)
-            .with_resources(resource_store.clone()),
+        ConfigService::new(
+            model_wiring.publication_resolver,
+            executable_agent_registrar,
+        )
+        .with_credential_reference_validator(Arc::new(
+            awaken_control::CredentialRevisionValidator::new(credentials.clone()),
+        ))
+        .with_plugin_publication_resolver(web_search_publication_resolver)
+        .with_resources(resource_store.clone()),
     );
-    // Warm-load the installed catalog from the durable config store BEFORE the plane
-    // takes ownership, so a fresh process (a restart, or a server that did not author
-    // the publish) repopulates `installed`. A no-op on the in-memory path.
+    // Re-submit durable Control publications through the same registration port
+    // used by live publication. The catalog is a rebuildable Coordinator projection,
+    // never a second publication source of truth.
     let warmed = config_service
-        .warm_install(
+        .reconcile_registrations(
             config.as_ref(),
             &awaken_tenancy::ScopeId::from(platform_workspace.as_str()),
         )
-        .await;
+        .await
+        .unwrap_or_else(|error| panic!("executable Agent registration recovery failed: {error}"));
     if warmed > 0 {
-        eprintln!("config: warm-loaded {warmed} published agent(s) from the durable store");
+        eprintln!("config: reconciled {warmed} durable Agent publication(s)");
     }
     let plane = ConfigPlane::new(config_service.clone(), config, tool_catalog);
     // Seed the in-console Admin Assistant as an ordinary published agent in the
@@ -1471,11 +1483,12 @@ async fn assemble_process_router(
         .with_remote_attempt_executor(awaken_server::a2a_attempt_executor(Some(
             credential_materializer.clone(),
         )))
-        .with_config_service(config_service.clone())
+        .with_agent_publications(executable_agent_catalog.clone())
+        .with_agent_resource_references(executable_agent_catalog.clone())
         .with_admin_tools(admin_execs);
     host_builder = host_builder.with_tool_executor_provider(Arc::new(
         awaken_server::placement::ConfigToolExecutorProvider::from_declared_hands(
-            Arc::new(ConfigDeclaredHandSource(config_service.clone())),
+            Arc::new(CatalogDeclaredHandSource(executable_agent_catalog.clone())),
             hand_executors,
         ),
     ));
@@ -1552,9 +1565,7 @@ async fn assemble_process_router(
         .with_resource_purge_scheduler(host.clone())
         // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
         // published agent's model sees the authoritative config-plane truth (M2).
-        .with_config_source(Arc::new(awaken_runtime_host::ConfigServiceAgentSource(
-            config_service.clone(),
-        )))
+        .with_config_source(executable_agent_catalog)
         .with_session_repo(sessions)
         .with_lifecycle_sink(webhook_sink),
     );

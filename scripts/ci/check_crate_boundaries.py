@@ -7,6 +7,7 @@ from pathlib import Path
 import _arch_fitness
 import _coordinator_authority_fitness
 import _crate_dependency_fitness
+from _executable_agent_boundary import EXECUTABLE_AGENT_ALLOWED_DEPS
 import _provider_env_fitness
 import _resource_plane_fitness
 from _sandbox_policy_boundary import SANDBOX_POLICY_ALLOWED_DEPS
@@ -23,6 +24,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     **SANDBOX_POLICY_ALLOWED_DEPS,
     **MANAGED_ROUTERS_ALLOWED_DEPS,
     **MANAGED_PROTOCOL_ALLOWED_DEPS,
+    **EXECUTABLE_AGENT_ALLOWED_DEPS,
     # zeroize backs RedactedString's zero-on-drop (ADR-0043); a leaf crypto-hygiene
     # primitive, not a model/provider SDK.
     "awaken-agent-contract": {"serde", "serde_json", "thiserror", "async-trait", "tokio", "zeroize", "http", "schemars"},
@@ -236,6 +238,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # the config service + CRUD/capabilities routers, the model-binding resolver, and the
     # scoped tool catalog — it names neither SharedHost nor run execution.
     "awaken-config-service": {
+        "awaken-executable-agent-contract",
+        "awaken-executable-agent-catalog",
         "awaken-runtime-contract",
         "awaken-session-contract",
         "awaken-config-store",
@@ -1359,6 +1363,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-authz-enforce",
         "awaken-config-resolver",
         "awaken-config-store",
+        "awaken-executable-agent-catalog",
         "awaken-connection-plan",
         "awaken-credential-vault",
         "awaken-data-subject",
@@ -1527,6 +1532,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-session-contract",
+        "awaken-executable-agent-catalog",
         "rusqlite",
         "async-trait",
         "serde",
@@ -1561,6 +1567,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-resource-reclaimer",
         "awaken-file-store", "awaken-memory-store", "awaken-resource-contract",
         "awaken-session-contract", "awaken-session-store",
+        "awaken-executable-agent-catalog",
         "awaken-sandbox-memoryd",
         # The ACP executor: the composition root wires an `acp:*` backend into the Serve
         # host by config (AWAKEN_ACP_ARGV), which the runtime-host plane does not do itself.

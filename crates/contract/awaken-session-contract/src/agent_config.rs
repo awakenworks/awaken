@@ -4,7 +4,7 @@
 /// managed wire shows. A neutral view so `/v1/agents` presents an agent authored on
 /// the config plane (`/v1/config/agents`) as a *projection* of that single truth
 /// rather than a second copy — the "retreat to projection" direction (ADR-0043).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentMcpServerView {
     pub name: String,
     pub url: String,
@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 /// Exact model-visible contract for a tool executed by the protocol client.
 /// JSON Schema remains open by definition; identity, description, and ownership
 /// are otherwise typed and frozen in the published Agent snapshot.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentClientToolView {
     pub name: String,
     pub description: String,
@@ -254,6 +254,7 @@ pub fn resolved_toolsets(policies: &[awaken_agent_contract::ToolsetPolicy]) -> V
         .collect()
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AgentConfigView {
     /// Canonical Managed model id exposed to clients and used only for equality
     /// checks at the protocol boundary.
@@ -285,7 +286,7 @@ pub struct AgentConfigView {
     pub environment: Option<AgentEnvironmentBindingView>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentEnvironmentBindingView {
     pub environment_id: String,
     pub revision: u64,

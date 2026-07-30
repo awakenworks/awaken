@@ -56,6 +56,13 @@ impl ResourceTarget {
     }
 }
 
+/// Read-only Coordinator projection of current Agent bindings that prevent
+/// physical Resource reclamation. The caller supplies an already-authorized,
+/// intrinsic target; this port carries no IAM or authoring-store authority.
+pub trait AgentResourceReferenceSource: Send + Sync {
+    fn agents_referencing(&self, target: &ResourceTarget) -> Vec<String>;
+}
+
 /// Intrinsic references which postpone physical deletion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

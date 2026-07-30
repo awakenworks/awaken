@@ -12,6 +12,7 @@ license.workspace = true
 # execution (the control ⊥ execution invariant). The data-plane host re-exports it
 # for the composition root; awaken-control depends on it directly.
 [dependencies]
+awaken-executable-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-ext-permission = { workspace = true }
 awaken-config-store = { workspace = true }
@@ -28,6 +29,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 axum = { version = "0.8", features = ["multipart"] }
+
+[dev-dependencies]
+awaken-executable-agent-catalog.workspace = true
 
 [lints]
 workspace = true

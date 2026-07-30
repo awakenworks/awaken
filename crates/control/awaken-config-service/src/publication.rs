@@ -1,6 +1,7 @@
 //! Configuration publication preparation and values shared by the service and HTTP edge.
 
 use awaken_config_store::{AgentConfig, AgentConfigRevision, ModelSelection};
+use awaken_executable_agent_contract::ExecutableAgentRegistrationError;
 use awaken_runtime_contract::ResolutionManifest;
 
 use crate::binding_resolver::{
@@ -25,6 +26,8 @@ pub enum PublishError {
     Compile(String),
     #[error("{0}")]
     Store(String),
+    #[error("publication persisted but executable registration failed: {0}")]
+    Registration(ExecutableAgentRegistrationError),
 }
 
 /// A compile problem projected onto the authored config field that caused it.

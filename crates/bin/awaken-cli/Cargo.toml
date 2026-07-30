@@ -36,6 +36,7 @@ awaken-file-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-memory-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-resource-contract = { workspace = true }
 awaken-session-contract = { workspace = true }
+awaken-executable-agent-catalog = { workspace = true }
 awaken-session-store = { workspace = true }
 awaken-sandbox-memoryd = { workspace = true }
 # The ACP executor (AcpLaunch/AcpRunExecutor) for `acp:*` threads — wired by config

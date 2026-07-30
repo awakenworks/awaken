@@ -42,6 +42,7 @@ awaken-runtime-contract = { path = "crates/runtime/awaken-runtime-contract" }
 awaken-tenancy = { path = "crates/contract/awaken-tenancy" }
 awaken-session-contract = { path = "crates/contract/awaken-session-contract" }
 awaken-deployment-contract = { path = "crates/contract/awaken-deployment-contract" }
+awaken-executable-agent-contract = { path = "crates/server/awaken-executable-agent-contract" }
 awaken-resource-contract = { path = "crates/contract/awaken-resource-contract" }
 awaken-observability = { path = "crates/runtime/awaken-observability" }
 awaken-memory-store = { path = "crates/resources/awaken-memory-store" }
@@ -122,6 +123,7 @@ awaken-local-process = { path = "crates/worker/awaken-local-process" }
 awaken-sandbox-policy-store = { path = "crates/server/awaken-sandbox-policy-store" }
 awaken-worker-contract = { path = "crates/worker/awaken-worker-contract" }
 awaken-worker-registry = { path = "crates/server/awaken-worker-registry" }
+awaken-executable-agent-catalog = { path = "crates/server/awaken-executable-agent-catalog" }
 awaken-agent-channel = { path = "crates/worker/awaken-agent-channel" }
 awaken-acp-contract = { path = "crates/worker/awaken-acp-contract" }
 awaken-connection-plan = { path = "crates/worker/awaken-connection-plan" }

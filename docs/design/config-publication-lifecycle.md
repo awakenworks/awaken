@@ -18,7 +18,7 @@ AgentConfig revision
   -> compile_published
   -> StoredPublication (durable)
   -> ExecutableAgentRegistrar.register
-                                          -> ExecutableAgentCatalog.upsert
+                                          -> ExecutableAgentCatalog
                                           -> current/exact/fingerprint reads
 ```
 
@@ -58,6 +58,11 @@ pub trait ExecutableAgentRegistrar: Send + Sync {
         &self,
         registration: ExecutableAgentRegistration,
     ) -> Result<ExecutableAgentRegistrationOutcome, ExecutableAgentRegistrationError>;
+
+    async fn withdraw(
+        &self,
+        withdrawal: ExecutableAgentWithdrawal,
+    ) -> Result<ExecutableAgentWithdrawalOutcome, ExecutableAgentRegistrationError>;
 }
 ```
 
@@ -69,6 +74,8 @@ workspace_id
 agent_id
 source_revision
 ExecutableAgentSnapshot, including its fingerprint
+AgentConfigView frozen from the same revision
+optional declared Hand placement
 ```
 
 The identity and outcomes are:
@@ -84,7 +91,7 @@ The identity and outcomes are:
 A natural remote representation is an idempotent `PUT` keyed by Workspace,
 Agent, and source revision. Transport naming is secondary to the port contract.
 
-## Existing, Modified, And New Scope
+## Implemented Scope
 
 ### Reused unchanged
 
@@ -92,16 +99,15 @@ Agent, and source revision. Transport naming is secondary to the port contract.
   `StoredPublication` persistence in `awaken-config-service` and
   `awaken-config-store`;
 - `ExecutableAgentSnapshot` and its fingerprinted resolved data;
-- current, exact-revision, and fingerprint lookup semantics already represented
-  by `InstalledAgentCatalog`;
 - the existing publication reconciler trigger and durable publication history.
 
 ### Modified
 
 - `ConfigService::publish` calls `ExecutableAgentRegistrar` after durable
   publication instead of directly mutating a process-local catalog;
-- `InstalledAgentCatalog` becomes the Coordinator-owned
-  `ExecutableAgentCatalog` backed by an `ExecutableAgentCatalogRepository`;
+- the execution projection is now the Coordinator-owned
+  `ExecutableAgentCatalog`; all runtime, Session, Hand, and Resource-reference
+  reads use that one catalog;
 - startup rehydration uses the same `register` port instead of a separate local
   warm-install mechanism;
 - the publish HTTP adapter distinguishes validation/conflict failures from a
@@ -109,11 +115,17 @@ Agent, and source revision. Transport naming is secondary to the port contract.
 
 ### New boundary code
 
-- `ExecutableAgentRegistrar`;
-- `CoordinatorExecutableAgentClient`;
-- `RegisterExecutableAgentHandler`;
-- the persistence adapter behind `ExecutableAgentCatalogRepository`;
-- a local registrar adapter for AllInOne composition.
+- `ExecutableAgentRegistrar` with registration and withdrawal commands;
+- `ExecutableAgentCatalog` as the one rebuildable execution projection;
+- `LocalExecutableAgentRegistrar` for AllInOne composition;
+- `AgentResourceReferenceSource`, allowing Resource reclamation to query the
+  same execution projection without depending on Config Service.
+
+### Required remaining boundary code
+
+- `CoordinatorExecutableAgentClient` and `RegisterExecutableAgentHandler`;
+- a durable Coordinator adapter for `ExecutableAgentCatalog`;
+- split-role composition and registration reconciliation scheduling.
 
 No whole-catalog command, second publication model, generic RPC framework, or
 parallel compatibility path is added.

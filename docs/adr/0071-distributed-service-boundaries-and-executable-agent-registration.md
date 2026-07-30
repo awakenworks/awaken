@@ -9,9 +9,10 @@
 
 ## Context
 
-The implemented publication path persists a `StoredPublication` and then writes
-the same `ExecutableAgentSnapshot` into a process-local `InstalledAgentCatalog`.
-The implemented Deployment adapter likewise calls the ordinary Managed Session
+Before this ADR's first implementation slice, publication persisted a
+`StoredPublication` and then wrote the same `ExecutableAgentSnapshot` into a
+process-local catalog owned by Config Service. The Deployment adapter still
+calls the ordinary Managed Session
 creation command in the same process. Remote Workers already use authenticated,
 claim-fenced dispatch and commit transports, but publication availability,
 Deployment-to-Session launch, exact credential materialization, and per-kind
@@ -106,6 +107,29 @@ Control owns authoring and publication stores. Coordinator owns executable Agent
 registration, Deployment, Session, dispatch, and commit stores. Resource
 providers own their content. Worker owns only ephemeral execution state and must
 not receive Control or Coordinator database connections.
+
+## Implementation Status
+
+The first registration slice is complete:
+
+- `ConfigService::publish` persists first and calls the sole
+  `ExecutableAgentRegistrar`; registration availability/storage failures map to
+  retryable HTTP 503 responses while the publication remains durable;
+- `ExecutableAgentRegistration` reuses the existing immutable snapshot and
+  `AgentConfigView`, and carries only boundary identity plus Hand placement;
+- `ExecutableAgentWithdrawal` preserves exact history while removing current
+  availability after disable/archive;
+- `ExecutableAgentCatalog` is the single Coordinator execution projection for
+  current, exact-revision, fingerprint, Session-view, Hand, and Resource-reference
+  reads;
+- AllInOne and scenario composition use `LocalExecutableAgentRegistrar`, and
+  startup recovery replays durable publications through that same port;
+- the superseded process-local catalog, runtime projection wrapper, and separate
+  warm-install path have been removed.
+
+The split-deployment client/handler and durable Coordinator catalog adapter,
+remote Deployment Session launch, exact Credential/Resource adapters, and
+role-aware data-ownership checks remain subsequent ADR-0071 slices.
 
 ## Consequences
 

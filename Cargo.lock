@@ -360,6 +360,7 @@ dependencies = [
  "awaken-connection-plan",
  "awaken-control",
  "awaken-credential-vault",
+ "awaken-executable-agent-catalog",
  "awaken-ext-mcp",
  "awaken-file-store",
  "awaken-iam-client",
@@ -427,6 +428,8 @@ dependencies = [
  "async-trait",
  "awaken-config-resolver",
  "awaken-config-store",
+ "awaken-executable-agent-catalog",
+ "awaken-executable-agent-contract",
  "awaken-ext-permission",
  "awaken-resource-contract",
  "awaken-runtime-contract",
@@ -496,6 +499,7 @@ dependencies = [
  "awaken-config-store",
  "awaken-credential-vault",
  "awaken-data-subject",
+ "awaken-executable-agent-catalog",
  "awaken-iam-contract",
  "awaken-iam-core",
  "awaken-iam-host",
@@ -614,6 +618,31 @@ dependencies = [
  "awaken-runtime-contract",
  "reqwest 0.12.28",
  "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-executable-agent-catalog"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-executable-agent-contract",
+ "awaken-resource-contract",
+ "awaken-runtime-contract",
+ "awaken-session-contract",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-executable-agent-contract"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-runtime-contract",
+ "awaken-session-contract",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -1513,6 +1542,7 @@ dependencies = [
  "awaken-control",
  "awaken-credential-vault",
  "awaken-data-subject",
+ "awaken-executable-agent-catalog",
  "awaken-ext-builtin-tools",
  "awaken-iam-contract",
  "awaken-iam-core",

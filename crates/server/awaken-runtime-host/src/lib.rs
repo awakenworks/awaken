@@ -141,9 +141,7 @@ pub use crate::config::{
     authorable_tools, block_text, platform_plugin_capabilities,
     platform_plugin_capabilities_with_web_search,
 };
-pub use crate::config_plane::{
-    ConfigPlane, ConfigService, ConfigServiceAgentSource, PublishError, config_router,
-};
+pub use crate::config_plane::{ConfigPlane, ConfigService, PublishError, config_router};
 pub use crate::tool_catalog::{
     RESERVED_ADMIN_SCOPE, ScopedToolCatalog, StaticToolCatalog, ToolCatalogSource,
 };
