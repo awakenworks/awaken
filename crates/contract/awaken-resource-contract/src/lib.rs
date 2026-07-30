@@ -259,6 +259,13 @@ pub trait SkillStore: Send + Sync {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<SkillDefinition>, SkillStoreError>;
+    /// Return one atomic, Skill-id-sorted snapshot of every visible aggregate's
+    /// current immutable version. Callers must not reconstruct this view with
+    /// `list_definitions` followed by per-Skill reads.
+    async fn snapshot_latest_versions(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<SkillVersion>, SkillStoreError>;
     async fn version(
         &self,
         workspace_id: &str,

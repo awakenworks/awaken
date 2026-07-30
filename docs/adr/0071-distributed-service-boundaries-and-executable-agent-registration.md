@@ -235,6 +235,13 @@ The mutable Memory boundary is complete:
 Immutable Skill bundle access and the remaining Coordinator/Resource
 store-ownership separation remain subsequent ADR-0071 slices.
 
+Before adding the Skill transport, delivered-catalog refresh was consolidated
+onto `SkillStore::snapshot_latest_versions`. The former
+`list_definitions`-then-`version(latest)` reconstruction could mix concurrent
+publication generations and is no longer an execution path. Every backend now
+owns one Skill-id-ordered snapshot operation; this extends the existing port and
+adds no second Skill model.
+
 ## Consequences
 
 - The same application ports support AllInOne and distributed deployment.

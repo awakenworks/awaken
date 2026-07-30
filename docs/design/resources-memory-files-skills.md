@@ -335,6 +335,12 @@ claim epoch guard, matches the frozen manifest, validates live Resource state,
 and rejects write-back for read-only input. The existing copy/harvest algorithm
 then supplies CAS conflict and delete-if-match behavior across the network.
 
+The Skill store's latest-version view is likewise one backend-owned atomic
+operation. `SkillCatalog` calls `snapshot_latest_versions`; it no longer rebuilds
+that view by listing definitions and fetching each mutable latest pointer in a
+separate operation. Exact pinned bundle loading remains the subsequent network
+boundary.
+
 `ResourcePlane` selects local or remote implementations at the composition root;
 it does not own a Resource aggregate. A separately deployed provider retains its
 per-kind contract and data authority. The design does not add a universal

@@ -324,24 +324,7 @@ impl SkillCatalog {
         let Some(store) = self.store.as_ref() else {
             return Ok(());
         };
-        let loaded = async {
-            let definitions = store.list_definitions(workspace).await?;
-            let mut snapshot = Vec::with_capacity(definitions.len());
-            for definition in definitions {
-                let version = store
-                    .version(workspace, definition.id.as_str(), definition.latest_version)
-                    .await?
-                    .ok_or_else(|| {
-                        SkillStoreError::Storage(format!(
-                            "Skill {} latest version {} is missing",
-                            definition.id, definition.latest_version
-                        ))
-                    })?;
-                snapshot.push(version);
-            }
-            Ok::<_, SkillStoreError>(snapshot)
-        }
-        .await;
+        let loaded = store.snapshot_latest_versions(workspace).await;
         match loaded {
             Ok(snapshot) => {
                 self.cache

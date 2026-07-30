@@ -54,6 +54,16 @@ impl awaken_resource_contract::SkillStore for UnavailableSkillStore {
         Ok(Vec::new())
     }
 
+    async fn snapshot_latest_versions(
+        &self,
+        _workspace_id: &str,
+    ) -> Result<
+        Vec<awaken_resource_contract::SkillVersion>,
+        awaken_resource_contract::SkillStoreError,
+    > {
+        Ok(Vec::new())
+    }
+
     async fn version(
         &self,
         _workspace_id: &str,
