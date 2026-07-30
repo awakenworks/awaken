@@ -236,6 +236,21 @@ export interface Environment {
   updated_at: string;
 }
 
+export type SandboxProvisioning = "eager" | "on_tool_use";
+export interface SandboxExecutionPolicy {
+  id: string;
+  version: number;
+  config: SandboxConfig;
+  provisioning: SandboxProvisioning;
+  disabled: boolean;
+}
+export interface SandboxPolicyBinding {
+  environment_id: string;
+  policy_id: string;
+  version: number;
+  provisioning: SandboxProvisioning;
+}
+
 /** An environment's durable work queue state (GET /v1/environments/:id/work/stats):
  * `depth` = items queued (waiting to be claimed), `pending` = items a worker has
  * claimed and is processing. */
