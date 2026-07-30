@@ -183,8 +183,31 @@ The exact Worker-private Credential boundary is also complete:
 - until the per-kind Resource clients are installed, the Worker omits Session
   Resource and Repository credential capabilities so placement fails closed.
 
-Per-kind Resource adapters and the remaining Coordinator/Resource
-store-ownership separation remain subsequent ADR-0071 slices.
+The immutable File boundary is complete:
+
+- `FileContentSource` is the single per-kind materialization port used by local
+  and distributed staging; the former direct `FileCatalog`/`FileStore` staging
+  branch was consolidated into `StoreFileContentSource`;
+- `HttpFileContentSource` sends the exact Workspace-scoped public `FileId` and
+  dispatch claim, never a guessed private blob key or database handle;
+- the handler authenticates the Worker, holds the authoritative claim-epoch
+  guard, proves the Workspace and File are present in that Run's frozen Session
+  manifest, and only then resolves the logical catalog record and immutable
+  bytes;
+- both sides validate the returned digest, and the Worker stages the result as
+  the existing read-only `InlineBytes` mount without introducing another mount
+  model or provider path;
+- the redundant post-staging direct `FileCatalog` liveness check was removed;
+  immutable File existence and integrity now have one authoritative
+  materialization path, so a database-less Worker cannot succeed remotely and
+  then fail by accidentally reopening a local catalog;
+- Worker composition replaces the embedded source with the HTTP adapter before
+  accepting work; missing/stale claims, cross-Workspace/File requests, missing
+  content, and substituted responses fail closed.
+
+Memory snapshot/CAS write-back, immutable Skill bundle access, and the remaining
+Coordinator/Resource store-ownership separation remain subsequent ADR-0071
+slices.
 
 ## Consequences
 

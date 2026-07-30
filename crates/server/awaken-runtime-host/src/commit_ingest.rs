@@ -20,7 +20,7 @@ use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitRe
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_run_ingress::{
     ClaimedCommitCommand, ClaimedCommitRequest, ClaimedRunCommit, DispatchQueue, RunClaim,
-    WorkerDirectory, WorkerIdentity, WorkerRequestAuthorizer, WorkerState, commit_payload_hash,
+    WorkerDirectory, WorkerIdentity, WorkerRequestAuthorizer, commit_payload_hash,
 };
 
 use crate::host::HostError;
@@ -28,7 +28,7 @@ use crate::host::SharedHost;
 use crate::worker_http::respond;
 use crate::worker_security::{
     VerifiedWorkerContext, WORKER_ID_HEADER, WorkerRequestAuthenticator,
-    authenticate_worker_request,
+    authenticate_worker_request, verify_current_worker_identity,
 };
 
 #[async_trait::async_trait]
@@ -165,23 +165,16 @@ async fn commit_claimed(
     Json(request): Json<ClaimedCommitRequest>,
 ) -> (StatusCode, Json<Value>) {
     let identity = &request.identity;
-    if worker.worker_id() != identity.worker_id {
-        return unauthorized("authenticated worker identity does not match".to_string());
-    }
-    if worker.credential_id().is_some() && worker.identity() != Some(identity) {
-        return unauthorized(
-            "authenticated worker incarnation does not match request identity".to_string(),
-        );
-    }
-    let current = match state.directory.current(&identity.worker_id).await {
-        Ok(current) => current,
-        Err(error) => return unauthorized(error.to_string()),
-    };
-    if !current.as_ref().is_some_and(|record| {
-        &record.snapshot.identity == identity
-            && record.snapshot.state != WorkerState::Dead
-            && record.snapshot.expires_at_ms > unix_now_ms()
-    }) || request.claim.owner != identity.lease_owner()
+    if verify_current_worker_identity(
+        state.directory.as_ref(),
+        &worker,
+        identity,
+        unix_now_ms(),
+        false,
+    )
+    .await
+    .is_err()
+        || request.claim.owner != identity.lease_owner()
     {
         return unauthorized("worker incarnation does not own the claim".to_string());
     }

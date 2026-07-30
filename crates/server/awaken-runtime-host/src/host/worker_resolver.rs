@@ -3,7 +3,10 @@
 
 use super::*;
 
-struct WorkerProjectionSynchronizer<'a>(&'a SharedHost);
+struct WorkerProjectionSynchronizer<'a> {
+    host: &'a SharedHost,
+    claim: Option<&'a awaken_run_ingress::RunClaim>,
+}
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjectionSynchronizer<'_> {
@@ -14,11 +17,11 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         lease: &awaken_session_contract::SessionRealizationLease,
         _prepare_session: bool,
     ) -> Result<(), awaken_session_contract::RunError> {
-        self.0
-            .install_frozen_session_projection(session_id, projection.clone())
+        self.host
+            .install_frozen_session_projection(session_id, projection.clone(), self.claim)
             .await
             .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
-        self.0
+        self.host
             .install_session_realization_lease(session_id, lease.clone());
         Ok(())
     }
@@ -94,11 +97,12 @@ impl HostWorkerResolver {
         control: &Arc<dyn crate::ApplicationSessionControlClient>,
         session_id: &str,
         directive: awaken_session_contract::SessionRealizationDirective,
+        claim: Option<&awaken_run_ingress::RunClaim>,
     ) -> Result<(), awaken_run_ingress::Error> {
         awaken_session_contract::drive_session_realization(
             session_id,
             control.as_ref(),
-            &WorkerProjectionSynchronizer(host),
+            &WorkerProjectionSynchronizer { host, claim },
             &WorkerMcpEffects(host),
             directive,
         )
@@ -365,10 +369,17 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                     "Control contribution projection conflicts with the claimed resource snapshot",
                 ));
             }
-            Self::realize_application_session(&host, control, &thread_id.0, receipt.realization)
-                .await?;
+            Self::realize_application_session(
+                &host,
+                control,
+                &thread_id.0,
+                receipt.realization,
+                Some(&claim),
+            )
+            .await?;
         } else if let Some(manifest) = &dispatched_resources {
-            host.install_dispatched_resources(&thread_id.0, manifest)
+            let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
+            host.install_dispatched_resources(&thread_id.0, manifest, Some(&claim))
                 .await
                 .map_err(|error| Self::execution_error(error.to_string()))?;
         }
@@ -1436,7 +1447,7 @@ mod tests {
             },
         );
 
-        host.install_dispatched_resources("thread-cold-resource", &manifest)
+        host.install_dispatched_resources("thread-cold-resource", &manifest, None)
             .await
             .expect("install frozen manifest");
         let activation = test_activation("thread-cold-resource", "run-cold-resource");
@@ -1468,6 +1479,98 @@ mod tests {
         assert_eq!(
             host.thread_resource_manifest("thread-cold-resource"),
             Some(manifest)
+        );
+    }
+
+    /// Cause/effect decision table for Worker-side File staging:
+    /// | Rule | Worker File source | exact claim | local File DB entry | Effect |
+    /// |---|---|---|---|---|
+    /// | W1 | remote adapter | present | absent | stage returned digest/bytes; later runtime validation does not reopen a local File database |
+    /// | W2 | remote adapter | absent | absent | fail closed; no mount |
+    #[tokio::test]
+    async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
+        struct ClaimFileSource;
+
+        #[async_trait::async_trait]
+        impl crate::FileContentSource for ClaimFileSource {
+            async fn read(
+                &self,
+                workspace_id: &str,
+                file_id: &str,
+                claim: Option<&awaken_run_ingress::RunClaim>,
+            ) -> Result<Option<(String, Vec<u8>)>, crate::FileContentSourceError> {
+                let Some(claim) = claim else {
+                    return Ok(None);
+                };
+                if workspace_id != "workspace-remote"
+                    || file_id != "file-remote"
+                    || claim.run_id.0 != "run-remote"
+                    || claim.owner != "worker-remote"
+                    || claim.epoch != 7
+                {
+                    return Ok(None);
+                }
+                let bytes = b"remote immutable File".to_vec();
+                Ok(Some((awaken_file_store::content_id(&bytes), bytes)))
+            }
+        }
+
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .with_file_content_source(Arc::new(ClaimFileSource)),
+        );
+        let managed = crate::ManagedHost::new(host.clone());
+        let manifest = awaken_session_contract::SessionResourceManifest::new(
+            "workspace-remote",
+            awaken_session_contract::ResolvedSessionResources {
+                inputs: vec![awaken_session_contract::ResolvedInput {
+                    binding_id: awaken_resource_contract::BindingId::new("remote-file-binding"),
+                    source: awaken_session_contract::ResolvedInputSource::File {
+                        file_id: awaken_resource_contract::FileId::from("file-remote"),
+                    },
+                    mount_path: "/input.txt".into(),
+                    access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                    instructions: None,
+                }],
+                skills: Some(Vec::new()),
+            },
+        );
+        let claim = awaken_run_ingress::RunClaim {
+            run_id: RunId("run-remote".into()),
+            owner: "worker-remote".into(),
+            epoch: 7,
+        };
+
+        host.install_dispatched_resources("remote-file-ok", &manifest, Some(&claim))
+            .await
+            .expect("W1");
+        let mount = host
+            .sandbox_spec("remote-file-ok")
+            .mounts
+            .into_iter()
+            .find(|mount| mount.mount_id == "file-remote")
+            .expect("W1 exact mount");
+        assert!(
+            matches!(
+                mount.source,
+                awaken_provisioning_contract::MountSource::InlineBytes { ref contents, .. }
+                    if contents == b"remote immutable File"
+            ),
+            "W1"
+        );
+        managed
+            .validate_thread_resource_bindings("remote-file-ok")
+            .await
+            .expect("W1 has no redundant local File catalog check");
+
+        let error = host
+            .install_dispatched_resources("remote-file-no-claim", &manifest, None)
+            .await
+            .expect_err("W2");
+        assert!(error.to_string().contains("not found"), "W2: {error}");
+        assert!(
+            host.sandbox_spec("remote-file-no-claim").mounts.is_empty(),
+            "W2"
         );
     }
 

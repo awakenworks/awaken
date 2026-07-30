@@ -171,8 +171,8 @@ flowchart TD
     J["Existing: enqueue RunDispatch with snapshot and secret-free envelopes"]
 
     K["Existing: authenticated Worker claim with lease epoch"]
-    L["Pending boundary: per-kind Resource realization"]
-    M["Pending boundary: exact credential materialization"]
+    L["Modified/New: per-kind Resource realization (File complete; Memory/Skill pending)"]
+    M["Added: exact Worker-private credential materialization"]
     N["Existing: Sandbox creation and repository realization"]
     O["Existing: Runtime model, tool, child Run, and HITL execution"]
     P["Existing: best-effort preview frames"]
@@ -226,7 +226,7 @@ registries, authorization grants, or Sandbox handles.
 
 | Resource kind | Boundary | Required semantics |
 |---|---|---|
-| File | `FileContentSource` | exact blob, digest validation, read-only materialization, no write-back |
+| File | `FileContentSource` | exact Workspace/File identity under the live dispatch claim, authoritative logical-to-content resolution, digest validation, read-only materialization, no write-back |
 | Memory | `MemorySnapshotSource`, `MemoryMounter`, `MemoryWritebackClient` | exact config, mutable content, CAS conflict handling, recovery-safe write-back |
 | Repository | `RepositoryRealizer` | exact config and credential pin, clone/fetch into Session working tree |
 | Skill | `SkillBundleSource` | exact immutable bundle and capability version, no generic Resource lifecycle |
@@ -234,6 +234,15 @@ registries, authorization grants, or Sandbox handles.
 
 These are network adapters over existing authority ports. They do not create a
 universal Resource domain or allow Worker database access.
+
+For File inputs, the local and distributed paths now use the same
+`FileContentSource` port. `StoreFileContentSource` resolves the public `FileId`
+through the authoritative `FileCatalog` and reads its immutable blob. A remote
+Worker uses `HttpFileContentSource`; the handler holds the exact claim guard,
+checks the dispatch execution scope and frozen manifest, and then delegates to
+that same store adapter. The returned digest is verified again on the Worker
+before the existing binary-safe read-only mount is staged. The private blob key
+is never accepted as caller authority.
 
 ### Commit and response authority
 

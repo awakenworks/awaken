@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use awaken_run_ingress::{WorkerIdentity, WorkerRequestAuthorizer};
+use awaken_run_ingress::{
+    WorkerDirectory, WorkerIdentity, WorkerRequestAuthorizer, WorkerSnapshot, WorkerState,
+};
 use axum::Json;
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, request::Parts};
@@ -52,6 +54,49 @@ pub(crate) async fn authenticate_worker_request(
         )
             .into_response(),
     }
+}
+
+/// Verify the authenticated transport identity against one exact registered
+/// Worker incarnation carried by an application request.
+pub(crate) fn verify_worker_identity(
+    worker: &VerifiedWorkerContext,
+    identity: &WorkerIdentity,
+) -> Result<(), String> {
+    if worker.worker_id() != identity.worker_id {
+        return Err("authenticated worker id does not match request identity".into());
+    }
+    if worker.credential_id().is_some() && worker.identity() != Some(identity) {
+        return Err("authenticated worker incarnation does not match request identity".into());
+    }
+    Ok(())
+}
+
+/// Resolve and verify the one live Coordinator-owned registration record.
+/// Dispatch, claimed commit, and per-kind Resource handlers reuse this check so
+/// registry state and signed/mTLS incarnation semantics cannot drift.
+pub(crate) async fn verify_current_worker_identity(
+    directory: &dyn WorkerDirectory,
+    worker: &VerifiedWorkerContext,
+    identity: &WorkerIdentity,
+    now_ms: u64,
+    require_ready: bool,
+) -> Result<WorkerSnapshot, String> {
+    verify_worker_identity(worker, identity)?;
+    let record = directory
+        .current(&identity.worker_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "worker is not registered".to_string())?;
+    if &record.snapshot.identity != identity {
+        return Err("worker incarnation is stale".into());
+    }
+    if (require_ready && record.snapshot.state != WorkerState::Ready)
+        || record.snapshot.expires_at_ms <= now_ms
+        || record.snapshot.state == WorkerState::Dead
+    {
+        return Err("worker is not ready or its registry lease expired".into());
+    }
+    Ok(record.snapshot)
 }
 
 type HmacSha256 = Hmac<Sha256>;

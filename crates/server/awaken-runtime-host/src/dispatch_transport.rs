@@ -27,7 +27,7 @@ use awaken_run_ingress::{
     EnqueueRequest as EnqueueReq, HeartbeatWorkerRequest as HeartbeatWorkerReq, HttpDispatchQueue,
     PlacementPolicy, RecoveryRequest as RecoveryReq, RegisterWorkerRequest as RegisterWorkerReq,
     RenewRequest as RenewReq, RunClaim, SettleRequest as SettleReq, WorkerDirectory,
-    WorkerIdentity, WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot, WorkerState,
+    WorkerIdentity, WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot,
 };
 
 use crate::host::{HostError, SharedHost};
@@ -35,7 +35,7 @@ use crate::worker_http::respond;
 use crate::worker_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, SystemWorkerClock, VerifiedWorkerContext,
     WorkerClock, WorkerLeasePolicy, WorkerRequestAuthenticator, WorkerUpstream,
-    authenticate_worker_request,
+    authenticate_worker_request, verify_current_worker_identity, verify_worker_identity,
 };
 
 /// Build the database-less worker's dispatch store from the same authenticated
@@ -192,28 +192,15 @@ async fn claim_authority(
     let identity = identity.ok_or_else(|| {
         HostError::bad_request("registered worker identity is required for dispatch authority")
     })?;
-    verify_worker_identity(worker, identity)?;
-    let record = directory
-        .current(&identity.worker_id)
-        .await
-        .map_err(|error| HostError::internal(error.to_string()))?
-        .ok_or_else(|| HostError::bad_request("worker is not registered"))?;
-    if &record.snapshot.identity != identity {
-        return Err(HostError::bad_request("worker incarnation is stale"));
-    }
-    if (require_ready && record.snapshot.state != WorkerState::Ready)
-        || record.snapshot.expires_at_ms <= now_ms
-        || record.snapshot.state == WorkerState::Dead
-    {
-        return Err(HostError::bad_request(
-            "worker is not ready or its registry lease expired",
-        ));
-    }
+    let snapshot =
+        verify_current_worker_identity(directory.as_ref(), worker, identity, now_ms, require_ready)
+            .await
+            .map_err(HostError::bad_request)?;
     Ok(ClaimAuthority {
         owner: identity.lease_owner(),
         lease_ms,
         now_ms,
-        snapshot: Some(record.snapshot),
+        snapshot: Some(snapshot),
     })
 }
 
@@ -266,13 +253,24 @@ pub fn registered_worker_transport_router(
         policy,
         application_session_control,
     );
+    let file_content = crate::worker_file_content_router(Arc::new(
+        crate::WorkerFileContentService::new(
+            host.file_content_source.clone(),
+            dispatch.clone() as Arc<dyn DispatchQueue>,
+            Arc::new(HeaderWorkerAuthenticator),
+        )
+        .with_worker_directory(directory.clone()),
+    ));
     let commit_service = Arc::new(crate::commit_ingest::ClaimedCommitService::for_host(
         dispatch as Arc<dyn DispatchQueue>,
         host,
         directory,
         Arc::new(HeaderWorkerAuthenticator),
     ));
-    registered_worker_transport_router_with_services(dispatch_router, commit_service)
+    registered_worker_transport_router_with_services(
+        dispatch_router.merge(file_content),
+        commit_service,
+    )
 }
 
 /// Compose the complete registered-Worker transport from already-configured
@@ -472,7 +470,7 @@ async fn verify_session_realization_authority(
     identity: &WorkerIdentity,
     lease: &awaken_session_contract::SessionRealizationLease,
 ) -> Result<(), HostError> {
-    verify_worker_identity(worker, identity)?;
+    verify_worker_identity(worker, identity).map_err(HostError::bad_request)?;
     let authority = claim_authority(service, worker, Some(identity), false).await?;
     if lease.owner != identity.worker_id
         || lease.runtime_incarnation != identity.lease_owner()
@@ -503,7 +501,7 @@ async fn begin_session_realization(
     Json(request): Json<SessionRealizationReq<awaken_session_contract::BeginSessionRealization>>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_identity(&worker, &request.identity)?;
+        verify_worker_identity(&worker, &request.identity).map_err(HostError::bad_request)?;
         let authority = claim_authority(&service, &worker, Some(&request.identity), false).await?;
         let registry_expiry = authority
             .snapshot
@@ -823,19 +821,6 @@ fn verify_worker_id(worker: &VerifiedWorkerContext, worker_id: &str) -> Result<(
     Ok(())
 }
 
-fn verify_worker_identity(
-    worker: &VerifiedWorkerContext,
-    identity: &WorkerIdentity,
-) -> Result<(), HostError> {
-    verify_worker_id(worker, &identity.worker_id)?;
-    if worker.credential_id().is_some() && worker.identity() != Some(identity) {
-        return Err(HostError::bad_request(
-            "authenticated worker incarnation does not match request identity",
-        ));
-    }
-    Ok(())
-}
-
 async fn register_worker(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
@@ -868,7 +853,7 @@ async fn heartbeat_worker(
     Json(request): Json<HeartbeatWorkerReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_identity(&worker, &request.identity)?;
+        verify_worker_identity(&worker, &request.identity).map_err(HostError::bad_request)?;
         let mutation = directory(&service)?
             .heartbeat(
                 &request.identity,
@@ -890,7 +875,7 @@ async fn drain_worker(
     Json(request): Json<WorkerIdentityReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_identity(&worker, &request.identity)?;
+        verify_worker_identity(&worker, &request.identity).map_err(HostError::bad_request)?;
         let deadline = request.deadline_ms.unwrap_or_else(|| {
             service
                 .clock
@@ -913,7 +898,7 @@ async fn quiesce_worker(
     Json(request): Json<WorkerIdentityReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_identity(&worker, &request.identity)?;
+        verify_worker_identity(&worker, &request.identity).map_err(HostError::bad_request)?;
         let mutation = directory(&service)?
             .mark_quiesced(&request.identity)
             .await
@@ -930,7 +915,7 @@ async fn deregister_worker(
     Json(request): Json<WorkerIdentityReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        verify_worker_identity(&worker, &request.identity)?;
+        verify_worker_identity(&worker, &request.identity).map_err(HostError::bad_request)?;
         let mutation = directory(&service)?
             .deregister(&request.identity)
             .await

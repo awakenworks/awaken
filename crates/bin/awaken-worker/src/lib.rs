@@ -777,6 +777,9 @@ impl WorkerNode {
             ),
         };
         let mut host = host
+            .with_file_content_source(Arc::new(awaken_runtime_host::HttpFileContentSource::new(
+                upstream.clone(),
+            )))
             .with_worker_upstream(upstream)
             .with_dispatch_store(dispatch_store)
             .with_web_search_provider_registry(self.web_search_providers);

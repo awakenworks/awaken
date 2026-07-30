@@ -274,7 +274,9 @@ process-local handle.
 | authorization PDP/PIP | External/shared authorization domain | IAM | decide principal/action/scope/resource facts under active policy | mounts, resource configuration, storage |
 | `SessionResourceCoordinator` | Existing in Managed Session application service | Session application/host | activation state, ordered provision/release, recovery handoff | Agent config loading, IAM policy language |
 | `FileStore` | Existing | File data plane | immutable content-addressed bytes | Workspace authorization; mutable overwrite |
-| `FileContentSource` | New boundary adapter | Worker/File boundary | retrieve one exact blob and verify its digest before read-only materialization | File ownership, mutable write-back, database access |
+| `FileContentSource` | Implemented boundary port | Worker/File boundary | resolve one exact Workspace-scoped public `FileId` under the current claim and verify the immutable digest before read-only materialization | File ownership, mutable write-back, private blob-id authority, database access |
+| `StoreFileContentSource` | Implemented local adapter | File data plane | reuse `FileCatalog` then `FileStore` as the sole logical-to-content resolution path | Worker identity, dispatch ownership, HTTP, a second catalog |
+| `HttpFileContentSource` / Worker File handler | Implemented network adapters | Worker/File boundary | carry Workspace, File, and exact claim; authenticate, prove the File belongs to the frozen dispatch manifest, hold the claim guard through the read, and verify the response digest again on Worker | authoring/list/delete, generic Resource dispatch, Worker database access |
 | `MemoryRepository` | Existing canonical port | Memory data plane | scoped entries, CAS, atomic history, redaction, retention hooks | Agent/Session binding and IAM policy |
 | `MemorySnapshotSource` / `MemoryWritebackClient` | New boundary adapters | Worker/Memory boundary | obtain exact mutable content and apply claim-fenced CAS write-back | config selection, silent overwrite, Memory database access |
 | `MemoryRuntime` | Existing, moving to extension ownership | `awaken-ext-memory` | recall Plugin, terminal extraction observer, selector/extractor capability, stable intent/receipt | resource identity, default store, IAM policy, Host lifecycle |
@@ -307,6 +309,18 @@ SessionResourceManifest
   |- Repository -> CredentialMaterialResolver -> RepositoryRealizer
   `- Skill      -> SkillBundleSource -> capability load
 ```
+
+The File branch is implemented. The Session manifest continues to carry its
+existing public `FileId`; it does not expose the private content-store key. In a
+distributed read, the File handler validates the authenticated Worker's exact
+claim, Workspace execution scope, and frozen File binding while holding the
+dispatch epoch guard. It then reuses `StoreFileContentSource`. The Worker stages
+the returned bytes through the existing `InlineBytes` mount path and independently
+checks the digest. This removes the earlier direct staging branch instead of
+maintaining local and remote materialization algorithms. It also removes the
+old post-staging direct catalog lookup: immutable File existence and integrity
+are decided once by the per-kind materialization port, while mutable/configured
+Resource kinds retain their operation-time binding checks.
 
 `ResourcePlane` selects local or remote implementations at the composition root;
 it does not own a Resource aggregate. A separately deployed provider retains its

@@ -525,7 +525,7 @@ impl crate::SharedHost {
                 .await
                 .map_err(|error| crate::HostError::internal(error.to_string()))?;
             crate::host::HostWorkerResolver::realize_application_session(
-                self, control, session_id, directive,
+                self, control, session_id, directive, None,
             )
             .await
             .map_err(|error| crate::HostError::internal(error.to_string()))?;
@@ -558,6 +558,7 @@ impl crate::SharedHost {
         &self,
         thread: &str,
         projection: awaken_session_contract::FrozenSessionProjection,
+        claim: Option<&RunClaim>,
     ) -> Result<(), crate::HostError> {
         if projection.baseline.fingerprint.0.trim().is_empty() {
             return Err(crate::HostError::internal(
@@ -614,7 +615,7 @@ impl crate::SharedHost {
                 projection.workspace_id.clone(),
                 projection.resources,
             );
-            self.install_dispatched_resources(thread, &manifest)
+            self.install_dispatched_resources(thread, &manifest, claim)
                 .await
                 .map_err(|error| crate::HostError::internal(error.to_string()))?;
         }

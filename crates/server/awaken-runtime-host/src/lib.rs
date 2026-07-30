@@ -31,6 +31,7 @@ mod deployment_config;
 mod dispatch_backend;
 mod dispatch_transport;
 mod durable_ops;
+mod file_content_transport;
 mod hand_placement;
 mod host;
 mod hub;
@@ -106,6 +107,10 @@ pub use crate::credential_materializer::{
     CredentialExtensionRegistryError, PinnedCredentialMaterializer,
 };
 pub use crate::dispatch_backend::init_shared_postgres_dispatch_with_config;
+pub use crate::file_content_transport::{
+    FileContentSource, FileContentSourceError, HttpFileContentSource, StoreFileContentSource,
+    WorkerFileContentService, worker_file_content_router,
+};
 pub use crate::host::{
     AttemptExecutorDecorator, HostResume, RemoteAttemptInstallation, ResourcePlane, SharedHost,
     remote_worker_placement, self_hosted_inference_holder,
@@ -308,6 +313,7 @@ impl DispatchSessionRuntime {
         &self,
         thread: &str,
         manifest: &awaken_session_contract::SessionResourceManifest,
+        claim: Option<&awaken_run_ingress::RunClaim>,
     ) -> Result<(), RunError> {
         let managed = self.managed()?;
         let previous = managed.host.thread_resource_manifest(thread);
@@ -315,21 +321,23 @@ impl DispatchSessionRuntime {
             .as_ref()
             .is_some_and(|previous| previous != manifest)
         {
-            awaken_session_contract::SessionRuntime::apply_session_inputs(
-                &managed,
+            return Err(RunError::bad_request(
+                "a claimed Worker cannot replace the frozen Session Resource manifest",
+            ));
+        }
+        // Re-stage even when the manifest is unchanged: immutable File bytes,
+        // config-version integrity, and credential revocation are live-deny checks
+        // at every claimed operation. Worker projection never mutates the
+        // authority-side intrinsic Resource reference graph.
+        managed
+            .stage_resource_manifest(
                 thread,
                 &manifest.workspace_id,
                 &manifest.resources,
+                claim,
+                false,
             )
             .await?;
-        } else {
-            // Re-stage even when the manifest is unchanged: ownership/lifecycle,
-            // immutable File bytes, config-version integrity, and credential
-            // revocation are live-deny checks at every claimed operation.
-            managed
-                .stage_resource_manifest(thread, &manifest.workspace_id, &manifest.resources)
-                .await?;
-        }
         Ok(())
     }
 
@@ -387,6 +395,7 @@ impl SharedHost {
         &self,
         thread: &str,
         manifest: &awaken_session_contract::SessionResourceManifest,
+        claim: Option<&awaken_run_ingress::RunClaim>,
     ) -> Result<(), RunError> {
         let preparer = self
             .dispatch_session_runtime
@@ -396,7 +405,7 @@ impl SharedHost {
             .ok_or_else(|| {
                 RunError::internal("durable resource dispatch has no Session Runtime")
             })?;
-        preparer.install(thread, manifest).await
+        preparer.install(thread, manifest, claim).await
     }
 
     fn dispatch_session_runtime(&self) -> Result<DispatchSessionRuntime, RunError> {
@@ -508,6 +517,7 @@ impl ManagedHost {
         thread: &str,
         workspace: &str,
         inputs: &awaken_session_contract::ResolvedSessionResources,
+        claim: Option<&awaken_run_ingress::RunClaim>,
     ) -> Result<
         (
             crate::provisioning::StagedResources,
@@ -519,7 +529,7 @@ impl ManagedHost {
         let mut bound_memory = None;
         let mut memory_seen = false;
         for input in &inputs.inputs {
-            let one = self.stage_resolved_input(workspace, input).await?;
+            let one = self.stage_resolved_input(workspace, input, claim).await?;
             all.mounts.extend(one.mounts);
             all.prompts.extend(one.prompts);
             all.binding_checks.extend(one.binding_checks);
@@ -565,13 +575,16 @@ impl ManagedHost {
         inputs: &awaken_session_contract::ResolvedSessionResources,
         staged: crate::provisioning::StagedResources,
         bound_memory: Option<Arc<crate::memory::BoundMemory>>,
+        update_authority_references: bool,
     ) -> Result<(), RunError> {
         // The complete manifest replaces the prior projection. Register an empty
         // value too, so deleting the final input cannot leave a stale mount behind.
-        self.host
-            .replace_session_references(workspace, thread, inputs)
-            .await
-            .map_err(|error| RunError::internal(error.to_string()))?;
+        if update_authority_references {
+            self.host
+                .replace_session_references(workspace, thread, inputs)
+                .await
+                .map_err(|error| RunError::internal(error.to_string()))?;
+        }
         self.host.register_thread_resources(thread, staged);
         self.host.register_thread_resource_manifest(
             thread,
@@ -591,12 +604,21 @@ impl ManagedHost {
         thread: &str,
         workspace: &str,
         inputs: &awaken_session_contract::ResolvedSessionResources,
+        claim: Option<&awaken_run_ingress::RunClaim>,
+        update_authority_references: bool,
     ) -> Result<(), RunError> {
         let (staged, bound_memory) = self
-            .compile_effective_inputs(thread, workspace, inputs)
+            .compile_effective_inputs(thread, workspace, inputs, claim)
             .await?;
-        self.install_effective_inputs(thread, workspace, inputs, staged, bound_memory)
-            .await
+        self.install_effective_inputs(
+            thread,
+            workspace,
+            inputs,
+            staged,
+            bound_memory,
+            update_authority_references,
+        )
+        .await
     }
 
     /// Install one already-resolved Session resource manifest. This is shared by
@@ -607,6 +629,8 @@ impl ManagedHost {
         thread: &str,
         workspace: &str,
         resources: &awaken_session_contract::ResolvedSessionResources,
+        claim: Option<&awaken_run_ingress::RunClaim>,
+        update_authority_references: bool,
     ) -> Result<(), RunError> {
         self.host.register_thread_workspace(thread, workspace);
         match &resources.skills {
@@ -634,8 +658,14 @@ impl ManagedHost {
                     .update(thread, |slot| slot.skills = None);
             }
         }
-        self.stage_effective_inputs(thread, workspace, resources)
-            .await
+        self.stage_effective_inputs(
+            thread,
+            workspace,
+            resources,
+            claim,
+            update_authority_references,
+        )
+        .await
     }
 
     async fn validate_thread_resource_bindings(&self, thread: &str) -> Result<(), RunError> {
@@ -652,19 +682,6 @@ impl ManagedHost {
         let workspace = self.host.thread_workspace(thread);
         for check in checks {
             match check {
-                ResourceBindingCheck::File { file_id } => {
-                    if self
-                        .host
-                        .file_record(&workspace, &file_id)
-                        .await
-                        .map_err(|error| RunError::internal(error.to_string()))?
-                        .is_none()
-                    {
-                        return Err(RunError::bad_request(format!(
-                            "file resource `{file_id}` is unavailable in this Workspace"
-                        )));
-                    }
-                }
                 ResourceBindingCheck::MemoryStore {
                     memory_store_id,
                     config_version,
@@ -1101,7 +1118,7 @@ impl SessionRuntime for ManagedHost {
             None => None,
         };
         let (new, bound_memory) = self
-            .compile_effective_inputs(thread, workspace_id, inputs)
+            .compile_effective_inputs(thread, workspace_id, inputs, None)
             .await?;
         if let Some(environment) = &live_environment {
             environment
@@ -1171,7 +1188,7 @@ impl SessionRuntime for ManagedHost {
                 }
             }
         }
-        self.install_effective_inputs(thread, workspace_id, inputs, new, bound_memory)
+        self.install_effective_inputs(thread, workspace_id, inputs, new, bound_memory, true)
             .await?;
         self.host
             .session_slots
@@ -1220,7 +1237,7 @@ impl SessionRuntime for ManagedHost {
             .update(thread, |slot| slot.toolsets = init.toolsets.clone());
         // Stage only the already-resolved manifest. Runtime never reads the Agent
         // binding repository or composes defaults again.
-        self.stage_resource_manifest(thread, &init.workspace_id, &init.resources)
+        self.stage_resource_manifest(thread, &init.workspace_id, &init.resources, None, true)
             .await?;
         Ok(())
     }

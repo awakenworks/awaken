@@ -253,6 +253,9 @@ impl SharedHost {
         let resource_lifecycle =
             resource_lifecycle.or_else(|| Some(super::tests::test_resource_lifecycle()));
         let session_slots = crate::session_slot::SessionRuntimeSlots::default();
+        let file_content_source: Arc<dyn crate::FileContentSource> = Arc::new(
+            crate::StoreFileContentSource::new(file_catalog.clone(), file_store.clone()),
+        );
         let capture_decision = crate::redact::capture_decision(deployment.content_capture, false);
         Self {
             llm,
@@ -305,6 +308,7 @@ impl SharedHost {
             mcp_relay: tokio::sync::OnceCell::new(),
             dispatch_session_runtime: std::sync::RwLock::new(None),
             file_store,
+            file_content_source,
             file_catalog,
             resource_lifecycle,
             memory_stores,
@@ -808,6 +812,14 @@ impl SharedHost {
         if let Some(provider) = &self.backend_owned_session_provider {
             provider.install_secret_broker(broker);
         }
+        self
+    }
+
+    /// Replace the embedded File adapter with the exact per-kind boundary selected
+    /// by the composition root. This does not change Files API authoring ownership.
+    #[must_use]
+    pub fn with_file_content_source(mut self, source: Arc<dyn crate::FileContentSource>) -> Self {
+        self.file_content_source = source;
         self
     }
 

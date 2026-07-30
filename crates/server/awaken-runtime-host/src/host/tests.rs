@@ -801,10 +801,10 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
     let observed = recorder.0.clone();
     let host = SharedHost::new(Arc::new(recorder), "stub");
     let frozen = projection("Use the bound Flow project.", true);
-    host.install_frozen_session_projection("flow-thread", frozen.clone())
+    host.install_frozen_session_projection("flow-thread", frozen.clone(), None)
         .await
         .expect("first frozen projection installs");
-    host.install_frozen_session_projection("flow-thread", frozen)
+    host.install_frozen_session_projection("flow-thread", frozen, None)
         .await
         .expect("same frozen fingerprint is idempotent");
 
@@ -843,6 +843,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
     host.install_frozen_session_projection(
         "prompt-thread",
         projection("Use the bound Flow project.", false),
+        None,
     )
     .await
     .expect("P2/P4 projection");
@@ -852,7 +853,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
     host.run(None, "prompt-thread", user("P4"))
         .await
         .expect("P4");
-    host.install_frozen_session_projection("deduplicated", projection("exact prompt", false))
+    host.install_frozen_session_projection("deduplicated", projection("exact prompt", false), None)
         .await
         .expect("P3 projection");
     host.run(
@@ -900,7 +901,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
 
     let replacement = projection("different", true);
     assert!(
-        host.install_frozen_session_projection("flow-thread", replacement)
+        host.install_frozen_session_projection("flow-thread", replacement, None)
             .await
             .is_err(),
         "a bound Session cannot switch frozen baselines"
@@ -2922,7 +2923,12 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
 
     let declared_blob_id = awaken_sandbox_local::content_fingerprint(b"declared bytes");
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
-    raw_host.file_store = Arc::new(CorruptFileStore);
+    let corrupt_store = Arc::new(CorruptFileStore);
+    raw_host.file_store = corrupt_store.clone();
+    raw_host.file_content_source = Arc::new(crate::StoreFileContentSource::new(
+        raw_host.file_catalog.clone(),
+        corrupt_store,
+    ));
     let host = Arc::new(raw_host);
     let public_id = "file_corrupt".to_string();
     host.file_catalog()
@@ -2957,7 +2963,10 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
     let error = managed.prepare_session("t-corrupt-file", init).await;
 
     assert!(
-        error.unwrap_err().message.contains("content hash mismatch"),
+        error
+            .unwrap_err()
+            .message
+            .contains("content digest mismatch"),
         "corrupt content must fail before Agent execution"
     );
 }
@@ -3876,7 +3885,9 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
                 Some(source.id.0),
             ),
         );
-        let result = host.install_dispatched_resources(&thread, &manifest).await;
+        let result = host
+            .install_dispatched_resources(&thread, &manifest, None)
+            .await;
         if install_credentials {
             result.unwrap_or_else(|error| panic!("{rule}: {error}"));
             assert_eq!(
