@@ -539,7 +539,7 @@ impl ManagedState {
             .await
     }
 
-    async fn create_session_with_identity(
+    pub(super) async fn create_session_with_identity(
         &self,
         req: SessionCreateParams,
         workspace_id: Option<String>,

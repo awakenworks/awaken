@@ -87,7 +87,7 @@ flowchart TD
     V{"Manual or scheduled trigger"}
     W["Existing: persist stable DeploymentRun"]
     X["Modified: DeploymentSessionLauncher carries deployment_run_id"]
-    Y["New boundary: CoordinatorDeploymentSessionClient"]
+    Y["New boundary: HttpDeploymentSessionLauncher"]
     Z["New boundary: idempotent Deployment Session launch handler"]
     AA["Existing: create_session_with_initial_events"]
     AB["Existing: SessionDefaultsCompiler and SessionInputResolver"]
@@ -296,15 +296,17 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - `PostgresExecutableAgentRegistrar` and its scoped command-log schema;
 - split-role registration composition, token-file loading, catalog migration,
   and Worker database rejection;
+- `HttpDeploymentSessionLauncher` and authenticated
+  `deployment_session_launch_router` over the existing launch port;
+- stable DeploymentRun-to-Session identity/fingerprint replay and separate
+  launch token-file composition;
 - `AgentResourceReferenceSource` as a narrow read port.
 
 ### Required remaining ADR-0071 work
 
-- Deployment launch carries `deployment_run_id` and supports a remote adapter;
 - Worker resource composition uses per-kind network adapters rather than shared
   authority-store implementations;
 - remaining Coordinator/Resource composition removes direct non-owner stores;
-- Coordinator Deployment Session client and handler;
 - per-kind File, Memory, Skill, and credential clients/handlers;
 - service-data-ownership fitness check for the remaining boundaries.
 
