@@ -1012,8 +1012,9 @@ impl SharedHost {
                     HostError::internal("recovered Memory copy has no MemoryMounter")
                 })?;
                 for mount in self.thread_resources_snapshot(thread).mounts {
-                    if let awaken_provisioning_contract::MountSource::MemoryStore { store_id } =
-                        &mount.source
+                    if let awaken_provisioning_contract::MountSource::MemoryStore {
+                        store_id, ..
+                    } = &mount.source
                     {
                         let files = env
                             .list_files(&mount.mount_path)

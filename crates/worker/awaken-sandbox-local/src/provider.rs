@@ -435,7 +435,11 @@ impl LocalProvider {
         // realize it through the injected mounter (FUSE where the kernel supports it,
         // else a harvested copy). Without a mounter, fail loud rather than fake it
         // with an empty file that misleads the agent into thinking it has a store.
-        if let pc::MountSource::MemoryStore { store_id } = &req.source {
+        if let pc::MountSource::MemoryStore {
+            store_id,
+            write_consistency,
+        } = &req.source
+        {
             let mounter = self
                 .memory_mounter
                 .read()
@@ -448,6 +452,15 @@ impl LocalProvider {
                 )));
             };
             let guard = mounter.mount(store_id, &host, req.access).await?;
+            if *write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
+                && guard.realization() != pc::Realization::Fuse
+            {
+                guard.teardown().await;
+                return Err(err(format!(
+                    "mount {:?}: memory_store requires write-through FUSE realization",
+                    req.mount_id
+                )));
+            }
             let realized = pc::RealizedMount {
                 mount_id: req.mount_id.clone(),
                 mount_path: req.mount_path.clone(),
@@ -1125,6 +1138,7 @@ mod shred_tests {
         // A memory store is not byte-resolvable through this path.
         let mem = MountSource::MemoryStore {
             store_id: "m".into(),
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
         };
         assert_eq!(
             resolve_source(&mem, &blobs, &none_store, None)
@@ -1158,6 +1172,7 @@ mod shred_tests {
         assert_eq!(
             declared_hash(&MountSource::MemoryStore {
                 store_id: "m".into(),
+                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
             }),
             None
         );

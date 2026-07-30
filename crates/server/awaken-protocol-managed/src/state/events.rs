@@ -726,13 +726,21 @@ impl ManagedState {
         // An archived session is terminal and read-only: refuse every inbound write
         // (message, resume, interrupt, outcome) with a 409, before touching the
         // runtime — the contract makes an archived session read-only.
-        let agent_id = {
+        let (agent_id, is_built_in_memory_consolidator) = {
             let sessions = self.sessions.lock().unwrap();
             let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
             if record.session.archived_at.is_some() {
                 return Err(StateError::Archived);
             }
-            record.agent_id.clone()
+            (
+                record.agent_id.clone(),
+                record.agent_id == crate::dream::BUILT_IN_MEMORY_CONSOLIDATOR_AGENT_ID
+                    && record
+                        .session
+                        .metadata
+                        .get("awaken.session.origin")
+                        .is_some_and(|origin| origin == "memory_consolidation"),
+            )
         };
         let owner_scope = self
             .owner_scope(session_id)
@@ -741,6 +749,7 @@ impl ManagedState {
             .config_source
             .as_ref()
             .is_some_and(|source| source.agent_unavailable_in(&owner_scope, &agent_id))
+            && !is_built_in_memory_consolidator
         {
             return Err(StateError::Run(RunError::bad_request(format!(
                 "agent_unavailable: agent `{agent_id}` cannot admit a new event"

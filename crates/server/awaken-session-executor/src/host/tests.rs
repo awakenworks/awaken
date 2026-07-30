@@ -410,7 +410,8 @@ fn carried_mount_bytes(mount: &awaken_provisioning_contract::MountRequirement) -
 }
 
 fn memory_mount_store_id(mount: &awaken_provisioning_contract::MountRequirement) -> &str {
-    let awaken_provisioning_contract::MountSource::MemoryStore { store_id } = &mount.source else {
+    let awaken_provisioning_contract::MountSource::MemoryStore { store_id, .. } = &mount.source
+    else {
         panic!("expected a governed memory-store source")
     };
     store_id

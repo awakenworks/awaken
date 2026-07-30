@@ -286,6 +286,19 @@ pub async fn enforce_managed_beta(
         )
             .into_response();
     }
+    if is_family("/v1/dreams") && !has_beta(&req, super::dreams::DREAMING_BETA) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                format!(
+                    "the {beta} beta is required: send the `anthropic-beta: {beta}` header",
+                    beta = super::dreams::DREAMING_BETA,
+                ),
+            )),
+        )
+            .into_response();
+    }
     let is_managed = [
         "/v1/sessions",
         "/v1/agents",
@@ -293,6 +306,7 @@ pub async fn enforce_managed_beta(
         "/v1/deployments",
         "/v1/deployment_runs",
         "/v1/vaults",
+        "/v1/dreams",
     ]
     .into_iter()
     .any(is_family);
