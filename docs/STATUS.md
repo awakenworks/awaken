@@ -152,4 +152,4 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0068-unified-prompt-and-skill-optimization.md` | Proposed decision record | Not required | n/a |
 | `adr/0069-acp-capability-configuration-lifecycle.md` | Proposed decision record | Not required | n/a |
 | `adr/0070-local-browser-session-bootstrap.md` | Decision record | Not required | n/a |
-| `adr/0071-distributed-service-boundaries-and-executable-agent-registration.md` | Decision record | Not required | n/a |
+| `adr/0071-distributed-service-boundaries-and-executable-agent-registration.md` | Implemented decision record | Not required | n/a |
