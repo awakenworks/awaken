@@ -95,7 +95,7 @@ echo "pod placement (three separate pods):"
 kubectl -n "$NS" get pods -o custom-columns=POD:.metadata.name,APP:.metadata.labels.app,NODE:.spec.nodeName --no-headers || true
 
 # Port-forward the brain's durable HTTP surface; poll a REAL 200 before driving.
-LOCAL_PORT=$((LOCAL_PORT + 1))
+LOCAL_PORT=$(k3d_available_port "$((LOCAL_PORT + 1))")
 PF_PID=$(k3d_start_port_forward "$NS" svc/brain "$LOCAL_PORT" 3000 /tmp/micro_pf.log)
 READY=0
 for _ in $(seq 1 60); do

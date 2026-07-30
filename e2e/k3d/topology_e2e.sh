@@ -66,6 +66,7 @@ run_topology() {
     return 1
   fi
 
+  LOCAL_PORT=$(k3d_available_port "$((LOCAL_PORT + 1))")
   PF_PID=$(k3d_start_port_forward "$NS" svc/brain "$LOCAL_PORT" 3000 /tmp/topo_pf.log)
   for _ in $(seq 1 30); do
     (exec 3<>"/dev/tcp/127.0.0.1/$LOCAL_PORT") 2>/dev/null && { exec 3>&- 3<&-; break; }

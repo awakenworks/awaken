@@ -78,14 +78,14 @@ if ! kubectl -n "$NS" rollout status deploy/brain --timeout=150s; then
 fi
 
 # Port-forward the load-balanced Service so submissions fan out across the fleet.
-LOCAL_PORT=$((LOCAL_PORT + 1))
+LOCAL_PORT=$(k3d_available_port "$((LOCAL_PORT + 1))")
 PF_PID=$(k3d_start_port_forward "$NS" svc/brain "$LOCAL_PORT" 3000 /tmp/nats_wake_pf.log)
 READY=""
 for _ in $(seq 1 60); do
   if curl -fsS -o /dev/null "http://127.0.0.1:$LOCAL_PORT/v1/durable/threads/probe/messages" 2>/dev/null; then READY=1; break; fi
   sleep 1
 done
-[ -n "$READY" ] || { err "port-forward never served HTTP 200"; exit 1; }
+[ -n "$READY" ] || { err "port-forward never served HTTP 200"; cat /tmp/nats_wake_pf.log || true; exit 1; }
 
 log "fire $M concurrent durable submissions across the fleet"
 R1=$(THREAD_PREFIX=natswake node "$DRIVER" submit "http://127.0.0.1:$LOCAL_PORT" "$M" 2>&1 | tail -1) || true

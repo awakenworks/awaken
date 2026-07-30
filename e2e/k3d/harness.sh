@@ -64,6 +64,31 @@ k3d_archive_name() {
   printf '%s' "$value"
 }
 
+# Return the first IPv4 loopback port available at or above the preferred port.
+# This avoids false E2E failures when a previous kubectl tunnel left the same
+# static port in TIME_WAIT.
+k3d_available_port() {
+  local preferred="$1"
+  [[ "$preferred" =~ ^[0-9]+$ ]] && (( preferred >= 1024 && preferred <= 65535 )) || return 2
+  python3 - "$preferred" <<'PY'
+import socket
+import sys
+
+preferred = int(sys.argv[1])
+for port in range(preferred, min(preferred + 100, 65536)):
+    candidate = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        candidate.bind(("127.0.0.1", port))
+    except OSError:
+        candidate.close()
+        continue
+    candidate.close()
+    print(port)
+    raise SystemExit(0)
+raise SystemExit("no available IPv4 loopback port in the candidate range")
+PY
+}
+
 # k3d_start_port_forward <namespace> <svc/name|pod/name> <local-port> <remote-port> <log-file>
 # Force IPv4 because every scenario probes 127.0.0.1; kubectl's localhost
 # resolution can otherwise leave only an IPv6 listener on some developer hosts.
@@ -157,7 +182,9 @@ k3d_harness_selftest() (
   # non-numeric count/percentage -> rejected before any k3d effect; H4 duplicate
   # image coordinates -> one single-platform archive per unique image plus the
   # canonical Pause/CoreDNS prerequisites; H5 malformed port-forward identity ->
-  # rejection before kubectl. The scenario tests own network and topology effects.
+  # rejection before kubectl; H6 valid preferred port -> an available IPv4 port;
+  # H7 malformed preferred port -> rejection before a socket probe. The scenario
+  # tests own network and topology effects.
   local k3d_calls=() docker_saves=()
   k3d() { k3d_calls+=("$*"); }
 
@@ -179,6 +206,11 @@ k3d_harness_selftest() (
   (( ${#k3d_calls[@]} == 0 ))
   ! k3d_start_port_forward "--all" "svc/brain" 38080 3000 /tmp/unused
   ! k3d_start_port_forward "awaken-test" "deployment/brain" 38080 3000 /tmp/unused
+  local available_port
+  available_port=$(k3d_available_port 43000)
+  [[ "$available_port" =~ ^[0-9]+$ ]] && (( available_port >= 43000 ))
+  ! k3d_available_port 80
+  ! k3d_available_port many
 
   [[ "$(k3d_archive_name 'registry:5000/awaken@sha256:abc')" = "registry_5000_awaken_sha256_abc" ]]
   docker() {

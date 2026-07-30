@@ -93,7 +93,7 @@ if ! kubectl -n "$NS_GUARD" rollout status deploy/brain --timeout=150s; then
 fi
 
 # Port-forward the load-balanced Service so submissions fan out across the fleet.
-LOCAL_PORT=$((LOCAL_PORT + 1))
+LOCAL_PORT=$(k3d_available_port "$((LOCAL_PORT + 1))")
 PF_PID=$(k3d_start_port_forward "$NS_GUARD" svc/brain "$LOCAL_PORT" 3000 /tmp/cold_start_pf.log)
 for _ in $(seq 1 60); do
   curl -fsS -o /dev/null "http://127.0.0.1:$LOCAL_PORT/v1/durable/threads/probe/messages" 2>/dev/null && break

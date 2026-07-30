@@ -57,7 +57,7 @@ fi
 # coordinator, backed by shared Postgres).
 pf_brain() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
-  LOCAL_PORT=$((LOCAL_PORT + 1))
+  LOCAL_PORT=$(k3d_available_port "$((LOCAL_PORT + 1))")
   PF_PID=$(k3d_start_port_forward "$NS" svc/brain "$LOCAL_PORT" 3000 /tmp/wfailover_pf.log)
   for _ in $(seq 1 60); do
     if curl -fsS -o /dev/null "http://127.0.0.1:$LOCAL_PORT/v1/durable/threads/probe/messages" 2>/dev/null; then

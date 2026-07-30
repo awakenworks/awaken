@@ -44,7 +44,7 @@ pf_pod() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
   # A fresh port each call: a killed port-forward can leave the old local port in
   # TIME_WAIT, and reusing it races the new tunnel.
-  LOCAL_PORT=$((LOCAL_PORT + 1))
+  LOCAL_PORT=$(k3d_available_port "$((LOCAL_PORT + 1))")
   PF_PID=$(k3d_start_port_forward "$NS" "pod/$pod" "$LOCAL_PORT" 3000 /tmp/failover_pf.log)
   # Wait for a real HTTP 200 from the durable surface, not just a TCP accept: the
   # kubectl local listener accepts before the pod tunnel is ready, so an early fetch

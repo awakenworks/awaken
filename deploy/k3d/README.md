@@ -15,7 +15,7 @@ copied cluster setup scripts.
 | `microservices/` | Postgres plus the Direct topology, with a focused durable-brain patch applied before object creation |
 | `failover/`, `scaling/`, `cold-start/`, `nats-wake/`, `worker-failover/` | Placement, replica counts, dependencies, and fault behavior layered over the Postgres and durable-brain bases |
 | `topology-reverse.yaml`, `topology-relay.yaml` | Distinct network topologies that cannot reuse the Direct deployment contract |
-| `e2e/k3d/harness.sh` | Tool admission, cluster lifecycle, Cargo executable resolution, single-platform image import, and CoreDNS refresh |
+| `e2e/k3d/harness.sh` | Tool admission, cluster lifecycle, Cargo executable resolution, single-platform image import, CoreDNS refresh, and collision-free IPv4 port forwarding |
 | `e2e/k3d/*_e2e.sh` | Scenario triggers, fault timing, and terminal assertions only |
 
 Kustomize resolves every overlay before Kubernetes creates an object. In
@@ -40,7 +40,7 @@ flowchart LR
 The harness always imports a single-platform application image together with
 the cluster's exact Pause and CoreDNS images. Scenario scripts may add
 dependencies such as Postgres or NATS, but they must not reimplement import,
-cluster creation, executable discovery, or cleanup.
+cluster creation, executable discovery, port selection, or cleanup.
 
 ## Verification Rules
 
