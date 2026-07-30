@@ -521,23 +521,36 @@ impl ManagedState {
                 "agent_unavailable: agent `{agent_id}` cannot start a new session"
             ))));
         }
-        // Resolve the session's effective model. Precedence: the official
-        // `agent_with_overrides.model` (a per-session replace) wins; then the legacy
-        // `metadata.awaken.model` selection; then the referenced agent's authoritative
-        // model from the config plane (the config plane owns model/system/tools); else
-        // `None` = the host default. Clearing the model is rejected — a session always
-        // needs one (400 `agent_model_required`).
+        // Cause/effect decision table for Session model authority:
+        // R1 no override + published Agent -> inherit its complete publication;
+        // R2 equal official override -> accept without changing the route;
+        // R3 different official override + published Agent -> reject before state;
+        // R4 cleared override -> reject. Metadata never selects execution.
+        // This prevents a model string from being stitched to the Agent's old
+        // backend/credential pins. Selecting another route requires publishing an
+        // Agent for that Managed model id first.
         let selected_model: Option<ModelConfig> = match req.agent.model_override() {
-            ModelOverride::Set(cfg) => Some(cfg),
+            ModelOverride::Set(cfg) => {
+                if config_view
+                    .as_ref()
+                    .and_then(|view| view.model.as_deref())
+                    .is_some_and(|published| published != cfg.id)
+                {
+                    return Err(StateError::Run(RunError::bad_request(
+                        "agent_model_override_unpublished: publish or update an Agent with this model id before creating the Session",
+                    )));
+                }
+                Some(cfg)
+            }
             ModelOverride::Cleared => {
                 return Err(StateError::Run(RunError::bad_request(
                     "agent_model_required: a session override cannot clear `model`",
                 )));
             }
-            ModelOverride::Absent => req
-                .awaken_model()
-                .map(ModelConfig::new)
-                .or_else(|| config_view.as_ref()?.model.clone().map(ModelConfig::new)),
+            ModelOverride::Absent => config_view
+                .as_ref()
+                .and_then(|view| view.model.clone())
+                .map(ModelConfig::new),
         };
         // Echo the agent version the client pinned (or overrode over), defaulting to 1.
         let agent_version = req.agent.version().unwrap_or(1);
@@ -906,9 +919,7 @@ impl ManagedState {
                 id: agent_id.clone(),
                 kind: "agent",
                 version: agent_version,
-                // R6: echo the session's actual model — the `agent_with_overrides`
-                // override, else the legacy `metadata.awaken.model`, else the host
-                // default — so the client sees which model the session runs.
+                // Echo the accepted official override or the published Agent model.
                 model: resolved_model,
                 name: agent_id.clone(),
                 description: None,

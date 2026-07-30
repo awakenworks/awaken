@@ -2,16 +2,25 @@
 
 - Status: Proposed
 - Date: 2026-07-04
+- Amended 2026-07-30: a direct Provider connection defaults one protocol surface
+  to `(provider_id, dialect)` and uses an explicit endpoint name only to qualify
+  additional surfaces speaking the same dialect. The application derives the
+  stable endpoint id; clients do not author a parallel id namespace. Credential
+  materialization, selection, target usage, and execution policy remain separate
+  existing facts.
 - Amended 2026-07-29: provider connection is one reusable application command,
   and executable model readiness is one server-owned Catalog/Credential
   projection shared by HTTP and embedded hosts.
+- Amended 2026-07-30: the official Managed `model` string is decoded into
+  unresolved selection intent; no metadata key selects execution. One Offering
+  selector and the executable model directory project the same catalog facts.
 - Amended 2026-07-04: provider/endpoint/offering/routing live in a **dedicated
   management-plane crate `awaken-management-contract`** (mirroring awaken-next
   ADR-0088), orthogonal to execution (execution never depends on it — I4 = D6/D9);
   names align to that crate (`ProtocolEndpoint`/`Offering`/`InferenceProfile`/
   `InferenceTriple`/`ModelApiCompat`/`model_ref::ResolvedModel`), not raw
-  oversight-next; the Managed API's `model` resolves via model-extension
-  (`metadata.awaken` model axis → `reconcile_model_ref` → `resolve_inference`).
+  oversight-next; the Managed API's `model` resolves through the model-id ACL and
+  publication planner.
 - Relates to: [ADR-0038](0038-managed-resource-injection-and-store-organization.md),
   [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md),
   [ADR-0042](0042-public-api-tenancy-authz-and-front-door-consistency.md)
@@ -76,10 +85,13 @@ absent (host-native / egress proxy). Dependency direction is management plane �
 `awaken-runtime-contract`, never reverse.
 
 The **Managed Agents API consumes the management plane by reference, not by
-value**: the public `model` string + a `metadata.awaken` model axis is decoded
-(`model_ref`) and resolved (`reconcile_model_ref` → `resolve_inference` →
-`InferenceTriple`), admitted against the model-directory capability (ADR-0091 D5),
-fail-closed — see [model-provider-backend-binding](../design/model-provider-backend-binding.md).
+value**: its official `model` string is decoded by the sole Managed model-id ACL
+into unresolved `ModelSelection` intent, resolved by the sole Offering selector,
+and admitted against Provider, credential, executor, and Worker capabilities.
+`metadata.awaken.model` is not an execution path. The Workspace-scoped
+`/v1/models` directory is a rebuildable projection of the same executable facts;
+write paths always revalidate and freeze an immutable candidate — see
+[model-provider-backend-binding](../design/model-provider-backend-binding.md).
 
 ### 2. The runtime receives resolved secrets; the host owns the seam (the durable decision)
 
@@ -190,6 +202,24 @@ then call the same command; they do not recreate provider, credential, discovery
 or catalog orchestration. Provider-driver descriptors own authoring fields, and
 the service owns provider-specific endpoint construction, so clients submit
 non-secret configuration values instead of duplicating driver URL rules.
+
+For a direct Provider connection, the unnamed `ProtocolEndpointId` is the
+canonical `<provider_id>.<dialect>` projection. The request selects a dialect but
+does not mint an endpoint id. Reconnecting the same unnamed Provider/dialect
+surface updates it; selecting another dialect creates the other surface. When a
+Provider genuinely exposes multiple endpoints using one dialect, the request
+adds `endpoint_name` and the service derives
+`<provider_id>.<dialect>.<endpoint_name>`. A legacy `endpoint_id` request member
+is decode-only compatibility input and has no authoring authority. Brokered routes
+retain their internal opaque route identity: they are a managed model-supply
+projection, not another direct Provider connection namespace.
+
+This endpoint identity does not collapse credentials into protocol data.
+`CredentialKind`/material origin owns how material is obtained,
+`CredentialBinding` owns which source is selected, and the published
+`CredentialUsage` owns how the exact Native/ACP/remote consumer receives it.
+Compatibility is checked when these facts are joined; no descriptor or endpoint
+defines a second credential-usage vocabulary.
 
 For API-key and OAuth authoring, the initiator supplies a stable idempotency key.
 The Credential/Vault context derives one command-owned source identity and its

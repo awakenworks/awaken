@@ -28,4 +28,4 @@ awaken-store-sqlite = { workspace = true }
 
 [features]
 default = []
-schema = ["dep:schemars", "awaken-runtime-contract/schema"]
+schema = ["dep:schemars", "awaken-agent-contract/schema", "awaken-runtime-contract/schema"]

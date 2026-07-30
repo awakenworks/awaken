@@ -338,6 +338,52 @@ impl AgentConfigSource for AgentWithBackend {
     }
 }
 
+struct AgentWithPublishedModel;
+
+impl AgentConfigSource for AgentWithPublishedModel {
+    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
+        (agent_id == "model-agent").then(|| AgentConfigView {
+            model: Some("openai@edge/gpt-5".into()),
+            ..empty_agent_view("genai")
+        })
+    }
+}
+
+#[tokio::test]
+async fn session_model_override_cannot_change_a_published_execution_route() {
+    // Causes: C1 published model id; C2 official override absent/equal/different.
+    // Effects: E1 inherit; E2 accept the same immutable route; E3 reject before
+    // Session persistence. Decision rules exercise equal and different; the
+    // inheritance rule is covered by ordinary published-Agent Session tests.
+    let state = ManagedState::new(AcceptingFake::default())
+        .with_config_source(std::sync::Arc::new(AgentWithPublishedModel));
+    let equal = serde_json::from_value(json!({
+        "agent": {
+            "id": "model-agent",
+            "type": "agent_with_overrides",
+            "model": "openai@edge/gpt-5"
+        }
+    }))
+    .unwrap();
+    assert!(state.create_session(equal, None).await.is_ok(), "E2");
+
+    let different = serde_json::from_value(json!({
+        "agent": {
+            "id": "model-agent",
+            "type": "agent_with_overrides",
+            "model": "openai@gateway/gpt-5"
+        }
+    }))
+    .unwrap();
+    let error = state.create_session(different, None).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("agent_model_override_unpublished"),
+        "E3: {error}"
+    );
+}
+
 #[tokio::test]
 async fn publication_backend_is_the_only_session_backend_authority() {
     // Cause graph:

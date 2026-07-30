@@ -213,7 +213,6 @@ fn connection_request(workspace_id: &str, credential_source_id: &str) -> Value {
         "workspace_id": workspace_id,
         "provider_id": "anthropic",
         "display_name": "Anthropic",
-        "endpoint_id": "ep1",
         "dialect": "anthropic_messages",
         "base_url": "https://provider.invalid/v1",
         "timeout_secs": 30,
@@ -428,7 +427,6 @@ async fn test_and_save_activates_all_facts_only_after_discovery_succeeds() {
             "workspace_id":"workspace-a",
             "provider_id":"anthropic",
             "display_name":"Anthropic",
-            "endpoint_id":"anthropic-messages",
             "dialect":"anthropic_messages",
             "secret":secret
         }),
@@ -437,6 +435,7 @@ async fn test_and_save_activates_all_facts_only_after_discovery_succeeds() {
     assert_eq!(status, StatusCode::CREATED, "{result}");
     assert_eq!(result["sync"]["discovered"], 2);
     assert_eq!(result["credential"]["status"], "active");
+    assert_eq!(result["endpoint"]["id"], "anthropic.anthropic_messages");
     assert_eq!(
         result["endpoint"]["base_url"],
         "https://api.anthropic.com/v1"
@@ -444,7 +443,7 @@ async fn test_and_save_activates_all_facts_only_after_discovery_succeeds() {
     assert!(!result.to_string().contains(secret));
     assert_eq!(
         harness.discovery.secret_calls.lock().unwrap().as_slice(),
-        &[("anthropic-messages".into(), secret.into())]
+        &[("anthropic.anthropic_messages".into(), secret.into())]
     );
     let catalog = harness.catalog.snapshot().await.unwrap();
     assert_eq!(catalog.providers.len(), 1);
@@ -452,8 +451,98 @@ async fn test_and_save_activates_all_facts_only_after_discovery_succeeds() {
     assert_eq!(catalog.offerings.len(), 2);
 }
 
+#[tokio::test]
+async fn provider_and_dialect_are_the_only_authored_endpoint_identity() {
+    // Cause/effect decision table:
+    // R1 provider + dialect, no legacy endpoint_id -> canonical surface id;
+    // R2 same provider, another dialect -> a distinct canonical surface id;
+    // R3 same provider + dialect + endpoint_name -> a distinct named surface;
+    // R4 same provider + dialect, arbitrary legacy endpoint_id -> the unnamed
+    // canonical surface is updated, never a parallel client-named endpoint;
+    // R5 invalid endpoint_name -> reject before discovery or persistence.
+    let harness = harness();
+    let request =
+        |key: &str, dialect: &str, endpoint_name: Option<&str>, endpoint_id: Option<&str>| {
+            let mut request = json!({
+                "idempotency_key": key,
+                "workspace_id":"workspace-a",
+                "provider_id":"openai",
+                "display_name":"OpenAI",
+                "dialect":dialect,
+                "secret":"surface-fixture" // awaken-allow: secret -- inert fixture
+            });
+            if let Some(endpoint_id) = endpoint_id {
+                request["endpoint_id"] = json!(endpoint_id);
+            }
+            if let Some(endpoint_name) = endpoint_name {
+                request["endpoint_name"] = json!(endpoint_name);
+            }
+            request
+        };
+
+    let (responses_status, responses) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        request("responses", "open_ai_responses", None, None),
+    )
+    .await;
+    let (chat_status, chat) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        request("chat", "open_ai_chat", None, None),
+    )
+    .await;
+    let (named_chat_status, named_chat) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        request("chat-regional", "open_ai_chat", Some("regional"), None),
+    )
+    .await;
+    let (legacy_chat_status, legacy_chat) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        request("chat-legacy", "open_ai_chat", None, Some("client-invented")),
+    )
+    .await;
+    let discovery_calls_before_invalid = harness.discovery.secret_calls.lock().unwrap().len();
+    let (invalid_status, _) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        request("chat-invalid", "open_ai_chat", Some("not/a/name"), None),
+    )
+    .await;
+
+    assert_eq!(responses_status, StatusCode::CREATED, "{responses}");
+    assert_eq!(chat_status, StatusCode::CREATED, "{chat}");
+    assert_eq!(named_chat_status, StatusCode::CREATED, "{named_chat}");
+    assert_eq!(legacy_chat_status, StatusCode::CREATED, "{legacy_chat}");
+    assert_eq!(invalid_status, StatusCode::UNPROCESSABLE_ENTITY, "R5");
+    assert_eq!(
+        responses["endpoint"]["id"], "openai.open_ai_responses",
+        "R1"
+    );
+    assert_eq!(chat["endpoint"]["id"], "openai.open_ai_chat", "R2");
+    assert_eq!(
+        named_chat["endpoint"]["id"], "openai.open_ai_chat.regional",
+        "R3"
+    );
+    assert_eq!(legacy_chat["endpoint"]["id"], "openai.open_ai_chat", "R4");
+    assert_eq!(
+        harness.discovery.secret_calls.lock().unwrap().len(),
+        discovery_calls_before_invalid,
+        "R5"
+    );
+    let catalog = harness.catalog.snapshot().await.unwrap();
+    assert_eq!(catalog.endpoints.len(), 3, "R2+R3+R4");
+}
+
 // Provider-command identity decision table:
-// R1 same Workspace/provider/endpoint/key replay -> same credential source.
+// R1 same Workspace/provider/dialect/name/key replay -> same credential source.
 // R2 same connection with a different key -> distinct credential source.
 // R3 blank key -> reject before discovery or persistence.
 #[tokio::test]
@@ -465,7 +554,6 @@ async fn provider_connection_command_is_idempotent_and_requires_an_explicit_key(
             "workspace_id":"workspace-a",
             "provider_id":"anthropic",
             "display_name":"Anthropic",
-            "endpoint_id":"anthropic-messages",
             "dialect":"anthropic_messages",
             "secret":"idempotent-fixture" // awaken-allow: secret -- inert fixture
         })
@@ -531,7 +619,6 @@ async fn oauth_connection_uses_the_same_command_and_persists_only_the_helper() {
             "workspace_id":"workspace-a",
             "provider_id":"vertex",
             "display_name":"Vertex AI",
-            "endpoint_id":"vertex-gemini",
             "dialect":"vertex_gemini",
             "configuration":{"project_id":"p", "location":"global"},
             "oauth_helper":"gcloud"
@@ -549,7 +636,7 @@ async fn oauth_connection_uses_the_same_command_and_persists_only_the_helper() {
     assert_eq!(
         harness.discovery.calls.lock().unwrap().as_slice(),
         &[(
-            "vertex-gemini".into(),
+            "vertex.vertex_gemini".into(),
             "cred:provider-connection-probe".into()
         )]
     );
@@ -584,7 +671,6 @@ async fn existing_credential_connection_reuses_the_source_without_creating_a_dup
             "workspace_id":"workspace-a",
             "provider_id":"openai",
             "display_name":"OpenAI",
-            "endpoint_id":"openai-responses",
             "dialect":"open_ai_responses",
             "credential_source_id":credential_id
         }),
@@ -624,7 +710,6 @@ async fn provider_connection_rejects_a_claude_code_setup_token_before_discovery(
             "workspace_id":"workspace-a",
             "provider_id":"anthropic",
             "display_name":"Anthropic",
-            "endpoint_id":"anthropic-messages",
             "dialect":"anthropic_messages",
             "credential_source_id":entered["id"]
         }),
@@ -647,7 +732,6 @@ async fn connection_rejects_parallel_or_unsupported_auth_inputs() {
             "workspace_id":"workspace-a",
             "provider_id":"anthropic",
             "display_name":"Anthropic",
-            "endpoint_id":"anthropic-messages",
             "dialect":"anthropic_messages",
             "secret":"one",
             "oauth_helper":"gcloud"
@@ -666,7 +750,6 @@ async fn connection_rejects_parallel_or_unsupported_auth_inputs() {
             "workspace_id":"workspace-a",
             "provider_id":"anthropic",
             "display_name":"Anthropic",
-            "endpoint_id":"anthropic-messages",
             "dialect":"anthropic_messages",
             "oauth_helper":"gcloud"
         }),
@@ -689,7 +772,6 @@ async fn failed_connection_test_leaves_no_executable_catalog_facts() {
             "workspace_id":"workspace-a",
             "provider_id":"openai",
             "display_name":"OpenAI",
-            "endpoint_id":"openai-responses",
             "dialect":"open_ai_responses",
             "base_url":"https://api.openai.com/v1",
             "secret":"bad-key"
@@ -716,7 +798,6 @@ async fn unsupported_provider_and_empty_key_fail_before_discovery() {
             "workspace_id":"workspace-a",
             "provider_id":"unknown-provider",
             "display_name":"Unknown",
-            "endpoint_id":"unknown",
             "dialect":"open_ai_chat",
             "secret":secret
         }),
@@ -734,7 +815,6 @@ async fn unsupported_provider_and_empty_key_fail_before_discovery() {
             "workspace_id":"workspace-a",
             "provider_id":"openai",
             "display_name":"OpenAI",
-            "endpoint_id":"openai-responses",
             "dialect":"open_ai_responses",
             "secret":""
         }),
@@ -769,7 +849,6 @@ async fn catalog_rejection_disables_the_already_sealed_credential() {
             "workspace_id":"workspace-a",
             "provider_id":"anthropic",
             "display_name":"Anthropic",
-            "endpoint_id":"anthropic-messages",
             "dialect":"anthropic_messages",
             "base_url":"https://provider.invalid/v1",
             "secret":"sealed-before-catalog-rejection" // awaken-allow: secret -- inert fixture
@@ -818,7 +897,7 @@ async fn connection_summaries_cover_not_configured_ready_stale_and_unavailable()
         json!({
             "idempotency_key":"test-summary-command",
             "workspace_id":"workspace-a", "provider_id":"anthropic",
-            "display_name":"Anthropic", "endpoint_id":"anthropic-messages",
+            "display_name":"Anthropic",
             "dialect":"anthropic_messages", "secret":"summary-secret" // awaken-allow: secret -- inert fixture
         }),
     )
@@ -837,7 +916,7 @@ async fn connection_summaries_cover_not_configured_ready_stale_and_unavailable()
     harness
         .catalog
         .reconcile_discovered_models(
-            &awaken_model_catalog::ProtocolEndpointId::new("anthropic-messages"),
+            &awaken_model_catalog::ProtocolEndpointId::new("anthropic.anthropic_messages"),
             vec![DiscoveredModel {
                 model_id: "provider-a".into(),
                 upstream_model: None,
@@ -858,7 +937,7 @@ async fn connection_summaries_cover_not_configured_ready_stale_and_unavailable()
     harness
         .catalog
         .reconcile_discovered_models(
-            &awaken_model_catalog::ProtocolEndpointId::new("anthropic-messages"),
+            &awaken_model_catalog::ProtocolEndpointId::new("anthropic.anthropic_messages"),
             Vec::new(),
             2,
         )

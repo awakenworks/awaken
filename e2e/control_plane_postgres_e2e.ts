@@ -22,7 +22,6 @@ const WORKSPACE = `workspace_control_pg_${process.pid}`;
 const AGENT = `control-pg-agent-${process.pid}`;
 const MODEL = 'fake-haiku';
 const PROVIDER = 'anthropic';
-const ENDPOINT = `control-pg-endpoint-${process.pid}`;
 const FAKE_KEY = `sk-control-pg-${process.pid}`; // awaken-allow: secret
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 const BETAS = ['managed-agents-2026-04-01'];
@@ -181,7 +180,6 @@ async function main(): Promise<void> {
       workspace_id: WORKSPACE,
       provider_id: PROVIDER,
       display_name: 'Postgres provider',
-      endpoint_id: ENDPOINT,
       dialect: 'anthropic_messages',
       base_url: `${upstream.url}/v1/`,
       timeout_secs: 30,

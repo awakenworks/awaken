@@ -152,7 +152,6 @@ async function publishAgent(base, directoryUrl) {
     workspace_id: WORKSPACE,
     provider_id: 'gemini',
     display_name: 'Gemini',
-    endpoint_id: 'container-gemini-endpoint',
     dialect: 'gemini',
     base_url: `${directoryUrl}/v1beta/`,
     timeout_secs: 30,

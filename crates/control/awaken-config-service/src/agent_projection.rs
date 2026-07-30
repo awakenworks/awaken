@@ -32,7 +32,8 @@ impl ConfigServiceAgentSource {
         workspace_id: &str,
         agent_id: &str,
     ) -> Option<awaken_session_contract::AgentConfigView> {
-        let snapshot = self.0.installed_in(workspace_id, agent_id)?;
+        let projection = self.0.installed_projection_in(workspace_id, agent_id)?;
+        let snapshot = projection.snapshot;
         let spec = &snapshot.resolved_spec;
         let bindings = spec.plugin_config.agent.clone();
         let pinned_defaults_revision = snapshot
@@ -73,8 +74,15 @@ impl ConfigServiceAgentSource {
                 revision: 1,
             },
         };
+        let managed_model = crate::render_managed_model_id(&projection.authored_model_selection)
+            .or_else(|_| {
+                crate::render_managed_model_id(&awaken_config_store::ModelSelection::Pinned(
+                    spec.model_binding.binding.clone(),
+                ))
+            })
+            .ok();
         Some(awaken_session_contract::AgentConfigView {
-            model: Some(spec.model_binding.model_ref.clone()),
+            model: managed_model,
             backend_ref: spec.model_binding.backend_ref.clone(),
             system: (!spec.instructions.is_empty()).then(|| spec.instructions.clone()),
             tool_ids: spec

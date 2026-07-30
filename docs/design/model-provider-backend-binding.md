@@ -249,7 +249,7 @@ oversight-next; the execution side keeps our existing `ResolvedSpec` /
 ```rust
 // awaken-management-contract — catalog domain
 enum   Provider { … }                         // vendor
-struct ProtocolEndpoint { provider_id, flavor: ModelApiCompat, base_url: Option<String> }
+struct ProtocolEndpoint { id, provider_id, flavor: ModelApiCompat, base_url: Option<String> }
 struct Offering { model_id, provider_id, flavor: ModelApiCompat }  // a model reachable on a surface
 struct ProviderCatalog { … }
 
@@ -264,6 +264,15 @@ fn     resolve_inference(..) -> InferenceResolution         // picks the triple
 // model-pool axis: agent def `model_pool: Option<String>` (load-spread + fallback, ADR-0117 D6)
 ```
 
+For direct Provider authoring, the default `ProtocolEndpoint.id` is derived from
+`(provider_id, flavor)` as `<provider_id>.<dialect>`; it is not an additional
+client-selected axis. Only multiple endpoints sharing the same dialect require an
+`endpoint_name`, producing `<provider_id>.<dialect>.<endpoint_name>`. The retained
+id gives immutable publications and internal brokered routes an opaque route pin,
+while ordinary Provider setup and selection use the dialect as the protocol-
+surface discriminator. Provider descriptors therefore publish dialect/default-
+URL pairs and do not maintain a duplicate endpoint suffix.
+
 **The intersection.** `resolve_inference` picks the `ProtocolEndpoint` by
 `Offering(model) ∩ flavor` and an eligible `ProviderIdentity` / credential,
 yielding one `InferenceTriple = (model × identity × provider × flavor)`.
@@ -273,35 +282,106 @@ a secret in any spec, preserving G22.
 
 ## How the Managed Agents API consumes management-plane Provider/Model
 
-The public Managed Agents `model` field stays **Anthropic-compatible** — a bare
-model string. The binding detail rides in `metadata.awaken` and is decoded by a
-**model-axis codec** (`agent_model_codec` / `ModelAxis`) into a management-plane
-model reference. This is the **"model 扩展解析" (model-extension resolution)** — the
-Managed API never inlines provider/endpoint/credential config; it references a
-model, and the management plane resolves it.
+The public Agent `model.id` remains one string, so official Managed Agents clients
+do not need a second Awaken request shape. Provider, endpoint, executor, and model
+are encoded only when they are needed to disambiguate execution:
 
-At resolve time ingress **queries** the management plane:
+| Model id | Meaning |
+|---|---|
+| `<model>` | native executor; accepted only when one active Offering matches |
+| `<provider>/<model>` | native executor through one Provider |
+| `<provider>@<endpoint>/<model>` | native executor through one endpoint selector |
+| `acp:<cli>` | ACP CLI with its own default model and Worker-local login |
+| `acp:<cli>/<model>` | ACP CLI with an exact backend-owned model |
+| `acp:<cli>@<provider>/<model>` | ACP CLI using an Awaken-managed Provider route |
+| `acp:<cli>@<provider>@<endpoint>/<model>` | the same with an endpoint selector |
 
-1. `reconcile_model_ref(..)` → `ResolvedModel { model_id, flavor: ModelApiCompat }`
-   (or `ModelRefBinding::BuiltinDefault` for an ACP adapter's built-in backend).
-   Fail-closed if a `Native` def's required model ref does not resolve to a
-   `ModelSpec` (fail-closed).
-2. `resolve_inference(..)` → an `InferenceTriple` from the catalog +
-   `ProviderIdentity` + `CredentialBinding` (+ `model_pool` selection).
-3. The selected model is admitted against the **resolved model-directory
-   capability** (ADR-0091 D5) — fail-closed.
-4. The triple + a `MaterializedCredential` feed execution; execution never touches
-   `awaken-management-contract` (I4).
+The model portion is the complete remainder after the route separator, so ids
+such as `anyrouter/qwen/qwen3-235b` mean provider `anyrouter`, model
+`qwen/qwen3-235b`. Credentials never appear in this string. Dialect is normally
+negotiated from the selected Offering and appears only when it is needed as an
+endpoint selector.
 
-Agent-def kinds set whether a model ref is required: **Native** (in-proc brain)
-**requires** a `ModelSpec` ref; **AcpLaunched** has an optional capability-gated
-backend ref (else built-in default); **Remote** (A2A / Coze) owns no local model.
+The endpoint selector is the dialect for an unnamed/default surface (for example
+`glm@anthropic_messages/glm-5`) and the explicit `endpoint_name` when multiple
+surfaces share that dialect. If the same short endpoint name occurs under two
+dialects, discovery emits `<dialect>.<endpoint_name>` to keep the id unambiguous.
+These qualifiers are returned by `/v1/models`; clients do not construct internal
+`ProtocolEndpointId` values.
 
-**P0 implementation subset.** Model the full graph in `awaken-management-contract`,
-but P0 wires only the single-`ProviderIdentity` + single-`ProtocolEndpoint` +
-`CredentialBinding::Exact` path — one Provider, one endpoint, one credential per
-run. Model pool, multi-candidate `InferenceProfile` failover, and endpoint pinning
-are P1. `ProviderDiscovery` model-capability backfill is P2.
+`parse_managed_model_id` is the sole ACL. It creates a `ModelSelection::Target`
+intent rather than an incomplete `Pinned` binding. `select_offering` is the sole
+catalog selector. Publication then intersects:
+
+```text
+Target
+  × one active Offering (Provider + ProtocolEndpoint + dialect)
+  × one compatible active Credential
+  × Executor capability (native or ACP CLI)
+  × current Worker capability when the backend owns execution
+  → immutable ResolvedModelCandidate
+```
+
+Zero matches, multiple matches, unsupported dialects, incompatible credential
+material/usage, unavailable Worker capabilities, and incomplete endpoint
+qualifiers fail before an Agent becomes visible. Runtime receives only the frozen
+candidate and never renegotiates Provider, credential, dialect, or executor.
+
+### Developer flow
+
+1. Connect and discover a Provider endpoint. Built-in descriptors provide form
+   defaults only; an arbitrary Provider identity is accepted for an installed
+   dialect when it supplies `base_url` and a supported authentication method.
+
+   ```http
+   POST /v1/config/provider-connections
+   Content-Type: application/json
+
+   {
+     "idempotency_key": "glm-anthropic-primary",
+     "workspace_id": "workspace-a",
+     "provider_id": "glm",
+     "display_name": "GLM",
+     "dialect": "anthropic_messages",
+     "base_url": "https://example.invalid/anthropic/v1",
+     "secret": "..."
+   }
+   ```
+
+   The command tests authentication and discovers models before visibility. It
+   stages a newly created credential as disabled, records the Provider, derived
+   endpoint id, and Offerings, then activates that credential. A catalog-write
+   failure therefore cannot expose an unverified credential/model route. A
+   second endpoint using the same dialect supplies `endpoint_name`.
+
+2. List the executable, Workspace-scoped Managed ids:
+
+   ```http
+   GET /v1/models
+   ```
+
+   The response is derived from live Catalog × Credential × executor capability;
+   it is not a static vendor list. Bare ids are returned only when unique;
+   provider and endpoint qualifiers are added only when required.
+
+3. Create and publish an Agent using the ordinary Managed Agents field:
+
+   ```http
+   POST /v1/agents
+   Content-Type: application/json
+
+   {"name":"support","model":"acp:claude@glm/glm-5","tools":[]}
+   ```
+
+   Create/update dry-runs the complete publication first and returns `400` for an
+   unsupported combination. The config authoring API may retain drafts; the
+   Managed Agents API exposes only successfully published Agents.
+
+4. Create a Session with the Agent id through `/v1/sessions`. The Session inherits
+   the complete immutable publication. `metadata.awaken.model` is inert metadata,
+   not an execution path. An official per-Session model override is accepted only
+   when it names the Agent's already-published model; selecting another route
+   requires creating or updating an Agent so model and backend pins cannot diverge.
 
 ## Guardrails
 

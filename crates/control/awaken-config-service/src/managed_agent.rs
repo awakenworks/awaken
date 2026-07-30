@@ -9,6 +9,8 @@ use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use serde_json::{Value, json};
 
+use crate::{parse_managed_model_id, render_managed_model_id};
+
 fn managed_tool_id(value: &Value) -> Option<String> {
     match value {
         Value::String(id) => Some(id.clone()),
@@ -180,8 +182,11 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
 
 fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, String> {
     let Some(model) = model else {
-        return Ok(ModelSelection::pinned("", "", ""));
+        return Ok(ModelSelection::Auto);
     };
+    if let Some(model) = model.as_str() {
+        return parse_managed_model_id(model).map_err(|error| error.to_string());
+    }
     if model.get("mode").and_then(Value::as_str) == Some("auto") {
         return Ok(ModelSelection::Auto);
     }
@@ -259,25 +264,41 @@ fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, Stri
         });
     }
     let (provider_identity_ref, model_ref, backend_ref) = match model {
-        Value::String(model) => (String::new(), model.clone(), String::new()),
-        Value::Object(model) => (
-            model
-                .get("provider_identity_ref")
+        Value::Object(model)
+            if !model.contains_key("provider_identity_ref")
+                && !model.contains_key("backend_ref") =>
+        {
+            let id = model
+                .get("id")
                 .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            model
-                .get("model_ref")
-                .or_else(|| model.get("id"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            model
-                .get("backend_ref")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        ),
+                .ok_or_else(|| "model object requires a non-empty id".to_string())?;
+            return parse_managed_model_id(id).map_err(|error| error.to_string());
+        }
+        Value::Object(model) => {
+            let required = |key: &str| {
+                model
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("pinned model object requires non-empty `{key}`"))
+            };
+            (
+                required("provider_identity_ref")?,
+                model
+                    .get("model_ref")
+                    .or_else(|| model.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        "pinned model object requires non-empty `model_ref` or `id`".to_string()
+                    })?,
+                required("backend_ref")?,
+            )
+        }
         _ => return Err("model must be a string or object".to_string()),
     };
     Ok(ModelSelection::pinned(
@@ -291,6 +312,10 @@ fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, Stri
 pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value {
     let binding = config.model_binding.resolved();
     let model = match &config.model_binding {
+        ModelSelection::Target { .. } => Value::String(
+            render_managed_model_id(&config.model_binding)
+                .expect("validated target selection has a Managed model id"),
+        ),
         ModelSelection::BackendDefault { .. } | ModelSelection::BackendExact { .. } => {
             serde_json::to_value(&config.model_binding).expect("ModelSelection serializes")
         }
@@ -356,10 +381,10 @@ mod tests {
 
     #[test]
     fn reads_every_managed_model_shape() {
-        // Cause graph: C1 `model.mode` is `auto`; C2 an exact model coordinate is
-        // present. E1 preserve Auto for Workspace Profile resolution; E2 preserve
-        // the exact pinned triple. Decision table: C1=Y -> E1; C1=N,C2=Y -> E2;
-        // C1=N,C2=N -> legacy empty pin.
+        // Causes: C1 explicit auto; C2 Managed string; C3 Managed object;
+        // C4 absent model. Effects: E1 Auto intent; E2 unresolved Target intent;
+        // E3 the object id uses the same parser. Rules: C1/C4 -> E1,
+        // C2/C3 -> E2; incomplete Pinned is never a parallel selection syntax.
         let auto = agent_config_from_managed(
             "a".into(),
             &json!({
@@ -376,7 +401,7 @@ mod tests {
         let from_string = agent_config_from_managed("a".into(), &json!({ "model": "gpt-x" }))
             .expect("string model");
         assert_eq!(
-            from_string.model_binding.resolved().unwrap().model_ref,
+            from_string.model_binding.target().unwrap().0.model_id,
             "gpt-x"
         );
 
@@ -384,12 +409,12 @@ mod tests {
             agent_config_from_managed("a".into(), &json!({ "model": { "id": "claude" } }))
                 .expect("object model");
         assert_eq!(
-            from_object.model_binding.resolved().unwrap().model_ref,
+            from_object.model_binding.target().unwrap().0.model_id,
             "claude"
         );
 
         let missing = agent_config_from_managed("a".into(), &json!({})).expect("absent model");
-        assert_eq!(missing.model_binding.resolved().unwrap().model_ref, "");
+        assert!(missing.model_binding.is_auto());
     }
 
     #[test]

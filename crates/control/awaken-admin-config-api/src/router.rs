@@ -365,13 +365,6 @@ fn provider_connection_problem(error: &ProviderConnectionError, rid: &str) -> Pr
         ProviderConnectionError::Credential(error) => cred_problem(error, rid),
         ProviderConnectionError::Discovery(error) => model_discovery_problem(error, rid),
         ProviderConnectionError::Catalog(error) => repo_problem(error, rid),
-        ProviderConnectionError::UnsupportedProvider(_) => Problem(ApiError::new(
-            422,
-            "provider_unsupported",
-            "Unsupported provider",
-            error.to_string(),
-            rid,
-        )),
         ProviderConnectionError::UnsupportedDialect { .. } => Problem(ApiError::new(
             422,
             "dialect_unsupported",
@@ -442,8 +435,16 @@ pub struct SaveProviderConnectionRequest {
     pub workspace_id: String,
     pub provider_id: String,
     pub display_name: String,
-    pub endpoint_id: String,
+    /// Deprecated compatibility input. Endpoint identity is canonicalized from
+    /// `(provider_id, dialect)`; retained clients may still send this field, but
+    /// it never creates a second route for the same protocol surface.
+    #[serde(default, rename = "endpoint_id")]
+    #[cfg_attr(feature = "schema", schemars(skip))]
+    pub _legacy_endpoint_id: Option<String>,
     pub dialect: awaken_model_catalog::ApiDialect,
+    /// Optional stable qualifier for a second endpoint using the same dialect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_name: Option<String>,
     #[serde(default)]
     pub base_url: Option<String>,
     #[serde(default)]
@@ -517,8 +518,8 @@ async fn test_and_save_provider_connection(
             workspace_id,
             provider_id: body.provider_id,
             display_name: body.display_name,
-            endpoint_id: body.endpoint_id,
             dialect: body.dialect,
+            endpoint_name: body.endpoint_name,
             base_url: body.base_url,
             configuration: body.configuration,
             timeout_secs: body.timeout_secs,
@@ -675,8 +676,6 @@ fn resolve_problem(error: &ResolveError, rid: &str) -> Problem {
     let (status, code) = match error {
         ResolveError::ModelUnresolved(_) => (404, "model_unresolved"),
         ResolveError::ModelAmbiguous { .. } => (409, "model_ambiguous"),
-        ResolveError::AcpDialectUnknown(_) => (422, "acp_dialect_unknown"),
-        ResolveError::DialectIncompatible { .. } => (422, "dialect_incompatible"),
         ResolveError::EndpointMissing(_) => (422, "endpoint_missing"),
         ResolveError::SourceMissing(_) | ResolveError::PoolMissing(_) => (404, "not_found"),
         ResolveError::IncompatibleCredential { .. } => (422, "incompatible_credential"),
@@ -1545,36 +1544,6 @@ mod tests {
         );
         assert_eq!(p.0.status, 409);
         assert_eq!(p.0.code, "model_ambiguous");
-    }
-
-    // Cause/effect decision table for ACP dialect-resolution failures:
-    // R1 resolver has no executor→dialect mapping -> 422/acp_dialect_unknown;
-    // R2 executor and Offering dialect conflict -> 422/dialect_incompatible.
-    // Both are valid authored shapes that cannot be executed safely, so neither
-    // is reported as a missing resource or a transient conflict.
-    #[test]
-    fn resolve_problem_acp_dialect_failures_are_stable_422_contracts() {
-        let cases = [
-            (
-                ResolveError::AcpDialectUnknown("acp:other".into()),
-                "acp_dialect_unknown",
-                "R1",
-            ),
-            (
-                ResolveError::DialectIncompatible {
-                    backend_ref: "acp:claude".into(),
-                    expected: "anthropic_messages",
-                    actual: "openai_chat",
-                },
-                "dialect_incompatible",
-                "R2",
-            ),
-        ];
-        for (error, expected_code, rule) in cases {
-            let p = resolve_problem(&error, "rid");
-            assert_eq!(p.0.status, 422, "{rule}");
-            assert_eq!(p.0.code, expected_code, "{rule}");
-        }
     }
 
     #[test]

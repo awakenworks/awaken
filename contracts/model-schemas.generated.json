@@ -2242,13 +2242,9 @@
             },
             "dialect": {
               "$ref": "#/$defs/ApiDialect"
-            },
-            "id_suffix": {
-              "type": "string"
             }
           },
           "required": [
-            "id_suffix",
             "dialect",
             "base_url"
           ],
@@ -2695,8 +2691,12 @@
         "display_name": {
           "type": "string"
         },
-        "endpoint_id": {
-          "type": "string"
+        "endpoint_name": {
+          "description": "Optional stable qualifier for a second endpoint using the same dialect.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "idempotency_key": {
           "type": "string"
@@ -2739,7 +2739,6 @@
         "workspace_id",
         "provider_id",
         "display_name",
-        "endpoint_id",
         "dialect"
       ],
       "title": "SaveProviderConnectionRequest",

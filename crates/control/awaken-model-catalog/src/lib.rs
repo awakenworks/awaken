@@ -105,6 +105,24 @@ impl ApiDialect {
     }
 }
 
+impl ProtocolEndpointId {
+    /// Canonical identity of one provider's protocol surface. The unnamed
+    /// endpoint uses `(provider, dialect)`; an optional name qualifies a second
+    /// endpoint speaking the same dialect without replacing either axis.
+    #[must_use]
+    pub fn for_surface(
+        provider_id: &ProviderId,
+        dialect: ApiDialect,
+        endpoint_name: Option<&str>,
+    ) -> Self {
+        let base = format!("{}.{}", provider_id.as_str(), dialect.as_str());
+        match endpoint_name.map(str::trim).filter(|name| !name.is_empty()) {
+            Some(name) => Self(format!("{base}.{name}")),
+            None => Self(base),
+        }
+    }
+}
+
 /// A vendor namespace (`anthropic`, `openai`, …).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -196,7 +214,6 @@ pub struct ProviderConfigurationField {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DefaultProtocolEndpoint {
-    pub id_suffix: String,
     pub dialect: ApiDialect,
     pub base_url: String,
 }
@@ -246,7 +263,6 @@ pub fn provider_driver_descriptors() -> Vec<ProviderDriverDescriptor> {
             auth_methods: vec![ProviderAuthMethod::ApiKey],
             configuration_fields: vec![api_key(), custom_url()],
             default_endpoints: vec![DefaultProtocolEndpoint {
-                id_suffix: "messages".into(),
                 dialect: ApiDialect::AnthropicMessages,
                 base_url: "https://api.anthropic.com/v1".into(),
             }],
@@ -261,12 +277,10 @@ pub fn provider_driver_descriptors() -> Vec<ProviderDriverDescriptor> {
             configuration_fields: vec![api_key(), custom_url()],
             default_endpoints: vec![
                 DefaultProtocolEndpoint {
-                    id_suffix: "responses".into(),
                     dialect: ApiDialect::OpenAiResponses,
                     base_url: "https://api.openai.com/v1".into(),
                 },
                 DefaultProtocolEndpoint {
-                    id_suffix: "chat".into(),
                     dialect: ApiDialect::OpenAiChat,
                     base_url: "https://api.openai.com/v1".into(),
                 },
@@ -281,7 +295,6 @@ pub fn provider_driver_descriptors() -> Vec<ProviderDriverDescriptor> {
             auth_methods: vec![ProviderAuthMethod::ApiKey],
             configuration_fields: vec![api_key(), custom_url()],
             default_endpoints: vec![DefaultProtocolEndpoint {
-                id_suffix: "chat".into(),
                 dialect: ApiDialect::OpenAiChat,
                 base_url: "https://api.deepseek.com".into(),
             }],
@@ -295,7 +308,6 @@ pub fn provider_driver_descriptors() -> Vec<ProviderDriverDescriptor> {
             auth_methods: vec![ProviderAuthMethod::ApiKey],
             configuration_fields: vec![api_key(), custom_url()],
             default_endpoints: vec![DefaultProtocolEndpoint {
-                id_suffix: "coding".into(),
                 dialect: ApiDialect::AnthropicMessages,
                 base_url: "https://api.kimi.com/coding/v1".into(),
             }],
@@ -309,7 +321,6 @@ pub fn provider_driver_descriptors() -> Vec<ProviderDriverDescriptor> {
             auth_methods: vec![ProviderAuthMethod::ApiKey],
             configuration_fields: vec![api_key(), custom_url()],
             default_endpoints: vec![DefaultProtocolEndpoint {
-                id_suffix: "gemini".into(),
                 dialect: ApiDialect::Gemini,
                 base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
             }],
@@ -1030,6 +1041,37 @@ mod tests {
     #[test]
     fn valid_catalog_passes() {
         assert!(catalog().validate().is_ok());
+    }
+
+    #[test]
+    fn protocol_surface_identity_defaults_to_provider_plus_dialect() {
+        // Cause/effect decision table:
+        // R1 same provider + same dialect -> the same stable endpoint id;
+        // R2 same provider + different dialect -> distinct endpoint ids;
+        // R3 different provider + same dialect -> distinct endpoint ids;
+        // R4 same provider + dialect + explicit name -> a qualified endpoint id.
+        let openai = ProviderId::new("openai");
+        let another = ProviderId::new("another");
+        assert_eq!(
+            ProtocolEndpointId::for_surface(&openai, ApiDialect::OpenAiChat, None).as_str(),
+            "openai.open_ai_chat",
+            "R1"
+        );
+        assert_ne!(
+            ProtocolEndpointId::for_surface(&openai, ApiDialect::OpenAiChat, None),
+            ProtocolEndpointId::for_surface(&openai, ApiDialect::OpenAiResponses, None),
+            "R2"
+        );
+        assert_ne!(
+            ProtocolEndpointId::for_surface(&openai, ApiDialect::OpenAiChat, None),
+            ProtocolEndpointId::for_surface(&another, ApiDialect::OpenAiChat, None),
+            "R3"
+        );
+        assert_ne!(
+            ProtocolEndpointId::for_surface(&openai, ApiDialect::OpenAiChat, None),
+            ProtocolEndpointId::for_surface(&openai, ApiDialect::OpenAiChat, Some("enterprise")),
+            "R4"
+        );
     }
 
     #[test]

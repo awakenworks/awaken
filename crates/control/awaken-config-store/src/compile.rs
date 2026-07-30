@@ -1144,6 +1144,21 @@ mod tests {
             serde_json::from_value::<ModelSelection>(wire).unwrap(),
             backend_default
         );
+        let target = ModelSelection::Target {
+            target: crate::ModelTarget {
+                model_id: "qwen/qwen3".into(),
+                provider_id: Some("anyrouter".into()),
+                protocol_endpoint_id: None,
+                endpoint_name: Some("primary".into()),
+            },
+            backend_ref: "acp:opencode".into(),
+        };
+        let wire = serde_json::to_value(&target).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ModelSelection>(wire).unwrap(),
+            target,
+            "unresolved target intent must round-trip without becoming a pin"
+        );
 
         // Cause/effect decision table for the shared ACP selection wire:
         // W1 default + empty configuration -> compact backward-compatible shape;

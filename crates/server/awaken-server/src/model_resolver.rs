@@ -8,9 +8,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use awaken_config_resolver::validate_acp_dialect;
 use awaken_config_resolver::{
-    InferenceProfile, InferenceProfileStore, ModelTarget, derive_vendor_pool, get_workspace_profile,
+    InferenceProfile, InferenceProfileStore, ModelTarget, derive_vendor_pool,
+    get_workspace_profile, select_offering,
 };
 use awaken_config_store::ModelSelection;
 use awaken_credential_vault::repo::CredentialRepo;
@@ -77,6 +77,30 @@ impl CatalogModelPublicationResolver {
                     .collect::<Result<Vec<_>, _>>()?,
             ));
         }
+        if let Some((target, backend_ref)) = selection.target() {
+            let offering = select_offering(catalog, target, &[]).map_err(|error| {
+                PublicationResolutionError::CandidateUnavailable {
+                    binding: ModelBinding::new(
+                        target.provider_id.as_deref().unwrap_or_default(),
+                        &target.model_id,
+                        backend_ref,
+                    ),
+                    reason: error.to_string(),
+                }
+            })?;
+            let primary = ModelBinding::new(
+                offering.provider_id.as_str(),
+                &offering.model_id,
+                backend_ref,
+            );
+            return Ok((
+                primary,
+                fallbacks
+                    .iter()
+                    .map(|binding| Self::canonical_binding(catalog, binding))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ));
+        }
         if let Some(backend_ref) = selection.backend_default_ref() {
             let primary = ModelBinding::new("", "", backend_ref);
             Self::validate_acp_binding(&primary, BackendModelSelection::Default)?;
@@ -112,22 +136,15 @@ impl CatalogModelPublicationResolver {
         ))
     }
 
-    /// Normalize the public model-level selection into the one complete catalog
-    /// identity frozen in the publication. Provider/backend-qualified bindings
-    /// remain exact; an SDK/UI `{model}` selection is accepted only when the
-    /// active catalog has one matching offering.
+    /// Validate a complete internal binding against the current executable
+    /// catalog. Public partial/qualified model syntax is represented only by
+    /// `ModelSelection::Target`; Pinned never fills an omitted axis.
     fn canonical_binding(
         catalog: &ProviderCatalog,
         binding: &ModelBinding,
     ) -> Result<ModelBinding, PublicationResolutionError> {
-        if Self::offering_for(catalog, binding).is_some() {
-            return Ok(binding.clone());
-        }
-        if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp { .. }) {
-            Self::validate_acp_binding(binding, BackendModelSelection::Exact)?;
-            return Ok(binding.clone());
-        }
-        if let Backend::Remote { endpoint } = Backend::from_ref(&binding.backend_ref) {
+        let backend = Backend::from_ref(&binding.backend_ref);
+        if let Backend::Remote { endpoint } = backend {
             Self::remote_origin(&endpoint).map_err(|reason| {
                 PublicationResolutionError::CandidateUnavailable {
                     binding: binding.clone(),
@@ -136,32 +153,43 @@ impl CatalogModelPublicationResolver {
             })?;
             return Ok(binding.clone());
         }
-        let candidates = catalog
-            .offerings
-            .iter()
-            .filter(|offering| {
-                offering.status == awaken_model_catalog::OfferingStatus::Active
-                    && offering.model_id == binding.model_ref
-                    && (binding.provider_identity_ref.is_empty()
-                        || offering.provider_id.as_str() == binding.provider_identity_ref)
-                    && (binding.backend_ref.is_empty() || binding.backend_ref == "genai")
-            })
-            .map(Self::binding_of)
-            .collect::<Vec<_>>();
-        match candidates.as_slice() {
-            [resolved] => Ok(resolved.clone()),
-            [] => Err(PublicationResolutionError::CandidateUnavailable {
-                binding: binding.clone(),
-                reason: format!("model offering {} is not published", binding.model_ref),
-            }),
-            _ => Err(PublicationResolutionError::CandidateUnavailable {
-                binding: binding.clone(),
-                reason: format!(
-                    "model {} is ambiguous; select a provider-qualified binding",
-                    binding.model_ref
-                ),
-            }),
+        if matches!(backend, Backend::Acp { .. }) {
+            if binding.provider_identity_ref.trim().is_empty() {
+                return Err(PublicationResolutionError::CandidateUnavailable {
+                    binding: binding.clone(),
+                    reason: "Pinned ACP binding requires its exact Worker-local identity; use Target for a Provider route or BackendExact for selection intent".into(),
+                });
+            }
+            Self::validate_acp_binding(binding, BackendModelSelection::Exact)?;
+            return Ok(binding.clone());
         }
+        if binding.provider_identity_ref.trim().is_empty()
+            || binding.model_ref.trim().is_empty()
+            || binding.backend_ref.trim().is_empty()
+        {
+            return Err(PublicationResolutionError::CandidateUnavailable {
+                binding: binding.clone(),
+                reason: "Pinned model binding must contain provider, model, and backend; use Target or BackendExact for public selection intent".into(),
+            });
+        }
+        let target = ModelTarget {
+            model_id: binding.model_ref.clone(),
+            provider_id: (!binding.provider_identity_ref.is_empty())
+                .then(|| binding.provider_identity_ref.clone()),
+            protocol_endpoint_id: None,
+            endpoint_name: None,
+        };
+        let offering = select_offering(catalog, &target, &[]).map_err(|error| {
+            PublicationResolutionError::CandidateUnavailable {
+                binding: binding.clone(),
+                reason: error.to_string(),
+            }
+        })?;
+        Ok(ModelBinding::new(
+            offering.provider_id.as_str(),
+            &offering.model_id,
+            &binding.backend_ref,
+        ))
     }
 
     fn validate_acp_binding(
@@ -211,13 +239,19 @@ impl CatalogModelPublicationResolver {
     fn offering_for<'a>(
         catalog: &'a ProviderCatalog,
         binding: &ModelBinding,
-    ) -> Option<&'a Offering> {
-        catalog.offerings.iter().find(|offering| {
-            offering.status == awaken_model_catalog::OfferingStatus::Active
-                && offering.model_id == binding.model_ref
-                && offering.provider_id.as_str() == binding.provider_identity_ref
-                && (binding.backend_ref == "genai"
-                    || matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp { .. }))
+    ) -> Result<&'a Offering, PublicationResolutionError> {
+        let target = ModelTarget {
+            model_id: binding.model_ref.clone(),
+            provider_id: (!binding.provider_identity_ref.is_empty())
+                .then(|| binding.provider_identity_ref.clone()),
+            protocol_endpoint_id: None,
+            endpoint_name: None,
+        };
+        select_offering(catalog, &target, &[]).map_err(|error| {
+            PublicationResolutionError::CandidateUnavailable {
+                binding: binding.clone(),
+                reason: error.to_string(),
+            }
         })
     }
 
@@ -226,42 +260,16 @@ impl CatalogModelPublicationResolver {
         target: &ModelTarget,
         disabled_endpoints: &[String],
     ) -> Result<&'a Offering, PublicationResolutionError> {
-        let matches = catalog
-            .offerings
-            .iter()
-            .filter(|offering| {
-                offering.status == awaken_model_catalog::OfferingStatus::Active
-                    && offering.model_id == target.model_id
-                    && target
-                        .provider_id
-                        .as_deref()
-                        .is_none_or(|provider| offering.provider_id.as_str() == provider)
-                    && target
-                        .protocol_endpoint_id
-                        .as_deref()
-                        .is_none_or(|endpoint| offering.protocol_endpoint_id.as_str() == endpoint)
-                    && !disabled_endpoints.contains(&offering.protocol_endpoint_id.0)
-            })
-            .collect::<Vec<_>>();
-        match matches.as_slice() {
-            [offering] => Ok(*offering),
-            [] => Err(PublicationResolutionError::CandidateUnavailable {
+        select_offering(catalog, target, disabled_endpoints).map_err(|error| {
+            PublicationResolutionError::CandidateUnavailable {
                 binding: ModelBinding::new(
                     target.provider_id.as_deref().unwrap_or_default(),
                     &target.model_id,
                     "genai",
                 ),
-                reason: "the exact profile offering is not active or published".into(),
-            }),
-            _ => Err(PublicationResolutionError::CandidateUnavailable {
-                binding: ModelBinding::new(
-                    target.provider_id.as_deref().unwrap_or_default(),
-                    &target.model_id,
-                    "genai",
-                ),
-                reason: "the profile target is ambiguous; select provider and endpoint".into(),
-            }),
-        }
+                reason: error.to_string(),
+            }
+        })
     }
 
     async fn candidate(
@@ -271,13 +279,28 @@ impl CatalogModelPublicationResolver {
         workspace: &ScopeId,
         binding: ModelBinding,
     ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
-        if let Some(offering) = Self::offering_for(catalog, &binding) {
-            validate_acp_dialect(&binding.backend_ref, offering.dialect).map_err(|error| {
-                PublicationResolutionError::CandidateUnavailable {
-                    binding: binding.clone(),
-                    reason: error.to_string(),
+        if matches!(Backend::from_ref(&binding.backend_ref), Backend::Native)
+            || !binding.provider_identity_ref.is_empty()
+        {
+            let offering = Self::offering_for(catalog, &binding)?;
+            if let Backend::Acp { cli } = Backend::from_ref(&binding.backend_ref) {
+                let profile = awaken_run_executor_acp::acp_cli(&cli).ok_or_else(|| {
+                    PublicationResolutionError::CandidateUnavailable {
+                        binding: binding.clone(),
+                        reason: format!("ACP backend {cli} is not in the executable catalog"),
+                    }
+                })?;
+                if !profile.supports_model_api_dialect(offering.dialect.as_str()) {
+                    return Err(PublicationResolutionError::CandidateUnavailable {
+                        binding: binding.clone(),
+                        reason: format!(
+                            "ACP backend {} does not support model API dialect {}",
+                            binding.backend_ref,
+                            offering.dialect.as_str()
+                        ),
+                    });
                 }
-            })?;
+            }
             let pool = derive_vendor_pool(
                 workspace.as_str(),
                 offering.provider_id.as_str(),
@@ -619,7 +642,7 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
             .chain(fallback_bindings.iter())
             .collect::<Vec<_>>();
         let needs_credentials = all_bindings.iter().any(|binding| {
-            Self::offering_for(&catalog, binding).is_some()
+            Self::offering_for(&catalog, binding).is_ok()
                 || matches!(
                     Backend::from_ref(&binding.backend_ref),
                     Backend::Acp { .. } | Backend::Remote { .. }
@@ -653,6 +676,15 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
                 selection
                     .acp_configuration()
                     .expect("backend exact has ACP configuration"),
+            )
+            .await?
+        } else if matches!(selection, ModelSelection::Pinned(binding) if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp { .. }))
+        {
+            self.backend_candidate(
+                primary_binding.clone(),
+                &sources,
+                BackendModelSelection::Exact,
+                &Default::default(),
             )
             .await?
         } else {
@@ -912,6 +944,7 @@ mod tests {
                             model_id: "primary".into(),
                             provider_id: Some("openai".into()),
                             protocol_endpoint_id: Some("ep1".into()),
+                            endpoint_name: None,
                         },
                         credential_binding: CredentialBinding::Exact {
                             credential_source_id: primary_credential.id.clone(),
@@ -922,6 +955,7 @@ mod tests {
                             model_id: "fallback".into(),
                             provider_id: Some("openai".into()),
                             protocol_endpoint_id: Some("ep2".into()),
+                            endpoint_name: None,
                         },
                         credential_binding: CredentialBinding::Exact {
                             credential_source_id: fallback_credential.id.clone(),
@@ -1033,6 +1067,7 @@ mod tests {
                             model_id: "primary".into(),
                             provider_id: Some("openai".into()),
                             protocol_endpoint_id: Some("ep1".into()),
+                            endpoint_name: None,
                         },
                         credential_binding: CredentialBinding::OneOfCredentialPool {
                             credential_pool_id: pool_id,
@@ -1079,6 +1114,7 @@ mod tests {
                             model_id: "primary".into(),
                             provider_id: Some("openai".into()),
                             protocol_endpoint_id: Some("ep1".into()),
+                            endpoint_name: None,
                         },
                         credential_binding: CredentialBinding::None,
                     },
@@ -1110,6 +1146,7 @@ mod tests {
                             model_id: "primary".into(),
                             provider_id: Some("openai".into()),
                             protocol_endpoint_id: Some("ep1".into()),
+                            endpoint_name: None,
                         },
                         credential_binding: CredentialBinding::None,
                     },
@@ -1124,7 +1161,7 @@ mod tests {
             .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("not active or published"));
+        assert!(error.to_string().contains("no active matching offering"));
     }
 
     #[tokio::test]
@@ -1155,6 +1192,7 @@ mod tests {
                             model_id: "primary".into(),
                             provider_id: Some("openai".into()),
                             protocol_endpoint_id: Some("ep1".into()),
+                            endpoint_name: None,
                         },
                         credential_binding: CredentialBinding::Exact {
                             credential_source_id: incompatible.id,
@@ -1227,6 +1265,7 @@ mod tests {
                             model_id: "managed-model".into(),
                             provider_id: Some("openai".into()),
                             protocol_endpoint_id: Some("ep1".into()),
+                            endpoint_name: None,
                         },
                         credential_binding: CredentialBinding::Brokered,
                     },
@@ -1278,6 +1317,7 @@ mod tests {
                             model_id: "managed-model".into(),
                             provider_id: Some("openai".into()),
                             protocol_endpoint_id: Some("ep1".into()),
+                            endpoint_name: None,
                         },
                         credential_binding: CredentialBinding::Brokered,
                     },
@@ -1310,6 +1350,7 @@ mod tests {
                             model_id: "primary".into(),
                             provider_id: Some("openai".into()),
                             protocol_endpoint_id: Some("ep1".into()),
+                            endpoint_name: None,
                         },
                         credential_binding: CredentialBinding::Brokered,
                     },
@@ -1358,11 +1399,18 @@ mod tests {
 
     #[tokio::test]
     async fn model_level_selection_is_normalized_to_one_complete_catalog_binding() {
+        // Causes: C1 unresolved Managed target; C2 one active Offering; C3
+        // compatible credential. Effects: E1 exact provider/model/backend pin;
+        // E2 no partial pin survives. This is the publication leg of the
+        // ManagedModelId -> Target -> Offering -> immutable candidate chain.
         let resolver = resolver(&["m-first"]).await;
         let resolved = resolver
             .resolve_models(
                 &ScopeId::from("workspace-a"),
-                &ModelSelection::Pinned(ModelBinding::new("", "m-first", "")),
+                &ModelSelection::Target {
+                    target: ModelTarget::unqualified("m-first"),
+                    backend_ref: "genai".into(),
+                },
                 &[],
             )
             .await
@@ -1398,14 +1446,22 @@ mod tests {
         // same ACP backend resolves only through its WorkerLocal identity.
         //
         // Decision table:
-        // P1 provider + catalog model + ACP -> Provider/Vault on exact ACP backend
-        // P2 WorkerLocal id + exact model  -> BackendOwned/CLI login
-        // P3 bare model                    -> canonical native provider binding
+        // P1 provider Target + ACP -> Provider/Vault on exact ACP backend
+        // P2 BackendExact          -> BackendOwned/CLI login
+        // P3 unqualified Target    -> canonical native provider binding
         let resolver = resolver(&["primary"]).await;
         let managed = resolver
             .resolve_models(
                 &ScopeId::from("workspace-a"),
-                &ModelSelection::Pinned(ModelBinding::new("openai", "primary", "acp:codex")),
+                &ModelSelection::Target {
+                    target: ModelTarget {
+                        model_id: "primary".into(),
+                        provider_id: Some("openai".into()),
+                        protocol_endpoint_id: None,
+                        endpoint_name: None,
+                    },
+                    backend_ref: "acp:codex".into(),
+                },
                 &[],
             )
             .await
@@ -1434,7 +1490,11 @@ mod tests {
                 .with_worker_directory(workers)
                 .resolve_models(
                     &ScopeId::from("workspace-a"),
-                    &ModelSelection::Pinned(ModelBinding::new(local.id.0, "primary", "acp:codex")),
+                    &ModelSelection::BackendExact {
+                        backend_ref: "acp:codex".into(),
+                        model_ref: "primary".into(),
+                        configuration: Default::default(),
+                    },
                     &[],
                 )
                 .await
@@ -1450,7 +1510,10 @@ mod tests {
         let native = resolver
             .resolve_models(
                 &ScopeId::from("workspace-a"),
-                &ModelSelection::Pinned(ModelBinding::new("", "primary", "")),
+                &ModelSelection::Target {
+                    target: ModelTarget::unqualified("primary"),
+                    backend_ref: "genai".into(),
+                },
                 &[],
             )
             .await
@@ -1552,11 +1615,15 @@ mod tests {
         let claude = resolver
             .resolve_models(
                 &ScopeId::from("workspace-a"),
-                &ModelSelection::Pinned(ModelBinding::new(
-                    "anthropic",
-                    "claude-test",
-                    "acp:claude",
-                )),
+                &ModelSelection::Target {
+                    target: ModelTarget {
+                        model_id: "claude-test".into(),
+                        provider_id: Some("anthropic".into()),
+                        protocol_endpoint_id: None,
+                        endpoint_name: None,
+                    },
+                    backend_ref: "acp:claude".into(),
+                },
                 &[],
             )
             .await
@@ -1767,7 +1834,11 @@ mod tests {
         let exact = resolver
             .resolve_models(
                 &ScopeId::from("workspace-a"),
-                &ModelSelection::Pinned(ModelBinding::new("", "gpt-exact", "acp:codex")),
+                &ModelSelection::BackendExact {
+                    backend_ref: "acp:codex".into(),
+                    model_ref: "gpt-exact".into(),
+                    configuration: Default::default(),
+                },
                 &[],
             )
             .await
@@ -1867,7 +1938,11 @@ mod tests {
         let error = resolver
             .resolve_models(
                 &ScopeId::from("workspace-a"),
-                &ModelSelection::Pinned(ModelBinding::new("", "model-x", "acp:opencode")),
+                &ModelSelection::BackendExact {
+                    backend_ref: "acp:opencode".into(),
+                    model_ref: "model-x".into(),
+                    configuration: Default::default(),
+                },
                 &[],
             )
             .await
