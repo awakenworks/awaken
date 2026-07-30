@@ -415,7 +415,7 @@ impl Runtime {
         awaken_agent_contract::agent::run::RunState,
         awaken_runtime_contract::execution::Error,
     > {
-        crate::engine::resume_run(self, command, reader, context).await
+        crate::engine::run_commands::resume_run(self, command, reader, context).await
     }
 
     /// Commit the authoritative terminal `Cancelled` fact and clear any awaiting
@@ -431,7 +431,7 @@ impl Runtime {
         awaken_agent_contract::agent::run::RunState,
         awaken_runtime_contract::execution::Error,
     > {
-        crate::engine::cancel_run(self, run_id, thread_id, context).await
+        crate::engine::run_commands::cancel_run(self, run_id, thread_id, context).await
     }
 
     /// Retry every durable child-cancellation intent retained on `thread`.
@@ -460,7 +460,7 @@ impl Runtime {
         awaken_agent_contract::agent::run::RunState,
         awaken_runtime_contract::execution::Error,
     > {
-        crate::engine::stop_run(self, run_id, thread_id, reason, context).await
+        crate::engine::run_commands::stop_run(self, run_id, thread_id, reason, context).await
     }
 
     /// Perform a committed `ScheduledAction` (ADR-0020): run the deferred action
@@ -476,7 +476,8 @@ impl Runtime {
         awaken_agent_contract::agent::run::RunState,
         awaken_runtime_contract::execution::Error,
     > {
-        crate::engine::perform_scheduled_action(self, run_id, reader, context, now_ms).await
+        crate::engine::run_commands::perform_scheduled_action(self, run_id, reader, context, now_ms)
+            .await
     }
 
     pub(crate) fn snapshot_by_id(
