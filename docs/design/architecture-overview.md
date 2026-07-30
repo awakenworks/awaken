@@ -17,13 +17,13 @@ state and registration-bound clients; it receives no authority database handle.
 
 ```text
   Control Context
-  Agent/Resource authoring, publication history, IAM, credential metadata,
-  vaults, product mappings, operator UX
+  Agent/Resource authoring, publication history, Deployment/DeploymentRun,
+  IAM, credential metadata, vaults, product mappings, operator UX
         |
         | immutable publications, exact references, boundary adapters
         v
   Coordinator Context
-  executable Agent registration, Deployment, Session, durable dispatch,
+  executable Agent registration, Session, durable dispatch,
   committed truth, protocol replay, HTTP/SSE routes
         |
         | bidirectional dispatch/claim and commit/settle protocol

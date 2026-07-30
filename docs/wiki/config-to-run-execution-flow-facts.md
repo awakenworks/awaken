@@ -12,7 +12,7 @@ Owner: [Configuration-to-application and request-to-response flows](../design/co
 
 ## FACT-FLOW-001: Publication and registration are distinct
 
-- Status: accepted target
+- Status: active
 - Owner: [Flow one](../design/config-to-run-execution-flow.md#flow-one-configuration-to-application)
 - Fact: Control publishes immutable Agent truth and Coordinator registers its rebuildable executable projection through one idempotent boundary.
 - Links: [ADR-0071](../adr/0071-distributed-service-boundaries-and-executable-agent-registration.md); guardrails G3, G23, G29, and G45
@@ -20,7 +20,7 @@ Owner: [Configuration-to-application and request-to-response flows](../design/co
 
 ## FACT-FLOW-002: Deployment launch reuses Session authority
 
-- Status: accepted target
+- Status: active
 - Owner: [Deployment and Session creation](../design/config-to-run-execution-flow.md#deployment-and-session-creation)
 - Fact: local and remote Deployment launch adapters invoke the same Session command and use `deployment_run_id` to prevent duplicate Sessions.
 - Links: [Managed Deployments](../design/managed-deployments.md); guardrail G45
@@ -28,7 +28,7 @@ Owner: [Configuration-to-application and request-to-response flows](../design/co
 
 ## FACT-FLOW-003: Resource realization stays type-specific
 
-- Status: accepted target
+- Status: active
 - Owner: [Per-kind materialization](../design/config-to-run-execution-flow.md#per-kind-materialization)
 - Fact: the Session manifest is common input while File, Memory, Repository, Skill, and credential realization retain separate ports and consistency rules.
 - Links: [Resource owner](../design/resources-memory-files-skills.md); [credential owner](../design/credentials-and-vaults.md); guardrails G37, G38, G43, and G45

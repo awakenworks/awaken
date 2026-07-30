@@ -10,6 +10,7 @@ import _crate_dependency_fitness
 from _executable_agent_boundary import EXECUTABLE_AGENT_ALLOWED_DEPS
 import _provider_env_fitness
 import _resource_plane_fitness
+import _service_data_ownership_fitness
 from _sandbox_policy_boundary import SANDBOX_POLICY_ALLOWED_DEPS
 from _crate_boundary_workspace import iter_crate_manifests, load_manifest, package_name, text_files
 from _managed_routers_boundary import MANAGED_ROUTERS_ALLOWED_DEPS
@@ -1976,6 +1977,7 @@ def _arch_fitness_specs() -> list[_arch_fitness.CrateSpec]:
 def main() -> int:
     _arch_fitness.selftest()
     _coordinator_authority_fitness.selftest()
+    _service_data_ownership_fitness.selftest()
     errors = (
         check_dependencies()
         + check_neutral_code_boundaries()
@@ -1987,6 +1989,7 @@ def main() -> int:
         + _provider_env_fitness.check_all(REPO_ROOT, CRATES)
         + _arch_fitness.check_all(_arch_fitness_specs())
         + _coordinator_authority_fitness.check_all(REPO_ROOT, CRATES)
+        + _service_data_ownership_fitness.check_all(REPO_ROOT)
     )
     if errors:
         for error in errors:
