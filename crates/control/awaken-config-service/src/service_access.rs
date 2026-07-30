@@ -3,17 +3,17 @@
 
 use std::sync::Arc;
 
-use awaken_runtime_contract::ExecutableAgentSnapshot;
-
 use crate::binding_resolver::ModelPublicationResolver;
-use crate::config_plane::ConfigService;
-use crate::installed_catalog::InstalledAgentCatalog;
+use crate::config_service::ConfigService;
 
 impl ConfigService {
     #[must_use]
-    pub fn new(model_publication_resolver: Arc<dyn ModelPublicationResolver>) -> Self {
+    pub fn new(
+        model_publication_resolver: Arc<dyn ModelPublicationResolver>,
+        registrar: Arc<dyn awaken_executable_agent_contract::ExecutableAgentRegistrar>,
+    ) -> Self {
         Self {
-            installed: InstalledAgentCatalog::default(),
+            registrar,
             resources: None,
             model_publication_resolver,
             credential_reference_validator: None,
@@ -40,35 +40,5 @@ impl ConfigService {
                     .collect()
             })
             .unwrap_or_default()
-    }
-
-    pub fn agents_referencing_skill(&self, workspace_id: &str, skill_id: &str) -> Vec<String> {
-        self.installed
-            .agents_referencing_skill(workspace_id, skill_id)
-    }
-
-    pub fn installed_in(&self, workspace: &str, agent: &str) -> Option<ExecutableAgentSnapshot> {
-        self.installed.snapshot_in(workspace, agent)
-    }
-
-    pub(crate) fn installed_projection_in(
-        &self,
-        workspace: &str,
-        agent: &str,
-    ) -> Option<crate::installed_catalog::InstalledAgentProjection> {
-        self.installed.projection_in(workspace, agent)
-    }
-
-    #[must_use]
-    pub fn agent_unavailable_in(&self, workspace: &str, agent: &str) -> bool {
-        self.installed.is_unavailable(workspace, agent)
-    }
-
-    /// Current logical Hand declaration for a globally unambiguous Agent id.
-    ///
-    /// Placement is deliberately absent from executable snapshots. A collision
-    /// across Workspaces fails closed rather than selecting one deployment.
-    pub fn declared_hand_for_agent(&self, agent: &str) -> Result<Option<String>, String> {
-        self.installed.declared_hand_for_agent(agent)
     }
 }

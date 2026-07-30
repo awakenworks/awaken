@@ -113,7 +113,7 @@ pub trait PublicationBindingReconciler: Send + Sync {
 /// The concrete reconciler the host wires. Catalog changes use its fixed Agent
 /// set; Worker observation changes use its all-scope operation. Both go through
 /// the ordinary config-plane publication path. It holds the scope edge
-/// ([`ConfigPlane`](crate::config_plane::ConfigPlane)),
+/// ([`ConfigPlane`](crate::ConfigPlane)),
 /// the configuration namespace, the execution Workspace, and the agent ids. Keeping
 /// both coordinates explicit prevents a reserved authoring namespace from becoming a
 /// synthetic resource or credential Workspace.

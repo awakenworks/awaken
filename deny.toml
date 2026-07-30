@@ -94,6 +94,10 @@ wrappers = [
     # Neutral process provisioning reuses the base zeroizing secret value at its
     # non-serializable final launch boundary.
     "awaken-provisioning-contract",
+    # ADR-0071 application port and Coordinator projection compose existing
+    # Agent/Runtime/Session values without moving those authorities upward.
+    "awaken-executable-agent-contract",
+    "awaken-executable-agent-catalog",
 ]
 reason = "base contract; nothing may pull it upward (no downward dep of its own)"
 
@@ -171,6 +175,9 @@ wrappers = [
     "awaken-admin-config-api",
     # Stage A: the test-only scenario host.
     "awaken-scenario-host",
+    # ADR-0071 registration port and Coordinator execution projection.
+    "awaken-executable-agent-contract",
+    "awaken-executable-agent-catalog",
 ]
 reason = "contract layer; agent-contract must not depend on it (no upward edge)"
 

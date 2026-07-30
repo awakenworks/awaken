@@ -300,8 +300,8 @@ impl SharedHost {
             memory,
             memory_selector,
             compaction: None,
-            config_service: None,
             agent_publications: None,
+            agent_resource_references: None,
             mcp_relay: tokio::sync::OnceCell::new(),
             dispatch_session_runtime: std::sync::RwLock::new(None),
             file_store,
@@ -622,14 +622,6 @@ impl SharedHost {
         self
     }
 
-    /// Wire the config data plane, so a session's agent resolves to its installed
-    /// (published) config (slice A).
-    pub fn with_config_service(mut self, service: Arc<crate::config_plane::ConfigService>) -> Self {
-        self.agent_publications = Some(service.clone());
-        self.config_service = Some(service);
-        self
-    }
-
     /// Supply immutable executable publications without mounting the authoring
     /// plane. Intended for embedded composition roots and scenario fixtures.
     pub fn with_agent_publications(
@@ -637,6 +629,15 @@ impl SharedHost {
         source: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
     ) -> Self {
         self.agent_publications = Some(source);
+        self
+    }
+
+    /// Supply the Coordinator projection of current Agent-to-Resource bindings.
+    pub fn with_agent_resource_references(
+        mut self,
+        source: Arc<dyn awaken_resource_contract::AgentResourceReferenceSource>,
+    ) -> Self {
+        self.agent_resource_references = Some(source);
         self
     }
 
