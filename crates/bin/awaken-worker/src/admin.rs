@@ -38,7 +38,11 @@ pub(crate) fn worker_admin_router_with_lifecycle(lifecycle: Arc<crate::WorkerLif
 async fn lifecycle_readyz(
     State(lifecycle): State<Arc<crate::WorkerLifecycle>>,
 ) -> impl IntoResponse {
-    awaken_server::admin::readyz(lifecycle.host.pool_accepting_work())
+    if lifecycle.host.pool_accepting_work() {
+        (StatusCode::OK, "ready\n")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "not ready\n")
+    }
 }
 
 async fn lifecycle_drain(
@@ -107,8 +111,8 @@ mod tests {
     // readiness reports 503 — the worker is not routable until its pool is up.
     #[tokio::test]
     async fn readyz_is_503_without_a_running_pool() {
-        let host = Arc::new(awaken_server::SharedHost::new(
-            Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
+        let host = Arc::new(awaken_runtime_host::SharedHost::new(
+            Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
             "worker-test",
         ));
         let lifecycle = Arc::new(crate::WorkerLifecycle {

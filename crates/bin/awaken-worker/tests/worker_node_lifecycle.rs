@@ -165,26 +165,24 @@ fn standard_manifest_is_derived_from_builder_topology() {
 }
 
 #[test]
-fn standard_manifest_uses_the_installed_session_provider_as_authority() {
-    let worker = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
+fn external_session_provider_requires_its_hand_channel_port() {
+    // Cause/effect decision rules: E1 external container provider + missing
+    // hand factory fails during build; E2 an empty backend fails on identity
+    // before runtime. Capability advertisement cannot outpace executable wiring.
+    let missing_hand = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
         .with_session_container_provider("external-secure", Arc::new(ExternalSessionProvider))
         .with_standard_manifest(Default::default())
         .build()
-        .expect("external provider is a complete standard topology");
-
-    assert_eq!(
-        worker.manifest().sandbox_backends,
-        std::collections::BTreeSet::from(["external-secure".to_string()])
-    );
-    assert!(worker.manifest().sandbox.secret_egress_substitution);
-    assert!(worker.manifest().sandbox.enforced_network_allowlist);
+        .err()
+        .expect("E1 incomplete external provider topology");
+    assert!(missing_hand.to_string().contains("hand executor factory"));
 
     let empty_backend = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
         .with_session_container_provider(" ", Arc::new(ExternalSessionProvider))
         .with_standard_manifest(Default::default())
         .build()
         .err()
-        .expect("provider identity is required");
+        .expect("E2 provider identity is required");
     assert!(empty_backend.to_string().contains("backend"));
 }
 

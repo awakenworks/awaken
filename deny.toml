@@ -184,6 +184,9 @@ wrappers = [
     "awaken-ext-mcp",
     "awaken-ext-state-machine",
     "awaken-server",
+    # The product composition root drives online export into the embedded SDK
+    # in a dev-only whole-boundary test.
+    "awaken-cli",
     # #4: the eval harness runs recorded cases on the real kernel.
     "awaken-eval",
     # Stage A: the test-only scenario host runs cases on the real kernel.

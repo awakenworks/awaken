@@ -32,6 +32,8 @@ awaken-resource-store = { workspace = true, features = ["postgres"] }
 awaken-resource-reclaimer = { workspace = true }
 awaken-file-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-memory-store = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-resource-contract = { workspace = true }
+awaken-sandbox-memoryd = { workspace = true }
 # The ACP executor (AcpLaunch/AcpRunExecutor) for `acp:*` threads — wired by config
 # (AWAKEN_ACP_ARGV) into the worker's configured sandbox tier.
 awaken-run-executor-acp = { workspace = true }
@@ -85,6 +87,9 @@ container-k8s = ["awaken-runtime-host/container-k8s"]
 # The management integration tests moved here from awaken-server (they drive
 # build_management_router* over this composition root).
 awaken-scenario-host = { workspace = true }
+awaken-runtime = { workspace = true }
+awaken-provisioning-contract = { workspace = true }
+awaken-worker-contract = { workspace = true }
 # mcp_sessions drives the VaultRefresher refresh grant + the ext-mcp tool-id shape.
 awaken-ext-mcp = { workspace = true }
 # management_authz drives a legacy iam.sqlite import: the contract ids + the sqlite driver.

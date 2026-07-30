@@ -98,9 +98,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+    let credentials = awaken_runtime_host::PinnedCredentialMaterializer::new(credentials, secrets)
+        .with_external_material_resolver(resolver);
+    let inference = Arc::new(
+        awaken_server::inference_materializer::CredentialInferenceMaterializer::from_pinned(
+            credentials.clone(),
+        ),
+    );
     awaken_worker::WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new(upstream))
-        .with_credential_stores(credentials, secrets)
-        .with_external_credential_resolver(resolver)
+        .with_inference_materializer(inference)
+        .with_credential_materializer(credentials)
         .with_standard_manifest(Default::default())
         .with_admin_listen(std::env::var("AWAKEN_WORKER_ADMIN_LISTEN")?)
         .build()?

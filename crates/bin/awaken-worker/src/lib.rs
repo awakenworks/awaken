@@ -1,7 +1,7 @@
 //! `awaken-worker` — the PRODUCTION database-less worker (Stage C).
 //!
-//! A peer of the control plane (`awaken-control`) and the data plane
-//! (`awaken-server`). It owns no Run, Session, or authoring store: it drains runs
+//! A peer of the control and data planes. It owns no Run, Session, or authoring
+//! store: it drains runs
 //! from a Control Node over the typed dispatch transport and sends claim-fenced
 //! commit operations back through the same Worker boundary. A resource-capable
 //! worker may open shared data-plane and Resource Catalog validation ports; those
@@ -11,11 +11,8 @@
 //! `RunActivation` carrying its own `ExecutableAgentSnapshot`, whose
 //! `resolved_spec.model_binding.model_ref` is the run's model identity. The host's
 //! run loop resolves that ref through the injected [`InferenceExecutorMaterializer`]
-//! ([`CredentialInferenceMaterializer`]),
-//! which consumes the snapshot-pinned endpoint and credential reference and
-//! injects the credential from the shared vault — see
-//! [`awaken_control::open_inference_materialization_stores`]). The host's
-//! [`NoModelConfiguredExecutor`]
+//! which consumes the snapshot-pinned endpoint and credential reference through
+//! the injected [`InferenceExecutorMaterializer`]. The host's inert executor
 //! is only an inert construction placeholder: because the materializer is installed,
 //! an unavailable publication pin fails closed before that executor can run.
 
@@ -37,7 +34,6 @@ use manifest::{
     CredentialMaterializerSupport, ManifestSelection, ManifestSource, ResourceManifestSupport,
     StandardManifestInputs, derive_standard_manifest,
 };
-use resource_plane::shared_resource_wiring;
 
 pub use application::{
     RegisteredApplicationFactory, RegisteredWorkerApplication, RegisteredWorkerContext,
@@ -46,10 +42,8 @@ pub use lifecycle::WorkerShutdown;
 pub use manifest::StandardManifestConfig;
 pub use resource_plane::WorkerResourcePlane;
 
+use awaken_runtime_host::{InferenceExecutorMaterializer, SharedHost};
 use awaken_runtime_host::{WorkerControlClient, WorkerUpstream};
-use awaken_server::inference_materializer::CredentialInferenceMaterializer;
-use awaken_server::no_model::NoModelConfiguredExecutor;
-use awaken_server::{InferenceExecutorMaterializer, SharedHost};
 use awaken_worker_contract::{RegistryMutation, WorkerHeartbeat, WorkerManifest};
 
 struct WorkerProcessConfig {
@@ -59,18 +53,6 @@ struct WorkerProcessConfig {
     graceful_drain: std::time::Duration,
     credential_probe_interval: std::time::Duration,
     credential_observation_ttl: std::time::Duration,
-    repository_credentials: bool,
-}
-
-/// Product-command presentation and manifest values resolved at its one config
-/// boundary.
-pub struct WorkerRunOptions {
-    pub worker_id: String,
-    pub admin_listen: Option<String>,
-    pub drain_grace: std::time::Duration,
-    pub credential_probe_interval: std::time::Duration,
-    pub credential_observation_ttl: std::time::Duration,
-    pub manifest: StandardManifestConfig,
 }
 
 impl WorkerProcessConfig {
@@ -82,7 +64,6 @@ impl WorkerProcessConfig {
             graceful_drain: grace_window(true, None),
             credential_probe_interval: std::time::Duration::from_secs(10),
             credential_observation_ttl: std::time::Duration::from_secs(30),
-            repository_credentials: false,
         }
     }
 }
@@ -109,13 +90,14 @@ pub struct WorkerNodeBuilder {
     application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     credential_materializer: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
+    remote_attempt: Option<awaken_runtime_host::RemoteAttemptInstallation>,
+    hand_executor_factory: Option<Arc<dyn awaken_runtime_host::HandExecutorFactory>>,
     external_credential_resolver:
         Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
     worker_local_credential_resolver:
         Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
     acp_capability_observation_source:
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
-    credential_inference_derived: bool,
     session_container_provider: Option<InstalledSessionContainerProvider>,
     mcp_attachment_realizer: Option<Arc<dyn awaken_runtime_host::McpAttachmentRealizer>>,
     web_search_providers: awaken_runtime_host::WebSearchProviderRegistry,
@@ -138,10 +120,11 @@ impl WorkerNodeBuilder {
             application_gate: None,
             materializer: None,
             credential_materializer: None,
+            remote_attempt: None,
+            hand_executor_factory: None,
             external_credential_resolver: None,
             worker_local_credential_resolver: None,
             acp_capability_observation_source: None,
-            credential_inference_derived: false,
             session_container_provider: None,
             mcp_attachment_realizer: None,
             web_search_providers: awaken_runtime_host::WebSearchProviderRegistry::builtins(),
@@ -228,7 +211,28 @@ impl WorkerNodeBuilder {
         materializer: Arc<dyn InferenceExecutorMaterializer>,
     ) -> Self {
         self.materializer = Some(materializer);
-        self.credential_inference_derived = false;
+        self
+    }
+
+    /// Install the already-composed remote-attempt adapter. A2A construction and
+    /// transport credentials remain at the outer composition root.
+    #[must_use]
+    pub fn with_remote_attempt_executor(
+        mut self,
+        installation: awaken_runtime_host::RemoteAttemptInstallation,
+    ) -> Self {
+        self.remote_attempt = Some(installation);
+        self
+    }
+
+    /// Install the existing hand-channel adapter used by container and ACP
+    /// environments. The Worker owns lifecycle, not relay construction.
+    #[must_use]
+    pub fn with_hand_executor_factory(
+        mut self,
+        factory: Arc<dyn awaken_runtime_host::HandExecutorFactory>,
+    ) -> Self {
+        self.hand_executor_factory = Some(factory);
         self
     }
 
@@ -247,15 +251,6 @@ impl WorkerNodeBuilder {
 
     #[must_use]
     pub fn with_resource_plane(mut self, resources: WorkerResourcePlane) -> Self {
-        if self.credential_materializer.is_none()
-            && let Some(stores) = &resources.credentials
-        {
-            self.credential_materializer =
-                Some(awaken_runtime_host::PinnedCredentialMaterializer::new(
-                    stores.credentials.clone(),
-                    stores.secrets.clone(),
-                ));
-        }
         self.resources = Some(resources);
         self
     }
@@ -369,24 +364,6 @@ impl WorkerNodeBuilder {
         self
     }
 
-    /// Derive both inference and Session-secret materializers from one pair of
-    /// authoritative credential stores.
-    #[must_use]
-    pub fn with_credential_stores(
-        mut self,
-        credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
-        secrets: Arc<dyn awaken_credential_vault::SecretStore>,
-    ) -> Self {
-        let materializer =
-            awaken_runtime_host::PinnedCredentialMaterializer::new(credentials, secrets);
-        self.materializer = Some(Arc::new(CredentialInferenceMaterializer::from_pinned(
-            materializer.clone(),
-        )));
-        self.credential_materializer = Some(materializer);
-        self.credential_inference_derived = true;
-        self
-    }
-
     /// Validate the immutable topology without registering or starting work.
     pub fn build(mut self) -> Result<WorkerNode, WorkerNodeBuildError> {
         if self.credential_probe_interval.is_zero()
@@ -411,6 +388,14 @@ impl WorkerNodeBuilder {
                 "Session container provider backend must not be empty".to_string(),
             ));
         }
+        if (self.session_container_provider.is_some()
+            || self.deployment.sandbox_tier.is_container())
+            && self.hand_executor_factory.is_none()
+        {
+            return Err(WorkerNodeBuildError(
+                "container execution requires an installed hand executor factory".to_string(),
+            ));
+        }
         let credential_observation_resolver = self.worker_local_credential_resolver.clone();
         if let Some(resolver) = self.external_credential_resolver.take() {
             let Some(materializer) = self.credential_materializer.take() else {
@@ -420,11 +405,6 @@ impl WorkerNodeBuilder {
                 ));
             };
             let materializer = materializer.with_external_material_resolver(resolver);
-            if self.credential_inference_derived {
-                self.materializer = Some(Arc::new(CredentialInferenceMaterializer::from_pinned(
-                    materializer.clone(),
-                )));
-            }
             self.credential_materializer = Some(materializer);
         }
         // A WorkerNode is, by definition, the database-less remote drain of the
@@ -433,29 +413,42 @@ impl WorkerNodeBuilder {
         // successfully registered Worker cannot report Ready without a claim pool.
         self.deployment.durable = true;
         self.deployment.disable_local_pool = false;
-        let resource_support = ResourceManifestSupport::from(self.resources.as_ref());
+        let resource_support = ResourceManifestSupport::from((
+            self.resources.as_ref(),
+            self.credential_materializer.as_ref(),
+        ));
         let manifest = match self.manifest {
             ManifestSelection::Selected(ManifestSource::Explicit(manifest)) => *manifest,
             ManifestSelection::Selected(ManifestSource::Standard {
-                application_capabilities,
-            }) => derive_standard_manifest(StandardManifestInputs {
-                deployment: &self.deployment,
-                materializer: self.materializer.as_deref(),
-                credential_materializer: self
-                    .credential_materializer
-                    .as_ref()
-                    .map(CredentialMaterializerSupport::from),
-                worker_local_credentials: credential_observation_resolver.is_some(),
-                sandbox_override: self.session_container_provider.as_ref().map(|installed| {
-                    (
-                        installed.provider.sandbox_capabilities(),
-                        installed.backend.as_str(),
-                    )
-                }),
-                resource_support,
-                application_capabilities,
-                config: &self.standard_manifest_config,
-            }),
+                mut application_capabilities,
+            }) => {
+                if self.remote_attempt.is_some() {
+                    application_capabilities
+                        .insert(awaken_runtime_contract::A2A_RUNTIME_CAPABILITY.to_string());
+                }
+                derive_standard_manifest(StandardManifestInputs {
+                    deployment: &self.deployment,
+                    materializer: self.materializer.as_deref(),
+                    credential_materializer: self
+                        .credential_materializer
+                        .as_ref()
+                        .map(CredentialMaterializerSupport::from),
+                    worker_local_credentials: credential_observation_resolver.is_some(),
+                    remote_credential_realization: self
+                        .remote_attempt
+                        .as_ref()
+                        .map(|remote| &remote.credential_realization),
+                    sandbox_override: self.session_container_provider.as_ref().map(|installed| {
+                        (
+                            installed.provider.sandbox_capabilities(),
+                            installed.backend.as_str(),
+                        )
+                    }),
+                    resource_support,
+                    application_capabilities,
+                    config: &self.standard_manifest_config,
+                })
+            }
             ManifestSelection::Unset => {
                 return Err(WorkerNodeBuildError(
                     "Worker manifest source must be selected".to_string(),
@@ -476,6 +469,8 @@ impl WorkerNodeBuilder {
             application_gate: self.application_gate,
             materializer: self.materializer,
             credential_materializer: self.credential_materializer,
+            remote_attempt: self.remote_attempt,
+            hand_executor_factory: self.hand_executor_factory,
             credential_observation_resolver,
             acp_capability_observation_source: self.acp_capability_observation_source,
             session_container_provider: self.session_container_provider,
@@ -521,6 +516,8 @@ pub struct WorkerNode {
     application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     credential_materializer: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
+    remote_attempt: Option<awaken_runtime_host::RemoteAttemptInstallation>,
+    hand_executor_factory: Option<Arc<dyn awaken_runtime_host::HandExecutorFactory>>,
     credential_observation_resolver:
         Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
     acp_capability_observation_source:
@@ -538,48 +535,6 @@ pub struct WorkerNode {
 struct InstalledSessionContainerProvider {
     backend: String,
     provider: Arc<dyn awaken_runtime_host::ContainerEnvironmentProvider>,
-}
-
-/// Run a Worker from the product command's already-resolved deployment and
-/// store configuration. This path performs no deployment rediscovery.
-pub async fn run_with_config(
-    upstream: &str,
-    deployment: awaken_runtime_host::DeploymentConfig,
-    control: awaken_control::ControlStoreConfig,
-    resource_url: Option<String>,
-    seal_key: [u8; 32],
-    options: WorkerRunOptions,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let repository_credentials = matches!(
-        &control.credential,
-        awaken_control::StoreBackend::Postgres(_)
-    );
-    let process = WorkerProcessConfig {
-        deployment,
-        manifest: options.manifest,
-        admin_listen: options.admin_listen,
-        graceful_drain: options.drain_grace,
-        credential_probe_interval: options.credential_probe_interval,
-        credential_observation_ttl: options.credential_observation_ttl,
-        repository_credentials,
-    };
-    let stores = awaken_control::open_inference_materialization_stores(&control, &seal_key).await;
-    let resource_credentials = process.repository_credentials.then(|| stores.clone());
-    let resources = shared_resource_wiring(
-        resource_credentials,
-        resource_url.as_deref(),
-        Some(&control.admin),
-    )
-    .await?;
-    let mut builder =
-        WorkerNodeBuilder::new(WorkerUpstream::new(upstream).with_worker_id(options.worker_id))
-            .with_process_config(process)
-            .with_credential_stores(stores.credentials, stores.secrets)
-            .with_standard_manifest(Default::default());
-    if let Some(resources) = resources {
-        builder = builder.with_resource_plane(resources);
-    }
-    builder.build()?.run_until_shutdown().await
 }
 
 /// Run a genuinely secretless worker with a deployment-provided materializer.
@@ -628,38 +583,6 @@ where
     .await
 }
 
-/// Embedded secretless Worker with an explicitly resolved deployment and shared
-/// ResourcePlane. This extends the same authoritative builder used above; it
-/// performs no environment/config rediscovery and installs no second resolver.
-pub async fn run_with_inference_and_credential_resolver_and_resources<R>(
-    upstream: &str,
-    deployment: awaken_runtime_host::DeploymentConfig,
-    resource_url: &str,
-    admin_backend: &awaken_control::StoreBackend,
-    materializer: Arc<dyn InferenceExecutorMaterializer>,
-    resolver: Arc<R>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
-where
-    R: awaken_runtime_contract::CredentialMaterialResolver
-        + awaken_runtime_contract::WorkerLocalCredentialResolver
-        + 'static,
-{
-    let resources = shared_resource_wiring(None, Some(resource_url), Some(admin_backend)).await?;
-    let mut process = WorkerProcessConfig::embedded_defaults();
-    process.deployment = deployment;
-    build_secretless_worker(
-        WorkerUpstream::new(upstream),
-        process,
-        materializer,
-        Some(resolver.clone()),
-        Some(resolver),
-        resources,
-    )
-    .await?
-    .run_until_shutdown()
-    .await
-}
-
 /// Run a secretless worker with a caller-provided shutdown source.
 ///
 /// Embedders and deterministic process tests use this seam when platform process
@@ -700,10 +623,10 @@ async fn build_secretless_worker(
     let mut builder = WorkerNodeBuilder::new(upstream).with_process_config(process);
     if let Some(resolver) = material_resolver {
         builder = builder
-            .with_credential_stores(
+            .with_credential_materializer(awaken_runtime_host::PinnedCredentialMaterializer::new(
                 Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
                 Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-            )
+            ))
             .with_external_credential_resolver(resolver);
     }
     if let Some(resolver) = local_resolver {
@@ -812,16 +735,20 @@ impl WorkerNode {
             .resources
             .as_ref()
             .map(|resources| resources.validator.clone());
+        let memory_mounter = self
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.memory_mounter.clone());
         let managed_credential_materializer = self.credential_materializer.clone();
         let host = match self.resources {
             Some(resources) => SharedHost::new_with_resource_plane_and_deployment(
-                Arc::new(NoModelConfiguredExecutor),
+                Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
                 "worker",
                 resources.ports,
                 self.deployment,
             ),
             None => SharedHost::new_with_deployment(
-                Arc::new(NoModelConfiguredExecutor),
+                Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
                 "worker",
                 self.deployment,
             ),
@@ -829,10 +756,10 @@ impl WorkerNode {
         let mut host = host
             .with_worker_upstream(upstream)
             .with_dispatch_store(dispatch_store)
-            .with_web_search_provider_registry(self.web_search_providers)
-            .with_remote_attempt_executor(awaken_server::a2a_attempt_executor(
-                managed_credential_materializer.clone(),
-            ));
+            .with_web_search_provider_registry(self.web_search_providers);
+        if let Some(remote_attempt) = self.remote_attempt {
+            host = host.with_remote_attempt_executor(remote_attempt);
+        }
         if let Some(materializer) = &self.materializer {
             host = host.with_inference_materializer(materializer.clone());
         }
@@ -855,19 +782,21 @@ impl WorkerNode {
         if let Some(gate) = self.application_gate {
             host = host.with_gate_override(gate);
         }
-        awaken_server::install_platform_memory_data_plane(&host);
+        if let Some(mounter) = memory_mounter {
+            host.install_memory_mounter(mounter);
+        }
 
         if let Some(installed) = self.session_container_provider {
-            host = host.with_session_container_provider(
-                installed.provider,
-                awaken_server::relay_hand_executor_factory(),
-            );
+            let hand_factory = self
+                .hand_executor_factory
+                .clone()
+                .expect("container provider was validated with a hand factory");
+            host = host.with_session_container_provider(installed.provider, hand_factory);
         }
         // Serve only the ACP CLI capability this worker advertises. The run's snapshot
         // selects the matching backend and supplies its published provider access.
-        let hand_factory = awaken_server::relay_hand_executor_factory();
         host = host
-            .with_session_environment_from_deployment(hand_factory)
+            .with_session_environment_from_deployment(self.hand_executor_factory)
             .await
             .with_acp_from_deployment(self.credential_materializer)
             .await;
@@ -876,7 +805,7 @@ impl WorkerNode {
         // Install one dispatch-facing Session adapter even when no Resource
         // validator is present: MCP hot attachment commands have an independent
         // lifecycle and must not be enabled accidentally by Resource wiring.
-        let mut managed = awaken_server::ManagedHost::new(host.clone());
+        let mut managed = awaken_runtime_host::ManagedHost::new(host.clone());
         if let Some(validator) = resource_validator {
             managed = managed.with_resource_validator(validator);
         }

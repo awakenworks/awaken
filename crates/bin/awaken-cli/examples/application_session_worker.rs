@@ -11,7 +11,7 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
 };
 use awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier;
-use awaken_server::InferenceExecutorMaterializer;
+use awaken_runtime_host::InferenceExecutorMaterializer;
 
 const APPLICATION_PROMPT: &str = "application-session-e2e-prompt";
 

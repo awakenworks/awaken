@@ -1559,7 +1559,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-sandbox-policy-store",
         "awaken-resource-store",
         "awaken-resource-reclaimer",
-        "awaken-file-store", "awaken-memory-store",
+        "awaken-file-store", "awaken-memory-store", "awaken-resource-contract",
+        "awaken-sandbox-memoryd",
         # The ACP executor: the composition root wires an `acp:*` backend into the Serve
         # host by config (AWAKEN_ACP_ARGV), which the runtime-host plane does not do itself.
         "awaken-run-executor-acp",
@@ -1592,6 +1593,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         # dev-only: the management integration tests moved here from awaken-server.
         "awaken-scenario-host",
+        "awaken-runtime", "awaken-provisioning-contract", "awaken-worker-contract",
         "awaken-ext-mcp",
         "awaken-iam-contract",
         "awaken-iam-core",
@@ -1624,18 +1626,12 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # the memoryd-role test seeds + asserts a sqlite-backed store.
         "awaken-runtime-contract",
     },
-    # The PRODUCTION database-less worker (Stage C): a peer of the control / data
-    # planes. It composes the neutral host (runtime-host) with the data plane's
-    # ConfigExecutorProvider + NoModelConfiguredExecutor (awaken-server) over the
-    # shared control-plane stores it opens through awaken-control (catalog / credential
-    # vault / secret store + seal key). Depends on awaken-control — NOT awaken-cli —
-    # so the graph stays acyclic (awaken-cli's bin depends on this crate). The
-    # dev-deps back the offline model-resolution test.
+    # Database-less Worker SDK: lifecycle and neutral injected Host ports only.
+    # Product store/server adapters are composed by awaken-cli.
     "awaken-worker": {
         "awaken-acp-contract",
         "awaken-runtime-host",
-        "awaken-server",
-        "awaken-control",
+        "awaken-resource-contract",
         "awaken-worker-contract",
         "awaken-provisioning-contract",
         "getrandom",
@@ -1645,15 +1641,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-observability",
         "axum",
         "tower",
-        # dev-only: the ConfigExecutorProvider resolution test authors an in-memory
-        # catalog + credential and asserts a configured model_ref resolves to a real
-        # executor (and falls back otherwise).
-        "awaken-model-catalog",
         "awaken-credential-vault",
-        "awaken-agent-contract",
-        # dev-only: the gateway-worker E2E example implements the public
-        # ExecutorProvider/LlmExecutor SPI. It reaches ModelAccessRef through the
-        # host facade, never by depending on the run-ingress implementation.
         "awaken-runtime-contract",
         "async-trait",
     },

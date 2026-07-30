@@ -42,7 +42,7 @@ function buildGatewayWorker(): string {
       '--quiet',
       '--message-format=json',
       '-p',
-      'awaken-worker',
+      'awaken-cli',
       '--example',
       'credential_reference_worker',
     ],

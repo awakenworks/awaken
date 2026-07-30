@@ -28,7 +28,6 @@ pub mod mcp_export;
 pub mod model_directory;
 pub mod model_discovery;
 pub mod model_resolver;
-pub mod no_model;
 pub mod placement;
 mod relay_hand;
 pub mod webhooks;
@@ -55,9 +54,10 @@ pub use awaken_acp_application::{
 pub use awaken_managed_routers::{default_models, files_router, models_router};
 pub use awaken_runtime_host::{
     ConfigService, ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost,
-    ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent, ThreadEventHub, VaultRefresher,
-    advertised_tools, capabilities_router, config_router, content_fingerprint, durable_ops_router,
-    memory_stores_router_with_catalog, parse_skill_md, skills_router,
+    NoModelConfiguredExecutor, ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent,
+    ThreadEventHub, UNCONFIGURED_MODEL_REF, VaultRefresher, advertised_tools, capabilities_router,
+    config_router, content_fingerprint, durable_ops_router, memory_stores_router_with_catalog,
+    parse_skill_md, skills_router,
 };
 pub use legacy_resource_migration::migrate_legacy_skill_registry;
 pub use relay_hand::relay_hand_executor_factory;
@@ -84,12 +84,6 @@ pub async fn prepare_local_acp(
     )
     .await
 }
-
-/// Neutral Resource Catalog validation port used by outer composition roots.
-/// The alias lets binaries depend on this data-plane facade instead of reaching
-/// through it into the resource bounded context.
-pub type ResourceBindingValidatorPort =
-    Arc<dyn awaken_protocol_managed::resource_plane::ResourceBindingValidator>;
 
 /// Assemble the governed MemoryRepository data plane with its worker-side mount adapter.
 /// Authorization has already selected workspace/store/access before this adapter

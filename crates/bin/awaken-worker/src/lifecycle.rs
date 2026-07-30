@@ -2,8 +2,7 @@
 
 use std::sync::Arc;
 
-use awaken_runtime_host::WorkerControlClient;
-use awaken_server::SharedHost;
+use awaken_runtime_host::{SharedHost, WorkerControlClient};
 use awaken_worker_contract::{RegistryMutation, WorkerHeartbeat, WorkerIdentity};
 
 use crate::credential_liveness::WorkerObservationCache;

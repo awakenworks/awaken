@@ -56,6 +56,13 @@ impl ResourcePlanePorts {
             self.lifecycle,
         )
     }
+
+    /// Clone the one Memory repository port so an outer composition root can
+    /// build the matching worker-side mounter before moving this complete port
+    /// set into the Host.
+    pub fn memory_repository(&self) -> Arc<dyn awaken_memory_store::MemoryRepository> {
+        self.memory_repository.clone()
+    }
 }
 
 impl SharedHost {

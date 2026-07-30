@@ -6,60 +6,30 @@
 /// materializes their already-authorized bindings for an attempt.
 pub struct WorkerResourcePlane {
     pub(crate) ports: awaken_runtime_host::ResourcePlanePorts,
-    pub(crate) validator: awaken_server::ResourceBindingValidatorPort,
-    pub(crate) credentials: Option<awaken_control::InferenceMaterializationStores>,
+    pub(crate) validator: std::sync::Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
+    pub(crate) memory_mounter:
+        Option<std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>>,
 }
 
 impl WorkerResourcePlane {
     #[must_use]
     pub fn new(
         ports: awaken_runtime_host::ResourcePlanePorts,
-        validator: awaken_server::ResourceBindingValidatorPort,
+        validator: std::sync::Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
     ) -> Self {
         Self {
             ports,
             validator,
-            credentials: None,
+            memory_mounter: None,
         }
     }
 
     #[must_use]
-    pub fn with_repository_credentials(
+    pub fn with_memory_mounter(
         mut self,
-        credentials: awaken_control::InferenceMaterializationStores,
+        mounter: std::sync::Arc<dyn awaken_provisioning_contract::MemoryMounter>,
     ) -> Self {
-        self.credentials = Some(credentials);
+        self.memory_mounter = Some(mounter);
         self
-    }
-
-    pub(crate) fn supports_repository_credentials(&self) -> bool {
-        self.credentials.is_some()
-    }
-}
-
-pub(crate) async fn shared_resource_wiring(
-    credentials: Option<awaken_control::InferenceMaterializationStores>,
-    resource_url: Option<&str>,
-    admin_backend: Option<&awaken_control::StoreBackend>,
-) -> Result<Option<WorkerResourcePlane>, Box<dyn std::error::Error + Send + Sync>> {
-    let ports = awaken_server::shared_worker_resource_plane(resource_url).await?;
-    let validator = awaken_control::open_shared_resource_validator(admin_backend).await?;
-    match (ports, validator) {
-        (None, None) => Ok(None),
-        (Some(ports), Some(validator)) => {
-            let resources = WorkerResourcePlane::new(ports, validator);
-            Ok(Some(match credentials {
-                Some(credentials) => resources.with_repository_credentials(credentials),
-                None => resources,
-            }))
-        }
-        (Some(_), None) => Err(std::io::Error::other(
-            "resource_database_url requires a shared admin store on a remote worker",
-        )
-        .into()),
-        (None, Some(_)) => Err(std::io::Error::other(
-            "a shared admin store requires resource_database_url on a resource worker",
-        )
-        .into()),
     }
 }

@@ -310,8 +310,10 @@ application projection. The public router accepts only a versioned
 ```rust
 WorkerNodeBuilder::new(upstream)
     .with_deployment_config(deployment)
-    .with_credential_stores(credentials, secrets)
-    .with_external_credential_resolver(sealed_material_resolver)
+    .with_inference_materializer(inference)
+    .with_credential_materializer(credentials)
+    .with_remote_attempt_executor(remote_attempt)
+    .with_hand_executor_factory(hand_factory)
     .with_session_container_provider("provider-id", provider)
     .with_application_factory(factory)
     .with_application_gate(gate)
@@ -324,8 +326,9 @@ WorkerNodeBuilder::new(upstream)
 
 `with_standard_manifest` is the sole standard capability projection. At
 `build()` it derives the immutable manifest from the deployment, installed
-inference materializer, resource plane and its repository credential support,
-ACP profile, optional externally installed Session container provider, and
+inference materializer, resource plane, credential materializer and
+remote-attempt evidence, ACP profile,
+optional externally installed Session container provider, and
 explicit application capabilities. An installed provider is authoritative for
 its backend id and enforceable Sandbox capabilities; deployment inference is
 used only when no provider was injected. Secret substitution and enforced
@@ -335,6 +338,12 @@ instead select `with_manifest(explicit_manifest)`; selecting both sources fails
 closed rather than depending on call order. The process adapters parse
 environment-driven deployment and manifest metadata once before installing
 their typed values on the Builder.
+
+`awaken-worker` depends only on these neutral ports and the typed Worker
+transport. `awaken-cli` is the product composition root that opens Control and
+Resource stores and injects the concrete inference, A2A, relay and Memory-mount
+adapters. The boundary check rejects any direct `awaken-worker` dependency on
+`awaken-server` or `awaken-control`.
 
 `build()` is synchronous and side-effect free: it derives or accepts one
 manifest and runs the same contract validation before registration.
@@ -839,7 +848,7 @@ helpers and CLI parsing do not belong here.
 | `ClaimedCommitService` | application service | authenticated, fenced, versioned, idempotent commit orchestration | directory, dispatch, coordinator resolver, authenticator | `SharedHost` construction or product projection | embedding system cannot use its coordinator; stale owner writes | G1/G13; dependency-injection and stale-epoch tests |
 | `ThreadCoordinatorResolver` | boundary port | coordinator selection for the addressed Thread/cell | configured commit backend | placement, auth, or application cache | request commits through a different authority | same-source and multi-node tests |
 | `WorkerNode` | public component | Worker lifecycle from registration through drain | control client, recovery client, commit client, executor | product envelope or Control database | every application rewrites lifecycle and diverges | G5/G6; lifecycle state-machine suite |
-| `WorkerNodeBuilder` | assembly API | validated Worker dependency assembly, mutually exclusive explicit/standard manifest selection, one optional existing Session container-provider seam, and one post-registration application factory | typed deployment, materializers/resources/provider, application capabilities/factory | credential-specific provider port, process environment parsing, hidden global stores, or a second capability derivation | application duplicates Worker/router lifecycle or advertises capabilities absent from the installed topology | construction, manifest-source, provider-evidence decision table, capability-derivation, and registered-context lifecycle tests |
+| `WorkerNodeBuilder` | assembly API | validated Worker dependency assembly, mutually exclusive explicit/standard manifest selection, one optional existing Session container-provider seam, and one post-registration application factory | typed deployment, neutral Host/credential/resource ports, application capabilities/factory | server/control crate, database opening, process environment parsing, hidden global stores, or a second capability derivation | application duplicates Worker/router lifecycle or advertises capabilities absent from the installed topology | construction, manifest-source, missing-port preflight, capability-derivation, and registered-context lifecycle tests |
 | `RegisteredWorkerContext` | immutable assembly value | one allocated Worker incarnation plus its identity-bound request transport | `RegisteredWorker`, `WorkerUpstream` | mutable liveness truth, product ACL, or a second credential | application uses an unsigned/stale identity or parallel trust path | signed transport and registration-order tests |
 | `RegisteredWorkerApplication` | immutable assembly value | the one provisioner/decorator pair installed after registration | registered context and neutral Host ports | Worker lifecycle or a second execution router | application hooks are assembled under different identities | registered-context lifecycle tests |
 | `ApplicationSessionProvisioner` | Worker application port | produce one claim-bound, secret-free neutral plan | activation and neutral ownership verifier | Sandbox creation, Session cache, product persistence, materialized credential, or a second environment plan | Native and ACP receive different inputs or a stale claim contributes effects | application-input ordering, fingerprint, and stale-claim tests |

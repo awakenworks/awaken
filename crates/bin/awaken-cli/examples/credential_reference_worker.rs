@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
 };
-use awaken_server::InferenceExecutorMaterializer;
+use awaken_runtime_host::InferenceExecutorMaterializer;
 
 struct GrantExecutor {
     reference: String,
@@ -205,14 +205,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
             deployment.durable = true;
             deployment.storage_dir = Some(storage_dir.into());
-            awaken_worker::run_with_inference_and_credential_resolver_and_resources(
-                &upstream,
-                deployment,
-                &resource_url,
+            let ports = awaken_server::shared_worker_resource_plane(Some(&resource_url))
+                .await?
+                .ok_or("resource database URL did not produce Worker ports")?;
+            let validator = awaken_control::open_shared_resource_validator(Some(
                 &awaken_control::StoreBackend::Postgres(admin_url),
-                materializer.clone(),
-                materializer,
+            ))
+            .await?
+            .ok_or("admin database URL did not produce a Resource validator")?;
+            let mounter = Arc::new(awaken_sandbox_memoryd::MemoryStoreMounter::new(
+                ports.memory_repository(),
+            ));
+            let resources = awaken_worker::WorkerResourcePlane::new(ports, validator)
+                .with_memory_mounter(mounter);
+            let credentials = awaken_runtime_host::PinnedCredentialMaterializer::new(
+                Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+                Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
             )
+            .with_external_material_resolver(materializer.clone());
+            awaken_worker::WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new(
+                upstream,
+            ))
+            .with_deployment_config(deployment)
+            .with_inference_materializer(materializer.clone())
+            .with_credential_materializer(credentials)
+            .with_worker_local_credential_resolver(materializer)
+            .with_resource_plane(resources)
+            .with_standard_manifest(Default::default())
+            .build()?
+            .run_until_shutdown()
             .await
         }
         _ => Err("resource Worker fixture requires resource, admin, and storage together".into()),

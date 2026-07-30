@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use awaken_runtime_contract::execution::NATIVE_RUNTIME_CAPABILITY;
-use awaken_server::InferenceExecutorMaterializer;
+use awaken_runtime_host::InferenceExecutorMaterializer;
 use awaken_worker_contract::{
     REPOSITORY_CREDENTIALS_CAPABILITY, SESSION_RESOURCES_CAPABILITY, VersionRange,
     WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerCapacity, WorkerManifest,
@@ -129,14 +129,22 @@ pub(crate) enum ResourceManifestSupport {
     SessionWithRepositoryCredentials,
 }
 
-impl From<Option<&WorkerResourcePlane>> for ResourceManifestSupport {
-    fn from(resources: Option<&WorkerResourcePlane>) -> Self {
-        match resources {
-            Some(resources) if resources.supports_repository_credentials() => {
-                Self::SessionWithRepositoryCredentials
-            }
-            Some(_) => Self::Session,
-            None => Self::None,
+impl
+    From<(
+        Option<&WorkerResourcePlane>,
+        Option<&awaken_runtime_host::PinnedCredentialMaterializer>,
+    )> for ResourceManifestSupport
+{
+    fn from(
+        (resources, credentials): (
+            Option<&WorkerResourcePlane>,
+            Option<&awaken_runtime_host::PinnedCredentialMaterializer>,
+        ),
+    ) -> Self {
+        match (resources, credentials) {
+            (Some(_), Some(_)) => Self::SessionWithRepositoryCredentials,
+            (Some(_), None) => Self::Session,
+            (None, _) => Self::None,
         }
     }
 }
@@ -148,6 +156,8 @@ pub(crate) struct StandardManifestInputs<'a> {
     /// An exact Worker-local observation/revalidation resolver is installed.
     /// This is independent of whether that resolver returns secret material.
     pub(crate) worker_local_credentials: bool,
+    pub(crate) remote_credential_realization:
+        Option<&'a awaken_runtime_contract::CredentialRealizationCapabilities>,
     pub(crate) sandbox_override:
         Option<(awaken_provisioning_contract::SandboxCapabilities, &'a str)>,
     pub(crate) resource_support: ResourceManifestSupport,
@@ -174,10 +184,7 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
     let (sandbox, backend) = inputs
         .sandbox_override
         .unwrap_or_else(|| inputs.deployment.sandbox_support());
-    let mut capabilities = BTreeSet::from([
-        NATIVE_RUNTIME_CAPABILITY.to_string(),
-        awaken_runtime_contract::A2A_RUNTIME_CAPABILITY.to_string(),
-    ]);
+    let mut capabilities = BTreeSet::from([NATIVE_RUNTIME_CAPABILITY.to_string()]);
     capabilities.extend(
         inputs
             .materializer
@@ -207,6 +214,9 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         .materializer
         .map(InferenceExecutorMaterializer::credential_realization_capabilities)
         .unwrap_or_default();
+    if let Some(remote) = inputs.remote_credential_realization {
+        credential_realization.merge(remote);
+    }
     if let Some(materializer) = inputs
         .credential_materializer
         .as_ref()

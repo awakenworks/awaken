@@ -74,14 +74,14 @@ async fn snapshot_file_loads_and_runs_as_an_embedded_sdk() {
     value["resolved_spec"]["model_binding"]["model_ref"] = "model-b".into();
     serde_json::to_writer_pretty(std::fs::File::create(&path).unwrap(), &value).unwrap();
 
-    let loaded = Runtime::load_snapshot_file(path).unwrap();
+    let runtime = Runtime::new().with_llm(Arc::new(TextLlm("offline reply")));
+    let loaded = runtime.load_snapshot_file(path).unwrap();
     assert_eq!(
         loaded.resolved_spec.model_binding.binding.model_ref,
         "model-b"
     );
     assert_eq!(loaded.fingerprint, loaded.resolved_spec.catalog_fingerprint);
 
-    let runtime = Runtime::new().with_llm(Arc::new(TextLlm("offline reply")));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let state = runtime
         .run(

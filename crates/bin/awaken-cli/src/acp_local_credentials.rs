@@ -47,7 +47,7 @@ pub async fn prepare_local_acp(
     ));
     let stores =
         awaken_control::open_inference_materialization_stores(&deployment.control, seal_key).await;
-    let resources = Some(local_worker_resources(deployment, stores.clone()).await?);
+    let resources = Some(local_worker_resources(deployment).await?);
     prepare_local_acp_with(
         deployment, discovery, installer, negotiator, stores, resources,
     )
@@ -56,19 +56,19 @@ pub async fn prepare_local_acp(
 
 async fn local_worker_resources(
     deployment: &crate::config::ResolvedDeployment,
-    credentials: awaken_control::InferenceMaterializationStores,
 ) -> Result<awaken_worker::WorkerResourcePlane, String> {
-    let validator: awaken_server::ResourceBindingValidatorPort = match &deployment.control.admin {
-        awaken_control::StoreBackend::Sqlite(path) => Arc::new(
-            awaken_admin_config_api::SqliteAdminStore::open(&path.to_string_lossy())
-                .map_err(|error| format!("open local Worker Resource Catalog: {error}"))?,
-        ),
-        awaken_control::StoreBackend::Postgres(_) => {
-            awaken_control::open_shared_resource_validator(Some(&deployment.control.admin))
-                .await?
-                .expect("Postgres admin backend produces a validator")
-        }
-    };
+    let validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator> =
+        match &deployment.control.admin {
+            awaken_control::StoreBackend::Sqlite(path) => Arc::new(
+                awaken_admin_config_api::SqliteAdminStore::open(&path.to_string_lossy())
+                    .map_err(|error| format!("open local Worker Resource Catalog: {error}"))?,
+            ),
+            awaken_control::StoreBackend::Postgres(_) => {
+                awaken_control::open_shared_resource_validator(Some(&deployment.control.admin))
+                    .await?
+                    .expect("Postgres admin backend produces a validator")
+            }
+        };
     let ports = match &deployment.resources {
         crate::config::ResourcePlaneStoreBackend::Embedded(root) => {
             awaken_server::embedded_resource_plane(root)
@@ -79,8 +79,75 @@ async fn local_worker_resources(
                 .ok_or_else(|| "Postgres resource plane did not produce Worker ports".to_string())?
         }
     };
-    Ok(awaken_worker::WorkerResourcePlane::new(ports, validator)
-        .with_repository_credentials(credentials))
+    let mounter = Arc::new(awaken_sandbox_memoryd::MemoryStoreMounter::new(
+        ports.memory_repository(),
+    ));
+    Ok(awaken_worker::WorkerResourcePlane::new(ports, validator).with_memory_mounter(mounter))
+}
+
+fn configured_worker_builder(
+    upstream: impl Into<String>,
+    deployment: &crate::config::ResolvedDeployment,
+    credentials: awaken_runtime_host::PinnedCredentialMaterializer,
+) -> awaken_worker::WorkerNodeBuilder {
+    let worker = &deployment.worker;
+    let mut manifest = worker
+        .build_digest
+        .clone()
+        .map(awaken_worker::StandardManifestConfig::new)
+        .unwrap_or_default()
+        .with_extra_capabilities(worker.capabilities.clone());
+    if let Some(zone) = &worker.zone {
+        manifest = manifest.with_zone(zone.clone());
+    }
+    if let Some(max_concurrent) = worker.max_concurrent {
+        manifest = manifest.with_max_concurrent(max_concurrent);
+    }
+
+    let mut builder = awaken_worker::WorkerNodeBuilder::new(
+        awaken_runtime_host::WorkerUpstream::new(upstream).with_worker_id(&worker.worker_id),
+    )
+    .with_deployment_config(deployment.runtime.clone())
+    .with_standard_manifest_config(manifest)
+    .with_inference_materializer(Arc::new(
+        awaken_server::inference_materializer::CredentialInferenceMaterializer::from_pinned(
+            credentials.clone(),
+        ),
+    ))
+    .with_remote_attempt_executor(awaken_server::a2a_attempt_executor(Some(
+        credentials.clone(),
+    )))
+    .with_hand_executor_factory(awaken_server::relay_hand_executor_factory())
+    .with_credential_materializer(credentials)
+    .with_graceful_drain(std::time::Duration::from_secs(worker.drain_grace_secs))
+    .with_credential_observation_window(
+        std::time::Duration::from_secs(worker.credential_probe_interval_secs),
+        std::time::Duration::from_secs(worker.credential_observation_ttl_secs),
+    )
+    .with_standard_manifest(Default::default());
+    builder = match &worker.admin_listen {
+        Some(address) => builder.with_admin_listen(address),
+        None => builder.without_admin_surface(),
+    };
+    builder
+}
+
+/// Compose the process Worker from the already-resolved product configuration.
+/// Store opening and concrete server adapters remain at this CLI boundary.
+pub async fn build_configured_worker(
+    upstream: impl Into<String>,
+    deployment: &crate::config::ResolvedDeployment,
+    seal_key: &[u8; 32],
+) -> Result<awaken_worker::WorkerNode, String> {
+    let stores =
+        awaken_control::open_inference_materialization_stores(&deployment.control, seal_key).await;
+    let credentials =
+        awaken_runtime_host::PinnedCredentialMaterializer::new(stores.credentials, stores.secrets);
+    let resources = local_worker_resources(deployment).await?;
+    configured_worker_builder(upstream, deployment, credentials)
+        .with_resource_plane(resources)
+        .build()
+        .map_err(|error| error.to_string())
 }
 
 async fn prepare_local_acp_with(
@@ -141,36 +208,15 @@ impl PreparedLocalAcp {
         upstream: impl Into<String>,
         deployment: &crate::config::ResolvedDeployment,
     ) -> Result<awaken_worker::WorkerNode, String> {
-        let worker = &deployment.worker;
-        let mut manifest = worker
-            .build_digest
-            .clone()
-            .map(awaken_worker::StandardManifestConfig::new)
-            .unwrap_or_default()
-            .with_extra_capabilities(worker.capabilities.clone());
-        if let Some(zone) = &worker.zone {
-            manifest = manifest.with_zone(zone.clone());
-        }
-        if let Some(max_concurrent) = worker.max_concurrent {
-            manifest = manifest.with_max_concurrent(max_concurrent);
-        }
-
         let resolver = self.resolver;
-        let mut builder = awaken_worker::WorkerNodeBuilder::new(
-            awaken_runtime_host::WorkerUpstream::new(upstream),
-        )
-        .with_deployment_config(deployment.runtime.clone())
-        .with_standard_manifest_config(manifest)
-        .with_credential_stores(self.stores.credentials, self.stores.secrets)
-        .with_worker_local_credential_resolver(resolver.clone())
-        .with_acp_capability_observation_source(resolver)
-        .with_graceful_drain(std::time::Duration::from_secs(worker.drain_grace_secs))
-        .with_credential_observation_window(
-            std::time::Duration::from_secs(worker.credential_probe_interval_secs),
-            std::time::Duration::from_secs(worker.credential_observation_ttl_secs),
-        )
-        .without_admin_surface()
-        .with_standard_manifest(Default::default());
+        let credentials = awaken_runtime_host::PinnedCredentialMaterializer::new(
+            self.stores.credentials,
+            self.stores.secrets,
+        );
+        let mut builder = configured_worker_builder(upstream, deployment, credentials)
+            .with_worker_local_credential_resolver(resolver.clone())
+            .with_acp_capability_observation_source(resolver)
+            .without_admin_surface();
         if let Some(resources) = self.resources {
             builder = builder.with_resource_plane(resources);
         }
@@ -257,6 +303,34 @@ mod tests {
     };
 
     use super::*;
+
+    /// Cause/effect rule C1: resolved CLI deployment + opened credential and
+    /// Resource stores installs the existing inference, A2A, relay, validator
+    /// and mounter adapters once; the built Worker advertises Native, A2A and
+    /// Resource support with one decodable merged credential evidence value.
+    #[tokio::test]
+    async fn configured_worker_projects_only_the_cli_installed_adapters() {
+        let directory = tempfile::tempdir().unwrap();
+        let deployment = crate::config::local_test_deployment(directory.path().into());
+        deployment.ensure_data_layout().unwrap();
+        let worker = build_configured_worker("http://127.0.0.1:1", &deployment, &[7_u8; 32])
+            .await
+            .expect("C1 complete CLI Worker topology");
+        let capabilities = &worker.manifest().capabilities;
+        assert!(capabilities.contains(awaken_runtime_contract::A2A_RUNTIME_CAPABILITY));
+        assert!(capabilities.contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY));
+        assert!(capabilities.contains(awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY));
+        let evidence =
+            awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+                capabilities,
+            )
+            .expect("C1 one merged credential evidence capability");
+        assert!(
+            evidence
+                .material_sources
+                .contains(&CredentialMaterialSource::ControlPlaneReference)
+        );
+    }
 
     struct FixedDiscovery {
         observations: BTreeMap<String, AcpHostObservation>,
@@ -540,10 +614,10 @@ mod tests {
         let worker = awaken_worker::WorkerNodeBuilder::new(
             awaken_runtime_host::WorkerUpstream::new("http://control"),
         )
-        .with_credential_stores(
+        .with_credential_materializer(awaken_runtime_host::PinnedCredentialMaterializer::new(
             credentials,
             Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-        )
+        ))
         .with_worker_local_credential_resolver(resolver.clone())
         .with_standard_manifest(Default::default())
         .build()

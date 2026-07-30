@@ -173,8 +173,11 @@ fn worker_uses_the_injected_web_search_registry_as_its_only_catalog() {
     assert!(descriptors.is_empty());
 }
 
-#[tokio::test]
-async fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
+#[test]
+fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
+    // Cause/effect rule M1: the standard derivation receives only installed
+    // inference evidence, so it publishes Native + that adapter and cannot
+    // invent the independently installed A2A capability.
     let materializer = SchemeMaterializer;
     let deployment = deployment();
     let manifest = derive_standard_manifest(StandardManifestInputs {
@@ -182,6 +185,7 @@ async fn worker_manifest_derives_materialization_capabilities_from_the_adapter()
         materializer: Some(&materializer),
         credential_materializer: None,
         worker_local_credentials: false,
+        remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
@@ -190,7 +194,7 @@ async fn worker_manifest_derives_materialization_capabilities_from_the_adapter()
 
     assert!(manifest.capabilities.contains("native-runtime"));
     assert!(
-        manifest
+        !manifest
             .capabilities
             .contains(awaken_runtime_contract::A2A_RUNTIME_CAPABILITY)
     );
@@ -227,13 +231,13 @@ fn standard_builder_derives_from_its_installed_materializer() {
 }
 
 /// Cause-effect graph: an external resolver without the canonical materializer
-/// is meaningless and fails build; stores + resolver compose once and project
-/// the same source/envelope evidence into the standard manifest.
+/// is meaningless and fails build; stores + resolver compose once, while a
+/// resolver without an installed consuming adapter cannot advertise realization.
 ///
 /// | Rule | Stores | External resolver | Result |
 /// |---|---|---|---|
 /// | X1 | F | T | build error |
-/// | X2 | T | T | WorkerReference + envelope evidence |
+/// | X2 | T | T | build succeeds; no invented realization evidence |
 #[test]
 fn external_credential_resolver_composes_with_the_canonical_materializer() {
     let missing =
@@ -248,7 +252,10 @@ fn external_credential_resolver_composes_with_the_canonical_materializer() {
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let worker = WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new("http://control"))
-        .with_credential_stores(credentials, secrets)
+        .with_credential_materializer(awaken_runtime_host::PinnedCredentialMaterializer::new(
+            credentials,
+            secrets,
+        ))
         .with_external_credential_resolver(Arc::new(ExternalCredentialResolver))
         .with_worker_local_credential_resolver(Arc::new(ExternalCredentialResolver))
         .with_standard_manifest(Default::default())
@@ -266,12 +273,9 @@ fn external_credential_resolver_composes_with_the_canonical_materializer() {
             &worker.manifest().capabilities,
         )
         .expect("X2 evidence decodes");
-    assert!(evidence.recipient_bound_envelopes, "X2");
     assert!(
-        evidence
-            .material_sources
-            .contains(&awaken_runtime_contract::CredentialMaterialSource::WorkerReference),
-        "X2"
+        evidence.is_empty(),
+        "X2 a material source is not itself an installed realization mechanism"
     );
 }
 
@@ -298,6 +302,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         materializer: None,
         credential_materializer: Some(credential_support()),
         worker_local_credentials: false,
+        remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
@@ -327,6 +332,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         materializer: None,
         credential_materializer: Some(credential_support()),
         worker_local_credentials: false,
+        remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
@@ -372,6 +378,7 @@ fn standard_manifest_requires_complete_provider_evidence_for_worker_relay() {
             materializer: None,
             credential_materializer: credential_materializer.then(credential_support),
             worker_local_credentials: false,
+            remote_credential_realization: None,
             sandbox_override: Some((sandbox.clone(), "external-secure-provider")),
             resource_support: ResourceManifestSupport::None,
             application_capabilities: Default::default(),
@@ -417,6 +424,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         materializer: None,
         credential_materializer: None,
         worker_local_credentials: false,
+        remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
@@ -445,6 +453,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         materializer: None,
         credential_materializer: None,
         worker_local_credentials: false,
+        remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::Session,
         application_capabilities: Default::default(),
@@ -473,6 +482,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         materializer: None,
         credential_materializer: None,
         worker_local_credentials: false,
+        remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::SessionWithRepositoryCredentials,
         application_capabilities: Default::default(),
@@ -496,6 +506,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         materializer: Some(&materializer),
         credential_materializer: None,
         worker_local_credentials: false,
+        remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
@@ -545,6 +556,7 @@ fn worker_manifest_includes_explicit_application_capabilities() {
         materializer: None,
         credential_materializer: None,
         worker_local_credentials: false,
+        remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
         application_capabilities: std::collections::BTreeSet::from([
@@ -574,6 +586,7 @@ fn standard_manifest_uses_one_typed_metadata_source() {
         materializer: None,
         credential_materializer: None,
         worker_local_credentials: false,
+        remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),

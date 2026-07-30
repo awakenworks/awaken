@@ -10,7 +10,9 @@ use awaken_runtime_contract::delegation::{DelegationExecutionError, RunDelegatio
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::permission::ToolGateHook;
-use awaken_runtime_contract::plugin::{MergeError, Plugin, ResolvedExecutionEnv};
+use awaken_runtime_contract::plugin::{
+    MergeError, Plugin, PluginConfigError, ResolvedExecutionEnv,
+};
 use awaken_runtime_contract::snapshot::{ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
 use awaken_runtime_contract::tool::RawTool;
 use parking_lot::Mutex;
@@ -288,6 +290,19 @@ impl Runtime {
         &self,
         spec: &awaken_runtime_contract::resolved::ResolvedSpec,
     ) -> std::result::Result<(), MergeError> {
+        for selected in &spec.plugin_ids {
+            if !self
+                .plugins
+                .iter()
+                .any(|plugin| plugin.manifest().id == *selected)
+            {
+                return Err(PluginConfigError::new(
+                    selected,
+                    "selected plugin is not installed in this Runtime",
+                )
+                .into());
+            }
+        }
         self.resolve_plugin_env(spec).map(|_| ())
     }
 

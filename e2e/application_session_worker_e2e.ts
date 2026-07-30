@@ -49,7 +49,7 @@ function etagRevision(value: string | null): number {
 function buildWorker(): string {
   const output = execFileSync(
     'cargo',
-    ['build', '--quiet', '--message-format=json', '-p', 'awaken-worker', '--example', 'application_session_worker'],
+    ['build', '--quiet', '--message-format=json', '-p', 'awaken-cli', '--example', 'application_session_worker'],
     { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
   );
   for (const line of output.split('\n')) {

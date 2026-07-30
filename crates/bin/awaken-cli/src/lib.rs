@@ -40,7 +40,8 @@ pub use crate::brain_admin::{
     with_connection_metric,
 };
 pub use acp_local_credentials::{
-    AcpLocalCredentialResolver, PreparedLocalAcp, local_acp_diagnostics, prepare_local_acp,
+    AcpLocalCredentialResolver, PreparedLocalAcp, build_configured_worker, local_acp_diagnostics,
+    prepare_local_acp,
 };
 pub use console_assets::mount as mount_console;
 pub use hosted_control::{
@@ -1206,8 +1207,8 @@ async fn management_router_over(
         .unwrap_or_else(awaken_runtime_host::WebSearchProviderRegistry::builtins);
     let model_wiring = match model_composition {
         ManagementModelComposition::PublishedProviders => ManagementModelWiring {
-            executor: Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
-            model_ref: awaken_server::no_model::UNCONFIGURED_MODEL_REF.to_string(),
+            executor: Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
+            model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
             publication_resolver: Arc::new(
                 awaken_server::model_resolver::CatalogModelPublicationResolver::from_repo(
                     catalog.clone(),
@@ -1229,8 +1230,8 @@ async fn management_router_over(
             })),
         },
         ManagementModelComposition::HostedPublication { resolver } => ManagementModelWiring {
-            executor: Arc::new(awaken_server::no_model::NoModelConfiguredExecutor),
-            model_ref: awaken_server::no_model::UNCONFIGURED_MODEL_REF.to_string(),
+            executor: Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
+            model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
             publication_resolver: resolver,
             materializer: None,
         },
@@ -1479,7 +1480,7 @@ async fn management_router_over(
     // realized from the same publication-pinned DB facts as native inference.
     let hand_factory = awaken_server::relay_hand_executor_factory();
     let host_builder = host_builder
-        .with_session_environment_from_deployment(hand_factory)
+        .with_session_environment_from_deployment(Some(hand_factory))
         .await
         .with_acp_from_deployment(Some(credential_materializer.clone()))
         .await;

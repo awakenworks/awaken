@@ -18,25 +18,20 @@ path = "src/lib.rs"
 # explicitly configured for shared resources additionally opens data-plane clients
 # plus the narrow ResourceBindingValidator; it still owns no authoring/Session store.
 [features]
-# Container sandbox tiers (AWAKEN_SANDBOX_TIER=docker|podman|k8s), passed through to
-# the shared host via awaken-server so a database-less worker can realize its ACP
+# Container sandbox tiers (AWAKEN_SANDBOX_TIER=docker|podman|k8s), passed directly
+# to the shared host so a database-less worker can realize its ACP
 # sessions inside containers/Pods. Off by default (bwrap namespace tier).
-container-docker = ["awaken-server/container-docker"]
-container-podman = ["awaken-server/container-podman"]
-container-k8s = ["awaken-server/container-k8s"]
+container-docker = ["awaken-runtime-host/container-docker"]
+container-podman = ["awaken-runtime-host/container-podman"]
+container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dependencies]
 # The neutral host substrate: SharedHost, the dispatch pool, and the worker dispatch
 # store that routes the drain over HTTP to the cell server.
 awaken-runtime-host = { workspace = true }
 awaken-runtime-contract = { workspace = true }
-# The data plane: the inert NoModelConfiguredExecutor placeholder + the
-# CredentialInferenceMaterializer that opens a pinned credential for an executor.
-awaken-server = { workspace = true }
-# Reuse the composition's credential-vault + secret-store opening and seal-key
-# resolution. The worker does not open catalog/config/admin/session stores.
-awaken-control = { workspace = true }
 awaken-credential-vault = { workspace = true }
+awaken-resource-contract = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util"] }
 # The cloud-native admin surface (readyz / livez / metrics / drain) on a separate
 # port, so an orchestrator can gate routing and drain the worker gracefully.
@@ -52,9 +47,6 @@ getrandom = "0.2"
 [dev-dependencies]
 # The admin router tests drive the axum router directly (oneshot).
 tower = { version = "0.5", features = ["util"] }
-# The materialization test builds a CredentialInferenceMaterializer over in-memory
-# stores and asserts exact published access materializes a real executor.
-awaken-agent-contract = { workspace = true }
 async-trait = { workspace = true }
 
 [lints]
