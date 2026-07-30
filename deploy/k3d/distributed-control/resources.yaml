@@ -1,0 +1,233 @@
+# ADR-0071 production-role topology. Control and Coordinator use the shipped
+# composition roots; only model execution is deterministic at the scenario edge.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: adr71-database-init }
+data:
+  00-create-databases.sql: |
+    SELECT 'CREATE DATABASE control' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'control')\gexec
+    SELECT 'CREATE DATABASE credentials' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'credentials')\gexec
+    SELECT 'CREATE DATABASE runtime' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'runtime')\gexec
+    SELECT 'CREATE DATABASE resources' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'resources')\gexec
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: adr71-installation }
+data:
+  platform-workspace-id: workspace-adr71
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: adr71-boundary-auth }
+type: Opaque
+stringData:
+  registration-token: "adr71-registration-token" # awaken-allow: secret
+  deployment-launch-token: "adr71-deployment-launch-token" # awaken-allow: secret
+  seal-key: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff" # awaken-allow: secret
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: adr71-role-config }
+type: Opaque
+stringData:
+  control.toml: |
+    data_dir = "/var/lib/awaken/control"
+    bind = "0.0.0.0:3000"
+    mode = "server"
+    role = "control"
+    no_browser = true
+    identity_mode = "no-login"
+    coordinator_internal_url = "http://coordinator:3000"
+    executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
+    deployment_session_launch_token_file = "/etc/awaken-auth/deployment-launch-token"
+    control_seal_key_file = "/etc/awaken-auth/seal-key"
+    catalog_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
+    credential_db = "postgres://postgres:test@postgres:5432/credentials" # awaken-allow: secret
+    config_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
+    admin_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
+    # Deployment/Environment and Session use the existing shared repository
+    # adapter; tables remain owner-specific while both split roles see the same
+    # launch prerequisites and idempotency identity.
+    sessions_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
+  coordinator.toml: |
+    data_dir = "/var/lib/awaken/coordinator"
+    bind = "0.0.0.0:3000"
+    mode = "server"
+    role = "coordinator"
+    no_browser = true
+    identity_mode = "no-login"
+    runtime_database_url = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
+    resource_database_url = "postgres://postgres:test@postgres:5432/resources" # awaken-allow: secret
+    catalog_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
+    credential_db = "postgres://postgres:test@postgres:5432/credentials" # awaken-allow: secret
+    config_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
+    admin_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
+    sessions_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
+    executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
+    deployment_session_launch_token_file = "/etc/awaken-auth/deployment-launch-token"
+    control_seal_key_file = "/etc/awaken-auth/seal-key"
+    sandbox_tier = "local"
+    dispatch_wake = "pg-notify"
+    dispatch_owner = "adr71-coordinator"
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: control-migrate }
+spec:
+  backoffLimit: 12
+  template:
+    metadata: { labels: { app: control-migrate } }
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: awaken-roles:latest
+          imagePullPolicy: Never
+          command: ["/usr/local/bin/awaken", "database", "migrate", "--config", "/etc/awaken/control.toml"]
+          volumeMounts:
+            - { name: config, mountPath: /etc/awaken, readOnly: true }
+            - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
+      volumes:
+        - name: config
+          secret: { secretName: adr71-role-config }
+        - name: auth
+          secret: { secretName: adr71-boundary-auth }
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: coordinator-migrate }
+spec:
+  backoffLimit: 12
+  template:
+    metadata: { labels: { app: coordinator-migrate } }
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: awaken-roles:latest
+          imagePullPolicy: Never
+          command: ["/usr/local/bin/awaken", "database", "migrate", "--config", "/etc/awaken/coordinator.toml"]
+          volumeMounts:
+            - { name: config, mountPath: /etc/awaken, readOnly: true }
+            - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
+      volumes:
+        - name: config
+          secret: { secretName: adr71-role-config }
+        - name: auth
+          secret: { secretName: adr71-boundary-auth }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: control, labels: { app: control } }
+spec:
+  selector: { app: control }
+  ports: [{ name: http, port: 3000, targetPort: 3000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: control, labels: { app: control } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: control } }
+  template:
+    metadata: { labels: { app: control } }
+    spec:
+      containers:
+        - name: control
+          image: awaken-roles:latest
+          imagePullPolicy: Never
+          command: ["/usr/local/bin/awaken-server"]
+          env:
+            - { name: AWAKEN_MODEL_MODE, value: distributed-control }
+            - { name: AWAKEN_HTTP_ADDR, value: "0.0.0.0:3000" }
+            - { name: HOME, value: "/etc/awaken-home" }
+          ports: [{ containerPort: 3000 }]
+          readinessProbe:
+            httpGet: { path: /readyz, port: 3000 }
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          volumeMounts:
+            - { name: home, mountPath: /etc/awaken-home/.awaken, readOnly: true }
+            - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
+            - { name: workspace, mountPath: /var/lib/awaken/control/platform-workspace-id, subPath: platform-workspace-id, readOnly: true }
+      volumes:
+        - name: home
+          secret:
+            secretName: adr71-role-config
+            items: [{ key: control.toml, path: config.toml }]
+        - name: auth
+          secret: { secretName: adr71-boundary-auth }
+        - name: workspace
+          configMap: { name: adr71-installation }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: coordinator, labels: { app: coordinator } }
+spec:
+  selector: { app: coordinator }
+  ports: [{ name: http, port: 3000, targetPort: 3000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: coordinator, labels: { app: coordinator } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: coordinator } }
+  template:
+    metadata: { labels: { app: coordinator } }
+    spec:
+      containers:
+        - name: coordinator
+          image: awaken-roles:latest
+          imagePullPolicy: Never
+          command: ["/usr/local/bin/awaken", "coordinator", "--config", "/etc/awaken/coordinator.toml"]
+          ports: [{ containerPort: 3000 }]
+          readinessProbe:
+            httpGet: { path: /readyz, port: 3000 }
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          volumeMounts:
+            - { name: config, mountPath: /etc/awaken, readOnly: true }
+            - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
+            - { name: workspace, mountPath: /var/lib/awaken/coordinator/platform-workspace-id, subPath: platform-workspace-id, readOnly: true }
+      volumes:
+        - name: config
+          secret: { secretName: adr71-role-config }
+        - name: auth
+          secret: { secretName: adr71-boundary-auth }
+        - name: workspace
+          configMap: { name: adr71-installation }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: worker, labels: { app: worker } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: worker } }
+  template:
+    metadata: { labels: { app: worker } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: { matchLabels: { app: worker } }
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: worker
+          image: awaken-roles:latest
+          imagePullPolicy: Never
+          command: ["/usr/local/bin/awaken-server"]
+          env:
+            - { name: AWAKEN_SCENARIO_ROLE, value: worker }
+            - name: AWAKEN_WORKER_ID
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
+            - { name: AWAKEN_UPSTREAM_URL, value: "http://coordinator:3000" }
+            - { name: AWAKEN_WORKER_ADMIN_LISTEN, value: "0.0.0.0:9090" }
+          ports: [{ containerPort: 9090 }]
+          readinessProbe:
+            httpGet: { path: /readyz, port: 9090 }
+            initialDelaySeconds: 2
+            periodSeconds: 2
