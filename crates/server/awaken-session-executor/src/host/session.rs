@@ -119,6 +119,9 @@ impl SharedHost {
             .expect("environment binding sink lock poisoned")
             .clone();
         if let Some(sink) = sink {
+            if !sink.owns(thread).await {
+                return Ok(());
+            }
             sink.persist(thread, &binding).await.map_err(|error| {
                 HostError::internal(format!(
                     "persist Session environment binding before use: {error}"
@@ -519,7 +522,7 @@ impl SharedHost {
             .flatten();
         let deferred = retained.is_none()
             && adopted.is_none()
-            && self.can_defer_session_environment(thread, agent, published_snapshot.as_ref());
+            && self.can_defer_session_environment(thread, agent, installed.as_ref());
         let (env, needs_provision, needs_registration) = match (retained, adopted) {
             (Some(existing), Some(adopted)) => {
                 if existing.handle() != adopted.handle() {

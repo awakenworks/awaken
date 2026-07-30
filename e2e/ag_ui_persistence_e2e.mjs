@@ -42,8 +42,8 @@ async function messages(query = '') {
 async function main() {
   const upstream = await startUpstream('echo');
   const { server } = spawnServer('real', PORT, { ...realServerEnv('echo', upstream) });
-  await waitForPort(PORT);
   try {
+    await waitForPort(PORT);
     // Two separate turns, each sending only its own new user message.
     await runTurn('q1', 'FIRST');
     await runTurn('q2', 'SECOND');

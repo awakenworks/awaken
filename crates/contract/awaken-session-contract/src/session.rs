@@ -569,6 +569,13 @@ pub trait SessionRuntime: Send + Sync {
 /// The binding must commit before the runtime exposes that environment to work.
 #[async_trait]
 pub trait SessionEnvironmentBindingSink: Send + Sync {
+    /// Whether this sink owns a durable aggregate for `session_id`. Internal
+    /// runtime threads (graders, forks) deliberately have no Managed Session
+    /// aggregate and must not be forced through this persistence boundary.
+    async fn owns(&self, _session_id: &str) -> bool {
+        true
+    }
+
     async fn persist(&self, session_id: &str, binding: &str) -> Result<(), RunError>;
 }
 

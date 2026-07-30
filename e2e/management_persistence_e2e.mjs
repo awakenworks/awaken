@@ -135,7 +135,7 @@ async function main() {
       model: {
         mode: 'pinned',
         provider_identity_ref: 'default',
-        model_ref: 'management',
+        model_ref: 'fake-haiku',
         backend_ref: 'default',
       },
       mcp_servers: [{

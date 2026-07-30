@@ -1267,13 +1267,13 @@ impl SessionRuntime for ManagedHost {
     ) -> Result<(), RunError> {
         let (adopted, rebuild) = self
             .host
-            .adopt_bound_session_environment(thread, Some(binding), false)
+            .adopt_bound_session_environment(thread, Some(binding), true)
             .await
             .map_err(to_run_error)?;
-        debug_assert!(
-            !rebuild,
-            "foreground restoration never requests replacement"
-        );
+        // A graceful process shutdown disposes its physical sandbox while the
+        // durable Session binding remains. Rebuild from committed Session truth;
+        // ctx_for_with_sandbox persists the replacement binding before use.
+        debug_assert!(adopted.is_none() || !rebuild);
         self.host
             .ctx_for_with_sandbox(thread, Some(agent), adopted)
             .await
