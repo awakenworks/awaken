@@ -281,20 +281,12 @@ impl MemoryStoreHandle for PlatformMemoryHandle {
 
     async fn entries(&self) -> Result<Vec<awaken_ext_memory::Entry>, String> {
         let mut entries = Vec::new();
-        for item in self
+        for memory in self
             .fs
-            .list(&self.store_id, "/")
+            .snapshot_heads(&self.store_id)
             .await
             .map_err(|error| error.to_string())?
         {
-            let Some(memory) = self
-                .fs
-                .get_by_path(&self.store_id, &item.path)
-                .await
-                .map_err(|error| error.to_string())?
-            else {
-                continue;
-            };
             let Some(content) = memory.content.filter(|content| !content.trim().is_empty()) else {
                 continue;
             };
@@ -1195,6 +1187,106 @@ mod tests {
         }
     }
 
+    struct RecallSnapshotRepository {
+        heads: Vec<awaken_memory_store::Memory>,
+    }
+
+    #[async_trait]
+    impl awaken_memory_store::MemoryRepository for RecallSnapshotRepository {
+        async fn snapshot_heads(
+            &self,
+            _store: &str,
+        ) -> Result<Vec<awaken_memory_store::Memory>, awaken_memory_store::MemErr> {
+            Ok(self.heads.clone())
+        }
+
+        async fn list(
+            &self,
+            _store: &str,
+            _prefix: &str,
+        ) -> Result<Vec<awaken_memory_store::MemoryEntry>, awaken_memory_store::MemErr> {
+            panic!("Recall must not emulate an atomic snapshot with list")
+        }
+
+        async fn get_by_path(
+            &self,
+            _store: &str,
+            _path: &str,
+        ) -> Result<Option<awaken_memory_store::Memory>, awaken_memory_store::MemErr> {
+            panic!("Recall must not emulate an atomic snapshot with per-path reads")
+        }
+
+        async fn create(
+            &self,
+            _store: &str,
+            _path: &str,
+            _content: &str,
+        ) -> Result<awaken_memory_store::Memory, awaken_memory_store::MemErr> {
+            unreachable!("Recall snapshot test performs no writes")
+        }
+
+        async fn update_head(
+            &self,
+            _store: &str,
+            _id: &str,
+            _content: &str,
+            _base_sha: &str,
+            _target_path: Option<&str>,
+        ) -> Result<awaken_memory_store::Memory, awaken_memory_store::MemErr> {
+            unreachable!("Recall snapshot test performs no writes")
+        }
+
+        async fn rename(
+            &self,
+            _store: &str,
+            _from: &str,
+            _to: &str,
+        ) -> Result<awaken_memory_store::Memory, awaken_memory_store::MemErr> {
+            unreachable!("Recall snapshot test performs no writes")
+        }
+
+        async fn delete_by_path(
+            &self,
+            _store: &str,
+            _path: &str,
+        ) -> Result<(), awaken_memory_store::MemErr> {
+            unreachable!("Recall snapshot test performs no writes")
+        }
+
+        async fn delete_if_match(
+            &self,
+            _store: &str,
+            _path: &str,
+            _base_id: &str,
+            _base_sha: &str,
+        ) -> Result<bool, awaken_memory_store::MemErr> {
+            unreachable!("Recall snapshot test performs no writes")
+        }
+
+        async fn list_versions(
+            &self,
+            _store: &str,
+        ) -> Result<Vec<awaken_memory_store::MemoryVersion>, awaken_memory_store::MemErr> {
+            unreachable!("Recall snapshot test performs no history reads")
+        }
+
+        async fn redact_version(
+            &self,
+            _store: &str,
+            _version_id: &str,
+        ) -> Result<Option<awaken_memory_store::MemoryVersion>, awaken_memory_store::MemErr>
+        {
+            unreachable!("Recall snapshot test performs no history writes")
+        }
+
+        async fn purge_store(
+            &self,
+            _store: &str,
+        ) -> Result<awaken_memory_store::MemoryPurgeSummary, awaken_memory_store::MemErr> {
+            unreachable!("Recall snapshot test performs no lifecycle writes")
+        }
+    }
+
     /// A model that replies with fixed selection indices, standing in for the
     /// `memory-selector` sub-agent.
     struct IndexModel;
@@ -1288,6 +1380,40 @@ mod tests {
                 .is_none()
         );
         assert_eq!(read_only.entries().await.unwrap().len(), 1);
+    }
+
+    /// Cause/effect decision table for Recall reads:
+    /// | Rule | atomic snapshot | legacy list/get | Effect |
+    /// |---|---|---|---|
+    /// | R1 | one non-empty head | panic if called | return one trimmed Recall entry |
+    /// | R2 | one blank head | panic if called | omit blank content |
+    #[tokio::test]
+    async fn recall_entries_use_only_the_atomic_memory_snapshot() {
+        let memory = |id: &str, path: &str, content: &str| awaken_memory_store::Memory {
+            id: id.into(),
+            path: path.into(),
+            content_sha256: awaken_memory_store::sha256_hex(content),
+            content_size: content.len() as u64,
+            version: 1,
+            created_unix_nanos: 1,
+            updated_unix_nanos: 2,
+            content: Some(content.into()),
+        };
+        let handle = PlatformMemoryHandle::new(
+            Arc::new(RecallSnapshotRepository {
+                heads: vec![
+                    memory("memory-a", "/a.md", "  remembered  "),
+                    memory("memory-blank", "/blank.md", "  "),
+                ],
+            }),
+            "store-a".into(),
+            false,
+        );
+
+        let entries = handle.entries().await.expect("R1/R2");
+        assert_eq!(entries.len(), 1, "R1/R2");
+        assert_eq!(entries[0].path, std::path::PathBuf::from("/a.md"), "R1");
+        assert_eq!(entries[0].content, "remembered", "R1");
     }
 
     /// An extractor that saves whatever non-prompt text it was seeded with, so the
