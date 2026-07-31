@@ -458,7 +458,6 @@ runtime_database_url = "postgres://127.0.0.1/runtime"
 resource_database_url = "postgres://127.0.0.1/resources"
 admin_db = "postgres://127.0.0.1/control"
 executable_agent_registration_token_file = {token:?}
-deployment_session_launch_token_file = {token:?}
 control_seal_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 "#,
                 data = dir.path().join("coordinator-data"),

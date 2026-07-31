@@ -139,11 +139,9 @@ the same authoritative registrar path.
 No whole-catalog command, second publication model, generic RPC framework, or
 parallel compatibility path is added.
 
-Deployment Session launch uses a separate
-`deployment_session_launch_token_file`. It shares only
-`coordinator_internal_url` with registration; the credentials are distinct so
-publication authority cannot launch Sessions and launch authority cannot change
-the executable catalog.
+Deployment and Session are both Coordinator-owned. Their local application seam
+uses the stable `deployment_run_id`; no private launch endpoint, token, or second
+Deployment aggregate remains.
 
 ## Recovery And Failure Rules
 

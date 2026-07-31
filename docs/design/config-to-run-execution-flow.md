@@ -41,7 +41,7 @@ Distributed:  application port -> network adapter -> same authority
 | Resource definitions and immutable config versions | Control / Resource Catalog | exact resolved values in the Session manifest plus per-kind clients |
 | credential metadata, policy, and encrypted material | Control / Vault | exact claim-fenced materialization only |
 | executable Agent catalog | Coordinator | exact snapshot carried by dispatch or resolved through Coordinator |
-| Deployment and DeploymentRun | Control | none; launch crosses the Session port |
+| Deployment, DeploymentRun, and Environment execution state | Coordinator | none; launch is a local Session application call |
 | Session baseline and frozen Resource manifest | Coordinator | secret-free dispatch envelope |
 | dispatch, Run commit, and completion | Coordinator | authenticated claim, commit, and settle APIs |
 | File bytes | File data plane | `FileContentSource` |
@@ -95,9 +95,7 @@ flowchart TD
 
     V{"Manual or scheduled trigger"}
     W["Existing: persist stable DeploymentRun"]
-    X["Modified: DeploymentSessionLauncher carries deployment_run_id"]
-    Y["New boundary: HttpDeploymentSessionLauncher"]
-    Z["New boundary: idempotent Deployment Session launch handler"]
+    X["Existing: LocalDeploymentSessionLauncher carries deployment_run_id"]
     AA["Existing: create_session_with_initial_events"]
     AB["Existing: SessionDefaultsCompiler and SessionInputResolver"]
     AC["Existing: exact Environment, Skill, Resource, and credential pins"]
@@ -120,7 +118,7 @@ flowchart TD
     KF -- Yes --> KG
     KF -- No --> KH
     KH -. idempotent retry or reconciliation .-> K
-    KG --> R --> S --> T --> U --> V --> W --> X --> Y --> Z --> AA
+    KG --> R --> S --> T --> U --> V --> W --> X --> AA
     AA --> AB --> AC --> AD --> AE --> AF
     AE --> AG --> AH
 ```
@@ -143,10 +141,11 @@ pointer backwards.
 
 ### Deployment and Session creation
 
-The existing `DeploymentSessionLauncher` is reused rather than shadowed by a
-second remote-only abstraction. Its request gains `deployment_run_id`, the
-existing durable business identity. Local and remote adapters reach the same
-canonical Session command. A repeated launch returns the original Session id.
+The existing `DeploymentSessionLauncher` is the local application seam between
+Coordinator-owned Deployment and Session. Its request carries
+`deployment_run_id`, the durable business identity. A repeated launch returns
+the original Session id. The former remote client/router/token were deleted with
+the duplicate Control-side Deployment aggregate.
 
 Session creation performs all validation before external realization, persists
 the creation intent and frozen baseline first, and sends create-time initial
@@ -331,6 +330,11 @@ the exact snapshot, source revision, and fingerprint selected before execution.
   addressable;
 - registration availability/storage failures return HTTP 503 after durable
   publication persistence.
+- Deployment, DeploymentRun, scheduler, and Session launch now share one
+  Coordinator-owned application composition. The Environment API and work
+  execution are Coordinator-mounted; Control's Admin Assistant still uses the
+  existing shared `EnvironmentAuthor` registry port until definition commands
+  are separated from execution/work ownership.
 
 ### New boundary code (implemented)
 
@@ -340,10 +344,8 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - `PostgresExecutableAgentRegistrar` and its scoped command-log schema;
 - split-role registration composition, token-file loading, catalog migration,
   and Worker database rejection;
-- `HttpDeploymentSessionLauncher` and authenticated
-  `deployment_session_launch_router` over the existing launch port;
-- stable DeploymentRun-to-Session identity/fingerprint replay and separate
-  launch token-file composition;
+- stable DeploymentRun-to-Session identity/fingerprint replay through the local
+  application port;
 - `AgentResourceReferenceSource` as a narrow read port;
 - `WorkerCredentialFileResolver` as the exact Worker-private
   `CredentialMaterialResolver` adapter for `WorkerReference` and

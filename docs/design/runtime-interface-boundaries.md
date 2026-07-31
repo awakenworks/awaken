@@ -18,7 +18,7 @@ runtime small.
 
 > **Accepted service split.** ADR-0071 replaces the current process-local
 > publication-to-catalog write with Control-to-Coordinator registration. The
-> registrar, remote Deployment launcher adapter, and per-kind remote Resource
+> registrar, Coordinator-local Deployment launcher, and per-kind remote Resource
 > adapters below are target boundaries, not claims about already-landed code.
 
 ## Embedded Runtime SDK Boundary

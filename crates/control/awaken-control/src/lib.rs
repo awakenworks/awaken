@@ -3,7 +3,7 @@
 //! This crate owns the management **authoring** surfaces and the embedded IAM
 //! guard: the admin config CRUD (catalog / credentials / profiles / MCP defs), the
 //! webhook-subscription CRUD, the Managed vault front door, user profiles,
-//! deployments, environments, the config authoring plane (`/v1/config/agents/*`),
+//! the config authoring plane (`/v1/config/agents/*`),
 //! and the capability snapshot — all optionally gated behind the embedded
 //! `ApiToken` guard (ADR-0042/0043 P1). [`control_router`] weaves them into one
 //! guarded management router.
@@ -66,8 +66,8 @@ use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_protocol_managed::{
-    AgentRegistryState, DeploymentState, EnvironmentState, UserProfileState, VaultState,
-    agents_router, deployments_router, environments_router, user_profiles_router, vault_router,
+    AgentRegistryState, ManagedAgentRepository, UserProfileState, VaultState, agents_router,
+    user_profiles_router, vault_router,
 };
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
@@ -179,10 +179,8 @@ pub struct ControlRouterInput {
     pub secrets: Arc<dyn SecretStore>,
     /// Authored inference profiles (admin aggregate).
     pub profiles: Arc<dyn InferenceProfileStore>,
-    /// Authored webhook endpoints (admin aggregate); the sink is returned for the data plane.
+    /// Authored webhook endpoints (admin aggregate).
     pub webhook_store: Arc<dyn WebhookStore>,
-    /// Session aggregate plus lifecycle transactional outbox, shared with the data plane.
-    pub sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
     /// Per-agent resource bindings, shared with the config service (ADR-0038).
     pub resource_store: Arc<dyn AgentInputBindingRepository>,
     /// The live credential probe (provider-backed), injected by the composition root.
@@ -196,11 +194,10 @@ pub struct ControlRouterInput {
     pub cloud_models_enabled: bool,
     /// The Managed vault state, shared with the data-plane managed state.
     pub vault_state: Arc<VaultState>,
-    /// The environment state, shared with the data-plane managed state.
-    pub env_state: Arc<EnvironmentState>,
-    /// Deployment state shared with the composition root, which binds its Session
-    /// launcher after the data plane has been assembled.
-    pub deployment_state: Arc<DeploymentState>,
+    /// The one authoring projection used by `/v1/agents`. Execution-owned
+    /// consumers receive the same port from composition instead of reconstructing
+    /// a second repository adapter.
+    pub agent_repository: Arc<dyn ManagedAgentRepository>,
     /// The config authoring plane (scope edge over the config service).
     pub plane: ConfigPlane,
     /// The host's global tool descriptors, for `GET /v1/capabilities`.
@@ -210,8 +207,6 @@ pub struct ControlRouterInput {
     /// Runtime capabilities projected by the composition root from the one
     /// executable catalog.
     pub runtimes: Arc<dyn RuntimeCapabilitySource>,
-    /// The org id stamped on webhook deliveries (`AWAKEN_ORG_ID`).
-    pub org_id: Option<String>,
     /// The embedded IAM guard, when enabled by typed deployment identity mode.
     pub iam: Option<Arc<ManagementAuthz>>,
     /// Canonical local setup/session routes, mounted outside the protected
@@ -223,13 +218,11 @@ pub struct ControlRouterInput {
     pub application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
 }
 
-/// Build the authoring / authz management router over the shared handles, and
-/// return the webhook lifecycle sink the data plane feeds. The guard (when
-/// present) wraps ONLY the admin + vault surfaces: an axum layer binds to the
-/// routes present when applied, so merging the guarded sub-router later leaves
-/// every other surface untouched (ADR-0043). Behavior is identical to the
-/// pre-split all-in-one authoring half.
-pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycleSink>) {
+/// Build the authoring / authz management router over the shared handles. The
+/// lifecycle sink is assembled separately by its Managed Execution consumer, so
+/// split Control never needs a Session repository merely to expose webhook CRUD.
+/// The guard (when present) wraps only the management surfaces (ADR-0043).
+pub fn control_router(input: ControlRouterInput) -> Router {
     let ControlRouterInput {
         platform_workspace,
         catalog,
@@ -237,20 +230,17 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         secrets,
         profiles,
         webhook_store,
-        sessions,
         resource_store,
         probe,
         model_discovery,
         brokered_catalog,
         cloud_models_enabled,
         vault_state,
-        env_state,
-        deployment_state,
+        agent_repository,
         plane,
         global_tools,
         plugins,
         runtimes,
-        org_id,
         iam,
         local_browser_auth,
         remote_iam,
@@ -303,18 +293,12 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     // the front door into the admin router BEFORE the ownership fence so
     // `/v1/config/webhook-subscriptions/{id}` is tenant-fenced like profiles/MCP; the
     // sink (fed the same store + secrets) fans committed session facts out-of-band.
-    let (webhook_sink, webhook_crud) =
-        assemble_with_session_repo(webhook_store, secrets.clone(), org_id, sessions);
+    let webhook_crud =
+        awaken_webhook_managed::webhook_config_router(webhook_store, secrets.clone());
     let admin = admin.merge(webhook_crud);
     let vaults = vault_router(vault_state);
     // The user-profiles front door (`/v1/user_profiles`) over its own in-mem store.
     let user_profiles = user_profiles_router(Arc::new(UserProfileState::new()));
-    // Deployments + deployment runs (`/v1/deployments`, `/v1/deployment_runs`).
-    let deployments = deployments_router(deployment_state.clone());
-    // Environments + work queue (`/v1/environments`, single-worker open cap). Shared
-    // with the session state so `POST /v1/sessions` resolves an environment's
-    // networking policy (egress on/off) at creation.
-    let environments = environments_router(env_state);
     // The config authoring plane (`/v1/config/agents/*`): the console authors the
     // rich `AgentConfig` here and `publish` compiles + installs it so sessions run it.
     let audit_plane = plane.clone();
@@ -322,15 +306,9 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
     // `/v1/agents` projects the config plane it hosts: an agent published via
     // `/v1/config/agents` is retrievable as a managed-wire projection of that single
     // truth (no second store), which is how the console probes the assistant.
-    let agent_repository = Arc::new(managed_agents::ConfigPlaneManagedAgentRepository::new(
-        audit_plane.clone(),
-        platform_workspace.clone(),
-    ));
-    deployment_state.bind_agent_repository(agent_repository.clone());
-    let agents = agents_router(Arc::new(
-        AgentRegistryState::from_repository(agent_repository)
-            .with_deployments(deployment_state.clone()),
-    ));
+    let agents = agents_router(Arc::new(AgentRegistryState::from_repository(
+        agent_repository,
+    )));
     // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
     // installable plugins (with config schema) so the console authors data-driven.
     let capabilities =
@@ -346,45 +324,74 @@ pub fn control_router(input: ControlRouterInput) -> (Router, Arc<WebhookLifecycl
         .merge(vaults)
         .merge(user_profiles)
         .merge(agents)
-        .merge(deployments)
-        .merge(environments)
         .merge(config_plane)
         .merge(capabilities)
         .merge(crate::application_access::router(
             application_access,
             platform_workspace,
         ));
-    if let Some(iam) = iam {
+    if let Some(iam) = iam.as_ref() {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
+    }
+    mgmt = protect_management_router(mgmt, audit_plane, iam, remote_iam);
+    if let Some(local_browser_auth) = local_browser_auth {
+        mgmt = mgmt.merge(awaken_iam_host::local_browser_router(local_browser_auth));
+    }
+    mgmt
+}
+
+/// Construct only the outbound lifecycle sink used by Managed Execution.
+///
+/// Split Coordinator composition must not instantiate the authoring router merely
+/// to obtain this adapter. Subscription custody remains in the supplied Control
+/// ports; this function exposes no CRUD or other management state.
+pub fn webhook_lifecycle_sink(
+    webhook_store: Arc<dyn WebhookStore>,
+    secrets: Arc<dyn SecretStore>,
+    org_id: Option<String>,
+    sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
+) -> Arc<WebhookLifecycleSink> {
+    assemble_with_session_repo(webhook_store, secrets, org_id, sessions).0
+}
+
+/// Apply the canonical management audit and IAM edge to a domain router.
+///
+/// Deployment is execution-owned, but its public management API must retain the
+/// same authorization and audit semantics as the authoring surfaces. Keeping the
+/// edge here prevents a second interpretation of management identity in the CLI.
+pub fn protect_management_router(
+    mut router: Router,
+    audit_plane: ConfigPlane,
+    iam: Option<Arc<ManagementAuthz>>,
+    remote_iam: Option<Arc<RemoteManagementAuthz>>,
+) -> Router {
+    if let Some(iam) = iam {
         // Layer order is outside-in in reverse application order: audit is
         // installed first, then IAM wraps it. Thus unauthenticated requests
         // never create audit intents, while admitted requests carry the
         // authenticated WorkspaceScope into durable audit and ownership guards.
-        mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
+        router = router.layer(axum::middleware::from_fn_with_state(
             audit_plane,
             durable_management_audit,
         ));
-        mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
+        router = router.layer(axum::middleware::from_fn_with_state(
             iam,
             crate::authz::management_guard,
         ));
     } else if let Some(remote_iam) = remote_iam {
-        mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
+        router = router.layer(axum::middleware::from_fn_with_state(
             audit_plane,
             durable_management_audit,
         ));
-        mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
+        router = router.layer(axum::middleware::from_fn_with_state(
             remote_iam,
             crate::authz::cloud_management_guard,
         ));
     } else {
-        mgmt = mgmt.layer(axum::middleware::from_fn_with_state(
+        router = router.layer(axum::middleware::from_fn_with_state(
             audit_plane,
             durable_management_audit,
         ));
     }
-    if let Some(local_browser_auth) = local_browser_auth {
-        mgmt = mgmt.merge(awaken_iam_host::local_browser_router(local_browser_auth));
-    }
-    (mgmt, webhook_sink)
+    router
 }

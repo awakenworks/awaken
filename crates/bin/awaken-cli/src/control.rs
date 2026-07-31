@@ -100,7 +100,7 @@ async fn build_control_assembly_with_model_composition(
         &deployment.iam_workspaces,
         &deployment.cloud_iam,
     )?;
-    let stores = open_deployment_stores(
+    let stores = open_process_stores(
         deployment.control.clone(),
         // Control exposes no File/Memory/Skill routes. This volatile
         // resource plane satisfies shared control-plane collaborators without
@@ -108,6 +108,7 @@ async fn build_control_assembly_with_model_composition(
         ephemeral_resource_plane(),
         deployment.data_dir.clone(),
         key,
+        config::Role::Control,
         PostgresSchemaMode::Verify,
     )
     .await?;
@@ -131,7 +132,6 @@ async fn build_control_assembly_with_model_composition(
             web_search_providers: web_search.as_ref().map(|value| value.0.clone()),
             web_search_publication_resolver: web_search.map(|value| value.1),
             executable_agent_wiring: Some(executable_agent_wiring),
-            deployment_session_launch: Some(deployment.deployment_session_launch.clone()),
             worker_authenticator: None,
         },
         None,

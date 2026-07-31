@@ -164,7 +164,8 @@ fn requires_agent_projection_refresh(method: &Method, path: &str) -> bool {
     method == Method::POST
         && (path.ends_with("/v1/sessions")
             || path.contains("/v1/sessions/")
-            || path == awaken_protocol_managed::DEPLOYMENT_SESSION_LAUNCH_PATH)
+            || path.ends_with("/v1/deployments")
+            || path.contains("/v1/deployments/"))
 }
 
 /// Reconcile before a request can admit or resume Session Runtime work. In an
@@ -192,7 +193,7 @@ mod tests {
     #[test]
     fn projection_refresh_scope_covers_cross_replica_runtime_writes() {
         // Causes: C1 Session create, C2 existing-Session POST that can realize or
-        // resume Runtime work, C3 private Deployment launch, C4 read-only Session
+        // resume Runtime work, C3 Deployment create/run, C4 read-only Session
         // request, C5 unrelated POST. Effects: E1 refresh the one durable Agent
         // projection before continuing; E2 do not add a database read.
         //
@@ -200,7 +201,7 @@ mod tests {
         // | rule | method | path                              | effect |
         // | R1   | POST   | /v1/sessions                      | E1     |
         // | R2   | POST   | /v1/sessions/{id}/events          | E1     |
-        // | R3   | POST   | private Deployment Session launch | E1     |
+        // | R3   | POST   | /v1/deployments/{id}/run           | E1     |
         // | R4   | GET    | /v1/sessions/{id}                 | E2     |
         // | R5   | POST   | /v1/agents                        | E2     |
         assert!(requires_agent_projection_refresh(
@@ -213,7 +214,7 @@ mod tests {
         ));
         assert!(requires_agent_projection_refresh(
             &Method::POST,
-            awaken_protocol_managed::DEPLOYMENT_SESSION_LAUNCH_PATH
+            "/v1/deployments/depl_1/run"
         ));
         assert!(!requires_agent_projection_refresh(
             &Method::GET,

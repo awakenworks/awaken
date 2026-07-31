@@ -2,9 +2,10 @@
 //!
 //! The management plane owns several independent stores — the model catalog, the
 //! credential vault (+ sealed secrets), the config authoring registry, the admin
-//! aggregate (inference profiles / MCP defs / webhook subscriptions), and the
-//! managed-session repository. They default to SQLite files under one typed
-//! deployment `data_dir`; this module lets each one use its **own** database
+//! aggregate (inference profiles / MCP defs / webhook subscriptions), Environment
+//! registry/work state, plus the AllInOne/Coordinator Managed Execution repository. They default to
+//! SQLite files under one typed deployment `data_dir`; this compatibility bundle
+//! lets each one use its **own** database
 //! independently, so an operator can isolate (e.g.) credentials on a hardened Postgres
 //! while config stays on another — the precondition for splitting control / server
 //! into separate services that share per-component databases (ADR: shared-DB, Option A).
@@ -42,7 +43,8 @@ fn is_postgres_url(value: &str) -> bool {
     value.starts_with("postgres://") || value.starts_with("postgresql://")
 }
 
-/// The typed database configuration backing each control-plane store.
+/// Typed database configuration for the process composition bundle.
+/// Split Control ignores `sessions`; Coordinator/AllInOne owns it.
 #[derive(Debug, Clone)]
 pub struct ControlStoreConfig {
     pub catalog: StoreBackend,
@@ -52,13 +54,16 @@ pub struct ControlStoreConfig {
     pub config: StoreBackend,
     /// The admin aggregate: inference profiles, MCP server defs, webhook subscriptions.
     pub admin: StoreBackend,
+    /// Environment definitions plus their execution work and sandbox-policy state.
+    /// Control and Coordinator currently share this explicit boundary.
+    pub environments: StoreBackend,
     pub sessions: StoreBackend,
 }
 
 impl ControlStoreConfig {
     #[must_use]
     pub fn local(dir: &Path) -> Self {
-        Self::from_values(dir, None, None, None, None, None)
+        Self::from_values(dir, None, None, None, None, None, None)
     }
 
     #[must_use]
@@ -68,6 +73,7 @@ impl ControlStoreConfig {
         credential: Option<String>,
         config: Option<String>,
         admin: Option<String>,
+        environments: Option<String>,
         sessions: Option<String>,
     ) -> Self {
         let bundle = |name: &str| dir.join(name);
@@ -76,6 +82,7 @@ impl ControlStoreConfig {
             credential: StoreBackend::resolve(credential, bundle("credential.db")),
             config: StoreBackend::resolve(config, bundle("config.db")),
             admin: StoreBackend::resolve(admin, bundle("admin.db")),
+            environments: StoreBackend::resolve(environments, bundle("environments.db")),
             sessions: StoreBackend::resolve(sessions, bundle("sessions.db")),
         }
     }
@@ -98,6 +105,7 @@ mod tests {
             get("AWAKEN_CREDENTIAL_DB"),
             get("AWAKEN_CONFIG_DB"),
             get("AWAKEN_ADMIN_DB"),
+            get("AWAKEN_ENVIRONMENT_DB"),
             get("AWAKEN_SESSIONS_DB"),
         )
     }
@@ -118,6 +126,10 @@ mod tests {
             StoreBackend::Sqlite("/var/awaken/config.db".into())
         );
         assert_eq!(c.admin, StoreBackend::Sqlite("/var/awaken/admin.db".into()));
+        assert_eq!(
+            c.environments,
+            StoreBackend::Sqlite("/var/awaken/environments.db".into())
+        );
         assert_eq!(
             c.sessions,
             StoreBackend::Sqlite("/var/awaken/sessions.db".into())
@@ -156,9 +168,14 @@ mod tests {
 
     #[test]
     fn each_component_resolves_independently() {
+        // Causes: explicit Catalog, Credential, Environment and Session bindings
+        // select different backends. Effects: each named domain keeps its exact
+        // backend and an unconfigured Admin store retains its local default; no
+        // Session address is reused as the Environment address.
         let c = cfg(&[
             ("AWAKEN_CATALOG_DB", "postgres://h/cat"),
             ("AWAKEN_CREDENTIAL_DB", "postgres://secure/cred"),
+            ("AWAKEN_ENVIRONMENT_DB", "postgres://h/environments"),
             ("AWAKEN_SESSIONS_DB", "/data/sessions.db"),
         ]);
         assert_eq!(c.catalog, StoreBackend::Postgres("postgres://h/cat".into()));
@@ -167,6 +184,10 @@ mod tests {
             StoreBackend::Postgres("postgres://secure/cred".into())
         );
         assert_eq!(c.sessions, StoreBackend::Sqlite("/data/sessions.db".into()));
+        assert_eq!(
+            c.environments,
+            StoreBackend::Postgres("postgres://h/environments".into())
+        );
         assert_eq!(c.admin, StoreBackend::Sqlite("/var/awaken/admin.db".into()));
     }
 }
