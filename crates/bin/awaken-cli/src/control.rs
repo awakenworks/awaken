@@ -5,6 +5,7 @@
 //! existing modules.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 
@@ -152,7 +153,7 @@ async fn build_control_assembly_with_model_composition(
     }
     let executable_agent_wiring =
         executable_agent_registration::ExecutableAgentWiring::control(deployment)?;
-    let router = assemble_process_router(
+    let router = assemble_control_process_router(
         stores,
         identity.iam,
         identity.remote_iam,
@@ -178,7 +179,6 @@ async fn build_control_assembly_with_model_composition(
             executable_agent_wiring: Some(executable_agent_wiring),
             worker_authenticator: None,
         },
-        None,
     )
     .await;
     Ok(ProcessAssembly {

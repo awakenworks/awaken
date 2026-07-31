@@ -1549,6 +1549,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # control names this, NOT the data-plane host.
         "awaken-config-service",
         "awaken-admin-assistant",
+        "awaken-executable-agent-contract",
         "awaken-tenancy",
         "awaken-authz-enforce",
         "awaken-protocol-managed",
@@ -1577,6 +1578,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # Secret-free, fixed-size request-body fingerprints for the durable
         # management audit middleware. The body itself is never persisted.
         "sha2",
+        "thiserror",
         "tokio",
         "axum",
         # dev-only: the authz restart tests open a tempdir-backed iam.sqlite.

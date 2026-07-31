@@ -5,7 +5,7 @@
 //! catalog implementation, persistence API, or RPC framework.
 
 use async_trait::async_trait;
-use awaken_runtime_contract::ExecutableAgentSnapshot;
+pub use awaken_runtime_contract::ExecutableAgentSnapshot;
 use serde::{Deserialize, Serialize};
 
 mod session_profile;
@@ -151,6 +151,27 @@ pub trait ExecutableAgentRegistrar: Send + Sync {
         &self,
         withdrawal: ExecutableAgentWithdrawal,
     ) -> Result<ExecutableAgentWithdrawalOutcome, ExecutableAgentRegistrationError>;
+}
+
+/// Coordinator-owned read projection of Control's immutable registrations.
+///
+/// Deployment resolution needs only current or exact publication availability;
+/// it must not receive Control's mutable Agent authoring repository merely to
+/// freeze one executable revision.
+#[async_trait]
+pub trait ExecutableAgentRegistrationSource: Send + Sync {
+    async fn current_registration(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError>;
+
+    async fn registration_at_revision(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError>;
 }
 
 #[cfg(test)]

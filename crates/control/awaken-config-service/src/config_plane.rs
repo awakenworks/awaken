@@ -12,6 +12,7 @@ use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
 
 use crate::config_service::ConfigService;
+use crate::management_audit::ManagementAuditPlane;
 use crate::publication::{PublishError, ValidationIssue};
 use crate::tool_catalog::{RESERVED_ADMIN_SCOPE, ToolCatalogSource};
 
@@ -40,6 +41,13 @@ impl ConfigPlane {
             store,
             tools,
         }
+    }
+
+    /// Project the one durable management-audit edge without exposing the
+    /// Config Service or reconstructing an audit store adapter.
+    #[must_use]
+    pub fn management_audit_plane(&self) -> ManagementAuditPlane {
+        ManagementAuditPlane::new(self.store.clone())
     }
 
     /// The scope's tool catalog (D3): the descriptors a config in `scope` may name.
@@ -138,10 +146,7 @@ impl ConfigPlane {
         scope: &ScopeId,
         audit: &ManagementAuditRecord,
     ) -> Result<AuditedConfigWrite, String> {
-        self.store
-            .record_management_audit_scoped(scope, audit)
-            .await
-            .map_err(|error| error.to_string())
+        self.management_audit_plane().record(scope, audit).await
     }
 
     pub async fn get_management_audit(
@@ -150,10 +155,9 @@ impl ConfigPlane {
         tool: &str,
         call_id: &str,
     ) -> Result<Option<ManagementAuditEntry>, String> {
-        self.store
-            .get_management_audit_scoped(scope, tool, call_id)
+        self.management_audit_plane()
+            .get(scope, tool, call_id)
             .await
-            .map_err(|error| error.to_string())
     }
 
     pub async fn mark_management_audit_committed(
@@ -162,10 +166,9 @@ impl ConfigPlane {
         tool: &str,
         call_id: &str,
     ) -> Result<(), String> {
-        self.store
-            .mark_management_audit_committed_scoped(scope, tool, call_id)
+        self.management_audit_plane()
+            .mark_committed(scope, tool, call_id)
             .await
-            .map_err(|error| error.to_string())
     }
 
     pub async fn put_if_revision(

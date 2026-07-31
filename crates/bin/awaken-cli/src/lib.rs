@@ -14,6 +14,7 @@ mod brain_admin;
 pub mod config;
 mod console_assets;
 mod control;
+mod control_component;
 mod credential_probe;
 mod exact_host_model;
 mod executable_agent_registration;
@@ -26,11 +27,8 @@ mod worker_transport_security;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
 
-use awaken_config_service::{
-    ConfigPlane, ConfigService, RESERVED_ADMIN_SCOPE, ScopedToolCatalog, ToolCatalogSource,
-};
+use awaken_config_service::ManagementAuditPlane;
 use awaken_protocol_managed::{EnvironmentState, ManagedState, VaultState};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_host::{ExtMcpProbe, ManagedHost, SharedHost};
@@ -51,6 +49,7 @@ pub use control::{
     build_control_assembly, build_control_router, build_control_router_with_publication_resolver,
     build_control_router_with_publication_resolver_and_web_search,
 };
+use control_component::{assemble_control_process_router, control_component_for_process};
 use identity::identity_wiring;
 use process_assembly_options::{ProcessAssemblyOptions, local_model_supply};
 use resource_plane::{ephemeral_resource_plane, open_resource_plane};
@@ -93,6 +92,21 @@ struct PublicationModelWiring {
     materializer: Option<Arc<dyn awaken_runtime_host::InferenceExecutorMaterializer>>,
 }
 
+/// Publication policy plus a deferred runtime choice. Standalone Control uses
+/// only the resolver; execution adapters are realized only by runtime assembly.
+struct PublicationModelAssembly {
+    publication_resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
+    runtime: RuntimeModelAssembly,
+}
+
+enum RuntimeModelAssembly {
+    PublishedProviders,
+    NoModelConfigured,
+    Host {
+        executor: Arc<dyn LlmExecutor>,
+        model_ref: String,
+    },
+}
 /// Router plus the cleartext local setup handoff printed by the CLI once.
 pub struct ProcessAssembly {
     pub router: Router,
@@ -146,52 +160,13 @@ enum PostgresSchemaMode {
     Verify,
 }
 
-const CREDENTIAL_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(60);
-
-fn role_owns_credential_mutations(role: config::Role) -> bool {
+#[cfg(test)]
+fn role_owns_control_component(role: config::Role) -> bool {
     matches!(role, config::Role::AllInOne | config::Role::Control)
 }
 
 fn role_owns_managed_execution(role: config::Role) -> bool {
     matches!(role, config::Role::AllInOne | config::Role::Coordinator)
-}
-
-/// Keep retrying interrupted credential mutations after startup. A failed
-/// material cleanup leaves its durable intent intact, so the next tick resumes.
-fn spawn_credential_mutation_reconciliation(
-    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
-    credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
-) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(CREDENTIAL_RECONCILIATION_INTERVAL);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // The composition root already performed the first pass synchronously.
-        interval.tick().await;
-        loop {
-            interval.tick().await;
-            if let Err(error) = awaken_credential_vault::repo::recover_credential_mutations(
-                secrets.as_ref(),
-                credentials.as_ref(),
-            )
-            .await
-            {
-                eprintln!("credential mutation reconciliation failed: {error}");
-            }
-            match awaken_credential_vault::repo::reconcile_credential_inventory(
-                secrets.as_ref(),
-                credentials.as_ref(),
-            )
-            .await
-            {
-                Ok(report) if !report.missing_material.is_empty() => eprintln!(
-                    "credential inventory is missing referenced material: {:?}",
-                    report.missing_material
-                ),
-                Err(error) => eprintln!("credential inventory reconciliation failed: {error}"),
-                _ => {}
-            }
-        }
-    });
 }
 
 /// Ephemeral deployment stores: everything in process memory (dev / e2e default).
@@ -567,7 +542,7 @@ pub async fn build_all_in_one_router() -> Router {
 /// Hermetic all-in-one composition for tests and embedders that explicitly want
 /// volatile stores. It never consults the standard deployment config path.
 pub async fn build_ephemeral_all_in_one_router() -> Router {
-    assemble_process_router(
+    assemble_runtime_process_router(
         in_memory_process_stores(),
         None,
         None,
@@ -641,7 +616,7 @@ async fn build_runtime_process_assembly(
     let executable_agent_wiring =
         executable_agent_registration::for_runtime_role(role, deployment, postgres_schema).await?;
     let worker_authenticator = worker_transport_security::authenticator(deployment)?;
-    let router = assemble_process_router(
+    let router = assemble_runtime_process_router(
         stores,
         identity.iam,
         identity.remote_iam,
@@ -748,7 +723,7 @@ async fn build_all_in_one_router_with_composition(
         awaken_server::placement::connect_declared_hands(&deployment.hand_connections)
             .await
             .unwrap_or_else(|error| panic!("declared Hand topology: {error}"));
-    assemble_process_router(
+    assemble_runtime_process_router(
         stores,
         identity.iam,
         identity.remote_iam,
@@ -784,7 +759,7 @@ pub async fn build_all_in_one_router_with_host_customizer(
     binding: awaken_runtime_contract::resolved::ModelBinding,
     customize_host: impl FnOnce(SharedHost) -> SharedHost + Send + 'static,
 ) -> Router {
-    assemble_process_router(
+    assemble_runtime_process_router(
         in_memory_process_stores(),
         None,
         None,
@@ -812,7 +787,7 @@ pub async fn build_durable_all_in_one_router_with_host_customizer(
     binding: awaken_runtime_contract::resolved::ModelBinding,
     customize_host: impl FnOnce(SharedHost) -> SharedHost + Send + 'static,
 ) -> Router {
-    assemble_process_router(
+    assemble_runtime_process_router(
         open_local_process_stores(dir, key)
             .await
             .unwrap_or_else(|error| panic!("open local deployment stores: {error}")),
@@ -837,7 +812,7 @@ pub async fn build_all_in_one_router_with_model(
     model: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
 ) -> Router {
-    assemble_process_router(
+    assemble_runtime_process_router(
         in_memory_process_stores(),
         None,
         None,
@@ -860,7 +835,7 @@ pub async fn build_all_in_one_router_with_model(
 /// simulated process lifetimes without racing on process-global env vars.
 /// No IAM guard — the open (default) all-in-one process.
 pub async fn build_durable_all_in_one_router(dir: &std::path::Path, key: &[u8; 32]) -> Router {
-    assemble_process_router(
+    assemble_runtime_process_router(
         open_local_process_stores(dir, key)
             .await
             .unwrap_or_else(|error| panic!("open local deployment stores: {error}")),
@@ -883,7 +858,7 @@ pub async fn build_secured_all_in_one_router(
     key: &[u8; 32],
 ) -> (Router, Arc<ManagementAuthz>) {
     let iam = embedded_iam(dir);
-    let router = assemble_process_router(
+    let router = assemble_runtime_process_router(
         open_local_process_stores(dir, key)
             .await
             .unwrap_or_else(|error| panic!("open local deployment stores: {error}")),
@@ -898,12 +873,130 @@ pub async fn build_secured_all_in_one_router(
     (router, iam)
 }
 
-/// Assemble a process over an explicit store set, optionally gated by the
-/// embedded IAM guard (`iam`). The authoring / authz half comes from
-/// [`awaken_control::control_router`] (guard wraps ONLY admin + vault); the data
-/// plane comes from [`awaken_server::mount_with_managed`]; this composition root
-/// weaves them and keeps the warm-load + inert no-model placeholder wired here.
-async fn assemble_process_router(
+fn brokered_inference_client(
+    cloud_models_enabled: bool,
+    remote_iam: Option<&Arc<RemoteManagementAuthz>>,
+    cloud_api_base_url: Option<&str>,
+    execution_workspace: &str,
+) -> Option<Arc<awaken_server::brokered_inference::HttpBrokeredInferenceClient>> {
+    cloud_models_enabled
+        .then(|| remote_iam.and_then(|authz| authz.cloud_user_token()))
+        .flatten()
+        .map(|token| {
+            let base_url = cloud_api_base_url
+                .expect("Awaken Cloud identity requires a Cloud inference API URL");
+            Arc::new(
+                awaken_server::brokered_inference::HttpBrokeredInferenceClient::new(
+                    base_url,
+                    token,
+                    execution_workspace,
+                )
+                .unwrap_or_else(|error| panic!("Cloud inference configuration: {error}")),
+            )
+        })
+}
+
+async fn migrate_legacy_skill_registry(
+    stores: &ProcessStores,
+    skill_store: &Arc<dyn awaken_skill_store::SkillStore>,
+) {
+    if let Some(root) = stores.workspace_root.as_deref() {
+        let migrated = awaken_server::migrate_legacy_skill_registry(root, skill_store.as_ref())
+            .await
+            .unwrap_or_else(|error| panic!("legacy Skill migration failed: {error}"));
+        if migrated > 0 {
+            eprintln!("migrated {migrated} legacy Skill aggregate(s)");
+        }
+    }
+}
+
+fn publication_model_assembly(
+    composition: PublicationModelComposition,
+    stores: &ProcessStores,
+    cloud_models_enabled: bool,
+) -> PublicationModelAssembly {
+    let executor_model_capabilities =
+        Arc::new(awaken_server::model_directory::installed_executor_model_capabilities());
+    match composition {
+        PublicationModelComposition::PublishedProviders => PublicationModelAssembly {
+            publication_resolver: Arc::new(
+                awaken_server::model_resolver::CatalogModelPublicationResolver::from_repo(
+                    stores.catalog.clone(),
+                    stores.credentials.clone(),
+                )
+                .with_executor_capabilities(executor_model_capabilities)
+                .with_profiles(stores.profiles.clone())
+                .with_worker_directory(awaken_server::worker_directory())
+                .with_brokered_access(cloud_models_enabled),
+            ),
+            runtime: RuntimeModelAssembly::PublishedProviders,
+        },
+        PublicationModelComposition::HostedPublication { resolver } => PublicationModelAssembly {
+            publication_resolver: resolver,
+            runtime: RuntimeModelAssembly::NoModelConfigured,
+        },
+        PublicationModelComposition::Host { executor, binding } => {
+            let model_ref = binding.model_ref.clone();
+            PublicationModelAssembly {
+                publication_resolver: Arc::new(ExactHostModelPublicationResolver { binding }),
+                runtime: RuntimeModelAssembly::Host {
+                    executor,
+                    model_ref,
+                },
+            }
+        }
+    }
+}
+
+fn runtime_model_wiring(
+    assembly: PublicationModelAssembly,
+    credential_materializer: &awaken_credential_materializer::PinnedCredentialMaterializer,
+    cloud_models_enabled: bool,
+    brokered_client: Option<&Arc<awaken_server::brokered_inference::HttpBrokeredInferenceClient>>,
+) -> PublicationModelWiring {
+    let PublicationModelAssembly {
+        publication_resolver,
+        runtime,
+    } = assembly;
+    match runtime {
+        RuntimeModelAssembly::PublishedProviders => PublicationModelWiring {
+            executor: Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
+            model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
+            publication_resolver,
+            materializer: Some(Arc::new({
+                let materializer = awaken_server::inference_materializer::CredentialInferenceMaterializer::from_pinned(
+                    credential_materializer.clone(),
+                )
+                .with_brokered_mode(cloud_models_enabled);
+                match brokered_client {
+                    Some(client) => materializer.with_brokered_client(client.clone()),
+                    None => materializer,
+                }
+            })),
+        },
+        RuntimeModelAssembly::NoModelConfigured => PublicationModelWiring {
+            executor: Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
+            model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
+            publication_resolver,
+            materializer: None,
+        },
+        RuntimeModelAssembly::Host {
+            executor,
+            model_ref,
+        } => PublicationModelWiring {
+            executor,
+            model_ref,
+            publication_resolver,
+            materializer: None,
+        },
+    }
+}
+
+/// Assemble Coordinator, optionally composing the canonical Control component
+/// for AllInOne. The data plane comes from [`awaken_server::mount_with_managed`];
+/// this process layer merges routers and supervises lifecycle without rebuilding
+/// either domain application.
+async fn assemble_runtime_process_router(
     stores: ProcessStores,
     iam: Option<Arc<ManagementAuthz>>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
@@ -918,6 +1011,10 @@ async fn assemble_process_router(
     customize_host: Option<Box<dyn FnOnce(SharedHost) -> SharedHost + Send>>,
 ) -> Router {
     let role = assembly.role;
+    debug_assert!(matches!(
+        role,
+        config::Role::AllInOne | config::Role::Coordinator
+    ));
     let worker_authenticator = assembly.worker_authenticator.unwrap_or_else(|| {
         Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator)
             as Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
@@ -938,350 +1035,129 @@ async fn assemble_process_router(
     let managed_rate_limiter =
         Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization(org_id.clone()));
     let mcp_bearer_token = assembly.mcp_bearer_token;
-    let ProcessStores {
-        workspace_root,
-        resource_plane,
-        catalog,
-        credentials,
-        secrets,
-        profiles,
-        resources: resource_store,
-        resource_catalog,
-        webhooks: webhook_store,
-        config,
-        environments,
-        managed_execution,
-    } = stores;
     // Cause/effect composition rule: one selected ResourcePlane is moved intact
     // into the Host. The management Skill API borrows the one additional view it
     // needs; no tuple decomposition or parallel ResourcePlane reconstruction.
-    let skill_store = resource_plane.skill_store();
+    let skill_store = stores.resource_plane.skill_store();
     // Resolve the installation's Workspace exactly once, then inject the same
     // coordinate into every adapter assembled below. Durable roots persist it;
     // ephemeral roots receive a process-local generated coordinate.
-    let platform_workspace = workspace_root.as_deref().map_or_else(
+    let platform_workspace = stores.workspace_root.as_deref().map_or_else(
         SharedHost::provision_local_workspace,
         SharedHost::provision_local_workspace_at,
     );
-    let brokered_client = cloud_models_enabled
-        .then(|| {
-            remote_iam
-                .as_ref()
-                .and_then(|authz| authz.cloud_user_token())
-        })
-        .flatten()
-        .map(|token| {
-            let base_url = cloud_api_base_url
-                .clone()
-                .expect("Awaken Cloud identity requires a Cloud inference API URL");
-            Arc::new(
-                awaken_server::brokered_inference::HttpBrokeredInferenceClient::new(
-                    base_url,
-                    token,
-                    platform_workspace.clone(),
-                )
-                .unwrap_or_else(|error| panic!("Cloud inference configuration: {error}")),
-            )
-        });
-    if let Some(root) = workspace_root.as_deref() {
-        let migrated = awaken_server::migrate_legacy_skill_registry(root, skill_store.as_ref())
-            .await
-            .unwrap_or_else(|error| panic!("legacy Skill migration failed: {error}"));
-        if migrated > 0 {
-            eprintln!("migrated {migrated} legacy Skill aggregate(s)");
-        }
-    }
-    // Credential mutation recovery belongs to the authoring authority. A split
-    // Coordinator may consume exact material through the existing resolver, but
-    // it must never run a second mutation/reconciliation owner over the Vault.
-    if role_owns_credential_mutations(role) {
-        if let Err(error) = awaken_credential_vault::repo::recover_credential_mutations(
-            secrets.as_ref(),
-            credentials.as_ref(),
-        )
-        .await
-        {
-            eprintln!("credential mutation recovery failed: {error}");
-        }
-        match awaken_credential_vault::repo::reconcile_credential_inventory(
-            secrets.as_ref(),
-            credentials.as_ref(),
-        )
-        .await
-        {
-            Ok(report) if !report.missing_material.is_empty() => eprintln!(
-                "credential inventory is missing referenced material: {:?}",
-                report.missing_material
-            ),
-            Err(error) => eprintln!("credential inventory reconciliation failed: {error}"),
-            _ => {}
-        }
-        spawn_credential_mutation_reconciliation(secrets.clone(), credentials.clone());
-    }
-    // ONE resource-binding store shared by the admin router (which authors an agent's
-    // resources) and the config service (which reads them into resource prompts +
-    // mounts at compile) — so a binding authored through the API reaches the compiled
-    // config (ADR-0038).
-    // The Managed vault state, shared by the vault router (authoring) and the managed
-    // state (data plane): a credential entered through either surface is the same row.
-    let vault_state = Arc::new(
-        VaultState::new(secrets.clone(), credentials.clone())
-            // The live MCP probe is backed by ext-mcp here — the only place the MCP
-            // client is named for validation (mirrors the GenaiProbe pattern).
-            .with_probe(Arc::new(ExtMcpProbe)),
+    let brokered_client = brokered_inference_client(
+        cloud_models_enabled,
+        remote_iam.as_ref(),
+        cloud_api_base_url.as_deref(),
+        &platform_workspace,
     );
-    // Environments + work queue, shared with the session state so `POST /v1/sessions`
-    // resolves an environment's networking policy (egress on/off) at creation.
-    let env_state = environments;
-
+    migrate_legacy_skill_registry(&stores, &skill_store).await;
     let credential_materializer = awaken_credential_materializer::PinnedCredentialMaterializer::new(
-        credentials.clone(),
-        secrets.clone(),
+        stores.credentials.clone(),
+        stores.secrets.clone(),
     );
     let web_search_providers = assembly
         .web_search_providers
         .unwrap_or_else(awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins);
-    let executor_model_capabilities =
-        Arc::new(awaken_server::model_directory::installed_executor_model_capabilities());
-    let model_wiring = match model_composition {
-        PublicationModelComposition::PublishedProviders => PublicationModelWiring {
-            executor: Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
-            model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
-            publication_resolver: Arc::new(
-                awaken_server::model_resolver::CatalogModelPublicationResolver::from_repo(
-                    catalog.clone(),
-                    credentials.clone(),
-                )
-                .with_executor_capabilities(executor_model_capabilities.clone())
-                .with_profiles(profiles.clone())
-                .with_worker_directory(awaken_server::worker_directory())
-                .with_brokered_access(cloud_models_enabled),
-            ),
-            materializer: Some(Arc::new({
-                let materializer = awaken_server::inference_materializer::CredentialInferenceMaterializer::from_pinned(
-                    credential_materializer.clone(),
-                )
-                .with_brokered_mode(cloud_models_enabled);
-                match &brokered_client {
-                    Some(client) => materializer.with_brokered_client(client.clone()),
-                    None => materializer,
-                }
-            })),
-        },
-        PublicationModelComposition::HostedPublication { resolver } => PublicationModelWiring {
-            executor: Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
-            model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
-            publication_resolver: resolver,
-            materializer: None,
-        },
-        PublicationModelComposition::Host { executor, binding } => PublicationModelWiring {
-            executor,
-            model_ref: binding.model_ref.clone(),
-            publication_resolver: Arc::new(ExactHostModelPublicationResolver { binding }),
-            materializer: None,
-        },
-    };
-    let global = awaken_runtime_host::authorable_tools();
-    let tool_catalog: Arc<dyn ToolCatalogSource> = Arc::new(ScopedToolCatalog::new(
-        global.clone(),
-        RESERVED_ADMIN_SCOPE,
-        awaken_admin_assistant::admin_tool_descriptors(),
-    ));
-    // Resolve `Auto` against the LIVE catalog repo (not the frozen seed), so a
-    // model an operator adds AFTER startup is visible when we re-publish the
-    // reserved-scope assistant. The resolver is mandatory: no config service can
-    // be constructed with an implicit model fallback.
+    let model_assembly =
+        publication_model_assembly(model_composition, &stores, cloud_models_enabled);
+    let model_wiring = runtime_model_wiring(
+        model_assembly,
+        &credential_materializer,
+        cloud_models_enabled,
+        brokered_client.as_ref(),
+    );
     let web_search_publication_resolver =
         assembly.web_search_publication_resolver.unwrap_or_else(|| {
             Arc::new(awaken_config_service::WebSearchPublicationResolver::new(
                 web_search_providers.clone(),
             ))
         });
-    // One Coordinator-owned executable projection serves every execution read.
-    // Composition selects only the local, HTTP, or durable boundary adapter.
-    let config_service = Arc::new(
-        ConfigService::new(
-            model_wiring.publication_resolver,
-            executable_agent_registrar,
-        )
-        .with_credential_reference_validator(Arc::new(
-            awaken_control::CredentialRevisionValidator::new(credentials.clone()),
-        ))
-        .with_plugin_publication_resolver(web_search_publication_resolver)
-        .with_resources(resource_store.clone()),
-    );
-    // Re-submit durable Control publications through the same registration port
-    // used by live publication. The catalog is a rebuildable Coordinator projection,
-    // never a second publication source of truth.
-    let warmed = if role == config::Role::Coordinator {
-        0
-    } else {
-        config_service
-            .reconcile_registrations(
-                config.as_ref(),
-                &awaken_tenancy::ScopeId::from(platform_workspace.as_str()),
-            )
-            .await
-            .unwrap_or_else(|error| {
-                panic!("executable Agent registration recovery failed: {error}")
-            })
-    };
-    if warmed > 0 {
-        eprintln!("config: reconciled {warmed} durable Agent publication(s)");
-    }
-    let plane = ConfigPlane::new(config_service.clone(), config, tool_catalog);
-    // Seed the in-console Admin Assistant as an ordinary published agent in the
-    // reserved scope (ADR-0052 D1/D2). Best-effort: a server booted without a
-    // resolvable model still starts (the assistant stays a draft until one is set).
-    let assistant_catalog = catalog.snapshot().await.unwrap_or_default();
-    let assistant_credentials = credentials
-        .list(&platform_workspace)
-        .await
-        .unwrap_or_default();
-    let assistant_selection = assistant_selection::select(
-        &assistant_catalog,
-        &assistant_credentials,
-        &assembly.local_acp_observations,
-    );
-    if role != config::Role::Coordinator
-        && let Some(assistant_selection) = assistant_selection
-        && let Err(err) =
-            awaken_control::seed_admin_assistant(&plane, &platform_workspace, assistant_selection)
-                .await
-    {
-        eprintln!("admin assistant not seeded (configure a model, then republish): {err}");
-    }
-    // When an operator adds a model AFTER startup, re-publish the reserved-scope
-    // assistant so its `Auto` binding resolves off `unconfigured` onto the new model.
-    // Same reserved scope + agent id `seed_admin_assistant` published under, so the
-    // reconcile targets exactly the seeded agent (ADR-0052 D2). Fired by the middleware
-    // layer below on a successful catalog write. `ConfigPlane` is `Clone`.
-    let reconciler = Arc::new(awaken_config_service::ConfigServiceReconciler::new(
-        plane.clone(),
-        RESERVED_ADMIN_SCOPE,
-        platform_workspace.clone(),
-        vec![awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID.to_string()],
-    ));
-    // The LIVE data-plane resource inventory (ADR-0038): memory-store ids from the durable
-    // Resource Catalog (the same aggregate Session resolution reads, so this stays
-    // consistent) + skill ids from the shared skill store. Unlike before, this is now
-    // reachable at wire time because both handles are assembled by the composition root.
-    let resource_inventory = Arc::new(awaken_control::HostResourceInventory::new(
-        resource_catalog.clone(),
-        skill_store.clone(),
-        platform_workspace.clone(),
-    ));
-    // The management tool executables (ADR-0052 D3/D4): the capability reader reads the
-    // shared catalog + advertised tools; the validator runs the publish-time compile
-    // check on drafts in the tenant scope; Runtime history records every call and
-    // mutating tools additionally enter the durable config-change path.
-    let capability_reader = Arc::new(awaken_control::CatalogCapabilityReader::new(
-        // The LIVE catalog repo — models/providers an operator adds after startup
-        // are visible on the next capabilities call (not a frozen seed snapshot).
-        catalog.clone(),
-        &global,
-        // The installable plugins (state_machine / memory / compact) so the assistant
-        // knows it CAN author a state machine etc. — not an empty list (it would
-        // otherwise refuse, thinking no plugins exist).
-        &awaken_runtime_host::authorable_config_sections_with_web_search(&web_search_providers),
-        // The config plane, to list existing agent ids in the tenant scope.
-        plane.clone(),
-        platform_workspace.clone(),
-        // LIVE data-plane inventory: memory-store ids (durable registry) + skill ids
-        // (shared skill store). Both handles are assembled by this composition root
-        // before the host, so the assistant enumerates real memory stores + skills.
-        Some(resource_inventory),
-    ));
-    let admin_execs = awaken_admin_assistant::admin_tools(
-        capability_reader,
-        Arc::new(awaken_control::ConfigServiceDraftValidator::new(
-            plane.clone(),
-            platform_workspace.clone(),
-        )),
-        // Persist/read drafts as unpublished config agents through the same plane the
-        // editor's Save uses, in the tenant/default scope (ADR-0052).
-        Arc::new(awaken_control::ConfigServiceDraftStore::new(
-            plane.clone(),
-            platform_workspace.clone(),
-            resource_store.clone(),
-        )),
-        // Author environments through the SAME managed-plane registry the console's
-        // New-environment modal drives, so `admin_draft_environment` persists for real.
-        Arc::new(awaken_control::EnvironmentStateAuthor::new(
-            env_state.clone(),
-        )),
-        Arc::new(awaken_admin_assistant::TracingAuditSink),
-    );
-    // The MCP server export is explicit and capability-token gated. Clone the
-    // management executables before the host takes ownership, pairing each with
-    // its authoritative descriptor rather than reconstructing a schema here.
-    let mcp_export = awaken_server::mcp_export::router(
-        awaken_admin_assistant::admin_tool_descriptors(),
-        admin_execs.clone(),
-        mcp_bearer_token,
-    );
-
     // Keep the IAM handles for the sibling resource PEP. The authoring router owns
     // its PEP; File/Memory/Skill routes are wrapped independently after the data
     // router is assembled, so neither plane depends on the other's services.
     let resource_iam = iam.clone();
     let resource_remote_iam = remote_iam.clone();
+    let deployment_iam = iam.clone();
+    let deployment_remote_iam = remote_iam.clone();
     let live_runtime_capabilities = Arc::new(LiveRuntimeCapabilities {
         initial: assembly.local_acp_observations.clone(),
         workers: awaken_server::worker_directory(),
-        credentials: credentials.clone(),
+        credentials: stores.credentials.clone(),
         workspace: platform_workspace.clone(),
     });
-    let agent_repository = Arc::new(awaken_control::ConfigPlaneManagedAgentRepository::new(
-        plane.clone(),
-        platform_workspace.clone(),
-    ));
-    let deployment_audit_plane = plane.clone();
-    let deployment_iam = iam.clone();
-    let deployment_remote_iam = remote_iam.clone();
-    let control = if role == config::Role::Coordinator {
-        Router::new()
-    } else {
-        awaken_control::control_router(awaken_control::ControlRouterInput {
-            catalog: catalog.clone(),
-            credentials: credentials.clone(),
-            secrets: secrets.clone(),
-            profiles,
-            webhook_store: webhook_store.clone(),
-            resource_store: resource_store.clone(),
-            probe: Arc::new(credential_probe::GenaiProbe),
-            model_discovery: Arc::new(awaken_server::model_discovery::GenaiModelDiscovery::new(
-                secrets.clone(),
-            )),
-            brokered_catalog: injected_brokered_catalog.or_else(|| {
-                brokered_client.clone().map(|client| {
-                    client as Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>
-                })
-            }),
-            model_supply,
-            vault_state: vault_state.clone(),
-            agent_repository: agent_repository.clone(),
-            plane,
-            global_tools: global,
-            plugins: awaken_runtime_host::platform_plugin_capabilities_with_web_search(
+    // Control owns this complete component. Standalone Control and AllInOne
+    // supply different process adapters but call the same domain builder;
+    // Coordinator never constructs ConfigService or a Control router.
+    let control_component = match role {
+        config::Role::AllInOne => Some(
+            control_component_for_process(
+                &stores,
+                &platform_workspace,
+                executable_agent_registrar,
+                model_wiring.publication_resolver.clone(),
+                web_search_publication_resolver,
                 &web_search_providers,
-            ),
-            runtimes: live_runtime_capabilities.clone(),
-            iam,
-            remote_iam,
-            local_browser_auth,
-        })
+                brokered_client.clone(),
+                injected_brokered_catalog,
+                model_supply,
+                &assembly.local_acp_observations,
+                live_runtime_capabilities.clone(),
+                iam.clone(),
+                local_browser_auth,
+                remote_iam.clone(),
+            )
+            .await,
+        ),
+        config::Role::Coordinator => None,
+        config::Role::Control | config::Role::Worker => {
+            unreachable!("runtime process assembly accepts only AllInOne or Coordinator")
+        }
     };
-
-    if role == config::Role::Control {
-        return process_surface::finish(
-            control,
-            mcp_export,
-            Some(reconciler),
-            platform_workspace,
-            managed_rate_limiter,
-        );
-    }
+    let ProcessStores {
+        workspace_root: _,
+        resource_plane,
+        catalog,
+        credentials,
+        secrets,
+        profiles: _,
+        resources: _,
+        resource_catalog,
+        webhooks: webhook_store,
+        config,
+        environments: env_state,
+        managed_execution,
+    } = stores;
+    let (control, mcp_export, reconciler, admin_execs, vault_state, deployment_audit_plane) =
+        match control_component {
+            Some(component) => {
+                let mcp_export = awaken_server::mcp_export::router(
+                    awaken_admin_assistant::admin_tool_descriptors(),
+                    component.admin_tools.clone(),
+                    mcp_bearer_token,
+                );
+                (
+                    component.router,
+                    mcp_export,
+                    Some(component.publication_reconciler),
+                    component.admin_tools,
+                    component.vault_state,
+                    component.management_audit,
+                )
+            }
+            None => (
+                Router::new(),
+                Router::new(),
+                None,
+                Vec::new(),
+                Arc::new(
+                    VaultState::new(secrets.clone(), credentials.clone())
+                        .with_probe(Arc::new(ExtMcpProbe)),
+                ),
+                ManagementAuditPlane::new(config.clone()),
+            ),
+        };
 
     // Only Coordinator and AllInOne can reach this point. Their one execution
     // store group owns Session, Deployment/Run, Dream, extraction work and the
@@ -1309,7 +1185,7 @@ async fn assemble_process_router(
             .unwrap_or_else(|error| panic!("restore Deployment state: {error}")),
     );
     deployment_state.bind_rate_limiter(managed_rate_limiter.clone());
-    deployment_state.bind_agent_repository(agent_repository);
+    deployment_state.bind_executable_agents(executable_agent_catalog.clone());
 
     // The data plane: the host runs the server model, resolves a session's agent to
     // its installed config, and carries the management tool executables so the
@@ -1519,8 +1395,7 @@ async fn assemble_process_router(
     process_surface::finish(
         flat,
         mcp_export,
-        (role == config::Role::AllInOne)
-            .then_some(reconciler as Arc<dyn awaken_config_service::PublicationBindingReconciler>),
+        reconciler,
         platform_workspace,
         managed_rate_limiter,
     )
@@ -1741,18 +1616,19 @@ mod process_role_surface_tests {
     use super::*;
 
     #[test]
-    fn credential_mutation_reconciliation_has_one_process_owner() {
+    fn control_component_has_exactly_the_authoring_process_owners() {
         // Cause/effect decision table:
         // R1 Control and R2 AllInOne contain the authoring authority, so they
-        // recover and reconcile Vault mutations. R3 Coordinator and R4 Worker
-        // only consume projected/runtime material and must not mutate Vault truth.
-        assert!(role_owns_credential_mutations(config::Role::Control), "R1");
-        assert!(role_owns_credential_mutations(config::Role::AllInOne), "R2");
+        // build the canonical Control component (including Vault recovery).
+        // R3 Coordinator and R4 Worker consume only explicit projections and
+        // must not construct a parallel ConfigService or Control router.
+        assert!(role_owns_control_component(config::Role::Control), "R1");
+        assert!(role_owns_control_component(config::Role::AllInOne), "R2");
         assert!(
-            !role_owns_credential_mutations(config::Role::Coordinator),
+            !role_owns_control_component(config::Role::Coordinator),
             "R3"
         );
-        assert!(!role_owns_credential_mutations(config::Role::Worker), "R4");
+        assert!(!role_owns_control_component(config::Role::Worker), "R4");
     }
 
     #[test]
@@ -1779,7 +1655,7 @@ mod process_role_surface_tests {
     /// prove.
     #[tokio::test]
     async fn service_roles_expose_only_their_owned_api() {
-        let app = assemble_process_router(
+        let app = assemble_control_process_router(
             in_memory_process_stores(),
             None,
             None,
@@ -1789,7 +1665,6 @@ mod process_role_surface_tests {
                 role: config::Role::Control,
                 ..Default::default()
             },
-            None,
         )
         .await;
 
@@ -1830,7 +1705,7 @@ mod process_role_surface_tests {
             .unwrap();
         assert_eq!(session.status(), StatusCode::NOT_FOUND);
 
-        let app = assemble_process_router(
+        let app = assemble_runtime_process_router(
             in_memory_process_stores(),
             None,
             None,
@@ -1932,7 +1807,7 @@ mod process_role_surface_tests {
     #[tokio::test]
     async fn hosted_control_uses_the_injected_publication_resolver() {
         let called = Arc::new(AtomicBool::new(false));
-        let app = assemble_process_router(
+        let app = assemble_control_process_router(
             in_memory_process_stores(),
             None,
             None,
@@ -1946,7 +1821,6 @@ mod process_role_surface_tests {
                 role: config::Role::Control,
                 ..Default::default()
             },
-            None,
         )
         .await;
 

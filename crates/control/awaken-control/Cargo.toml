@@ -16,6 +16,7 @@ license.workspace = true
 # the authoring/authz plane stays a sibling of the data plane (control ⊥ execution).
 awaken-config-service = { workspace = true }
 awaken-admin-assistant = { workspace = true }
+awaken-executable-agent-contract = { workspace = true }
 awaken-tenancy = { workspace = true }
 awaken-authz-enforce = { workspace = true }
 awaken-protocol-managed = { workspace = true }
@@ -48,6 +49,7 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
+thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 axum = { version = "0.8", features = ["multipart"] }
 

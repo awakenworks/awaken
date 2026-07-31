@@ -87,6 +87,41 @@ def retired_launch_violations(source: str) -> list[str]:
     return sorted({match.group(0) for match in FORBIDDEN_RETIRED_LAUNCH_SOURCE.finditer(source)})
 
 
+def control_component_violations(
+    cli_source: str, component_source: str, control_process_source: str
+) -> list[str]:
+    """Enforce one Control application builder and process-only composition.
+
+    AllInOne and standalone Control may each call the CLI adapter helper, but
+    that helper must have exactly one call into the authoritative domain builder.
+    Coordinator/runtime assembly must never reconstruct ConfigService or invoke
+    the lower-level Control router directly.
+    """
+
+    errors: list[str] = []
+    calls = cli_source.count("awaken_control::build_control_component(")
+    if calls != 1:
+        errors.append(
+            "awaken-cli must contain exactly one call to "
+            f"awaken_control::build_control_component (found {calls})"
+        )
+    for forbidden in ("ConfigService::new(", "awaken_control::control_router("):
+        if forbidden in cli_source:
+            errors.append(f"awaken-cli reconstructs Control through `{forbidden}`")
+    for required in (
+        "pub async fn build_control_component(",
+        "ConfigService::new(",
+        "control_router(ControlRouterInput",
+    ):
+        if required not in component_source:
+            errors.append(f"awaken-control component is missing `{required}`")
+    if "assemble_runtime_process_router(" in control_process_source:
+        errors.append("standalone Control delegates to the runtime process assembler")
+    if "assemble_control_process_router(" not in control_process_source:
+        errors.append("standalone Control does not use its dedicated process assembler")
+    return errors
+
+
 def _normal_dependencies(manifest: dict) -> set[str]:
     dependencies: set[str] = set()
     for section in ("dependencies", "build-dependencies"):
@@ -120,6 +155,20 @@ def selftest() -> None:
     assert retired_launch_violations("HttpDeploymentSessionLauncher::new(url, token)") == [
         "HttpDeploymentSessionLauncher"
     ]  # O7
+    component = (
+        "pub async fn build_control_component("
+        " ConfigService::new( control_router(ControlRouterInput"
+    )
+    assert control_component_violations(
+        "awaken_control::build_control_component(",
+        component,
+        "assemble_control_process_router(",
+    ) == []  # O8 one canonical builder
+    assert control_component_violations(
+        "ConfigService::new( awaken_control::build_control_component( ",
+        component,
+        "assemble_runtime_process_router(",
+    )  # O9 duplicate CLI construction and wrong standalone path
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -156,12 +205,21 @@ def check_all(repo_root: Path) -> list[str]:
             )
 
     cli_root = repo_root / CLI_SOURCE
+    cli_sources: list[str] = []
     for path in sorted(cli_root.rglob("*.rs")):
-        source = path.read_text(encoding="utf-8")
-        source = re.split(r"(?m)^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*]", source, maxsplit=1)[0]
+        raw_source = path.read_text(encoding="utf-8")
+        cli_sources.append(raw_source)
+        source = re.split(r"(?m)^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*]", raw_source, maxsplit=1)[0]
         for token in retired_launch_violations(source):
             errors.append(
                 f"{path.relative_to(repo_root)}: retired remote Deployment launch "
                 f"vocabulary `{token}` reappeared"
             )
+    errors.extend(
+        control_component_violations(
+            "\n".join(cli_sources),
+            (repo_root / CONTROL_SOURCE / "component.rs").read_text(encoding="utf-8"),
+            (repo_root / CLI_SOURCE / "control.rs").read_text(encoding="utf-8"),
+        )
+    )
     return errors

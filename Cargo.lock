@@ -509,6 +509,7 @@ dependencies = [
  "awaken-credential-vault",
  "awaken-data-subject",
  "awaken-executable-agent-catalog",
+ "awaken-executable-agent-contract",
  "awaken-iam-contract",
  "awaken-iam-core",
  "awaken-iam-host",
@@ -528,6 +529,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "thiserror 2.0.19",
  "tokio",
  "tower",
 ]

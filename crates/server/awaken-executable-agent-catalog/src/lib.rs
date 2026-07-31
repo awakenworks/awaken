@@ -11,7 +11,8 @@ use async_trait::async_trait;
 use awaken_executable_agent_contract::{
     ExecutableAgentProfileSource, ExecutableAgentRegistrar, ExecutableAgentRegistration,
     ExecutableAgentRegistrationError, ExecutableAgentRegistrationOutcome,
-    ExecutableAgentSessionProfile, ExecutableAgentWithdrawal, ExecutableAgentWithdrawalOutcome,
+    ExecutableAgentRegistrationSource, ExecutableAgentSessionProfile, ExecutableAgentWithdrawal,
+    ExecutableAgentWithdrawalOutcome,
 };
 use awaken_resource_contract::{
     AgentResourceReferenceSource, InputResourceId, ResourceKind, ResourceTarget,
@@ -240,6 +241,26 @@ impl ExecutableAgentCatalog {
     ) -> Result<ExecutableAgentWithdrawalOutcome, ExecutableAgentRegistrationError> {
         let mut state = self.state.read().expect("executable Agent catalog").clone();
         Self::withdraw_locked(&mut state, withdrawal)
+    }
+}
+
+#[async_trait]
+impl ExecutableAgentRegistrationSource for ExecutableAgentCatalog {
+    async fn current_registration(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
+        Ok(self.current(workspace_id, agent_id))
+    }
+
+    async fn registration_at_revision(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
+        Ok(self.at_revision(workspace_id, agent_id, source_revision))
     }
 }
 
