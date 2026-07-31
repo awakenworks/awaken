@@ -26,7 +26,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "style-dictionary": "^4.4.0"
+    "style-dictionary": "^5.4.4"
   },
   "devDependencies": {
     "vitest": "^4.0.18"
