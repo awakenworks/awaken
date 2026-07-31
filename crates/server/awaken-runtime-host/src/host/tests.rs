@@ -5381,12 +5381,16 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
     // Cause/effect graph: C1=the Runtime has atomically committed a client-tool
     // call and its Awaiting ticket; C2=the foreground protocol has not yet copied
     // that position into disposable SessionState; C3=a peer protocol queries the
-    // pending tool. E1=the exact committed call is returned as client-executed;
-    // E2=no pending tool is fabricated when committed truth has no open wait.
+    // pending tool; C4=a fresh user turn races that wait; C5=the exact client
+    // result arrives. E1=the exact committed call is returned as client-executed;
+    // E2=no pending tool is fabricated when committed truth has no open wait;
+    // E3=the fresh turn is rejected; E4=the original Run resumes and ends.
     // Decision table:
-    // | Rule | C1 | C2 | C3 | Effect |
-    // | R1   | T  | T  | T  | E1     |
-    // | R2   | F  | T/F| T  | E2 (covered by resume_with_no_awaiting_run) |
+    // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+    // | R1   | T  | T  | T  | F  | F  | E1     |
+    // | R2   | T  | T  | F  | T  | F  | E3     |
+    // | R3   | T  | T  | F  | F  | T  | E4     |
+    // | R4   | F  | T/F| T  | F  | F  | E2 (resume_with_no_awaiting_run) |
     let host = SharedHost::new(Arc::new(ClientLookupModel), "stub")
         .with_client_tools(HashSet::from(["lookup".to_string()]));
     let first = host
@@ -5412,6 +5416,33 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
     assert_eq!(observed.input, serde_json::json!({ "q": "weather" }));
     assert!(observed.client_executed);
     assert!(host.is_awaiting("t-cross-protocol-pending").await);
+
+    let error = match host
+        .run(
+            None,
+            "t-cross-protocol-pending",
+            user("do not overtake the wait"),
+        )
+        .await
+    {
+        Ok(_) => panic!("committed wait must reject a competing user turn"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, HostErrorKind::BadRequest);
+
+    let resumed = host
+        .resume(
+            "t-cross-protocol-pending",
+            &observed.tool_use_id,
+            HostResume::ClientResult {
+                content: vec![ContentBlock::text("sunny")],
+                is_error: false,
+            },
+        )
+        .await
+        .expect("committed wait resumes without the disposable position");
+    assert!(matches!(resumed.state, RunState::Ended(_)));
+    assert!(!host.is_awaiting("t-cross-protocol-pending").await);
 }
 
 /// Superseding a run requires durable ingress; a default (direct-ingress) host

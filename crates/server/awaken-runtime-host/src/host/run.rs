@@ -250,7 +250,7 @@ impl SharedHost {
         let ctx = self.ctx_for(thread, agent).await?;
         let _execution = ctx.execution.lock().await;
         let mut st = ctx.state.lock().await;
-        if st.awaiting_run.is_some() && !supersede {
+        if ctx.commit.open_wait_for_thread(&ctx.thread_id).is_some() && !supersede {
             return Err(HostError::bad_request("thread is awaiting a tool decision"));
         }
         if supersede && ctx.durable_ingress.is_none() {
@@ -517,16 +517,11 @@ impl SharedHost {
     ) -> Result<RunResult, HostError> {
         let ctx = self.ctx_for(thread, None).await?;
         let _execution = ctx.execution.lock().await;
-        let run_id = ctx
-            .state
-            .lock()
-            .await
-            .awaiting_run
-            .clone()
+        let (run_id, ticket) = ctx
+            .commit
+            .open_wait_for_thread(&ctx.thread_id)
             .ok_or_else(|| HostError::bad_request("no awaiting run to resume"))?;
         let awaiting_snapshot = self.authoritative_step_snapshot(&ctx, &run_id).await?;
-        let ticket = recovery_ticket(&awaiting_snapshot, &run_id)
-            .ok_or_else(|| HostError::internal("awaiting run has no awaiting ticket"))?;
 
         if matches!(
             ticket.reason,
