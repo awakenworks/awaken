@@ -1,6 +1,14 @@
-// Production worker E2E: awaken-worker opens only the shared credential backend,
-// materializes the exact access pinned in a dispatch, calls that endpoint, and
-// commits the provider reply through the cell server.
+// Production Worker process E2E: the real `awaken worker` owns no authority
+// database or seal key. A recipient-bound CSI-style projection supplies only the
+// exact credential material pinned by its dispatch; Resource reads use the same
+// authenticated Worker upstream and the result commits through the claim fence.
+//
+// Cause/effect decision table:
+// P1 exact recipient + live expiry + payload marker + target + claim -> one
+// provider call, one committed reply; P2 any changed envelope/target dimension
+// -> no provider call; P3 no authority DB/seal configuration -> Worker starts
+// and leaves no authority files; P4 stale/malformed publication pin -> fail
+// closed while the same Worker remains available for P1.
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -19,6 +27,20 @@ const CONFIG_BASE = `http://127.0.0.1:${CONFIG_PORT}`;
 const THREAD = 'credential-materialization-worker';
 const SEAL_KEY = '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
 const PROVIDER_KEY = 'sk-worker-materialization-e2e'; // awaken-allow: secret
+
+function hexComponent(value: string): string {
+  return Buffer.from(value).toString('hex');
+}
+
+function stableFingerprint(value: unknown): string {
+  const bytes = Buffer.from(JSON.stringify(value));
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of bytes) {
+    hash ^= BigInt(byte);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return `fnv1a64:${hash.toString(16).padStart(16, '0')}`;
+}
 
 function workerBinary(): string {
   const output = execFileSync(
@@ -160,9 +182,18 @@ async function main() {
         provider_ref: 'anthropic@1',
         route_ref: 'fake-endpoint@1',
         scope_id: credential.json.workspace_id,
-        credential: {
-          credential: { id: credential.json.id, revision: credential.json.version },
-          material_source: 'control_plane_reference',
+          credential: {
+            credential: { id: credential.json.id, revision: credential.json.version },
+            material_source: 'control_plane_reference',
+            envelope: {
+              type: 'sealed_for_worker',
+              envelope_ref: {
+                id: 'materialization-envelope',
+                payload_fingerprint: 'sha256:materialization-payload',
+              },
+              recipient: 'awaken.worker',
+              expires_at_unix_ms: Date.now() + 120_000,
+            },
           usage: { type: 'provider_adapter' },
           policy: {
             allowed_plaintext_holders: [
@@ -190,6 +221,50 @@ async function main() {
     // and continue draining. Dispatch retry policy retains failed attempts; none
     // may reach a provider or fall back to catalog resolution.
     const invalidCandidates = [
+      {
+        ...structuredClone(publishedCandidate),
+        provisioning: {
+          ...structuredClone(publishedCandidate.provisioning),
+          credential: {
+            ...structuredClone(publishedCandidate.provisioning.credential),
+            envelope: {
+              ...structuredClone(publishedCandidate.provisioning.credential.envelope),
+              envelope_ref: {
+                ...structuredClone(
+                  publishedCandidate.provisioning.credential.envelope.envelope_ref,
+                ),
+                payload_fingerprint: 'sha256:substituted-payload',
+              },
+            },
+          },
+        },
+      },
+      {
+        ...structuredClone(publishedCandidate),
+        provisioning: {
+          ...structuredClone(publishedCandidate.provisioning),
+          credential: {
+            ...structuredClone(publishedCandidate.provisioning.credential),
+            envelope: {
+              ...structuredClone(publishedCandidate.provisioning.credential.envelope),
+              expires_at_unix_ms: 1,
+            },
+          },
+        },
+      },
+      {
+        ...structuredClone(publishedCandidate),
+        provisioning: {
+          ...structuredClone(publishedCandidate.provisioning),
+          credential: {
+            ...structuredClone(publishedCandidate.provisioning.credential),
+            envelope: {
+              ...structuredClone(publishedCandidate.provisioning.credential.envelope),
+              recipient: 'another.worker',
+            },
+          },
+        },
+      },
       {
         ...structuredClone(publishedCandidate),
         provisioning: {
@@ -264,15 +339,36 @@ async function main() {
     }, seed.id);
     assert.equal(settled.json.settled, true, settled.text);
 
+    const materialRoot = path.join(storage, 'projected-worker-credentials');
+    const targetUseFingerprint = stableFingerprint([
+      [publishedCandidate.provisioning.provider_ref, publishedCandidate.provisioning.endpoint],
+      publishedCandidate.provisioning.credential.usage,
+    ]);
+    const materialDirectory = path.join(
+      materialRoot,
+      'envelopes',
+      hexComponent(publishedCandidate.provisioning.credential.envelope.envelope_ref.id),
+      hexComponent(
+        publishedCandidate.provisioning.credential.envelope.envelope_ref.payload_fingerprint,
+      ),
+      hexComponent(credential.json.id),
+      String(credential.json.version),
+      hexComponent(credential.json.workspace_id),
+      hexComponent(targetUseFingerprint),
+    );
+    fs.mkdirSync(materialDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(materialDirectory, 'payload_fingerprint'),
+      `${publishedCandidate.provisioning.credential.envelope.envelope_ref.payload_fingerprint}\n`,
+    );
+    fs.writeFileSync(path.join(materialDirectory, 'secret'), PROVIDER_KEY);
+
     const workerConfig = path.join(storage, 'worker.toml');
-    const sharedResourceDatabase = process.env.SESSION_DEPLOYMENT_DATABASE_URL;
-    assert.ok(sharedResourceDatabase, 'production Worker E2E requires the stage PostgreSQL resource plane');
     fs.writeFileSync(workerConfig, [
       `data_dir = ${JSON.stringify(path.join(storage, 'worker'))}`,
-      `credential_db = ${JSON.stringify(path.join(storage, 'credential.db'))}`,
-      `admin_db = ${JSON.stringify(sharedResourceDatabase)}`,
-      `resource_database_url = ${JSON.stringify(sharedResourceDatabase)}`,
-      `control_seal_key = ${JSON.stringify(SEAL_KEY)}`,
+      'worker_id = "materialization-worker"',
+      `worker_credential_material_root = ${JSON.stringify(materialRoot)}`,
+      'worker_admin_listen = "127.0.0.1:39823"',
     ].join('\n'));
     worker = spawn(workerBinary(), ['worker', '--config', workerConfig, '--server', BASE], {
       cwd: ROOT,
@@ -291,7 +387,16 @@ async function main() {
       1,
       `only the valid pin reached the provider endpoint: ${JSON.stringify(upstream.requests)}`,
     );
-    console.log('CREDENTIAL MATERIALIZATION WORKER TS E2E PASS: production worker opened credential stores, injected the exact pinned revision, called the pinned endpoint, and committed once.');
+    for (const forbidden of [
+      'credential.db', 'files.db', 'memory_fs.db', 'resource-lifecycle.db', 'control-seal.key',
+    ]) {
+      assert.equal(
+        fs.existsSync(path.join(storage, 'worker', forbidden)),
+        false,
+        `${forbidden} must not become Worker authority`,
+      );
+    }
+    console.log('CREDENTIAL MATERIALIZATION WORKER TS E2E PASS: a database-less production Worker consumed one exact recipient-bound projection, called the pinned endpoint, and committed once.');
   } finally {
     if (worker) await stopServer(worker).catch(() => {});
     await stopServer(cell).catch(() => {});
