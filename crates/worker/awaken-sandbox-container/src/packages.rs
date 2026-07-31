@@ -9,7 +9,7 @@ use awaken_provisioning_contract as pc;
 use crate::RuntimeError;
 
 #[cfg(any(feature = "docker", feature = "podman", test))]
-const PACKAGE_RECIPE_VERSION: &str = "2";
+const PACKAGE_RECIPE_VERSION: &str = "3";
 
 #[cfg(any(feature = "docker", feature = "podman", test))]
 fn requirement_is_pinned(manager: &str, package: &str) -> bool {
@@ -89,38 +89,52 @@ fn package_containerfile_for_user(
         }
         match manager.as_str() {
             "apt" => {
-                steps.push(vec!["apt-get".into(), "update".into()]);
                 let mut argv = vec![
-                    "apt-get".into(),
-                    "install".into(),
-                    "-y".into(),
-                    "--no-install-recommends".into(),
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "set -e; apt-get update; apt-get install -y --no-install-recommends \"$@\"; rm -rf /var/lib/apt/lists/*".into(),
+                    "awaken-packages".into(),
                 ];
                 argv.extend(packages.clone());
                 steps.push(argv);
             }
-            "cargo" => steps.extend(
-                packages
-                    .iter()
-                    .map(|package| vec!["cargo".into(), "install".into(), package.clone()]),
-            ),
-            "gem" => {
-                let mut argv = vec!["gem".into(), "install".into()];
+            "cargo" => {
+                let mut argv = vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "set -e; for package do cargo install --root /usr/local \"$package\"; done; rm -rf /root/.cargo/registry /root/.cargo/git".into(),
+                    "awaken-packages".into(),
+                ];
                 argv.extend(packages.clone());
                 steps.push(argv);
             }
-            "go" => steps.extend(
-                packages
-                    .iter()
-                    .map(|package| vec!["go".into(), "install".into(), package.clone()]),
-            ),
+            "gem" => {
+                let mut argv = vec!["gem".into(), "install".into(), "--no-document".into()];
+                argv.extend(packages.clone());
+                steps.push(argv);
+            }
+            "go" => {
+                let mut argv = vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "set -e; for package do GOBIN=/usr/local/bin go install \"$package\"; done; rm -rf /root/go".into(),
+                    "awaken-packages".into(),
+                ];
+                argv.extend(packages.clone());
+                steps.push(argv);
+            }
             "npm" => {
-                let mut argv = vec!["npm".into(), "install".into(), "--global".into()];
+                let mut argv = vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "set -e; npm install --global --no-audit --no-fund \"$@\"; npm cache clean --force".into(),
+                    "awaken-packages".into(),
+                ];
                 argv.extend(packages.clone());
                 steps.push(argv);
             }
             "pip" => {
-                let mut argv = vec!["pip".into(), "install".into()];
+                let mut argv = vec!["pip".into(), "install".into(), "--no-cache-dir".into()];
                 argv.extend(packages.clone());
                 steps.push(argv);
             }
@@ -217,11 +231,11 @@ mod tests {
             "B1"
         );
         assert!(
-            file.contains(r#"RUN ["/usr/bin/env","npm","install","--global","tsx@4.0.0"]"#),
+            file.contains(r#"npm install --global --no-audit --no-fund \"$@\"; npm cache clean --force","awaken-packages","tsx@4.0.0"]"#),
             "B1: {file}"
         );
         assert!(
-            file.contains(r#"["/usr/bin/env","pip","install","httpx==0.28.0;touch /tmp/pwn"]"#),
+            file.contains(r#"["/usr/bin/env","pip","install","--no-cache-dir","httpx==0.28.0;touch /tmp/pwn"]"#),
             "B2 remains one JSON argv element: {file}"
         );
         assert!(!file.contains("RUN pip install"), "B2 no shell form");
@@ -251,7 +265,7 @@ mod tests {
         let (recipe, first) =
             package_image_recipe("sha256:base-a", "10001", &requirements).unwrap();
         assert!(recipe.contains("USER 10001\n"));
-        assert!(recipe.contains("org.awaken.package-recipe=2"));
+        assert!(recipe.contains("org.awaken.package-recipe=3"));
         let (_, identical) = package_image_recipe("sha256:base-a", "10001", &requirements).unwrap();
         assert_eq!(identical, first, "identical inputs reuse one image key");
 

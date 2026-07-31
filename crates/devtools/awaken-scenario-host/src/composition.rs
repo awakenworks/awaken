@@ -83,6 +83,15 @@ impl FixedAgentPublication {
         backend_ref: &str,
         skills: Vec<awaken_agent_contract::AgentSkillBinding>,
     ) -> Self {
+        Self::host_backend_with_acp_mcp(id, backend_ref, skills, Vec::new())
+    }
+
+    fn host_backend_with_acp_mcp(
+        id: &str,
+        backend_ref: &str,
+        skills: Vec<awaken_agent_contract::AgentSkillBinding>,
+        mcp_servers: Vec<awaken_runtime_contract::resolved::AcpMcpServer>,
+    ) -> Self {
         // Cause graph: deterministic scenario launch -> host-installed executor ->
         // HostExecutor placement. BackendOwned instead implies a discovered,
         // revision-pinned WorkerLocal identity, which these fake CLIs do not own.
@@ -90,6 +99,11 @@ impl FixedAgentPublication {
         // Decision table:
         // S1 fixed scenario launch -> HostExecutor, no credential observation
         // S2 product local CLI     -> BackendOwned + exact WorkerLocal observation
+        let plugin_config = awaken_runtime_contract::resolved::AcpSpec {
+            compact_window: None,
+            mcp_servers,
+        }
+        .into_plugin_config(Default::default());
         let snapshot = ExecutableAgentSnapshot::builder(id)
             .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
                 "",
@@ -100,12 +114,27 @@ impl FixedAgentPublication {
                 skills,
                 ..Default::default()
             })
+            .plugin_config(plugin_config)
             .build();
         Self {
             snapshots: StaticPublishedAgentSnapshots::try_new([snapshot])
                 .expect("valid fixed scenario Agent publication"),
         }
     }
+}
+
+pub(super) fn fixed_host_backend_publication_with_acp_mcp(
+    id: &str,
+    backend_ref: &str,
+    skills: Vec<awaken_agent_contract::AgentSkillBinding>,
+    mcp_servers: Vec<awaken_runtime_contract::resolved::AcpMcpServer>,
+) -> Arc<FixedAgentPublication> {
+    Arc::new(FixedAgentPublication::host_backend_with_acp_mcp(
+        id,
+        backend_ref,
+        skills,
+        mcp_servers,
+    ))
 }
 
 pub(super) fn fixed_host_backend_publication(
@@ -189,7 +218,9 @@ pub fn build_unscoped_resource_router() -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime_contract::resolved::ModelProvisioning;
+    use awaken_runtime_contract::resolved::{
+        AcpMcpServer, AcpMcpTransport, AcpSpec, ModelProvisioning,
+    };
 
     #[test]
     fn fixed_scenario_backend_uses_the_installed_host_executor() {
@@ -205,5 +236,33 @@ mod tests {
             snapshot.resolved_spec.model_binding.binding.backend_ref,
             "acp:claude"
         );
+    }
+
+    #[test]
+    fn fixed_publication_preserves_a_secret_free_stdio_mcp_route() {
+        let publication = fixed_host_backend_publication_with_acp_mcp(
+            "acp-agent",
+            "acp:fixture",
+            Vec::new(),
+            vec![AcpMcpServer {
+                name: "playwright".into(),
+                transport: AcpMcpTransport::Stdio {
+                    command: "playwright-mcp".into(),
+                    args: vec!["--headless".into()],
+                },
+            }],
+        );
+        let snapshot = publication
+            .current("workspace", &AgentId("acp-agent".into()))
+            .expect("fixed publication");
+        let servers =
+            AcpSpec::from_plugin_config(snapshot.resolved_spec.plugin_config.plugins()).mcp_servers;
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].name, "playwright");
+        assert!(matches!(
+            &servers[0].transport,
+            AcpMcpTransport::Stdio { command, args }
+                if command == "playwright-mcp" && args == &["--headless"]
+        ));
     }
 }

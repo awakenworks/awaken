@@ -1096,7 +1096,11 @@ mod tests {
         assert_eq!(calls[2].first().map(String::as_str), Some("build"));
         let file = captured.lock().unwrap().clone().unwrap();
         assert!(file.starts_with("FROM sha256:exact-base\n"), "P1: {file}");
-        assert!(file.contains(r#"RUN ["/usr/bin/env","pip","install","httpx==0.28.0"]"#));
+        assert!(
+            file.contains(
+                r#"RUN ["/usr/bin/env","pip","install","--no-cache-dir","httpx==0.28.0"]"#
+            )
+        );
     }
 
     #[tokio::test]

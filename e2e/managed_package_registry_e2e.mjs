@@ -50,12 +50,13 @@ function managedRun() {
     encoding: 'utf8',
     // A cold Rust build on a constrained CI worker can take several minutes;
     // the nested managed run itself remains bounded.
-    timeout: 600_000,
+    timeout: 1_200_000,
     env: {
       ...process.env,
       AWAKEN_PACKAGE_IMAGE_REGISTRY: registry,
       AWAKEN_PACKAGE_REGISTRY_AUTH_FILE: authFile,
       AWAKEN_E2E_PACKAGE_ONLY: '1',
+      AWAKEN_E2E_PACKAGE_REGISTRY_ONLY: '1',
       AWAKEN_E2E_REQUIRE_CONTAINER: '1',
       AWAKEN_E2E_CONTAINER_ENGINE: 'docker',
     },
