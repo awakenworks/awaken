@@ -38,6 +38,23 @@ use awaken_run_ingress_contract::RunDispatch;
 pub struct AnyDispatchStore {
     inner: Arc<dyn Dispatch>,
     operational: Option<Arc<dyn DispatchOperationalFeed>>,
+    enqueue: Option<Arc<dyn DispatchEnqueue>>,
+}
+
+/// Optional outer admission edge for durable enqueue.
+///
+/// The decorated [`AnyDispatchStore`] remains the sole queue handle: every
+/// claim, settle, inbox and outbox operation still delegates to its exact inner
+/// [`Dispatch`]. Only creation of a new dispatch crosses this port, allowing an
+/// embedding composition to make its own atomic admission/outbox transaction
+/// authoritative without reimplementing the complete dispatch bundle.
+#[async_trait]
+pub trait DispatchEnqueue: Send + Sync {
+    async fn enqueue_with(
+        &self,
+        request: RunDispatch,
+        options: SubmitOptions,
+    ) -> Result<(), DispatchError>;
 }
 
 impl AnyDispatchStore {
@@ -113,6 +130,7 @@ impl AnyDispatchStore {
         Self {
             inner: store.clone(),
             operational: Some(store),
+            enqueue: None,
         }
     }
 
@@ -125,7 +143,16 @@ impl AnyDispatchStore {
         Self {
             inner,
             operational: None,
+            enqueue: None,
         }
+    }
+
+    /// Decorate only new-dispatch admission while preserving the one inner
+    /// queue for every other operation.
+    #[must_use]
+    pub fn with_enqueue(mut self, enqueue: Arc<dyn DispatchEnqueue>) -> Self {
+        self.enqueue = Some(enqueue);
+        self
     }
 }
 
@@ -202,7 +229,10 @@ impl DispatchQueue for AnyDispatchStore {
         request: RunDispatch,
         options: SubmitOptions,
     ) -> Result<(), DispatchError> {
-        delegate!(self, enqueue_with(request, options))
+        match &self.enqueue {
+            Some(enqueue) => enqueue.enqueue_with(request, options).await,
+            None => delegate!(self, enqueue_with(request, options)),
+        }
     }
 
     async fn claim_new_run(

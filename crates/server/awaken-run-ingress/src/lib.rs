@@ -36,7 +36,7 @@ mod wake;
 mod worker;
 mod worker_context;
 
-pub use any::AnyDispatchStore;
+pub use any::{AnyDispatchStore, DispatchEnqueue};
 pub use capability::RunIngressCapabilities;
 // The database-less worker's HTTP dispatch client (drives claim/settle over the wire
 // to the Coordinator's registered Worker router), extracted from awaken-runtime-host.
