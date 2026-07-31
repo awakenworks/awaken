@@ -306,7 +306,7 @@ mod tests {
     ///
     /// | Rule | Installed implementations | Effect |
     /// |---|---|---|
-    /// | C1 | exact file resolver | WorkerReference capability only |
+    /// | C1 | exact file resolver | WorkerReference plus recipient-bound projected Control envelope |
     /// | C2 | Memory factory + exact credential adapter | Session Resource and Repository credential capabilities |
     /// | C3 | Worker runtime config | no durable local storage root |
     #[tokio::test]
@@ -347,7 +347,15 @@ mod tests {
             "C1: {evidence:?}"
         );
         assert!(
-            !includes_source(&evidence, CredentialMaterialSource::ControlPlaneReference),
+            includes_source(&evidence, CredentialMaterialSource::ControlPlaneReference),
+            "C1: {evidence:?}"
+        );
+        assert!(
+            evidence.recipient_bound_envelopes
+                || evidence
+                    .alternatives
+                    .iter()
+                    .any(|alternative| alternative.recipient_bound_envelopes),
             "C1: {evidence:?}"
         );
         assert!(deployment.runtime.storage_dir.is_none(), "C3");
