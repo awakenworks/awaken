@@ -185,7 +185,7 @@ fn jail_args(
     mut args: Value,
     root: &IsolatedRoot,
     deny_egress: bool,
-    force_namespace: bool,
+    namespace_shell: Option<&namespace::NamespaceToolShell>,
 ) -> Result<Value, ToolError> {
     let escape = |e: EscapeError| ToolError::Execution(e.to_string());
     let rebase = |args: &mut Value, key: &str, root: &IsolatedRoot| -> Result<(), ToolError> {
@@ -204,7 +204,9 @@ fn jail_args(
         "glob" => rebase(&mut args, "pattern", root)?,
         "bash" => {
             if let Some(Value::String(cmd)) = args.get("command") {
-                let rooted = if deny_egress || force_namespace {
+                let rooted = if let Some(shell) = namespace_shell {
+                    shell.wrap_command(cmd)
+                } else if deny_egress {
                     // Egress denied: run the command inside a bwrap namespace with no
                     // network (`--unshare-net`), rooted at the environment dir. The
                     // shared bash tool still `sh -c`s this string, which execs bwrap.
@@ -322,8 +324,9 @@ pub(crate) struct RootedTool {
     root: IsolatedRoot,
     /// Deny network egress for the `bash` tool (from the environment's spec).
     deny_egress: bool,
-    /// Always execute shell inside bwrap, even when network remains shared.
-    force_namespace: bool,
+    /// Namespace tools reuse the provider's authoritative process launcher so
+    /// workspace, outputs, mounts, and network have one rendered layout.
+    namespace_shell: Option<namespace::NamespaceToolShell>,
     runtime_paths: RuntimePathEnv,
 }
 
@@ -338,7 +341,7 @@ impl RootedTool {
             inner,
             root,
             deny_egress,
-            force_namespace: false,
+            namespace_shell: None,
             runtime_paths,
         }
     }
@@ -347,13 +350,13 @@ impl RootedTool {
         inner: Arc<dyn RawTool>,
         root: IsolatedRoot,
         runtime_paths: RuntimePathEnv,
-        deny_egress: bool,
+        namespace_shell: namespace::NamespaceToolShell,
     ) -> Self {
         Self {
             inner,
             root,
-            deny_egress,
-            force_namespace: true,
+            deny_egress: false,
+            namespace_shell: Some(namespace_shell),
             runtime_paths,
         }
     }
@@ -376,7 +379,7 @@ impl HandTool for RootedTool {
             call.arguments,
             &self.root,
             self.deny_egress,
-            self.force_namespace,
+            self.namespace_shell.as_ref(),
         )?;
         let out = self.inner.invoke(call).await?;
         // Narrow to content/error: an environment tool never authors runtime state.
@@ -647,7 +650,7 @@ pub(crate) fn rooted_raw_tools(
 pub(crate) fn namespace_raw_tools(
     root: IsolatedRoot,
     runtime_paths: RuntimePathEnv,
-    deny_egress: bool,
+    namespace_shell: namespace::NamespaceToolShell,
 ) -> Vec<Arc<dyn RawTool>> {
     executable_hand_tools()
         .into_iter()
@@ -656,7 +659,7 @@ pub(crate) fn namespace_raw_tools(
                 inner,
                 root.clone(),
                 runtime_paths.clone(),
-                deny_egress,
+                namespace_shell.clone(),
             )))
         })
         .collect()
@@ -992,7 +995,7 @@ mod tests {
             serde_json::json!({ "pattern": "src/*.rs" }),
             &root,
             false,
-            false,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1005,7 +1008,7 @@ mod tests {
             serde_json::json!({ "command": "ls" }),
             &root,
             false,
-            false,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1022,7 +1025,7 @@ mod tests {
             serde_json::json!({ "path": "../x" }),
             &root,
             false,
-            false,
+            None,
         )
         .unwrap();
         assert_eq!(u["path"], "../x"); // unknown tool: untouched
@@ -1033,7 +1036,7 @@ mod tests {
                 serde_json::json!({ "path": "../escape" }),
                 &root,
                 false,
-                false,
+                None,
             )
             .is_err()
         );
@@ -1051,7 +1054,7 @@ mod tests {
             serde_json::json!({"source":"old.md", "destination":"topic/new.md"}),
             &root,
             false,
-            false,
+            None,
         )
         .unwrap();
         assert_eq!(moved["source"], "/env/old.md");
@@ -1063,7 +1066,7 @@ mod tests {
             ),
             ("delete", serde_json::json!({"path":"../escape.md"})),
         ] {
-            assert!(jail_args(tool, arguments, &root, false, false).is_err());
+            assert!(jail_args(tool, arguments, &root, false, None).is_err());
         }
     }
 
@@ -1080,7 +1083,7 @@ mod tests {
             serde_json::json!({ "command": "id" }),
             &root,
             true,
-            false,
+            None,
         )
         .unwrap();
         let cmd = out["command"].as_str().unwrap();
@@ -1099,23 +1102,6 @@ mod tests {
     }
 
     #[test]
-    fn namespace_bash_is_wrapped_even_when_network_is_allowed() {
-        let root = IsolatedRoot::new("/tmp/session-namespace");
-        let out = jail_args(
-            "bash",
-            serde_json::json!({ "command": "pwd" }),
-            &root,
-            false,
-            true,
-        )
-        .unwrap();
-        let command = out["command"].as_str().unwrap();
-        assert!(command.starts_with("'bwrap'"));
-        assert!(command.contains("'/tmp/session-namespace'"));
-        assert!(!command.contains("'--unshare-net'"));
-    }
-
-    #[test]
     fn deny_egress_bash_escapes_an_embedded_quote_so_the_command_cannot_break_out() {
         // Injection safety: a single quote inside the user command must be escaped
         // (`'` → `'\''`) so it cannot terminate the outer `sh -c` quoting and smuggle
@@ -1126,7 +1112,7 @@ mod tests {
             serde_json::json!({ "command": "a'b" }),
             &root,
             true,
-            false,
+            None,
         )
         .unwrap();
         let cmd = out["command"].as_str().unwrap();
