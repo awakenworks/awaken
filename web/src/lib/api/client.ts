@@ -177,11 +177,13 @@ export const api = {
 export interface ApplicationAccessTokenRequest {
   authority_id: string;
   application_scope: string;
-  thread_namespace: string;
   actor_key?: string;
-  operations: Array<"thread.run" | "thread.read">;
-  agent_ids: string[];
-  default_agent_id?: string;
+  protocols: Array<"ai-sdk" | "ag-ui">;
+  operations: Array<"thread.run" | "thread.messages.read">;
+  thread_bindings: Array<{
+    external_thread_id: string;
+    managed_session_id: string;
+  }>;
   expires_in_seconds?: number;
 }
 
@@ -192,7 +194,8 @@ export interface IssuedApplicationAccessToken {
   access_token: string;
   expires_at: string;
   application_scope: string;
-  thread_namespace: string;
+  protocols: Array<"ai-sdk" | "ag-ui">;
+  operations: Array<"thread.run" | "thread.messages.read">;
 }
 
 /** Exchange the console's management credential for a short-lived application

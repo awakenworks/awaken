@@ -6,10 +6,13 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  api,
   getWorkspace,
   issueApplicationAccessToken,
   type IssuedApplicationAccessToken,
+  ws,
 } from "../../lib/api/client";
+import type { Session } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
 import { Button, Card, EmptyState, Pill } from "../ui";
 
@@ -193,18 +196,21 @@ export default function SandboxPane({
   const start = async () => {
     setStarting(true);
     setStartError(undefined);
-    const threadId = crypto.randomUUID();
+    const externalThreadId = crypto.randomUUID();
     try {
+      const session = await api.post<Session>(ws("/v1/sessions"), { agent: agentId });
       const token = await issueApplicationAccessToken({
         authority_id: "awaken-console",
         application_scope: previewApplicationScope(getWorkspace()),
-        thread_namespace: "live-preview",
-        operations: ["thread.run", "thread.read"],
-        agent_ids: [agentId],
-        default_agent_id: agentId,
+        protocols: ["ai-sdk"],
+        operations: ["thread.run", "thread.messages.read"],
+        thread_bindings: [{
+          external_thread_id: externalThreadId,
+          managed_session_id: session.id,
+        }],
         expires_in_seconds: 900,
       });
-      setAccess({ token, threadId });
+      setAccess({ token, threadId: externalThreadId });
     } catch (error) {
       setStartError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -229,8 +235,8 @@ export default function SandboxPane({
       <EmptyState
         title={app.t("Start an authenticated Live Preview", "开始带鉴权的实时预览")}
         hint={app.t(
-          "Awaken exchanges your management credential for a 15-minute, Agent-scoped application token kept only in this tab.",
-          "Awaken 会把管理凭证换成仅限当前 Agent、有效 15 分钟且只保存在当前标签页的应用令牌。",
+          "Awaken creates one Managed Session, then issues a 15-minute token bound to it and kept only in this tab.",
+          "Awaken 会先创建唯一的 Managed Session，再签发绑定该 Session、有效 15 分钟且只保存在当前标签页的应用令牌。",
         )}
         action={
           <div className="col" style={{ gap: 8, alignItems: "center" }}>

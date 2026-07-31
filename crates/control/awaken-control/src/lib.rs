@@ -169,8 +169,6 @@ async fn durable_management_audit(
 /// the authoring routers, and keeps its own for the data-plane host — one instance
 /// of each port is shared across both planes, exactly as before the split.
 pub struct ControlRouterInput {
-    /// Execution Workspace that may read the reserved platform Assistant config.
-    pub platform_workspace: String,
     /// The model catalog (providers / endpoints / offerings) the admin CRUD authors.
     pub catalog: Arc<dyn CatalogRepo>,
     /// The credential repo (secret-free source/pool rows) the admin + vault surfaces read.
@@ -214,8 +212,6 @@ pub struct ControlRouterInput {
     pub local_browser_auth: Option<awaken_iam_host::LocalBrowserAuth>,
     /// Awaken Cloud identity adapter. Mutually exclusive with `iam`.
     pub remote_iam: Option<Arc<RemoteManagementAuthz>>,
-    /// Short-lived credentials used only by browser/application protocol routes.
-    pub application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
 }
 
 /// Build the authoring / authz management router over the shared handles. The
@@ -224,7 +220,6 @@ pub struct ControlRouterInput {
 /// The guard (when present) wraps only the management surfaces (ADR-0043).
 pub fn control_router(input: ControlRouterInput) -> Router {
     let ControlRouterInput {
-        platform_workspace,
         catalog,
         credentials,
         secrets,
@@ -244,7 +239,6 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         iam,
         local_browser_auth,
         remote_iam,
-        application_access,
     } = input;
 
     let identity_mode = if remote_iam.is_some() {
@@ -325,11 +319,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         .merge(user_profiles)
         .merge(agents)
         .merge(config_plane)
-        .merge(capabilities)
-        .merge(crate::application_access::router(
-            application_access,
-            platform_workspace,
-        ));
+        .merge(capabilities);
     if let Some(iam) = iam.as_ref() {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
     }
