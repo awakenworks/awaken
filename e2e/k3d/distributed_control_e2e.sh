@@ -106,6 +106,16 @@ IMAGE_ID=$(docker image inspect "$IMAGE" --format '{{.Id}}')
 echo "using immutable test image $IMAGE_ID"
 k3d_create_cluster "$CLUSTER" 3 1
 k3d_import_images "$CLUSTER" "$IMAGE" postgres:16 nginx:1.27-alpine
+# Cause/effect decision table: D1 one default CoreDNS replica + its node stops ->
+# replacement application Pods cannot resolve authority Services; D2 two replicas
+# + the built-in hostname spread constraint -> one node loss retains DNS; D3 fewer
+# than two distinct ready placements -> reject the topology before business tests.
+kubectl -n kube-system scale deployment/coredns --replicas=2 >/dev/null
+kubectl -n kube-system rollout status deployment/coredns --timeout=120s
+DNS_NODES=$(kubectl -n kube-system get pod -l k8s-app=kube-dns \
+  -o jsonpath='{range .items[?(@.status.containerStatuses[0].ready==true)]}{.spec.nodeName}{"\n"}{end}' \
+  | sort -u | grep -c .)
+[ "$DNS_NODES" = "2" ] || { err "CoreDNS is not ready on two distinct nodes"; exit 1; }
 kubectl create namespace "$NS" >/dev/null 2>&1 || true
 
 log "3/10 deploy replicated authorities, real Workers, and PostgreSQL standby"
@@ -198,8 +208,10 @@ log "8/10 stop one K3D agent node and verify public continuity"
 # N1 hard node stop + Ready still True -> no business write during the detection window;
 # N2 Ready False/Unknown + 15-second NoExecute toleration -> failed role endpoints
 # are evicted and replacement Pods become eligible on healthy nodes;
-# N3 stable public GETs -> issue the non-idempotent Event exactly once;
-# N4 surviving/replaced Provider and Worker -> one terminal response, never an
+# N3 the surviving spread CoreDNS replica resolves replacement dependencies and
+# every application role becomes Ready again;
+# N4 stable public GETs -> issue the non-idempotent Event exactly once;
+# N5 surviving/replaced Provider and Worker -> one terminal response, never an
 # error hidden by retrying the accepted Event.
 DB_NODES=$(kubectl -n "$NS" get pod -l 'database-role in (primary,standby)' -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}')
 # K3D agent nodes intentionally do not rely on the optional
@@ -231,6 +243,16 @@ done
 # a new business write. This repairs only the test transport; it never replays
 # an ambiguous request.
 start_public_endpoint
+for _ in $(seq 1 60); do
+  DNS_SURVIVORS=$(kubectl -n kube-system get pod -l k8s-app=kube-dns \
+    -o custom-columns=NODE:.spec.nodeName,READY:.status.containerStatuses[0].ready --no-headers \
+    | grep -v "^${STOPPED_NODE} " | grep -c ' true$' || true)
+  [ "$DNS_SURVIVORS" -ge 1 ] && break
+  sleep 1
+done
+[ "${DNS_SURVIVORS:-0}" -ge 1 ] \
+  || { err "no Ready CoreDNS replica survived the stopped node"; exit 1; }
+wait_roles || { diagnostics; exit 1; }
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-NODE-LOSS
 docker start "$STOPPED_NODE" >/dev/null
 RESTORED_NODE="$STOPPED_NODE"
