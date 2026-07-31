@@ -1238,7 +1238,6 @@ async fn assemble_process_router(
     // router is assembled, so neither plane depends on the other's services.
     let resource_iam = iam.clone();
     let resource_remote_iam = remote_iam.clone();
-    let application_access = Arc::new(awaken_authz_enforce::ApplicationAccessStore::new());
     let live_runtime_capabilities = Arc::new(LiveRuntimeCapabilities {
         initial: assembly.local_acp_observations.clone(),
         workers: awaken_server::worker_directory(),
@@ -1256,7 +1255,6 @@ async fn assemble_process_router(
         Router::new()
     } else {
         awaken_control::control_router(awaken_control::ControlRouterInput {
-            platform_workspace: platform_workspace.clone(),
             catalog: catalog.clone(),
             credentials: credentials.clone(),
             secrets: secrets.clone(),
@@ -1282,7 +1280,6 @@ async fn assemble_process_router(
             iam,
             remote_iam,
             local_browser_auth,
-            application_access: application_access.clone(),
         })
     };
 
@@ -1305,6 +1302,11 @@ async fn assemble_process_router(
         dream_repository,
         memory_extractions,
     } = managed_execution.expect("Managed Execution role requires execution stores");
+    // Application credentials and the protocol guards that consume them must
+    // live in the same Coordinator process. The issuer validates bindings
+    // against this Coordinator's sole Managed Session repository; split Control
+    // neither mirrors that repository nor owns a second token directory.
+    let application_access = Arc::new(awaken_authz_enforce::ApplicationAccessStore::new());
     let webhook_sink = awaken_control::webhook_lifecycle_sink(
         webhook_store,
         secrets.clone(),
@@ -1431,7 +1433,7 @@ async fn assemble_process_router(
         // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
         // published agent's model sees the authoritative config-plane truth (M2).
         .with_config_source(executable_agent_catalog)
-        .with_session_repo(sessions)
+        .with_session_repo(sessions.clone())
         .with_lifecycle_sink(webhook_sink),
     );
     let reconciled_resource_activations = managed_state.reconcile_resource_activations().await;
@@ -1448,10 +1450,16 @@ async fn assemble_process_router(
     deployment_state.bind_launcher(Arc::new(
         awaken_protocol_managed::LocalDeploymentSessionLauncher::new(managed_state.clone()),
     ));
-    let deployments = awaken_control::protect_management_router(
-        awaken_protocol_managed::deployments_router(deployment_state.clone()).merge(
-            awaken_protocol_managed::environments_router(env_state.clone()),
-        ),
+    let coordinator_management = awaken_control::protect_management_router(
+        awaken_protocol_managed::deployments_router(deployment_state.clone())
+            .merge(awaken_protocol_managed::environments_router(
+                env_state.clone(),
+            ))
+            .merge(awaken_control::application_access::router(
+                application_access.clone(),
+                sessions.clone(),
+                platform_workspace.clone(),
+            )),
         deployment_audit_plane,
         deployment_iam,
         deployment_remote_iam,
@@ -1479,7 +1487,7 @@ async fn assemble_process_router(
             worker_authenticator,
         );
     data = data.merge(executable_agent_private_router);
-    data = data.merge(deployments);
+    data = data.merge(coordinator_management);
     data =
         executable_agent_registration::layer_refresh(data, executable_agent_projection_refresher);
     // One timer drives every Managed periodic trigger. Deployment remains the cron

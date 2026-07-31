@@ -1,11 +1,12 @@
 //! Management API for issuing narrow, short-lived application credentials.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use awaken_authz_enforce::{ApplicationAccessStore, ApplicationGrant};
+use awaken_authz_enforce::{ApplicationAccessStore, ApplicationGrant, ApplicationThreadBinding};
+use awaken_session_contract::ManagedSessionRepository;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -21,17 +22,19 @@ const MAX_TTL_SECONDS: u64 = 900;
 pub struct CreateApplicationToken {
     pub authority_id: String,
     pub application_scope: String,
-    #[serde(default = "default_thread_namespace")]
-    pub thread_namespace: String,
     #[serde(default)]
     pub actor_key: Option<String>,
-    #[serde(default = "default_operations")]
+    pub protocols: Vec<String>,
     pub operations: Vec<String>,
-    pub agent_ids: Vec<String>,
-    #[serde(default)]
-    pub default_agent_id: Option<String>,
+    pub thread_bindings: Vec<CreateApplicationThreadBinding>,
     #[serde(default = "default_ttl")]
     pub expires_in_seconds: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateApplicationThreadBinding {
+    pub external_thread_id: String,
+    pub managed_session_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,21 +45,28 @@ pub struct IssuedApplicationToken {
     pub access_token: String,
     pub expires_at: String,
     pub application_scope: String,
-    pub thread_namespace: String,
+    pub protocols: Vec<String>,
+    pub operations: Vec<String>,
 }
 
 #[derive(Clone)]
 struct ApplicationTokenState {
     store: Arc<ApplicationAccessStore>,
+    sessions: Arc<dyn ManagedSessionRepository>,
     default_workspace: String,
 }
 
-pub fn router(store: Arc<ApplicationAccessStore>, default_workspace: String) -> Router {
+pub fn router(
+    store: Arc<ApplicationAccessStore>,
+    sessions: Arc<dyn ManagedSessionRepository>,
+    default_workspace: String,
+) -> Router {
     Router::new()
         .route("/v1/application-access-tokens", post(create))
         .route("/v1/application-access-tokens/{id}", delete(revoke))
         .with_state(ApplicationTokenState {
             store,
+            sessions,
             default_workspace,
         })
 }
@@ -72,6 +82,39 @@ async fn create(
     let workspace_id = workspace
         .map(|Extension(scope)| scope.0)
         .unwrap_or(state.default_workspace);
+    let permits_run = request
+        .operations
+        .iter()
+        .any(|operation| operation == "thread.run");
+    let mut thread_bindings = HashMap::new();
+    for requested in &request.thread_bindings {
+        let owner = state.sessions.owner(&requested.managed_session_id).await;
+        if owner.as_deref() != Some(workspace_id.as_str()) {
+            return problem(StatusCode::NOT_FOUND, "bound Managed Session not found");
+        }
+        let Some(session) = state.sessions.get(&requested.managed_session_id).await else {
+            return problem(StatusCode::NOT_FOUND, "bound Managed Session not found");
+        };
+        let Some(agent_id) = session.agent_id() else {
+            return problem(
+                StatusCode::CONFLICT,
+                "bound Managed Session baseline is not frozen",
+            );
+        };
+        if permits_run && session.is_terminal() {
+            return problem(
+                StatusCode::CONFLICT,
+                "bound Managed Session is not runnable",
+            );
+        }
+        thread_bindings.insert(
+            requested.external_thread_id.clone(),
+            ApplicationThreadBinding {
+                managed_session_id: requested.managed_session_id.clone(),
+                agent_id: agent_id.to_string(),
+            },
+        );
+    }
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
@@ -86,11 +129,10 @@ async fn create(
     let grant = ApplicationGrant {
         authority_id: request.authority_id,
         application_scope: request.application_scope.clone(),
-        thread_namespace: request.thread_namespace.clone(),
         actor_key: request.actor_key,
+        protocols: request.protocols.iter().cloned().collect::<HashSet<_>>(),
         operations: request.operations.iter().cloned().collect::<HashSet<_>>(),
-        agent_ids: request.agent_ids.iter().cloned().collect::<HashSet<_>>(),
-        default_agent_id: request.default_agent_id,
+        thread_bindings,
     };
     match state
         .store
@@ -105,7 +147,8 @@ async fn create(
                 access_token,
                 expires_at,
                 application_scope: request.application_scope,
-                thread_namespace: request.thread_namespace,
+                protocols: request.protocols,
+                operations: request.operations,
             }),
         )
             .into_response(),
@@ -124,30 +167,54 @@ async fn revoke(State(state): State<ApplicationTokenState>, Path(id): Path<Strin
 }
 
 fn validate(request: &CreateApplicationToken) -> Result<(), &'static str> {
-    if request.authority_id.trim().is_empty()
-        || request.application_scope.trim().is_empty()
-        || request.thread_namespace.trim().is_empty()
-    {
-        return Err("authority_id, application_scope, and thread_namespace are required");
+    if request.authority_id.trim().is_empty() || request.application_scope.trim().is_empty() {
+        return Err("authority_id and application_scope are required");
     }
     if request.expires_in_seconds == 0 || request.expires_in_seconds > MAX_TTL_SECONDS {
         return Err("expires_in_seconds must be between 1 and 900");
     }
-    if request.agent_ids.is_empty() || request.agent_ids.iter().any(|id| id.trim().is_empty()) {
-        return Err("agent_ids must contain at least one non-empty Agent id");
-    }
-    if let Some(default_agent) = &request.default_agent_id
-        && !request.agent_ids.contains(default_agent)
+    if request.protocols.is_empty()
+        || request
+            .protocols
+            .iter()
+            .any(|protocol| !matches!(protocol.as_str(), "ai-sdk" | "ag-ui"))
+        || request.protocols.iter().collect::<HashSet<_>>().len() != request.protocols.len()
     {
-        return Err("default_agent_id must be present in agent_ids");
+        return Err("protocols must be unique and may contain only ai-sdk and ag-ui");
     }
     if request.operations.is_empty()
         || request
             .operations
             .iter()
-            .any(|operation| !matches!(operation.as_str(), "thread.run" | "thread.read"))
+            .any(|operation| !matches!(operation.as_str(), "thread.run" | "thread.messages.read"))
+        || request.operations.iter().collect::<HashSet<_>>().len() != request.operations.len()
     {
-        return Err("operations may contain only thread.run and thread.read");
+        return Err(
+            "operations must be unique and may contain only thread.run and thread.messages.read",
+        );
+    }
+    if request.thread_bindings.is_empty()
+        || request.thread_bindings.iter().any(|binding| {
+            binding.external_thread_id.trim().is_empty()
+                || binding.managed_session_id.trim().is_empty()
+        })
+    {
+        return Err("thread_bindings must contain at least one complete binding");
+    }
+    let external_ids = request
+        .thread_bindings
+        .iter()
+        .map(|binding| binding.external_thread_id.as_str())
+        .collect::<HashSet<_>>();
+    let session_ids = request
+        .thread_bindings
+        .iter()
+        .map(|binding| binding.managed_session_id.as_str())
+        .collect::<HashSet<_>>();
+    if external_ids.len() != request.thread_bindings.len()
+        || session_ids.len() != request.thread_bindings.len()
+    {
+        return Err("thread_bindings must be one-to-one and unique");
     }
     Ok(())
 }
@@ -165,20 +232,16 @@ fn problem(status: StatusCode, detail: impl Into<String>) -> Response {
         .into_response()
 }
 
-fn default_thread_namespace() -> String {
-    "default".to_string()
-}
-
-fn default_operations() -> Vec<String> {
-    vec!["thread.run".to_string(), "thread.read".to_string()]
-}
-
 const fn default_ttl() -> u64 {
     DEFAULT_TTL_SECONDS
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use async_trait::async_trait;
+    use awaken_session_contract::{ManagedLifecycleFact, PersistedSession, SessionBaselineState};
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use serde_json::{Value, json};
@@ -186,29 +249,173 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
-    async fn issues_a_token_with_the_requested_opaque_scope() {
-        let store = Arc::new(ApplicationAccessStore::new());
-        let response = router(store.clone(), "workspace-a".to_string())
+    struct TestSessions {
+        rows: HashMap<String, (String, PersistedSession)>,
+    }
+
+    #[async_trait]
+    impl ManagedSessionRepository for TestSessions {
+        async fn append_lifecycle(&self, _fact: ManagedLifecycleFact) {}
+
+        async fn pending_lifecycle(&self) -> Vec<ManagedLifecycleFact> {
+            Vec::new()
+        }
+
+        async fn complete_lifecycle(&self, _fact_id: &str) {}
+
+        async fn get(&self, session_id: &str) -> Option<PersistedSession> {
+            self.rows
+                .get(session_id)
+                .map(|(_, session)| session.clone())
+        }
+
+        async fn owner(&self, session_id: &str) -> Option<String> {
+            self.rows.get(session_id).map(|(owner, _)| owner.clone())
+        }
+    }
+
+    fn frozen_session(id: &str, status: &str) -> PersistedSession {
+        // Decode through the Session contract's own persistence representation;
+        // control tests must not import the credential execution layer merely to
+        // construct an otherwise opaque frozen Environment snapshot.
+        let baseline = serde_json::from_value(json!({
+            "state": "frozen",
+            "fingerprint": "test-baseline",
+            "environment": {
+                "environment_id": "env",
+                "revision": 1,
+                "config_fingerprint": "env-1",
+                "sandbox": {},
+                "network": { "mode": "none" },
+                "credential_realization": {
+                    "inference_holder": {
+                        "boundary": "workload",
+                        "trust_domain": "awaken.workload.acp"
+                    },
+                    "mcp_holder": {
+                        "boundary": "worker",
+                        "trust_domain": "awaken.worker"
+                    },
+                    "resource_holder": {
+                        "boundary": "worker",
+                        "trust_domain": "awaken.worker"
+                    }
+                }
+            },
+            "mcp_authoring": { "ordered_vault_ids": [] },
+            "agent_id": "support",
+            "model": "test-model",
+            "execution_model_ref": "test-model",
+            "runtime": null,
+            "application": null,
+            "delegate_ids": [],
+            "toolsets": [],
+            "mounts": [],
+            "env": [],
+            "prompts": []
+        }))
+        .expect("decode frozen Session fixture through the contract");
+        PersistedSession {
+            session_id: id.into(),
+            revision: Default::default(),
+            baseline,
+            title: None,
+            metadata: BTreeMap::new(),
+            tools: Default::default(),
+            environment_binding: None,
+            mcp: Default::default(),
+            resources: Default::default(),
+            realization: None,
+            status: status.into(),
+            archived_at: None,
+        }
+    }
+
+    fn preparing_session(id: &str) -> PersistedSession {
+        let mut session = frozen_session(id, "preparing");
+        let SessionBaselineState::Frozen(baseline) = session.baseline else {
+            unreachable!()
+        };
+        session.baseline =
+            SessionBaselineState::Preparing(awaken_session_contract::SessionCreationIntent {
+                control: awaken_session_contract::ControlSessionCreationInputs {
+                    environment: baseline.environment,
+                    agent_id: baseline.agent_id,
+                    model: baseline.model.clone(),
+                    execution_model_ref: baseline.model,
+                    runtime: baseline.runtime,
+                    mcp_authoring: Default::default(),
+                    toolsets: baseline.toolsets,
+                    delegate_ids: baseline.delegate_ids,
+                    mounts: baseline.mounts,
+                    env: baseline.env,
+                    prompts: baseline.prompts,
+                    resources: Default::default(),
+                    initial_mcp: Vec::new(),
+                },
+                application: awaken_session_contract::ApplicationContributionState::Absent,
+            });
+        session
+    }
+
+    fn sessions(rows: Vec<(&str, &str, PersistedSession)>) -> Arc<TestSessions> {
+        Arc::new(TestSessions {
+            rows: rows
+                .into_iter()
+                .map(|(id, owner, session)| (id.to_string(), (owner.to_string(), session)))
+                .collect(),
+        })
+    }
+
+    fn issue_body(session_id: &str, operations: Value) -> Value {
+        json!({
+            "authority_id": "shop-backend",
+            "application_scope": "project-42",
+            "actor_key": "opaque-user",
+            "protocols": ["ai-sdk"],
+            "operations": operations,
+            "thread_bindings": [{
+                "external_thread_id": "customer-thread",
+                "managed_session_id": session_id
+            }]
+        })
+    }
+
+    async fn issue(
+        store: Arc<ApplicationAccessStore>,
+        sessions: Arc<dyn ManagedSessionRepository>,
+        body: Value,
+    ) -> axum::response::Response {
+        router(store, sessions, "workspace-a".to_string())
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/v1/application-access-tokens")
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "authority_id": "shop-backend",
-                            "application_scope": "project-42",
-                            "thread_namespace": "customer-chat",
-                            "agent_ids": ["support"],
-                            "default_agent_id": "support"
-                        })
-                        .to_string(),
-                    ))
+                    .body(Body::from(body.to_string()))
                     .unwrap(),
             )
             .await
-            .unwrap();
+            .unwrap()
+    }
+
+    /// Cause-effect graph: syntactically valid capability (C1), Session exists
+    /// in caller Workspace (C2), frozen baseline (C3), and runnable lifecycle
+    /// when run is requested (C4) produce a token carrying the exact Session and
+    /// baseline Agent (E1). Rule T1: C1-C4 true -> 201/E1.
+    #[tokio::test]
+    async fn issues_an_exact_binding_from_the_managed_session_authority() {
+        let store = Arc::new(ApplicationAccessStore::new());
+        let response = issue(
+            store.clone(),
+            sessions(vec![(
+                "sesn_1",
+                "workspace-a",
+                frozen_session("sesn_1", "idle"),
+            )]),
+            issue_body("sesn_1", json!(["thread.run", "thread.messages.read"])),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::CREATED);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
@@ -216,34 +423,140 @@ mod tests {
         let identity = store.authenticate(token).unwrap();
         assert_eq!(identity.workspace_id, "workspace-a");
         assert_eq!(identity.grant.application_scope, "project-42");
+        assert_eq!(identity.grant.protocols, HashSet::from(["ai-sdk".into()]));
         assert!(identity.grant.operations.contains("thread.run"));
-        assert!(identity.grant.operations.contains("thread.read"));
+        assert!(identity.grant.operations.contains("thread.messages.read"));
+        assert_eq!(
+            identity.grant.thread_bindings["customer-thread"],
+            ApplicationThreadBinding {
+                managed_session_id: "sesn_1".into(),
+                agent_id: "support".into(),
+            }
+        );
     }
 
+    /// Decision rules: T2 missing or foreign Session (C2 false) -> 404 with no
+    /// token; the same response prevents cross-Workspace existence disclosure.
     #[tokio::test]
-    async fn rejects_an_agent_default_outside_the_allow_list() {
-        let response = router(
+    async fn hides_missing_and_foreign_sessions() {
+        let repository = sessions(vec![(
+            "sesn_foreign",
+            "workspace-b",
+            frozen_session("sesn_foreign", "idle"),
+        )]);
+        for id in ["sesn_missing", "sesn_foreign"] {
+            let response = issue(
+                Arc::new(ApplicationAccessStore::new()),
+                repository.clone(),
+                issue_body(id, json!(["thread.run"])),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "case {id}");
+        }
+    }
+
+    /// Decision rules: T3 unfrozen baseline (C3 false) -> 409; T4 terminal plus
+    /// run requested (C4 false) -> 409; T5 terminal plus history-only -> 201,
+    /// because reads do not create a new runtime transition.
+    #[tokio::test]
+    async fn lifecycle_and_operation_determine_issuance() {
+        let repository = sessions(vec![
+            (
+                "sesn_preparing",
+                "workspace-a",
+                preparing_session("sesn_preparing"),
+            ),
+            (
+                "sesn_terminal",
+                "workspace-a",
+                frozen_session("sesn_terminal", "terminated"),
+            ),
+        ]);
+        let preparing = issue(
             Arc::new(ApplicationAccessStore::new()),
-            "workspace-a".to_string(),
+            repository.clone(),
+            issue_body("sesn_preparing", json!(["thread.run"])),
         )
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/application-access-tokens")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "authority_id": "shop-backend",
-                        "application_scope": "project-42",
-                        "agent_ids": ["support"],
-                        "default_agent_id": "billing"
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
+        .await;
+        assert_eq!(preparing.status(), StatusCode::CONFLICT);
+
+        let terminal_run = issue(
+            Arc::new(ApplicationAccessStore::new()),
+            repository.clone(),
+            issue_body("sesn_terminal", json!(["thread.run"])),
         )
-        .await
-        .unwrap();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        .await;
+        assert_eq!(terminal_run.status(), StatusCode::CONFLICT);
+
+        let terminal_read = issue(
+            Arc::new(ApplicationAccessStore::new()),
+            repository,
+            issue_body("sesn_terminal", json!(["thread.messages.read"])),
+        )
+        .await;
+        assert_eq!(terminal_read.status(), StatusCode::CREATED);
+    }
+
+    /// T6 invalid capability vocabulary or non-bijective bindings (C1 false)
+    /// -> 422. These cases ensure no compatibility aliases or overlapping
+    /// external/session identities become a second authorization source.
+    #[tokio::test]
+    async fn invalid_or_duplicate_capabilities_are_rejected() {
+        let repository = sessions(vec![(
+            "sesn_1",
+            "workspace-a",
+            frozen_session("sesn_1", "idle"),
+        )]);
+        let cases = [
+            json!({
+                "authority_id": "shop-backend",
+                "application_scope": "project-42",
+                "protocols": ["unknown"],
+                "operations": ["thread.run"],
+                "thread_bindings": [{
+                    "external_thread_id": "customer-thread",
+                    "managed_session_id": "sesn_1"
+                }]
+            }),
+            json!({
+                "authority_id": "shop-backend",
+                "application_scope": "project-42",
+                "protocols": ["ai-sdk"],
+                "operations": ["thread.read"],
+                "thread_bindings": [{
+                    "external_thread_id": "customer-thread",
+                    "managed_session_id": "sesn_1"
+                }]
+            }),
+            json!({
+                "authority_id": "shop-backend",
+                "application_scope": "project-42",
+                "protocols": ["ai-sdk"],
+                "operations": ["thread.run"],
+                "thread_bindings": [
+                    { "external_thread_id": "one", "managed_session_id": "sesn_1" },
+                    { "external_thread_id": "two", "managed_session_id": "sesn_1" }
+                ]
+            }),
+            json!({
+                "authority_id": "shop-backend",
+                "application_scope": "project-42",
+                "protocols": ["ai-sdk", "ai-sdk"],
+                "operations": ["thread.run"],
+                "thread_bindings": [{
+                    "external_thread_id": "customer-thread",
+                    "managed_session_id": "sesn_1"
+                }]
+            }),
+        ];
+        for body in cases {
+            let response = issue(
+                Arc::new(ApplicationAccessStore::new()),
+                repository.clone(),
+                body,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        }
     }
 }
