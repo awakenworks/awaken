@@ -17,166 +17,28 @@ use awaken_runtime_host::{
     AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
     SandboxSettings, SandboxTier, StoreKind, Wake,
 };
+mod deployment;
 mod file_schema;
 mod file_support;
 mod report;
 mod role;
+mod seal_key;
 mod service_boundary;
 mod worker_bootstrap;
 
+pub use deployment::{CloudModelMode, ConfigOverrides, OperatingMode, ResourcePlaneStoreBackend};
 use file_schema::FileConfig;
 use file_support::{
     home_dir, is_postgres_url, override_port, read_management_database_url,
     read_or_create_local_key, validate_suite_hub_url,
 };
 pub use role::Role;
+pub use seal_key::SealKeySource;
 pub use service_boundary::ExecutableAgentRegistrationConfig;
 pub use worker_bootstrap::WorkerBootstrap;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_WAKE_CHANNEL: &str = "awaken_dispatch_wake";
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum OperatingMode {
-    #[default]
-    Local,
-    Server,
-}
-
-impl OperatingMode {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "local" => Ok(Self::Local),
-            "server" => Ok(Self::Server),
-            other => Err(format!("invalid mode={other:?}: expected local or server")),
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Local => "local",
-            Self::Server => "server",
-        }
-    }
-}
-
-/// CLI presentation values have the highest precedence. `None` leaves
-/// resolution to the typed config file and defaults.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ConfigOverrides {
-    pub config_path: Option<PathBuf>,
-    pub role: Option<Role>,
-    pub data_dir: Option<PathBuf>,
-    pub port: Option<u16>,
-    pub no_browser: Option<bool>,
-    pub worker_server: Option<String>,
-    pub identity_mode: Option<awaken_control::ManagementIdentityMode>,
-    pub cloud_models: Option<CloudModelMode>,
-}
-
-/// Whether this process may project and execute Awaken Cloud subscription models.
-/// Cloud identity remains independent so users may sign in while staying BYOK-only.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum CloudModelMode {
-    #[default]
-    Disabled,
-    Enabled,
-}
-
-impl CloudModelMode {
-    pub fn parse(value: &str) -> Result<Self, String> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "disabled" | "off" | "false" => Ok(Self::Disabled),
-            "enabled" | "on" | "true" => Ok(Self::Enabled),
-            other => Err(format!(
-                "invalid cloud_models={other:?}: expected disabled or enabled"
-            )),
-        }
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Disabled => "disabled",
-            Self::Enabled => "enabled",
-        }
-    }
-
-    pub const fn is_enabled(self) -> bool {
-        matches!(self, Self::Enabled)
-    }
-}
-
-/// One backend family for the complete resource plane.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResourcePlaneStoreBackend {
-    Embedded(PathBuf),
-    Postgres(String),
-}
-
-impl ResourcePlaneStoreBackend {
-    pub fn is_shared(&self) -> bool {
-        matches!(self, Self::Postgres(_))
-    }
-
-    pub fn validate_runtime_shape(
-        &self,
-        shared_runtime: bool,
-        shared_resource_catalog: bool,
-    ) -> Result<(), &'static str> {
-        if shared_runtime && !self.is_shared() {
-            Err("a shared Postgres runtime requires resource_database_url")
-        } else if shared_runtime && !shared_resource_catalog {
-            Err("a shared Postgres runtime requires admin_db to use Postgres")
-        } else {
-            Ok(())
-        }
-    }
-}
-
-#[derive(Clone)]
-pub enum SealKeySource {
-    NotOwnedByRole,
-    Inline(String),
-    File(PathBuf),
-    LocalFile(PathBuf),
-}
-
-impl std::fmt::Debug for SealKeySource {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotOwnedByRole => formatter.write_str("NotOwnedByRole"),
-            Self::Inline(_) => formatter.write_str("Inline([REDACTED])"),
-            Self::File(path) => formatter.debug_tuple("File").field(path).finish(),
-            Self::LocalFile(path) => formatter.debug_tuple("LocalFile").field(path).finish(),
-        }
-    }
-}
-
-impl SealKeySource {
-    pub fn description(&self) -> String {
-        match self {
-            Self::NotOwnedByRole => "not owned by this role".to_owned(),
-            Self::Inline(_) => "config.toml (redacted)".to_owned(),
-            Self::File(path) | Self::LocalFile(path) => path.display().to_string(),
-        }
-    }
-
-    /// Resolve the existing operator key or create the Local-mode key exactly
-    /// once with owner-only permissions. The returned bytes are never logged.
-    pub fn load_or_create(&self) -> Result<[u8; 32], String> {
-        let value = match self {
-            Self::NotOwnedByRole => {
-                return Err("this process role does not own the Control seal key".to_owned());
-            }
-            Self::Inline(value) => value.clone(),
-            Self::File(path) => fs::read_to_string(path)
-                .map_err(|error| format!("read seal key {}: {error}", path.display()))?,
-            Self::LocalFile(path) => read_or_create_local_key(path)?,
-        };
-        awaken_credential_vault::parse_seal_key(value.trim())
-            .map_err(|reason| format!("invalid control-plane seal key: {reason}"))
-    }
-}
 
 /// Fully resolved bootstrap truth shared by the command, server assembly, and
 /// runtime host. Database URLs and key material are intentionally absent from
