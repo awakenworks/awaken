@@ -18,7 +18,7 @@ FROM ubuntu:24.04
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bubblewrap ca-certificates libssl3 python3 \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /var/lib/awaken/control /var/lib/awaken/coordinator
+    && mkdir -p /var/lib/awaken/control /var/lib/awaken/coordinator /workspace /outputs
 
 # The control-plane (brain) binary — the scenario host serving remote-hand mode.
 COPY awaken-server /usr/local/bin/awaken-server
