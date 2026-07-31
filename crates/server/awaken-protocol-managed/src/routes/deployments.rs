@@ -919,6 +919,7 @@ mod tests {
                 skills: Vec::new(),
                 tools: Vec::new(),
                 multiagent: None,
+                x_awaken: None,
                 version,
             }
         }
