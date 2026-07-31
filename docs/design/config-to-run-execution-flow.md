@@ -239,7 +239,7 @@ registries, authorization grants, or Sandbox handles.
 | Memory | `MemorySnapshotSource`, `MemoryMounter`, `MemoryWritebackClient` | exact config, mutable content, CAS conflict handling, recovery-safe write-back |
 | Repository | `RepositoryRealizer` | exact config and credential pin, clone/fetch into Session working tree |
 | Skill | `SkillBundleSource` | exact immutable bundle and capability version, no generic Resource lifecycle |
-| Credential | `CredentialMaterialResolver` through a remote adapter | exact id, revision, access, target use, Workspace, holder, and live claim |
+| Credential | `CredentialMaterialResolver` through a Worker-private projection or brokered adapter | exact id, revision, access, target use, Workspace, holder, and live claim |
 
 These are network adapters over existing authority ports. They do not create a
 universal Resource domain or allow Worker database access.
@@ -346,8 +346,14 @@ the exact snapshot, source revision, and fingerprint selected before execution.
   launch token-file composition;
 - `AgentResourceReferenceSource` as a narrow read port;
 - `WorkerCredentialFileResolver` as the exact Worker-private
-  `CredentialMaterialResolver` adapter; Worker role composition removes the
-  Control seal key, authority stores, and implicit durable Host stores;
+  `CredentialMaterialResolver` adapter for `WorkerReference` and
+  recipient-bound projected `ControlPlaneReference` material; Worker role
+  composition removes the Control seal key, authority stores, and implicit
+  durable Host stores;
+- `worker_request_credential_file` and `worker_trust_credentials_file` as the
+  role-owned projected inputs to the existing signed Worker transport; one
+  authenticator instance protects dispatch, File, Memory, Skill, Repository,
+  and claimed-commit routes;
 - `HttpFileContentSource`, `HttpMemorySnapshotSource`,
   `HttpMemoryWritebackClient`, `HttpSkillBundleSource`, and
   `HttpRepositoryBindingVerifier`, paired with their authenticated,
@@ -384,10 +390,18 @@ entry points are owned by the
 overlays reuse one Postgres fixture and one Direct brain/hand fixture so these
 verification rules cannot pass through a stale parallel deployment path.
 The dedicated ADR-0071 overlay crosses both canonical flows through the shipped
-Control and Coordinator composition roots, database-less Workers, authenticated
+Control and Coordinator composition roots, a database-less Worker, authenticated
 registration and launch adapters, isolated component databases, an unavailable
 Coordinator, and forced authority-role restarts. Adapter and repository tests
 remain the owners of rule combinations that do not require a real cluster.
+
+The overlay's deterministic Host-executor Worker is built through the canonical
+`WorkerNodeBuilder`, but it is not the `awaken worker` CLI process. The production
+CLI process is covered by `credential_materialization_worker_e2e.ts`, including
+zero authority configuration and exact recipient-bound projection. P2-B is not
+fully accepted until the cluster overlay runs the CLI Worker and one process-level
+scenario combines Credential plus File/Memory/Skill realization while proving
+zero authority connection attempts.
 
 ## Guardrails
 
