@@ -55,8 +55,8 @@ use process_assembly_options::{ProcessAssemblyOptions, local_model_supply};
 #[cfg(test)]
 use process_stores::role_composes_resource_component;
 use process_stores::{
-    ControlStores, CoordinatorStores, PostgresSchemaMode, ProcessStores,
-    role_owns_control_component, role_owns_managed_execution,
+    ControlStores, CoordinatorStores, MigrationComponent, PostgresSchemaMode, ProcessStores,
+    migration_manifest, role_owns_control_component, role_owns_managed_execution,
 };
 use resource_component::{ephemeral_resource_component, open_resource_component};
 pub use worker_transport_security::load_request_authorizer as load_worker_request_authorizer;
@@ -249,6 +249,7 @@ async fn open_process_stores(
     key: Option<&[u8; 32]>,
     role: config::Role,
     postgres_schema: PostgresSchemaMode,
+    open_environment_stores: bool,
 ) -> Result<ProcessStores, String> {
     use awaken_control::StoreBackend;
 
@@ -339,7 +340,8 @@ async fn open_process_stores(
         (None, None)
     };
 
-    // The admin aggregate backs three interfaces (profiles / MCP / webhooks) off one store.
+    // The admin aggregate backs three Control ports (profiles / Agent resource
+    // bindings / webhooks) off one store.
     let mut admin_profiles: Option<Arc<dyn awaken_admin_config_api::InferenceProfileStore>> = None;
     let mut admin_webhooks: Option<Arc<dyn awaken_admin_config_api::WebhookStore>> = None;
     let mut admin_resources: Option<Arc<dyn awaken_config_resolver::AgentInputBindingRepository>> =
@@ -350,9 +352,6 @@ async fn open_process_stores(
             StoreBackend::Sqlite(p) => {
                 let admin = awaken_admin_config_api::SqliteAdminStore::open(&path(p))
                     .map_err(|error| format!("open admin SQLite {}: {error}", p.display()))?;
-                admin
-                    .migrate_legacy_memory_stores()
-                    .map_err(|error| format!("migrate legacy MemoryStore rows: {error}"))?;
                 let admin = Arc::new(admin);
                 admin_profiles = Some(admin.clone());
                 admin_resources = Some(admin.clone());
@@ -375,11 +374,6 @@ async fn open_process_stores(
                     .map_err(|error| format!("join admin Postgres connection: {error}"))?
                     .map_err(|error| format!("connect admin Postgres: {error}"))?,
                 );
-                if postgres_schema == PostgresSchemaMode::Migrate {
-                    admin
-                        .migrate_legacy_memory_stores()
-                        .map_err(|error| format!("migrate legacy MemoryStore rows: {error}"))?;
-                }
                 admin_profiles = Some(admin.clone());
                 admin_resources = Some(admin.clone());
                 admin_webhooks = Some(admin);
@@ -462,48 +456,49 @@ async fn open_process_stores(
     // Environment definitions and execution work have an explicit backend instead
     // of borrowing Session's address. Split Control and Coordinator therefore open
     // one shared registry without giving Control a Session/Deployment repository.
-    ensure_parent(&cfg.environments)?;
-    let environments: Arc<EnvironmentState> = match &cfg.environments {
-        StoreBackend::Sqlite(environment_path) => Arc::new(
-            EnvironmentState::with_stores(
-                Arc::new(
-                    awaken_env_store::SqliteEnvRegistry::open(&path(environment_path))
-                        .map_err(|error| format!("open environments SQLite: {error}"))?,
-                ),
-                Arc::new(
-                    awaken_work_store::SqliteWorkQueue::open(&path(
-                        &environment_path.with_file_name("work_queue.db"),
+    let environments: Arc<EnvironmentState> = if open_environment_stores {
+        ensure_parent(&cfg.environments)?;
+        match &cfg.environments {
+            StoreBackend::Sqlite(environment_path) => Arc::new(
+                EnvironmentState::with_stores(
+                    Arc::new(
+                        awaken_env_store::SqliteEnvRegistry::open(&path(environment_path))
+                            .map_err(|error| format!("open environments SQLite: {error}"))?,
+                    ),
+                    Arc::new(
+                        awaken_work_store::SqliteWorkQueue::open(&path(
+                            &environment_path.with_file_name("work_queue.db"),
+                        ))
+                        .map_err(|error| format!("open work queue SQLite: {error}"))?,
+                    ),
+                )
+                .with_sandbox_policies(Arc::new(
+                    awaken_sandbox_policy_store::SqliteSandboxExecutionPolicyStore::open(&path(
+                        &environment_path.with_file_name("sandbox_policies.db"),
                     ))
-                    .map_err(|error| format!("open work queue SQLite: {error}"))?,
-                ),
-            )
-            .with_sandbox_policies(Arc::new(
-                awaken_sandbox_policy_store::SqliteSandboxExecutionPolicyStore::open(&path(
-                    &environment_path.with_file_name("sandbox_policies.db"),
-                ))
-                .map_err(|error| format!("open sandbox policies SQLite: {error}"))?,
-            )),
-        ),
-        StoreBackend::Postgres(url) => {
-            let environments = match postgres_schema {
-                PostgresSchemaMode::Migrate => {
-                    awaken_env_store::PostgresEnvRegistry::connect(url).await
+                    .map_err(|error| format!("open sandbox policies SQLite: {error}"))?,
+                )),
+            ),
+            StoreBackend::Postgres(url) => {
+                let environments = match postgres_schema {
+                    PostgresSchemaMode::Migrate => {
+                        awaken_env_store::PostgresEnvRegistry::connect(url).await
+                    }
+                    PostgresSchemaMode::Verify => {
+                        awaken_env_store::PostgresEnvRegistry::connect_existing(url).await
+                    }
                 }
-                PostgresSchemaMode::Verify => {
-                    awaken_env_store::PostgresEnvRegistry::connect_existing(url).await
+                .map_err(|error| format!("connect environments Postgres: {error}"))?;
+                let work = match postgres_schema {
+                    PostgresSchemaMode::Migrate => {
+                        awaken_work_store::PostgresWorkQueue::connect(url).await
+                    }
+                    PostgresSchemaMode::Verify => {
+                        awaken_work_store::PostgresWorkQueue::connect_existing(url).await
+                    }
                 }
-            }
-            .map_err(|error| format!("connect environments Postgres: {error}"))?;
-            let work = match postgres_schema {
-                PostgresSchemaMode::Migrate => {
-                    awaken_work_store::PostgresWorkQueue::connect(url).await
-                }
-                PostgresSchemaMode::Verify => {
-                    awaken_work_store::PostgresWorkQueue::connect_existing(url).await
-                }
-            }
-            .map_err(|error| format!("connect work queue Postgres: {error}"))?;
-            let sandbox_policies = match postgres_schema {
+                .map_err(|error| format!("connect work queue Postgres: {error}"))?;
+                let sandbox_policies = match postgres_schema {
                 PostgresSchemaMode::Migrate => {
                     awaken_sandbox_policy_store::PostgresSandboxExecutionPolicyStore::connect(url)
                         .await
@@ -514,11 +509,14 @@ async fn open_process_stores(
                 }
             }
             .map_err(|error| format!("connect sandbox policies Postgres: {error}"))?;
-            Arc::new(
-                EnvironmentState::with_stores(Arc::new(environments), Arc::new(work))
-                    .with_sandbox_policies(Arc::new(sandbox_policies)),
-            )
+                Arc::new(
+                    EnvironmentState::with_stores(Arc::new(environments), Arc::new(work))
+                        .with_sandbox_policies(Arc::new(sandbox_policies)),
+                )
+            }
         }
+    } else {
+        Arc::new(EnvironmentState::new())
     };
 
     Ok(ProcessStores {
@@ -558,6 +556,7 @@ async fn open_local_process_stores(
         Some(key),
         config::Role::AllInOne,
         PostgresSchemaMode::Migrate,
+        true,
     )
     .await
 }
@@ -637,6 +636,7 @@ async fn build_runtime_process_assembly(
         key,
         role,
         postgres_schema,
+        true,
     )
     .await?;
     let hand_executors =
@@ -691,7 +691,8 @@ pub async fn migrate_deployment_schema(
     deployment: &config::ResolvedDeployment,
     key: Option<&[u8; 32]>,
 ) -> Result<(), String> {
-    let resource_component = if role_owns_managed_execution(deployment.role) {
+    let manifest = migration_manifest(deployment.role);
+    let resource_component = if manifest.contains(&MigrationComponent::Resources) {
         Some(
             open_resource_component(deployment.resources.clone(), PostgresSchemaMode::Migrate)
                 .await?,
@@ -699,17 +700,28 @@ pub async fn migrate_deployment_schema(
     } else {
         None
     };
-    open_process_stores(
-        deployment.control.clone(),
-        resource_component,
-        deployment.data_dir.clone(),
-        key,
-        deployment.role,
-        PostgresSchemaMode::Migrate,
-    )
-    .await
-    .map(drop)?;
-    executable_agent_registration::migrate(deployment).await
+    if manifest.contains(&MigrationComponent::Control)
+        || manifest.contains(&MigrationComponent::Coordinator)
+    {
+        open_process_stores(
+            deployment.control.clone(),
+            resource_component,
+            deployment.data_dir.clone(),
+            key,
+            deployment.role,
+            PostgresSchemaMode::Migrate,
+            manifest.contains(&MigrationComponent::Coordinator),
+        )
+        .await
+        .map(drop)?;
+    }
+    if manifest.contains(&MigrationComponent::ExecutableAgentCatalog) {
+        executable_agent_registration::migrate(deployment).await?;
+    }
+    if manifest.contains(&MigrationComponent::Coordinator) {
+        awaken_server::migrate_postgres_coordinator_schema(&deployment.runtime).await?;
+    }
+    Ok(())
 }
 
 /// Build the real env-selected management surface with one explicit in-process
@@ -760,6 +772,7 @@ async fn build_all_in_one_router_with_composition(
         Some(&key),
         config::Role::AllInOne,
         postgres_schema,
+        true,
     )
     .await
     .unwrap_or_else(|error| panic!("open deployment stores: {error}"));
@@ -942,20 +955,6 @@ fn brokered_inference_client(
         })
 }
 
-async fn migrate_legacy_skill_registry(
-    stores: &ProcessStores,
-    skill_store: &Arc<dyn awaken_skill_store::SkillStore>,
-) {
-    if let Some(root) = stores.workspace_root.as_deref() {
-        let migrated = awaken_server::migrate_legacy_skill_registry(root, skill_store.as_ref())
-            .await
-            .unwrap_or_else(|error| panic!("legacy Skill migration failed: {error}"));
-        if migrated > 0 {
-            eprintln!("migrated {migrated} legacy Skill aggregate(s)");
-        }
-    }
-}
-
 fn publication_model_assembly(
     composition: PublicationModelComposition,
     stores: &ProcessStores,
@@ -1086,7 +1085,6 @@ async fn assemble_runtime_process_router(
         .as_ref()
         .expect("Managed Execution role requires Coordinator stores");
     let resource_component = &coordinator_stores.resource_component;
-    let skill_store = resource_component.skill_store();
     // Resolve the installation's Workspace exactly once, then inject the same
     // coordinate into every adapter assembled below. Durable roots persist it;
     // ephemeral roots receive a process-local generated coordinate.
@@ -1100,7 +1098,6 @@ async fn assemble_runtime_process_router(
         cloud_api_base_url.as_deref(),
         &platform_workspace,
     );
-    migrate_legacy_skill_registry(&stores, &skill_store).await;
     let credential_materializer = (role == config::Role::AllInOne)
         .then(|| {
             stores.control.as_ref().map(|control| {

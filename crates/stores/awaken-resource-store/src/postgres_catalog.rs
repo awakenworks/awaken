@@ -1,4 +1,4 @@
-//! Postgres Resource Catalog adapter. Each aggregate is a single JSON row;
+//! Resources-owned Postgres Resource Catalog adapter. Each aggregate is a single JSON row;
 //! mutations lock that row so the current pointer and immutable history commit
 //! atomically across processes.
 
@@ -13,10 +13,9 @@ use serde::Serialize;
 use sqlx::Row;
 use sqlx::types::Json;
 
-use crate::postgres::{NS, PostgresAdminStore, block};
-use crate::resource_catalog_codec::{
-    LegacyMemoryStoreDef, MemoryRecord, RepositoryRecord, now_nanos,
-};
+use crate::postgres::{PostgresResourceStore, block};
+use crate::resource_catalog_codec::{MemoryRecord, RepositoryRecord, now_nanos};
+use crate::schema::CATALOG_NS;
 
 const MEMORY: &str = "memory_store";
 const REPOSITORY: &str = "repository";
@@ -25,45 +24,12 @@ fn storage(error: impl ToString) -> ResourceCatalogError {
     ResourceCatalogError::Storage(error.to_string())
 }
 
-impl PostgresAdminStore {
-    /// Idempotently import owned legacy rows into the Resource Catalog. The old
-    /// table is never consulted by normal reads after this startup migration.
-    pub fn migrate_legacy_memory_stores(&self) -> Result<(), ResourceCatalogError> {
-        let sql = format!("SELECT data FROM {NS}_memory_store ORDER BY id");
-        let pool = self.pool.clone();
-        let rows = block(&self.handle, move || async move {
-            sqlx::query(&sql)
-                .fetch_all(&pool)
-                .await
-                .map_err(storage)?
-                .into_iter()
-                .map(|row| {
-                    let Json(value): Json<LegacyMemoryStoreDef> =
-                        row.try_get("data").map_err(storage)?;
-                    Ok(value)
-                })
-                .collect::<Result<Vec<_>, ResourceCatalogError>>()
-        })?;
-        for legacy in rows {
-            if self.memory_record(&legacy.id)?.is_some() {
-                continue;
-            }
-            let Some((definition, config)) = legacy.into_catalog_records() else {
-                continue;
-            };
-            match self.create_memory_store(definition, config) {
-                Ok(()) | Err(ResourceCatalogError::AlreadyExists(_)) => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(())
-    }
-
+impl PostgresResourceStore {
     fn catalog_record<T>(&self, kind: &str, id: &str) -> Result<Option<T>, ResourceCatalogError>
     where
         T: serde::de::DeserializeOwned + Send + 'static,
     {
-        let sql = format!("SELECT data FROM {NS}_resource_catalog WHERE kind = $1 AND id = $2");
+        let sql = format!("SELECT data FROM {CATALOG_NS}_entry WHERE kind = $1 AND id = $2");
         let pool = self.pool.clone();
         let kind = kind.to_string();
         let id = id.to_string();
@@ -115,7 +81,7 @@ impl PostgresAdminStore {
         id: &str,
         value: &T,
     ) -> Result<(), ResourceCatalogError> {
-        let sql = format!("INSERT INTO {NS}_resource_catalog (kind, id, data) VALUES ($1, $2, $3)");
+        let sql = format!("INSERT INTO {CATALOG_NS}_entry (kind, id, data) VALUES ($1, $2, $3)");
         let data = serde_json::to_value(value).map_err(storage)?;
         let pool = self.pool.clone();
         let kind = kind.to_string();
@@ -148,11 +114,9 @@ impl PostgresAdminStore {
         T: serde::de::DeserializeOwned + Serialize + Send + 'static,
         F: FnOnce(&mut T) -> Result<(), ResourceCatalogError> + Send + 'static,
     {
-        let select = format!(
-            "SELECT data FROM {NS}_resource_catalog WHERE kind = $1 AND id = $2 FOR UPDATE"
-        );
-        let write =
-            format!("UPDATE {NS}_resource_catalog SET data = $3 WHERE kind = $1 AND id = $2");
+        let select =
+            format!("SELECT data FROM {CATALOG_NS}_entry WHERE kind = $1 AND id = $2 FOR UPDATE");
+        let write = format!("UPDATE {CATALOG_NS}_entry SET data = $3 WHERE kind = $1 AND id = $2");
         let pool = self.pool.clone();
         let kind = kind.to_string();
         let id = id.to_string();
@@ -180,7 +144,7 @@ impl PostgresAdminStore {
     }
 }
 
-impl ResourceConfigSource for PostgresAdminStore {
+impl ResourceConfigSource for PostgresResourceStore {
     fn resolve_memory_store(
         &self,
         workspace_id: &str,
@@ -222,7 +186,7 @@ impl ResourceConfigSource for PostgresAdminStore {
     }
 }
 
-impl ResourceBindingValidator for PostgresAdminStore {
+impl ResourceBindingValidator for PostgresResourceStore {
     fn validate_memory_binding(
         &self,
         workspace_id: &str,
@@ -268,7 +232,7 @@ impl ResourceBindingValidator for PostgresAdminStore {
     }
 }
 
-impl ResourceCatalog for PostgresAdminStore {
+impl ResourceCatalog for PostgresResourceStore {
     fn create_memory_store(
         &self,
         definition: MemoryStoreDefinition,
@@ -307,7 +271,7 @@ impl ResourceCatalog for PostgresAdminStore {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<MemoryStoreDefinition>, ResourceCatalogError> {
-        let sql = format!("SELECT id, data FROM {NS}_resource_catalog WHERE kind = $1 ORDER BY id");
+        let sql = format!("SELECT id, data FROM {CATALOG_NS}_entry WHERE kind = $1 ORDER BY id");
         let pool = self.pool.clone();
         let workspace_id = workspace_id.to_string();
         block(&self.handle, move || async move {

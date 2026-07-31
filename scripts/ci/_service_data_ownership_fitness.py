@@ -217,7 +217,8 @@ def process_store_ownership_violations(
     for required in (
         "let opens_control = role_owns_control_component(role);",
         "let coordinator = if role_owns_managed_execution(role)",
-        "let resource_component = if role_owns_managed_execution(deployment.role)",
+        "let manifest = migration_manifest(deployment.role);",
+        "let resource_component = if manifest.contains(&MigrationComponent::Resources)",
     ):
         if required not in cli_source:
             errors.append(f"role-aware store assembly is missing `{required}`")
@@ -323,7 +324,8 @@ def selftest() -> None:
     role_aware = (
         "let opens_control = role_owns_control_component(role); "
         "let coordinator = if role_owns_managed_execution(role) "
-        "let resource_component = if role_owns_managed_execution(deployment.role)"
+        "let manifest = migration_manifest(deployment.role); "
+        "let resource_component = if manifest.contains(&MigrationComponent::Resources)"
     )
     resource_owner = (
         "pub resource_catalog: Arc<dyn ResourceCatalog> "
@@ -335,7 +337,7 @@ def selftest() -> None:
     assert process_store_ownership_violations(
         process_stores.replace("catalog: CatalogRepo", "sessions: ManagedSessionRepository"),
         role_aware.replace(
-            "let resource_component = if role_owns_managed_execution(deployment.role)", ""
+            "let resource_component = if manifest.contains(&MigrationComponent::Resources)", ""
         ),
         resource_owner,
     )  # O14

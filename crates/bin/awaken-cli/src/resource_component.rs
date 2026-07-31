@@ -6,21 +6,18 @@ use super::{PostgresSchemaMode, config};
 
 pub(super) fn ephemeral_resource_component() -> awaken_resource_contract::ResourceComponent {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-    let resource_catalog = Arc::new(
-        awaken_admin_config_api::SqliteAdminStore::open_in_memory()
-            .expect("open ephemeral Resource Catalog"),
+    let resources = Arc::new(
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .expect("open ephemeral Resources store"),
     );
     awaken_resource_contract::build_resource_component(
         awaken_resource_contract::ResourceDependencies {
-            resource_catalog,
+            resource_catalog: resources.clone(),
             file_store: files.clone(),
             file_catalog: files,
             memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
             skill_store: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
-            lifecycle: Arc::new(
-                awaken_resource_store::SqliteResourceStore::in_memory()
-                    .expect("open ephemeral resource lifecycle sqlite"),
-            ),
+            lifecycle: resources,
         },
     )
 }
@@ -34,32 +31,17 @@ pub(super) async fn open_resource_component(
             Ok(awaken_server::embedded_resource_component(&root))
         }
         config::ResourcePlaneStoreBackend::Postgres(url) => {
-            // The existing AdminStore implementation is the authoritative
-            // ResourceCatalog adapter. It is opened against the Resources
-            // backend and only its narrow catalog port escapes this module.
-            let catalog_url = url.clone();
-            let resource_catalog = Arc::new(
-                tokio::task::spawn_blocking(move || match postgres_schema {
+            let resources = Arc::new(
+                match postgres_schema {
                     PostgresSchemaMode::Migrate => {
-                        awaken_admin_config_api::PostgresAdminStore::connect(&catalog_url)
+                        awaken_resource_store::PostgresResourceStore::connect(&url).await
                     }
                     PostgresSchemaMode::Verify => {
-                        awaken_admin_config_api::PostgresAdminStore::connect_existing(&catalog_url)
+                        awaken_resource_store::PostgresResourceStore::connect_existing(&url).await
                     }
-                })
-                .await
-                .map_err(|error| format!("join Resource Catalog Postgres connection: {error}"))?
-                .map_err(|error| format!("connect Resource Catalog Postgres: {error}"))?,
+                }
+                .map_err(|error| format!("connect Resources Postgres: {error}"))?,
             );
-            let lifecycle = match postgres_schema {
-                PostgresSchemaMode::Migrate => {
-                    awaken_resource_store::PostgresResourceStore::connect(&url).await
-                }
-                PostgresSchemaMode::Verify => {
-                    awaken_resource_store::PostgresResourceStore::connect_existing(&url).await
-                }
-            }
-            .map_err(|error| format!("connect resource lifecycle Postgres: {error}"))?;
             let files = Arc::new(
                 match postgres_schema {
                     PostgresSchemaMode::Migrate => {
@@ -91,12 +73,12 @@ pub(super) async fn open_resource_component(
             .map_err(|error| format!("connect resource skill Postgres: {error}"))?;
             Ok(awaken_resource_contract::build_resource_component(
                 awaken_resource_contract::ResourceDependencies {
-                    resource_catalog,
+                    resource_catalog: resources.clone(),
                     file_store: files.clone(),
                     file_catalog: files,
                     memory_repository: Arc::new(memory),
                     skill_store: Arc::new(skills),
-                    lifecycle: Arc::new(lifecycle),
+                    lifecycle: resources,
                 },
             ))
         }

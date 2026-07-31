@@ -501,15 +501,26 @@ async fn resume_ticket_awaits_then_clears() {
 }
 
 #[tokio::test]
-async fn connect_applies_migrations_and_serves_a_commit() {
+async fn migration_phase_applies_schema_then_runtime_verifies_and_commits() {
+    // Cause/effect decision table for schema access:
+    // R1 empty schema + migrate -> portable and PG-only bundles are applied
+    // without hydrating a runtime projection.
+    // R2 R1 ledger + connect_existing -> both bundles are verified, projection
+    // hydration succeeds, and commits remain writable without startup DDL.
+    // R3 either bundle missing/drifted -> connect_existing fails closed (the
+    // shared scoped-migration verify suite owns those ledger failure cases).
     let schema = "t_connect";
     if schema_pool(schema).await.is_none() {
         return;
     }
 
-    let coordinator = PostgresCommitCoordinator::connect(&database_url_in_schema(schema), 10)
+    let url = database_url_in_schema(schema);
+    PostgresCommitCoordinator::migrate(&url, 10)
         .await
-        .expect("connect");
+        .expect("migrate schema only");
+    let coordinator = PostgresCommitCoordinator::connect_existing(&url, 10)
+        .await
+        .expect("verify and connect existing");
     coordinator
         .commit(ThreadCommit {
             thread_id: ThreadId("thread-1".to_string()),

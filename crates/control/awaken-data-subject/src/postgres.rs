@@ -1,7 +1,6 @@
 //! Postgres adapter for the data-subject domain (feature `postgres`, ADR-0050),
 //! the network-DB sibling of [`SqliteDataSubjectRepo`](crate::SqliteDataSubjectRepo)
-//! over the crate's own `data_subject` migration scope
-//! ([`data_subject_bundle`](crate::data_subject_bundle)). The subject aggregate
+//! over the Control-owned `control_data_subject` migration scope. The subject aggregate
 //! serializes into the `data {json}` (jsonb) column; `id`/`org` are keyed columns,
 //! so `list`/erasure stay **Org-partitioned** (D7). The *same* portable bundle
 //! renders here as on sqlite — the schema is written once.
@@ -10,11 +9,11 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
-use crate::schema::data_subject_bundle;
+use crate::schema::{CONTROL_PREFIX, control_data_subject_bundle};
 use crate::{DataSubject, DataSubjectError, DataSubjectId, DataSubjectRepo, ErasureProgress};
 
 /// The component's table namespace (its bundle prefix).
-const NS: &str = "data_subject";
+const NS: &str = CONTROL_PREFIX;
 
 /// Errors from connecting or migrating the Postgres store.
 #[derive(Debug, thiserror::Error)]
@@ -25,15 +24,16 @@ pub enum PgStoreError {
     Migrate(String),
 }
 
-pub(crate) async fn connect_migrated(url: &str) -> Result<PgPool, PgStoreError> {
+async fn connect_migrated(url: &str) -> Result<PgPool, PgStoreError> {
     let pool = PgPool::connect(url)
         .await
         .map_err(|e| PgStoreError::Connect(e.to_string()))?;
     pool_migrated(pool).await
 }
 
-pub(crate) async fn pool_migrated(pool: PgPool) -> Result<PgPool, PgStoreError> {
-    let bundle = data_subject_bundle().map_err(|e| PgStoreError::Migrate(e.to_string()))?;
+async fn pool_migrated(pool: PgPool) -> Result<PgPool, PgStoreError> {
+    let bundle =
+        control_data_subject_bundle().map_err(|error| PgStoreError::Migrate(error.to_string()))?;
     awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
         .map_err(|e| PgStoreError::Migrate(e.to_string()))?
         .run_bundle(&bundle)
@@ -52,14 +52,15 @@ pub struct PgDataSubjectRepo {
 }
 
 impl PgDataSubjectRepo {
-    /// Connect and apply the data-subject migrations under the `data_subject` namespace.
+    /// Connect and apply the Control data-subject migrations under the
+    /// `control_data_subject` namespace.
     pub async fn connect(url: &str) -> Result<Self, PgStoreError> {
         Ok(Self {
             pool: connect_migrated(url).await?,
         })
     }
 
-    /// Build from an existing pool: apply the data-subject migrations.
+    /// Build from an existing pool: apply the Control data-subject migrations.
     pub async fn with_pool(pool: PgPool) -> Result<Self, PgStoreError> {
         Ok(Self {
             pool: pool_migrated(pool).await?,

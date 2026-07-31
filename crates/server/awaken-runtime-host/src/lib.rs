@@ -83,7 +83,6 @@ use awaken_session_contract::{
 };
 
 use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
-mod postgres_migration_lock;
 mod worker_control_client;
 
 // The neutral session substrate and its resume vocabulary.
@@ -92,8 +91,14 @@ pub use crate::application::{
     ApplicationSessionControlClient, ApplicationSessionControlReceipt, ApplicationSessionError,
     ApplicationSessionProvisioner, WorkerControlApplicationSessionClient,
 };
-pub use crate::commit_backend::init_shared_postgres_commit;
-pub use crate::dispatch_backend::init_shared_postgres_dispatch_with_config;
+pub use crate::commit_backend::{
+    init_shared_postgres_commit, init_shared_postgres_commit_existing,
+    migrate_postgres_commit_schema,
+};
+pub use crate::dispatch_backend::{
+    init_shared_postgres_dispatch_existing_with_config, init_shared_postgres_dispatch_with_config,
+    migrate_postgres_dispatch_schema,
+};
 pub use crate::file_content_transport::{
     FileContentSource, FileContentSourceError, HttpFileContentSource, StoreFileContentSource,
     WorkerFileContentService, worker_file_content_router,
@@ -107,7 +112,6 @@ pub use crate::memory_transport::{
     memory_materialization_reference, worker_memory_router,
 };
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
-pub use crate::postgres_migration_lock::PostgresMigrationLock;
 pub use crate::repository_transport::{
     CatalogRepositoryBindingVerifier, HttpRepositoryBindingVerifier, RepositoryBindingVerifier,
     RepositoryBindingVerifierError, WorkerRepositoryBindingService,

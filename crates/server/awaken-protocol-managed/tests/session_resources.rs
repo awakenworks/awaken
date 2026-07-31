@@ -5,7 +5,6 @@
 
 mod support;
 
-use awaken_admin_config_api::SqliteAdminStore;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::run::EndCause;
 use awaken_credential_vault::repo::CredentialRepo;
@@ -45,9 +44,10 @@ fn input(
     }
 }
 
-fn resource_catalog() -> std::sync::Arc<SqliteAdminStore> {
+fn resource_catalog() -> std::sync::Arc<awaken_resource_store::SqliteResourceStore> {
     let catalog = std::sync::Arc::new(
-        SqliteAdminStore::open_in_memory().expect("open ephemeral Resource Catalog"),
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .expect("open ephemeral Resource Catalog"),
     );
     for id in [
         "mem_1",

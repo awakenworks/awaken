@@ -13,7 +13,6 @@ awaken-api-contract.workspace = true
 # against the authored catalog through the resolver (secret-free result).
 awaken-config-resolver.workspace = true
 awaken-config-store = { workspace = true, optional = true }
-awaken-resource-contract.workspace = true
 # Failure disposition (Disposition) for the credential-cooldown ops route.
 awaken-runtime-contract.workspace = true
 awaken-tenancy.workspace = true

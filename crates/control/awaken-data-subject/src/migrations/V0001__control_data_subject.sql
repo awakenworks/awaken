@@ -1,4 +1,4 @@
--- data subjects: the attributed party, its consent grants, keyed by org
+-- Control-owned data subjects and consent grants, keyed by organization
 CREATE TABLE {prefix}_subject (
     id TEXT PRIMARY KEY,
     org TEXT NOT NULL,

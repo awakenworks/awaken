@@ -2,7 +2,8 @@
 //! [`InMemoryCapturedContentStore`](crate::InMemoryCapturedContentStore). Rows
 //! are subject-tagged so GDPR erasure is a keyed `DELETE`, and a TTL sweep
 //! enforces storage limitation. Implements both [`CaptureSink`] (write) and
-//! [`ContentEraser`] (erase) over the crate's `data_subject` migration scope.
+//! [`ContentEraser`] (erase) over the Coordinator-owned
+//! `coordinator_data_capture` migration scope.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,13 +13,14 @@ use async_trait::async_trait;
 use awaken_runtime_contract::{CaptureSink, ContentEraser, ContentKind, DataSubjectId, Purpose};
 use rusqlite::{Connection, params};
 
-use crate::schema::data_subject_bundle;
+use crate::schema::{COORDINATOR_CAPTURE_PREFIX, coordinator_data_capture_bundle};
 use crate::sqlite::StoreError;
 
-const NS: &str = "data_subject";
+const NS: &str = COORDINATOR_CAPTURE_PREFIX;
 
 fn open_migrated(conn: Connection) -> Result<Arc<Mutex<Connection>>, StoreError> {
-    let bundle = data_subject_bundle().map_err(|e| StoreError::Migrate(e.to_string()))?;
+    let bundle = coordinator_data_capture_bundle()
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
     awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
         .map_err(|e| StoreError::Migrate(e.to_string()))?
         .run_bundle(&conn, &bundle)

@@ -214,10 +214,6 @@ impl awaken_runtime_host::PiiRedactor
 pub fn awaken_runtime_host::PiiRedactor::new() -> Self
 impl awaken_runtime_contract::capture::ContentRedactor for awaken_runtime_host::PiiRedactor
 pub fn awaken_runtime_host::PiiRedactor::redact<'a>(&self, awaken_runtime_contract::capture::ContentKind, &'a str) -> alloc::borrow::Cow<'a, str>
-pub struct awaken_runtime_host::PostgresMigrationLock
-impl awaken_runtime_host::PostgresMigrationLock
-pub async fn awaken_runtime_host::PostgresMigrationLock::acquire(&str) -> core::result::Result<Self, alloc::string::String>
-pub async fn awaken_runtime_host::PostgresMigrationLock::release(self) -> core::result::Result<(), alloc::string::String>
 pub struct awaken_runtime_host::ProtocolHost
 impl awaken_runtime_host::ProtocolHost
 pub fn awaken_runtime_host::ProtocolHost::new(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> Self
@@ -251,11 +247,6 @@ impl awaken_run_ingress::commit_fence::ClaimedRunCommit for awaken_runtime_host:
 pub fn awaken_runtime_host::RemoteClaimedRunCommit::commit<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_run_ingress_contract::dispatch::RunClaim, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::RemoteClaimedRunCommit::commit_operation<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::dispatch::ClaimedCommitCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_runtime_host::RepositoryBindingVerifierError(_)
-pub struct awaken_runtime_host::ResourcePlane
-impl awaken_runtime_host::ResourcePlane
-pub fn awaken_runtime_host::ResourcePlane::memory_repository(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>
-pub fn awaken_runtime_host::ResourcePlane::new(alloc::sync::Arc<dyn awaken_resource_contract::FileStore>, alloc::sync::Arc<dyn awaken_resource_contract::FileCatalog>, alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceLifecycleRepository>) -> Self
-pub fn awaken_runtime_host::ResourcePlane::skill_store(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>
 pub struct awaken_runtime_host::SandboxSettings
 pub awaken_runtime_host::SandboxSettings::allow_local_fallback: bool
 pub awaken_runtime_host::SandboxSettings::container_forward_proxy: core::option::Option<alloc::string::String>
@@ -307,8 +298,8 @@ pub fn awaken_runtime_host::SharedHost::model(&self) -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::model_for_thread(&self, &str) -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::new(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::new_with_deployment(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, awaken_runtime_host::DeploymentConfig) -> Self
-pub fn awaken_runtime_host::SharedHost::new_with_resource_plane(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, awaken_runtime_host::ResourcePlane) -> Self
-pub fn awaken_runtime_host::SharedHost::new_with_resource_plane_and_deployment(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, awaken_runtime_host::ResourcePlane, awaken_runtime_host::DeploymentConfig) -> Self
+pub fn awaken_runtime_host::SharedHost::new_with_resource_component(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, awaken_resource_contract::component::ResourceComponent) -> Self
+pub fn awaken_runtime_host::SharedHost::new_with_resource_component_and_deployment(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, awaken_resource_contract::component::ResourceComponent, awaken_runtime_host::DeploymentConfig) -> Self
 pub fn awaken_runtime_host::SharedHost::new_worker_with_deployment(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_runtime_host::FileContentSource>, alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, awaken_runtime_host::DeploymentConfig) -> Self
 pub fn awaken_runtime_host::SharedHost::pool_accepting_work(&self) -> bool
 pub fn awaken_runtime_host::SharedHost::pool_in_flight(&self) -> u32
@@ -511,8 +502,12 @@ pub fn awaken_runtime_host::default_postgres_max_connections() -> core::num::non
 pub fn awaken_runtime_host::dispatch_transport_router_with_service(alloc::sync::Arc<awaken_runtime_host::WorkerDispatchService>) -> axum::routing::Router
 pub fn awaken_runtime_host::durable_ops_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> axum::routing::Router
 pub async fn awaken_runtime_host::init_shared_postgres_commit(&str, u32) -> core::result::Result<(), alloc::string::String>
+pub async fn awaken_runtime_host::init_shared_postgres_commit_existing(&str, u32) -> core::result::Result<(), alloc::string::String>
+pub async fn awaken_runtime_host::init_shared_postgres_dispatch_existing_with_config(&str, &awaken_runtime_host::DeploymentConfig) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_runtime_host::init_shared_postgres_dispatch_with_config(&str, &awaken_runtime_host::DeploymentConfig) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_runtime_host::memory_materialization_reference(&str, &str, awaken_resource_contract::catalog::ConfigVersion, awaken_resource_contract::input::ResourceAccess, &awaken_run_ingress_contract::dispatch::RunClaim) -> core::result::Result<alloc::string::String, awaken_resource_contract::MemErr>
+pub async fn awaken_runtime_host::migrate_postgres_commit_schema(&str, u32) -> core::result::Result<(), alloc::string::String>
+pub async fn awaken_runtime_host::migrate_postgres_dispatch_schema(&str, u32) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_runtime_host::platform_plugin_capabilities() -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub fn awaken_runtime_host::platform_plugin_capabilities_with_web_search(&awaken_ext_builtin_tools::web::WebSearchProviderRegistry) -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub fn awaken_runtime_host::registered_worker_transport_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>, alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>, alloc::sync::Arc<dyn awaken_session_contract::session_realization::ApplicationSessionControl>, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceBindingValidator>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>) -> axum::routing::Router

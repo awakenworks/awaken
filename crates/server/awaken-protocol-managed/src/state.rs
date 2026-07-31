@@ -421,8 +421,8 @@ mod tests {
         .expect("create Session fixture");
     }
 
-    fn ephemeral_resource_catalog() -> awaken_admin_config_api::SqliteAdminStore {
-        awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+    fn ephemeral_resource_catalog() -> awaken_resource_store::SqliteResourceStore {
+        awaken_resource_store::SqliteResourceStore::in_memory()
             .expect("open ephemeral Resource Catalog")
     }
 

@@ -50,7 +50,7 @@ pub struct ControlStoreConfig {
     /// are the same `credential.db` today; the same Postgres database when shared).
     pub credential: StoreBackend,
     pub config: StoreBackend,
-    /// The admin aggregate: inference profiles, MCP server defs, webhook subscriptions.
+    /// The admin aggregate: inference profiles, Agent inputs, and webhooks.
     pub admin: StoreBackend,
     /// Environment definitions plus execution work and sandbox-policy state.
     /// This is the one documented Control/Coordinator transition.

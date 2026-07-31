@@ -201,49 +201,15 @@ async fn serve_resolved(
     local_acp: Option<awaken_cli::PreparedLocalAcp>,
 ) -> Result<(), String> {
     let runs_coordinator = matches!(role, Role::AllInOne | Role::Coordinator);
-    let postgres_startup = runs_coordinator
-        && (deployment.runtime.dispatch_backend == awaken_runtime_host::DispatchBackend::Postgres
-            || deployment.runtime.store == awaken_runtime_host::StoreKind::Postgres);
-    let migration_lock = if postgres_startup {
-        let url = deployment.runtime.database_url.as_deref().ok_or_else(|| {
-            "a Postgres runtime requires runtime.database_url in the deployment config".to_owned()
-        })?;
-        Some(
-            awaken_runtime_host::PostgresMigrationLock::acquire(url)
-                .await
-                .map_err(|error| format!("acquire database migration lock: {error}"))?,
-        )
-    } else {
-        None
-    };
-
-    if runs_coordinator
-        && deployment.runtime.dispatch_backend == awaken_runtime_host::DispatchBackend::Postgres
-    {
-        let url = deployment
-            .runtime
-            .database_url
-            .as_deref()
-            .expect("validated Postgres dispatch URL");
-        awaken_runtime_host::init_shared_postgres_dispatch_with_config(url, &deployment.runtime)
-            .await
-            .map_err(|error| format!("initialize Postgres dispatch: {error}"))?;
-        awaken_server::init_postgres_worker_registry(url)
-            .await
-            .map_err(|error| format!("initialize Postgres worker registry: {error}"))?;
-    }
-    if runs_coordinator && deployment.runtime.store == awaken_runtime_host::StoreKind::Postgres {
-        let url = deployment
-            .runtime
-            .database_url
-            .as_deref()
-            .expect("validated Postgres commit URL");
-        awaken_runtime_host::init_shared_postgres_commit(
-            url,
-            deployment.runtime.postgres_max_connections.get(),
-        )
-        .await
-        .map_err(|error| format!("initialize Postgres commit store: {error}"))?;
+    if runs_coordinator {
+        match deployment.mode {
+            awaken_cli::config::OperatingMode::Local => {
+                awaken_server::init_postgres_coordinator(&deployment.runtime).await?
+            }
+            awaken_cli::config::OperatingMode::Server => {
+                awaken_server::init_existing_postgres_coordinator(&deployment.runtime).await?
+            }
+        }
     }
 
     let assembly = match role {
@@ -271,12 +237,6 @@ async fn serve_resolved(
     let app = assembly.router.layer(axum::middleware::from_fn(
         awaken_protocol_managed::enforce_managed_beta,
     ));
-    if let Some(lock) = migration_lock {
-        lock.release()
-            .await
-            .map_err(|error| format!("release database migration lock: {error}"))?;
-    }
-
     let ctrl = awaken_cli::DrainController::new();
     let _active_streams_gauge = awaken_cli::register_active_streams_gauge(ctrl.clone());
     let app = match &deployment.admin_listen {

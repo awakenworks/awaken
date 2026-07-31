@@ -18,8 +18,9 @@ thiserror = { workspace = true }
 rusqlite = { workspace = true }
 # `spawn_blocking` for the sqlite adapter's off-thread connection work.
 tokio = { workspace = true, features = ["rt"] }
-# Feature `postgres`: network-DB DataSubjectRepo + CapturedContentStore backends
-# over the same `data_subject` migration scope (ADR-0050), for multi-node SaaS.
+# Feature `postgres`: network-DB DataSubjectRepo + CapturedContentStore adapters
+# over separately owned Control and Coordinator scopes (ADR-0050). The shared
+# crate location is transitional; the migration bundles do not share a prefix.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
 awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 awaken-scoped-migration-sqlite.workspace = true
@@ -33,8 +34,8 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 
 [features]
 default = []
-# Postgres-backed DataSubjectRepo + CapturedContentStore (`postgres::*`) over the
-# same portable `data_subject` bundle as sqlite (ADR-0050 D7, Org-partitioned).
+# Postgres-backed DataSubjectRepo + CapturedContentStore over the same per-owner
+# portable bundles as SQLite (ADR-0050 D7, Org-partitioned).
 postgres = ["dep:sqlx"]
 
 [lints]

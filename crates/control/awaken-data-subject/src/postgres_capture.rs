@@ -3,8 +3,8 @@
 //! [`SqliteCapturedContentStore`](crate::SqliteCapturedContentStore). Rows are
 //! subject-tagged so GDPR erasure is a keyed `DELETE`, a TTL sweep enforces storage
 //! limitation, and an Art. 18 `restricted` flag exempts a row from both. Implements
-//! [`CaptureSink`] (write) and [`ContentEraser`] (erase) over the crate's
-//! `data_subject` migration scope — the same portable bundle as sqlite.
+//! [`CaptureSink`] (write) and [`ContentEraser`] (erase) over Coordinator's
+//! `coordinator_data_capture` migration scope — the same portable bundle as sqlite.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,9 +14,28 @@ use awaken_runtime_contract::{CaptureSink, ContentEraser, ContentKind, DataSubje
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 
-use crate::postgres::{PgStoreError, connect_migrated, pool_migrated};
+use crate::postgres::PgStoreError;
+use crate::schema::{COORDINATOR_CAPTURE_PREFIX, coordinator_data_capture_bundle};
 
-const NS: &str = "data_subject";
+const NS: &str = COORDINATOR_CAPTURE_PREFIX;
+
+async fn connect_migrated(url: &str) -> Result<PgPool, PgStoreError> {
+    let pool = PgPool::connect(url)
+        .await
+        .map_err(|error| PgStoreError::Connect(error.to_string()))?;
+    pool_migrated(pool).await
+}
+
+async fn pool_migrated(pool: PgPool) -> Result<PgPool, PgStoreError> {
+    let bundle = coordinator_data_capture_bundle()
+        .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
+    awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+        .map_err(|error| PgStoreError::Migrate(error.to_string()))?
+        .run_bundle(&bundle)
+        .await
+        .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
+    Ok(pool)
+}
 
 fn now_millis() -> i64 {
     SystemTime::now()
@@ -32,7 +51,8 @@ pub struct PgCapturedContentStore {
 }
 
 impl PgCapturedContentStore {
-    /// Connect and apply the data-subject migrations under the `data_subject` namespace.
+    /// Connect and apply the Coordinator capture migration under the
+    /// `coordinator_data_capture` namespace.
     pub async fn connect(url: &str) -> Result<Self, PgStoreError> {
         Ok(Self {
             pool: connect_migrated(url).await?,
@@ -40,7 +60,7 @@ impl PgCapturedContentStore {
         })
     }
 
-    /// Build from an existing pool: apply the data-subject migrations.
+    /// Build from an existing pool: apply the Coordinator capture migration.
     pub async fn with_pool(pool: PgPool) -> Result<Self, PgStoreError> {
         Ok(Self {
             pool: pool_migrated(pool).await?,

@@ -242,18 +242,15 @@ fn scenario_resource_catalog() -> Arc<dyn awaken_protocol_managed::ResourceCatal
     let root = scenario_storage_dir();
     let Some(root) = root else {
         return Arc::new(
-            awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+            awaken_resource_store::SqliteResourceStore::in_memory()
                 .expect("open ephemeral scenario resource catalog"),
         );
     };
     std::fs::create_dir_all(&root).expect("create scenario resource registry directory");
-    let catalog =
-        awaken_admin_config_api::SqliteAdminStore::open(&root.join("admin.db").to_string_lossy())
-            .expect("open durable scenario resource catalog");
-    catalog
-        .migrate_legacy_memory_stores()
-        .expect("migrate legacy scenario MemoryStore rows");
-    Arc::new(catalog)
+    Arc::new(
+        awaken_resource_store::SqliteResourceStore::open(root.join("resources.db"))
+            .expect("open durable scenario resource catalog"),
+    )
 }
 
 /// A router with context compaction (the compaction e2e): a low threshold folds
@@ -1675,16 +1672,7 @@ pub fn build_skills_router() -> Router {
 pub async fn build_skills_durable_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(SkillDrivingModel), "skills-durable");
     let deployment = scenario_deployment();
-    let storage_root = deployment.storage_dir.clone();
     let host = resource_host_with_deployment(model, model_ref, deployment);
-    if let Some(storage_root) = storage_root {
-        let skills = host
-            .skill_store()
-            .expect("canonical scenario ResourceComponent installs SkillStore");
-        awaken_server::migrate_legacy_skill_registry(&storage_root, skills.as_ref())
-            .await
-            .expect("migrate legacy scenario Skill registry");
-    }
     mount(Arc::new(host))
 }
 pub async fn build_config_router() -> Router {

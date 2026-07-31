@@ -1,4 +1,4 @@
-//! SQLite Resource Catalog adapter. One JSON record per aggregate keeps the
+//! Resources-owned SQLite Resource Catalog adapter. One JSON record per aggregate keeps the
 //! definition, current pointer, and immutable config history in one atomic row.
 
 use std::collections::BTreeMap;
@@ -11,10 +11,9 @@ use awaken_resource_contract::{
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 
-use crate::resource_catalog_codec::{
-    LegacyMemoryStoreDef, MemoryRecord, RepositoryRecord, now_nanos,
-};
-use crate::sqlite::{NS, SqliteAdminStore};
+use crate::SqliteResourceStore;
+use crate::resource_catalog_codec::{MemoryRecord, RepositoryRecord, now_nanos};
+use crate::schema::CATALOG_NS;
 
 const MEMORY: &str = "memory_store";
 const REPOSITORY: &str = "repository";
@@ -23,51 +22,16 @@ fn storage(error: impl ToString) -> ResourceCatalogError {
     ResourceCatalogError::Storage(error.to_string())
 }
 
-impl SqliteAdminStore {
-    /// Idempotently import owned rows from the retired identity table into the
-    /// Resource Catalog. This is an upgrade adapter, never a live read fallback.
-    pub fn migrate_legacy_memory_stores(&self) -> Result<(), ResourceCatalogError> {
-        let rows = {
-            let conn = self.conn.lock().expect("resource catalog");
-            let mut statement = conn
-                .prepare(&format!("SELECT data FROM {NS}_memory_store ORDER BY id"))
-                .map_err(storage)?;
-            let rows = statement
-                .query_map([], |row| row.get::<_, String>(0))
-                .map_err(storage)?;
-            rows.map(|row| {
-                let data = row.map_err(storage)?;
-                serde_json::from_str::<LegacyMemoryStoreDef>(&data).map_err(storage)
-            })
-            .collect::<Result<Vec<_>, _>>()?
-        };
-        for legacy in rows {
-            if self.memory_record(&legacy.id)?.is_some() {
-                continue;
-            }
-            let Some((definition, config)) = legacy.into_catalog_records() else {
-                continue;
-            };
-            let result = self.create_memory_store(definition, config);
-            match result {
-                Ok(()) | Err(ResourceCatalogError::AlreadyExists(_)) => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(())
-    }
-
+impl SqliteResourceStore {
     fn catalog_record<T: serde::de::DeserializeOwned>(
         &self,
         kind: &str,
         id: &str,
     ) -> Result<Option<T>, ResourceCatalogError> {
         let data: Option<String> = self
-            .conn
-            .lock()
-            .expect("resource catalog")
+            .connection()
             .query_row(
-                &format!("SELECT data FROM {NS}_resource_catalog WHERE kind = ?1 AND id = ?2"),
+                &format!("SELECT data FROM {CATALOG_NS}_entry WHERE kind = ?1 AND id = ?2"),
                 params![kind, id],
                 |row| row.get(0),
             )
@@ -111,8 +75,8 @@ impl SqliteAdminStore {
         value: &T,
     ) -> Result<(), ResourceCatalogError> {
         let data = serde_json::to_string(value).map_err(storage)?;
-        let result = self.conn.lock().expect("resource catalog").execute(
-            &format!("INSERT INTO {NS}_resource_catalog (kind, id, data) VALUES (?1, ?2, ?3)"),
+        let result = self.connection().execute(
+            &format!("INSERT INTO {CATALOG_NS}_entry (kind, id, data) VALUES (?1, ?2, ?3)"),
             params![kind, id, data],
         );
         match result {
@@ -136,11 +100,11 @@ impl SqliteAdminStore {
         T: serde::de::DeserializeOwned + Serialize,
         F: FnOnce(&mut T) -> Result<(), ResourceCatalogError>,
     {
-        let mut conn = self.conn.lock().expect("resource catalog");
+        let mut conn = self.connection();
         let tx = conn.transaction().map_err(storage)?;
         let data: Option<String> = tx
             .query_row(
-                &format!("SELECT data FROM {NS}_resource_catalog WHERE kind = ?1 AND id = ?2"),
+                &format!("SELECT data FROM {CATALOG_NS}_entry WHERE kind = ?1 AND id = ?2"),
                 params![kind, id],
                 |row| row.get(0),
             )
@@ -153,7 +117,7 @@ impl SqliteAdminStore {
         update(&mut record)?;
         let data = serde_json::to_string(&record).map_err(storage)?;
         tx.execute(
-            &format!("UPDATE {NS}_resource_catalog SET data = ?3 WHERE kind = ?1 AND id = ?2"),
+            &format!("UPDATE {CATALOG_NS}_entry SET data = ?3 WHERE kind = ?1 AND id = ?2"),
             params![kind, id, data],
         )
         .map_err(storage)?;
@@ -161,7 +125,7 @@ impl SqliteAdminStore {
     }
 }
 
-impl ResourceConfigSource for SqliteAdminStore {
+impl ResourceConfigSource for SqliteResourceStore {
     fn resolve_memory_store(
         &self,
         workspace_id: &str,
@@ -203,7 +167,7 @@ impl ResourceConfigSource for SqliteAdminStore {
     }
 }
 
-impl ResourceBindingValidator for SqliteAdminStore {
+impl ResourceBindingValidator for SqliteResourceStore {
     fn validate_memory_binding(
         &self,
         workspace_id: &str,
@@ -249,7 +213,7 @@ impl ResourceBindingValidator for SqliteAdminStore {
     }
 }
 
-impl ResourceCatalog for SqliteAdminStore {
+impl ResourceCatalog for SqliteResourceStore {
     fn create_memory_store(
         &self,
         definition: MemoryStoreDefinition,
@@ -288,10 +252,10 @@ impl ResourceCatalog for SqliteAdminStore {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<MemoryStoreDefinition>, ResourceCatalogError> {
-        let conn = self.conn.lock().expect("resource catalog");
+        let conn = self.connection();
         let mut statement = conn
             .prepare(&format!(
-                "SELECT id, data FROM {NS}_resource_catalog WHERE kind = ?1 ORDER BY id"
+                "SELECT id, data FROM {CATALOG_NS}_entry WHERE kind = ?1 ORDER BY id"
             ))
             .map_err(storage)?;
         let rows = statement
@@ -551,10 +515,14 @@ mod tests {
 
     #[test]
     fn catalog_versions_and_state_survive_reopen() {
+        // Cause/effect rules: a fresh Resources database applies the catalog
+        // bundle and accepts valid aggregate transitions; a reopen validates the
+        // same ledger and returns the persisted current/history/state. Foreign
+        // Workspace and stale-version inputs still fail without side effects.
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("admin.db");
+        let path = dir.path().join("resources.db");
         {
-            let store = SqliteAdminStore::open(path.to_str().unwrap()).unwrap();
+            let store = SqliteResourceStore::open(path.to_str().unwrap()).unwrap();
             let (definition, initial) = memory();
             store.create_memory_store(definition, initial).unwrap();
             let mut second = store
@@ -583,7 +551,7 @@ mod tests {
                 .unwrap();
         }
 
-        let reopened = SqliteAdminStore::open(path.to_str().unwrap()).unwrap();
+        let reopened = SqliteResourceStore::open(path.to_str().unwrap()).unwrap();
         assert_eq!(
             reopened
                 .resolve_memory_store("workspace-a", "memory-1")
@@ -626,79 +594,6 @@ mod tests {
                 .repository("workspace-b", "repo-1")
                 .unwrap()
                 .is_none()
-        );
-    }
-
-    #[test]
-    fn inventory_update_and_legacy_upgrade_are_scoped_and_durable() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("admin.db");
-        {
-            let store = SqliteAdminStore::open(path.to_str().unwrap()).unwrap();
-            store
-                .conn
-                .lock()
-                .unwrap()
-                .execute(
-                    &format!("INSERT INTO {NS}_memory_store (id, data) VALUES (?1, ?2), (?3, ?4)"),
-                    rusqlite::params![
-                        "legacy-owned",
-                        serde_json::json!({
-                            "id": "legacy-owned",
-                            "workspace_id": "workspace-a",
-                            "name": "Legacy",
-                            "description": "old row",
-                            "metadata": {"source": "v6"},
-                            "archived": false
-                        })
-                        .to_string(),
-                        "legacy-unowned",
-                        serde_json::json!({
-                            "id": "legacy-unowned",
-                            "name": "Quarantined",
-                            "archived": false
-                        })
-                        .to_string(),
-                    ],
-                )
-                .unwrap();
-        }
-
-        let store = SqliteAdminStore::open(path.to_str().unwrap()).unwrap();
-        store.migrate_legacy_memory_stores().unwrap();
-        let mut migrated = store
-            .memory_store("workspace-a", "legacy-owned")
-            .unwrap()
-            .expect("owned legacy row migrated");
-        assert_eq!(migrated.current_config_version, ConfigVersion::INITIAL);
-        assert!(
-            store
-                .memory_store("workspace-a", "legacy-unowned")
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            store.list_memory_stores("workspace-a").unwrap()[0].id,
-            "legacy-owned".into()
-        );
-
-        migrated.name = "Renamed".into();
-        store.update_memory_store(migrated).unwrap();
-        drop(store);
-        let reopened = SqliteAdminStore::open(path.to_str().unwrap()).unwrap();
-        assert_eq!(
-            reopened
-                .memory_store("workspace-a", "legacy-owned")
-                .unwrap()
-                .unwrap()
-                .name,
-            "Renamed"
-        );
-        assert!(
-            reopened
-                .list_memory_stores("workspace-b")
-                .unwrap()
-                .is_empty()
         );
     }
 }

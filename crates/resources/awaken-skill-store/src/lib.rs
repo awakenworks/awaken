@@ -87,40 +87,6 @@ pub(crate) struct SkillAggregate {
     pub deleted: bool,
 }
 
-pub(crate) fn legacy_aggregate(workspace: &str, id: &str, content: &[u8]) -> SkillAggregate {
-    let files = vec![SkillBundleFile {
-        path: "SKILL.md".into(),
-        content: content.to_vec(),
-        executable: false,
-    }];
-    SkillAggregate {
-        definition: SkillDefinition {
-            id: id.into(),
-            workspace_id: workspace.into(),
-            display_title: None,
-            latest_version: 1,
-            last_version: 1,
-            timestamps: Default::default(),
-        },
-        versions: BTreeMap::from([(
-            1,
-            SkillVersion {
-                id: format!("skver_{}_1", sanitize_stem(id)).into(),
-                skill_id: id.into(),
-                version: 1,
-                name: id.into(),
-                description: String::new(),
-                directory: format!("/skills/{}", sanitize_stem(id)),
-                bundle_sha256: bundle_sha256(&files),
-                files,
-                created_unix_nanos: 0,
-            },
-        )]),
-        retired_versions: Default::default(),
-        deleted: false,
-    }
-}
-
 /// Canonical SHA-256 of the complete bundle. Paths are ordered and length-framed so
 /// distinct path/content partitions cannot hash to the same byte stream.
 #[must_use]
@@ -615,40 +581,6 @@ impl FsSkillStore {
         out.sort_by(|a, b| a.definition.id.cmp(&b.definition.id));
         Ok(out)
     }
-
-    /// Explicit one-time import for the removed `<workspace>/<skill>.md` layout.
-    ///
-    /// Repository construction is deliberately side-effect free beyond opening
-    /// its own root; deployment startup owns when compatibility data is imported.
-    pub fn migrate_legacy_files(&self) -> std::io::Result<()> {
-        for workspace in std::fs::read_dir(&self.root)? {
-            let workspace = workspace?;
-            if !workspace.file_type()?.is_dir() {
-                continue;
-            }
-            let Some(workspace_id) = workspace.file_name().to_str().map(str::to_string) else {
-                continue;
-            };
-            for entry in std::fs::read_dir(workspace.path())? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().is_none_or(|extension| extension != "md") {
-                    continue;
-                }
-                let Some(id) = path.file_stem().and_then(|value| value.to_str()) else {
-                    continue;
-                };
-                let target = self.aggregate_path(&workspace_id, id);
-                if target.exists() {
-                    continue;
-                }
-                let aggregate = legacy_aggregate(&workspace_id, id, &std::fs::read(&path)?);
-                self.write_aggregate(&aggregate)
-                    .map_err(|error| std::io::Error::other(error.to_string()))?;
-            }
-        }
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -973,36 +905,5 @@ mod tests {
             .collect();
         assert_eq!(ids, vec!["greet", "review"]);
         std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[tokio::test]
-    async fn explicit_filesystem_migration_imports_legacy_skill_md_once() {
-        let root = scratch("legacy");
-        std::fs::create_dir_all(root.join("workspace-a")).unwrap();
-        std::fs::write(
-            root.join("workspace-a/greet.md"),
-            "---\ndescription: old\n---\nlegacy",
-        )
-        .unwrap();
-        let store = FsSkillStore::open(&root).unwrap();
-        store.migrate_legacy_files().unwrap();
-        let version = store
-            .version("workspace-a", "greet", 1)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(version.skill_md().unwrap().ends_with(b"legacy"));
-        drop(store);
-        let reopened = FsSkillStore::open(&root).unwrap();
-        reopened.migrate_legacy_files().unwrap();
-        assert_eq!(
-            reopened
-                .list_versions("workspace-a", "greet")
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
-        std::fs::remove_dir_all(root).ok();
     }
 }

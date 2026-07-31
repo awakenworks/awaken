@@ -1,4 +1,4 @@
--- complete binary-safe Skill aggregate; replaces the V1 current-SKILL.md projection
+-- complete binary-safe Skill aggregate
 CREATE TABLE {prefix}_aggregate (
     workspace_id TEXT NOT NULL,
     id TEXT NOT NULL,

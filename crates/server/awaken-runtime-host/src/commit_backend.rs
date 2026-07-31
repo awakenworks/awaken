@@ -20,14 +20,50 @@ static SHARED_POSTGRES_COMMIT: std::sync::OnceLock<Arc<PostgresCommitCoordinator
 /// serves) — it must run here, not in the per-thread run path. Idempotent: a second
 /// call keeps the first coordinator.
 pub async fn init_shared_postgres_commit(url: &str, max_connections: u32) -> Result<(), String> {
+    init_shared_postgres_commit_with(url, max_connections, PostgresSchemaAccess::Migrate).await
+}
+
+/// Connect the process-wide coordinator after verifying that the deployment
+/// migration phase applied both commit bundles. No DDL runs on this path.
+pub async fn init_shared_postgres_commit_existing(
+    url: &str,
+    max_connections: u32,
+) -> Result<(), String> {
+    init_shared_postgres_commit_with(url, max_connections, PostgresSchemaAccess::Verify).await
+}
+
+/// Apply only the Coordinator-owned commit bundles without publishing a
+/// process-global runtime handle.
+pub async fn migrate_postgres_commit_schema(url: &str, max_connections: u32) -> Result<(), String> {
+    PostgresCommitCoordinator::migrate(url, max_connections)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Clone, Copy)]
+enum PostgresSchemaAccess {
+    Migrate,
+    Verify,
+}
+
+async fn init_shared_postgres_commit_with(
+    url: &str,
+    max_connections: u32,
+    schema: PostgresSchemaAccess,
+) -> Result<(), String> {
     if SHARED_POSTGRES_COMMIT.get().is_some() {
         return Ok(());
     }
-    let coord = Arc::new(
-        PostgresCommitCoordinator::connect(url, max_connections)
-            .await
-            .map_err(|e| e.to_string())?,
-    );
+    let coordinator = match schema {
+        PostgresSchemaAccess::Migrate => {
+            PostgresCommitCoordinator::connect(url, max_connections).await
+        }
+        PostgresSchemaAccess::Verify => {
+            PostgresCommitCoordinator::connect_existing(url, max_connections).await
+        }
+    }
+    .map_err(|error| error.to_string())?;
+    let coord = Arc::new(coordinator);
     let _ = SHARED_POSTGRES_COMMIT.set(coord);
     Ok(())
 }

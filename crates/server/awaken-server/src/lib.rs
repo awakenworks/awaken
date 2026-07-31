@@ -26,9 +26,9 @@ pub mod brokered_inference;
 pub mod console;
 pub mod control_service_boundary;
 mod coordinator_component;
+mod coordinator_persistence;
 pub mod dynamic_placement;
 pub mod inference_materializer;
-mod legacy_resource_migration;
 pub mod mcp_export;
 pub mod model_directory;
 pub mod model_discovery;
@@ -43,6 +43,11 @@ pub use awaken_managed_routers::ModelDirectory;
 pub use coordinator_component::{
     CoordinatorBuildError, CoordinatorComponent, CoordinatorDependencies,
     build_coordinator_component,
+};
+pub use coordinator_persistence::{
+    init_existing_postgres as init_existing_postgres_coordinator,
+    init_postgres as init_postgres_coordinator,
+    migrate_postgres_schema as migrate_postgres_coordinator_schema,
 };
 
 use std::sync::Arc;
@@ -72,11 +77,9 @@ pub use awaken_runtime_host::{
     advertised_tools, durable_ops_router,
 };
 pub use awaken_sandbox_local::content_fingerprint;
-pub use legacy_resource_migration::migrate_legacy_skill_registry;
 pub use relay_hand::relay_hand_executor_factory;
 pub use worker_registry::{
-    WorkerDirectoryHandle, init_postgres as init_postgres_worker_registry,
-    inject as init_worker_registry, shared as worker_directory,
+    WorkerDirectoryHandle, inject as init_worker_registry, shared as worker_directory,
 };
 
 /// Canonical trusted-host ACP composition for outer product roots. This
@@ -121,11 +124,9 @@ pub fn embedded_resource_component(
     root: &std::path::Path,
 ) -> awaken_resource_contract::ResourceComponent {
     std::fs::create_dir_all(root).expect("create resource-plane directory");
-    let resource_catalog = Arc::new(
-        awaken_admin_config_api::SqliteAdminStore::open(
-            &root.join("resource-catalog.db").to_string_lossy(),
-        )
-        .expect("open resource catalog sqlite"),
+    let resources = Arc::new(
+        awaken_resource_store::SqliteResourceStore::open(root.join("resources.db"))
+            .expect("open Resources sqlite"),
     );
     let memory = awaken_memory_store::SqliteMemoryRepository::open(
         root.join("memory_fs.db")
@@ -133,9 +134,6 @@ pub fn embedded_resource_component(
             .expect("resource memory path is valid UTF-8"),
     )
     .expect("open resource memory sqlite");
-    memory
-        .import_legacy_versions(&root.join("resource-api.db"))
-        .expect("import legacy resource memory versions");
     let files = Arc::new(
         awaken_file_store::sqlite::SqliteFileStore::open(
             root.join("files.db")
@@ -146,21 +144,12 @@ pub fn embedded_resource_component(
     );
     awaken_resource_contract::build_resource_component(
         awaken_resource_contract::ResourceDependencies {
-            resource_catalog,
+            resource_catalog: resources.clone(),
             file_store: files.clone(),
             file_catalog: files,
             memory_repository: Arc::new(memory),
             skill_store: embedded_skill_store(root),
-            lifecycle: Arc::new({
-                let lifecycle = awaken_resource_store::SqliteResourceStore::open(
-                    root.join("resource-lifecycle.db"),
-                )
-                .expect("open resource lifecycle sqlite");
-                lifecycle
-                    .migrate_legacy_unscoped_schema()
-                    .expect("migrate legacy resource lifecycle rows");
-                lifecycle
-            }),
+            lifecycle: resources,
         },
     )
 }
@@ -173,9 +162,6 @@ pub fn embedded_skill_store(
 ) -> Arc<dyn awaken_resource_contract::SkillStore> {
     let skills = awaken_skill_store::FsSkillStore::open(root.join("skills"))
         .expect("open resource skill filesystem store");
-    skills
-        .migrate_legacy_files()
-        .expect("migrate legacy Skill files");
     Arc::new(skills)
 }
 
@@ -398,7 +384,7 @@ pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState
 
 fn ephemeral_resource_catalog() -> Arc<dyn awaken_protocol_managed::ResourceCatalog> {
     Arc::new(
-        awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+        awaken_resource_store::SqliteResourceStore::in_memory()
             .expect("open ephemeral Resource Catalog"),
     )
 }
@@ -615,10 +601,10 @@ fn mount_with_managed_over_and_models(
         awaken_managed_routers::models_router_with_directory,
     );
     // ADR-0050: install the Host-owned captured-content sink and expose the
-    // erasure + consent routes over the SAME store, so content a run captures is
-    // erasable within this one server (the run→capture→store→erase loop). Durable
-    // (sqlite under DeploymentConfig::storage_dir) so captured content + consent survive a
-    // restart; in-memory otherwise.
+    // erasure + consent routes over the SAME process-local stores, so content a
+    // run captures is erasable within this server (run→capture→store→erase).
+    // Durable adapters exist but are not yet injected into this component; do
+    // not describe this composition as restart-durable.
     let (sink, eraser, ds_repo) = data_subject_plane();
     host.install_capture_sink(sink);
     let mut resolver =
@@ -670,7 +656,10 @@ fn mount_with_managed_over_and_models(
 /// both the capture sink a run writes to and the eraser the endpoint fans out to)
 /// and the subject/consent repo. One captured-content instance backs both the sink
 /// and the eraser, so a run's content is erasable. Durable (sqlite under
-/// `DeploymentConfig::storage_dir`) or in-memory. Built once at composition (build_router).
+/// The current component uses one in-memory instance for each responsibility.
+/// Durable adapters are separate migration bundles and are not part of the
+/// production role manifest until they can be injected without crossing the
+/// Control/Coordinator database boundary.
 pub fn data_subject_plane() -> (
     Arc<dyn awaken_runtime_contract::CaptureSink>,
     Arc<dyn awaken_runtime_contract::ContentEraser>,

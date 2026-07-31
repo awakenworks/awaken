@@ -282,24 +282,24 @@ is the only owner of the ephemeral-versus-durable ResourcePlane decision, so a
 special protocol cannot silently discard storage, pool, Environment, or Resource
 ownership selected by the test deployment.
 
-## Phase 12: Workspace ownership and legacy Resource import
+## Phase 12: Workspace ownership and canonical Resource persistence
 
 ```text
 production config data root -> persisted platform Workspace
 scenario-only explicit Workspace -> AWAKEN_SCENARIO_WORKSPACE -> canonical Host
-legacy resource-api.db -> canonical Memory/Skill import -> receipt -> old DB removable
+canonical Resource stores -> reopen under the same exact Workspace
 ```
 
-| Rule | Process type | Workspace input | Legacy source | Expected |
+| Rule | Process type | Workspace input | Resource source | Expected |
 |---|---|---|---|---|
 | W1 | production | persisted data-root identity | none | exact persisted Workspace |
-| W2 | scenario | explicit scenario metadata | Memory + Skill | import into that exact scope |
-| W3 | scenario restart | same explicit metadata | source removed | canonical aggregates remain |
+| W2 | scenario | explicit scenario metadata | canonical Memory + Skill | writes use that exact scope |
+| W3 | scenario restart | same explicit metadata | same canonical stores | canonical aggregates remain |
 | W4 | production | `AWAKEN_LOCAL_WORKSPACE_ID` | any | ignored; no configuration effect |
 
 The test-only name prevents fixture metadata from becoming a second production
-deployment boundary. Legacy migration reuses the server's one migration function
-and writes only canonical Resource stores; it never installs a dual-read adapter.
+deployment boundary. There is no startup legacy-Resource importer or dual-read
+adapter; unreleased pre-baseline databases are recreated before this suite runs.
 
 ## Phase 13: retained Session upgrade under one data root
 

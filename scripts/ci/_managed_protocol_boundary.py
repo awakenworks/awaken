@@ -18,6 +18,9 @@ MANAGED_PROTOCOL_ALLOWED_DEPS = {
         "awaken-deployment-contract",
         "awaken-ext-memory",
         "awaken-resource-contract",
+        # Dev-only Session/Resource conformance uses the authoritative Resources
+        # catalog adapter rather than reconstructing it in Admin.
+        "awaken-resource-store",
         "awaken-work-store",
         "awaken-env-store",
         "awaken-session-store",

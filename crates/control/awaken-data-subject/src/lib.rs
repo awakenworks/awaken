@@ -30,7 +30,10 @@ pub use capture_store::{CapturedRecord, InMemoryCapturedContentStore};
 pub use postgres::{PgDataSubjectRepo, PgStoreError};
 #[cfg(feature = "postgres")]
 pub use postgres_capture::PgCapturedContentStore;
-pub use schema::{BUNDLE_ID, data_subject_bundle};
+pub use schema::{
+    CONTROL_BUNDLE_ID, CONTROL_PREFIX, COORDINATOR_CAPTURE_BUNDLE_ID, COORDINATOR_CAPTURE_PREFIX,
+    control_data_subject_bundle, coordinator_data_capture_bundle,
+};
 pub use sqlite::{SqliteDataSubjectRepo, StoreError};
 pub use sqlite_capture::SqliteCapturedContentStore;
 

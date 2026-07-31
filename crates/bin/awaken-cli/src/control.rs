@@ -140,6 +140,7 @@ async fn build_control_assembly_with_model_composition(
         Some(key),
         config::Role::Control,
         PostgresSchemaMode::Verify,
+        true,
     )
     .await?;
     let catalog = stores

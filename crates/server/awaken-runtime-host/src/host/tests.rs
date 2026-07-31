@@ -42,9 +42,9 @@ fn on_tool_use_environment() -> awaken_session_contract::EnvironmentSnapshot {
     environment
 }
 
-fn resource_catalog() -> Arc<awaken_admin_config_api::SqliteAdminStore> {
+fn resource_catalog() -> Arc<awaken_resource_store::SqliteResourceStore> {
     Arc::new(
-        awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+        awaken_resource_store::SqliteResourceStore::in_memory()
             .expect("open ephemeral Resource Catalog"),
     )
 }

@@ -64,6 +64,94 @@ the named Resources ports. Credential selection instead crosses the authenticate
 Control application boundary. Separating a provider later changes composition
 and routing; it does not introduce another domain service or data model.
 
+## Database And Migration Ownership
+
+The deployable unit is a bounded-context migration bundle, not a physical
+database and not an individual table. A production deployment may place several
+bundles owned by the same service in one PostgreSQL database; each prefix keeps
+its own ledger. A service must never open another service's database. AllInOne
+may co-locate the same canonical bundles, but it does not gain a fifth schema or
+another implementation.
+
+Every prefix owns `<prefix>_schema_migrations` and
+`<prefix>_schema_migrations_meta` in addition to the business tables below. The
+ledger records bundle id, dense positive version, and checksum. IAM has four
+subdomain bundle ids over the `iam` prefix and one IAM ledger; the other rows use
+one bundle id per aggregate-safe scope.
+
+| Service owner | Bundle id / prefix | Business tables (indexes, triggers, and PostgreSQL sequences omitted) |
+|---|---|---|
+| Control | `iam.identity`, `iam.authz`, `iam.entitlement`, `iam.audit` / `iam` | `iam_accounts`, `iam_external_identities`, `iam_sessions`, `iam_login_flows`, `iam_api_tokens`, `iam_oauth_clients`, `iam_grants`, `iam_role_bindings`, `iam_resource_edges`, `iam_orgs`, `iam_groups`, `iam_roles`, `iam_fence`, `iam_authorization_profiles`, `iam_authorization_profile_heads`, `iam_workspace_org_edges`, `iam_plans`, `iam_subscriptions`, `iam_audit_events` |
+| Control | `awaken.catalog` / `catalog` | `catalog_provider`, `catalog_protocol_endpoint`, `catalog_offering`, `catalog_model_attributes` |
+| Control | `awaken.credential` / `credential` | `credential_source`, `credential_secret`, `credential_pool`, `credential_creation_intent` |
+| Control | `awaken.admin` / `admin` | `admin_inference_profile`, `admin_agent_resource`, `admin_webhook` |
+| Control | `awaken.config` / `config` | `config_agent`, `config_publication`, `config_management_audit`, `config_management_effect`, `config_agent_revision` |
+| Control | `awaken.control_data_subject` / `control_data_subject` | `control_data_subject_subject`, `control_data_subject_erasure_job` |
+| Coordinator | `awaken.managed_session` / `managed` | `managed_session`, `managed_lifecycle_outbox`, `managed_memory_extraction`, `managed_session_idempotency`, `managed_session_tombstone`, `managed_dream`, `managed_dream_agent_override`, `managed_deployment`, `managed_deployment_run`, `managed_deployment_claim`, `managed_dream_policy` |
+| Coordinator | `awaken.env_registry` / `env_registry` | `env_registry_env` |
+| Coordinator | `awaken.work_queue` / `work_queue` | `work_queue_item` |
+| Coordinator | `awaken.sandbox_execution_policy` / `sandbox_execution_policy` | `sandbox_execution_policy_version`, `sandbox_execution_policy_current`, `sandbox_execution_policy_environment` |
+| Coordinator | `awaken.worker_registry` / `worker_registry` | `worker_registry_worker` |
+| Coordinator | `awaken.executable_agent_catalog` / `executable_agent` | `executable_agent_command` |
+| Coordinator | `awaken.run_dispatch` / `runtime` | `runtime_dispatch`, `runtime_pending`, `runtime_outbox`, `runtime_dispatch_completion`, `runtime_stream_checkpoint`, `runtime_dispatch_operation` |
+| Coordinator | `awaken.runtime_commit`, `awaken.runtime_commit_pg` / `runtime` | `runtime_commit`, `runtime_message`, `runtime_state_command`, `runtime_event`, `runtime_run_record`, `runtime_waiting`, `runtime_thread_version`, `runtime_commit_receipt`; PostgreSQL also owns `runtime_commit_seq` |
+| Coordinator | `awaken.coordinator_data_capture` / `coordinator_data_capture` | `coordinator_data_capture_captured` |
+| Resources | `awaken.resource_catalog` / `resource_catalog` | `resource_catalog_entry` |
+| Resources | `awaken.resource_lifecycle` / `resource_lifecycle` | `resource_lifecycle_purge_intents`, `resource_lifecycle_references`, `resource_lifecycle_reclamation_fences` |
+| Resources | `awaken.file_store` / `file_store` | `file_store_blob`, `file_store_file` |
+| Resources | `awaken.memory_store` / `memory_store` | `memory_store_memories`, `memory_store_counters`, `memory_store_versions` |
+| Resources | `awaken.skill_store` / `skill_store` | `skill_store_aggregate` |
+| Worker | none | none; Worker has only ephemeral execution/cache state and receives no authority database setting |
+
+The Environment registry remains the explicitly documented ADR-0071 transition:
+Coordinator owns and migrates its schema, while the split Control Admin Assistant
+still reaches the same registry through `EnvironmentAuthor`. That exception must
+be replaced by a Coordinator application adapter before the runtime database
+connection can be removed from split Control; it is not a precedent for another
+shared table or shared ledger.
+
+The two data-subject rows describe versioned durable adapters, not currently
+active production stores. `awaken.control_data_subject` and
+`awaken.coordinator_data_capture` are intentionally absent from every role
+manifest while `awaken-server::data_subject_plane` composes the corresponding
+ports in memory. This is fail-visible: startup does not silently create those
+tables. Before enabling durability, the subject repository must be injected by
+Control and the captured-content store by Coordinator; the transitional shared
+crate must then split along that same boundary.
+
+Schema execution is deterministic:
+
+```text
+database migrate
+  -> select the role's immutable migration manifest
+  -> acquire only those component stores
+  -> Coordinator additionally applies dispatch + worker-registry + commit bundles
+  -> ledger lock + exact ledger-state read
+  -> absent: execute unconditional versioned SQL, record checksum, commit
+  -> current: verify checksum and perform no DDL
+  -> partial/drift/unknown version: fail; never probe-and-skip an object
+
+server process start
+  -> connect_existing
+  -> verify exact ledger
+  -> serve, or fail closed without DDL
+```
+
+| Role | Migration manifest |
+|---|---|
+| `control` | Control only |
+| `coordinator` | Coordinator + co-deployed Resources + executable-Agent projection |
+| `worker` | empty; no database connection |
+| `all-in-one` | Control + Coordinator + Resources; no second executable-Agent projection |
+
+Conditional schema commands (`IF NOT EXISTS`, `IF EXISTS`, `CREATE OR REPLACE`),
+conflict-ignore data migration, raw startup DDL, and unversioned `.sql` files are
+rejected by the repository fitness check. Since this repository is still
+`1.0.0-dev`, this consolidation intentionally rebases unreleased histories;
+developers must recreate pre-change local databases. After the first stable
+release, an applied migration is immutable and every change appends a new
+version—never edits or renumbers history.
+
 ## Flow One: Configuration To Application
 
 ```mermaid
