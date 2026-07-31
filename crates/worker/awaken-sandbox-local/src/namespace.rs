@@ -143,7 +143,7 @@ impl NamespaceToolShell {
         let rendered = if cfg!(target_os = "macos") {
             sandbox_exec_argv(&input)
         } else {
-            bubblewrap_argv(&input)
+            bubblewrap_tool_argv(&input)
         };
         rendered
             .iter()
@@ -254,17 +254,30 @@ async fn realize_memory_mount(
 /// and the program argv.
 #[must_use]
 pub fn bubblewrap_argv(input: &RenderInput) -> Vec<String> {
+    bubblewrap_argv_for(input, true)
+}
+
+/// Native tools already execute as children of the Awaken runtime and need the
+/// Namespace filesystem/network boundary, but not a second PID/user namespace.
+/// Both modes deliberately share the same layout renderer.
+fn bubblewrap_tool_argv(input: &RenderInput) -> Vec<String> {
+    bubblewrap_argv_for(input, false)
+}
+
+fn bubblewrap_argv_for(input: &RenderInput, isolate_process: bool) -> Vec<String> {
     let mut a: Vec<String> = vec![s("bwrap")];
-    a.extend(
-        [
-            "--unshare-user",
-            "--unshare-pid",
-            "--unshare-ipc",
-            "--unshare-uts",
-        ]
-        .into_iter()
-        .map(s),
-    );
+    if isolate_process {
+        a.extend(
+            [
+                "--unshare-user",
+                "--unshare-pid",
+                "--unshare-ipc",
+                "--unshare-uts",
+            ]
+            .into_iter()
+            .map(s),
+        );
+    }
     match input.network {
         pc::NetworkPolicy::Unrestricted => {} // share the host network namespace
         _ => a.push(s("--unshare-net")),
@@ -1711,12 +1724,14 @@ mod tests {
     #[test]
     fn namespace_tool_shell_reuses_the_process_layout_and_quotes_the_payload() {
         // Cause/effect graph: C1=Namespace tool has one authoritative workspace/output
-        // layout; C2=network is denied; C3=payload contains a shell quote. Effects:
+        // layout; C2=network is denied; C3=payload contains a shell quote;
+        // C4=tool already runs under the owning runtime process. Effects:
         // E1=tool binds the same host roots at /workspace and outputs_path;
-        // E2=the same network restriction is rendered; E3=payload remains one argv token.
+        // E2=the same network restriction is rendered; E3=payload remains one argv token;
+        // E4=no incompatible second PID/user process namespace is requested.
         //
-        // | Rule | C1 | C2 | C3 | Effects |
-        // | N1   | yes | yes | yes | E1,E2,E3 |
+        // | Rule | C1 | C2 | C3 | C4 | Effects |
+        // | N1   | yes | yes | yes | yes | E1,E2,E3,E4 |
         let shell = NamespaceToolShell {
             host_workspace: PathBuf::from("/host/session/workspace"),
             host_outputs: PathBuf::from("/host/session/outputs"),
@@ -1741,6 +1756,8 @@ mod tests {
                 "N1/E1: {rendered}"
             );
             assert!(rendered.contains("'--unshare-net'"), "N1/E2");
+            assert!(!rendered.contains("'--unshare-user'"), "N1/E4");
+            assert!(!rendered.contains("'--unshare-pid'"), "N1/E4");
         }
         assert!(
             rendered
