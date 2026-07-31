@@ -21,10 +21,9 @@ use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, Resolv
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_session_executor::{
-    ClaimedCommitService, HeaderWorkerAuthenticator, RemoteClaimedRunCommit, claimed_commit_router,
-};
+use awaken_session_executor::{ClaimedCommitService, RemoteClaimedRunCommit, claimed_commit_router};
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_worker_transport_security::HeaderWorkerAuthenticator;
 
 struct CurrentWorkerDirectory(RegisteredWorker);
 

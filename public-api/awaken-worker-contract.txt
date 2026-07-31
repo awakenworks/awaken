@@ -1,4 +1,6 @@
 pub mod awaken_worker_contract
+pub use awaken_worker_contract::WorkerCredentialRevision
+pub use awaken_worker_contract::WorkerCredentialState
 pub enum awaken_worker_contract::AssignmentRejection
 pub awaken_worker_contract::AssignmentRejection::Ineligible
 pub awaken_worker_contract::AssignmentRejection::ReplacementForbidden
@@ -43,13 +45,6 @@ pub awaken_worker_contract::RegistryMutation::InvalidTransition
 pub awaken_worker_contract::RegistryMutation::NotFound
 pub awaken_worker_contract::RegistryMutation::StaleIncarnation
 pub awaken_worker_contract::RegistryMutation::StaleSequence
-pub enum awaken_worker_contract::WorkerCredentialState
-pub awaken_worker_contract::WorkerCredentialState::Available
-pub awaken_worker_contract::WorkerCredentialState::Disabled
-pub awaken_worker_contract::WorkerCredentialState::Expired
-pub awaken_worker_contract::WorkerCredentialState::Invalid
-pub awaken_worker_contract::WorkerCredentialState::LoginRequired
-pub awaken_worker_contract::WorkerCredentialState::ProbeFailed
 pub enum awaken_worker_contract::WorkerRecoveryMode
 pub awaken_worker_contract::WorkerRecoveryMode::NeverReplace
 pub awaken_worker_contract::WorkerRecoveryMode::RebuildFromCommittedTruth
@@ -86,7 +81,7 @@ pub awaken_worker_contract::PlacementRequirements::require_resource_limits: bool
 pub awaken_worker_contract::PlacementRequirements::require_tool_transparent: bool
 pub awaken_worker_contract::PlacementRequirements::required_acp_capabilities: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerAcpCapabilityRequirement>
 pub awaken_worker_contract::PlacementRequirements::required_capabilities: alloc::collections::btree::set::BTreeSet<alloc::string::String>
-pub awaken_worker_contract::PlacementRequirements::required_credentials: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerCredentialRevision>
+pub awaken_worker_contract::PlacementRequirements::required_credentials: alloc::collections::btree::set::BTreeSet<awaken_credential_contract::CredentialRef>
 pub awaken_worker_contract::PlacementRequirements::required_zone: core::option::Option<alloc::string::String>
 pub awaken_worker_contract::PlacementRequirements::runtime_protocol_version: u32
 pub awaken_worker_contract::PlacementRequirements::sandbox_backend: core::option::Option<alloc::string::String>
@@ -134,17 +129,14 @@ pub awaken_worker_contract::WorkerCapacity::resources: awaken_provisioning_contr
 impl core::default::Default for awaken_worker_contract::WorkerCapacity
 pub fn awaken_worker_contract::WorkerCapacity::default() -> Self
 pub struct awaken_worker_contract::WorkerCredentialObservation
-pub awaken_worker_contract::WorkerCredentialObservation::credential: awaken_worker_contract::WorkerCredentialRevision
+pub awaken_worker_contract::WorkerCredentialObservation::credential: awaken_credential_contract::CredentialRef
 pub awaken_worker_contract::WorkerCredentialObservation::observed_at_ms: u64
 pub awaken_worker_contract::WorkerCredentialObservation::reason_code: core::option::Option<alloc::string::String>
-pub awaken_worker_contract::WorkerCredentialObservation::state: awaken_worker_contract::WorkerCredentialState
+pub awaken_worker_contract::WorkerCredentialObservation::state: awaken_credential_contract::CredentialObservationState
 pub awaken_worker_contract::WorkerCredentialObservation::valid_until_ms: u64
 impl awaken_worker_contract::WorkerCredentialObservation
-pub fn awaken_worker_contract::WorkerCredentialObservation::available(awaken_worker_contract::WorkerCredentialRevision, u64, u64) -> Self
-pub fn awaken_worker_contract::WorkerCredentialObservation::is_selectable_at(&self, &awaken_worker_contract::WorkerCredentialRevision, u64) -> bool
-pub struct awaken_worker_contract::WorkerCredentialRevision
-pub awaken_worker_contract::WorkerCredentialRevision::id: alloc::string::String
-pub awaken_worker_contract::WorkerCredentialRevision::revision: u64
+pub fn awaken_worker_contract::WorkerCredentialObservation::available(awaken_credential_contract::CredentialRef, u64, u64) -> Self
+pub fn awaken_worker_contract::WorkerCredentialObservation::is_selectable_at(&self, &awaken_credential_contract::CredentialRef, u64) -> bool
 pub struct awaken_worker_contract::WorkerHeartbeat
 pub awaken_worker_contract::WorkerHeartbeat::acp_capability_observations: alloc::vec::Vec<awaken_worker_contract::WorkerAcpCapabilityObservation>
 pub awaken_worker_contract::WorkerHeartbeat::credential_observations: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerCredentialObservation>

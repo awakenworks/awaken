@@ -1,8 +1,8 @@
 //! The connection plan value object (ADR-0045 D2).
 //!
 //! `ConnectionPlan` names *how two ends meet*: a transport address, who initiates,
-//! and *which* credential to present — a reference, never resolved material
-//! (ADR-0045 D4 / G34). It is a
+//! and who initiates it. Authentication is deliberately absent until a transport
+//! implementation consumes the canonical revision-pinned credential contract. It is a
 //! serializable value object with no product-hosting vocabulary and no secret,
 //! safe to log, persist, and carry across the config-to-host edge.
 
@@ -39,23 +39,14 @@ pub enum DialPolicy {
     Listen,
 }
 
-/// An opaque reference to a credential resolved *by the host* immediately before
-/// dialing (ADR-0043 boundary). The plan carries the reference only; resolved
-/// material never lives in, serializes with, or logs from a `ConnectionPlan`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CredentialRef(pub String);
-
 /// One realized connection topology.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConnectionPlan {
     /// Where the peer is.
     pub transport: DialAddr,
     /// Who initiates.
     pub dial: DialPolicy,
-    /// Which credential to present, if any. A loopback (`InProcess`/`Unix`) plan
-    /// usually needs none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential: Option<CredentialRef>,
 }
 
 impl ConnectionPlan {
@@ -64,7 +55,6 @@ impl ConnectionPlan {
         Self {
             transport: DialAddr::InProcess,
             dial: DialPolicy::Dial,
-            credential: None,
         }
     }
 
@@ -73,7 +63,6 @@ impl ConnectionPlan {
         Self {
             transport: DialAddr::Unix(path.into()),
             dial: DialPolicy::Dial,
-            credential: None,
         }
     }
 
@@ -82,7 +71,6 @@ impl ConnectionPlan {
         Self {
             transport: DialAddr::Unix(path.into()),
             dial: DialPolicy::Listen,
-            credential: None,
         }
     }
 
@@ -92,7 +80,6 @@ impl ConnectionPlan {
         Self {
             transport: DialAddr::Tcp(addr.into()),
             dial: DialPolicy::Dial,
-            credential: None,
         }
     }
 
@@ -102,14 +89,6 @@ impl ConnectionPlan {
         Self {
             transport: DialAddr::Tcp(addr.into()),
             dial: DialPolicy::Listen,
-            credential: None,
         }
-    }
-
-    /// Attach the credential reference the host will resolve before dialing.
-    #[must_use]
-    pub fn with_credential(mut self, credential: CredentialRef) -> Self {
-        self.credential = Some(credential);
-        self
     }
 }

@@ -48,6 +48,11 @@ mod state;
 /// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
 pub mod work_queue;
 
+pub use awaken_agent_contract::ClientToolDescriptor;
+pub use awaken_executable_agent_contract::{
+    ExecutableAgentEnvironment, ExecutableAgentMcpServer, ExecutableAgentProfileSource,
+    ExecutableAgentSessionProfile,
+};
 pub use dream::{
     BUILT_IN_DREAM_AGENT_ID, DreamAgentConfiguration, DreamAgentSelection, DreamApiError,
     DreamCancellation, DreamFailure, DreamPolicy, DreamPolicyConfig, DreamPreparation,
@@ -56,7 +61,6 @@ pub use dream::{
 pub use env_registry::{EnvItem, EnvRegistry, EnvUpdate, InMemoryEnvRegistry};
 pub use rate_limit::{ManagedRateLimiter, ManagedRateLimits, enforce_managed_rate_limit};
 pub use routes::agents_registry::{
-    AgentClientToolView, AgentConfigSource, AgentConfigView, AgentMcpServerView,
     AgentRegistryState, ManagedAgentError, ManagedAgentRepository, agents_router,
 };
 pub use routes::deployments::{

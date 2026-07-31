@@ -15,9 +15,9 @@ use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, Resolv
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_session_executor::{
-    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, WorkerDispatchService,
-    dispatch_transport_router_with_service,
+use awaken_session_executor::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_worker_transport_security::{
+    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock,
 };
 use axum::Router;
 use axum::body::Body;

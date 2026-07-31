@@ -13,13 +13,13 @@ pub async fn run_echo_worker(
     upstream: &str,
     worker_id: &str,
     admin_listen: Option<&str>,
-    request_authorizer: Option<Arc<dyn awaken_session_executor::WorkerRequestAuthorizer>>,
+    request_authorizer: Option<Arc<dyn awaken_dispatch::WorkerRequestAuthorizer>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     struct EchoWorkerProvider;
 
     impl InferenceExecutorMaterializer for EchoWorkerProvider {
         fn supported_access_schemes(&self) -> &'static [&'static str] {
-            &[awaken_session_executor::HOST_EXECUTOR_CAPABILITY]
+            &[awaken_dispatch::HOST_EXECUTOR_CAPABILITY]
         }
 
         fn materialize_pinned(
@@ -38,7 +38,7 @@ pub async fn run_echo_worker(
     }
 
     let mut worker_upstream =
-        awaken_session_executor::WorkerUpstream::new(upstream).with_worker_id(worker_id);
+        awaken_worker_transport_security::WorkerUpstream::new(upstream).with_worker_id(worker_id);
     if let Some(authorizer) = request_authorizer {
         worker_upstream = worker_upstream.with_request_authorizer(authorizer);
     }
@@ -51,7 +51,7 @@ pub async fn run_echo_worker(
 }
 
 fn echo_worker_builder(
-    upstream: awaken_session_executor::WorkerUpstream,
+    upstream: awaken_worker_transport_security::WorkerUpstream,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
 ) -> awaken_worker::WorkerNodeBuilder {
     // The scenario image intentionally does not install bwrap: this test isolates
@@ -83,7 +83,7 @@ mod tests {
         struct HostMaterializer;
         impl InferenceExecutorMaterializer for HostMaterializer {
             fn supported_access_schemes(&self) -> &'static [&'static str] {
-                &[awaken_session_executor::HOST_EXECUTOR_CAPABILITY]
+                &[awaken_dispatch::HOST_EXECUTOR_CAPABILITY]
             }
 
             fn materialize_pinned(
@@ -96,7 +96,7 @@ mod tests {
         }
 
         let worker = echo_worker_builder(
-            awaken_session_executor::WorkerUpstream::new("http://coordinator")
+            awaken_worker_transport_security::WorkerUpstream::new("http://coordinator")
                 .with_worker_id("worker-a"),
             Arc::new(HostMaterializer),
         )

@@ -7,7 +7,6 @@ license.workspace = true
 [dependencies]
 awaken-executable-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-session-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 async-trait.workspace = true

@@ -77,17 +77,55 @@ pub use awaken_session_contract::{
     AGENT_TOOLSET_TOOL_IDS, is_agent_toolset_member, resolved_toolsets, toolset_policies,
 };
 
+/// Lower the Managed tool union into the Session's one neutral durable owner.
+pub fn session_tool_configuration(
+    tools: &[crate::types::agent::AgentTool],
+) -> awaken_session_contract::SessionToolConfiguration {
+    awaken_session_contract::SessionToolConfiguration {
+        toolsets: toolset_policies(tools),
+        client_tools: tools
+            .iter()
+            .filter_map(|tool| match tool {
+                crate::types::agent::AgentTool::Custom {
+                    name,
+                    description,
+                    input_schema,
+                } => Some(awaken_agent_contract::ClientToolDescriptor {
+                    name: name.clone(),
+                    description: description.clone(),
+                    input_schema: serde_json::to_value(input_schema)
+                        .expect("Managed custom tool schema serializes"),
+                }),
+                crate::types::agent::AgentTool::AgentToolset20260401 { .. }
+                | crate::types::agent::AgentTool::McpToolset { .. } => None,
+            })
+            .collect(),
+    }
+}
+
+/// Project one neutral Session tool configuration onto the Managed union.
+pub fn managed_tools(
+    configuration: &awaken_session_contract::SessionToolConfiguration,
+) -> Vec<crate::types::agent::AgentTool> {
+    let mut tools = resolved_toolsets(&configuration.toolsets);
+    tools.extend(configuration.client_tools.iter().map(|tool| {
+        crate::types::agent::AgentTool::Custom {
+            name: tool.name.clone(),
+            description: tool.description.clone(),
+            input_schema: crate::types::agent::CustomToolInputSchema::from_value(
+                tool.input_schema.clone(),
+            )
+            .expect("published client tool schemas are object schemas"),
+        }
+    }));
+    tools
+}
+
 /// Resolve nullable toolset fields while preserving custom tool definitions.
 pub fn resolved_tools(
     tools: &[crate::types::agent::AgentTool],
 ) -> Vec<crate::types::agent::AgentTool> {
-    let mut resolved = resolved_toolsets(&toolset_policies(tools));
-    resolved.extend(tools.iter().filter_map(|tool| match tool {
-        crate::types::agent::AgentTool::Custom { .. } => Some(tool.clone()),
-        crate::types::agent::AgentTool::AgentToolset20260401 { .. }
-        | crate::types::agent::AgentTool::McpToolset { .. } => None,
-    }));
-    resolved
+    managed_tools(&session_tool_configuration(tools))
 }
 
 /// Project the agent's tool surface onto the public `agent.tools` array. The built-in
@@ -153,7 +191,7 @@ pub fn agent_tools(caps: &AgentCapabilities) -> Vec<crate::types::agent::AgentTo
 /// path is separate from host capabilities because equal names must not transfer
 /// execution ownership to the host registry.
 pub fn agent_client_tools(
-    tools: &[awaken_session_contract::AgentClientToolView],
+    tools: &[awaken_agent_contract::ClientToolDescriptor],
 ) -> Result<Vec<crate::types::agent::AgentTool>, String> {
     tools
         .iter()

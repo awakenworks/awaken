@@ -14,7 +14,7 @@
 - Builds on: the `pc::Sandbox`/`SandboxProvider`/`SandboxHandle` port and the
   never-downgrade `select_provider` / fail-closed `prepare_environment` gates
   (`awaken-provisioning-contract::sandbox`); the already-written-but-uncalled
-  reuse decision functions `reconcile_adoption` / `LeaseLiveness` / `capped_expiry`
+  reuse decision functions `reconcile_adoption` / `LeaseLiveness`
   (`awaken-provisioning-contract::lease`); the deprecated cooperating-tool
   `Environment`/`RootedTool` model pending a `pc::Sandbox` rebase
   (`awaken-sandbox-local::lib`); the brain–hand relay and dynamic placement
@@ -33,7 +33,7 @@ renew_lease,dispose,status,artifacts}`, `SandboxProvider::{capabilities,
 probe_ready,create,adopt}`), the never-downgrade selection and fail-closed
 preparation exist, and the reuse *decisions* are written as pure, tested
 functions (`reconcile_adoption(live, referenced) -> AdoptionPlan`,
-`LeaseLiveness::{Healthy,DueForRenewal,Dead}`, `capped_expiry`). **None of the
+`LeaseLiveness::{Healthy,DueForRenewal,Dead}`). **None of the
 decision functions has a caller.** There is no warm pool, no lease-renewal loop,
 no idle reaper. Separately, the resident host still provisions per session
 through the *deprecated* `Environment` cooperating-tool model, one fresh
@@ -152,8 +152,8 @@ isolation is awaken's declared job (the provisioning-contract header). A
 
 - **Wires the existing pure decisions** — the reap/renew loop *calls*
   `reconcile_adoption` for orphan/idle decisions and `LeaseLiveness` for
-  renew-vs-reap, with `capped_expiry` aligning any injected secret's TTL to the
-  lease. The manager contributes control flow only; every judgement stays in the
+  renew-vs-reap. Credential lifetime is governed by the credential realization
+  authority, not by the sandbox lease contract. The manager contributes control flow only; every judgement stays in the
   already-tested pure functions.
 - **Pools only when creation is expensive.** Workdir and Namespace tiers create
   in milliseconds and are **not pooled** — they are created per run and disposed.
@@ -229,7 +229,7 @@ single-user host). Building all of it now is gold-plating.
 
 ### Tension B — pure decision core vs orchestration (simple design: decision/IO split)
 
-The reuse *judgements* (`reconcile_adoption`, `LeaseLiveness`, `capped_expiry`) and
+The reuse *judgements* (`reconcile_adoption`, `LeaseLiveness`) and
 the reuse *orchestration* (the reaper loop, the pool, the Cache-Volume provisioner)
 are different kinds of thing, and mixing them is why `attach`/`renew_lease`/pooling
 are half-built. Keep the two cleanly separated.
@@ -237,7 +237,7 @@ are half-built. Keep the two cleanly separated.
 **Resolution — decisions are a pure kernel; orchestration is the impure shell.**
 
 - **The pure decision kernel:** the *decision* functions and value types only —
-  `reconcile_adoption`, `LeaseLiveness`, `LeaseGrant`, `capped_expiry`,
+  `reconcile_adoption`, `LeaseLiveness`, `LeaseGrant`,
   `SandboxHandle`, `IsolationClass`. These are nearly immutable, carry no DTOs, and
   do no I/O, so they are exhaustively testable with a fake clock and plain values.
   They live in a thin awaken crate (`awaken-provisioning-contract` today; a

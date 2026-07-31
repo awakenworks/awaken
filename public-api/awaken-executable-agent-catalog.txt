@@ -7,15 +7,15 @@ pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::declared_hand_fo
 pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::exact(&self, &str, &str) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
 pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::is_unavailable(&self, &str, &str) -> bool
 pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::new() -> Self
+impl awaken_executable_agent_contract::session_profile::ExecutableAgentProfileSource for awaken_executable_agent_catalog::ExecutableAgentCatalog
+pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::agent_unavailable_in(&self, &str, &str) -> bool
+pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::session_profile_in(&self, &str, &str) -> core::option::Option<awaken_executable_agent_contract::session_profile::ExecutableAgentSessionProfile>
 impl awaken_resource_contract::lifecycle::AgentResourceReferenceSource for awaken_executable_agent_catalog::ExecutableAgentCatalog
 pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::agents_referencing(&self, &awaken_resource_contract::lifecycle::ResourceTarget) -> alloc::vec::Vec<alloc::string::String>
 impl awaken_runtime_contract::resolver::PublishedAgentSnapshotSource for awaken_executable_agent_catalog::ExecutableAgentCatalog
 pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::at_revision(&self, &str, &awaken_runtime_contract::snapshot::AgentId, u64) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
 pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::current(&self, &str, &awaken_runtime_contract::snapshot::AgentId) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
 pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::exact(&self, &str, &awaken_runtime_contract::resolved::CatalogFingerprint) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
-impl awaken_session_contract::agent_config::AgentConfigSource for awaken_executable_agent_catalog::ExecutableAgentCatalog
-pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::agent_unavailable_in(&self, &str, &str) -> bool
-pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::agent_view_in(&self, &str, &str) -> core::option::Option<awaken_session_contract::agent_config::AgentConfigView>
 pub struct awaken_executable_agent_catalog::HttpExecutableAgentRegistrar
 impl awaken_executable_agent_catalog::HttpExecutableAgentRegistrar
 pub fn awaken_executable_agent_catalog::HttpExecutableAgentRegistrar::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_executable_agent_contract::ExecutableAgentRegistrationError>
@@ -33,6 +33,7 @@ pub struct awaken_executable_agent_catalog::PostgresExecutableAgentRegistrar
 impl awaken_executable_agent_catalog::PostgresExecutableAgentRegistrar
 pub async fn awaken_executable_agent_catalog::PostgresExecutableAgentRegistrar::connect(&str, alloc::sync::Arc<awaken_executable_agent_catalog::ExecutableAgentCatalog>) -> core::result::Result<Self, awaken_executable_agent_contract::ExecutableAgentRegistrationError>
 pub async fn awaken_executable_agent_catalog::PostgresExecutableAgentRegistrar::connect_existing(&str, alloc::sync::Arc<awaken_executable_agent_catalog::ExecutableAgentCatalog>) -> core::result::Result<Self, awaken_executable_agent_contract::ExecutableAgentRegistrationError>
+pub async fn awaken_executable_agent_catalog::PostgresExecutableAgentRegistrar::refresh_projection(&self) -> core::result::Result<(), awaken_executable_agent_contract::ExecutableAgentRegistrationError>
 pub async fn awaken_executable_agent_catalog::PostgresExecutableAgentRegistrar::with_pool(sqlx_postgres::PgPool, alloc::sync::Arc<awaken_executable_agent_catalog::ExecutableAgentCatalog>) -> core::result::Result<Self, awaken_executable_agent_contract::ExecutableAgentRegistrationError>
 impl awaken_executable_agent_contract::ExecutableAgentRegistrar for awaken_executable_agent_catalog::PostgresExecutableAgentRegistrar
 pub fn awaken_executable_agent_catalog::PostgresExecutableAgentRegistrar::register<'life0, 'async_trait>(&'life0 self, awaken_executable_agent_contract::ExecutableAgentRegistration) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_executable_agent_contract::ExecutableAgentRegistrationOutcome, awaken_executable_agent_contract::ExecutableAgentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

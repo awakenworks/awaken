@@ -6,8 +6,14 @@
 
 use async_trait::async_trait;
 use awaken_runtime_contract::ExecutableAgentSnapshot;
-use awaken_session_contract::AgentConfigView;
 use serde::{Deserialize, Serialize};
+
+mod session_profile;
+
+pub use session_profile::{
+    ExecutableAgentEnvironment, ExecutableAgentMcpServer, ExecutableAgentProfileSource,
+    ExecutableAgentSessionProfile,
+};
 
 /// One immutable Control publication made available for future Coordinator
 /// Session resolution.
@@ -18,8 +24,8 @@ pub struct ExecutableAgentRegistration {
     pub agent_id: String,
     pub source_revision: u64,
     pub snapshot: ExecutableAgentSnapshot,
-    /// Existing Session-facing projection frozen from the same publication.
-    pub agent_view: AgentConfigView,
+    /// Session-facing defaults frozen from the same publication.
+    pub session_profile: ExecutableAgentSessionProfile,
     /// Optional logical Hand placement intent. Placement remains outside the
     /// executable snapshot and is joined to deployment-owned executors later.
     pub declared_hand: Option<String>,
@@ -174,7 +180,7 @@ mod tests {
             agent_id: "agent-a".into(),
             source_revision: 7,
             snapshot,
-            agent_view: AgentConfigView::default(),
+            session_profile: ExecutableAgentSessionProfile::default(),
             declared_hand: Some("hand-a".into()),
         }
     }

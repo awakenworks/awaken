@@ -33,12 +33,10 @@ mod admission;
 mod approval;
 mod execution_policy;
 mod lease;
-mod poison;
 mod prepare;
 mod sandbox;
 mod shape;
 mod spec;
-mod token;
 mod vocab;
 
 pub use admission::{AdmissionError, EnvironmentDecl, check_environment_soundness};
@@ -49,12 +47,7 @@ pub use execution_policy::{
 };
 pub use lease::{
     AdoptionPlan, LeaseGrant, LeaseLiveness, LivenessSignals, ReapCause, ReconcileOutcome,
-    apply_adoption_plan, capped_expiry, decide_reap, egress_permitted, reconcile_adoption,
-    reconcile_and_apply,
-};
-pub use poison::{
-    AttemptSignal, InFlightOutcome, PoisonVerdict, classify as classify_poison, resolve_inflight,
-    should_redispatch,
+    apply_adoption_plan, decide_reap, reconcile_adoption, reconcile_and_apply,
 };
 pub use prepare::{
     EnvironmentPlan, PrepareError, prepare_environment, validate_mount_requirements,
@@ -71,7 +64,6 @@ pub use spec::{
     Command, EnvironmentKind, MaterializedCommand, MaterializedEnvValue, MaterializedEnvVar,
     RootfsSource, SandboxOverride, SandboxSpec, Stdio, materialize_process_command,
 };
-pub use token::{LeaseCallbackClaims, LeaseCallbackToken, NonceWatermark, TokenError};
 pub use vocab::{
     Artifact, EnvValue, EnvVar, EnvVisibility, MemoryWriteConsistency, MountAccess, MountLifetime,
     MountRequirement, MountSource, NetworkPolicy, PackageRequirements, RESERVED_ENV_KEYS,

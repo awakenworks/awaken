@@ -1653,8 +1653,9 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     assert_eq!(status, StatusCode::OK, "I6");
     assert_eq!(updated["agent"]["tools"], tools, "I6");
     assert_eq!(
-        h.repo.get(id).await.unwrap().agent_tools,
-        serde_json::from_value::<Vec<awaken_session_contract::AgentTool>>(tools).unwrap(),
+        awaken_protocol_managed::project::managed_tools(&h.repo.get(id).await.unwrap().tools),
+        serde_json::from_value::<Vec<awaken_protocol_managed::types::agent::AgentTool>>(tools)
+            .unwrap(),
         "I6"
     );
     let state = h.state.lock().unwrap();
