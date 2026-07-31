@@ -120,16 +120,20 @@ impl SharedHost {
             Ok(ctx) => ctx,
             Err(_) => return false,
         };
-        ctx.state.lock().await.awaiting_run.is_some()
+        ctx.commit.open_wait_for_thread(&ctx.thread_id).is_some()
     }
 
     /// The tool an awaiting run on `thread` is awaiting on, if any.
     pub async fn pending_tool(&self, thread: &str) -> Option<PendingTool> {
         let ctx = self.ctx_for(thread, None).await.ok()?;
-        let st = ctx.state.lock().await;
-        let run_id = st.awaiting_run.clone()?;
+        // The committed ticket is the lifecycle authority. In particular, an
+        // observer on another protocol can see the committed tool-call message
+        // before the foreground caller reaches `finish_step` and updates its
+        // disposable `SessionState`; consulting that cache here would briefly
+        // misclassify a client-executed call as an ordinary executed tool.
+        let (_, ticket) = ctx.commit.open_wait_for_thread(&ctx.thread_id)?;
         let client_tools = self.client_tools_for(&ctx);
-        pending_from_ticket(&ctx.commit.resume_ticket(&run_id)?, &client_tools)
+        pending_from_ticket(&ticket, &client_tools)
     }
 
     /// Buffer a system message; it is prepended to the next turn's input.
