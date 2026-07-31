@@ -91,6 +91,10 @@ Replicated stateless roles and Workers use a 15-second `not-ready`/`unreachable`
 Service routing and its workloads become replaceable within the test's bounded
 recovery window; the PostgreSQL pair is excluded and follows the separately
 fenced WAL-replay-and-promotion path.
+The suite also scales the K3S CoreDNS Deployment to two hostname-spread replicas
+before application admission. Service discovery therefore remains available
+when the node-chaos stage removes either DNS placement; the topology is rejected
+up front unless both replicas are Ready on distinct nodes.
 
 The four logical owner databases share one disposable PostgreSQL primary and
 streaming standby to keep this topology affordable. Database names, role
