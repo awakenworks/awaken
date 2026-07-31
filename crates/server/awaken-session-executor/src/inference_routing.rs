@@ -47,22 +47,31 @@ pub trait InferenceExecutorMaterializer: Send + Sync {
 
     /// Materialize exactly the pinned Native access for this activation. ACP and
     /// remote candidates are not applicable here and are handled by their peer
-    /// attempt executors. A Native failure never falls back to another route.
+    /// attempt executors. The convenience default is valid only when the
+    /// effective model identifies one complete binding; a pool-aware adapter must
+    /// override this method and exact-match each request binding itself.
     fn materialize(
         &self,
         activation: &RunActivation,
         context: &RuntimeRunContext,
     ) -> Result<Option<Arc<dyn LlmExecutor>>, String> {
-        let exact = activation
+        let mut matching = activation
             .snapshot
             .resolved_spec
-            .candidate_for_model(activation.effective_model_ref())
-            .ok_or_else(|| {
-                format!(
-                    "model `{}` is outside the publication-pinned candidate set",
-                    activation.effective_model_ref()
-                )
-            })?;
+            .execution_candidates(Some(activation.effective_model_ref()))
+            .into_iter();
+        let exact = matching.next().ok_or_else(|| {
+            format!(
+                "model `{}` is outside the publication-pinned candidate set",
+                activation.effective_model_ref()
+            )
+        })?;
+        if matching.next().is_some() {
+            return Err(format!(
+                "model `{}` has multiple publication-pinned bindings; this inference materializer must provide pool-aware exact-binding routing",
+                activation.effective_model_ref()
+            ));
+        }
         if !matches!(
             Backend::from_ref(&exact.binding.backend_ref),
             Backend::Native
@@ -281,6 +290,39 @@ mod tests {
                 .unwrap(),
             &fast
         ));
+    }
+
+    #[test]
+    fn default_materializer_rejects_ambiguous_same_model_bindings() {
+        // Cause/effect graph: C1 effective model has 0/1/many complete bindings;
+        // C2 adapter overrides pool routing. Default + 0 -> outside-set error;
+        // default + 1 -> materialize that exact candidate; default + many ->
+        // fail closed. A C2 adapter owns request-binding routing and bypasses
+        // this convenience default.
+        //
+        // Decision-table coverage: the neighboring unknown/single-candidate
+        // tests cover R1/R2; this case covers R3 (default + many -> reject).
+        let executor: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("smart"));
+        let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
+        map.insert("smart-model".into(), executor);
+        let mut routing = routing();
+        routing.set_materializer(Arc::new(MapProvider(map)));
+
+        let mut activation = activation("smart-model");
+        activation.snapshot.resolved_spec.model_candidates.push(
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding::new(
+                "provider-b",
+                "smart-model",
+                "backend",
+            )),
+        );
+
+        let error = match routing.executor_for_activation(&activation, &RuntimeRunContext::new()) {
+            Ok(_) => panic!("ambiguous same-model bindings require a pool-aware adapter"),
+            Err(error) => error,
+        };
+        assert!(error.contains("multiple publication-pinned bindings"));
+        assert!(error.contains("pool-aware exact-binding routing"));
     }
 
     #[test]
