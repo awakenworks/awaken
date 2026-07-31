@@ -707,16 +707,64 @@ pub async fn enforce_managed_beta(
 async fn create_session(
     State(state): State<Arc<ManagedState>>,
     workspace: Option<axum::Extension<WorkspaceScope>>,
+    headers: HeaderMap,
     ManagedJson(req): ManagedJson<SessionCreateParams>,
 ) -> Result<(HeaderMap, Json<Session>), (StatusCode, Json<ErrorResponse>)> {
     // Session preparation (MCP provisioning, ADR-0043 Phase 3) can fail; map the
     // RunError to the envelope exactly like a turn's failure, so a failed create
     // is loud rather than a half-provisioned session.
-    let session = state
-        .create_session_with_initial_events(req, workspace.map(|w| w.0.0.clone()))
-        .await
-        .map_err(error_response)?;
-    versioned_session_response(&state, session, None).await
+    let workspace_id = workspace.map(|w| w.0.0.clone());
+    let idempotency_key = parse_idempotency_key(&headers)?;
+    let session = match idempotency_key.as_deref() {
+        Some(_) if !req.initial_events.is_empty() => {
+            return Err(error_response(StateError::Run(RunError::bad_request(
+                "Idempotency-Key is not supported with initial_events",
+            ))));
+        }
+        Some(key) => {
+            state
+                .create_session_with_initial_events_idempotent(req, workspace_id.clone(), key)
+                .await
+        }
+        None => {
+            state
+                .create_session_with_initial_events(req, workspace_id.clone())
+                .await
+        }
+    }
+    .map_err(error_response)?;
+    let operation_id = idempotency_key.as_deref().map(|key| {
+        awaken_session_contract::stable_fingerprint(&(
+            "managed-session-create-operation",
+            workspace_id
+                .as_deref()
+                .unwrap_or(crate::state::DEFAULT_SCOPE),
+            key,
+        ))
+    });
+    versioned_session_response(&state, session, operation_id).await
+}
+
+fn parse_idempotency_key(headers: &HeaderMap) -> Result<Option<String>, WireErr> {
+    let key = headers
+        .get("idempotency-key")
+        .map(|value| {
+            value.to_str().map(str::to_string).map_err(|_| {
+                error_response(StateError::Run(RunError::bad_request(
+                    "Idempotency-Key must be visible ASCII",
+                )))
+            })
+        })
+        .transpose()?;
+    if key
+        .as_ref()
+        .is_some_and(|key| key.trim().is_empty() || key.len() > 255)
+    {
+        return Err(error_response(StateError::Run(RunError::bad_request(
+            "Idempotency-Key must contain 1 to 255 characters",
+        ))));
+    }
+    Ok(key)
 }
 
 async fn retrieve_session(
@@ -800,24 +848,7 @@ async fn update_session(
         .unwrap_or_default();
     let title = body.title;
     let metadata = body.metadata;
-    let idempotency_key = headers
-        .get("idempotency-key")
-        .map(|value| {
-            value.to_str().map(str::to_string).map_err(|_| {
-                error_response(StateError::Run(RunError::bad_request(
-                    "Idempotency-Key must be visible ASCII",
-                )))
-            })
-        })
-        .transpose()?;
-    if idempotency_key
-        .as_ref()
-        .is_some_and(|key| key.trim().is_empty() || key.len() > 255)
-    {
-        return Err(error_response(StateError::Run(RunError::bad_request(
-            "Idempotency-Key must contain 1 to 255 characters",
-        ))));
-    }
+    let idempotency_key = parse_idempotency_key(&headers)?;
     let if_match = headers
         .get(header::IF_MATCH)
         .map(|value| {
