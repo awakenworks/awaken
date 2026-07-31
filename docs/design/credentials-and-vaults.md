@@ -278,13 +278,13 @@ current-Vault rediscovery. Target binding, streaming lifecycle, and
 sandbox-facing MCP route projection remain Runtime Host adapter
 responsibilities. Failure never authorizes plaintext in another trust domain.
 
-In a split deployment, `ControlCredentialMaterialResolver` is the Worker-side
-network adapter for that same port. The Control/Vault-side handler validates the
-exact id, revision, access, target use, Workspace, allowed holder, and live claim
-before opening material. This is an adapter name, not a second resolver contract.
-AllInOne injects the local implementation through the same port. Neither adapter
-may enumerate credentials, choose another revision or holder, or fall back after
-a transport failure.
+In a split deployment, the implemented self-hosted path is the external
+Secret/CSI projection described below; brokered inference remains secretless to
+the Worker. There is no `ControlCredentialMaterialResolver` HTTP implementation
+and no plaintext credential response DTO. AllInOne injects the local Vault
+implementation through the same resolver port. Neither composition may
+enumerate credentials, choose another revision or holder, or fall back to a
+database after a projection or broker failure.
 
 Credential material and last-mile consumers are open to external extensions
 without adding protocol variants to the core enum. A structured Vault document
@@ -373,8 +373,9 @@ idempotency, compensation, outbox, and orphan cleanup.
 The server-role Worker does not open the Control credential repository or
 `SecretStore`, and Awaken does not serialize `RedactedString` into a private HTTP
 response. `WorkerCredentialFileResolver` is the production boundary adapter for
-`CredentialMaterialSource::WorkerReference`. An external secret-volume provider
-projects the exact material under:
+an exact `CredentialMaterialSource::WorkerReference` and a recipient-bound,
+externally projected `ControlPlaneReference`. An external Secret/CSI provider
+projects Worker-local material under:
 
 ```text
 <root>/<hex credential id>/<revision>/<hex workspace>/<hex target-use fingerprint>/
@@ -382,17 +383,29 @@ projects the exact material under:
   username + password    # canonical awaken.http-basic/v1 only
 ```
 
-The adapter supports one configured Worker `PlaintextHolder`, rejects Control
-references, envelopes, another trust domain, empty bindings, malformed UTF-8,
-missing fields, and unsupported structured extensions. It never enumerates the
-root or falls back to another revision/binding. The path values are secret-free;
-the files are plaintext inside the already-selected Worker trust domain and must
-be supplied and protected by the deployment's Secret/CSI volume policy.
+For a Control envelope, the adapter uses a distinct exact path:
+
+```text
+<root>/envelopes/<hex envelope id>/<hex payload fingerprint>/
+  <hex credential id>/<revision>/<hex workspace>/<hex target-use fingerprint>/
+  payload_fingerprint
+  secret | username + password
+```
+
+The adapter supports one configured Worker `PlaintextHolder`. A Control
+reference is accepted only with a Worker envelope whose recipient and expiry
+are live and whose projected marker equals the pinned payload fingerprint.
+Another trust domain or a changed envelope id, payload, revision, Workspace,
+target, or usage resolves to a different or absent path and fails closed. The
+adapter never enumerates the root or falls back to another revision/binding. The
+files are plaintext only inside the selected Worker trust domain and must be
+supplied and protected by the deployment's Secret/CSI volume policy.
 
 AllInOne continues to use the local `PinnedCredentialMaterializer` over the
 Control-owned stores. Both compositions consume the same exact resolver port and
-the same Model/MCP/Repository validation; there is no compatibility bridge
-between `ControlPlaneReference` and `WorkerReference`.
+the same Model/MCP/Repository validation. The published material source remains
+authoritative; deployment composition installs the matching adapter without a
+compatibility conversion or database fallback.
 
 ## Staging
 

@@ -405,8 +405,9 @@ The CLI composition additionally removes the Worker's durable Host storage root.
 `SharedHost::new_worker_with_deployment` installs File and Memory clients before
 store selection, so Worker startup cannot briefly open and then replace local
 File/Memory SQLite authorities. It installs `WorkerCredentialFileResolver` for
-exact `WorkerReference` material and advertises Resource capabilities only when
-the corresponding per-kind network adapters exist. A Resource-capable Worker
+exact `WorkerReference` material and recipient-bound projected Control
+envelopes. It advertises Resource capabilities only when the corresponding
+per-kind network adapters exist. A Resource-capable Worker
 without the registration-bound Memory mounter factory fails during `build()`;
 there is no shared-store fallback.
 
@@ -596,7 +597,10 @@ The composition decision table is:
 | Input at composition root | Registration result | Later lifecycle transport | Decision |
 |---|---|---|---|
 | complete `WorkerUpstream` with custom client and Worker id | accepted | the same clone-shared client and allocated identity serve heartbeat, claim, recovery, commit, settle, drain, and deregister | allow |
-| URL only through the CLI helper | accepted | helper constructs one default `WorkerUpstream`, then delegates to `WorkerNodeBuilder` | allow for CLI/local use |
+| Local mode with URL only | accepted | helper constructs the explicit header-compatible local `WorkerUpstream` | allow only for local/test use |
+| Server Worker with `worker_request_credential_file` and matching `worker_id` | accepted | every lifecycle, Resource, and commit request carries a fresh signed assertion | allow |
+| Server Coordinator/AllInOne with non-empty `worker_trust_credentials_file` | enrolled Workers accepted | one shared authenticator verifies every Worker-facing route | allow |
+| Server mode missing either role-owned credential file | none | no Worker-facing request is attempted or admitted | reject startup |
 | empty upstream URL | none | none | reject at `build()` |
 | application attempts a second manifest source | none | none | reject topology conflict |
 | registered identity is lost or replaced | registration/liveness fence fails | claims and mutations fail closed | stop admission and drain |
