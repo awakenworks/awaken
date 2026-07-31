@@ -132,6 +132,14 @@ pub enum MultiagentConfig {
     Coordinator { agents: Vec<MultiagentRosterEntry> },
 }
 
+/// Awaken-owned Agent controls namespaced away from upstream Managed fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AwakenAgentExtensions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_steps: Option<usize>,
+}
+
 /// A client's `model` input: a bare id string or a full `{id, speed?}` config
 /// (the SDK's `string | BetaManagedAgentsModelConfig`). Normalized to the shared
 /// [`ModelConfig`] via [`ModelInput::into_config`].
@@ -172,6 +180,8 @@ pub struct AgentCreateParams {
     pub tools: Vec<AgentTool>,
     #[serde(default)]
     pub multiagent: Option<MultiagentConfig>,
+    #[serde(default)]
+    pub x_awaken: Option<AwakenAgentExtensions>,
 }
 
 /// `AgentUpdateParams` — a partial update under optimistic concurrency: `version`
@@ -199,6 +209,8 @@ pub struct AgentUpdateParams {
     pub tools: Option<Option<Vec<AgentTool>>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
     pub multiagent: Option<Option<MultiagentConfig>>,
+    #[serde(default)]
+    pub x_awaken: Option<AwakenAgentExtensions>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -285,6 +297,8 @@ pub struct Agent {
     pub skills: Vec<AgentSkill>,
     pub tools: Vec<AgentTool>,
     pub multiagent: Option<MultiagentConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x_awaken: Option<AwakenAgentExtensions>,
     pub version: u64,
 }
 
@@ -312,6 +326,7 @@ mod tests {
         // | unknown discriminator                      | reject    |
         // | known discriminator + misspelled field     | reject    |
         // | custom input_schema extension keyword      | preserve  |
+        // | namespaced Awaken max_steps                | preserve  |
         let valid = json!({
             "name": "typed",
             "model": {
@@ -332,7 +347,8 @@ mod tests {
                     "type":"object","properties":{"id":{"type":"string"}},"additionalProperties":false
                 }}
             ],
-            "multiagent": {"type":"coordinator","agents":["worker",{"type":"self"}]}
+            "multiagent": {"type":"coordinator","agents":["worker",{"type":"self"}]},
+            "x_awaken": {"max_steps":40}
         });
         let parsed: AgentCreateParams = serde_json::from_value(valid).expect("SDK union parses");
         let model = parsed.model.clone().into_config();
@@ -346,11 +362,13 @@ mod tests {
             panic!("custom tool retained its variant")
         };
         assert_eq!(input_schema.keywords["additionalProperties"], false);
+        assert_eq!(parsed.x_awaken.unwrap().max_steps, Some(40));
 
         for invalid in [
             json!({"name":"x","model":"m","skills":[{"type":"unknown","skill_id":"s"}]}),
             json!({"name":"x","model":"m","mcp_servers":[{"type":"url","name":"s","uri":"https://x"}]}),
             json!({"name":"x","model":"m","tools":[{"type":"mcp_toolset","mcp_server":"s"}]}),
+            json!({"name":"x","model":"m","x_awaken":{"step_limit":40}}),
         ] {
             assert!(serde_json::from_value::<AgentCreateParams>(invalid).is_err());
         }

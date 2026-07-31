@@ -12,13 +12,13 @@ use awaken_config_service::{
     ConfigPlane, RESERVED_ADMIN_SCOPE, parse_managed_model_id, render_managed_model_id,
 };
 use awaken_config_store::{
-    AgentConfig, AgentConfigRevision, AgentLifecycle, ConfigWrite, ModelSelection,
+    AgentConfig, AgentConfigRevision, AgentKind, AgentLifecycle, ConfigWrite, ModelSelection,
     MultiagentConfig, MultiagentTarget,
 };
 use awaken_protocol_managed::types::agent::{
     Agent, AgentCreateParams, AgentListParams, AgentSkill, AgentStatus, AgentTool,
-    AgentUpdateParams, CustomToolInputSchema, MultiagentConfig as WireMultiagent,
-    MultiagentRosterEntry, UrlMcpServer, UrlMcpServerKind,
+    AgentUpdateParams, AwakenAgentExtensions, CustomToolInputSchema,
+    MultiagentConfig as WireMultiagent, MultiagentRosterEntry, UrlMcpServer, UrlMcpServerKind,
 };
 use awaken_protocol_managed::types::{AwakenModelExtensions, ModelConfig, ModelEffort, ModelSpeed};
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
@@ -286,7 +286,10 @@ fn config_from_create(
     let config = AgentConfig {
         id,
         instructions: params.system.unwrap_or_default(),
-        max_steps: 8,
+        max_steps: params
+            .x_awaken
+            .and_then(|extensions| extensions.max_steps)
+            .unwrap_or(8),
         delegation_limits: Default::default(),
         model_binding,
         inference,
@@ -316,6 +319,11 @@ fn config_from_create(
 }
 
 fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgentError> {
+    if config.max_steps == 0 {
+        return Err(ManagedAgentError::Invalid(
+            "x_awaken.max_steps must be greater than or equal to 1".into(),
+        ));
+    }
     if config.mcp_servers.len() > 20 {
         return Err(ManagedAgentError::Invalid(
             "mcp_servers supports at most 20 entries".into(),
@@ -449,6 +457,20 @@ fn apply_model_extensions(
         .map_err(|error| ManagedAgentError::Invalid(error.into()))
 }
 
+fn acp_configuration_to_preserve(
+    config: &AgentConfig,
+    incoming_model_id: &str,
+    extension_omitted: bool,
+) -> Option<awaken_runtime_contract::resolved::AcpSessionConfiguration> {
+    let same_model = render_managed_model_id(&config.model_binding)
+        .is_ok_and(|current| current == incoming_model_id);
+    (same_model
+        && extension_omitted
+        && matches!(config.kind(), AgentKind::Acp { ref cli } if !cli.is_empty()))
+    .then(|| config.model_binding.acp_configuration().cloned())
+    .flatten()
+}
+
 fn model_config(
     model: String,
     inference: InferenceOptions,
@@ -565,6 +587,9 @@ fn project(revision: AgentConfigRevision) -> Agent {
                     ),
                 })
                 .collect(),
+        }),
+        x_awaken: (config.max_steps != 8).then_some(AwakenAgentExtensions {
+            max_steps: Some(config.max_steps),
         }),
         version: revision.revision,
     }
@@ -732,10 +757,9 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             let current_model = render_managed_model_id(&config.model_binding).ok();
             let preserve_effort =
                 current_model.as_deref() == Some(model.id.as_str()) && model.effort.is_none();
-            let preserve_acp =
-                current_model.as_deref() == Some(model.id.as_str()) && model.x_awaken.is_none();
             let prior_effort = config.inference.effort;
-            let prior_acp = config.model_binding.acp_configuration().cloned();
+            let prior_acp =
+                acp_configuration_to_preserve(&config, &model.id, model.x_awaken.is_none());
             config.inference =
                 inference_from_wire(model.speed, model.effort.map(|value| value.resolved()));
             if preserve_effort {
@@ -743,13 +767,11 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             }
             config.model_binding = parse_managed_model_id(&model.id)
                 .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?;
-            if preserve_acp {
-                if let Some(configuration) = prior_acp {
-                    config
-                        .model_binding
-                        .set_acp_configuration(configuration)
-                        .map_err(|error| ManagedAgentError::Invalid(error.into()))?;
-                }
+            if let Some(configuration) = prior_acp {
+                config
+                    .model_binding
+                    .set_acp_configuration(configuration)
+                    .map_err(|error| ManagedAgentError::Invalid(error.into()))?;
             } else {
                 apply_model_extensions(&mut config.model_binding, model.x_awaken)?;
             }
@@ -791,6 +813,9 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         }
         if let Some(multiagent) = params.multiagent {
             config.multiagent = multiagent.map(typed_multiagent);
+        }
+        if let Some(max_steps) = params.x_awaken.and_then(|extensions| extensions.max_steps) {
+            config.max_steps = max_steps;
         }
         validate_managed_agent_config(&config)?;
         self.resolve_multiagent_references(workspace_id, &mut config)
@@ -1024,6 +1049,7 @@ mod tests {
                 .unwrap(),
             ],
             multiagent: None,
+            x_awaken: None,
         }
     }
 
@@ -1039,6 +1065,7 @@ mod tests {
             skills: None,
             tools: None,
             multiagent: None,
+            x_awaken: None,
         }
     }
 
@@ -1320,6 +1347,115 @@ mod tests {
                 speed: Some(InferenceSpeed::Fast),
                 effort: Some(ReasoningEffort::Xhigh),
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn model_update_preserves_acp_configuration_only_for_an_explicit_acp_executor() {
+        // Cause/effect graph: a Managed update may repeat the current model id
+        // while omitting x_awaken.acp. The durable ModelSelection carries a
+        // configuration field for both native and ACP targets, but only an
+        // explicit acp:<cli> executor gives that field ACP semantics.
+        //
+        // Decision table:
+        // | rule | current executor | same model | extension omitted | effect |
+        // | U1   | native           | yes        | yes               | update succeeds; no ACP attachment |
+        // | U2   | acp:<cli>        | yes        | yes               | prior ACP mode/options preserved |
+        let native_temp = tempfile::tempdir().unwrap();
+        let native_repository = ConfigPlaneManagedAgentRepository::new(
+            plane(native_temp.path().join("config.sqlite").to_str().unwrap()),
+            "workspace-a",
+        );
+        let native = native_repository
+            .create("workspace-a", create_params("native"))
+            .await
+            .unwrap();
+        let mut native_update = update_params(native.version);
+        native_update.model = Some(ModelInput::Id("model-a".into()));
+        let updated = native_repository
+            .update("workspace-a", &native.id, native_update)
+            .await
+            .expect("U1");
+        assert_eq!(updated.model.id, "model-a", "U1");
+
+        let mut acp_params = create_params("acp");
+        acp_params.model = serde_json::from_value(json!({
+            "id": "acp:codex/gpt-5",
+            "x_awaken": {"acp": {"mode": "plan", "options": {"reasoning_effort": "high"}}}
+        }))
+        .unwrap();
+        let acp_config = config_from_create("agent_acp".into(), acp_params).expect("U2");
+        let incoming = ModelInput::Id("acp:codex/gpt-5".into()).into_config();
+        let preserved =
+            acp_configuration_to_preserve(&acp_config, &incoming.id, incoming.x_awaken.is_none())
+                .expect("U2");
+        assert_eq!(preserved.mode.as_deref(), Some("plan"), "U2");
+        assert_eq!(preserved.options["reasoning_effort"], "high", "U2");
+    }
+
+    #[tokio::test]
+    async fn managed_agent_namespaced_step_budget_is_validated_and_versioned() {
+        // Cause/effect graph: x_awaken.max_steps is the Managed wire control for
+        // the existing AgentConfig.max_steps source of truth. Omission selects or
+        // preserves the generic default; an explicit positive value replaces it;
+        // zero would eliminate the first inference and must fail admission.
+        //
+        // | rule | operation | extension | effect |
+        // | S1 | create | omitted | stores 8; response omits extension |
+        // | S2 | create | 40 | stores and returns 40 |
+        // | S3 | update | omitted | preserves 40 |
+        // | S4 | update | 24 | versions and returns 24 |
+        // | S5 | create | 0 | rejects before persistence |
+        let temp = tempfile::tempdir().unwrap();
+        let repository = ConfigPlaneManagedAgentRepository::new(
+            plane(temp.path().join("config.sqlite").to_str().unwrap()),
+            "workspace-a",
+        );
+
+        let default = repository
+            .create("workspace-a", create_params("default"))
+            .await
+            .expect("S1");
+        assert!(default.x_awaken.is_none(), "S1");
+
+        let mut configured_params = create_params("configured");
+        configured_params.x_awaken = Some(AwakenAgentExtensions {
+            max_steps: Some(40),
+        });
+        let configured = repository
+            .create("workspace-a", configured_params)
+            .await
+            .expect("S2");
+        assert_eq!(configured.x_awaken.unwrap().max_steps, Some(40), "S2");
+
+        let preserved = repository
+            .update(
+                "workspace-a",
+                &configured.id,
+                update_params(configured.version),
+            )
+            .await
+            .expect("S3");
+        assert_eq!(preserved.x_awaken.unwrap().max_steps, Some(40), "S3");
+
+        let mut replacement = update_params(preserved.version);
+        replacement.x_awaken = Some(AwakenAgentExtensions {
+            max_steps: Some(24),
+        });
+        let replaced = repository
+            .update("workspace-a", &configured.id, replacement)
+            .await
+            .expect("S4");
+        assert_eq!(replaced.x_awaken.unwrap().max_steps, Some(24), "S4");
+
+        let mut invalid = create_params("invalid");
+        invalid.x_awaken = Some(AwakenAgentExtensions { max_steps: Some(0) });
+        assert!(
+            matches!(
+                repository.create("workspace-a", invalid).await,
+                Err(ManagedAgentError::Invalid(message)) if message.contains("max_steps")
+            ),
+            "S5"
         );
     }
 
