@@ -400,7 +400,15 @@ impl ManagedState {
                 Vec::new(),
             )
             .await
-            .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+            .map_err(|error| match error {
+                awaken_session_contract::SessionRepositoryError::IdempotencyMismatch => {
+                    StateError::IdempotencyMismatch
+                }
+                awaken_session_contract::SessionRepositoryError::AlreadyExists => {
+                    StateError::Conflict
+                }
+                error => StateError::Run(RunError::internal(error.to_string())),
+            })?;
         session.revision = revision;
         Ok(session)
     }
@@ -502,8 +510,20 @@ impl ManagedState {
         req: SessionCreateParams,
         workspace_id: Option<String>,
     ) -> Result<Session, StateError> {
+        self.create_session_with_initial_events_and_identity(req, workspace_id, None)
+            .await
+    }
+
+    pub(super) async fn create_session_with_initial_events_and_identity(
+        self: &Arc<Self>,
+        req: SessionCreateParams,
+        workspace_id: Option<String>,
+        explicit_id: Option<String>,
+    ) -> Result<Session, StateError> {
         let initial_events = req.initial_events.clone();
-        let mut session = self.create_session(req, workspace_id).await?;
+        let mut session = self
+            .create_session_with_identity(req, workspace_id, explicit_id)
+            .await?;
         if !initial_events.is_empty() {
             self.start_initial_events(&session.id, initial_events)?;
             session.status = "running";
