@@ -95,6 +95,8 @@ pub enum StoreError {
     Connect(String),
     #[error("migrate: {0}")]
     Migrate(String),
+    #[error("read: {0}")]
+    Read(String),
     #[error("hydrate: {0}")]
     Hydrate(String),
 }
@@ -217,6 +219,61 @@ impl PostgresCommitCoordinator {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Read one Run directly from committed PostgreSQL truth. Active-active
+    /// peers use this narrow reconciliation read when another process performed
+    /// the commit and therefore only that process advanced its local projection.
+    pub async fn authoritative_run_record(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<RunRecord>, StoreError> {
+        let row = sqlx::query(&format!(
+            "SELECT thread_id, phase FROM {NS}_run_record WHERE run_id = $1"
+        ))
+        .bind(&run_id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| StoreError::Read(error.to_string()))?;
+        row.map(|row| {
+            let thread_id = ThreadId(
+                row.try_get("thread_id")
+                    .map_err(|error| StoreError::Read(error.to_string()))?,
+            );
+            let Json(state): Json<RunState> = row
+                .try_get("phase")
+                .map_err(|error| StoreError::Read(error.to_string()))?;
+            Ok(RunRecord {
+                id: run_id.clone(),
+                thread_id,
+                state,
+            })
+        })
+        .transpose()
+    }
+
+    /// Read a thread's complete message history directly from committed
+    /// PostgreSQL truth. Active-active peers use this instead of their
+    /// process-local compatibility projection when projecting public history.
+    pub async fn authoritative_committed_messages(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<Message>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "SELECT data FROM {NS}_message WHERE thread_id = $1 ORDER BY id"
+        ))
+        .bind(&thread_id.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| StoreError::Read(error.to_string()))?;
+        rows.into_iter()
+            .map(|row| {
+                let Json(message): Json<Message> = row
+                    .try_get("data")
+                    .map_err(|error| StoreError::Read(error.to_string()))?;
+                Ok(message)
+            })
+            .collect()
     }
 }
 

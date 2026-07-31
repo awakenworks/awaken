@@ -21,6 +21,7 @@
 //! the infinite SSE body cannot be without concurrency + timing.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::delegation::DelegationStatus;
@@ -48,6 +49,8 @@ use tower::ServiceExt;
 /// A one-text-reply runtime (no streaming path): `echo: <user text>`.
 struct EchoFake;
 
+static ECHO_MESSAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 #[async_trait::async_trait]
 impl SessionRuntime for EchoFake {
     async fn run(
@@ -58,7 +61,12 @@ impl SessionRuntime for EchoFake {
     ) -> Result<StepOutcome, RunError> {
         let text = Message::new(Id("u".into()), Role::User, content).text_content();
         Ok(end_turn(vec![Message::text(
-            Id("a".into()),
+            // Match the Runtime contract: committed message ids are unique and
+            // therefore safe as the peer-projection dedupe fence.
+            Id(format!(
+                "a-{}",
+                ECHO_MESSAGE_SEQUENCE.fetch_add(1, Ordering::SeqCst)
+            )),
             Role::Assistant,
             format!("echo: {text}"),
         )]))

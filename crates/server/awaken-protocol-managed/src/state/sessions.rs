@@ -551,16 +551,22 @@ impl ManagedState {
         req.validate_initial_events()
             .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
         self.check_bind(&req)?;
-        // Mint an id no durable thread already owns: a fresh process restarts
-        // the sequence at 0, but the store dir may hold committed truth from a
-        // previous process (ADR-0039). Adopting such a thread would graft the
-        // old transcript onto a NEW session, so skip forward instead — the
-        // rehydration path (`ensure_session`) remains the only way to reattach
-        // to an existing thread, and it is keyed by the caller's explicit id.
+        // Mint from the process-incarnation namespace so active-active peers and
+        // restarted processes cannot choose the same Session id. The repository
+        // check remains the final collision fence; `ensure_session` is still the
+        // only path that may reattach to a caller-supplied existing thread.
         let id = match explicit_id {
             Some(id) => id,
             None => loop {
-                let candidate = format!("sesn_{}", self.session_seq.fetch_add(1, Ordering::SeqCst));
+                let sequence = self.session_seq.fetch_add(1, Ordering::SeqCst);
+                let candidate = format!(
+                    "sesn_{}",
+                    awaken_session_contract::stable_fingerprint(&(
+                        "managed-session",
+                        &self.runtime_incarnation,
+                        sequence,
+                    ))
+                );
                 if !self.runtime.owns_thread(&candidate).await
                     && self.sessions_repo.get(&candidate).await.is_none()
                 {
@@ -1117,6 +1123,7 @@ impl ManagedState {
             session,
             resource_state: persisted.resources,
             events: Vec::new(),
+            projected_message_ids: Default::default(),
             child_threads: Vec::new(),
         };
         let session = record.session_projection();
@@ -1604,6 +1611,10 @@ impl ManagedState {
         if messages.is_empty() && persisted.is_none() {
             return Err(StateError::NotFound);
         }
+        let projected_message_ids = messages
+            .iter()
+            .map(|message| message.id.0.clone())
+            .collect();
         let events: Vec<Event> = project_messages(&messages, None)
             .into_iter()
             .map(|event| Event {
@@ -1631,6 +1642,7 @@ impl ManagedState {
             session,
             resource_state,
             events,
+            projected_message_ids,
             child_threads: Vec::new(),
         };
         self.append_delegation_projections(&mut record, &delegated_runs);

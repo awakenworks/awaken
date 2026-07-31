@@ -516,6 +516,17 @@ impl SharedHost {
             .update(thread, |slot| slot.workspace = Some(workspace.to_string()));
     }
 
+    pub(crate) fn register_thread_agent_projection(&self, thread: &str, agent_id: &str) {
+        self.session_slots
+            .update(thread, |slot| slot.agent_id = Some(agent_id.to_string()));
+    }
+
+    pub(crate) fn thread_agent_projection(&self, thread: &str) -> Option<String> {
+        self.session_slots
+            .read(thread, |slot| slot.agent_id.clone())
+            .flatten()
+    }
+
     pub(crate) fn thread_workspace(&self, thread: &str) -> String {
         self.session_slots
             .read(thread, |slot| slot.workspace.clone())

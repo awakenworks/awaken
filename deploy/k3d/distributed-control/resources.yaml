@@ -19,16 +19,44 @@ data:
 ---
 apiVersion: v1
 kind: Secret
-metadata: { name: adr71-boundary-auth }
+metadata: { name: adr71-control-auth }
 type: Opaque
 stringData:
   registration-token: "adr71-registration-token" # awaken-allow: secret
   deployment-launch-token: "adr71-deployment-launch-token" # awaken-allow: secret
   seal-key: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff" # awaken-allow: secret
-  worker-request.json: |
-    {"worker_id":"adr71-worker","key_id":"adr71-key","credential_id":"adr71-credential","secret_base64":"YWRyNzEtd29ya2VyLXNlY3JldA=="}
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: adr71-coordinator-auth }
+type: Opaque
+stringData:
+  registration-token: "adr71-registration-token" # awaken-allow: secret
+  deployment-launch-token: "adr71-deployment-launch-token" # awaken-allow: secret
+  seal-key: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff" # awaken-allow: secret
   worker-trust.json: |
-    [{"worker_id":"adr71-worker","key_id":"adr71-key","credential_id":"adr71-credential","secret_base64":"YWRyNzEtd29ya2VyLXNlY3JldA=="}]
+    [
+      {"worker_id":"worker-0","key_id":"adr71-key-0","credential_id":"adr71-worker-0","secret_base64":"YWRyNzEtd29ya2VyLTA="},
+      {"worker_id":"worker-1","key_id":"adr71-key-1","credential_id":"adr71-worker-1","secret_base64":"YWRyNzEtd29ya2VyLTE="}
+    ]
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: adr71-worker-auth }
+type: Opaque
+stringData:
+  worker-0.json: |
+    {"worker_id":"worker-0","key_id":"adr71-key-0","credential_id":"adr71-worker-0","secret_base64":"YWRyNzEtd29ya2VyLTA="}
+  worker-1.json: |
+    {"worker_id":"worker-1","key_id":"adr71-key-1","credential_id":"adr71-worker-1","secret_base64":"YWRyNzEtd29ya2VyLTE="}
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: adr71-worker-material }
+type: Opaque
+stringData:
+  provider-secret: "adr71-provider-secret" # awaken-allow: secret
+  payload-fingerprint: "sha256:adr71-provider-payload"
 ---
 apiVersion: v1
 kind: Secret
@@ -63,6 +91,10 @@ stringData:
     no_browser = true
     identity_mode = "no-login"
     runtime_database_url = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
+    # Two Workers expose 16 concurrent claim slots. Keep claim traffic plus
+    # foreground enqueue/commit/heartbeat headroom bounded per Coordinator;
+    # database capacity is sized for every owner repository across all replicas.
+    postgres_max_connections = 32
     resource_database_url = "postgres://postgres:test@postgres:5432/resources" # awaken-allow: secret
     catalog_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
     credential_db = "postgres://postgres:test@postgres:5432/credentials" # awaken-allow: secret
@@ -71,10 +103,24 @@ stringData:
     sessions_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
     executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
     deployment_session_launch_token_file = "/etc/awaken-auth/deployment-launch-token"
+    worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"
     control_seal_key_file = "/etc/awaken-auth/seal-key"
-    sandbox_tier = "local"
+    sandbox_tier = "namespace"
     dispatch_wake = "pg-notify"
     dispatch_owner = "adr71-coordinator"
+  worker.toml: |
+    data_dir = "/var/lib/awaken/worker"
+    mode = "server"
+    role = "worker"
+    worker_id = "__WORKER_ID__"
+    worker_request_credential_file = "/etc/awaken-worker-auth/__WORKER_ID__.json"
+    worker_credential_material_root = "/var/run/awaken/credentials"
+    worker_credential_trust_domain = "awaken.worker"
+    worker_admin_listen = "0.0.0.0:9090"
+    worker_drain_grace_secs = 15
+    worker_max_concurrent = 8
+    sandbox_tier = "namespace"
+    sandbox_dir = "/var/lib/awaken/sandboxes"
 ---
 apiVersion: batch/v1
 kind: Job
@@ -97,7 +143,7 @@ spec:
         - name: config
           secret: { secretName: adr71-role-config }
         - name: auth
-          secret: { secretName: adr71-boundary-auth }
+          secret: { secretName: adr71-control-auth }
 ---
 apiVersion: batch/v1
 kind: Job
@@ -120,7 +166,7 @@ spec:
         - name: config
           secret: { secretName: adr71-role-config }
         - name: auth
-          secret: { secretName: adr71-boundary-auth }
+          secret: { secretName: adr71-coordinator-auth }
 ---
 apiVersion: v1
 kind: Service
@@ -133,11 +179,16 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: { name: control, labels: { app: control } }
 spec:
-  replicas: 1
+  replicas: 2
   selector: { matchLabels: { app: control } }
   template:
     metadata: { labels: { app: control } }
     spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: { matchLabels: { app: control } }
+              topologyKey: kubernetes.io/hostname
       containers:
         - name: control
           image: awaken-roles:latest
@@ -162,7 +213,7 @@ spec:
             secretName: adr71-role-config
             items: [{ key: control.toml, path: config.toml }]
         - name: auth
-          secret: { secretName: adr71-boundary-auth }
+          secret: { secretName: adr71-control-auth }
         - name: workspace
           configMap: { name: adr71-installation }
 ---
@@ -177,11 +228,16 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: { name: coordinator, labels: { app: coordinator } }
 spec:
-  replicas: 1
+  replicas: 2
   selector: { matchLabels: { app: coordinator } }
   template:
     metadata: { labels: { app: coordinator } }
     spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: { matchLabels: { app: coordinator } }
+              topologyKey: kubernetes.io/hostname
       containers:
         - name: coordinator
           image: awaken-roles:latest
@@ -200,20 +256,29 @@ spec:
         - name: config
           secret: { secretName: adr71-role-config }
         - name: auth
-          secret: { secretName: adr71-boundary-auth }
+          secret: { secretName: adr71-coordinator-auth }
         - name: workspace
           configMap: { name: adr71-installation }
 ---
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: v1
+kind: Service
 metadata: { name: worker, labels: { app: worker } }
 spec:
-  replicas: 1
+  clusterIP: None
+  selector: { app: worker }
+  ports: [{ name: admin, port: 9090, targetPort: 9090 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: worker, labels: { app: worker } }
+spec:
+  serviceName: worker
+  replicas: 2
   selector: { matchLabels: { app: worker } }
   template:
     metadata: { labels: { app: worker } }
     spec:
-      terminationGracePeriodSeconds: 1
+      terminationGracePeriodSeconds: 20
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -223,20 +288,183 @@ spec:
         - name: worker
           image: awaken-roles:latest
           imagePullPolicy: Never
-          command: ["/usr/local/bin/awaken-server"]
-          env:
-            - { name: AWAKEN_SCENARIO_ROLE, value: worker }
-            - { name: AWAKEN_WORKER_ID, value: "adr71-worker" }
-            - { name: AWAKEN_UPSTREAM_URL, value: "http://coordinator:3000" }
-            - { name: AWAKEN_WORKER_ADMIN_LISTEN, value: "0.0.0.0:9090" }
-            - { name: AWAKEN_WORKER_REQUEST_CREDENTIAL_FILE, value: "/etc/awaken-auth/worker-request.json" }
+          securityContext:
+            allowPrivilegeEscalation: true
+            seccompProfile: { type: Unconfined }
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              sed "s/__WORKER_ID__/${HOSTNAME}/g" /etc/awaken-template/worker.toml > /tmp/worker.toml
+              exec /usr/local/bin/awaken worker --server http://coordinator:3000 --config /tmp/worker.toml
           ports: [{ containerPort: 9090 }]
           readinessProbe:
             httpGet: { path: /readyz, port: 9090 }
             initialDelaySeconds: 2
             periodSeconds: 2
           volumeMounts:
-            - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
+            - { name: template, mountPath: /etc/awaken-template, readOnly: true }
+            - { name: auth, mountPath: /etc/awaken-worker-auth, readOnly: true }
+            - { name: material, mountPath: /var/run/awaken/credentials, readOnly: true }
+            - { name: data, mountPath: /var/lib/awaken }
       volumes:
+        - name: template
+          secret:
+            secretName: adr71-role-config
+            items: [{ key: worker.toml, path: worker.toml }]
         - name: auth
-          secret: { secretName: adr71-boundary-auth }
+          secret: { secretName: adr71-worker-auth }
+        - name: material
+          secret:
+            secretName: adr71-worker-material
+            items:
+              - key: provider-secret
+                path: envelopes/61647237312d656e76656c6f7065/7368613235363a61647237312d70726f76696465722d7061796c6f6164/61647237312d70726f76696465722d63726564656e7469616c/1/776f726b73706163652d6164723731/666e76316136343a37616138653836326333363034333234/secret
+              - key: payload-fingerprint
+                path: envelopes/61647237312d656e76656c6f7065/7368613235363a61647237312d70726f76696465722d7061796c6f6164/61647237312d70726f76696465722d63726564656e7469616c/1/776f726b73706163652d6164723731/666e76316136343a37616138653836326333363034333234/payload_fingerprint
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata: { name: provider, labels: { app: provider } }
+spec:
+  selector: { app: provider }
+  ports: [{ name: http, port: 3000, targetPort: 3000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: provider, labels: { app: provider } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: provider } }
+  template:
+    metadata: { labels: { app: provider } }
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: { matchLabels: { app: provider } }
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: provider
+          image: awaken-roles:latest
+          imagePullPolicy: Never
+          command: ["/usr/local/bin/awaken-server"]
+          env:
+            - { name: AWAKEN_MODEL_MODE, value: distributed-provider }
+            - { name: AWAKEN_HTTP_ADDR, value: "0.0.0.0:3000" }
+          ports: [{ containerPort: 3000 }]
+          readinessProbe:
+            httpGet: { path: /readyz, port: 3000 }
+            initialDelaySeconds: 1
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: awaken-api-route-map }
+data:
+  default.conf: |
+    upstream control_api { server control:3000; }
+    upstream coordinator_api { server coordinator:3000; }
+    server {
+      listen 8080;
+      client_max_body_size 16m;
+      proxy_buffering off;
+      # Cause/effect rule E1: a selected Pod can disappear before EndpointSlice
+      # convergence. Bound connection establishment so an idempotent client read
+      # can reach the surviving replica within the public recovery budget. This
+      # does not replay an accepted request body or weaken application fencing.
+      proxy_connect_timeout 2s;
+      # The Runtime owns a 60-second terminal wait. Keep the edge above that
+      # boundary so callers receive the application's typed outcome instead of an
+      # earlier ambiguous gateway timeout for a non-idempotent command.
+      proxy_read_timeout 70s;
+      proxy_next_upstream error timeout http_502 http_503 http_504;
+      proxy_next_upstream_tries 2;
+      proxy_next_upstream_timeout 5s;
+      location ^~ /internal/ { return 404; }
+      location ^~ /v1/worker/ { return 404; }
+      location ~ ^/v1/(sessions|files|memory_stores|skills|models|dreams|ai-sdk|ag-ui|a2a|message|capabilities)(/|$) {
+        proxy_pass http://coordinator_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+      }
+      location / {
+        proxy_pass http://control_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+      }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: awaken-api, labels: { app: awaken-api } }
+spec:
+  selector: { app: awaken-api }
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: awaken-api, labels: { app: awaken-api } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: awaken-api } }
+  template:
+    metadata: { labels: { app: awaken-api } }
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: { matchLabels: { app: awaken-api } }
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: api
+          image: nginx:1.27-alpine
+          imagePullPolicy: Never
+          ports: [{ containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8080 }
+            initialDelaySeconds: 1
+            periodSeconds: 2
+          volumeMounts:
+            - { name: routes, mountPath: /etc/nginx/conf.d, readOnly: true }
+      volumes:
+        - name: routes
+          configMap: { name: awaken-api-route-map }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: awaken-api }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: awaken-api } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: control }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: control } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: coordinator }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: coordinator } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: worker }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: worker } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: provider }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: provider } }

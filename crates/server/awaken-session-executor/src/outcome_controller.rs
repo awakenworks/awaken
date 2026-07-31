@@ -1,15 +1,11 @@
 //! Managed Host adapter for the extension-owned Outcome controller.
 
-use std::sync::atomic::Ordering;
-
 use awaken_ext_goal::controller::{Controller, Error as ControllerError};
 use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
 use awaken_ext_goal::outcome::{Definition, Id};
 use awaken_ext_goal::state::Binding;
 
-use crate::host::{
-    BASE_SEQ, HostError, HostOutcomeIteration, HostOutcomeReport, SharedHost, now_ms,
-};
+use crate::host::{HostError, HostOutcomeIteration, HostOutcomeReport, SharedHost};
 use crate::judge::HostAgentGrader;
 use crate::run_exec::BoundRunExecutor;
 
@@ -55,11 +51,7 @@ impl SharedHost {
         );
         let report = controller
             .define_or_resume(
-                Id(format!(
-                    "outc_{}_{}",
-                    now_ms(),
-                    BASE_SEQ.fetch_add(1, Ordering::SeqCst)
-                )),
+                Id(awaken_runtime::fresh_process_id("outc")),
                 definition,
                 binding.clone(),
             )
@@ -98,6 +90,7 @@ mod tests {
     use super::*;
     use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
     use std::collections::VecDeque;
+    use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
 
     struct SequenceModel {

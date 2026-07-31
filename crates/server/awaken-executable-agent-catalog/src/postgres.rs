@@ -227,6 +227,37 @@ impl DurableRegistrar {
         Ok(actual)
     }
 
+    async fn refresh_projection(&self) -> Result<(), ExecutableAgentRegistrationError> {
+        let _guard = self.mutation.lock().await;
+        let refreshed = Arc::new(ExecutableAgentCatalog::new());
+        let local = LocalExecutableAgentRegistrar::new(refreshed.clone());
+        for command in self.log.load().await? {
+            match command {
+                CatalogCommand::Registration(command) => {
+                    local.register(*command).await.map_err(|error| {
+                        storage(format!("replay persisted registration: {error}"))
+                    })?;
+                }
+                CatalogCommand::Withdrawal(command) => {
+                    local.withdraw(command).await.map_err(|error| {
+                        storage(format!("replay persisted withdrawal: {error}"))
+                    })?;
+                }
+            }
+        }
+        let state = refreshed
+            .state
+            .read()
+            .map_err(|_| storage("refreshed executable Agent catalog lock poisoned"))?
+            .clone();
+        *self
+            .catalog
+            .state
+            .write()
+            .map_err(|_| storage("executable Agent catalog lock poisoned"))? = state;
+        Ok(())
+    }
+
     async fn withdraw(
         &self,
         withdrawal: ExecutableAgentWithdrawal,
@@ -253,6 +284,14 @@ pub struct PostgresExecutableAgentRegistrar {
 }
 
 impl PostgresExecutableAgentRegistrar {
+    /// Rebuild this replica's read projection from the one durable command log.
+    /// Session admission and Runtime-resuming writes call this narrow boundary
+    /// before resolving an Agent; registration transition rules remain solely in
+    /// `ExecutableAgentCatalog`.
+    pub async fn refresh_projection(&self) -> Result<(), ExecutableAgentRegistrationError> {
+        self.inner.refresh_projection().await
+    }
+
     /// Connect and apply the scoped catalog migration.
     pub async fn connect(
         url: &str,
@@ -461,6 +500,51 @@ mod tests {
             ExecutableAgentWithdrawalOutcome::AlreadyWithdrawn
         );
         assert_eq!(log.commands.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn active_active_peer_refreshes_the_durable_command_projection() {
+        // Cause/effect decision table: A1 two replicas hydrate before a command ->
+        // both empty; A2 replica L registers -> durable log and L projection update,
+        // while R remains stale; A3 R refreshes before Session admission -> R sees
+        // the exact publication; A4 refresh again -> idempotent, one durable command.
+        let log = Arc::new(MemoryCommandLog::default());
+        let left_catalog = Arc::new(ExecutableAgentCatalog::new());
+        let right_catalog = Arc::new(ExecutableAgentCatalog::new());
+        let left = registrar(log.clone(), left_catalog.clone()).await;
+        let right = registrar(log.clone(), right_catalog.clone()).await;
+        assert!(
+            left_catalog.current("workspace-a", "agent-a").is_none(),
+            "A1"
+        );
+        assert!(
+            right_catalog.current("workspace-a", "agent-a").is_none(),
+            "A1"
+        );
+
+        left.register(registration()).await.unwrap();
+        assert!(
+            left_catalog.current("workspace-a", "agent-a").is_some(),
+            "A2"
+        );
+        assert!(
+            right_catalog.current("workspace-a", "agent-a").is_none(),
+            "A2"
+        );
+
+        right.refresh_projection().await.unwrap();
+        assert_eq!(
+            right_catalog
+                .current("workspace-a", "agent-a")
+                .unwrap()
+                .snapshot
+                .fingerprint
+                .0,
+            "fp-a",
+            "A3"
+        );
+        right.refresh_projection().await.unwrap();
+        assert_eq!(log.commands.lock().unwrap().len(), 1, "A4");
     }
 
     #[tokio::test]

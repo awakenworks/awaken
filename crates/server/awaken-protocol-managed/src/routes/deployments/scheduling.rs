@@ -114,6 +114,56 @@ impl DeploymentState {
         })
     }
 
+    /// Merge the repository's latest committed projection into this replica's
+    /// working set. The repository is authoritative in multi-replica deployments;
+    /// process memory is only a scheduling cache and must never create affinity.
+    pub(super) async fn refresh_repository_projection(
+        &self,
+    ) -> Result<(), DeploymentRepositoryError> {
+        let Some(repository) = &self.repository else {
+            return Ok(());
+        };
+        let deployments = repository
+            .deployments()
+            .await?
+            .into_iter()
+            .map(|stored| {
+                let record: DeploymentRecord = serde_json::from_str(&stored.data)
+                    .map_err(|error| DeploymentRepositoryError::Storage(error.to_string()))?;
+                if record.workspace_id != stored.workspace_id {
+                    return Err(DeploymentRepositoryError::Storage(
+                        "Deployment owner mismatch in durable row".into(),
+                    ));
+                }
+                Ok((stored.deployment_id, record))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        let runs = repository
+            .deployment_runs()
+            .await?
+            .into_iter()
+            .map(|stored| {
+                let record: RunRecord = serde_json::from_str(&stored.data)
+                    .map_err(|error| DeploymentRepositoryError::Storage(error.to_string()))?;
+                if record.deployment_id != stored.deployment_id
+                    || record.workspace_id != stored.workspace_id
+                {
+                    return Err(DeploymentRepositoryError::Storage(
+                        "DeploymentRun identity mismatch in durable row".into(),
+                    ));
+                }
+                Ok((stored.run_id, record))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        self.dep_seq
+            .fetch_max(next_sequence(deployments.keys(), "depl_"), Ordering::SeqCst);
+        self.run_seq
+            .fetch_max(next_sequence(runs.keys(), "drun_"), Ordering::SeqCst);
+        self.deployments.lock().unwrap().extend(deployments);
+        self.runs.lock().unwrap().extend(runs);
+        Ok(())
+    }
+
     pub(super) async fn persist_deployment_event(
         &self,
         id: &str,
@@ -258,6 +308,7 @@ impl DeploymentState {
         workspace_id: &str,
         agent_id: &str,
     ) -> Result<usize, DeploymentRepositoryError> {
+        self.refresh_repository_projection().await?;
         let now = crate::cron::to_rfc3339(now_ms());
         let candidates: Vec<(String, DeploymentRecord)> = self
             .deployments
@@ -394,6 +445,7 @@ impl DeploymentState {
         &self,
         now_ms: u64,
     ) -> Result<Vec<DeploymentRun>, DeploymentRepositoryError> {
+        self.refresh_repository_projection().await?;
         let run_ids = self.tick(now_ms);
         let launches: Vec<(String, DeploymentLaunch, RunRecord, DeploymentRecord)> = {
             let runs = self.runs.lock().unwrap();

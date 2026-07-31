@@ -67,11 +67,29 @@ impl RemoteHostCommit {
 /// restart. The four backends implement it; the composition root picks one as
 /// `Arc<dyn HostStore>`. The remote Worker boundary is projected and is not a
 /// `HostStore`.
+#[async_trait::async_trait]
 pub(crate) trait HostStore:
     Coordinator + OperationCoordinator + CheckpointReader + RunStore + RunRecoverySource + Send + Sync
 {
     /// The awaiting run on `thread`, if any, recovered from committed truth.
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)>;
+
+    /// Read one Run from the backend's authoritative truth. Local backends have
+    /// one in-process projection; PostgreSQL overrides this for cross-replica
+    /// reconciliation after a peer commits.
+    async fn authoritative_run(&self, run_id: &RunId) -> Result<Option<RunRecord>, String> {
+        Ok(RunStore::get(self, run_id))
+    }
+
+    /// Read the complete committed transcript. PostgreSQL overrides this for
+    /// cross-replica commits; single-process stores already have a complete
+    /// projection and therefore reuse the synchronous reader.
+    async fn authoritative_committed_messages(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<Message>, String> {
+        Ok(ThreadReader::committed_messages(self, thread_id))
+    }
 }
 
 /// Recover the awaiting position from a durable backend's fact-derived read model
@@ -106,13 +124,49 @@ impl HostStore for FsCommitCoordinator {
     }
 }
 
+#[async_trait::async_trait]
 impl HostStore for PostgresCommitCoordinator {
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         awaiting_from_reader(self, thread)
     }
+
+    async fn authoritative_run(&self, run_id: &RunId) -> Result<Option<RunRecord>, String> {
+        self.authoritative_run_record(run_id)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn authoritative_committed_messages(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<Message>, String> {
+        PostgresCommitCoordinator::authoritative_committed_messages(self, thread_id)
+            .await
+            .map_err(|error| error.to_string())
+    }
 }
 
 impl HostCommit {
+    pub(crate) async fn authoritative_run(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<RunRecord>, String> {
+        match self {
+            HostCommit::Local(store) => store.authoritative_run(run_id).await,
+            HostCommit::Remote(remote) => Ok(remote.projection.get(run_id)),
+        }
+    }
+
+    pub(crate) async fn authoritative_committed_messages(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<Message>, String> {
+        match self {
+            HostCommit::Local(store) => store.authoritative_committed_messages(thread_id).await,
+            HostCommit::Remote(remote) => Ok(remote.projection.committed_messages(thread_id)),
+        }
+    }
+
     pub(crate) fn lifecycle_feed(
         &self,
     ) -> Option<awaken_agent_contract::CheckpointRunLifecycleFeed> {

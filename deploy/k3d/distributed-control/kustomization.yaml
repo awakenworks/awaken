@@ -1,23 +1,24 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - ../bases/postgres
+  - database-ha.yaml
   - resources.yaml
 patches:
+  # Bound the black-hole window for replicated stateless roles and Workers.
+  # PostgreSQL is excluded because its primary/standby promotion is explicitly
+  # fenced by the database-failover stage instead of automatic Pod relocation.
   - target:
-      kind: Deployment
-      name: postgres
+      kind: Deployment|StatefulSet
+      name: control|coordinator|worker|provider|awaken-api
     patch: |-
       - op: add
-        path: /spec/template/spec/volumes/-
+        path: /spec/template/spec/tolerations
         value:
-          name: database-init
-          configMap:
-            name: adr71-database-init
-            defaultMode: 0755
-      - op: add
-        path: /spec/template/spec/containers/0/volumeMounts/-
-        value:
-          name: database-init
-          mountPath: /docker-entrypoint-initdb.d
-          readOnly: true
+          - key: node.kubernetes.io/not-ready
+            operator: Exists
+            effect: NoExecute
+            tolerationSeconds: 15
+          - key: node.kubernetes.io/unreachable
+            operator: Exists
+            effect: NoExecute
+            tolerationSeconds: 15
