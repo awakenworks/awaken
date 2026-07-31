@@ -166,9 +166,6 @@ pub use crate::types::deployment::RunError as DeploymentRunError;
 #[path = "deployments/launcher.rs"]
 mod launcher;
 pub use launcher::LocalDeploymentSessionLauncher;
-#[path = "deployments/http.rs"]
-mod http;
-pub use http::{DEPLOYMENT_SESSION_LAUNCH_PATH, deployment_session_launch_router};
 #[path = "deployments/scheduling.rs"]
 mod scheduling;
 #[cfg(test)]

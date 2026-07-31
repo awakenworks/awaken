@@ -71,17 +71,19 @@ publication may exist while registration is temporarily unavailable; that call
 returns an availability failure and an idempotent retry registers the same
 publication.
 
-### D3: Deployment launch reuses the existing Session authority
+### D3: Coordinator owns Deployment and reuses the existing Session authority
 
-`DeploymentSessionLauncher` remains the only Deployment-to-Session port. Its
-request carries the existing stable `deployment_run_id`. AllInOne keeps a local
-adapter; split deployment adds a Coordinator client and handler. Coordinator
-Session creation is idempotent by DeploymentRun identity, so a transport retry
-cannot create a second Session.
+`DeploymentState`, its public API, scheduler, repository, and lifecycle outbox are
+owned by Coordinator beside Session. `DeploymentSessionLauncher` remains the one
+in-process application port and carries the existing stable `deployment_run_id`.
+Coordinator Session creation is idempotent by DeploymentRun identity, so recovery
+after an interrupted call cannot create a second Session.
 
-The Control-side Deployment component owns Deployment and DeploymentRun truth.
-Coordinator owns Session creation, the frozen baseline, execution, and history
-after creation.
+The earlier split placed the public Deployment API in Control while Coordinator
+constructed a second `DeploymentState` over the same repository to run schedules.
+That parallel aggregate and its private HTTP launch client/router/token are retired.
+The public gateway routes Deployment APIs to Coordinator; AllInOne merges the same
+local component.
 
 ### D4: Resource unification stops at the Session manifest
 
@@ -110,10 +112,19 @@ receipt, or continue mutable Resource write-back.
 
 ### D6: Data ownership is enforced at composition time
 
-Control owns authoring, publication, Deployment, and DeploymentRun stores.
-Coordinator owns executable Agent registration, Session, dispatch, and commit
-stores. Resource providers own their content. Worker owns only ephemeral
-execution state and must not receive authority database connections.
+Control owns authoring, publication, IAM, and credential mutation stores.
+Coordinator owns executable Agent registration, Deployment, DeploymentRun,
+Environment execution state, Session, dispatch, and commit stores. Resource
+providers own their content. Worker owns only ephemeral execution state and must
+not receive authority database connections.
+
+Environment is the remaining deliberate transition: the public Environment API
+and work execution run in Coordinator, while Control's Admin Assistant still
+authors definitions through the existing `EnvironmentAuthor` port backed by the
+same registry. Separating definition commands from execution/work ports requires
+its own contract migration; this change does not create an in-memory shadow
+registry or claim that migration is complete. The transition uses the explicit
+`environment_db` binding; Control never receives `sessions_db` merely to locate it.
 
 ## Implementation Status
 
@@ -134,7 +145,7 @@ Credential, or Resource authority store.
 - `StoredPublication` remains the single publication authority; Coordinator data
   is explicitly rebuildable.
 - No whole-catalog installation track survives beside per-Agent registration.
-- Deployment retries, publication retries, claimed commits, and mutable Resource
+- Deployment recovery, publication retries, claimed commits, and mutable Resource
   write-back have stable idempotency or fencing identities.
 - Resource semantics remain type-specific instead of accumulating optional
   behavior in a generic service.
