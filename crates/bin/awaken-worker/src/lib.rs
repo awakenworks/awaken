@@ -914,8 +914,8 @@ impl WorkerNode {
             self.credential_probe_interval,
             self.credential_observation_ttl,
         );
-        let heartbeat = spawn_heartbeat(lifecycle.clone(), 2);
-        eprintln!("awaken-worker draining from {upstream_url}");
+        let mut heartbeat = spawn_heartbeat(lifecycle.clone(), 2);
+        eprintln!("awaken-worker registered with {upstream_url}");
 
         // The cloud-native admin surface on a SEPARATE port from any data path: an
         // orchestrator gates routing on `/readyz` and calls `POST /admin/drain` in a
@@ -941,7 +941,21 @@ impl WorkerNode {
             }
         }
 
-        let shutdown = shutdown.await;
+        // Authority loss is an irreversible boundary for this incarnation. The
+        // heartbeat task has already fenced local claim admission; terminate the
+        // process after the ordinary drain cleanup so Kubernetes/systemd can start
+        // a newly registered incarnation. Reusing this process would make a stale
+        // epoch capable of silently becoming authoritative again.
+        let mut shutdown = std::pin::pin!(shutdown);
+        let (shutdown, authority_lost) = tokio::select! {
+            shutdown = &mut shutdown => (shutdown, false),
+            heartbeat = &mut heartbeat => {
+                if let Err(error) = heartbeat {
+                    eprintln!("worker heartbeat task failed: {error}; terminating incarnation");
+                }
+                (Ok(WorkerShutdown::Graceful), true)
+            }
+        };
         let graceful = shutdown
             .as_ref()
             .is_ok_and(|mode| *mode == WorkerShutdown::Graceful);
@@ -974,6 +988,12 @@ impl WorkerNode {
         }
         let _ = control.deregister(&lifecycle.identity).await;
         shutdown?;
+        if authority_lost {
+            return Err(std::io::Error::other(
+                "worker lost registry authority; supervisor restart required",
+            )
+            .into());
+        }
         Ok(())
     }
 }

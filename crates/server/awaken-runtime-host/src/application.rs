@@ -626,6 +626,7 @@ impl crate::SharedHost {
         });
         self.install_environment_projection(thread, &projection.baseline.environment)?;
         self.register_thread_workspace(thread, &projection.workspace_id);
+        self.register_thread_agent_projection(thread, &projection.baseline.agent_id);
         self.register_thread_model(thread, &projection.baseline.execution_model_ref);
         if let Some(backend_ref) = &projection.baseline.runtime {
             self.register_thread_backend_projection(thread, backend_ref);

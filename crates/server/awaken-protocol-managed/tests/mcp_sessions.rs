@@ -559,7 +559,8 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
             "A1 claim is durable before Runtime I/O"
         );
     }
-    let active = h.repo.get("sesn_0").await.expect("active aggregate");
+    let session_id = session["id"].as_str().expect("created Session id");
+    let active = h.repo.get(session_id).await.expect("active aggregate");
     assert_eq!(
         active.mcp.attachments[0].state,
         awaken_session_contract::McpAttachmentState::Active,
@@ -891,12 +892,21 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
         assert_eq!(s, status, "{kind:?}");
         assert_eq!(body["type"], "error");
         assert_eq!(body["error"]["type"], error_type);
-        // Fail closed: the failed create left no session behind.
-        let (s, _) = call(&h.app, "GET", "/v1/sessions/sesn_0", None).await;
+        // Fail closed: the recoverable durable intent is not exposed as a live
+        // Session. The pre-I/O observation owns the generated opaque identity.
+        let failed_id = h
+            .observed_durable
+            .lock()
+            .unwrap()
+            .last()
+            .expect("durable intent observed before Runtime I/O")
+            .session_id
+            .clone();
+        let (s, _) = call(&h.app, "GET", &format!("/v1/sessions/{failed_id}"), None).await;
         assert_eq!(s, StatusCode::NOT_FOUND, "no half-provisioned session");
         let failed = h
             .repo
-            .get("sesn_0")
+            .get(&failed_id)
             .await
             .expect("recoverable failed intent");
         assert_eq!(
@@ -920,7 +930,8 @@ async fn create_without_mcp_has_no_attachment_effect() {
     .await;
     assert_eq!(status, StatusCode::OK, "A3");
     assert_eq!(body["agent"]["mcp_servers"], json!([]), "A3");
-    let durable = h.repo.get("sesn_0").await.expect("A3 aggregate");
+    let session_id = body["id"].as_str().expect("A3 Session id");
+    let durable = h.repo.get(session_id).await.expect("A3 aggregate");
     assert!(durable.mcp.attachments.is_empty(), "A3");
 }
 
@@ -1775,7 +1786,7 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
 /// session must never graft onto an old thread's transcript (rehydration by
 /// explicit id stays the only reattach path).
 #[tokio::test]
-async fn minting_skips_session_ids_that_own_committed_truth() {
+async fn minting_namespace_cannot_alias_committed_truth() {
     use awaken_agent_contract::agent::content::ContentBlock;
 
     struct HauntedRuntime;
@@ -1845,7 +1856,9 @@ async fn minting_skips_session_ids_that_own_committed_truth() {
         )
         .await
         .expect("create skips haunted ids");
-    assert_eq!(session.id, "sesn_2", "sesn_0/sesn_1 own committed truth");
+    assert!(session.id.starts_with("sesn_fnv1a64:"));
+    assert_ne!(session.id, "sesn_0");
+    assert_ne!(session.id, "sesn_1");
 }
 
 /// Cause graph for the public creation switch:

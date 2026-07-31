@@ -356,31 +356,59 @@ impl SharedHost {
         run_id: &RunId,
         settled: tokio::sync::oneshot::Receiver<RunState>,
     ) -> Result<RunState, HostError> {
-        // ~60s ceiling — generous for a multi-step run's inference, bounded so a
-        // stuck run surfaces as an error rather than hanging the request forever.
-        match tokio::time::timeout(std::time::Duration::from_secs(60), settled).await {
-            // The pool signalled the settled state the instant it settled.
-            Ok(Ok(state)) => Ok(state),
-            // Sender dropped without sending (pool died) or the wait timed out: fall
-            // back to one committed-truth read, else surface a hard error. The
-            // waiter entry is cleaned up by the caller's `WaiterGuard` on return.
-            Ok(Err(_)) | Err(_) => self.read_settled_phase(ctx, run_id).ok_or_else(|| {
-                HostError::internal(
-                    "durable run did not settle: the dispatch pool never drove it to completion",
-                )
-            }),
+        // The local event is the fast path. A peer Coordinator can commit the same
+        // shared PostgreSQL Run without owning this process's oneshot sender, so a
+        // bounded committed-truth reconciliation is also required. One foreground
+        // waiter performs one narrow read per interval; it never claims, settles,
+        // or creates a second completion authority.
+        let mut settled = std::pin::pin!(settled);
+        let deadline = tokio::time::sleep(std::time::Duration::from_secs(60));
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                result = &mut settled => {
+                    if let Ok(state) = result {
+                        return Ok(state);
+                    }
+                    return self.read_settled_phase(ctx, run_id).await?.ok_or_else(|| {
+                        HostError::internal(
+                            "durable run did not settle: the dispatch pool never drove it to completion",
+                        )
+                    });
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
+                    if let Some(state) = self.read_settled_phase(ctx, run_id).await? {
+                        return Ok(state);
+                    }
+                }
+                _ = &mut deadline => {
+                    return self.read_settled_phase(ctx, run_id).await?.ok_or_else(|| {
+                        HostError::internal(
+                            "durable run did not settle: the dispatch pool never drove it to completion",
+                        )
+                    });
+                }
+            }
         }
     }
 
     /// One committed-truth read: the run's state if it has settled (`Ended` or
     /// `Awaiting`), else `None`. The fallback path for `await_settled_event`.
-    fn read_settled_phase(&self, ctx: &Arc<SessionCtx>, run_id: &RunId) -> Option<RunState> {
-        use awaken_agent_contract::thread::read::run_store::RunStore;
-        match RunStore::get(&*ctx.commit, run_id) {
+    async fn read_settled_phase(
+        &self,
+        ctx: &Arc<SessionCtx>,
+        run_id: &RunId,
+    ) -> Result<Option<RunState>, HostError> {
+        match ctx
+            .commit
+            .authoritative_run(run_id)
+            .await
+            .map_err(HostError::internal)?
+        {
             Some(record) if matches!(record.state, RunState::Ended(_) | RunState::Awaiting) => {
-                Some(record.state)
+                Ok(Some(record.state))
             }
-            _ => None,
+            _ => Ok(None),
         }
     }
 }

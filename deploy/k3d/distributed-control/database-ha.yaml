@@ -1,0 +1,126 @@
+# Scenario-only PostgreSQL streaming-replication fixture. It proves that the
+# public API can recover from writer loss without teaching application roles a
+# second database path; the stable `postgres` Service is the only database name.
+---
+apiVersion: v1
+kind: Service
+metadata: { name: postgres }
+spec:
+  selector: { database-role: primary }
+  ports: [{ name: pg, port: 5432, targetPort: 5432 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: postgres-primary }
+spec:
+  selector: { app: postgres-primary }
+  ports: [{ name: pg, port: 5432, targetPort: 5432 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: postgres-standby }
+spec:
+  selector: { app: postgres-standby }
+  ports: [{ name: pg, port: 5432, targetPort: 5432 }]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: adr71-replication-init }
+data:
+  01-replication.sql: |
+    CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD 'adr71-replication';
+  02-replication-hba.sh: |
+    #!/bin/bash
+    echo 'host replication replicator 0.0.0.0/0 scram-sha-256' >> "$PGDATA/pg_hba.conf"
+    echo 'host replication replicator ::/0 scram-sha-256' >> "$PGDATA/pg_hba.conf"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: postgres-primary }
+spec:
+  serviceName: postgres-primary
+  replicas: 1
+  selector: { matchLabels: { app: postgres-primary } }
+  template:
+    metadata:
+      labels: { app: postgres-primary, database-role: primary }
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - { key: database-role, operator: In, values: [primary, standby] }
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: postgres
+          image: postgres:16
+          imagePullPolicy: Never
+          args: ["postgres", "-c", "wal_level=replica", "-c", "max_connections=500", "-c", "max_wal_senders=10", "-c", "wal_keep_size=256MB"]
+          env:
+            - { name: POSTGRES_PASSWORD, value: "test" } # awaken-allow: secret
+            - { name: POSTGRES_DB, value: "awaken" }
+            - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
+          ports: [{ containerPort: 5432 }]
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "postgres", "-d", "awaken"] }
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: database-init, mountPath: /docker-entrypoint-initdb.d/00-create-databases.sql, subPath: 00-create-databases.sql, readOnly: true }
+            - { name: replication-init, mountPath: /docker-entrypoint-initdb.d/01-replication.sql, subPath: 01-replication.sql, readOnly: true }
+            - { name: replication-init, mountPath: /docker-entrypoint-initdb.d/02-replication-hba.sh, subPath: 02-replication-hba.sh, readOnly: true }
+      volumes:
+        - { name: data, emptyDir: {} }
+        - name: database-init
+          configMap: { name: adr71-database-init }
+        - name: replication-init
+          configMap: { name: adr71-replication-init, defaultMode: 0755 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: postgres-standby }
+spec:
+  serviceName: postgres-standby
+  replicas: 1
+  selector: { matchLabels: { app: postgres-standby } }
+  template:
+    metadata:
+      labels: { app: postgres-standby, database-role: standby }
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - { key: database-role, operator: In, values: [primary, standby] }
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: postgres
+          image: postgres:16
+          imagePullPolicy: Never
+          command: ["/bin/bash", "-ec"]
+          args:
+            - |
+              until pg_basebackup -h postgres-primary -U replicator -D "$PGDATA" -Fp -Xs -R; do
+                rm -rf "${PGDATA:?}"/*
+                sleep 1
+              done
+              chmod 0700 "$PGDATA"
+              exec docker-entrypoint.sh postgres -c hot_standby=on -c max_connections=500
+          env:
+            - { name: PGPASSWORD, value: "adr71-replication" } # awaken-allow: secret
+            # Bound each failed attempt so an initially unpublished primary
+            # endpoint is retried instead of consuming the rollout deadline.
+            - { name: PGCONNECT_TIMEOUT, value: "2" }
+            - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
+          ports: [{ containerPort: 5432 }]
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "postgres", "-d", "awaken"] }
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+      volumes:
+        - { name: data, emptyDir: {} }

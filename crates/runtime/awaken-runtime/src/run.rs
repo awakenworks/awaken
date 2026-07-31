@@ -33,7 +33,7 @@ impl Runtime {
         input: impl Into<RunInput>,
         context: RuntimeRunContext,
     ) -> Result<RunState, Error> {
-        let (_run_id, activation) = self.prepare(snapshot, next_id("thread"), input);
+        let (_run_id, activation) = self.prepare(snapshot, fresh_process_id("thread"), input);
         self.execute(activation, context).await
     }
 
@@ -207,32 +207,71 @@ impl From<Vec<Message>> for RunInput {
 
 fn user_message(text: impl Into<String>) -> Message {
     Message {
-        id: MessageId(next_id("msg")),
+        id: MessageId(fresh_process_id("msg")),
         role: Role::User,
         content: vec![ContentBlock::text(text)],
     }
 }
 
-/// A process-unique id with a readable prefix — enough for in-process ergonomic
-/// runs. The durable path supplies explicit, stable ids instead.
-fn next_id(prefix: &str) -> String {
+/// Mint one restart-unique runtime identity. Runs, input messages and protocol
+/// adapters share this generator because each value can enter the same durable
+/// transcript; process-local counters would collide across active-active peers.
+#[must_use]
+pub fn fresh_process_id(prefix: &str) -> String {
+    static PROCESS_NAMESPACE: OnceLock<String> = OnceLock::new();
     static COUNTER: AtomicU64 = AtomicU64::new(1);
-    format!("{prefix}-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+    let namespace = PROCESS_NAMESPACE.get_or_init(|| {
+        let started = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        process_namespace(std::process::id(), started)
+    });
+    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{namespace}-{sequence}")
+}
+
+fn process_namespace(process_id: u32, started_at_unix_nanos: u128) -> String {
+    format!("{process_id}-{started_at_unix_nanos:x}")
 }
 
 /// A fresh Run id must remain unique across process restarts because mutating tools
 /// derive their durable operation identity from it. Recovered/dispatched Runs supply
 /// their already-persisted explicit id and never pass through this generator.
 fn next_run_id() -> String {
-    static PROCESS_NAMESPACE: OnceLock<String> = OnceLock::new();
-    static RUN_COUNTER: AtomicU64 = AtomicU64::new(1);
-    let namespace = PROCESS_NAMESPACE.get_or_init(|| {
-        let started = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        format!("{}-{started:x}", std::process::id())
-    });
-    let sequence = RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("run-{namespace}-{sequence}")
+    fresh_process_id("run")
+}
+
+#[cfg(test)]
+mod id_tests {
+    use std::collections::HashSet;
+
+    use super::{fresh_process_id, process_namespace};
+
+    #[test]
+    fn durable_runtime_ids_follow_the_process_namespace_decision_table() {
+        // Cause/effect graph: process identity + start instant define a restart
+        // namespace; one atomic sequence orders every durable identity kind.
+        //
+        // | Rule | process | start | concurrent calls | prefix | Effect |
+        // |---|---|---|---|---|---|
+        // | I1 | same | same | yes | same | every id is unique |
+        // | I2 | same | same | no | different | ids cannot alias |
+        // | I3 | different | same | no | same | namespaces differ |
+        // | I4 | same | different | no | same | namespaces differ |
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            workers.push(std::thread::spawn(|| {
+                (0..32).map(|_| fresh_process_id("msg")).collect::<Vec<_>>()
+            }));
+        }
+        let ids = workers
+            .into_iter()
+            .flat_map(|worker| worker.join().expect("id worker"))
+            .collect::<Vec<_>>();
+        assert_eq!(ids.iter().collect::<HashSet<_>>().len(), ids.len(), "I1");
+        assert_ne!(fresh_process_id("msg"), fresh_process_id("run"), "I2");
+        assert_ne!(process_namespace(1, 7), process_namespace(2, 7), "I3");
+        assert_ne!(process_namespace(1, 7), process_namespace(1, 8), "I4");
+    }
 }

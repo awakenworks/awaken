@@ -647,6 +647,11 @@ async fn operation_receipt_survives_reconnect() {
 
 #[tokio::test]
 async fn peer_lifecycle_feed_reads_authoritative_postgres_without_projection_refresh() {
+    // Cause/effect decision table: P1 peer starts before writer commits -> its
+    // compatibility projection remains stale; P2 writer commits the full Run
+    // lifecycle and one message -> peer lifecycle feed, exact Run read, and
+    // transcript read observe committed truth; P3 none of the reads mutates or
+    // refreshes the peer compatibility projection.
     let Some(pool) = schema_pool("t_active_active_lifecycle").await else {
         return;
     };
@@ -659,18 +664,23 @@ async fn peer_lifecycle_feed_reads_authoritative_postgres_without_projection_ref
     let thread = ThreadId("active-active-thread".into());
     let run = RunId("active-active-run".into());
 
-    for disposition in [
+    for (index, disposition) in [
         RunDisposition::running(run.clone()),
         RunDisposition::awaiting(ticket(&run.0, &thread.0)),
         RunDisposition::running(run.clone()),
         RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         writer
             .commit(ThreadCommit::assemble(
                 thread.clone(),
                 disposition,
                 true,
-                Vec::new(),
+                (index == 0)
+                    .then(|| vec![message("active-active-message", "peer-visible")])
+                    .unwrap_or_default(),
                 Vec::new(),
                 Vec::new(),
             ))
@@ -680,7 +690,27 @@ async fn peer_lifecycle_feed_reads_authoritative_postgres_without_projection_ref
 
     assert!(
         RunStore::get(&peer, &run).is_none(),
-        "the peer's synchronous compatibility projection remains stale"
+        "P1/P3 the peer's synchronous compatibility projection remains stale"
+    );
+    assert_eq!(
+        peer.authoritative_run_record(&run)
+            .await
+            .expect("P2 authoritative exact read")
+            .expect("P2 committed Run exists")
+            .state,
+        RunState::Ended(EndCause::NaturalEnd),
+        "P2 exact active-active reconciliation reads committed truth"
+    );
+    assert!(
+        ThreadReader::committed_messages(&peer, &thread).is_empty(),
+        "P1/P3 the synchronous peer transcript remains stale"
+    );
+    assert_eq!(
+        peer.authoritative_committed_messages(&thread)
+            .await
+            .expect("P2 authoritative transcript"),
+        vec![message("active-active-message", "peer-visible")],
+        "P2 public projection reads every peer-committed message"
     );
     let first = peer
         .events_after(LifecycleCursor::default(), 2)

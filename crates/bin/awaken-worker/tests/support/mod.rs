@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -17,18 +17,25 @@ pub struct FakeWorkerUpstream {
 
 impl FakeWorkerUpstream {
     pub fn start() -> Self {
-        Self::start_with_drain_release(None)
+        Self::start_with_options(None, None)
+    }
+
+    pub fn start_rejecting_periodic_heartbeat() -> Self {
+        Self::start_with_options(None, Some(1))
     }
 
     pub fn start_with_blocked_drain() -> (Self, Arc<AtomicBool>) {
         let release = Arc::new(AtomicBool::new(false));
         (
-            Self::start_with_drain_release(Some(release.clone())),
+            Self::start_with_options(Some(release.clone()), None),
             release,
         )
     }
 
-    fn start_with_drain_release(drain_release: Option<Arc<AtomicBool>>) -> Self {
+    fn start_with_options(
+        drain_release: Option<Arc<AtomicBool>>,
+        applied_heartbeat_budget: Option<usize>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -39,6 +46,7 @@ impl FakeWorkerUpstream {
         let thread_requests = requests.clone();
         let thread_request_headers = request_headers.clone();
         let thread_drain_release = drain_release;
+        let heartbeat_count = AtomicUsize::new(0);
         let thread = std::thread::spawn(move || {
             while !thread_stop.load(Ordering::Acquire) {
                 match listener.accept() {
@@ -53,6 +61,8 @@ impl FakeWorkerUpstream {
                             &thread_request_headers,
                             &thread_stop,
                             thread_drain_release.as_deref(),
+                            applied_heartbeat_budget,
+                            &heartbeat_count,
                         );
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -103,6 +113,8 @@ fn handle(
     request_headers: &Mutex<Vec<String>>,
     stop: &AtomicBool,
     drain_release: Option<&AtomicBool>,
+    applied_heartbeat_budget: Option<usize>,
+    heartbeat_count: &AtomicUsize,
 ) {
     let request = read_request(&mut stream);
     let header_end = request
@@ -139,10 +151,17 @@ fn handle(
                 r#"{{"worker":{{"snapshot":{{"identity":{{"worker_id":"{worker_id}","incarnation_id":"{incarnation_id}","generation":1}},"state":"starting","manifest":{manifest},"capability_fingerprint":"composition-test","in_flight":0,"expires_at_ms":60000}},"heartbeat_sequence":0,"registered_at_ms":0,"heartbeat_at_ms":0,"drain_deadline_ms":null}}}}"#
             )
         }
-        "/v1/worker/heartbeat"
-        | "/v1/worker/drain"
-        | "/v1/worker/quiesced"
-        | "/v1/worker/deregister" => r#"{"mutation":"applied"}"#.to_string(),
+        "/v1/worker/heartbeat" => {
+            let ordinal = heartbeat_count.fetch_add(1, Ordering::AcqRel);
+            if applied_heartbeat_budget.is_some_and(|budget| ordinal >= budget) {
+                r#"{"mutation":"stale_incarnation"}"#.to_string()
+            } else {
+                r#"{"mutation":"applied"}"#.to_string()
+            }
+        }
+        "/v1/worker/drain" | "/v1/worker/quiesced" | "/v1/worker/deregister" => {
+            r#"{"mutation":"applied"}"#.to_string()
+        }
         "/v1/worker/dispatch/claim" => r#"{"claimed":null}"#.to_string(),
         _ => format!(r#"{{"error":"unexpected composition-test path: {path}"}}"#),
     };

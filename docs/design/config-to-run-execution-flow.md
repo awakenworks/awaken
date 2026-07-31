@@ -383,6 +383,9 @@ cite the rule they cover.
 | E8 | Worker crash before settle | reclaim and resume from committed truth without duplicate output |
 | E9 | preview loss or client reconnect | committed snapshot backfills the complete terminal response |
 | E10 | Memory CAS conflict | no silent overwrite; typed conflict/recovery outcome |
+| E11 | a peer Coordinator commits while this replica has a warm Session cache | refresh from the committed transcript and project each Runtime message id once |
+| E12 | Coordinator authority disappears or rejects the Worker incarnation | stop claim admission, drain, terminate, and restart as a fresh registered incarnation |
+| E13 | public write has no idempotency identity and its response is ambiguous | do not auto-replay; reconcile/read until routing is stable, then require one explicit write decision |
 
 The concrete multi-process topology, cluster lifecycle, and fault-injection
 entry points are owned by the
@@ -395,13 +398,16 @@ registration and launch adapters, isolated component databases, an unavailable
 Coordinator, and forced authority-role restarts. Adapter and repository tests
 remain the owners of rule combinations that do not require a real cluster.
 
-The overlay's deterministic Host-executor Worker is built through the canonical
-`WorkerNodeBuilder`, but it is not the `awaken worker` CLI process. The production
-CLI process is covered by `credential_materialization_worker_e2e.ts`, including
-zero authority configuration and exact recipient-bound projection. P2-B is not
-fully accepted until the cluster overlay runs the CLI Worker and one process-level
-scenario combines Credential plus File/Memory/Skill realization while proving
-zero authority connection attempts.
+The overlay now runs two instances of the shipped `awaken worker` CLI. Each
+instance receives only its Worker identity, signed-request credential, Runtime
+configuration, sandbox/cache paths, and narrow Credential/File/Memory/Skill
+boundary clients. The test proves that no authority database or Control seal
+configuration reaches the Worker, no Worker opens the PostgreSQL port, and one
+Native run realizes exact Credential, File, Memory, and Skill pins. It also
+removes the complete Coordinator tier, observes both old Worker incarnations
+fail closed, and requires Kubernetes to replace them before execution resumes.
+These process-level checks complete P2-B; crate checks remain defense in depth,
+not the acceptance claim by themselves.
 
 ## Guardrails
 

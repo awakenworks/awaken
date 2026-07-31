@@ -904,7 +904,10 @@ mod tests {
                             },
                     },
                     mcp_authoring: Default::default(),
-                    agent_id: "agent".into(),
+                    // The Control projection and the claimed publication name
+                    // the same immutable Agent. A different id is a projection
+                    // conflict and is covered by the Session projection tests.
+                    agent_id: "agent-a".into(),
                     model: "model".into(),
                     runtime: None,
                     application: Some(
@@ -1106,7 +1109,7 @@ mod tests {
         //
         // | Rule | Claim live | Provisioner | Contributor | Effect |
         // |---|---|---|---|---|
-        // | W1 | T | success | installed | receipt then environment |
+        // | W1 | T | success | installed, exact Agent | receipt then environment |
         // | W2 | T | success | missing | reject before environment |
         // | W3 | F | - | any | reject before provisioner |
         // | W4 | T | success + initial MCP | installed | stage/activate/publish/ack |

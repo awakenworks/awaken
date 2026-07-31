@@ -317,6 +317,15 @@ fn repository_unavailable(error: impl std::fmt::Display) -> WireError {
     )
 }
 
+/// Refresh the one durable Deployment projection and apply the public error
+/// mapping. Repository hydration remains owned by `DeploymentState`.
+async fn refresh_projection(state: &DeploymentState) -> Result<(), WireError> {
+    state
+        .refresh_repository_projection()
+        .await
+        .map_err(repository_unavailable)
+}
+
 fn agent_resolution_error(error: ManagedAgentError) -> WireError {
     match error {
         ManagedAgentError::NotFound => not_found("agent"),
@@ -419,6 +428,7 @@ async fn create_deployment(
     scope: Option<Extension<WorkspaceScope>>,
     ManagedJson(params): ManagedJson<DeploymentCreateParams>,
 ) -> Result<Json<Deployment>, WireError> {
+    refresh_projection(&state).await?;
     validate_schedule(params.schedule.as_ref())?;
     let next_fire_ms = params
         .schedule
@@ -473,6 +483,7 @@ async fn retrieve_deployment(
     Path(id): Path<String>,
     scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<Deployment>, WireError> {
+    refresh_projection(&state).await?;
     let scope = request_scope(&scope);
     let store = state.deployments.lock().unwrap();
     let record = store
@@ -487,6 +498,7 @@ async fn list_deployments(
     Query(query): Query<DeploymentListParams>,
     scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<Page<Deployment>>, WireError> {
+    refresh_projection(&state).await?;
     let scope = request_scope(&scope);
     if query.include_archived && query.status.is_some() {
         return Err(invalid(
@@ -530,6 +542,7 @@ async fn update_deployment(
     scope: Option<Extension<WorkspaceScope>>,
     ManagedJson(params): ManagedJson<DeploymentUpdateParams>,
 ) -> Result<Json<Deployment>, WireError> {
+    refresh_projection(&state).await?;
     if let Some(Some(schedule)) = &params.schedule {
         validate_schedule(Some(schedule))?;
     }
@@ -610,6 +623,7 @@ async fn archive_deployment(
     Path(id): Path<String>,
     scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<Deployment>, WireError> {
+    refresh_projection(&state).await?;
     let scope = request_scope(&scope);
     let mut candidate = state
         .deployments
@@ -641,6 +655,7 @@ async fn pause_deployment(
     Path(id): Path<String>,
     scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<Deployment>, WireError> {
+    refresh_projection(&state).await?;
     let scope = request_scope(&scope);
     let mut candidate = state
         .deployments
@@ -673,6 +688,7 @@ async fn unpause_deployment(
     Path(id): Path<String>,
     scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<Deployment>, WireError> {
+    refresh_projection(&state).await?;
     let scope = request_scope(&scope);
     let mut candidate = state
         .deployments
@@ -706,6 +722,7 @@ async fn run_deployment(
     Path(id): Path<String>,
     scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<DeploymentRun>, WireError> {
+    refresh_projection(&state).await?;
     let scope = request_scope(&scope);
     let deployment = {
         let store = state.deployments.lock().unwrap();
@@ -752,6 +769,7 @@ async fn retrieve_run(
     Path(id): Path<String>,
     scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<DeploymentRun>, WireError> {
+    refresh_projection(&state).await?;
     let scope = request_scope(&scope);
     let store = state.runs.lock().unwrap();
     let record = store
@@ -768,6 +786,10 @@ async fn list_runs(
     Query(query): Query<DeploymentRunListParams>,
     scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<Page<DeploymentRun>>, WireError> {
+    state
+        .refresh_repository_projection()
+        .await
+        .map_err(repository_unavailable)?;
     let scope = request_scope(&scope);
     let page = deployment_page(&query.page)?;
     let store = state.runs.lock().unwrap();
@@ -1213,6 +1235,90 @@ mod tests {
             "R3 terminal event"
         );
         drop(restored);
+        drop(repository);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn active_active_replica_reads_committed_deployment_before_run() {
+        // Cause/effect decision table: A1 two replicas start with the same empty
+        // repository and replica L creates -> replica R refreshes the authoritative
+        // projection and retrieves it; A2 R immediately runs that Deployment -> one
+        // durable DeploymentRun and Session launch; A3 wrong Workspace -> 404 after
+        // the same refresh, so cross-replica visibility never weakens ownership.
+        struct SuccessfulLauncher;
+        #[async_trait::async_trait]
+        impl DeploymentSessionLauncher for SuccessfulLauncher {
+            async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome {
+                DeploymentLaunchOutcome::Created {
+                    session_id: format!("sesn_{}", request.deployment_id),
+                }
+            }
+        }
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "awaken-active-active-deployment-{}-{unique}.db",
+            std::process::id()
+        ));
+        let repository = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
+                .unwrap(),
+        );
+        let left = Arc::new(
+            DeploymentState::with_repository(repository.clone())
+                .await
+                .unwrap(),
+        );
+        let right = Arc::new(
+            DeploymentState::with_repository(repository.clone())
+                .await
+                .unwrap(),
+        );
+        right.bind_launcher(Arc::new(SuccessfulLauncher));
+        let scope = Some(Extension(WorkspaceScope("workspace_a".into())));
+        let created = create_deployment(
+            State(left),
+            scope.clone(),
+            ManagedJson(create_params(false)),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(
+            retrieve_deployment(
+                State(right.clone()),
+                Path(created.id.clone()),
+                scope.clone(),
+            )
+            .await
+            .unwrap()
+            .0
+            .id,
+            created.id,
+            "A1"
+        );
+        let run = run_deployment(State(right.clone()), Path(created.id.clone()), scope)
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(run.deployment_id, created.id, "A2");
+        assert!(run.session_id.is_some(), "A2");
+        assert_eq!(
+            retrieve_deployment(
+                State(right),
+                Path(created.id),
+                Some(Extension(WorkspaceScope("workspace_b".into()))),
+            )
+            .await
+            .unwrap_err()
+            .0,
+            StatusCode::NOT_FOUND,
+            "A3"
+        );
         drop(repository);
         let _ = std::fs::remove_file(path);
     }

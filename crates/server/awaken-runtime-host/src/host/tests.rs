@@ -3,6 +3,7 @@ use crate::config::block_text;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
+use awaken_session_contract::SessionRuntime;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     Mutex,
@@ -1451,6 +1452,124 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
         "ok",
         "a Session with no binding cannot see another governed store"
     );
+}
+
+/// Cause/effect decision table for a live Memory binding:
+///
+/// | requested manifest | relation to installed pin | effect |
+/// |---|---|---|
+/// | prepare blocked by lifecycle | absent | expose neither Environment nor manifest |
+/// | durable active generation | absent beside an adopted live Environment | install as cold recovery |
+/// | exact replay | equal | idempotent success; retain the live environment |
+/// | concurrent exact replays | equal | serialize on the existing Session lifecycle and converge |
+/// | empty/different | mutation | fail closed because Memory is create-time only |
+///
+/// This is the active-active recovery case: a peer may ask the Runtime to replay
+/// durable Session truth after the local projection has already been installed.
+#[tokio::test]
+async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed() {
+    use awaken_session_contract::{SessionInit, SessionRuntime};
+
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
+    raw_host.session_provider =
+        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+            std::env::temp_dir().join(format!(
+                "awaken-memory-recovery-namespace-{}",
+                std::process::id()
+            )),
+            false,
+        );
+    let host = Arc::new(raw_host);
+    install_test_memory_mounter(&host);
+    let store = test_memory_store_id();
+    host.memory_stores
+        .fs()
+        .create(&store, "/seed.md", "seed")
+        .await
+        .unwrap();
+    let resources = effective_resources(vec![TestInput {
+        kind: "memory_store".into(),
+        id: store,
+        mount_path: "/memory".into(),
+        access: ResourceAccess::ReadWrite,
+        instructions: None,
+        initial_branch: None,
+        initial_commit: None,
+    }]);
+    let managed = managed_with_resource_source(host.clone());
+    let init = SessionInit {
+        workspace_id: host.local_workspace().into(),
+        agent_id: "agent".into(),
+        delegate_ids: Vec::new(),
+        toolsets: None,
+        resources: resources.clone(),
+        model: None,
+        runtime: None,
+        environment: session_environment(
+            awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+            serde_json::json!({}),
+        ),
+    };
+    let lifecycle = host
+        .session_slots
+        .update("memory-replay", |slot| slot.lifecycle.clone());
+    let lifecycle_guard = lifecycle.lock().await;
+    let preparing = tokio::spawn({
+        let managed = managed.clone();
+        async move { managed.prepare_session("memory-replay", init).await }
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        host.session_environment("memory-replay").await.is_none(),
+        "preparation cannot expose Environment before the lifecycle owner commits the manifest"
+    );
+    drop(lifecycle_guard);
+    preparing
+        .await
+        .expect("preparation task")
+        .expect("prepare Session");
+    managed
+        .run("agent", "memory-replay", vec![ContentBlock::text("open")])
+        .await
+        .unwrap();
+    let environment = host
+        .session_environment("memory-replay")
+        .await
+        .expect("live environment");
+
+    // Reproduce the active-active recovery state observed in the black-box
+    // pressure test: the durable sandbox binding is resident, while this process
+    // has not yet projected the authoritative Resource generation.
+    host.session_slots.update("memory-replay", |slot| {
+        slot.manifest = None;
+        slot.resources = Default::default();
+        slot.memory = None;
+    });
+    managed
+        .apply_session_inputs("memory-replay", host.local_workspace(), &resources)
+        .await
+        .expect("cold durable generation installs beside the adopted Environment");
+
+    let (left, right) = tokio::join!(
+        managed.apply_session_inputs("memory-replay", host.local_workspace(), &resources),
+        managed.apply_session_inputs("memory-replay", host.local_workspace(), &resources),
+    );
+    left.expect("first exact durable replay");
+    right.expect("concurrent exact durable replay");
+    assert!(Arc::ptr_eq(
+        &environment,
+        &host.session_environment("memory-replay").await.unwrap()
+    ));
+
+    let error = managed
+        .apply_session_inputs(
+            "memory-replay",
+            host.local_workspace(),
+            &awaken_session_contract::ResolvedSessionResources::default(),
+        )
+        .await
+        .expect_err("live Memory removal must remain forbidden");
+    assert!(error.message.contains("create-time only"));
 }
 
 #[tokio::test]
@@ -5433,4 +5552,67 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
         error.to_string().contains("no immutable Agent publication"),
         "H4"
     );
+}
+
+#[tokio::test]
+async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_reads() {
+    // Causes: C1 a cold Session has a frozen non-default Agent projection and an
+    // internal history read carries no repeated Agent argument; C2 the caller
+    // repeats the same Agent; C3 it asserts a different Agent. Effects: E1/E2
+    // resolve the exact publication; E3 fail closed before constructing Runtime.
+    //
+    // Decision table:
+    // | rule | projected Agent | requested Agent | result                  |
+    // | R1   | agent-a         | absent          | exact agent-a snapshot  |
+    // | R2   | agent-a         | agent-a         | exact agent-a snapshot  |
+    // | R3   | agent-a         | assistant       | projection mismatch     |
+    let snapshot = crate::config::server_config(
+        "agent-a",
+        "stub",
+        &HashSet::new(),
+        &HashSet::new(),
+        &[],
+        &Default::default(),
+        &[],
+        awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+    );
+    let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
+        .expect("valid publication");
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications)),
+    );
+    crate::ManagedHost::new(host.clone())
+        .prepare_session(
+            "cold-agent",
+            awaken_session_contract::SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "agent-a".into(),
+                delegate_ids: Vec::new(),
+                toolsets: None,
+                resources: Default::default(),
+                model: Some("stub".into()),
+                runtime: Some("default".into()),
+                environment: on_tool_use_environment(),
+            },
+        )
+        .await
+        .expect("project the frozen Session baseline");
+
+    let recovered = host
+        .ctx_for("cold-agent", None)
+        .await
+        .expect("R1 internal history read resolves the frozen Agent");
+    assert_eq!(recovered.config.root_agent_id.0, "agent-a", "R1");
+
+    host.register_thread_agent_projection("same-agent", "agent-a");
+    host.ctx_for("same-agent", Some("agent-a"))
+        .await
+        .expect("R2 repeated exact Agent");
+
+    host.register_thread_agent_projection("mismatch-agent", "agent-a");
+    let error = match host.ctx_for("mismatch-agent", Some("assistant")).await {
+        Ok(_) => panic!("R3 accepted a different requested Agent"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("projection"), "R3");
 }

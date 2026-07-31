@@ -47,9 +47,12 @@ The terms used here are precise:
   second;
 - execution is at least once; committed logical operations are idempotent.
 
-## 2. Current Protocol and Verified Gaps
+## 2. Pre-Implementation Baseline and Closed Gaps
 
-### 2.1 Current interaction
+This section preserves the evidence that motivated ADR-0065. It is historical;
+Sections 3–10 and the executable suites describe the implemented protocol.
+
+### 2.1 Baseline interaction
 
 ```text
 Worker                         Control Node                    Store
@@ -67,13 +70,13 @@ Worker                         Control Node                    Store
   |-- heartbeat/drain ------------->|                           |
 ```
 
-This protocol safely rejects stale-epoch writes and durably remembers terminal
-dispatch completion. It does not yet reconstruct committed execution context on
+This baseline safely rejected stale-epoch writes and durably remembered terminal
+dispatch completion, but it could not reconstruct committed execution context on
 another Worker.
 
-### 2.2 Gaps and their effects
+### 2.2 Gaps closed by the accepted implementation
 
-| Gap | Current evidence | Consequence |
+| Baseline gap | Pre-implementation evidence | Consequence that had to be removed |
 |---|---|---|
 | Remote commit read side is empty | remote `committed_messages`, `resume_ticket`, `run_state`, and committed state return empty/none | only a fresh execution context is safe |
 | Claim contains no recovery prefix | `Claimed` carries dispatch ownership, not committed messages/state/tickets | Awaiting and crash recovery cannot move to a cold Worker |
@@ -491,7 +494,28 @@ ordinary runtime resume path consumes it.
 | Control Node fails with SQLite | replacement reattaches the cell store before serving | one physical writer remains |
 | one PostgreSQL Control Node fails in P2 | another node serves the same protocol from authoritative DB state | no sticky-session dependency |
 
-### 5.3 State transitions
+### 5.3 Automatic recovery after fail-close
+
+Fail-closed recovery is intentionally split by failure class:
+
+| Failure class | Automatic recovery | What is never allowed |
+|---|---|---|
+| bounded transport/provider interruption while the claim remains current | retry the same idempotent read or operation while lease renewal and all claim checks continue to pass | changing revision, holder, target, or authority source |
+| Worker loses Coordinator authority or its incarnation is rejected | close local claim admission, drain/revoke local realizations, exit non-zero, and let the supervisor start a freshly registered incarnation | re-enabling the old process or borrowing its epoch |
+| Worker crashes with unfinished work | Coordinator lease expiry makes the durable dispatch reclaimable; another current Worker loads the recovery snapshot and continues | treating uncommitted output as truth or accepting the old epoch's commit |
+| semantic invalidity (expired Credential, revoked Resource, revision mismatch) | no blind retry; remain failed closed until an authoritative change creates a valid new claim/binding | database fallback, stale cached material, or a weaker substitute |
+| public command returned an ambiguous gateway/network failure | retry only when the command carries a durable idempotency identity; otherwise stabilize the route and require the caller to reconcile before another write | blindly replaying a non-idempotent command and creating a second Run |
+
+Kubernetes implements the second row with `RestartPolicy: Always`: readiness is
+published only after registration and the initial heartbeat, so a replacement
+cannot receive claims under the terminated incarnation. The Coordinator's
+durable dispatch and commit records, not the Worker filesystem, drive recovery.
+If the authority outage prevented the old process from recording deregistration,
+the replacement remains unready until the old registry TTL expires; it then
+registers a new incarnation with a higher generation. This delay is the fencing
+window that prevents two incarnations from owning the same Worker slot.
+
+### 5.4 State transitions
 
 ```text
 Unregistered

@@ -8,6 +8,10 @@ use awaken_executable_agent_catalog::{
 };
 use awaken_executable_agent_contract::ExecutableAgentRegistrar;
 use axum::Router;
+use axum::extract::{Request, State};
+use axum::http::{Method, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 
 use crate::PostgresSchemaMode;
 use crate::config::{ResolvedDeployment, Role};
@@ -45,6 +49,7 @@ pub(crate) async fn migrate(deployment: &ResolvedDeployment) -> Result<(), Strin
 pub(crate) struct ExecutableAgentWiring {
     pub(crate) catalog: Arc<ExecutableAgentCatalog>,
     pub(crate) registrar: Arc<dyn ExecutableAgentRegistrar>,
+    pub(crate) projection_refresher: Option<Arc<PostgresExecutableAgentRegistrar>>,
     pub(crate) private_router: Router,
 }
 
@@ -54,6 +59,7 @@ impl ExecutableAgentWiring {
         Self {
             registrar: Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
             catalog,
+            projection_refresher: None,
             private_router: Router::new(),
         }
     }
@@ -67,6 +73,7 @@ impl ExecutableAgentWiring {
         Ok(Self {
             catalog: Arc::new(ExecutableAgentCatalog::new()),
             registrar: Arc::new(registrar),
+            projection_refresher: None,
             private_router: Router::new(),
         })
     }
@@ -80,6 +87,7 @@ impl ExecutableAgentWiring {
         Self {
             catalog,
             registrar,
+            projection_refresher: None,
             private_router,
         }
     }
@@ -110,8 +118,110 @@ impl ExecutableAgentWiring {
             .map_err(|error| format!("construct executable Agent registration router: {error}"))?;
         Ok(Self {
             catalog,
-            registrar,
+            registrar: registrar.clone(),
+            projection_refresher: Some(registrar),
             private_router,
         })
+    }
+}
+
+type ProcessParts = (
+    Arc<ExecutableAgentCatalog>,
+    Arc<dyn ExecutableAgentRegistrar>,
+    Router,
+    Option<Arc<PostgresExecutableAgentRegistrar>>,
+);
+
+/// Consume the role wiring into the four process-assembly values. The boundary
+/// module owns the local default as well as the distributed selection.
+pub(crate) fn process_parts(wiring: Option<ExecutableAgentWiring>) -> ProcessParts {
+    let wiring = wiring.unwrap_or_else(ExecutableAgentWiring::local);
+    (
+        wiring.catalog,
+        wiring.registrar,
+        wiring.private_router,
+        wiring.projection_refresher,
+    )
+}
+
+/// Install the active-active reconciliation middleware only for the durable
+/// Coordinator composition. Keeping this assembly with the registration
+/// boundary prevents the CLI composition root from owning its transport rules.
+pub(crate) fn layer_refresh(
+    router: Router,
+    refresher: Option<Arc<PostgresExecutableAgentRegistrar>>,
+) -> Router {
+    match refresher {
+        Some(refresher) => router.layer(axum::middleware::from_fn_with_state(
+            refresher,
+            refresh_before_session_runtime_use,
+        )),
+        None => router,
+    }
+}
+
+fn requires_agent_projection_refresh(method: &Method, path: &str) -> bool {
+    method == Method::POST
+        && (path.ends_with("/v1/sessions")
+            || path.contains("/v1/sessions/")
+            || path == awaken_protocol_managed::DEPLOYMENT_SESSION_LAUNCH_PATH)
+}
+
+/// Reconcile before a request can admit or resume Session Runtime work. In an
+/// active-active deployment, Session creation and its first event can reach
+/// different Coordinator replicas; both must resolve the same durable Agent
+/// publication before the Host opens the frozen Session projection. Worker
+/// transport and read-only Session operations stay off this database read path.
+pub(crate) async fn refresh_before_session_runtime_use(
+    State(registrar): State<Arc<PostgresExecutableAgentRegistrar>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if requires_agent_projection_refresh(request.method(), request.uri().path())
+        && let Err(error) = registrar.refresh_projection().await
+    {
+        return (StatusCode::SERVICE_UNAVAILABLE, error.to_string()).into_response();
+    }
+    next.run(request).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projection_refresh_scope_covers_cross_replica_runtime_writes() {
+        // Causes: C1 Session create, C2 existing-Session POST that can realize or
+        // resume Runtime work, C3 private Deployment launch, C4 read-only Session
+        // request, C5 unrelated POST. Effects: E1 refresh the one durable Agent
+        // projection before continuing; E2 do not add a database read.
+        //
+        // Decision table:
+        // | rule | method | path                              | effect |
+        // | R1   | POST   | /v1/sessions                      | E1     |
+        // | R2   | POST   | /v1/sessions/{id}/events          | E1     |
+        // | R3   | POST   | private Deployment Session launch | E1     |
+        // | R4   | GET    | /v1/sessions/{id}                 | E2     |
+        // | R5   | POST   | /v1/agents                        | E2     |
+        assert!(requires_agent_projection_refresh(
+            &Method::POST,
+            "/v1/sessions"
+        ));
+        assert!(requires_agent_projection_refresh(
+            &Method::POST,
+            "/v1/sessions/sesn_1/events"
+        ));
+        assert!(requires_agent_projection_refresh(
+            &Method::POST,
+            awaken_protocol_managed::DEPLOYMENT_SESSION_LAUNCH_PATH
+        ));
+        assert!(!requires_agent_projection_refresh(
+            &Method::GET,
+            "/v1/sessions/sesn_1"
+        ));
+        assert!(!requires_agent_projection_refresh(
+            &Method::POST,
+            "/v1/agents"
+        ));
     }
 }

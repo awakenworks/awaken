@@ -15,7 +15,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::page::paginate_by_id;
 
 use crate::preview::{PreviewAllocations, PreviewSink};
-use crate::project::{self, project_messages, project_step};
+use crate::project::{self, project_messages, project_messages_with_mcp_ids, project_step};
 use crate::routes::vaults::VaultState;
 use crate::types::{
     ConfirmResult, Event, EventReceipt, InboundEvent, ListEventsResponse, ModelConfig,
@@ -36,6 +36,11 @@ pub(crate) const DEFAULT_SCOPE: &str = "default";
 /// clock port; the wire only needs a valid RFC 3339 value here.
 pub(crate) const PROCESSED_AT: &str = "2026-01-01T00:00:00Z";
 
+/// Distinguishes multiple Managed adapters constructed inside one process tick
+/// (tests and embedded multi-tenant composition). Production still normally has
+/// one adapter per Coordinator process.
+static MANAGED_STATE_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
+
 /// The Managed Agents contract error for a `memory_store` add/remove on a running
 /// session — memory stores bind at session creation only.
 const MEMORY_CREATE_ONLY: &str = "memory stores can only be attached at session creation time; \
@@ -50,6 +55,7 @@ mod realization;
 mod resource;
 mod resources;
 mod sandbox_provisioning;
+mod session_record;
 mod session_update;
 pub(crate) use session_update::SessionUpdateCommand;
 mod sessions;
@@ -61,40 +67,12 @@ pub(crate) use resource::{
     ParsedInputTarget, ParsedSessionInput, input_binding, resolved_resource_dto,
     resource_binding_id,
 };
+use session_record::SessionRecord;
 pub use types::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind,
     SessionInit, SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
 };
-
-struct SessionRecord {
-    agent_id: String,
-    session: Session,
-    /// Durable source of truth for the runtime's currently applied input projection.
-    resource_state: awaken_session_contract::SessionResourceState,
-    events: Vec<Event>,
-    /// Subagent (multiagent delegate) child threads spawned in the session. Enumerated
-    /// by `list_threads`/`get_thread`; each is announced by a `session.thread_created`
-    /// event (ADR-0047 D4, first slice).
-    child_threads: Vec<SessionThread>,
-}
-
-impl SessionRecord {
-    /// Project the HTTP Session DTO from the typed aggregate state. The stored
-    /// `Session` intentionally keeps `resources` empty so JSON can never become
-    /// a second mutable resource index.
-    fn session_projection(&self) -> Session {
-        let mut session = self.session.clone();
-        session.resources = self
-            .resource_state
-            .active
-            .inputs
-            .iter()
-            .map(|input| resolved_resource_dto(&session.id, input))
-            .collect();
-        session
-    }
-}
 
 /// The adapter's in-memory session store plus the runtime port.
 pub struct ManagedState {
@@ -292,7 +270,11 @@ impl ManagedState {
             owners: Mutex::new(HashMap::new()),
             sessions_repo,
             lifecycle_sink: None,
-            runtime_incarnation: format!("managed:{}:{started_at}", std::process::id()),
+            runtime_incarnation: format!(
+                "managed:{}:{started_at}:{}",
+                std::process::id(),
+                MANAGED_STATE_INCARNATION_SEQ.fetch_add(1, Ordering::Relaxed)
+            ),
             session_seq: AtomicU64::new(0),
             event_seq: Arc::new(AtomicU64::new(0)),
             live: Mutex::new(HashMap::new()),
@@ -491,6 +473,7 @@ mod tests {
         restored_runtimes: Arc<std::sync::Mutex<Vec<RestoredRuntime>>>,
         delegated: Arc<std::sync::Mutex<Vec<DelegatedRun>>>,
         order: Arc<std::sync::Mutex<Vec<&'static str>>>,
+        committed: Arc<std::sync::Mutex<Option<Vec<Message>>>>,
     }
 
     #[async_trait]
@@ -546,6 +529,9 @@ mod tests {
         }
         async fn committed_messages(&self, thread: &str) -> Vec<Message> {
             self.order.lock().unwrap().push("history");
+            if let Some(messages) = self.committed.lock().unwrap().clone() {
+                return messages;
+            }
             vec![Message::text(
                 awaken_agent_contract::agent::message::Id(format!("{thread}-m0")),
                 awaken_agent_contract::agent::message::Role::User,
@@ -1607,6 +1593,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn committed_event_refresh_merges_peer_messages_exactly_once() {
+        // Cause/effect graph:
+        // C1 a durable Session is already cached on Coordinator A;
+        // C2 Coordinator B commits a new Runtime message to the shared transcript;
+        // C3 A refreshes once or repeatedly through the public-read seam.
+        // E1 A exposes both committed messages; E2 each message is projected once;
+        // E3 the in-memory cache never becomes an alternative source of truth.
+        //
+        // Decision table:
+        // | cache | transcript delta | refresh count | result                 |
+        // | warm  | none             | one          | unchanged              |
+        // | warm  | one peer message | one          | append peer projection |
+        // | warm  | same peer message| repeated     | no duplicate           |
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+        create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, sample_persisted("sesn_peer")).await;
+        let runtime = RehydrateFake::default();
+        let first = Message::text(
+            awaken_agent_contract::agent::message::Id("peer-first".into()),
+            awaken_agent_contract::agent::message::Role::Assistant,
+            "first",
+        );
+        *runtime.committed.lock().unwrap() = Some(vec![first.clone()]);
+        let state = ManagedState::new_with_mcp(runtime.clone()).with_session_repo(repo);
+        state.ensure_session("sesn_peer").await.expect("warm cache");
+
+        let second = Message::text(
+            awaken_agent_contract::agent::message::Id("peer-second".into()),
+            awaken_agent_contract::agent::message::Role::Assistant,
+            "second",
+        );
+        *runtime.committed.lock().unwrap() = Some(vec![first, second]);
+        state
+            .refresh_committed_events("sesn_peer")
+            .await
+            .expect("merge peer commit");
+        state
+            .refresh_committed_events("sesn_peer")
+            .await
+            .expect("idempotent refresh");
+
+        let events = state
+            .list_events("sesn_peer", None, None)
+            .expect("read refreshed projection")
+            .data;
+        let rendered = serde_json::to_string(&events).unwrap();
+        assert_eq!(rendered.matches("first").count(), 1, "E1/E2");
+        assert_eq!(rendered.matches("second").count(), 1, "E1/E2");
+    }
+
+    #[tokio::test]
     async fn protocol_defaults_preparer_rehydrates_the_exact_durable_baseline() {
         // Phase-4 rule M5: an existing durable Session after process restart is
         // not merely "present".  The shared preparer must traverse the same
@@ -1641,7 +1677,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_id_mint_skips_repository_truth_after_restart() {
+    async fn session_id_mint_namespaces_restart_away_from_repository_truth() {
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, sample_persisted("sesn_0")).await;
         let restarted = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo);
@@ -1649,7 +1685,40 @@ mod tests {
             .create_session(bare_create_params(), None)
             .await
             .expect("mint after restart");
-        assert_eq!(created.id, "sesn_1");
+        assert_ne!(created.id, "sesn_0");
+        assert!(created.id.starts_with("sesn_fnv1a64:"));
+    }
+
+    #[tokio::test]
+    async fn active_active_session_id_mint_is_collision_free() {
+        // Cause/effect graph: each Coordinator owns a distinct process
+        // incarnation but both start their local sequence at zero and share one
+        // Session repository.
+        //
+        // | Rule | incarnations | local sequence | shared repo | Effect |
+        // |---|---|---|---|---|
+        // | S1 | different | both zero | yes | two distinct committed Sessions |
+        // | S2 | same process object | increasing | yes | distinct Sessions |
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+        let left = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
+        let right =
+            ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
+        let (left_result, right_result) = tokio::join!(
+            left.create_session(bare_create_params(), None),
+            right.create_session(bare_create_params(), None),
+        );
+        let left_session = left_result.expect("S1 left Session");
+        let right_session = right_result.expect("S1 right Session");
+        assert_ne!(left_session.id, right_session.id, "S1");
+        assert!(repo.get(&left_session.id).await.is_some(), "S1");
+        assert!(repo.get(&right_session.id).await.is_some(), "S1");
+
+        let next = left
+            .create_session(bare_create_params(), None)
+            .await
+            .expect("S2 next Session");
+        assert_ne!(next.id, left_session.id, "S2");
+        assert_ne!(next.id, right_session.id, "S2");
     }
 
     #[tokio::test]

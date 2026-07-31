@@ -71,6 +71,11 @@ pub(crate) struct SessionRuntimeSlot {
     /// Replaced at every resolve; the dispatch store remains the lease fence.
     pub deferred_claim: Option<awaken_run_ingress::RunClaim>,
     pub workspace: Option<String>,
+    /// Exact Agent identity copied from the frozen Session baseline. Internal
+    /// history/recovery calls do not carry a wire Agent parameter, so they must
+    /// resolve the publication through this projection instead of defaulting to
+    /// the built-in assistant.
+    pub agent_id: Option<String>,
     pub model_ref: Option<String>,
     /// Process-local copy of the backend frozen in the Session baseline. It is
     /// validated against the immutable publication before runtime construction.

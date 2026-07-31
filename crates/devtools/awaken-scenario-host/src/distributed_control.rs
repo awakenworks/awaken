@@ -12,7 +12,7 @@ use axum::body::Body;
 use axum::extract::Json;
 use axum::http::{HeaderMap, Response, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::post;
 
 use crate::model_publication::{DistributedProviderPublicationResolver, scenario_model_catalog};
 
@@ -42,9 +42,7 @@ pub async fn build_distributed_control_router() -> Router {
 /// It is a protocol fixture only: publication, credential selection/materialization,
 /// Worker execution, and commit all remain on their production paths.
 pub fn build_distributed_provider_router() -> Router {
-    Router::new()
-        .route("/readyz", get(|| async { StatusCode::OK }))
-        .route("/v1/messages", post(distributed_provider_message))
+    Router::new().route("/v1/messages", post(distributed_provider_message))
 }
 
 async fn distributed_provider_message(

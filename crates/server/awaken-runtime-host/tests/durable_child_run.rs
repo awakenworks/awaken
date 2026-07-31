@@ -84,6 +84,12 @@ impl LlmExecutor for ParentChildModel {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
+    // Cause/effect decision table: D1 parent Run awaits delegation + child Run
+    // awaits permission in its own thread -> the parent-facing result exposes the
+    // child's `write` ticket; D2 caller approves through the parent -> the exact
+    // child ticket resumes and both Runs terminate; D3 reading only the parent
+    // recovery snapshot cannot satisfy D1 and must never fall back to a stale
+    // process-local ticket projection.
     // Dedicated integration-test process: set deployment before constructing the
     // host and inject its one shared queue.
     unsafe {

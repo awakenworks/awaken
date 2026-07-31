@@ -3,6 +3,7 @@
 
 mod support;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -83,6 +84,8 @@ fn ended(messages: Vec<Message>) -> StepOutcome {
 /// The happy path: one assistant text reply, no tools.
 struct EchoFake;
 
+static ECHO_MESSAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 #[async_trait::async_trait]
 impl SessionRuntime for EchoFake {
     async fn run(
@@ -93,7 +96,13 @@ impl SessionRuntime for EchoFake {
     ) -> Result<StepOutcome, RunError> {
         let user_text = Message::new(Id("u".into()), Role::User, content).text_content();
         Ok(ended(vec![Message::text(
-            Id("a".into()),
+            // Runtime message identity is the active-active projection fence; a
+            // test double must obey the production contract that every committed
+            // message has a distinct id, including across turns.
+            Id(format!(
+                "a-{}",
+                ECHO_MESSAGE_SEQUENCE.fetch_add(1, Ordering::SeqCst)
+            )),
             Role::Assistant,
             format!("echo: {user_text}"),
         )]))

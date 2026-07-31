@@ -298,6 +298,53 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authority_loss_terminates_the_incarnation_for_supervisor_restart() {
+    // Cause/effect decision table:
+    // A1 initial heartbeat applied + periodic heartbeat applied -> Worker remains
+    // Ready (covered by node_runs_register_ready_drain_quiesce_and_deregister);
+    // A2 initial heartbeat applied + next heartbeat rejects this incarnation ->
+    // local admission closes, lifecycle cleanup runs, and run_until returns an
+    // error so the process supervisor creates a fresh registered incarnation.
+    // A3 no external shutdown signal -> A2 must still terminate by itself.
+    let upstream = FakeWorkerUpstream::start_rejecting_periodic_heartbeat();
+    let mut coordinator_defaults = awaken_runtime_host::DeploymentConfig::ephemeral();
+    coordinator_defaults.disable_local_pool = true;
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        WorkerNodeBuilder::new(
+            WorkerUpstream::new(upstream.url()).with_worker_id("worker-authority-loss-test"),
+        )
+        .with_deployment_config(coordinator_defaults)
+        .with_manifest(manifest())
+        .with_graceful_drain(Duration::ZERO)
+        .without_admin_surface()
+        .build()
+        .expect("valid Worker topology")
+        .run_until(std::future::pending()),
+    )
+    .await
+    .expect("A3 authority loss terminates without a signal")
+    .expect_err("A2 supervisor must observe a failed incarnation");
+    assert!(
+        result.to_string().contains("supervisor restart required"),
+        "A2"
+    );
+    let requests = upstream.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|path| path.as_str() == "/v1/worker/heartbeat")
+            .count(),
+        2,
+        "A2 initial and rejected periodic heartbeat"
+    );
+    assert!(
+        requests.iter().any(|path| path == "/v1/worker/drain"),
+        "A2 cleanup publishes drain when authority becomes reachable"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drain_closes_local_admission_before_control_acknowledges() {
     let (upstream, drain_release) = FakeWorkerUpstream::start_with_blocked_drain();
     let admin_addr = format!("127.0.0.1:{}", free_port());

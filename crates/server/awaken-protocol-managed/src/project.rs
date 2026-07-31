@@ -13,7 +13,7 @@ use awaken_agent_contract::event::{
     Fact, ToolDisposition, Transcoder, fold_messages as fold, terminal_awaiting,
 };
 
-use crate::state::{AgentCapabilities, CustomTool, OutcomeIteration, StepOutcome};
+use crate::state::{AgentCapabilities, CustomTool, OutcomeIteration};
 use crate::types::{OutboundKind, StopReason};
 
 /// Reserved MCP tool-name prefix — a custom tool may not claim it.
@@ -378,19 +378,33 @@ pub fn project_messages(
     messages: &[awaken_agent_contract::agent::message::Message],
     pending: Option<(&str, bool)>,
 ) -> Vec<ProjectedEvent> {
-    ManagedEncoder::default().transcode_facts(&fold(messages, pending))
+    project_messages_with_mcp_ids(messages, pending, std::iter::empty())
+}
+
+/// Project a committed transcript delta while retaining MCP call identities
+/// learned from the already-projected prefix. Active-active cache refresh uses
+/// this same encoder path; it does not invent a second recovery transcoder.
+pub(crate) fn project_messages_with_mcp_ids(
+    messages: &[awaken_agent_contract::agent::message::Message],
+    pending: Option<(&str, bool)>,
+    mcp_ids: impl IntoIterator<Item = String>,
+) -> Vec<ProjectedEvent> {
+    let mut encoder = ManagedEncoder::default();
+    encoder.mcp_ids.extend(mcp_ids);
+    encoder.transcode_facts(&fold(messages, pending))
 }
 
 /// Project the messages committed during one step, then a terminal
 /// `session.status_idle` derived from `stop`. When `stop` is `RequiresAction` the
 /// pending tool's id populates `requires_action.event_ids`.
 pub(crate) fn project_step(
-    outcome: &StepOutcome,
+    messages: &[awaken_agent_contract::agent::message::Message],
+    state: &awaken_agent_contract::agent::run::RunState,
     pending: Option<(&str, bool)>,
     mcp_ids: impl IntoIterator<Item = String>,
 ) -> Vec<ProjectedEvent> {
-    let mut events = fold(&outcome.messages, pending);
-    events.push(terminal_event(outcome.state(), pending));
+    let mut events = fold(messages, pending);
+    events.push(terminal_event(state, pending));
     let mut encoder = ManagedEncoder::default();
     encoder.mcp_ids.extend(mcp_ids);
     encoder.transcode_facts(&events)

@@ -38,7 +38,17 @@ impl SharedHost {
 
     pub async fn committed_messages(&self, thread: &str) -> Vec<Message> {
         match self.ctx_for(thread, None).await {
-            Ok(ctx) => ctx.commit.committed_messages(&ctx.thread_id),
+            Ok(ctx) => match ctx
+                .commit
+                .authoritative_committed_messages(&ctx.thread_id)
+                .await
+            {
+                Ok(messages) => messages,
+                Err(error) => {
+                    tracing::warn!(thread, %error, "failed to read authoritative thread history");
+                    Vec::new()
+                }
+            },
             Err(error) => {
                 tracing::warn!(thread, error = %error, "failed to open committed thread history");
                 Vec::new()
@@ -252,7 +262,7 @@ impl SharedHost {
                 .into_iter()
                 .map(|text| {
                     Message::text(
-                        MessageId(format!("sys-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst))),
+                        MessageId(awaken_runtime::fresh_process_id("sys")),
                         Role::System,
                         text,
                     )
@@ -266,25 +276,24 @@ impl SharedHost {
             None => input,
         };
         messages.extend(input);
-        let before = ctx.commit.committed_messages(&ctx.thread_id).len();
-        // Baseline the compaction-fold count at the turn's start; a fold during the
-        // turn grows it and the terminal step surfaces the marker. Set here (not on
-        // resume) so it spans an awaiting→resumed turn.
-        st.compactions_before =
-            awaken_ext_compact::compaction_count(&ctx.commit.committed_state(&ctx.thread_id));
-        drop(st);
         let (generated_run_id, mut activation) =
             ctx.runtime
                 .prepare(&ctx.config, ctx.thread_id.0.clone(), messages);
-        let run_id = if ctx.durable {
-            RunId(format!(
-                "run-{}-{}",
-                now_ms(),
-                BASE_SEQ.fetch_add(1, Ordering::SeqCst)
-            ))
-        } else {
-            generated_run_id
-        };
+        // Runtime owns the one restart-unique Run id scheme. Durable execution
+        // persists that id before dispatch; a second timestamp/counter mint here
+        // would collide across active-active PID-1 containers in the same millisecond.
+        let run_id = generated_run_id;
+        // Read the baseline from the authoritative recovery contract. In an
+        // active-active Coordinator tier this process's synchronous projection
+        // may lag commits made by a peer; using it here would project an older
+        // turn again when the current turn settles on another replica.
+        let baseline = self.authoritative_step_snapshot(&ctx, &run_id).await?;
+        let before = baseline.messages.len();
+        // Baseline the compaction-fold count at the turn's start; a fold during the
+        // turn grows it and the terminal step surfaces the marker. Set here (not on
+        // resume) so it spans an awaiting→resumed turn.
+        st.compactions_before = awaken_ext_compact::compaction_count(&baseline.state);
+        drop(st);
         activation.run_id = run_id.clone();
         activation.model_ref_override = self.inference_routing.override_for(thread);
         activation.data_subject_id = data_subject_id;
@@ -299,7 +308,9 @@ impl SharedHost {
         .await
         .map_err(|error| HostError::internal(error.to_string()))?;
         let mut st = ctx.state.lock().await;
-        let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
+        let result = self
+            .finish_step(&ctx, &mut st, run_id, state, before, thread)
+            .await?;
         Ok(result)
     }
 
@@ -452,7 +463,7 @@ impl SharedHost {
                 .into_iter()
                 .map(|text| {
                     Message::text(
-                        MessageId(format!("sys-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst))),
+                        MessageId(awaken_runtime::fresh_process_id("sys")),
                         Role::System,
                         text,
                     )
@@ -460,18 +471,12 @@ impl SharedHost {
                 .collect()
         };
         messages.extend(input);
-        let (_run_id, mut activation) =
-            ctx.runtime
-                .prepare(&ctx.config, thread.to_string(), messages);
+        let (uid, mut activation) = ctx
+            .runtime
+            .prepare(&ctx.config, thread.to_string(), messages);
         // Stamp the thread's per-turn model override (R2/R5) off the fingerprinted
         // snapshot, so the claiming worker resolves the effective model itself.
         activation.model_ref_override = self.inference_routing.override_for(thread);
-        // Restart-unique run id, same rationale as the foreground durable path.
-        let uid = RunId(format!(
-            "run-{}-{}",
-            now_ms(),
-            BASE_SEQ.fetch_add(1, Ordering::SeqCst)
-        ));
         activation.run_id = uid.clone();
         let request = self.resolved_dispatch(activation)?;
         match self.dispatch_pool_or_err() {
@@ -515,9 +520,8 @@ impl SharedHost {
             .awaiting_run
             .clone()
             .ok_or_else(|| HostError::bad_request("no awaiting run to resume"))?;
-        let ticket = ctx
-            .commit
-            .resume_ticket(&run_id)
+        let awaiting_snapshot = self.authoritative_step_snapshot(&ctx, &run_id).await?;
+        let ticket = recovery_ticket(&awaiting_snapshot, &run_id)
             .ok_or_else(|| HostError::internal("awaiting run has no awaiting ticket"))?;
 
         if matches!(
@@ -535,12 +539,18 @@ impl SharedHost {
                     "awaiting remote input requires a client result",
                 ));
             };
-            let before = ctx.commit.committed_messages(&ctx.thread_id).len();
             let activation = ctx.resume_activation(&ticket);
+            let before = self
+                .authoritative_step_snapshot(&ctx, &activation.run_id)
+                .await?
+                .messages
+                .len();
             let command = ResumeCommand::from_ticket(&ticket, ResumeResult::Input(content), 0);
             let state = self.drive_resume(&ctx, activation, command).await?;
             let mut st = ctx.state.lock().await;
-            let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
+            let result = self
+                .finish_step(&ctx, &mut st, run_id, state, before, thread)
+                .await?;
             return Ok(result);
         }
 
@@ -549,14 +559,16 @@ impl SharedHost {
         // child's own Run service. The user never resumes the child directly.
         if ticket.reason == AwaitReason::Delegation {
             let mut parent_store = Store::new();
-            for command in ctx.commit.committed_state(&ctx.thread_id) {
+            for command in &awaiting_snapshot.state {
                 if command.scope == Scope::Run && command.run_id.as_ref() == Some(&run_id) {
-                    parent_store.apply(&command);
+                    parent_store.apply(command);
                 }
             }
             let registry = RunDelegations::load(&parent_store)
                 .map_err(|error| HostError::internal(error.to_string()))?;
-            let child = child_ticket(ctx.as_ref(), registry.as_ref(), ticket.call_id.as_deref());
+            let child = self
+                .authoritative_child_ticket(&ctx, registry.as_ref(), ticket.call_id.as_deref())
+                .await?;
             let result = if let Some(child_ticket) = child {
                 self.check_pending(&ctx, &child_ticket, tool_use_id, resume.wants_client())?;
                 match resume {
@@ -592,12 +604,18 @@ impl SharedHost {
                 };
                 ResumeResult::Input(content)
             };
-            let before = ctx.commit.committed_messages(&ctx.thread_id).len();
             let activation = ctx.resume_activation(&ticket);
+            let before = self
+                .authoritative_step_snapshot(&ctx, &activation.run_id)
+                .await?
+                .messages
+                .len();
             let command = ResumeCommand::from_ticket(&ticket, result, 0);
             let state = self.drive_resume(&ctx, activation, command).await?;
             let mut st = ctx.state.lock().await;
-            let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
+            let result = self
+                .finish_step(&ctx, &mut st, run_id, state, before, thread)
+                .await?;
             return Ok(result);
         }
 
@@ -620,18 +638,64 @@ impl SharedHost {
                 ResumeResult::ToolResult(output)
             }
         };
-        let before = ctx.commit.committed_messages(&ctx.thread_id).len();
         let activation = ctx.resume_activation(&ticket);
+        let before = self
+            .authoritative_step_snapshot(&ctx, &activation.run_id)
+            .await?
+            .messages
+            .len();
         let command = ResumeCommand::from_ticket(&ticket, result, 0);
         let state = self.drive_resume(&ctx, activation, command).await?;
         let mut st = ctx.state.lock().await;
-        let result = self.finish_step(&ctx, &mut st, run_id, state, before, thread)?;
+        let result = self
+            .finish_step(&ctx, &mut st, run_id, state, before, thread)
+            .await?;
         Ok(result)
+    }
+
+    /// Reuse the canonical claim-recovery snapshot as the exact thread read for
+    /// foreground projection. PostgreSQL implements this from one repeatable-read
+    /// transaction; local stores expose the same facts without a parallel model.
+    async fn authoritative_step_snapshot(
+        &self,
+        ctx: &SessionCtx,
+        run_id: &RunId,
+    ) -> Result<RunRecoverySnapshot, HostError> {
+        ctx.commit
+            .recovery_snapshot(&ctx.thread_id, run_id)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))
+    }
+
+    /// Join the parent-thread delegation relationship with the child thread's
+    /// authoritative recovery snapshot. Child Runs intentionally own a separate
+    /// thread, so the parent's consistent snapshot cannot contain their ticket.
+    async fn authoritative_child_ticket(
+        &self,
+        ctx: &SessionCtx,
+        registry: Option<&awaken_agent_contract::agent::delegation::DelegationRegistry>,
+        parent_call_id: Option<&str>,
+    ) -> Result<Option<ResumeTicket>, HostError> {
+        let Some(child_run_id) = parent_call_id.and_then(|parent_call_id| {
+            registry?
+                .delegations()
+                .find(|relationship| relationship.parent_call_id == parent_call_id)
+                .map(|relationship| relationship.child_run_id.clone())
+        }) else {
+            return Ok(None);
+        };
+        let child_thread_id = ThreadId(child_run_id.0.clone());
+        let committed = ctx
+            .commit
+            .recovery_snapshot(&child_thread_id, &child_run_id)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        Ok(recovery_ticket(&committed, &child_run_id))
     }
 
     /// Project the step's delta, update the awaiting position, and publish the
     /// delta to the thread hub for any observing protocol.
-    fn finish_step(
+    async fn finish_step(
         &self,
         ctx: &SessionCtx,
         st: &mut SessionState,
@@ -640,12 +704,16 @@ impl SharedHost {
         before: usize,
         thread: &str,
     ) -> Result<RunResult, HostError> {
-        let all = ctx.commit.committed_messages(&ctx.thread_id);
-        let new_messages = all[before.min(all.len())..].to_vec();
+        // Cause/effect: when peer P commits this Run, this Coordinator's local
+        // projection is stale but the recovery snapshot contains P's messages,
+        // state, and tickets. Project that one committed truth or fail closed;
+        // never return an idle response with an empty/old assistant delta.
+        let committed = self.authoritative_step_snapshot(ctx, &run_id).await?;
+        let new_messages = committed.messages[before.min(committed.messages.len())..].to_vec();
         let mut run_store = Store::new();
-        for command in ctx.commit.committed_state(&ctx.thread_id) {
+        for command in &committed.state {
             if command.scope == Scope::Run && command.run_id.as_ref() == Some(&run_id) {
-                run_store.apply(&command);
+                run_store.apply(command);
             }
         }
         let delegation_registry = RunDelegations::load(&run_store)
@@ -654,13 +722,18 @@ impl SharedHost {
         let (pending, awaiting) = match &state {
             RunState::Awaiting => {
                 st.awaiting_run = Some(run_id.clone());
-                let pending = ctx.commit.resume_ticket(&run_id).and_then(|ticket| {
+                let pending = if let Some(ticket) = recovery_ticket(&committed, &run_id) {
                     // A parent waiting on a child exposes the CHILD's ordinary
                     // interaction request. The protocol still addresses the
                     // parent session; it never obtains a bypass around the
                     // parent-child relationship.
                     let visible_child = if ticket.reason == AwaitReason::Delegation {
-                        child_ticket(ctx, delegation_registry.as_ref(), ticket.call_id.as_deref())
+                        self.authoritative_child_ticket(
+                            ctx,
+                            delegation_registry.as_ref(),
+                            ticket.call_id.as_deref(),
+                        )
+                        .await?
                     } else {
                         None
                     };
@@ -679,7 +752,9 @@ impl SharedHost {
                         }
                         None => pending_from_ticket(&ticket, &client_tools),
                     }
-                });
+                } else {
+                    None
+                };
                 (pending, true)
             }
             _ => {
@@ -699,8 +774,7 @@ impl SharedHost {
         // not run-id-based, so it works under durable ingress (where the worker
         // mints its own run id). The compact extension owns the key (G16).
         let compacted = !awaiting
-            && awaken_ext_compact::compaction_count(&ctx.commit.committed_state(&ctx.thread_id))
-                > st.compactions_before;
+            && awaken_ext_compact::compaction_count(&committed.state) > st.compactions_before;
         // The run's transient-retry counter: non-zero ⇒ the inference seam
         // transparently retried at least once, so the turn was auto-recovered.
         let rescheduled = ctx
@@ -771,22 +845,12 @@ impl SharedHost {
     }
 }
 
-/// Resolve the ordinary ticket owned by the child named by a parent's pending
-/// delegation call. Relationship identity stays in `RunDelegations`; the ticket
-/// stays in the child Run. This function only joins those two committed facts for
-/// the parent-facing interaction projection.
-fn child_ticket(
-    ctx: &SessionCtx,
-    registry: Option<&awaken_agent_contract::agent::delegation::DelegationRegistry>,
-    parent_call_id: Option<&str>,
-) -> Option<ResumeTicket> {
-    let parent_call_id = parent_call_id?;
-    let child_run_id = registry?
-        .delegations()
-        .find(|relationship| relationship.parent_call_id == parent_call_id)?
-        .child_run_id
-        .clone();
-    ctx.commit.resume_ticket(&child_run_id)
+fn recovery_ticket(committed: &RunRecoverySnapshot, run_id: &RunId) -> Option<ResumeTicket> {
+    committed
+        .resume_tickets
+        .iter()
+        .find(|entry| &entry.run_id == run_id)
+        .map(|entry| entry.ticket.clone())
 }
 
 /// Read the pending tool off an awaiting ticket, classifying it client-executed

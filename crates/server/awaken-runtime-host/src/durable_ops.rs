@@ -17,7 +17,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use axum::extract::{Path, Query, State};
@@ -29,7 +28,7 @@ use serde_json::{Value, json};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
-use crate::host::{BASE_SEQ, HostError, SharedHost};
+use crate::host::{HostError, SharedHost};
 use crate::worker_http::respond;
 
 impl SharedHost {
@@ -121,7 +120,7 @@ impl SharedHost {
             HostError::bad_request("no awaiting run on this thread to deliver to")
         })?;
         let input = awaken_run_ingress::PendingInput {
-            message_id: format!("xthread-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst)),
+            message_id: awaken_runtime::fresh_process_id("xthread"),
             run_id: run_id.clone(),
             thread_id,
             correlation_id: ticket.correlation_id,
@@ -155,7 +154,7 @@ impl SharedHost {
             ));
         }
         pool.send(awaken_run_ingress::PendingInput {
-            message_id: format!("manual-resume-{}", BASE_SEQ.fetch_add(1, Ordering::SeqCst)),
+            message_id: awaken_runtime::fresh_process_id("manual-resume"),
             run_id: run_id.clone(),
             thread_id,
             correlation_id: ticket.correlation_id,
@@ -212,10 +211,7 @@ async fn submit_background(
                 .to_string();
             let agent = body.get("agent").and_then(|v| v.as_str());
             let message = Message::text(
-                MessageId(format!(
-                    "ops-user-{}",
-                    BASE_SEQ.fetch_add(1, Ordering::SeqCst)
-                )),
+                MessageId(awaken_runtime::fresh_process_id("ops-user")),
                 Role::User,
                 text,
             );
@@ -338,10 +334,7 @@ async fn supersede(
                 .to_string();
             let agent = body.get("agent").and_then(|v| v.as_str());
             let message = Message::text(
-                MessageId(format!(
-                    "ops-user-{}",
-                    BASE_SEQ.fetch_add(1, Ordering::SeqCst)
-                )),
+                MessageId(awaken_runtime::fresh_process_id("ops-user")),
                 Role::User,
                 text,
             );

@@ -933,7 +933,10 @@ async fn list_thread_events(
     Path((id, tid)): Path<(String, String)>,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<ListEventsResponse>, WireErr> {
-    state.ensure_session(&id).await.map_err(error_response)?;
+    state
+        .refresh_committed_events(&id)
+        .await
+        .map_err(error_response)?;
     state
         .list_thread_events(&id, &tid, query.page.as_deref(), query.limit)
         .map(Json)
@@ -1071,7 +1074,10 @@ async fn stream_thread_events(
     // the Session stream. Primary-thread previews are the Session previews; child
     // execution currently has no independent preview producer.
     let previews = parse_event_deltas(raw.as_deref())?;
-    state.ensure_session(&id).await.map_err(error_response)?;
+    state
+        .refresh_committed_events(&id)
+        .await
+        .map_err(error_response)?;
     state.get_thread(&id, &tid).map_err(error_response)?;
     let (snapshot, rx) = state.stream_subscribe(&id).map_err(error_response)?;
     let primary = tid == format!("{id}:primary");
@@ -1172,6 +1178,10 @@ async fn list_events(
     Query(query): Query<PageQuery>,
 ) -> Result<Json<ListEventsResponse>, (StatusCode, Json<ErrorResponse>)> {
     state
+        .refresh_committed_events(&id)
+        .await
+        .map_err(error_response)?;
+    state
         .list_events(&id, query.page.as_deref(), query.limit)
         .map(Json)
         .map_err(error_response)
@@ -1184,6 +1194,10 @@ async fn stream_events(
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, WireErr> {
     // Opt in to live previews (`event_start`/`event_delta`) via `event_deltas[]`.
     let previews = parse_event_deltas(raw.as_deref())?;
+    state
+        .refresh_committed_events(&id)
+        .await
+        .map_err(error_response)?;
     let (snapshot, rx) = state.stream_subscribe(&id).map_err(error_response)?;
     Ok(Sse::new(live_sse_stream(snapshot, rx, previews, Some)).keep_alive(KeepAlive::default()))
 }

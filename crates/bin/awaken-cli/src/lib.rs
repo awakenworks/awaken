@@ -982,9 +982,12 @@ async fn assemble_process_router(
         Arc::new(awaken_runtime_host::HeaderWorkerAuthenticator)
             as Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>
     });
-    let executable_agent_wiring = assembly
-        .executable_agent_wiring
-        .unwrap_or_else(executable_agent_registration::ExecutableAgentWiring::local);
+    let (
+        executable_agent_catalog,
+        executable_agent_registrar,
+        executable_agent_private_router,
+        executable_agent_projection_refresher,
+    ) = executable_agent_registration::process_parts(assembly.executable_agent_wiring);
     let deployment_session_launch = assembly.deployment_session_launch;
     let deployment = assembly.deployment;
     let hand_executors = assembly.hand_executors;
@@ -1155,9 +1158,6 @@ async fn assemble_process_router(
         });
     // One Coordinator-owned executable projection serves every execution read.
     // Composition selects only the local, HTTP, or durable boundary adapter.
-    let executable_agent_catalog = executable_agent_wiring.catalog;
-    let executable_agent_registrar = executable_agent_wiring.registrar;
-    let executable_agent_private_router = executable_agent_wiring.private_router;
     let config_service = Arc::new(
         ConfigService::new(
             model_wiring.publication_resolver,
@@ -1511,6 +1511,8 @@ async fn assemble_process_router(
         );
     data = data.merge(executable_agent_private_router);
     data = data.merge(deployment_session_private_router);
+    data =
+        executable_agent_registration::layer_refresh(data, executable_agent_projection_refresher);
     // One timer drives every Managed periodic trigger. Deployment remains the cron
     // authority; Dream policies submit the same durable DreamJob as manual create.
     let scheduled_deployments = deployment_state.clone();
