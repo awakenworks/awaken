@@ -604,6 +604,9 @@ pub fn classify_error(message: &str) -> Error {
         "usage limit",
         "quota",
         "insufficient_quota",
+        "insufficient balance",
+        "insufficient_balance",
+        "payment required",
         "billing",
         "credit balance",
         "out of credit",
@@ -904,6 +907,7 @@ mod classify_tests {
         for msg in [
             "You have exceeded your current quota",
             "429 insufficient_quota",
+            r#"402 Payment Required: {"error":{"message":"Insufficient Balance","type":"unknown_error","code":"invalid_request_error"}}"#,
             "Your credit balance is too low",
             "weekly limit reached",
             "monthly spending limit exceeded",
