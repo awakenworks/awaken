@@ -66,6 +66,26 @@ pub(crate) async fn prepare_agent_publication(
         .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
     let mut bindings = std::collections::BTreeSet::new();
     for candidate in std::iter::once(&models.primary).chain(models.candidates.iter()) {
+        let candidate_scope = match &candidate.provisioning {
+            awaken_runtime_contract::resolved::ModelProvisioning::Provider { scope_id, .. }
+            | awaken_runtime_contract::resolved::ModelProvisioning::Remote { scope_id, .. } => {
+                Some(scope_id)
+            }
+            _ => None,
+        };
+        if let Some(scope_id) = candidate_scope
+            && scope_id != workspace
+        {
+            return Err(PublishError::Unresolvable(
+                PublicationResolutionError::CandidateUnavailable {
+                    binding: candidate.binding.clone(),
+                    reason: format!(
+                        "resolved candidate belongs to Workspace {scope_id}, not trusted execution Workspace {workspace}"
+                    ),
+                }
+                .to_string(),
+            ));
+        }
         if matches!(
             &candidate.provisioning,
             awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
@@ -228,7 +248,7 @@ pub(crate) fn snapshot_metadata(
 mod tests {
     use super::*;
     use awaken_runtime_contract::{
-        CredentialRef,
+        CredentialRef, InferenceEndpoint,
         resolved::{BackendModelSelection, ModelBinding, ResolvedModelCandidate},
     };
 
@@ -348,6 +368,82 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("duplicate model candidate"));
+    }
+
+    #[tokio::test]
+    async fn publication_fences_every_scope_bearing_candidate() {
+        // Cause/effect graph:
+        // C1 provisioning carries a scope (Provider or Remote); C2 scope equals
+        // the trusted execution Workspace. C1+!C2 -> E1 reject the complete
+        // publication before compilation/persistence; C1+C2 -> E2 accept; !C1
+        // is governed by the provisioning variant's own validation.
+        //
+        // Decision table:
+        // R1 Provider + same Workspace  -> E2
+        // R2 Provider + other Workspace -> E1
+        // R3 Remote   + same Workspace  -> E2
+        // R4 Remote   + other Workspace -> E1
+        let binding = ModelBinding::new("provider-account", "model", "genai");
+        let provider = |scope: &str| {
+            ResolvedModelCandidate::provider(
+                binding.clone(),
+                "provider@1",
+                "route@1",
+                scope,
+                None,
+                InferenceEndpoint {
+                    adapter_kind: "openai".into(),
+                    api_dialect: "open_ai_responses".into(),
+                    base_url: "https://gateway.internal/v1".into(),
+                    upstream_model: "provider-model".into(),
+                },
+            )
+        };
+        let remote_binding = ModelBinding::new("", "", "a2a:https://agent.example");
+        let remote = |scope: &str| {
+            ResolvedModelCandidate::remote(remote_binding.clone(), scope, None, "sha256:agent-card")
+        };
+
+        for accepted in [provider("workspace-a"), remote("workspace-a")] {
+            let resolver = FixedResolver {
+                expected_workspace: "workspace-a",
+                output: ResolvedPublicationModels {
+                    primary: accepted,
+                    candidates: Vec::new(),
+                    context_window: None,
+                    max_output_tokens: None,
+                },
+            };
+            prepare_agent_publication(
+                &resolver,
+                &awaken_tenancy::ScopeId::from("workspace-a"),
+                revision(ModelSelection::Auto, Vec::new()),
+            )
+            .await
+            .expect("R1/R3: trusted scope is publishable");
+        }
+
+        for rejected in [provider("workspace-b"), remote("workspace-b")] {
+            let resolver = FixedResolver {
+                expected_workspace: "workspace-a",
+                output: ResolvedPublicationModels {
+                    primary: rejected,
+                    candidates: Vec::new(),
+                    context_window: None,
+                    max_output_tokens: None,
+                },
+            };
+            let error = prepare_agent_publication(
+                &resolver,
+                &awaken_tenancy::ScopeId::from("workspace-a"),
+                revision(ModelSelection::Auto, Vec::new()),
+            )
+            .await
+            .expect_err("R2/R4: cross-Workspace candidate must fail closed");
+            let message = error.to_string();
+            assert!(message.contains("Workspace workspace-b"));
+            assert!(message.contains("Workspace workspace-a"));
+        }
     }
 
     #[tokio::test]

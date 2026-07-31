@@ -336,3 +336,19 @@ This endpoint is deliberately not a product-specific Agent-control API and does
 not add a publication cache or DTO. Local embedded composition continues to use
 the same `ConfigPlane`/`ScopedConfigRegistry` authority directly; remote
 composition uses the HTTP adapter over that authority.
+
+## Amendment: port-boundary validation and pool-aware materialization (2026-07-31)
+
+Configuration publication treats `ModelPublicationResolver` as an adapter, not
+as authority. After resolution, the publication service independently verifies
+that every scope-bearing Provider or Remote candidate carries the trusted
+execution Workspace supplied to the port. A cross-Workspace candidate rejects
+the whole publication before compilation or persistence.
+
+The default `InferenceExecutorMaterializer::materialize` is intentionally valid
+only when the effective model identifies exactly one complete published
+candidate. If several identities publish the same model, the default fails
+closed instead of choosing the first. A pool-capable adapter overrides
+`materialize` and exact-matches each `ChatRequest.model_binding` against the
+ordered published pool. This preserves same-model, cross-account fallback
+without allowing the convenience path to become a second routing authority.
