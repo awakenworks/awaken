@@ -1,0 +1,155 @@
+# Internal all-in-one product topology for Awaken-backed applications. The
+# public product owns ingress; this Service deliberately has no external route.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: awaken-system
+  labels:
+    awaken.runtime/internal: "true"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: awaken-product-config
+data:
+  config.toml: |
+    data_dir = "/var/lib/awaken"
+    bind = "0.0.0.0:8080"
+    mode = "local"
+    role = "all-in-one"
+    run_local_pool = true
+    no_browser = true
+    identity_mode = "self-managed"
+    sandbox_tier = "namespace"
+    sandbox_dir = "/var/lib/awaken/sandboxes"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: awaken-product-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 8Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: awaken-product
+  labels:
+    app.kubernetes.io/name: awaken
+    app.kubernetes.io/component: internal-backend
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: awaken
+    app.kubernetes.io/component: internal-backend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: awaken-product
+  labels:
+    app.kubernetes.io/name: awaken
+    app.kubernetes.io/component: internal-backend
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: awaken
+      app.kubernetes.io/component: internal-backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: awaken
+        app.kubernetes.io/component: internal-backend
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: awaken
+          image: awaken-product:latest
+          imagePullPolicy: Never
+          command: ["/usr/local/bin/awaken-server"]
+          args: ["all-in-one", "--config", "/etc/awaken/config.toml", "--no-browser"]
+          securityContext:
+            allowPrivilegeEscalation: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: Unconfined
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 3Gi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/awaken
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/awaken
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: awaken-product-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: awaken-product-data
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: awaken-product-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: awaken
+      app.kubernetes.io/component: internal-backend
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              awaken.design/backend-access: "true"
+      ports:
+        - protocol: TCP
+          port: 8080
+

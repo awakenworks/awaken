@@ -12,6 +12,7 @@ copied cluster setup scripts.
 | `bases/postgres/` | Ephemeral Postgres Service, readiness contract, test credentials, and storage policy |
 | `bases/durable-brain/` | Deterministic Postgres-backed brain Service and Deployment, typed scenario inputs, and unique dispatch ownership |
 | `bases/topology-direct/` | Direct brain-to-hand Services and Deployments, including the canonical `awaken-sandbox hand` command |
+| `product-backend/` | Private all-in-one product backend with durable state, no public Service/Ingress, and an ingress allowlist for Awaken Design backends |
 | `microservices/` | Postgres plus the Direct topology, with a focused durable-brain patch applied before object creation |
 | `distributed-control/` | ADR-0071 production Control/Coordinator/Worker composition, four owner databases on a primary/streaming-standby fixture, authenticated boundaries, and a single public edge |
 | `failover/`, `scaling/`, `cold-start/`, `nats-wake/`, `worker-failover/` | Placement, replica counts, dependencies, and fault behavior layered over the Postgres and durable-brain bases |
@@ -58,6 +59,7 @@ Run the pure harness rules with:
 
 ```bash
 bash e2e/k3d/harness.sh --self-test
+bash e2e/k3d/product_backend_contract_test.sh
 ```
 
 Run a real topology with its driver, for example:
