@@ -28,6 +28,7 @@ run "secrets" python3 scripts/ci/check_secrets.py
 run "file-limits self-test" python3 scripts/ci/check_file_limits.py --self-test
 run "file-limits" python3 scripts/ci/check_file_limits.py
 run "commit-message self-test" python3 scripts/ci/check_commit_message.py --self-test
+run "Cargo target isolation self-test" scripts/ci/_cargo_target.sh --self-test
 run "documentation" scripts/ci/check-docs.sh
 run "rust" scripts/ci/check-rust.sh --full
 if [ "${AWAKEN_SKIP_FORMAL:-0}" = "1" ]; then
