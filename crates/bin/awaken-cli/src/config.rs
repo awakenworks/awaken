@@ -21,8 +21,11 @@ use serde::Deserialize;
 mod report;
 mod role;
 mod service_boundary;
+mod worker_bootstrap;
+
 pub use role::Role;
 pub use service_boundary::{DeploymentSessionLaunchConfig, ExecutableAgentRegistrationConfig};
+pub use worker_bootstrap::WorkerBootstrap;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_WAKE_CHANNEL: &str = "awaken_dispatch_wake";
@@ -95,21 +98,6 @@ impl CloudModelMode {
     pub const fn is_enabled(self) -> bool {
         matches!(self, Self::Enabled)
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct WorkerBootstrap {
-    pub worker_id: String,
-    pub credential_material_root: PathBuf,
-    pub credential_trust_domain: String,
-    pub admin_listen: Option<String>,
-    pub drain_grace_secs: u64,
-    pub build_digest: Option<String>,
-    pub zone: Option<String>,
-    pub capabilities: Vec<String>,
-    pub max_concurrent: Option<u32>,
-    pub credential_probe_interval_secs: u64,
-    pub credential_observation_ttl_secs: u64,
 }
 
 /// One backend family for the complete resource plane.
@@ -201,6 +189,9 @@ pub struct ResolvedDeployment {
     pub run_local_pool: bool,
     pub worker_server: Option<String>,
     pub worker: WorkerBootstrap,
+    /// Coordinator-owned enrollment file for authenticated Worker requests.
+    /// It contains no database or Control sealing material.
+    pub worker_trust_credentials_file: Option<PathBuf>,
     pub identity_mode: awaken_control::ManagementIdentityMode,
     pub cloud_models: CloudModelMode,
     pub org_id: String,
@@ -369,11 +360,17 @@ impl ResolvedDeployment {
                 "worker_server_required: pass --server or configure worker_server".to_owned(),
             );
         }
+        worker_bootstrap::validate_credential_file_ownership(
+            role,
+            file.worker_request_credential_file.is_some(),
+            file.worker_trust_credentials_file.is_some(),
+        )?;
         let worker = WorkerBootstrap {
             worker_id: file
                 .worker_id
                 .clone()
                 .unwrap_or_else(|| "awaken-worker".to_owned()),
+            request_credential_file: file.worker_request_credential_file.clone(),
             credential_material_root: file
                 .worker_credential_material_root
                 .clone()
@@ -816,6 +813,7 @@ impl ResolvedDeployment {
             run_local_pool,
             worker_server,
             worker,
+            worker_trust_credentials_file: file.worker_trust_credentials_file,
             identity_mode,
             cloud_models,
             org_id: file
@@ -940,6 +938,8 @@ struct FileConfig {
     role: Option<String>,
     worker_server: Option<String>,
     worker_id: Option<String>,
+    worker_request_credential_file: Option<PathBuf>,
+    worker_trust_credentials_file: Option<PathBuf>,
     worker_credential_material_root: Option<PathBuf>,
     worker_credential_trust_domain: Option<String>,
     worker_admin_listen: Option<String>,

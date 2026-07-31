@@ -348,4 +348,71 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("credential_db"));
     }
+
+    #[test]
+    fn worker_transport_credentials_follow_process_ownership() {
+        // Cause/effect decision table:
+        // R1 Worker + Coordinator enrollment file -> reject cross-owner config.
+        // R2 non-Worker + Worker signing file -> reject secret custody leak.
+        // R3 Worker + Worker signing file -> accept the projected boundary path.
+        // R4 AllInOne + enrollment file -> accept the trust boundary path.
+        let resolve = |role, file| {
+            ResolvedDeployment::resolve_file(
+                ConfigOverrides {
+                    role: Some(role),
+                    worker_server: (role == Role::Worker).then(|| "http://coordinator".to_owned()),
+                    ..Default::default()
+                },
+                Some(PathBuf::from("/home/dev")),
+                PathBuf::from("/home/dev/.awaken/config.toml"),
+                file,
+            )
+        };
+        assert!(
+            resolve(
+                Role::Worker,
+                FileConfig {
+                    worker_trust_credentials_file: Some("/trust.json".into()),
+                    ..Default::default()
+                }
+            )
+            .unwrap_err()
+            .contains("owned by Coordinator"),
+            "R1"
+        );
+        assert!(
+            resolve(
+                Role::AllInOne,
+                FileConfig {
+                    worker_request_credential_file: Some("/worker.json".into()),
+                    ..Default::default()
+                }
+            )
+            .unwrap_err()
+            .contains("owned by Worker"),
+            "R2"
+        );
+        assert!(
+            resolve(
+                Role::Worker,
+                FileConfig {
+                    worker_request_credential_file: Some("/worker.json".into()),
+                    ..Default::default()
+                }
+            )
+            .is_ok(),
+            "R3"
+        );
+        assert!(
+            resolve(
+                Role::AllInOne,
+                FileConfig {
+                    worker_trust_credentials_file: Some("/trust.json".into()),
+                    ..Default::default()
+                }
+            )
+            .is_ok(),
+            "R4"
+        );
+    }
 }
