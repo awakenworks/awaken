@@ -368,3 +368,24 @@ Agent/Session/Run authority. Standalone mode returns `hub_url: null` and does
 not guess from Host, issuer, referrer, or an OAuth token. The browser menu is a
 navigation affordance, never an authorization decision or a second product
 topology.
+
+## Amendment (2026-07-31): hosted browser entry returns to the account hub
+
+The same inert `SuiteNavigation` prevents an unauthenticated direct hosted URL
+from falling into Awaken's standalone setup or default Workspace presentation.
+Before local browser setup, the console reads the same-origin projection. An
+exact hub plus no canonical product session bearer navigates to that opaque hub;
+an existing bearer continues; `hub_url: null` retains the standalone path.
+Projection failure is visible and retryable and never guesses a login mode,
+OAuth coordinate, tenant, or Workspace.
+
+| Suite projection | Product bearer | Result |
+|---|---|---|
+| exact hub | absent | navigate to the exact hub; Cloud/IAM owns sign-in |
+| exact hub | present | enter the hosted console |
+| null | absent/present | retain standalone behavior |
+| unavailable | any | fail closed with retry |
+
+Awaken still does not construct OAuth URLs or know Cloud product topology. The
+Cloud hub remains responsible for returning through the existing product launch
+capability with the exact Workspace route.

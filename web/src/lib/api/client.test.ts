@@ -15,8 +15,8 @@ describe("cloud product session bearer", () => {
         setItem: (key: string, value: string) => values.set(key, value),
       };
     };
-    Object.defineProperty(globalThis, "sessionStorage", { value: storage() });
-    Object.defineProperty(globalThis, "localStorage", { value: storage() });
+    Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: storage() });
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage() });
   });
 
   beforeEach(() => {
@@ -32,5 +32,18 @@ describe("cloud product session bearer", () => {
   it("does not read a management bearer from local storage", () => {
     globalThis.localStorage.setItem("awaken.console.token", "legacy-token");
     expect(getToken()).toBe("");
+  });
+
+  it("treats unavailable browser storage as an absent credential", () => {
+    const original = globalThis.sessionStorage;
+    Object.defineProperty(globalThis, "sessionStorage", {
+      configurable: true,
+      get: () => { throw new DOMException("blocked", "SecurityError"); },
+    });
+    expect(getToken()).toBe("");
+    Object.defineProperty(globalThis, "sessionStorage", {
+      configurable: true,
+      value: original,
+    });
   });
 });
