@@ -539,6 +539,19 @@ impl SharedHost {
         !self.deployment.disable_local_pool
     }
 
+    /// Clone the completion projection consumed by the authenticated Worker
+    /// settle boundary.
+    ///
+    /// A coordinator-only embedding has no local dispatch pool. Its foreground
+    /// Managed Session turn therefore registers with this sink before enqueueing
+    /// and the remote Worker transport projects the committed terminal/awaiting
+    /// state back into the same host. The sink is notification-only: committed
+    /// Run truth remains authoritative and the bounded timeout retains its
+    /// existing one-read recovery fallback.
+    pub fn dispatch_completion_sink(&self) -> Arc<dyn awaken_run_ingress::CompletionSink> {
+        self.completion.clone()
+    }
+
     /// Register the management assistant's tool executables globally (ADR-0052). They
     /// run on every thread's runtime, but only the reserved-scope assistant's config
     /// names them, so only its runs can invoke them; their ids are auto-allowed on the
