@@ -678,9 +678,11 @@ async fn peer_lifecycle_feed_reads_authoritative_postgres_without_projection_ref
                 thread.clone(),
                 disposition,
                 true,
-                (index == 0)
-                    .then(|| vec![message("active-active-message", "peer-visible")])
-                    .unwrap_or_default(),
+                if index == 0 {
+                    vec![message("active-active-message", "peer-visible")]
+                } else {
+                    Vec::new()
+                },
                 Vec::new(),
                 Vec::new(),
             ))

@@ -85,11 +85,12 @@ async fn enqueue_decoration_changes_only_the_admission_edge() {
         .await
         .unwrap();
 
-    let admitted = admission.admitted.lock().unwrap();
-    assert_eq!(admitted.len(), 1);
-    assert_eq!(admitted[0].0.run_id().0, "admitted");
-    assert_eq!(admitted[0].1, options);
-    drop(admitted);
+    {
+        let admitted = admission.admitted.lock().unwrap();
+        assert_eq!(admitted.len(), 1);
+        assert_eq!(admitted[0].0.run_id().0, "admitted");
+        assert_eq!(admitted[0].1, options);
+    }
     assert_eq!(decorated.runnable_depth(0).await.unwrap(), Some(0));
 
     inner
