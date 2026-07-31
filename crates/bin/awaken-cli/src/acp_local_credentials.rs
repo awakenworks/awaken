@@ -75,7 +75,7 @@ pub fn registered_memory_mounter_factory() -> awaken_worker::RegisteredMemoryMou
 }
 
 fn configured_worker_builder(
-    upstream: impl Into<String>,
+    upstream: awaken_runtime_host::WorkerUpstream,
     deployment: &crate::config::ResolvedDeployment,
     credentials: awaken_runtime_host::PinnedCredentialMaterializer,
 ) -> awaken_worker::WorkerNodeBuilder {
@@ -93,28 +93,26 @@ fn configured_worker_builder(
         manifest = manifest.with_max_concurrent(max_concurrent);
     }
 
-    let mut builder = awaken_worker::WorkerNodeBuilder::new(
-        awaken_runtime_host::WorkerUpstream::new(upstream).with_worker_id(&worker.worker_id),
-    )
-    .with_deployment_config(deployment.runtime.clone())
-    .with_standard_manifest_config(manifest)
-    .with_inference_materializer(Arc::new(
-        awaken_server::inference_materializer::CredentialInferenceMaterializer::from_pinned(
+    let mut builder = awaken_worker::WorkerNodeBuilder::new(upstream)
+        .with_deployment_config(deployment.runtime.clone())
+        .with_standard_manifest_config(manifest)
+        .with_inference_materializer(Arc::new(
+            awaken_server::inference_materializer::CredentialInferenceMaterializer::from_pinned(
+                credentials.clone(),
+            ),
+        ))
+        .with_remote_attempt_executor(awaken_server::a2a_attempt_executor(Some(
             credentials.clone(),
-        ),
-    ))
-    .with_remote_attempt_executor(awaken_server::a2a_attempt_executor(Some(
-        credentials.clone(),
-    )))
-    .with_hand_executor_factory(awaken_server::relay_hand_executor_factory())
-    .with_credential_materializer(credentials)
-    .with_graceful_drain(std::time::Duration::from_secs(worker.drain_grace_secs))
-    .with_credential_observation_window(
-        std::time::Duration::from_secs(worker.credential_probe_interval_secs),
-        std::time::Duration::from_secs(worker.credential_observation_ttl_secs),
-    )
-    .with_registered_memory_mounter_factory(registered_memory_mounter_factory())
-    .with_standard_manifest(Default::default());
+        )))
+        .with_hand_executor_factory(awaken_server::relay_hand_executor_factory())
+        .with_credential_materializer(credentials)
+        .with_graceful_drain(std::time::Duration::from_secs(worker.drain_grace_secs))
+        .with_credential_observation_window(
+            std::time::Duration::from_secs(worker.credential_probe_interval_secs),
+            std::time::Duration::from_secs(worker.credential_observation_ttl_secs),
+        )
+        .with_registered_memory_mounter_factory(registered_memory_mounter_factory())
+        .with_standard_manifest(Default::default());
     builder = match &worker.admin_listen {
         Some(address) => builder.with_admin_listen(address),
         None => builder.without_admin_surface(),
@@ -133,7 +131,12 @@ pub async fn build_configured_worker(
         &deployment.worker.credential_trust_domain,
     ));
     let credentials = awaken_runtime_host::PinnedCredentialMaterializer::external_only(resolver);
-    configured_worker_builder(upstream, deployment, credentials)
+    let mut worker_upstream = awaken_runtime_host::WorkerUpstream::new(upstream)
+        .with_worker_id(&deployment.worker.worker_id);
+    if let Some(authorizer) = crate::worker_transport_security::request_authorizer(deployment)? {
+        worker_upstream = worker_upstream.with_request_authorizer(authorizer);
+    }
+    configured_worker_builder(worker_upstream, deployment, credentials)
         .build()
         .map_err(|error| error.to_string())
 }
@@ -203,12 +206,17 @@ impl PreparedLocalAcp {
             self.stores.credentials,
             self.stores.secrets,
         );
-        configured_worker_builder(upstream, deployment, credentials)
-            .with_worker_local_credential_resolver(resolver.clone())
-            .with_acp_capability_observation_source(resolver)
-            .without_admin_surface()
-            .build()
-            .map_err(|error| error.to_string())
+        configured_worker_builder(
+            awaken_runtime_host::WorkerUpstream::new(upstream)
+                .with_worker_id(&deployment.worker.worker_id),
+            deployment,
+            credentials,
+        )
+        .with_worker_local_credential_resolver(resolver.clone())
+        .with_acp_capability_observation_source(resolver)
+        .without_admin_surface()
+        .build()
+        .map_err(|error| error.to_string())
     }
 }
 

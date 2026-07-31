@@ -427,6 +427,7 @@ pub fn mount_with_managed_and_application_access_and_models(
         Some(application_access),
         Some(model_directory),
         None,
+        Arc::new(awaken_runtime_host::HeaderWorkerAuthenticator),
     )
     .0
 }
@@ -441,6 +442,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
     application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
     model_directory: Arc<dyn awaken_managed_routers::ModelDirectory>,
     dream_repository: Arc<dyn awaken_protocol_managed::DreamRepository>,
+    worker_authenticator: Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>,
 ) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
     mount_with_managed_over_and_models(
         host,
@@ -449,6 +451,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
         Some(application_access),
         Some(model_directory),
         Some(dream_repository),
+        worker_authenticator,
     )
 }
 
@@ -465,6 +468,7 @@ fn mount_with_managed_over(
         application_access,
         None,
         None,
+        Arc::new(awaken_runtime_host::HeaderWorkerAuthenticator),
     )
 }
 
@@ -475,6 +479,7 @@ fn mount_with_managed_over_and_models(
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
     model_directory: Option<Arc<dyn awaken_managed_routers::ModelDirectory>>,
     dream_repository: Option<Arc<dyn awaken_protocol_managed::DreamRepository>>,
+    worker_authenticator: Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>,
 ) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
     install_platform_memory_data_plane(&host);
     // Spawn the process-level dispatch pool once when durable ingress is enabled
@@ -568,6 +573,7 @@ fn mount_with_managed_over_and_models(
         dynamic_placement::shared_worker_placement_policy(),
         managed_state,
         resource_catalog.clone(),
+        worker_authenticator,
     );
     // The Files API (`/v1/files`) over the host's blob store — file resources + artifacts.
     let files = files_router(host.clone());

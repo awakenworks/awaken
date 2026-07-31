@@ -21,6 +21,7 @@ mod executable_agent_registration;
 mod identity;
 mod observation_reconcile;
 mod process_surface;
+mod worker_transport_security;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -103,6 +104,7 @@ struct ProcessAssemblyOptions {
         Option<Arc<dyn awaken_runtime_host::PluginPublicationResolver>>,
     executable_agent_wiring: Option<executable_agent_registration::ExecutableAgentWiring>,
     deployment_session_launch: Option<config::DeploymentSessionLaunchConfig>,
+    worker_authenticator: Option<Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>>,
 }
 
 /// Router plus the cleartext local setup handoff printed by the CLI once.
@@ -699,6 +701,7 @@ async fn build_runtime_process_assembly(
         awaken_server::placement::connect_declared_hands(&deployment.hand_connections).await?;
     let executable_agent_wiring =
         executable_agent_registration::for_runtime_role(role, deployment, postgres_schema).await?;
+    let worker_authenticator = worker_transport_security::authenticator(deployment)?;
     let router = assemble_process_router(
         stores,
         identity.iam,
@@ -718,6 +721,7 @@ async fn build_runtime_process_assembly(
             web_search_publication_resolver: None,
             executable_agent_wiring: Some(executable_agent_wiring),
             deployment_session_launch: Some(deployment.deployment_session_launch.clone()),
+            worker_authenticator: Some(worker_authenticator),
         },
         None,
     )
@@ -822,6 +826,7 @@ async fn build_all_in_one_router_with_composition(
             web_search_publication_resolver: None,
             executable_agent_wiring: None,
             deployment_session_launch: Some(deployment.deployment_session_launch),
+            worker_authenticator: None,
         },
         None,
     )
@@ -972,6 +977,10 @@ async fn assemble_process_router(
     customize_host: Option<Box<dyn FnOnce(SharedHost) -> SharedHost + Send>>,
 ) -> Router {
     let role = assembly.role;
+    let worker_authenticator = assembly.worker_authenticator.unwrap_or_else(|| {
+        Arc::new(awaken_runtime_host::HeaderWorkerAuthenticator)
+            as Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>
+    });
     let executable_agent_wiring = assembly
         .executable_agent_wiring
         .unwrap_or_else(executable_agent_registration::ExecutableAgentWiring::local);
@@ -1497,6 +1506,7 @@ async fn assemble_process_router(
             application_access,
             model_directory,
             dream_repository,
+            worker_authenticator,
         );
     data = data.merge(executable_agent_private_router);
     data = data.merge(deployment_session_private_router);
