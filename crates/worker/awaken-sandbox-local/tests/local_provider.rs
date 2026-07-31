@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider;
+use awaken_runtime_contract::llm::ToolCall;
 mod common;
 use awaken_file_store::{FileStore, FsFileStore};
 use awaken_sandbox_local::LocalProvider;
@@ -124,6 +125,42 @@ async fn spawn_writes_output_and_artifacts_round_trip() {
 
     let bytes = sandbox.read_artifact(&artifacts[0].id).await.unwrap();
     assert_eq!(bytes, b"hello");
+}
+
+#[tokio::test]
+async fn rooted_bash_reuses_the_process_runtime_paths_and_publishes_outputs() {
+    // Cause/effect graph: Workdir Sandbox processes and rooted Bash are two
+    // execution adapters over one Session environment. C1 process/rooted Bash;
+    // C2 project/output runtime paths; C3 Bash writes through the output var.
+    // Effects: E1 both adapters receive identical reserved paths; E2 the write
+    // lands in the one artifact scan root. Decision rules: P1 C1+C2=>E1;
+    // P2 C1(rooted Bash)+C2+C3=>E1+E2.
+    let tmp = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(tmp.path());
+    let sandbox = provider
+        .create_sandbox(&spec("t-rooted-env"))
+        .await
+        .unwrap();
+    let bash = sandbox
+        .rooted_tools()
+        .into_iter()
+        .find(|tool| tool.id() == "bash")
+        .unwrap();
+    let output = bash
+        .invoke(ToolCall {
+            call_id: "runtime-paths".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({
+                "command": "test -n \"$AWAKEN_PROJECT_DIR\" && printf artifact > \"$AWAKEN_OUTPUTS_DIR/from-tool.txt\""
+            }),
+        })
+        .await
+        .unwrap();
+    assert!(!output.is_error, "P2: {}", output.text());
+
+    let artifacts = pc::Sandbox::artifacts(&sandbox).await.unwrap();
+    assert_eq!(artifacts.len(), 1, "P2");
+    assert!(artifacts[0].path.ends_with("/from-tool.txt"), "P2");
 }
 
 #[tokio::test]
