@@ -15,6 +15,8 @@
 # Usage: scripts/ci/pg_tests.sh   (from repo root)
 set -uo pipefail
 cd "$(dirname "$0")/../.."
+source scripts/ci/_cargo_target.sh
+awaken_configure_cargo_target "$PWD"
 
 if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
   echo "docker unavailable; skipping Postgres-backed tests (they self-skip without a DB)"
