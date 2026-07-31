@@ -27,6 +27,35 @@ use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use serde_json::Value;
 
+#[derive(Clone)]
+pub(crate) struct RuntimePathEnv {
+    project_dir: String,
+    outputs_dir: String,
+}
+
+impl RuntimePathEnv {
+    pub(crate) fn new(project_dir: impl Into<String>, outputs_dir: impl Into<String>) -> Self {
+        Self {
+            project_dir: project_dir.into(),
+            outputs_dir: outputs_dir.into(),
+        }
+    }
+
+    pub(crate) fn apply(&self, command: &mut tokio::process::Command) {
+        command
+            .env("AWAKEN_PROJECT_DIR", &self.project_dir)
+            .env("AWAKEN_OUTPUTS_DIR", &self.outputs_dir);
+    }
+
+    fn prefix_shell(&self, command: &str) -> String {
+        format!(
+            "export AWAKEN_PROJECT_DIR={}; export AWAKEN_OUTPUTS_DIR={}; {command}",
+            sh_squote(&self.project_dir),
+            sh_squote(&self.outputs_dir),
+        )
+    }
+}
+
 #[cfg(windows)]
 pub(crate) fn sandbox_dir(base: &Path, id: &str) -> PathBuf {
     let invalid = id.is_empty()
@@ -295,21 +324,29 @@ pub(crate) struct RootedTool {
     deny_egress: bool,
     /// Always execute shell inside bwrap, even when network remains shared.
     force_namespace: bool,
+    runtime_paths: RuntimePathEnv,
 }
 
 impl RootedTool {
-    pub(crate) fn new(inner: Arc<dyn RawTool>, root: IsolatedRoot, deny_egress: bool) -> Self {
+    pub(crate) fn new(
+        inner: Arc<dyn RawTool>,
+        root: IsolatedRoot,
+        runtime_paths: RuntimePathEnv,
+        deny_egress: bool,
+    ) -> Self {
         Self {
             inner,
             root,
             deny_egress,
             force_namespace: false,
+            runtime_paths,
         }
     }
 
     pub(crate) fn namespace(
         inner: Arc<dyn RawTool>,
         root: IsolatedRoot,
+        runtime_paths: RuntimePathEnv,
         deny_egress: bool,
     ) -> Self {
         Self {
@@ -317,6 +354,7 @@ impl RootedTool {
             root,
             deny_egress,
             force_namespace: true,
+            runtime_paths,
         }
     }
 }
@@ -328,6 +366,11 @@ impl HandTool for RootedTool {
     }
 
     async fn run(&self, mut call: ToolCall) -> Result<HandOutput, ToolError> {
+        if self.inner.id() == "bash"
+            && let Some(Value::String(command)) = call.arguments.get_mut("command")
+        {
+            *command = self.runtime_paths.prefix_shell(command);
+        }
         call.arguments = jail_args(
             self.inner.id(),
             call.arguments,
@@ -374,11 +417,20 @@ fn hand_tool_as_raw(tool: Arc<dyn HandTool>) -> Arc<dyn RawTool> {
 /// The built-in hand tools, each jailed to `root`. Internal: the local provider's
 /// way to bind [`HandTool`]s to an environment; a distributed provider builds its
 /// own relay `HandTool`s instead.
-pub(crate) fn rooted_hand_tools(root: IsolatedRoot, deny_egress: bool) -> Vec<Arc<dyn HandTool>> {
+pub(crate) fn rooted_hand_tools(
+    root: IsolatedRoot,
+    runtime_paths: RuntimePathEnv,
+    deny_egress: bool,
+) -> Vec<Arc<dyn HandTool>> {
     executable_hand_tools()
         .into_iter()
         .map(|inner| {
-            Arc::new(RootedTool::new(inner, root.clone(), deny_egress)) as Arc<dyn HandTool>
+            Arc::new(RootedTool::new(
+                inner,
+                root.clone(),
+                runtime_paths.clone(),
+                deny_egress,
+            )) as Arc<dyn HandTool>
         })
         .collect()
 }
@@ -581,20 +633,29 @@ pub(crate) fn scan_skill_dir_at(root: &IsolatedRoot, subdir: &str) -> Vec<Discov
 /// `Runtime::with_tool` — the full capability surface the host composes (ADR-0035 D8),
 /// path-jailed to `root` with egress optionally denied. The pc-model counterpart of
 /// [`Environment::tools`]; the kernel sees a uniform `RawTool` set with no mount concept.
-pub(crate) fn rooted_raw_tools(root: IsolatedRoot, deny_egress: bool) -> Vec<Arc<dyn RawTool>> {
-    rooted_hand_tools(root, deny_egress)
+pub(crate) fn rooted_raw_tools(
+    root: IsolatedRoot,
+    runtime_paths: RuntimePathEnv,
+    deny_egress: bool,
+) -> Vec<Arc<dyn RawTool>> {
+    rooted_hand_tools(root, runtime_paths, deny_egress)
         .into_iter()
         .map(hand_tool_as_raw)
         .collect()
 }
 
-pub(crate) fn namespace_raw_tools(root: IsolatedRoot, deny_egress: bool) -> Vec<Arc<dyn RawTool>> {
+pub(crate) fn namespace_raw_tools(
+    root: IsolatedRoot,
+    runtime_paths: RuntimePathEnv,
+    deny_egress: bool,
+) -> Vec<Arc<dyn RawTool>> {
     executable_hand_tools()
         .into_iter()
         .map(|inner| {
             hand_tool_as_raw(Arc::new(RootedTool::namespace(
                 inner,
                 root.clone(),
+                runtime_paths.clone(),
                 deny_egress,
             )))
         })
@@ -1117,7 +1178,11 @@ mod tests {
 
     #[test]
     fn rooted_hand_tools_wraps_every_builtin_hand_tool() {
-        let tools = rooted_hand_tools(IsolatedRoot::new("/env"), false);
+        let tools = rooted_hand_tools(
+            IsolatedRoot::new("/env"),
+            RuntimePathEnv::new("/env", "/env/mnt/session/outputs"),
+            false,
+        );
         let ids: Vec<_> = tools.iter().map(|t| t.id().to_string()).collect();
         for expected in [
             "read", "write", "edit", "move", "delete", "glob", "grep", "bash",

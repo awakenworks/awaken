@@ -693,8 +693,11 @@ impl LocalSandbox {
         cmd.env_clear();
         // Reserved, runtime-owned env: where the agent writes/works (the local tier
         // has no path fidelity, so a process finds the outputs dir via this var).
-        cmd.env("AWAKEN_OUTPUTS_DIR", &host_outputs);
-        cmd.env("AWAKEN_PROJECT_DIR", &host_cwd);
+        crate::RuntimePathEnv::new(
+            host_cwd.to_string_lossy().into_owned(),
+            host_outputs.to_string_lossy().into_owned(),
+        )
+        .apply(&mut cmd);
         for var in &command.env {
             cmd.env(&var.name, var.value.expose());
         }
@@ -743,7 +746,18 @@ impl LocalSandbox {
     /// in-process tools as `RawTool`s, jailed to the root with egress per the spec.
     /// This is what the host registers on the runtime (the pc-model `Environment::tools`).
     pub fn rooted_tools(&self) -> Vec<Arc<dyn RawTool>> {
-        rooted_raw_tools(self.root.clone(), self.deny_egress)
+        let outputs = self
+            .root
+            .resolve(&self.outputs_path)
+            .expect("validated Sandbox outputs path");
+        rooted_raw_tools(
+            self.root.clone(),
+            crate::RuntimePathEnv::new(
+                self.root.root().to_string_lossy().into_owned(),
+                outputs.to_string_lossy().into_owned(),
+            ),
+            self.deny_egress,
+        )
     }
 
     /// List regular files under `<root>/<subdir>` as `(logical_path, bytes)` — a
