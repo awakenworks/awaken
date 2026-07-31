@@ -294,27 +294,27 @@ impl ManagedState {
         let pending = outcome
             .pending()
             .map(|p| (p.tool_use_id.as_str(), p.client_executed));
-        let prior_mcp_ids: Vec<String> = self
-            .sessions
-            .lock()
-            .ok()
-            .and_then(|sessions| {
-                sessions.get(session_id).map(|record| {
-                    record
-                        .events
-                        .iter()
-                        .filter_map(|event| match event.kind {
-                            OutboundKind::AgentMcpToolUse { .. } => Some(event.id.clone()),
-                            _ => None,
-                        })
-                        .collect()
-                })
-            })
-            .unwrap_or_default();
-        let projected = project_step(&outcome, pending, prior_mcp_ids);
         let delegated_runs = outcome.delegated_runs().to_vec();
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
+        let prior_mcp_ids: Vec<String> = record
+            .events
+            .iter()
+            .filter_map(|event| match event.kind {
+                OutboundKind::AgentMcpToolUse { .. } => Some(event.id.clone()),
+                _ => None,
+            })
+            .collect();
+        // A concurrent GET may already have observed this process's committed
+        // messages through the shared transcript and projected them. Message ids
+        // are the canonical dedupe key; status brackets remain request-local.
+        let new_messages = outcome
+            .messages
+            .iter()
+            .filter(|message| record.projected_message_ids.insert(message.id.0.clone()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let projected = project_step(&new_messages, outcome.state(), pending, prior_mcp_ids);
         // Everything appended from here is republished on the live broadcast at the end.
         let start = record.events.len();
         // Each processing segment is bracketed `running` … `idle`; the running
@@ -390,6 +390,11 @@ impl ManagedState {
         // Each round's durable evaluation record, collected as we project its events
         // and folded into the session object after the event-pushing borrow releases.
         let mut evaluations = Vec::new();
+        let projected_message_ids = report
+            .iterations
+            .iter()
+            .flat_map(|round| round.messages.iter().map(|message| message.id.0.clone()))
+            .collect::<Vec<_>>();
         let start = record.events.len();
         {
             let mut push = |id: Option<String>, kind: OutboundKind| {
@@ -438,6 +443,7 @@ impl ManagedState {
                 },
             );
         }
+        record.projected_message_ids.extend(projected_message_ids);
         // The session object carries the running list of evaluations that have graded
         // it, so a `GET /v1/sessions/{id}` reflects the outcomes that ran, not [].
         for evaluation in evaluations {
@@ -830,6 +836,45 @@ impl ManagedState {
             processed_at,
         });
         record.session.status = "idle";
+        self.broadcast_committed_from(session_id, record, start);
+        Ok(())
+    }
+
+    /// Refresh this process's disposable event projection from the Runtime's one
+    /// durable transcript. A Session cache hit is not proof that it contains
+    /// commits accepted through another Coordinator replica.
+    pub(crate) async fn refresh_committed_events(
+        &self,
+        session_id: &str,
+    ) -> Result<(), StateError> {
+        self.ensure_session(session_id).await?;
+        let pending = self.runtime.pending_tool(session_id).await;
+        let messages = self.runtime.committed_messages(session_id).await;
+        let mut sessions = self.sessions.lock().unwrap();
+        let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
+        let new_messages = messages
+            .into_iter()
+            .filter(|message| record.projected_message_ids.insert(message.id.0.clone()))
+            .collect::<Vec<_>>();
+        if new_messages.is_empty() {
+            return Ok(());
+        }
+        let prior_mcp_ids = record.events.iter().filter_map(|event| match event.kind {
+            OutboundKind::AgentMcpToolUse { .. } => Some(event.id.clone()),
+            _ => None,
+        });
+        let pending = pending
+            .as_ref()
+            .map(|pending| (pending.tool_use_id.as_str(), pending.client_executed));
+        let projected = project_messages_with_mcp_ids(&new_messages, pending, prior_mcp_ids);
+        let start = record.events.len();
+        record
+            .events
+            .extend(projected.into_iter().map(|event| Event {
+                id: event.id.unwrap_or_else(|| self.next_event_id()),
+                kind: event.kind,
+                processed_at: Some(PROCESSED_AT.to_string()),
+            }));
         self.broadcast_committed_from(session_id, record, start);
         Ok(())
     }

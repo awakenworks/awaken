@@ -231,10 +231,7 @@ fn to_live_inbox_error(err: EditError) -> LiveInboxError {
 /// concatenated to text before it enters the host).
 fn user_message(content: Vec<ContentBlock>) -> Message {
     Message::new(
-        MessageId(format!(
-            "usr-{}",
-            crate::host::BASE_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-        )),
+        MessageId(awaken_runtime::fresh_process_id("usr")),
         Role::User,
         content,
     )
@@ -687,6 +684,17 @@ impl ManagedHost {
         update_authority_references: bool,
     ) -> Result<(), RunError> {
         self.host.register_thread_workspace(thread, workspace);
+        let desired =
+            awaken_session_contract::SessionResourceManifest::new(workspace, resources.clone());
+        // The authority-side recovery path may first reconcile a retained or
+        // pending generation and then prepare the complete Session projection.
+        // Both operations carry the same canonical manifest. Avoid compiling and
+        // installing it twice; claimed Workers remain excluded because every
+        // claim must revalidate live Resource state even when the pin is equal.
+        if claim.is_none() && self.host.thread_resource_manifest(thread).as_ref() == Some(&desired)
+        {
+            return Ok(());
+        }
         match &resources.skills {
             Some(bindings) => {
                 let versions = self
@@ -1119,7 +1127,23 @@ impl SessionRuntime for ManagedHost {
         workspace_id: &str,
         inputs: &awaken_session_contract::ResolvedSessionResources,
     ) -> Result<(), RunError> {
+        // Reuse the Session slot's canonical realization mutex. Cold active-active
+        // requests may concurrently replay the same durable generation; only one
+        // may compare, realize, and publish its process-local projection at a time.
+        let lifecycle = self
+            .host
+            .session_slots
+            .update(thread, |slot| slot.lifecycle.clone());
+        let _lifecycle = lifecycle.lock().await;
         self.host.register_thread_workspace(thread, workspace_id);
+        let desired_manifest =
+            awaken_session_contract::SessionResourceManifest::new(workspace_id, inputs.clone());
+        // Exact replays are the recovery/idempotency case, not a live mutation.
+        // Return before the create-time-only Memory guard so concurrent/cold
+        // Session rehydration cannot reject the already-installed generation.
+        if self.host.thread_resource_manifest(thread).as_ref() == Some(&desired_manifest) {
+            return Ok(());
+        }
         let old = self.host.thread_resources_snapshot(thread);
         let old_memory: Vec<_> = old
             .mounts
@@ -1158,7 +1182,29 @@ impl SessionRuntime for ManagedHost {
             })
             .collect();
         let live_environment = self.host.session_environment(thread).await;
-        if live_environment.is_some() && old_memory != desired_memory {
+        // Another cold-rehydration request can install this exact manifest while
+        // the environment lookup above yields. Re-read the canonical manifest at
+        // the decision boundary: equal means the concurrent replay converged;
+        // unequal remains a forbidden live Memory mutation.
+        let installed_manifest = self.host.thread_resource_manifest(thread);
+        if live_environment.is_some() && installed_manifest.as_ref() == Some(&desired_manifest) {
+            return Ok(());
+        }
+        // A durable sandbox binding can be adopted before this process has any
+        // Resource projection. `None` therefore means cold recovery: install the
+        // authority's active generation. Only an already-installed, different
+        // manifest is evidence of a forbidden live Memory mutation.
+        if live_environment.is_some()
+            && installed_manifest.is_some()
+            && old_memory != desired_memory
+        {
+            tracing::warn!(
+                session_id = thread,
+                installed_manifest = ?installed_manifest,
+                old_memory = ?old_memory,
+                desired_memory = ?desired_memory,
+                "rejecting a live Session Memory projection change"
+            );
             return Err(RunError::bad_request(
                 "memory_store inputs are create-time only for a live Session",
             ));
@@ -1258,6 +1304,20 @@ impl SessionRuntime for ManagedHost {
         thread: &str,
         init: awaken_session_contract::SessionInit,
     ) -> Result<(), RunError> {
+        // Session preparation and durable Resource reconciliation publish one
+        // process-local projection. Serialize both through the existing slot
+        // lifecycle so a peer request cannot observe Environment installed while
+        // the exact frozen Resource manifest is still absent.
+        let lifecycle = self
+            .host
+            .session_slots
+            .update(thread, |slot| slot.lifecycle.clone());
+        let _lifecycle = lifecycle.lock().await;
+        // R1: retain the exact frozen Agent coordinate for internal cold-recovery
+        // calls (`committed_messages`, durable operations) that intentionally do
+        // not repeat a wire-level Agent argument.
+        self.host
+            .register_thread_agent_projection(thread, &init.agent_id);
         // R2: bind the session's requested model to the thread (independent of MCP),
         // consumed at the thread's first turn to resolve its executor + model name.
         if let Some(model) = &init.model {
@@ -1808,11 +1868,12 @@ impl ProtocolHost {
         let Some(preparer) = &self.session_defaults else {
             return Ok(());
         };
+        let projected_agent = self.host.thread_agent_projection(thread);
         preparer
             .prepare(
                 &self.host.thread_workspace(thread),
                 thread,
-                agent.unwrap_or("assistant"),
+                agent.or(projected_agent.as_deref()).unwrap_or("assistant"),
             )
             .await
             .map_err(|error| DriverError::BadRequest(error.to_string()))

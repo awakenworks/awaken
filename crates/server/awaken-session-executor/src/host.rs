@@ -24,6 +24,7 @@ use awaken_agent_contract::agent::state::{Scope, StateKey, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
+use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunRecoverySource};
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 use awaken_file_store::FileStore;

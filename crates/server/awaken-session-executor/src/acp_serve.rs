@@ -7,7 +7,6 @@
 //! transport-agnostic and unit-testable.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_protocol_transport::{DriverError, ProtocolRuntime, Terminal};
@@ -37,16 +36,12 @@ pub struct AcpTurn {
 /// through any other protocol adapter bound to the same host.
 pub struct AcpServeHost {
     runtime: Arc<dyn ProtocolRuntime>,
-    seq: AtomicU64,
 }
 
 impl AcpServeHost {
     #[must_use]
     pub fn new(runtime: Arc<dyn ProtocolRuntime>) -> Self {
-        Self {
-            runtime,
-            seq: AtomicU64::new(0),
-        }
+        Self { runtime }
     }
 
     /// The model id advertised in the ACP `initialize` response.
@@ -67,7 +62,7 @@ impl AcpServeHost {
     /// ACP `session/new`: mint a fresh session id (a thread) for a served session.
     #[must_use]
     pub fn new_session(&self) -> String {
-        format!("acp-serve-{}", self.seq.fetch_add(1, Ordering::SeqCst))
+        awaken_runtime::fresh_process_id("acp-serve")
     }
 
     /// ACP `session/prompt`: run one turn of our brain on `session` with the prompt
@@ -79,7 +74,7 @@ impl AcpServeHost {
         text: &str,
     ) -> Result<AcpTurn, DriverError> {
         let user = Message::text(
-            MessageId(format!("acp-u-{}", self.seq.fetch_add(1, Ordering::SeqCst))),
+            MessageId(awaken_runtime::fresh_process_id("acp-u")),
             Role::User,
             text.to_string(),
         );

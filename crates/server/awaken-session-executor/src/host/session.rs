@@ -468,13 +468,20 @@ impl SharedHost {
         // Environment identity is a consequence of provisioning, not of the ACP
         // executor or a process-wide sandbox default.
         let workspace = self.thread_workspace(thread);
+        let projected_agent = self.thread_agent_projection(thread);
+        if let (Some(asserted), Some(projected)) = (agent, projected_agent.as_deref())
+            && asserted != projected
+        {
+            return Err(HostError::internal(format!(
+                "session Agent projection `{projected}` does not match requested Agent `{asserted}`"
+            )));
+        }
+        let selected_agent = agent.or(projected_agent.as_deref()).unwrap_or("assistant");
         let installed = published_snapshot.or_else(|| {
             self.agent_publications.as_ref().and_then(|source| {
                 source.current(
                     &workspace,
-                    &awaken_runtime_contract::snapshot::AgentId(
-                        agent.unwrap_or("assistant").to_string(),
-                    ),
+                    &awaken_runtime_contract::snapshot::AgentId(selected_agent.to_string()),
                 )
             })
         });
@@ -508,7 +515,7 @@ impl SharedHost {
             .flatten();
         let deferred = retained.is_none()
             && adopted.is_none()
-            && self.can_defer_session_environment(thread, agent, installed.as_ref());
+            && self.can_defer_session_environment(thread, Some(selected_agent), installed.as_ref());
         let (env, needs_provision, needs_registration) = match (retained, adopted) {
             (Some(existing), Some(adopted)) => {
                 if existing.handle() != adopted.handle() {
