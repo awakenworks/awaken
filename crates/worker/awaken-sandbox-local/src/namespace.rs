@@ -834,6 +834,14 @@ impl NamespaceSandbox {
     pub fn rooted_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
         namespace_raw_tools(
             self.workspace_root(),
+            if cfg!(target_os = "macos") {
+                crate::RuntimePathEnv::new(
+                    self.host_workspace.to_string_lossy().into_owned(),
+                    self.host_outputs.to_string_lossy().into_owned(),
+                )
+            } else {
+                crate::RuntimePathEnv::new("/workspace", self.outputs_path.clone())
+            },
             matches!(self.network, pc::NetworkPolicy::None),
         )
     }
@@ -995,14 +1003,14 @@ impl NamespaceSandbox {
             } else {
                 self.root.resolve(&command.cwd).map_err(err)?
             };
-            process
-                .current_dir(cwd)
-                .env("AWAKEN_OUTPUTS_DIR", &self.host_outputs)
-                .env("AWAKEN_PROJECT_DIR", &self.host_workspace);
+            process.current_dir(cwd);
+            crate::RuntimePathEnv::new(
+                self.host_workspace.to_string_lossy().into_owned(),
+                self.host_outputs.to_string_lossy().into_owned(),
+            )
+            .apply(process);
         } else {
-            process
-                .env("AWAKEN_OUTPUTS_DIR", &self.outputs_path)
-                .env("AWAKEN_PROJECT_DIR", "/workspace");
+            crate::RuntimePathEnv::new("/workspace", self.outputs_path.clone()).apply(process);
         }
         for var in &command.env {
             process.env(&var.name, var.value.expose());
