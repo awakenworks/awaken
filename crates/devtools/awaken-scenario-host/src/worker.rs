@@ -13,6 +13,7 @@ pub async fn run_echo_worker(
     upstream: &str,
     worker_id: &str,
     admin_listen: Option<&str>,
+    request_authorizer: Option<Arc<dyn awaken_runtime_host::WorkerRequestAuthorizer>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     struct EchoWorkerProvider;
 
@@ -36,7 +37,12 @@ pub async fn run_echo_worker(
         }
     }
 
-    let mut builder = echo_worker_builder(upstream, worker_id, Arc::new(EchoWorkerProvider));
+    let mut worker_upstream =
+        awaken_runtime_host::WorkerUpstream::new(upstream).with_worker_id(worker_id);
+    if let Some(authorizer) = request_authorizer {
+        worker_upstream = worker_upstream.with_request_authorizer(authorizer);
+    }
+    let mut builder = echo_worker_builder(worker_upstream, Arc::new(EchoWorkerProvider));
     builder = match admin_listen {
         Some(address) => builder.with_admin_listen(address),
         None => builder.without_admin_surface(),
@@ -45,8 +51,7 @@ pub async fn run_echo_worker(
 }
 
 fn echo_worker_builder(
-    upstream: &str,
-    worker_id: &str,
+    upstream: awaken_runtime_host::WorkerUpstream,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
 ) -> awaken_worker::WorkerNodeBuilder {
     // The scenario image intentionally does not install bwrap: this test isolates
@@ -55,16 +60,14 @@ fn echo_worker_builder(
     // relying on an unsafe fallback from the Namespace default.
     let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
-    awaken_worker::WorkerNodeBuilder::new(
-        awaken_runtime_host::WorkerUpstream::new(upstream).with_worker_id(worker_id),
-    )
-    .with_deployment_config(deployment)
-    .with_inference_materializer(materializer)
-    // Managed Session placement requires the standard per-kind Resource clients.
-    // This is the same registered HTTP Memory adapter factory used by production;
-    // File, Skill, and Repository clients are installed by WorkerNode itself.
-    .with_registered_memory_mounter_factory(awaken_cli::registered_memory_mounter_factory())
-    .with_standard_manifest(Default::default())
+    awaken_worker::WorkerNodeBuilder::new(upstream)
+        .with_deployment_config(deployment)
+        .with_inference_materializer(materializer)
+        // Managed Session placement requires the standard per-kind Resource clients.
+        // This is the same registered HTTP Memory adapter factory used by production;
+        // File, Skill, and Repository clients are installed by WorkerNode itself.
+        .with_registered_memory_mounter_factory(awaken_cli::registered_memory_mounter_factory())
+        .with_standard_manifest(Default::default())
 }
 
 #[cfg(test)]
@@ -92,10 +95,13 @@ mod tests {
             }
         }
 
-        let worker =
-            echo_worker_builder("http://coordinator", "worker-a", Arc::new(HostMaterializer))
-                .build()
-                .expect("canonical scenario Worker topology");
+        let worker = echo_worker_builder(
+            awaken_runtime_host::WorkerUpstream::new("http://coordinator")
+                .with_worker_id("worker-a"),
+            Arc::new(HostMaterializer),
+        )
+        .build()
+        .expect("canonical scenario Worker topology");
         assert!(
             worker
                 .manifest()

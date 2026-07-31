@@ -25,6 +25,10 @@ stringData:
   registration-token: "adr71-registration-token" # awaken-allow: secret
   deployment-launch-token: "adr71-deployment-launch-token" # awaken-allow: secret
   seal-key: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff" # awaken-allow: secret
+  worker-request.json: |
+    {"worker_id":"adr71-worker","key_id":"adr71-key","credential_id":"adr71-credential","secret_base64":"YWRyNzEtd29ya2VyLXNlY3JldA=="}
+  worker-trust.json: |
+    [{"worker_id":"adr71-worker","key_id":"adr71-key","credential_id":"adr71-credential","secret_base64":"YWRyNzEtd29ya2VyLXNlY3JldA=="}]
 ---
 apiVersion: v1
 kind: Secret
@@ -41,6 +45,7 @@ stringData:
     coordinator_internal_url = "http://coordinator:3000"
     executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
     deployment_session_launch_token_file = "/etc/awaken-auth/deployment-launch-token"
+    worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"
     control_seal_key_file = "/etc/awaken-auth/seal-key"
     catalog_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
     credential_db = "postgres://postgres:test@postgres:5432/credentials" # awaken-allow: secret
@@ -203,7 +208,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: { name: worker, labels: { app: worker } }
 spec:
-  replicas: 2
+  replicas: 1
   selector: { matchLabels: { app: worker } }
   template:
     metadata: { labels: { app: worker } }
@@ -221,13 +226,17 @@ spec:
           command: ["/usr/local/bin/awaken-server"]
           env:
             - { name: AWAKEN_SCENARIO_ROLE, value: worker }
-            - name: AWAKEN_WORKER_ID
-              valueFrom:
-                fieldRef: { fieldPath: metadata.name }
+            - { name: AWAKEN_WORKER_ID, value: "adr71-worker" }
             - { name: AWAKEN_UPSTREAM_URL, value: "http://coordinator:3000" }
             - { name: AWAKEN_WORKER_ADMIN_LISTEN, value: "0.0.0.0:9090" }
+            - { name: AWAKEN_WORKER_REQUEST_CREDENTIAL_FILE, value: "/etc/awaken-auth/worker-request.json" }
           ports: [{ containerPort: 9090 }]
           readinessProbe:
             httpGet: { path: /readyz, port: 9090 }
             initialDelaySeconds: 2
             periodSeconds: 2
+          volumeMounts:
+            - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
+      volumes:
+        - name: auth
+          secret: { secretName: adr71-boundary-auth }

@@ -26,12 +26,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let admin_listen = std::env::var("AWAKEN_WORKER_ADMIN_LISTEN")
             .ok()
             .filter(|address| !address.trim().is_empty());
+        let request_authorizer = std::env::var("AWAKEN_WORKER_REQUEST_CREDENTIAL_FILE")
+            .ok()
+            .map(|path| {
+                awaken_cli::load_worker_request_authorizer(std::path::Path::new(&path), &worker_id)
+            })
+            .transpose()?;
         // Test-only echo-draining worker (the worker-pool e2e). The production
         // worker with real per-run model resolution lives in `awaken-worker`.
         return awaken_scenario_host::run_echo_worker(
             &upstream,
             &worker_id,
             admin_listen.as_deref(),
+            request_authorizer,
         )
         .await;
     }

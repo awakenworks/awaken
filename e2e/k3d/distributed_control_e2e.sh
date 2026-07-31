@@ -3,7 +3,7 @@
 #
 # Control runs the production authoring/publication/Deployment router with only
 # its model-publication SPI made deterministic. Coordinator is the shipped
-# `awaken coordinator` process. Two database-less Workers use the canonical
+# `awaken coordinator` process. A database-less Worker uses the canonical
 # registration/claim/commit lifecycle. PostgreSQL separates Control,
 # Credential, Coordinator runtime, and Resource data into distinct databases.
 set -euo pipefail
@@ -89,7 +89,7 @@ log "3/7 apply isolated databases, migrations, Control, Coordinator, and Workers
 # Coordinator -> publication and launch acknowledged; K4 Coordinator outage after
 # publication persistence -> retryable 503; K5 restore and retry -> one projection;
 # K6 Control/Coordinator restart -> Deployment, Session, and response survive;
-# K7 Worker receives no authority configuration -> only remote lifecycle starts.
+# K7 Worker receives no authority configuration and every private request is signed.
 kubectl -n "$NS" apply -k "$DEPLOY_DIR/distributed-control" >/dev/null
 kubectl -n "$NS" rollout status deploy/postgres --timeout=120s
 kubectl -n "$NS" wait --for=condition=complete job/control-migrate --timeout=180s

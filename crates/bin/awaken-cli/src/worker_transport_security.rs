@@ -58,6 +58,16 @@ pub(crate) fn request_authorizer(
             }
         };
     };
+    load_request_authorizer(path, &deployment.worker.worker_id).map(Some)
+}
+
+/// Load one projected Worker request credential for an embedding composition.
+/// The CLI and deterministic scenario Worker share this adapter so file shape,
+/// base64 handling, and exact Worker identity validation cannot drift.
+pub fn load_request_authorizer(
+    path: &Path,
+    worker_id: &str,
+) -> Result<Arc<dyn awaken_runtime_host::WorkerRequestAuthorizer>, String> {
     let projected: ProjectedWorkerCredential = serde_json::from_str(&read_projected_file(path)?)
         .map_err(|error| {
             format!(
@@ -66,12 +76,12 @@ pub(crate) fn request_authorizer(
             )
         })?;
     let credential = projected.into_signing_credential()?;
-    if credential.worker_id() != deployment.worker.worker_id {
+    if credential.worker_id() != worker_id {
         return Err("Worker request credential does not match configured worker_id".to_owned());
     }
-    Ok(Some(Arc::new(
+    Ok(Arc::new(
         awaken_runtime_host::SignedWorkerRequestAuthorizer::new(credential),
-    )))
+    ))
 }
 
 pub(crate) fn authenticator(

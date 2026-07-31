@@ -51,6 +51,7 @@ pub use control::{
     build_control_router_with_publication_resolver_and_web_search,
 };
 use identity::identity_wiring;
+pub use worker_transport_security::load_request_authorizer as load_worker_request_authorizer;
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
 // constants a test / operator embedding drives — re-exported from the authoring plane.
 pub use awaken_control::{
