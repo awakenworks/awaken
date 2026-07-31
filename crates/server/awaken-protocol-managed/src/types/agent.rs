@@ -138,6 +138,8 @@ pub enum MultiagentConfig {
 pub struct AwakenAgentExtensions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_steps: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_machine: Option<serde_json::Value>,
 }
 
 /// A client's `model` input: a bare id string or a full `{id, speed?}` config
@@ -348,7 +350,7 @@ mod tests {
                 }}
             ],
             "multiagent": {"type":"coordinator","agents":["worker",{"type":"self"}]},
-            "x_awaken": {"max_steps":40}
+            "x_awaken": {"max_steps":40,"state_machine":{"machines":[]}}
         });
         let parsed: AgentCreateParams = serde_json::from_value(valid).expect("SDK union parses");
         let model = parsed.model.clone().into_config();
