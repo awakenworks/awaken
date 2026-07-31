@@ -30,6 +30,7 @@ use awaken_tenancy::ScopeId;
 use sha2::{Digest, Sha256};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
+const STATE_MACHINE_PLUGIN_ID: &str = "state_machine";
 static AGENT_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn new_agent_id(workspace_id: &str) -> String {
@@ -283,21 +284,31 @@ fn config_from_create(
         .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?;
     apply_model_extensions(&mut model_binding, model.x_awaken)?;
     let multiagent = params.multiagent.map(typed_multiagent);
+    let extensions = params.x_awaken.unwrap_or(AwakenAgentExtensions {
+        max_steps: None,
+        state_machine: None,
+    });
+    let plugin_ids = extensions
+        .state_machine
+        .as_ref()
+        .map(|_| vec![STATE_MACHINE_PLUGIN_ID.to_string()])
+        .unwrap_or_default();
+    let plugin_config = extensions
+        .state_machine
+        .map(|config| BTreeMap::from([(STATE_MACHINE_PLUGIN_ID.to_string(), config)]))
+        .unwrap_or_default();
     let config = AgentConfig {
         id,
         instructions: params.system.unwrap_or_default(),
-        max_steps: params
-            .x_awaken
-            .and_then(|extensions| extensions.max_steps)
-            .unwrap_or(8),
+        max_steps: extensions.max_steps.unwrap_or(8),
         delegation_limits: Default::default(),
         model_binding,
         inference,
         tool_ids: Vec::new(),
         toolsets: awaken_protocol_managed::project::toolset_policies(&params.tools),
         client_tools: client_tools(&params.tools),
-        plugin_ids: Vec::new(),
-        plugin_config: BTreeMap::new(),
+        plugin_ids,
+        plugin_config,
         context_policy: Default::default(),
         tool_patterns: Vec::new(),
         model_fallbacks: Vec::new(),
@@ -531,6 +542,17 @@ fn project(revision: AgentConfigRevision) -> Agent {
         AgentLifecycle::Disabled => AgentStatus::Disabled,
         AgentLifecycle::Archived => AgentStatus::Archived,
     };
+    let state_machine = config
+        .plugin_ids
+        .iter()
+        .any(|id| id == STATE_MACHINE_PLUGIN_ID)
+        .then(|| config.plugin_config.get(STATE_MACHINE_PLUGIN_ID).cloned())
+        .flatten();
+    let x_awaken =
+        (config.max_steps != 8 || state_machine.is_some()).then_some(AwakenAgentExtensions {
+            max_steps: (config.max_steps != 8).then_some(config.max_steps),
+            state_machine,
+        });
     Agent {
         id: id.clone(),
         object_type: "agent",
@@ -588,9 +610,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
                 })
                 .collect(),
         }),
-        x_awaken: (config.max_steps != 8).then_some(AwakenAgentExtensions {
-            max_steps: Some(config.max_steps),
-        }),
+        x_awaken,
         version: revision.revision,
     }
 }
@@ -814,8 +834,22 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         if let Some(multiagent) = params.multiagent {
             config.multiagent = multiagent.map(typed_multiagent);
         }
-        if let Some(max_steps) = params.x_awaken.and_then(|extensions| extensions.max_steps) {
-            config.max_steps = max_steps;
+        if let Some(extensions) = params.x_awaken {
+            if let Some(max_steps) = extensions.max_steps {
+                config.max_steps = max_steps;
+            }
+            if let Some(state_machine) = extensions.state_machine {
+                if !config
+                    .plugin_ids
+                    .iter()
+                    .any(|id| id == STATE_MACHINE_PLUGIN_ID)
+                {
+                    config.plugin_ids.push(STATE_MACHINE_PLUGIN_ID.to_string());
+                }
+                config
+                    .plugin_config
+                    .insert(STATE_MACHINE_PLUGIN_ID.to_string(), state_machine);
+            }
         }
         validate_managed_agent_config(&config)?;
         self.resolve_multiagent_references(workspace_id, &mut config)
@@ -1395,16 +1429,16 @@ mod tests {
 
     #[tokio::test]
     async fn managed_agent_namespaced_step_budget_is_validated_and_versioned() {
-        // Cause/effect graph: x_awaken.max_steps is the Managed wire control for
-        // the existing AgentConfig.max_steps source of truth. Omission selects or
-        // preserves the generic default; an explicit positive value replaces it;
-        // zero would eliminate the first inference and must fail admission.
+        // Cause/effect graph: namespaced Managed controls project onto existing
+        // AgentConfig max-step and plugin sources of truth. Omission selects or
+        // preserves defaults; explicit values replace them; zero steps would
+        // eliminate the first inference and must fail admission.
         //
         // | rule | operation | extension | effect |
         // | S1 | create | omitted | stores 8; response omits extension |
-        // | S2 | create | 40 | stores and returns 40 |
-        // | S3 | update | omitted | preserves 40 |
-        // | S4 | update | 24 | versions and returns 24 |
+        // | S2 | create | 40 + state machine | stores and returns both |
+        // | S3 | update | omitted | preserves 40 + state machine |
+        // | S4 | update | 24, machine omitted | versions 24; preserves machine |
         // | S5 | create | 0 | rejects before persistence |
         let temp = tempfile::tempdir().unwrap();
         let repository = ConfigPlaneManagedAgentRepository::new(
@@ -1421,12 +1455,28 @@ mod tests {
         let mut configured_params = create_params("configured");
         configured_params.x_awaken = Some(AwakenAgentExtensions {
             max_steps: Some(40),
+            state_machine: Some(json!({
+                "machines": [{
+                    "name": "submit",
+                    "scope": "run",
+                    "key": "",
+                    "initial": "pending",
+                    "terminal": ["done"],
+                    "transitions": [
+                        {"on":{"event":"step.after_inference"},"from":"pending","to":"pending"},
+                        {"on":"design_submit_artifact","from":"pending","to":"done","when":"success"}
+                    ]
+                }],
+                "continuation": {"max_continuations": 2}
+            })),
         });
         let configured = repository
             .create("workspace-a", configured_params)
             .await
             .expect("S2");
-        assert_eq!(configured.x_awaken.unwrap().max_steps, Some(40), "S2");
+        let configured_extensions = configured.x_awaken.unwrap();
+        assert_eq!(configured_extensions.max_steps, Some(40), "S2");
+        assert!(configured_extensions.state_machine.is_some(), "S2");
 
         let preserved = repository
             .update(
@@ -1436,20 +1486,28 @@ mod tests {
             )
             .await
             .expect("S3");
-        assert_eq!(preserved.x_awaken.unwrap().max_steps, Some(40), "S3");
+        let preserved_extensions = preserved.x_awaken.unwrap();
+        assert_eq!(preserved_extensions.max_steps, Some(40), "S3");
+        assert!(preserved_extensions.state_machine.is_some(), "S3");
 
         let mut replacement = update_params(preserved.version);
         replacement.x_awaken = Some(AwakenAgentExtensions {
             max_steps: Some(24),
+            state_machine: None,
         });
         let replaced = repository
             .update("workspace-a", &configured.id, replacement)
             .await
             .expect("S4");
-        assert_eq!(replaced.x_awaken.unwrap().max_steps, Some(24), "S4");
+        let replaced_extensions = replaced.x_awaken.unwrap();
+        assert_eq!(replaced_extensions.max_steps, Some(24), "S4");
+        assert!(replaced_extensions.state_machine.is_some(), "S4");
 
         let mut invalid = create_params("invalid");
-        invalid.x_awaken = Some(AwakenAgentExtensions { max_steps: Some(0) });
+        invalid.x_awaken = Some(AwakenAgentExtensions {
+            max_steps: Some(0),
+            state_machine: None,
+        });
         assert!(
             matches!(
                 repository.create("workspace-a", invalid).await,
