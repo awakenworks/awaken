@@ -12,7 +12,7 @@ use awaken_config_service::{
     ConfigPlane, RESERVED_ADMIN_SCOPE, parse_managed_model_id, render_managed_model_id,
 };
 use awaken_config_store::{
-    AgentConfig, AgentConfigRevision, AgentLifecycle, ConfigWrite, ModelSelection,
+    AgentConfig, AgentConfigRevision, AgentKind, AgentLifecycle, ConfigWrite, ModelSelection,
     MultiagentConfig, MultiagentTarget,
 };
 use awaken_protocol_managed::types::agent::{
@@ -449,6 +449,20 @@ fn apply_model_extensions(
         .map_err(|error| ManagedAgentError::Invalid(error.into()))
 }
 
+fn acp_configuration_to_preserve(
+    config: &AgentConfig,
+    incoming_model_id: &str,
+    extension_omitted: bool,
+) -> Option<awaken_runtime_contract::resolved::AcpSessionConfiguration> {
+    let same_model = render_managed_model_id(&config.model_binding)
+        .is_ok_and(|current| current == incoming_model_id);
+    (same_model
+        && extension_omitted
+        && matches!(config.kind(), AgentKind::Acp { ref cli } if !cli.is_empty()))
+    .then(|| config.model_binding.acp_configuration().cloned())
+    .flatten()
+}
+
 fn model_config(
     model: String,
     inference: InferenceOptions,
@@ -732,10 +746,9 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             let current_model = render_managed_model_id(&config.model_binding).ok();
             let preserve_effort =
                 current_model.as_deref() == Some(model.id.as_str()) && model.effort.is_none();
-            let preserve_acp =
-                current_model.as_deref() == Some(model.id.as_str()) && model.x_awaken.is_none();
             let prior_effort = config.inference.effort;
-            let prior_acp = config.model_binding.acp_configuration().cloned();
+            let prior_acp =
+                acp_configuration_to_preserve(&config, &model.id, model.x_awaken.is_none());
             config.inference =
                 inference_from_wire(model.speed, model.effort.map(|value| value.resolved()));
             if preserve_effort {
@@ -743,13 +756,11 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             }
             config.model_binding = parse_managed_model_id(&model.id)
                 .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?;
-            if preserve_acp {
-                if let Some(configuration) = prior_acp {
-                    config
-                        .model_binding
-                        .set_acp_configuration(configuration)
-                        .map_err(|error| ManagedAgentError::Invalid(error.into()))?;
-                }
+            if let Some(configuration) = prior_acp {
+                config
+                    .model_binding
+                    .set_acp_configuration(configuration)
+                    .map_err(|error| ManagedAgentError::Invalid(error.into()))?;
             } else {
                 apply_model_extensions(&mut config.model_binding, model.x_awaken)?;
             }
@@ -1321,6 +1332,49 @@ mod tests {
                 effort: Some(ReasoningEffort::Xhigh),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn model_update_preserves_acp_configuration_only_for_an_explicit_acp_executor() {
+        // Cause/effect graph: a Managed update may repeat the current model id
+        // while omitting x_awaken.acp. The durable ModelSelection carries a
+        // configuration field for both native and ACP targets, but only an
+        // explicit acp:<cli> executor gives that field ACP semantics.
+        //
+        // Decision table:
+        // | rule | current executor | same model | extension omitted | effect |
+        // | U1   | native           | yes        | yes               | update succeeds; no ACP attachment |
+        // | U2   | acp:<cli>        | yes        | yes               | prior ACP mode/options preserved |
+        let native_temp = tempfile::tempdir().unwrap();
+        let native_repository = ConfigPlaneManagedAgentRepository::new(
+            plane(native_temp.path().join("config.sqlite").to_str().unwrap()),
+            "workspace-a",
+        );
+        let native = native_repository
+            .create("workspace-a", create_params("native"))
+            .await
+            .unwrap();
+        let mut native_update = update_params(native.version);
+        native_update.model = Some(ModelInput::Id("model-a".into()));
+        let updated = native_repository
+            .update("workspace-a", &native.id, native_update)
+            .await
+            .expect("U1");
+        assert_eq!(updated.model.id, "model-a", "U1");
+
+        let mut acp_params = create_params("acp");
+        acp_params.model = serde_json::from_value(json!({
+            "id": "acp:codex/gpt-5",
+            "x_awaken": {"acp": {"mode": "plan", "options": {"reasoning_effort": "high"}}}
+        }))
+        .unwrap();
+        let acp_config = config_from_create("agent_acp".into(), acp_params).expect("U2");
+        let incoming = ModelInput::Id("acp:codex/gpt-5".into()).into_config();
+        let preserved =
+            acp_configuration_to_preserve(&acp_config, &incoming.id, incoming.x_awaken.is_none())
+                .expect("U2");
+        assert_eq!(preserved.mode.as_deref(), Some("plan"), "U2");
+        assert_eq!(preserved.options["reasoning_effort"], "high", "U2");
     }
 
     #[test]
