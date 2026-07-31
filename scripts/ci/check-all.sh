@@ -23,6 +23,7 @@ run() {
 
 run "repository-hygiene self-test" python3 scripts/ci/check_repository_hygiene.py --self-test
 run "repository-hygiene" python3 scripts/ci/check_repository_hygiene.py
+run "k3d-product-image-contract" python3 deploy/k3d/test_image_contract.py
 run "secrets self-test" python3 scripts/ci/check_secrets.py --self-test
 run "secrets" python3 scripts/ci/check_secrets.py
 run "file-limits self-test" python3 scripts/ci/check_file_limits.py --self-test
