@@ -16,6 +16,8 @@ awaken-provisioning-contract.workspace = true
 awaken-run-ingress.workspace = true
 awaken-sandbox-local.workspace = true
 awaken-worker-transport-security.workspace = true
+awaken-executable-agent-contract.workspace = true
+awaken-deployment-contract.workspace = true
 awaken-worker-registry = { workspace = true }
 awaken-acp-contract = { workspace = true }
 awaken-managed-routers = { workspace = true }

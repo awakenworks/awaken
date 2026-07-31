@@ -17,31 +17,32 @@ state and registration-bound clients; it receives no authority database handle.
 
 ```text
   Control Context
-  Agent/Resource authoring, publication history, Deployment/DeploymentRun,
-  IAM, credential metadata, vaults, product mappings, operator UX
+  Agent/Resource-reference authoring, publication history, IAM,
+  credential metadata, vaults, product mappings, operator UX
         |
         | immutable publications, exact references, boundary adapters
         v
   Coordinator Context
-  executable Agent registration, Session, durable dispatch,
-  committed truth, protocol replay, HTTP/SSE routes
+  executable Agent registration, Deployment/DeploymentRun, Session,
+  durable dispatch, committed truth, protocol replay, HTTP/SSE routes
         |
         | bidirectional dispatch/claim and commit/settle protocol
         v
-  Worker / Sandbox Context
-  claim-fenced execution, per-kind Resource realization, exact credential
-  materialization, ephemeral processes and mounts
-        |
-        | gated runtime ports: RunActivation, RuntimeRunContext, ResolvedSpec,
-        | RunExecutor, LiveRunControl, CommitCoordinator, StreamSink,
-        | Plugin, RunWithSnapshotExecutor, AgentSnapshotResolver,
-        | RuntimeCapabilitySource
-        v
-  Runtime Core Context
-  AgentRuntime, agent loop, phases, in-process tool abstractions,
-  typed state/effects, plugin hooks, backend profiles, cancellation/stop policy,
-  continuation guards, goal extension, commit boundary, store contracts
+  Worker / Sandbox Context  -- claim-fenced exact reads / CAS write-back -->
+  claim-fenced execution, exact credential materialization,                 |
+  ephemeral processes and mounts                                            |
+        |                                                                   v
+        | gated Runtime ports                                     Resources Context
+        v                                                File/Memory/Skill/lifecycle,
+  Runtime Core Context                                    independent per-kind ports
+  AgentRuntime, agent loop, phases, typed state/effects,
+  plugin hooks, cancellation, commit boundary, store contracts
 ```
+
+AllInOne co-locates these components but does not create another bounded
+context or implementation. It calls the canonical Control, Coordinator, and
+Resources builders; an optional local Worker uses the same `WorkerNodeBuilder`
+as the split Worker process.
 
 The Runtime Core is the domain center. It runs tools in-process but must not know
 public protocols, registry publication workflow, vault schemas, remote execution

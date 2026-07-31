@@ -74,8 +74,8 @@ pub(crate) fn resource_host_with_deployment(
     deployment: awaken_runtime_host::DeploymentConfig,
 ) -> SharedHost {
     let host = if let Some(storage_dir) = deployment.storage_dir.clone() {
-        let resources = awaken_server::embedded_resource_plane(&storage_dir);
-        let host = SharedHost::new_with_resource_plane_and_deployment(
+        let resources = awaken_server::embedded_resource_component(&storage_dir);
+        let host = SharedHost::new_with_resource_component_and_deployment(
             llm, model_ref, resources, deployment,
         );
         awaken_server::install_platform_memory_data_plane(&host);

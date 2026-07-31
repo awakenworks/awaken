@@ -16,7 +16,6 @@
 //! guard exactly where it applied before.
 
 pub mod admin_assistant;
-pub mod application_access;
 pub mod authz;
 mod component;
 pub mod control_stores;
@@ -76,7 +75,6 @@ use awaken_protocol_managed::{
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
-use awaken_webhook_managed::{WebhookLifecycleSink, assemble_with_session_repo};
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode};
@@ -329,20 +327,6 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         mgmt = mgmt.merge(awaken_iam_host::local_browser_router(local_browser_auth));
     }
     mgmt
-}
-
-/// Construct only the outbound lifecycle sink used by Managed Execution.
-///
-/// Split Coordinator composition must not instantiate the authoring router merely
-/// to obtain this adapter. Subscription custody remains in the supplied Control
-/// ports; this function exposes no CRUD or other management state.
-pub fn webhook_lifecycle_sink(
-    webhook_store: Arc<dyn WebhookStore>,
-    secrets: Arc<dyn SecretStore>,
-    org_id: Option<String>,
-    sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
-) -> Arc<WebhookLifecycleSink> {
-    assemble_with_session_repo(webhook_store, secrets, org_id, sessions).0
 }
 
 /// Apply the canonical management audit and IAM edge to a domain router.

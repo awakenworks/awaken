@@ -1,4 +1,4 @@
-//! Management API for issuing narrow, short-lived application credentials.
+//! Coordinator API for issuing narrow, short-lived application credentials.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

@@ -92,7 +92,11 @@ impl std::fmt::Display for WorkerNodeBuildError {
 
 impl std::error::Error for WorkerNodeBuildError {}
 
-/// Public assembly boundary for a recoverable execution Worker.
+/// Public assembly boundary for the canonical Worker component.
+///
+/// `WorkerNodeBuilder` is intentionally the only Worker component builder;
+/// AllInOne and split Worker process adapters install different transports and
+/// application ports on this same path.
 pub struct WorkerNodeBuilder {
     upstream: WorkerUpstream,
     manifest: ManifestSelection,

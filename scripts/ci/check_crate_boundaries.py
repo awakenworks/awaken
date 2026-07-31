@@ -1453,6 +1453,12 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-run-ingress", "awaken-runtime-host",
         "awaken-config-service", "awaken-credential-materializer",
         "awaken-worker-transport-security",
+        # Coordinator consumes Control's immutable registration projection through
+        # the read port; it never imports Control authoring or its database.
+        "awaken-executable-agent-contract",
+        # Coordinator owns Deployment/DeploymentRun through the inward repository
+        # contract; protocol-managed remains only its HTTP projection.
+        "awaken-deployment-contract",
         "awaken-session-store",
         "awaken-session-contract", "awaken-resource-contract",
         # Outer composition owns Hand topology/relay; runtime-host exposes only APIs/SPIs.
@@ -1611,6 +1617,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-sandbox-policy-store",
         "awaken-resource-store",
         "awaken-resource-reclaimer",
+        # Process adapter joining Control-owned subscriptions/secrets to the
+        # Coordinator-owned Session lifecycle outbox.
+        "awaken-webhook-managed",
         "awaken-file-store", "awaken-memory-store", "awaken-resource-contract",
         "awaken-session-contract", "awaken-session-store",
         "awaken-executable-agent-contract",

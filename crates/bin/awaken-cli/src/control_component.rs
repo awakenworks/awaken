@@ -18,6 +18,7 @@ pub(super) async fn control_component_for_process(
     model_supply: awaken_admin_config_api::ModelSupplyCapabilityView,
     local_acp_observations: &[awaken_acp_application::AcpHostObservation],
     runtimes: Arc<dyn awaken_config_service::RuntimeCapabilitySource>,
+    resource_inventory: Option<Arc<dyn awaken_admin_assistant::ResourceInventory>>,
     iam: Option<Arc<ManagementAuthz>>,
     local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
@@ -33,11 +34,6 @@ pub(super) async fn control_component_for_process(
         &assistant_credentials,
         local_acp_observations,
     );
-    let resource_inventory = Arc::new(awaken_control::HostResourceInventory::new(
-        stores.resource_catalog.clone(),
-        stores.resource_plane.skill_store(),
-        execution_workspace,
-    ));
     awaken_control::build_control_component(awaken_control::ControlDependencies {
         execution_workspace: execution_workspace.to_owned(),
         catalog: stores.catalog.clone(),
@@ -69,7 +65,7 @@ pub(super) async fn control_component_for_process(
             web_search_providers,
         ),
         runtimes,
-        resource_inventory: Some(resource_inventory),
+        resource_inventory,
         environment_author: Arc::new(awaken_control::EnvironmentStateAuthor::new(
             stores.environments.clone(),
         )),
@@ -99,8 +95,6 @@ pub(super) async fn assemble_control_process_router(
         SharedHost::provision_local_workspace,
         SharedHost::provision_local_workspace_at,
     );
-    let skill_store = stores.resource_plane.skill_store();
-    migrate_legacy_skill_registry(&stores, &skill_store).await;
     let model_supply = assembly.model_supply.clone();
     let cloud_models_enabled = model_supply.cloud_models_enabled;
     let brokered_client = brokered_inference_client(
@@ -138,6 +132,7 @@ pub(super) async fn assemble_control_process_router(
         model_supply,
         &assembly.local_acp_observations,
         runtimes,
+        None,
         iam,
         local_browser_auth,
         remote_iam,

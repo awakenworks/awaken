@@ -1,4 +1,4 @@
-//! `awaken-server` — the single-machine **data plane** (Stage B2).
+//! `awaken-server` — the Coordinator application and protocol data plane.
 //!
 //! It composes one protocol-neutral [`SharedHost`] (from `awaken-runtime-host`,
 //! the thread-keyed session substrate) and mounts public protocol adapters over
@@ -7,7 +7,9 @@
 //! same thread id and drives the same coordinator, a turn started through one
 //! protocol can be resumed or observed through another on the *same thread*.
 //!
-//! This crate is the DATA PLANE: the session surface + protocol adapters
+//! This crate is the Coordinator owner: its canonical
+//! [`build_coordinator_component`] assembles Deployment/Session scheduling and
+//! the session surface + protocol adapters
 //! ([`mount`] / [`mount_with_managed`]), exact published-model credential
 //! materialization, the model publication resolver, the inert no-model placeholder,
 //! workspace path addressing, and the Worker
@@ -19,8 +21,10 @@
 //! `awaken-runtime-host`.
 
 pub mod admin;
+pub mod application_access;
 pub mod brokered_inference;
 pub mod console;
+mod coordinator_component;
 pub mod dynamic_placement;
 pub mod inference_materializer;
 mod legacy_resource_migration;
@@ -33,6 +37,11 @@ mod relay_hand;
 pub mod webhooks;
 mod worker_registry;
 pub mod workspace_path;
+
+pub use coordinator_component::{
+    CoordinatorBuildError, CoordinatorComponent, CoordinatorDependencies,
+    build_coordinator_component,
+};
 
 use std::sync::Arc;
 
@@ -106,7 +115,9 @@ pub fn install_platform_memory_data_plane(host: &SharedHost) {
 /// Keeping this factory at the data-plane composition edge prevents the runtime
 /// substrate from depending on concrete resource stores and prevents independent
 /// roots from drifting on filenames or backend selection.
-pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_runtime_host::ResourcePlane {
+pub fn embedded_resource_component(
+    root: &std::path::Path,
+) -> awaken_resource_contract::ResourceComponent {
     std::fs::create_dir_all(root).expect("create resource-plane directory");
     let memory = awaken_memory_store::SqliteMemoryRepository::open(
         root.join("memory_fs.db")
@@ -125,21 +136,23 @@ pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_runtime_host::R
         )
         .expect("open resource file sqlite"),
     );
-    awaken_runtime_host::ResourcePlane::new(
-        files.clone(),
-        files,
-        Arc::new(memory),
-        embedded_skill_store(root),
-        Arc::new({
-            let lifecycle = awaken_resource_store::SqliteResourceStore::open(
-                root.join("resource-lifecycle.db"),
-            )
-            .expect("open resource lifecycle sqlite");
-            lifecycle
-                .migrate_legacy_unscoped_schema()
-                .expect("migrate legacy resource lifecycle rows");
-            lifecycle
-        }),
+    awaken_resource_contract::build_resource_component(
+        awaken_resource_contract::ResourceDependencies {
+            file_store: files.clone(),
+            file_catalog: files,
+            memory_repository: Arc::new(memory),
+            skill_store: embedded_skill_store(root),
+            lifecycle: Arc::new({
+                let lifecycle = awaken_resource_store::SqliteResourceStore::open(
+                    root.join("resource-lifecycle.db"),
+                )
+                .expect("open resource lifecycle sqlite");
+                lifecycle
+                    .migrate_legacy_unscoped_schema()
+                    .expect("migrate legacy resource lifecycle rows");
+                lifecycle
+            }),
+        },
     )
 }
 

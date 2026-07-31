@@ -99,7 +99,7 @@ pub use crate::file_content_transport::{
     WorkerFileContentService, worker_file_content_router,
 };
 pub use crate::host::{
-    AttemptExecutorDecorator, HostResume, RemoteAttemptInstallation, ResourcePlane, SharedHost,
+    AttemptExecutorDecorator, HostResume, RemoteAttemptInstallation, SharedHost,
     remote_worker_placement, self_hosted_inference_holder,
 };
 pub use crate::memory_transport::{

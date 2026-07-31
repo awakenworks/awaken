@@ -1228,7 +1228,7 @@ pub fn build_echo_router() -> Router {
     build_router(Arc::new(EchoModel), "echo-model")
 }
 
-/// Ephemeral ResourcePlane behind the production workspace-path adapter. This
+/// Ephemeral ResourceComponent behind the production workspace-path adapter. This
 /// is the sole multi-workspace process fixture for volatile resource semantics;
 /// it decorates the canonical scenario Host instead of defining another store.
 pub fn build_ephemeral_resource_router() -> Router {
@@ -1680,7 +1680,7 @@ pub async fn build_skills_durable_router() -> Router {
     if let Some(storage_root) = storage_root {
         let skills = host
             .skill_store()
-            .expect("canonical scenario ResourcePlane installs SkillStore");
+            .expect("canonical scenario ResourceComponent installs SkillStore");
         awaken_server::migrate_legacy_skill_registry(&storage_root, skills.as_ref())
             .await
             .expect("migrate legacy scenario Skill registry");

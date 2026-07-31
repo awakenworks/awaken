@@ -5,8 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 # The authoring / authz plane (Stage B2): the management CRUD surfaces (admin
-# config, vault front door, webhook subscriptions, user profiles, deployments,
-# environments, config authoring plane, capabilities) plus the embedded IAM guard.
+# config, vault front door, webhook subscriptions, user profiles, config authoring,
+# and capabilities) plus the embedded IAM guard. Deployment/Session application
+# composition belongs to awaken-server's Coordinator component.
 # It knows nothing of the single-machine composition root (awaken-cli) and does
 # NOT depend on the awaken-server data-plane bin — the two planes are siblings the
 # composition root (awaken-cli) weaves together.
@@ -42,7 +43,6 @@ awaken-iam-host = { workspace = true }
 awaken-webhook-managed = { workspace = true }
 awaken-agent-contract = { workspace = true }
 awaken-runtime-contract = { workspace = true }
-awaken-session-contract = { workspace = true }
 # The embedded IAM token/binding rows persist under typed <data_dir>/iam.sqlite.
 rusqlite = { version = "0.32", features = ["bundled"] }
 async-trait.workspace = true

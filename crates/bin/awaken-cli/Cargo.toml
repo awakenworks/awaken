@@ -39,6 +39,7 @@ awaken-worker-transport-security.workspace = true
 awaken-sandbox-policy-store = { workspace = true }
 awaken-resource-store = { workspace = true, features = ["postgres"] }
 awaken-resource-reclaimer = { workspace = true }
+awaken-webhook-managed = { workspace = true }
 awaken-file-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-memory-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-resource-contract = { workspace = true }

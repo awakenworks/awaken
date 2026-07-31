@@ -132,10 +132,9 @@ async fn build_control_assembly_with_model_composition(
     )?;
     let stores = open_process_stores(
         deployment.control.clone(),
-        // Control exposes no File/Memory/Skill routes. This volatile
-        // resource plane satisfies shared control-plane collaborators without
-        // acquiring a second durable resource-plane authority.
-        ephemeral_resource_plane(),
+        // Control receives Resource references through authoring/read ports and
+        // opens no File, Memory, Skill-content, or lifecycle authority.
+        None,
         deployment.data_dir.clone(),
         key,
         config::Role::Control,

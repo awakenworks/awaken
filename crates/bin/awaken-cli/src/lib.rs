@@ -22,7 +22,7 @@ mod identity;
 mod observation_reconcile;
 mod process_assembly_options;
 mod process_surface;
-mod resource_plane;
+mod resource_component;
 mod worker_transport_security;
 
 use std::collections::BTreeMap;
@@ -52,7 +52,7 @@ pub use control::{
 use control_component::{assemble_control_process_router, control_component_for_process};
 use identity::identity_wiring;
 use process_assembly_options::{ProcessAssemblyOptions, local_model_supply};
-use resource_plane::{ephemeral_resource_plane, open_resource_plane};
+use resource_component::{ephemeral_resource_component, open_resource_component};
 pub use worker_transport_security::load_request_authorizer as load_worker_request_authorizer;
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
 // constants a test / operator embedding drives — re-exported from the authoring plane.
@@ -118,7 +118,10 @@ pub struct ProcessAssembly {
 struct ProcessStores {
     /// Durable installation root used to persist the platform Workspace id.
     workspace_root: Option<std::path::PathBuf>,
-    resource_plane: awaken_runtime_host::ResourcePlane,
+    /// Present only when this process composes the Resources domain. Standalone
+    /// Control receives only narrow Resource authoring/read ports and opens no
+    /// File, Memory, Skill-content, or lifecycle authority.
+    resource_component: Option<awaken_resource_contract::ResourceComponent>,
     catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo>,
     credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     secrets: Arc<dyn awaken_credential_vault::SecretStore>,
@@ -169,6 +172,11 @@ fn role_owns_managed_execution(role: config::Role) -> bool {
     matches!(role, config::Role::AllInOne | config::Role::Coordinator)
 }
 
+#[cfg(test)]
+fn role_composes_resource_component(role: config::Role) -> bool {
+    matches!(role, config::Role::AllInOne | config::Role::Coordinator)
+}
+
 /// Ephemeral deployment stores: everything in process memory (dev / e2e default).
 fn in_memory_process_stores() -> ProcessStores {
     let sessions = Arc::new(
@@ -181,7 +189,7 @@ fn in_memory_process_stores() -> ProcessStores {
     );
     ProcessStores {
         workspace_root: None,
-        resource_plane: ephemeral_resource_plane(),
+        resource_component: Some(ephemeral_resource_component()),
         catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
         credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
         secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
@@ -200,6 +208,14 @@ fn in_memory_process_stores() -> ProcessStores {
             dream_repository: sessions,
         }),
     }
+}
+
+#[cfg(test)]
+fn in_memory_control_stores() -> ProcessStores {
+    let mut stores = in_memory_process_stores();
+    stores.resource_component = None;
+    stores.managed_execution = None;
+    stores
 }
 
 /// Keep the Managed Session aggregate durable whenever the runtime itself is
@@ -237,7 +253,7 @@ fn process_stores_for_runtime_storage(storage_dir: Option<&std::path::Path>) -> 
 /// (Option A, shared-DB).
 async fn open_process_stores(
     cfg: awaken_control::ControlStoreConfig,
-    resource_plane: awaken_runtime_host::ResourcePlane,
+    resource_component: Option<awaken_resource_contract::ResourceComponent>,
     workspace_root: std::path::PathBuf,
     key: &[u8; 32],
     role: config::Role,
@@ -499,7 +515,7 @@ async fn open_process_stores(
 
     Ok(ProcessStores {
         workspace_root: Some(workspace_root),
-        resource_plane,
+        resource_component,
         catalog,
         credentials,
         secrets,
@@ -518,14 +534,14 @@ async fn open_local_process_stores(
     dir: &std::path::Path,
     key: &[u8; 32],
 ) -> Result<ProcessStores, String> {
-    let resource_plane = open_resource_plane(
+    let resource_component = open_resource_component(
         config::ResourcePlaneStoreBackend::Embedded(dir.to_path_buf()),
         PostgresSchemaMode::Migrate,
     )
     .await?;
     open_process_stores(
         awaken_control::ControlStoreConfig::local(dir),
-        resource_plane,
+        Some(resource_component),
         dir.to_path_buf(),
         key,
         config::Role::AllInOne,
@@ -601,10 +617,11 @@ async fn build_runtime_process_assembly(
         config::OperatingMode::Local => PostgresSchemaMode::Migrate,
         config::OperatingMode::Server => PostgresSchemaMode::Verify,
     };
-    let resource_plane = open_resource_plane(deployment.resources.clone(), postgres_schema).await?;
+    let resource_component =
+        open_resource_component(deployment.resources.clone(), postgres_schema).await?;
     let stores = open_process_stores(
         deployment.control.clone(),
-        resource_plane,
+        Some(resource_component),
         deployment.data_dir.clone(),
         key,
         role,
@@ -653,11 +670,11 @@ pub async fn migrate_deployment_schema(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
 ) -> Result<(), String> {
-    let resource_plane =
-        open_resource_plane(deployment.resources.clone(), PostgresSchemaMode::Migrate).await?;
+    let resource_component =
+        open_resource_component(deployment.resources.clone(), PostgresSchemaMode::Migrate).await?;
     open_process_stores(
         deployment.control.clone(),
-        resource_plane,
+        Some(resource_component),
         deployment.data_dir.clone(),
         key,
         deployment.role,
@@ -706,12 +723,12 @@ async fn build_all_in_one_router_with_composition(
         config::OperatingMode::Local => PostgresSchemaMode::Migrate,
         config::OperatingMode::Server => PostgresSchemaMode::Verify,
     };
-    let resource_plane = open_resource_plane(deployment.resources.clone(), postgres_schema)
+    let resource_component = open_resource_component(deployment.resources.clone(), postgres_schema)
         .await
         .unwrap_or_else(|error| panic!("open resource stores: {error}"));
     let stores = open_process_stores(
         deployment.control.clone(),
-        resource_plane,
+        Some(resource_component),
         deployment.data_dir.clone(),
         &key,
         config::Role::AllInOne,
@@ -1035,10 +1052,14 @@ async fn assemble_runtime_process_router(
     let managed_rate_limiter =
         Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization(org_id.clone()));
     let mcp_bearer_token = assembly.mcp_bearer_token;
-    // Cause/effect composition rule: one selected ResourcePlane is moved intact
+    // Cause/effect composition rule: one selected ResourceComponent is moved intact
     // into the Host. The management Skill API borrows the one additional view it
-    // needs; no tuple decomposition or parallel ResourcePlane reconstruction.
-    let skill_store = stores.resource_plane.skill_store();
+    // needs; no tuple decomposition or parallel Resources reconstruction.
+    let resource_component = stores
+        .resource_component
+        .as_ref()
+        .expect("Managed Execution role composes Resources");
+    let skill_store = resource_component.skill_store();
     // Resolve the installation's Workspace exactly once, then inject the same
     // coordinate into every adapter assembled below. Durable roots persist it;
     // ephemeral roots receive a process-local generated coordinate.
@@ -1104,6 +1125,11 @@ async fn assemble_runtime_process_router(
                 model_supply,
                 &assembly.local_acp_observations,
                 live_runtime_capabilities.clone(),
+                Some(Arc::new(awaken_control::HostResourceInventory::new(
+                    stores.resource_catalog.clone(),
+                    resource_component.skill_store(),
+                    &platform_workspace,
+                ))),
                 iam.clone(),
                 local_browser_auth,
                 remote_iam.clone(),
@@ -1117,7 +1143,7 @@ async fn assemble_runtime_process_router(
     };
     let ProcessStores {
         workspace_root: _,
-        resource_plane,
+        resource_component,
         catalog,
         credentials,
         secrets,
@@ -1173,20 +1199,13 @@ async fn assemble_runtime_process_router(
     // against this Coordinator's sole Managed Session repository; split Control
     // neither mirrors that repository nor owns a second token directory.
     let application_access = Arc::new(awaken_authz_enforce::ApplicationAccessStore::new());
-    let webhook_sink = awaken_control::webhook_lifecycle_sink(
+    let webhook_sink = awaken_webhook_managed::assemble_with_session_repo(
         webhook_store,
         secrets.clone(),
         Some(org_id.clone()),
         sessions.clone(),
-    );
-    let deployment_state = Arc::new(
-        awaken_protocol_managed::DeploymentState::with_repository(deployments)
-            .await
-            .unwrap_or_else(|error| panic!("restore Deployment state: {error}")),
-    );
-    deployment_state.bind_rate_limiter(managed_rate_limiter.clone());
-    deployment_state.bind_executable_agents(executable_agent_catalog.clone());
-
+    )
+    .0;
     // The data plane: the host runs the server model, resolves a session's agent to
     // its installed config, and carries the management tool executables so the
     // reserved-scope assistant can call them. It shares the SAME skill store and
@@ -1194,16 +1213,16 @@ async fn assemble_runtime_process_router(
     // host serves is exactly what the assistant enumerates, and identity survives a
     // restart.
     let mut host_builder = match deployment {
-        Some(deployment) => SharedHost::new_with_resource_plane_and_deployment(
+        Some(deployment) => SharedHost::new_with_resource_component_and_deployment(
             model_wiring.executor,
             model_wiring.model_ref,
-            resource_plane,
+            resource_component.expect("Managed Execution role composes Resources"),
             deployment,
         ),
-        None => SharedHost::new_with_resource_plane(
+        None => SharedHost::new_with_resource_component(
             model_wiring.executor,
             model_wiring.model_ref,
-            resource_plane,
+            resource_component.expect("Managed Execution role composes Resources"),
         ),
     };
     host_builder = host_builder
@@ -1298,37 +1317,9 @@ async fn assemble_runtime_process_router(
         .with_resource_purge_scheduler(host.clone())
         // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
         // published agent's model sees the authoritative config-plane truth (M2).
-        .with_config_source(executable_agent_catalog)
+        .with_config_source(executable_agent_catalog.clone())
         .with_session_repo(sessions.clone())
         .with_lifecycle_sink(webhook_sink),
-    );
-    let reconciled_resource_activations = managed_state.reconcile_resource_activations().await;
-    if reconciled_resource_activations > 0 {
-        eprintln!(
-            "reconciled {reconciled_resource_activations} durable Session resource activation(s)"
-        );
-    }
-    let reconciled_mcp_attachments = managed_state.reconcile_mcp_attachments().await;
-    if reconciled_mcp_attachments > 0 {
-        eprintln!("reconciled {reconciled_mcp_attachments} durable Session MCP projection(s)");
-    }
-    let _ = managed_state.spawn_realization_lease_supervisor();
-    deployment_state.bind_launcher(Arc::new(
-        awaken_protocol_managed::LocalDeploymentSessionLauncher::new(managed_state.clone()),
-    ));
-    let coordinator_management = awaken_control::protect_management_router(
-        awaken_protocol_managed::deployments_router(deployment_state.clone())
-            .merge(awaken_protocol_managed::environments_router(
-                env_state.clone(),
-            ))
-            .merge(awaken_control::application_access::router(
-                application_access.clone(),
-                sessions.clone(),
-                platform_workspace.clone(),
-            )),
-        deployment_audit_plane,
-        deployment_iam,
-        deployment_remote_iam,
     );
     // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
@@ -1342,8 +1333,12 @@ async fn assemble_runtime_process_router(
             live_runtime_capabilities,
         ),
     );
-    let (mut data, dream_state) =
-        awaken_server::mount_with_managed_application_access_models_and_dreams(
+    let registration_router = executable_agent_registration::layer_refresh(
+        executable_agent_private_router,
+        executable_agent_projection_refresher,
+    );
+    let coordinator =
+        awaken_server::build_coordinator_component(awaken_server::CoordinatorDependencies {
             host,
             managed_state,
             resource_catalog,
@@ -1351,30 +1346,23 @@ async fn assemble_runtime_process_router(
             model_directory,
             dream_repository,
             worker_authenticator,
-        );
-    data = data.merge(executable_agent_private_router);
-    data = data.merge(coordinator_management);
-    data =
-        executable_agent_registration::layer_refresh(data, executable_agent_projection_refresher);
-    // One timer drives every Managed periodic trigger. Deployment remains the cron
-    // authority; Dream policies submit the same durable DreamJob as manual create.
-    let scheduled_deployments = deployment_state.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
-        loop {
-            interval.tick().await;
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_millis() as u64)
-                .unwrap_or_default();
-            if let Err(error) = scheduled_deployments.tick_and_launch(now_ms).await {
-                eprintln!("scheduled Deployment tick failed: {error}");
-            }
-            if let Err(error) = dream_state.tick_policies(now_ms).await {
-                eprintln!("scheduled Dream policy tick failed: {error}");
-            }
-        }
-    });
+            deployment_repository: deployments,
+            executable_agents: executable_agent_catalog,
+            rate_limiter: managed_rate_limiter.clone(),
+            environments: env_state,
+            sessions,
+            default_workspace: platform_workspace.clone(),
+            registration_router,
+        })
+        .await
+        .unwrap_or_else(|error| panic!("build Coordinator component: {error}"));
+    let coordinator_management = awaken_control::protect_management_router(
+        coordinator.management_router,
+        deployment_audit_plane,
+        deployment_iam,
+        deployment_remote_iam,
+    );
+    let mut data = coordinator.router.merge(coordinator_management);
     if let Some(iam) = resource_iam {
         data = data.layer(axum::middleware::from_fn_with_state(
             iam,
@@ -1533,7 +1521,7 @@ mod runtime_session_store_tests {
         // Deployment typed ports point at one concrete repository allocation;
         // D2 ephemeral composition -> the same single-allocation invariant holds.
         // A different address would expose a parallel Deployment truth before
-        // `DeploymentState::with_repository` is assembled.
+        // the repository-backed Deployment component is assembled.
         let dir = tempfile::tempdir().expect("temporary runtime storage");
         let durable = process_stores_for_runtime_storage(Some(dir.path()));
         let durable = durable
@@ -1643,6 +1631,31 @@ mod process_role_surface_tests {
         assert!(!role_owns_managed_execution(config::Role::Worker), "R4");
     }
 
+    #[test]
+    fn resource_component_has_only_resource_serving_process_owners() {
+        // Cause/effect decision table:
+        // R1 AllInOne and R2 Coordinator serve claim-fenced Resource APIs and
+        // therefore compose the canonical component. R3 Control consumes only
+        // Resource authoring/read ports; R4 Worker consumes authenticated per-kind
+        // clients, so neither may open a Resource authority component.
+        assert!(
+            role_composes_resource_component(config::Role::AllInOne),
+            "R1"
+        );
+        assert!(
+            role_composes_resource_component(config::Role::Coordinator),
+            "R2"
+        );
+        assert!(
+            !role_composes_resource_component(config::Role::Control),
+            "R3"
+        );
+        assert!(
+            !role_composes_resource_component(config::Role::Worker),
+            "R4"
+        );
+    }
+
     /// Cause/effect decision table:
     ///
     /// | role | authoring API | Session API | Deployment API | registration API |
@@ -1656,7 +1669,7 @@ mod process_role_surface_tests {
     #[tokio::test]
     async fn service_roles_expose_only_their_owned_api() {
         let app = assemble_control_process_router(
-            in_memory_process_stores(),
+            in_memory_control_stores(),
             None,
             None,
             None,
@@ -1808,7 +1821,7 @@ mod process_role_surface_tests {
     async fn hosted_control_uses_the_injected_publication_resolver() {
         let called = Arc::new(AtomicBool::new(false));
         let app = assemble_control_process_router(
-            in_memory_process_stores(),
+            in_memory_control_stores(),
             None,
             None,
             None,
