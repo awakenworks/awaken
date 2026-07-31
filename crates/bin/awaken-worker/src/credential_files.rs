@@ -2,15 +2,16 @@
 //!
 //! Kubernetes Secrets and Vault CSI drivers may project material into the
 //! Worker's trust domain without giving the Worker a Control database or putting
-//! plaintext in an Awaken wire value. This adapter consumes only a publication-
-//! pinned `WorkerReference`; every path includes the exact revision, Workspace,
-//! and target/use fingerprint, so a file cannot be replayed for another use.
+//! plaintext in an Awaken wire value. This adapter consumes publication-pinned
+//! `WorkerReference` material and recipient-bound `ControlPlaneReference`
+//! envelopes; every path includes the exact revision, Workspace, and target/use
+//! fingerprint, so a file cannot be replayed for another use.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use awaken_runtime_contract::{
-    CredentialMaterial, CredentialMaterialError, CredentialMaterialRequest,
+    CredentialEnvelope, CredentialMaterial, CredentialMaterialError, CredentialMaterialRequest,
     CredentialMaterialResolver, CredentialMaterialSource, CredentialUsage, PlaintextBoundary,
     PlaintextHolder, RedactedString, ResolvedCredentialMaterial, StructuredCredentialMaterial,
 };
@@ -25,6 +26,11 @@ const MAX_PROJECTED_FIELD_BYTES: u64 = 1024 * 1024;
 /// <root>/<hex credential id>/<revision>/<hex workspace>/<hex target-use fingerprint>/
 ///   secret
 ///   username + password  # only for awaken.http-basic/v1
+///
+/// <root>/envelopes/<hex envelope id>/<hex payload fingerprint>/
+///   <hex credential id>/<revision>/<hex workspace>/<hex target-use fingerprint>/
+///   payload_fingerprint
+///   secret
 /// ```
 ///
 /// Hex-encoding every untrusted component makes path traversal impossible while
@@ -52,8 +58,15 @@ impl WorkerCredentialFileResolver {
     /// populate for one exact, secret-free request.
     #[must_use]
     pub fn material_directory(&self, request: CredentialMaterialRequest<'_>) -> PathBuf {
-        self.root
-            .join(hex_component(&request.access.credential.id))
+        let root = match request.access.envelope.as_ref() {
+            Some(CredentialEnvelope::SealedForWorker { envelope_ref, .. }) => self
+                .root
+                .join("envelopes")
+                .join(hex_component(&envelope_ref.id))
+                .join(hex_component(&envelope_ref.payload_fingerprint)),
+            Some(CredentialEnvelope::SealedForWorkload { .. }) | None => self.root.clone(),
+        };
+        root.join(hex_component(&request.access.credential.id))
             .join(request.access.credential.revision.to_string())
             .join(hex_component(&request.binding.workspace_id))
             .join(hex_component(&request.binding.target_use_fingerprint))
@@ -77,6 +90,17 @@ impl WorkerCredentialFileResolver {
             .map(RedactedString::new)
             .map_err(|_| CredentialMaterialError::Unavailable)
     }
+
+    async fn verify_envelope_projection(
+        directory: &Path,
+        expected_fingerprint: &str,
+    ) -> Result<(), CredentialMaterialError> {
+        let projected = Self::read_field(directory, "payload_fingerprint").await?;
+        if projected.expose_secret().trim() != expected_fingerprint {
+            return Err(CredentialMaterialError::PayloadMismatch);
+        }
+        Ok(())
+    }
 }
 
 fn hex_component(value: &str) -> String {
@@ -92,11 +116,14 @@ fn hex_component(value: &str) -> String {
 #[async_trait::async_trait]
 impl CredentialMaterialResolver for WorkerCredentialFileResolver {
     fn supported_material_sources(&self) -> BTreeSet<CredentialMaterialSource> {
-        BTreeSet::from([CredentialMaterialSource::WorkerReference])
+        BTreeSet::from([
+            CredentialMaterialSource::ControlPlaneReference,
+            CredentialMaterialSource::WorkerReference,
+        ])
     }
 
     fn supports_recipient_bound_envelopes(&self) -> bool {
-        false
+        true
     }
 
     async fn resolve_exact(
@@ -104,12 +131,6 @@ impl CredentialMaterialResolver for WorkerCredentialFileResolver {
         request: CredentialMaterialRequest<'_>,
     ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
         request.binding.validate()?;
-        if request.access.material_source != CredentialMaterialSource::WorkerReference {
-            return Err(CredentialMaterialError::Unavailable);
-        }
-        if request.access.envelope.is_some() {
-            return Err(CredentialMaterialError::RecipientMismatch);
-        }
         if request.selected_holder != &self.holder
             || !request
                 .access
@@ -121,6 +142,26 @@ impl CredentialMaterialResolver for WorkerCredentialFileResolver {
         }
 
         let directory = self.material_directory(request);
+        match (
+            request.access.material_source,
+            request.access.envelope.as_ref(),
+        ) {
+            (CredentialMaterialSource::WorkerReference, None) => {}
+            (
+                CredentialMaterialSource::ControlPlaneReference,
+                Some(envelope @ CredentialEnvelope::SealedForWorker { envelope_ref, .. }),
+            ) => {
+                envelope.validate_for_holder(request.selected_holder, unix_time_ms())?;
+                if envelope_ref.id.trim().is_empty()
+                    || envelope_ref.payload_fingerprint.trim().is_empty()
+                {
+                    return Err(CredentialMaterialError::PayloadMismatch);
+                }
+                Self::verify_envelope_projection(&directory, &envelope_ref.payload_fingerprint)
+                    .await?;
+            }
+            _ => return Err(CredentialMaterialError::Unavailable),
+        }
         let material = match &request.access.usage {
             CredentialUsage::HttpBasicAuth => {
                 CredentialMaterial::Structured(StructuredCredentialMaterial {
@@ -151,12 +192,19 @@ impl CredentialMaterialResolver for WorkerCredentialFileResolver {
     }
 }
 
+fn unix_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use awaken_runtime_contract::{
         CredentialAccess, CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterialBinding,
-        CredentialRef, ModelExposurePolicy, SealedCredentialEnvelopeRef,
+        CredentialRef, ModelExposurePolicy, SealedCredentialEnvelopeRef, TrustDomainRef,
     };
 
     fn temp_root(tag: &str) -> PathBuf {
@@ -304,8 +352,127 @@ mod tests {
     }
 
     /// Cause/effect decision table:
-    /// R5 Control source, another Worker trust domain, or an envelope -> reject
-    /// before file IO; R6 malformed UTF-8 -> unavailable without secret bytes in
+    /// R5 Control reference + Worker envelope + exact recipient/expiry/payload
+    /// marker + binding -> return only the projected material; R6 changed payload
+    /// marker -> PayloadMismatch; R7 expired or wrong-recipient envelope -> reject
+    /// before secret read; R8 changed envelope id -> exact directory is absent.
+    #[tokio::test]
+    async fn recipient_bound_control_projection_is_exact_and_expires() {
+        let root = temp_root("envelope");
+        let (resolver, mut access, holder, binding) =
+            fixture(&root, CredentialUsage::ProviderAdapter);
+        access.material_source = CredentialMaterialSource::ControlPlaneReference;
+        access = access.with_envelope(CredentialEnvelope::SealedForWorker {
+            envelope_ref: SealedCredentialEnvelopeRef {
+                id: "envelope-a".into(),
+                payload_fingerprint: "sha256:payload-a".into(),
+            },
+            recipient: holder.trust_domain.clone(),
+            expires_at_unix_ms: u64::MAX,
+        });
+        let request = CredentialMaterialRequest {
+            access: &access,
+            selected_holder: &holder,
+            binding: &binding,
+        };
+        let directory = resolver.material_directory(request);
+        write(&directory, "payload_fingerprint", b"sha256:payload-a\n").await;
+        write(&directory, "secret", b"recipient-secret").await;
+        assert_eq!(
+            resolver
+                .resolve_exact(request)
+                .await
+                .expect("R5 exact envelope")
+                .material
+                .single_secret()
+                .expect("R5 scalar")
+                .expose_secret(),
+            "recipient-secret",
+            "R5"
+        );
+
+        write(&directory, "payload_fingerprint", b"sha256:substituted").await;
+        assert_eq!(
+            resolver.resolve_exact(request).await.expect_err("R6"),
+            CredentialMaterialError::PayloadMismatch,
+            "R6"
+        );
+        write(&directory, "payload_fingerprint", b"sha256:payload-a").await;
+
+        let expired = access
+            .clone()
+            .with_envelope(CredentialEnvelope::SealedForWorker {
+                envelope_ref: SealedCredentialEnvelopeRef {
+                    id: "envelope-a".into(),
+                    payload_fingerprint: "sha256:payload-a".into(),
+                },
+                recipient: holder.trust_domain.clone(),
+                expires_at_unix_ms: 1,
+            });
+        assert_eq!(
+            resolver
+                .resolve_exact(CredentialMaterialRequest {
+                    access: &expired,
+                    selected_holder: &holder,
+                    binding: &binding,
+                })
+                .await
+                .expect_err("R7 expired"),
+            CredentialMaterialError::EnvelopeExpired,
+            "R7"
+        );
+
+        let wrong_recipient = access
+            .clone()
+            .with_envelope(CredentialEnvelope::SealedForWorker {
+                envelope_ref: SealedCredentialEnvelopeRef {
+                    id: "envelope-a".into(),
+                    payload_fingerprint: "sha256:payload-a".into(),
+                },
+                recipient: TrustDomainRef("worker-b".into()),
+                expires_at_unix_ms: u64::MAX,
+            });
+        assert_eq!(
+            resolver
+                .resolve_exact(CredentialMaterialRequest {
+                    access: &wrong_recipient,
+                    selected_holder: &holder,
+                    binding: &binding,
+                })
+                .await
+                .expect_err("R7 recipient"),
+            CredentialMaterialError::RecipientMismatch,
+            "R7"
+        );
+
+        let another_envelope = access
+            .clone()
+            .with_envelope(CredentialEnvelope::SealedForWorker {
+                envelope_ref: SealedCredentialEnvelopeRef {
+                    id: "envelope-b".into(),
+                    payload_fingerprint: "sha256:payload-a".into(),
+                },
+                recipient: holder.trust_domain.clone(),
+                expires_at_unix_ms: u64::MAX,
+            });
+        assert_eq!(
+            resolver
+                .resolve_exact(CredentialMaterialRequest {
+                    access: &another_envelope,
+                    selected_holder: &holder,
+                    binding: &binding,
+                })
+                .await
+                .expect_err("R8 exact envelope directory"),
+            CredentialMaterialError::Unavailable,
+            "R8"
+        );
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    /// Cause/effect decision table:
+    /// R9 unsupported source/envelope combination or another Worker trust domain
+    /// -> reject before file IO; R10 malformed UTF-8 -> unavailable without secret bytes in
     /// diagnostics.
     #[tokio::test]
     async fn unsupported_source_holder_envelope_and_encoding_fail_closed() {
@@ -321,9 +488,9 @@ mod tests {
                     binding: &binding,
                 })
                 .await
-                .expect_err("R5 source"),
+                .expect_err("R9 source"),
             CredentialMaterialError::Unavailable,
-            "R5"
+            "R9"
         );
 
         access.material_source = CredentialMaterialSource::WorkerReference;
@@ -345,9 +512,9 @@ mod tests {
                     binding: &binding,
                 })
                 .await
-                .expect_err("R5 envelope"),
-            CredentialMaterialError::RecipientMismatch,
-            "R5"
+                .expect_err("R9 envelope"),
+            CredentialMaterialError::Unavailable,
+            "R9"
         );
 
         let wrong_holder = PlaintextHolder::new(PlaintextBoundary::Worker, "worker-b");
@@ -359,9 +526,9 @@ mod tests {
                     binding: &binding,
                 })
                 .await
-                .expect_err("R5 holder"),
+                .expect_err("R9 holder"),
             CredentialMaterialError::RecipientMismatch,
-            "R5"
+            "R9"
         );
 
         let request = CredentialMaterialRequest {
@@ -376,9 +543,9 @@ mod tests {
         )
         .await;
         assert_eq!(
-            resolver.resolve_exact(request).await.expect_err("R6"),
+            resolver.resolve_exact(request).await.expect_err("R10"),
             CredentialMaterialError::Unavailable,
-            "R6"
+            "R10"
         );
         let _ = tokio::fs::remove_dir_all(root).await;
     }
