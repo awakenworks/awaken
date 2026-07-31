@@ -22,7 +22,7 @@ Owner: [Configuration-to-application and request-to-response flows](../design/co
 
 - Status: active
 - Owner: [Deployment and Session creation](../design/config-to-run-execution-flow.md#deployment-and-session-creation)
-- Fact: local and remote Deployment launch adapters invoke the same Session command and use `deployment_run_id` to prevent duplicate Sessions.
+- Fact: the Coordinator-owned Deployment application invokes the local Session command and uses `deployment_run_id` to prevent duplicate Sessions; the former remote launch path is retired.
 - Links: [Managed Deployments](../design/managed-deployments.md); guardrail G45
 - Verification: launch rule E4 in the owner document.
 

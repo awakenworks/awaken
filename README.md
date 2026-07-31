@@ -76,7 +76,8 @@ Repository-verification clients; capability advertisement derives from those
 installed adapters and fails closed when a required adapter is absent.
 
 The file also accepts `runtime_database_url`, `resource_database_url`, and
-`catalog_db` / `credential_db` / `config_db` / `admin_db` / `sessions_db` for
+`catalog_db` / `credential_db` / `config_db` / `admin_db` / `environment_db` /
+`sessions_db` for
 server deployments. A deployment that uses one PostgreSQL authority for the
 complete management plane should instead set `management_database_url_file` to
 an operator-projected secret file; it supplies all five control stores and the
@@ -95,8 +96,6 @@ coordinator_internal_url = "http://awaken-coordinator:8080"
 # Control and Coordinator: the same operator-projected, least-scope token file.
 executable_agent_registration_token_file = "/var/run/secrets/awaken/agent-registration-token"
 
-# Control and Coordinator: a separate least-privilege Session launch token.
-deployment_session_launch_token_file = "/var/run/secrets/awaken/deployment-launch-token"
 ```
 
 Token values are loaded from files and never appear in `awaken config`. Workers

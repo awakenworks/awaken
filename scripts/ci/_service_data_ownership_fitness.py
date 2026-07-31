@@ -15,6 +15,8 @@ from pathlib import Path
 
 WORKER_MANIFEST = "crates/bin/awaken-worker/Cargo.toml"
 WORKER_SOURCE = "crates/bin/awaken-worker/src"
+CONTROL_SOURCE = "crates/control/awaken-control/src"
+CLI_SOURCE = "crates/bin/awaken-cli/src"
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -44,6 +46,20 @@ FORBIDDEN_WORKER_SOURCE = re.compile(
     r"\b(?:rusqlite|sqlx)\s*::",
 )
 
+# Deployment and Environment are one Managed Execution composition. Reopening
+# either aggregate from the authoring service would recreate the former
+# Control/Coordinator parallel state path.
+FORBIDDEN_CONTROL_EXECUTION_SOURCE = re.compile(
+    r"\b(?:DeploymentState|deployments_router|environments_router)\b"
+)
+
+# The retired private launch boundary must not return beside the local
+# Coordinator application port.
+FORBIDDEN_RETIRED_LAUNCH_SOURCE = re.compile(
+    r"\b(?:HttpDeploymentSessionLauncher|DEPLOYMENT_SESSION_LAUNCH_PATH|"
+    r"deployment_session_launch_router|DeploymentSessionLaunchConfig)\b"
+)
+
 
 def dependency_violations(dependencies: set[str]) -> list[str]:
     """Return the durable-authority packages accidentally linked by Worker."""
@@ -55,6 +71,20 @@ def source_violations(source: str) -> list[str]:
     """Return forbidden production authority constructors/vocabulary."""
 
     return sorted({match.group(0) for match in FORBIDDEN_WORKER_SOURCE.finditer(source)})
+
+
+def control_execution_violations(source: str) -> list[str]:
+    """Return Managed Execution owners accidentally reconstructed by Control."""
+
+    return sorted(
+        {match.group(0) for match in FORBIDDEN_CONTROL_EXECUTION_SOURCE.finditer(source)}
+    )
+
+
+def retired_launch_violations(source: str) -> list[str]:
+    """Return vocabulary from the deleted remote Deployment launch path."""
+
+    return sorted({match.group(0) for match in FORBIDDEN_RETIRED_LAUNCH_SOURCE.finditer(source)})
 
 
 def _normal_dependencies(manifest: dict) -> set[str]:
@@ -83,6 +113,13 @@ def selftest() -> None:
     assert source_violations("let client = HttpMemoryRepository::new(url, token);") == []  # O4
     aliased = {"dependencies": {"session_backend": {"package": "awaken-session-store"}}}
     assert dependency_violations(_normal_dependencies(aliased)) == ["awaken-session-store"]  # O2
+    assert control_execution_violations("let x = DeploymentState::new();") == [
+        "DeploymentState"
+    ]  # O5
+    assert control_execution_violations("let x = ConfigPlane::new();") == []  # O6
+    assert retired_launch_violations("HttpDeploymentSessionLauncher::new(url, token)") == [
+        "HttpDeploymentSessionLauncher"
+    ]  # O7
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -106,5 +143,25 @@ def check_all(repo_root: Path) -> list[str]:
             errors.append(
                 f"{path.relative_to(repo_root)}: Worker production code acquires "
                 f"authority-store vocabulary `{token}`"
+            )
+
+    control_root = repo_root / CONTROL_SOURCE
+    for path in sorted(control_root.rglob("*.rs")):
+        source = path.read_text(encoding="utf-8")
+        source = re.split(r"(?m)^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*]", source, maxsplit=1)[0]
+        for token in control_execution_violations(source):
+            errors.append(
+                f"{path.relative_to(repo_root)}: Control reconstructs Coordinator-owned "
+                f"Managed Execution vocabulary `{token}`"
+            )
+
+    cli_root = repo_root / CLI_SOURCE
+    for path in sorted(cli_root.rglob("*.rs")):
+        source = path.read_text(encoding="utf-8")
+        source = re.split(r"(?m)^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*]", source, maxsplit=1)[0]
+        for token in retired_launch_violations(source):
+            errors.append(
+                f"{path.relative_to(repo_root)}: retired remote Deployment launch "
+                f"vocabulary `{token}` reappeared"
             )
     return errors

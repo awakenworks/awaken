@@ -15,7 +15,6 @@ pub mod config;
 mod console_assets;
 mod control;
 mod credential_probe;
-mod deployment_session_launch;
 mod exact_host_model;
 mod executable_agent_registration;
 mod identity;
@@ -106,7 +105,6 @@ struct ProcessAssemblyOptions {
     web_search_publication_resolver:
         Option<Arc<dyn awaken_config_service::PluginPublicationResolver>>,
     executable_agent_wiring: Option<executable_agent_registration::ExecutableAgentWiring>,
-    deployment_session_launch: Option<config::DeploymentSessionLaunchConfig>,
     worker_authenticator:
         Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
 }
@@ -119,7 +117,7 @@ pub struct ProcessAssembly {
 
 /// Store adapters opened once by the process composition and injected into their
 /// Control, Coordinator, Credential, Resource, and Session owners.
-struct DeploymentStores {
+struct ProcessStores {
     /// Durable installation root used to persist the platform Workspace id.
     workspace_root: Option<std::path::PathBuf>,
     resource_plane: awaken_runtime_host::ResourcePlane,
@@ -132,24 +130,30 @@ struct DeploymentStores {
     /// Authored webhook endpoints (ADR-0048), an id-addressed config resource beside
     /// profiles/MCP — the same admin store, a distinct interface.
     webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>,
-    /// Durable home for the Managed session aggregate (its own `sessions.db`), so a
-    /// rehydrated session reports its real config across a restart / peer process.
+    /// The config authoring plane (`config.db`): the rich `AgentConfig` drafts the
+    /// management console authors directly, and their publications. Scoped so a
+    /// workspace's config is fenced from another's (ADR-0051).
+    config: Arc<dyn awaken_config_store::ScopedConfigRegistry>,
+    /// Current shared Environment boundary: Control's Admin Assistant authors
+    /// definitions while Coordinator consumes definitions and owns queued work.
+    /// Splitting those two ports is intentionally separate from Session authority.
+    environments: Arc<awaken_protocol_managed::EnvironmentState>,
+    /// Present only in processes that own or compose Managed Execution. Split
+    /// Control has no placeholder Session/Deployment repository.
+    managed_execution: Option<ManagedExecutionStores>,
+}
+
+struct ManagedExecutionStores {
+    /// Durable home for the Managed Session aggregate and lifecycle outbox.
     sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
-    /// Control-owned Deployment and DeploymentRun view over that same physical
-    /// Session repository. Keeping the typed port separately avoids an invalid
-    /// trait-object cast and prevents an in-memory Deployment authority.
+    /// Coordinator-owned Deployment and DeploymentRun view over the same physical
+    /// repository as Session.
     deployments: Arc<dyn awaken_protocol_managed::DeploymentRepository>,
     /// The same physical Session store viewed through the Dream repository interface.
     dream_repository: Arc<dyn awaken_protocol_managed::DreamRepository>,
     /// Same Session application repository viewed through the extraction-work
     /// interface; kept separate from MemoryRepository and from IAM.
     memory_extractions: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>,
-    /// The config authoring plane (`config.db`): the rich `AgentConfig` drafts the
-    /// management console authors directly, and their publications. Scoped so a
-    /// workspace's config is fenced from another's (ADR-0051).
-    config: Arc<dyn awaken_config_store::ScopedConfigRegistry>,
-    /// Self-hosted environments registry + work queue, durable per deployment mode.
-    environments: Arc<awaken_protocol_managed::EnvironmentState>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -159,6 +163,14 @@ enum PostgresSchemaMode {
 }
 
 const CREDENTIAL_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(60);
+
+fn role_owns_credential_mutations(role: config::Role) -> bool {
+    matches!(role, config::Role::AllInOne | config::Role::Control)
+}
+
+fn role_owns_managed_execution(role: config::Role) -> bool {
+    matches!(role, config::Role::AllInOne | config::Role::Coordinator)
+}
 
 /// Keep retrying interrupted credential mutations after startup. A failed
 /// material cleanup leaves its durable intent intact, so the next tick resumes.
@@ -199,7 +211,7 @@ fn spawn_credential_mutation_reconciliation(
 }
 
 /// Ephemeral deployment stores: everything in process memory (dev / e2e default).
-fn in_memory_deployment_stores() -> DeploymentStores {
+fn in_memory_process_stores() -> ProcessStores {
     let sessions = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("open ephemeral managed Session repository"),
@@ -208,7 +220,7 @@ fn in_memory_deployment_stores() -> DeploymentStores {
         awaken_admin_config_api::SqliteAdminStore::open_in_memory()
             .expect("open ephemeral admin store"),
     );
-    DeploymentStores {
+    ProcessStores {
         workspace_root: None,
         resource_plane: ephemeral_resource_plane(),
         catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
@@ -218,14 +230,16 @@ fn in_memory_deployment_stores() -> DeploymentStores {
         resources: admin.clone(),
         resource_catalog: admin.clone(),
         webhooks: admin,
-        sessions: sessions.clone(),
-        deployments: sessions.clone(),
-        memory_extractions: sessions.clone(),
-        dream_repository: sessions,
         config: Arc::new(
             awaken_config_store::SqliteConfigStore::open_in_memory().expect("open config store"),
         ),
         environments: Arc::new(EnvironmentState::new()),
+        managed_execution: Some(ManagedExecutionStores {
+            sessions: sessions.clone(),
+            deployments: sessions.clone(),
+            memory_extractions: sessions.clone(),
+            dream_repository: sessions,
+        }),
     }
 }
 
@@ -234,10 +248,8 @@ fn in_memory_deployment_stores() -> DeploymentStores {
 /// ephemeral. A restarted runtime can only rehydrate a governed Session when its
 /// configuration and owner fence survive beside the committed thread facts.
 #[cfg(test)]
-fn deployment_stores_for_runtime_storage(
-    storage_dir: Option<&std::path::Path>,
-) -> DeploymentStores {
-    let mut stores = in_memory_deployment_stores();
+fn process_stores_for_runtime_storage(storage_dir: Option<&std::path::Path>) -> ProcessStores {
+    let mut stores = in_memory_process_stores();
     let Some(dir) = storage_dir else {
         return stores;
     };
@@ -249,10 +261,12 @@ fn deployment_stores_for_runtime_storage(
         )
         .expect("open sessions.db under runtime storage directory"),
     );
-    stores.sessions = sessions.clone();
-    stores.deployments = sessions.clone();
-    stores.memory_extractions = sessions.clone();
-    stores.dream_repository = sessions;
+    stores.managed_execution = Some(ManagedExecutionStores {
+        sessions: sessions.clone(),
+        deployments: sessions.clone(),
+        memory_extractions: sessions.clone(),
+        dream_repository: sessions,
+    });
     stores
 }
 
@@ -262,13 +276,14 @@ fn deployment_stores_for_runtime_storage(
 /// typed per-component database binding, so a
 /// separate control / server process can share the same per-component databases
 /// (Option A, shared-DB).
-async fn open_deployment_stores(
+async fn open_process_stores(
     cfg: awaken_control::ControlStoreConfig,
     resource_plane: awaken_runtime_host::ResourcePlane,
     workspace_root: std::path::PathBuf,
     key: &[u8; 32],
+    role: config::Role,
     postgres_schema: PostgresSchemaMode,
-) -> Result<DeploymentStores, String> {
+) -> Result<ProcessStores, String> {
     use awaken_control::StoreBackend;
 
     // Create the parent directory for any SQLite path (a bundle dir or a custom path).
@@ -395,25 +410,26 @@ async fn open_deployment_stores(
         }
     }
 
-    ensure_parent(&cfg.sessions)?;
-    let sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>;
-    let deployments: Arc<dyn awaken_protocol_managed::DeploymentRepository>;
-    let memory_extractions: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>;
-    let dream_repository: Arc<dyn awaken_protocol_managed::DreamRepository>;
-    match &cfg.sessions {
-        StoreBackend::Sqlite(p) => {
-            let repository = Arc::new(
-                awaken_session_store::SqliteManagedSessionRepository::open(&path(p))
-                    .map_err(|error| format!("open sessions SQLite {}: {error}", p.display()))?,
-            );
-            sessions = repository.clone();
-            deployments = repository.clone();
-            memory_extractions = repository.clone();
-            dream_repository = repository;
-        }
-        StoreBackend::Postgres(url) => {
-            let repository = Arc::new(
-                match postgres_schema {
+    let managed_execution = if role_owns_managed_execution(role) {
+        ensure_parent(&cfg.sessions)?;
+        let sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>;
+        let deployments: Arc<dyn awaken_protocol_managed::DeploymentRepository>;
+        let memory_extractions: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>;
+        let dream_repository: Arc<dyn awaken_protocol_managed::DreamRepository>;
+        match &cfg.sessions {
+            StoreBackend::Sqlite(p) => {
+                let repository = Arc::new(
+                    awaken_session_store::SqliteManagedSessionRepository::open(&path(p)).map_err(
+                        |error| format!("open sessions SQLite {}: {error}", p.display()),
+                    )?,
+                );
+                sessions = repository.clone();
+                deployments = repository.clone();
+                memory_extractions = repository.clone();
+                dream_repository = repository;
+            }
+            StoreBackend::Postgres(url) => {
+                let repository = Arc::new(match postgres_schema {
                     PostgresSchemaMode::Migrate => {
                         awaken_session_store::PostgresManagedSessionRepository::connect(url).await
                     }
@@ -424,14 +440,22 @@ async fn open_deployment_stores(
                         .await
                     }
                 }
-                .map_err(|error| format!("connect sessions Postgres: {error}"))?,
-            );
-            sessions = repository.clone();
-            deployments = repository.clone();
-            memory_extractions = repository.clone();
-            dream_repository = repository;
+                .map_err(|error| format!("connect sessions Postgres: {error}"))?);
+                sessions = repository.clone();
+                deployments = repository.clone();
+                memory_extractions = repository.clone();
+                dream_repository = repository;
+            }
         }
-    }
+        Some(ManagedExecutionStores {
+            sessions,
+            deployments,
+            memory_extractions,
+            dream_repository,
+        })
+    } else {
+        None
+    };
 
     ensure_parent(&cfg.config)?;
     let config: Arc<dyn awaken_config_store::ScopedConfigRegistry> = match &cfg.config {
@@ -452,27 +476,27 @@ async fn open_deployment_stores(
         ),
     };
 
-    // Self-hosted env registry + work queue follow the session store's backend kind
-    // (their own table namespaces, so a shared DB is fine).
-    let environments: Arc<EnvironmentState> = match &cfg.sessions {
-        StoreBackend::Sqlite(sp) => Arc::new(
+    // Environment definitions and execution work have an explicit backend instead
+    // of borrowing Session's address. Split Control and Coordinator therefore open
+    // one shared registry without giving Control a Session/Deployment repository.
+    ensure_parent(&cfg.environments)?;
+    let environments: Arc<EnvironmentState> = match &cfg.environments {
+        StoreBackend::Sqlite(environment_path) => Arc::new(
             EnvironmentState::with_stores(
                 Arc::new(
-                    awaken_env_store::SqliteEnvRegistry::open(&path(
-                        &sp.with_file_name("environments.db"),
-                    ))
-                    .map_err(|error| format!("open environments SQLite: {error}"))?,
+                    awaken_env_store::SqliteEnvRegistry::open(&path(environment_path))
+                        .map_err(|error| format!("open environments SQLite: {error}"))?,
                 ),
                 Arc::new(
                     awaken_work_store::SqliteWorkQueue::open(&path(
-                        &sp.with_file_name("work_queue.db"),
+                        &environment_path.with_file_name("work_queue.db"),
                     ))
                     .map_err(|error| format!("open work queue SQLite: {error}"))?,
                 ),
             )
             .with_sandbox_policies(Arc::new(
                 awaken_sandbox_policy_store::SqliteSandboxExecutionPolicyStore::open(&path(
-                    &sp.with_file_name("sandbox_policies.db"),
+                    &environment_path.with_file_name("sandbox_policies.db"),
                 ))
                 .map_err(|error| format!("open sandbox policies SQLite: {error}"))?,
             )),
@@ -514,7 +538,7 @@ async fn open_deployment_stores(
         }
     };
 
-    Ok(DeploymentStores {
+    Ok(ProcessStores {
         workspace_root: Some(workspace_root),
         resource_plane,
         catalog,
@@ -524,30 +548,28 @@ async fn open_deployment_stores(
         resources: admin_resources,
         resource_catalog: admin_catalog,
         webhooks: admin_webhooks,
-        sessions,
-        deployments,
-        memory_extractions,
-        dream_repository,
         config,
         environments,
+        managed_execution,
     })
 }
 
 /// Local SQLite is a backend selection, not a second store assembly.
-async fn open_local_deployment_stores(
+async fn open_local_process_stores(
     dir: &std::path::Path,
     key: &[u8; 32],
-) -> Result<DeploymentStores, String> {
+) -> Result<ProcessStores, String> {
     let resource_plane = open_resource_plane(
         config::ResourcePlaneStoreBackend::Embedded(dir.to_path_buf()),
         PostgresSchemaMode::Migrate,
     )
     .await?;
-    open_deployment_stores(
+    open_process_stores(
         awaken_control::ControlStoreConfig::local(dir),
         resource_plane,
         dir.to_path_buf(),
         key,
+        config::Role::AllInOne,
         PostgresSchemaMode::Migrate,
     )
     .await
@@ -562,7 +584,7 @@ pub async fn build_all_in_one_router() -> Router {
 /// volatile stores. It never consults the standard deployment config path.
 pub async fn build_ephemeral_all_in_one_router() -> Router {
     assemble_process_router(
-        in_memory_deployment_stores(),
+        in_memory_process_stores(),
         None,
         None,
         None,
@@ -621,11 +643,12 @@ async fn build_runtime_process_assembly(
         config::OperatingMode::Server => PostgresSchemaMode::Verify,
     };
     let resource_plane = open_resource_plane(deployment.resources.clone(), postgres_schema).await?;
-    let stores = open_deployment_stores(
+    let stores = open_process_stores(
         deployment.control.clone(),
         resource_plane,
         deployment.data_dir.clone(),
         key,
+        role,
         postgres_schema,
     )
     .await?;
@@ -652,7 +675,6 @@ async fn build_runtime_process_assembly(
             web_search_providers: None,
             web_search_publication_resolver: None,
             executable_agent_wiring: Some(executable_agent_wiring),
-            deployment_session_launch: Some(deployment.deployment_session_launch.clone()),
             worker_authenticator: Some(worker_authenticator),
         },
         None,
@@ -673,11 +695,12 @@ pub async fn migrate_deployment_schema(
 ) -> Result<(), String> {
     let resource_plane =
         open_resource_plane(deployment.resources.clone(), PostgresSchemaMode::Migrate).await?;
-    open_deployment_stores(
+    open_process_stores(
         deployment.control.clone(),
         resource_plane,
         deployment.data_dir.clone(),
         key,
+        deployment.role,
         PostgresSchemaMode::Migrate,
     )
     .await
@@ -726,11 +749,12 @@ async fn build_all_in_one_router_with_composition(
     let resource_plane = open_resource_plane(deployment.resources.clone(), postgres_schema)
         .await
         .unwrap_or_else(|error| panic!("open resource stores: {error}"));
-    let stores = open_deployment_stores(
+    let stores = open_process_stores(
         deployment.control.clone(),
         resource_plane,
         deployment.data_dir.clone(),
         &key,
+        config::Role::AllInOne,
         postgres_schema,
     )
     .await
@@ -757,7 +781,6 @@ async fn build_all_in_one_router_with_composition(
             web_search_providers: None,
             web_search_publication_resolver: None,
             executable_agent_wiring: None,
-            deployment_session_launch: Some(deployment.deployment_session_launch),
             worker_authenticator: None,
         },
         None,
@@ -776,7 +799,7 @@ pub async fn build_all_in_one_router_with_host_customizer(
     customize_host: impl FnOnce(SharedHost) -> SharedHost + Send + 'static,
 ) -> Router {
     assemble_process_router(
-        in_memory_deployment_stores(),
+        in_memory_process_stores(),
         None,
         None,
         None,
@@ -804,7 +827,7 @@ pub async fn build_durable_all_in_one_router_with_host_customizer(
     customize_host: impl FnOnce(SharedHost) -> SharedHost + Send + 'static,
 ) -> Router {
     assemble_process_router(
-        open_local_deployment_stores(dir, key)
+        open_local_process_stores(dir, key)
             .await
             .unwrap_or_else(|error| panic!("open local deployment stores: {error}")),
         None,
@@ -829,7 +852,7 @@ pub async fn build_all_in_one_router_with_model(
     model_ref: impl Into<String>,
 ) -> Router {
     assemble_process_router(
-        in_memory_deployment_stores(),
+        in_memory_process_stores(),
         None,
         None,
         None,
@@ -852,7 +875,7 @@ pub async fn build_all_in_one_router_with_model(
 /// No IAM guard — the open (default) all-in-one process.
 pub async fn build_durable_all_in_one_router(dir: &std::path::Path, key: &[u8; 32]) -> Router {
     assemble_process_router(
-        open_local_deployment_stores(dir, key)
+        open_local_process_stores(dir, key)
             .await
             .unwrap_or_else(|error| panic!("open local deployment stores: {error}")),
         None,
@@ -875,7 +898,7 @@ pub async fn build_secured_all_in_one_router(
 ) -> (Router, Arc<ManagementAuthz>) {
     let iam = embedded_iam(dir);
     let router = assemble_process_router(
-        open_local_deployment_stores(dir, key)
+        open_local_process_stores(dir, key)
             .await
             .unwrap_or_else(|error| panic!("open local deployment stores: {error}")),
         Some(iam.clone()),
@@ -895,7 +918,7 @@ pub async fn build_secured_all_in_one_router(
 /// plane comes from [`awaken_server::mount_with_managed`]; this composition root
 /// weaves them and keeps the warm-load + inert no-model placeholder wired here.
 async fn assemble_process_router(
-    stores: DeploymentStores,
+    stores: ProcessStores,
     iam: Option<Arc<ManagementAuthz>>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
     local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
@@ -919,7 +942,6 @@ async fn assemble_process_router(
         executable_agent_private_router,
         executable_agent_projection_refresher,
     ) = executable_agent_registration::process_parts(assembly.executable_agent_wiring);
-    let deployment_session_launch = assembly.deployment_session_launch;
     let deployment = assembly.deployment;
     let hand_executors = assembly.hand_executors;
     let cloud_api_base_url = assembly.cloud_api_base_url;
@@ -928,7 +950,7 @@ async fn assemble_process_router(
     let managed_rate_limiter =
         Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization(org_id.clone()));
     let mcp_bearer_token = assembly.mcp_bearer_token;
-    let DeploymentStores {
+    let ProcessStores {
         workspace_root,
         resource_plane,
         catalog,
@@ -938,12 +960,9 @@ async fn assemble_process_router(
         resources: resource_store,
         resource_catalog,
         webhooks: webhook_store,
-        sessions,
-        deployments,
-        memory_extractions,
-        dream_repository,
         config,
         environments,
+        managed_execution,
     } = stores;
     // Cause/effect composition rule: one selected ResourcePlane is moved intact
     // into the Host. The management Skill API borrows the one additional view it
@@ -984,30 +1003,33 @@ async fn assemble_process_router(
             eprintln!("migrated {migrated} legacy Skill aggregate(s)");
         }
     }
-    // Finish or compensate any credential mutation interrupted by a prior hard
-    // process crash before exposing the management/data planes.
-    if let Err(error) = awaken_credential_vault::repo::recover_credential_mutations(
-        secrets.as_ref(),
-        credentials.as_ref(),
-    )
-    .await
-    {
-        eprintln!("credential mutation recovery failed: {error}");
+    // Credential mutation recovery belongs to the authoring authority. A split
+    // Coordinator may consume exact material through the existing resolver, but
+    // it must never run a second mutation/reconciliation owner over the Vault.
+    if role_owns_credential_mutations(role) {
+        if let Err(error) = awaken_credential_vault::repo::recover_credential_mutations(
+            secrets.as_ref(),
+            credentials.as_ref(),
+        )
+        .await
+        {
+            eprintln!("credential mutation recovery failed: {error}");
+        }
+        match awaken_credential_vault::repo::reconcile_credential_inventory(
+            secrets.as_ref(),
+            credentials.as_ref(),
+        )
+        .await
+        {
+            Ok(report) if !report.missing_material.is_empty() => eprintln!(
+                "credential inventory is missing referenced material: {:?}",
+                report.missing_material
+            ),
+            Err(error) => eprintln!("credential inventory reconciliation failed: {error}"),
+            _ => {}
+        }
+        spawn_credential_mutation_reconciliation(secrets.clone(), credentials.clone());
     }
-    match awaken_credential_vault::repo::reconcile_credential_inventory(
-        secrets.as_ref(),
-        credentials.as_ref(),
-    )
-    .await
-    {
-        Ok(report) if !report.missing_material.is_empty() => eprintln!(
-            "credential inventory is missing referenced material: {:?}",
-            report.missing_material
-        ),
-        Err(error) => eprintln!("credential inventory reconciliation failed: {error}"),
-        _ => {}
-    }
-    spawn_credential_mutation_reconciliation(secrets.clone(), credentials.clone());
     // ONE resource-binding store shared by the admin router (which authors an agent's
     // resources) and the config service (which reads them into resource prompts +
     // mounts at compile) — so a binding authored through the API reaches the compiled
@@ -1211,24 +1233,6 @@ async fn assemble_process_router(
         mcp_bearer_token,
     );
 
-    // The authoring / authz plane (admin + vault + webhooks + user profiles +
-    // deployments + environments + config plane + capabilities), guard applied over
-    // admin + vault only. Returns the webhook sink the data plane feeds.
-    // Deployment and DeploymentRun are Control-owned durable truth. Restore the
-    // existing aggregate from the same repository that owns Managed Sessions;
-    // `DeploymentState::new()` is reserved for explicitly ephemeral tests.
-    let deployment_state = Arc::new(
-        awaken_protocol_managed::DeploymentState::with_repository(deployments)
-            .await
-            .unwrap_or_else(|error| panic!("restore Deployment state: {error}")),
-    );
-    deployment_state.bind_rate_limiter(managed_rate_limiter.clone());
-    if role == config::Role::Control
-        && let Some(config) = deployment_session_launch.as_ref()
-    {
-        deployment_session_launch::bind_control(deployment_state.clone(), config)
-            .unwrap_or_else(|error| panic!("Deployment Session launch configuration: {error}"));
-    }
     // Keep the IAM handles for the sibling resource PEP. The authoring router owns
     // its PEP; File/Memory/Skill routes are wrapped independently after the data
     // router is assembled, so neither plane depends on the other's services.
@@ -1241,15 +1245,23 @@ async fn assemble_process_router(
         credentials: credentials.clone(),
         workspace: platform_workspace.clone(),
     });
-    let (control, webhook_sink) =
+    let agent_repository = Arc::new(awaken_control::ConfigPlaneManagedAgentRepository::new(
+        plane.clone(),
+        platform_workspace.clone(),
+    ));
+    let deployment_audit_plane = plane.clone();
+    let deployment_iam = iam.clone();
+    let deployment_remote_iam = remote_iam.clone();
+    let control = if role == config::Role::Coordinator {
+        Router::new()
+    } else {
         awaken_control::control_router(awaken_control::ControlRouterInput {
             platform_workspace: platform_workspace.clone(),
             catalog: catalog.clone(),
             credentials: credentials.clone(),
             secrets: secrets.clone(),
             profiles,
-            webhook_store,
-            sessions: sessions.clone(),
+            webhook_store: webhook_store.clone(),
             resource_store: resource_store.clone(),
             probe: Arc::new(credential_probe::GenaiProbe),
             model_discovery: Arc::new(awaken_server::model_discovery::GenaiModelDiscovery::new(
@@ -1260,20 +1272,19 @@ async fn assemble_process_router(
                 .map(|client| client as Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>),
             cloud_models_enabled,
             vault_state: vault_state.clone(),
-            env_state: env_state.clone(),
-            deployment_state: deployment_state.clone(),
+            agent_repository: agent_repository.clone(),
             plane,
             global_tools: global,
             plugins: awaken_runtime_host::platform_plugin_capabilities_with_web_search(
                 &web_search_providers,
             ),
             runtimes: live_runtime_capabilities.clone(),
-            org_id: Some(org_id.clone()),
             iam,
             remote_iam,
             local_browser_auth,
             application_access: application_access.clone(),
-        });
+        })
+    };
 
     if role == config::Role::Control {
         return process_surface::finish(
@@ -1284,6 +1295,29 @@ async fn assemble_process_router(
             managed_rate_limiter,
         );
     }
+
+    // Only Coordinator and AllInOne can reach this point. Their one execution
+    // store group owns Session, Deployment/Run, Dream, extraction work and the
+    // lifecycle outbox; Control has no fallback implementation of that group.
+    let ManagedExecutionStores {
+        sessions,
+        deployments,
+        dream_repository,
+        memory_extractions,
+    } = managed_execution.expect("Managed Execution role requires execution stores");
+    let webhook_sink = awaken_control::webhook_lifecycle_sink(
+        webhook_store,
+        secrets.clone(),
+        Some(org_id.clone()),
+        sessions.clone(),
+    );
+    let deployment_state = Arc::new(
+        awaken_protocol_managed::DeploymentState::with_repository(deployments)
+            .await
+            .unwrap_or_else(|error| panic!("restore Deployment state: {error}")),
+    );
+    deployment_state.bind_rate_limiter(managed_rate_limiter.clone());
+    deployment_state.bind_agent_repository(agent_repository);
 
     // The data plane: the host runs the server model, resolves a session's agent to
     // its installed config, and carries the management tool executables so the
@@ -1391,7 +1425,7 @@ async fn assemble_process_router(
                 .with_credential_materializer(credential_materializer),
         )
         .with_vaults(vault_state)
-        .with_environments(env_state)
+        .with_environments(env_state.clone())
         .with_resource_catalog(resource_catalog.clone())
         .with_resource_purge_scheduler(host.clone())
         // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
@@ -1411,13 +1445,17 @@ async fn assemble_process_router(
         eprintln!("reconciled {reconciled_mcp_attachments} durable Session MCP projection(s)");
     }
     let _ = managed_state.spawn_realization_lease_supervisor();
-    let deployment_session_private_router = deployment_session_launch::bind_runtime(
-        role,
-        deployment_state.clone(),
-        managed_state.clone(),
-        deployment_session_launch.as_ref(),
-    )
-    .unwrap_or_else(|error| panic!("Deployment Session launch configuration: {error}"));
+    deployment_state.bind_launcher(Arc::new(
+        awaken_protocol_managed::LocalDeploymentSessionLauncher::new(managed_state.clone()),
+    ));
+    let deployments = awaken_control::protect_management_router(
+        awaken_protocol_managed::deployments_router(deployment_state.clone()).merge(
+            awaken_protocol_managed::environments_router(env_state.clone()),
+        ),
+        deployment_audit_plane,
+        deployment_iam,
+        deployment_remote_iam,
+    );
     // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
     // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
@@ -1441,7 +1479,7 @@ async fn assemble_process_router(
             worker_authenticator,
         );
     data = data.merge(executable_agent_private_router);
-    data = data.merge(deployment_session_private_router);
+    data = data.merge(deployments);
     data =
         executable_agent_registration::layer_refresh(data, executable_agent_projection_refresher);
     // One timer drives every Managed periodic trigger. Deployment remains the cron
@@ -1574,10 +1612,14 @@ mod runtime_session_store_tests {
     async fn runtime_storage_reopens_the_session_and_its_owner_fence() {
         let dir = tempfile::tempdir().expect("temporary runtime storage");
         {
-            let stores = deployment_stores_for_runtime_storage(Some(dir.path()));
+            let stores = process_stores_for_runtime_storage(Some(dir.path()));
+            let execution = stores
+                .managed_execution
+                .as_ref()
+                .expect("test composition owns Managed Execution");
             let value = session("sesn-restart");
             let payload_hash = stable_fingerprint(&value);
-            stores
+            execution
                 .sessions
                 .create(
                     "workspace-a",
@@ -1592,13 +1634,17 @@ mod runtime_session_store_tests {
                 .unwrap();
         }
 
-        let reopened = deployment_stores_for_runtime_storage(Some(dir.path()));
+        let reopened = process_stores_for_runtime_storage(Some(dir.path()));
+        let execution = reopened
+            .managed_execution
+            .as_ref()
+            .expect("test composition owns Managed Execution");
         assert_eq!(
-            reopened.sessions.owner("sesn-restart").await.as_deref(),
+            execution.sessions.owner("sesn-restart").await.as_deref(),
             Some("workspace-a")
         );
         assert_eq!(
-            reopened
+            execution
                 .sessions
                 .get("sesn-restart")
                 .await
@@ -1616,14 +1662,22 @@ mod runtime_session_store_tests {
         // A different address would expose a parallel Deployment truth before
         // `DeploymentState::with_repository` is assembled.
         let dir = tempfile::tempdir().expect("temporary runtime storage");
-        let durable = deployment_stores_for_runtime_storage(Some(dir.path()));
+        let durable = process_stores_for_runtime_storage(Some(dir.path()));
+        let durable = durable
+            .managed_execution
+            .as_ref()
+            .expect("durable test composition owns Managed Execution");
         assert_eq!(
             Arc::as_ptr(&durable.sessions) as *const (),
             Arc::as_ptr(&durable.deployments) as *const (),
             "D1"
         );
 
-        let ephemeral = deployment_stores_for_runtime_storage(None);
+        let ephemeral = process_stores_for_runtime_storage(None);
+        let ephemeral = ephemeral
+            .managed_execution
+            .as_ref()
+            .expect("ephemeral test composition owns Managed Execution");
         assert_eq!(
             Arc::as_ptr(&ephemeral.sessions) as *const (),
             Arc::as_ptr(&ephemeral.deployments) as *const (),
@@ -1688,12 +1742,39 @@ mod process_role_surface_tests {
 
     use super::*;
 
+    #[test]
+    fn credential_mutation_reconciliation_has_one_process_owner() {
+        // Cause/effect decision table:
+        // R1 Control and R2 AllInOne contain the authoring authority, so they
+        // recover and reconcile Vault mutations. R3 Coordinator and R4 Worker
+        // only consume projected/runtime material and must not mutate Vault truth.
+        assert!(role_owns_credential_mutations(config::Role::Control), "R1");
+        assert!(role_owns_credential_mutations(config::Role::AllInOne), "R2");
+        assert!(
+            !role_owns_credential_mutations(config::Role::Coordinator),
+            "R3"
+        );
+        assert!(!role_owns_credential_mutations(config::Role::Worker), "R4");
+    }
+
+    #[test]
+    fn managed_execution_stores_have_only_execution_process_owners() {
+        // Cause/effect decision table:
+        // R1 Coordinator owns the distributed execution boundary and R2
+        // AllInOne composes it locally, so both open the Session/Deployment store
+        // group. R3 Control and R4 Worker must never create a second local group.
+        assert!(role_owns_managed_execution(config::Role::Coordinator), "R1");
+        assert!(role_owns_managed_execution(config::Role::AllInOne), "R2");
+        assert!(!role_owns_managed_execution(config::Role::Control), "R3");
+        assert!(!role_owns_managed_execution(config::Role::Worker), "R4");
+    }
+
     /// Cause/effect decision table:
     ///
-    /// | role | Control API | Coordinator API | registration API | launch API |
+    /// | role | authoring API | Session API | Deployment API | registration API |
     /// | --- | --- | --- | --- | --- |
     /// | Control | mounted | absent | absent | absent |
-    /// | Coordinator | absent | mounted | authenticated | independently authenticated |
+    /// | Coordinator | absent | mounted | mounted | authenticated |
     ///
     /// AllInOne merging is covered by the existing full-surface integration
     /// suites; this test owns the two exclusion rules that those suites cannot
@@ -1701,7 +1782,7 @@ mod process_role_surface_tests {
     #[tokio::test]
     async fn service_roles_expose_only_their_owned_api() {
         let app = assemble_process_router(
-            in_memory_deployment_stores(),
+            in_memory_process_stores(),
             None,
             None,
             None,
@@ -1738,18 +1819,12 @@ mod process_role_surface_tests {
             .unwrap();
         assert_eq!(registration.status(), StatusCode::NOT_FOUND);
 
-        let launch = app
+        let deployment = app
             .clone()
-            .oneshot(
-                Request::post(awaken_protocol_managed::DEPLOYMENT_SESSION_LAUNCH_PATH)
-                    .header("content-type", "application/json")
-                    .header("authorization", "Bearer deployment-launch-token")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
+            .oneshot(Request::get("/v1/deployments").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(launch.status(), StatusCode::NOT_FOUND);
+        assert_eq!(deployment.status(), StatusCode::NOT_FOUND);
 
         let session = app
             .oneshot(Request::get("/v1/sessions").body(Body::empty()).unwrap())
@@ -1757,17 +1832,8 @@ mod process_role_surface_tests {
             .unwrap();
         assert_eq!(session.status(), StatusCode::NOT_FOUND);
 
-        let token_dir = tempfile::tempdir().unwrap();
-        let launch_token_file = token_dir.path().join("deployment-launch-token");
-        std::fs::write(&launch_token_file, "deployment-launch-token\n").unwrap();
-        let launch_config = config::DeploymentSessionLaunchConfig::resolve(
-            config::Role::Coordinator,
-            None,
-            Some(launch_token_file),
-        )
-        .unwrap();
         let app = assemble_process_router(
-            in_memory_deployment_stores(),
+            in_memory_process_stores(),
             None,
             None,
             None,
@@ -1779,7 +1845,6 @@ mod process_role_surface_tests {
                         "registration-token",
                     ),
                 ),
-                deployment_session_launch: Some(launch_config),
                 ..Default::default()
             },
             None,
@@ -1815,30 +1880,23 @@ mod process_role_surface_tests {
             .unwrap();
         assert_eq!(registration.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-        let launch = app
+        let deployments = app
+            .clone()
+            .oneshot(Request::get("/v1/deployments").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(deployments.status(), StatusCode::OK);
+
+        let retired_private_launch = app
             .oneshot(
-                Request::post(awaken_protocol_managed::DEPLOYMENT_SESSION_LAUNCH_PATH)
+                Request::post("/internal/v1/deployment-sessions/launch")
                     .header("content-type", "application/json")
-                    .header("authorization", "Bearer wrong-token")
-                    .body(Body::from(
-                        serde_json::json!({
-                            "deployment_id": "depl_role",
-                            "deployment_run_id": "drun_role",
-                            "workspace_id": "workspace-role",
-                            "agent": {"id": "agent-role", "type": "agent", "version": 1},
-                            "environment_id": "env_local",
-                            "metadata": {},
-                            "initial_events": [],
-                            "resources": [],
-                            "vault_ids": []
-                        })
-                        .to_string(),
-                    ))
+                    .body(Body::from("{}"))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(launch.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(retired_private_launch.status(), StatusCode::NOT_FOUND);
     }
 
     #[derive(Debug)]
@@ -1877,7 +1935,7 @@ mod process_role_surface_tests {
     async fn hosted_control_uses_the_injected_publication_resolver() {
         let called = Arc::new(AtomicBool::new(false));
         let app = assemble_process_router(
-            in_memory_deployment_stores(),
+            in_memory_process_stores(),
             None,
             None,
             None,

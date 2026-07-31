@@ -15,10 +15,8 @@ Deployment API -> DeploymentState -> DeploymentRepository
                          |                    `- exact occurrence claim
                          |                    `- ManagedLifecycleFact outbox
                          v
-                DeploymentSessionLauncher
-                    |- local adapter (AllInOne)
-                    `- Coordinator client -> launch handler
-                                           -> canonical Session create command
+                LocalDeploymentSessionLauncher
+                    `- canonical Coordinator Session create command
 ```
 
 The production periodic driver evaluates both cron Deployments and opt-in Dream
@@ -46,8 +44,8 @@ modified, or genuinely new before describing the dependency graph.
 |---|---|---|
 | `DeploymentState` | repository restore, Workspace checks, persistent cursor, exact occurrence claim, Agent version resolution | restart-safe and replica-safe aggregate projection |
 | Managed Session store | Deployment, DeploymentRun, occurrence-claim migrations and SQLite/Postgres adapters | business row and lifecycle fact commit atomically |
-| control/server composition | shares the Agent repository and binds the ordinary Session launcher | no duplicate Agent lookup or execution path |
-| `DeploymentSessionLauncher` request | add the existing stable `deployment_run_id` | remote retries resolve to at most one Session |
+| Coordinator composition | owns the public router, scheduler, repository projection, and ordinary Session launcher | one Deployment aggregate instance and no remote launch hop |
+| `DeploymentSessionLauncher` request | carries the existing stable `deployment_run_id` | restart recovery resolves to at most one Session |
 | Agent archive operation | cascades terminal archive to live primary-Agent Deployments | no later scheduled run |
 | Managed periodic driver | evaluates Deployment then Dream policies every 15 seconds | one production timer |
 
@@ -57,8 +55,7 @@ modified, or genuinely new before describing the dependency graph.
 |---|---|---|
 | `DeploymentRepository` | `awaken-deployment-contract` | opaque durable records plus atomic scheduled-occurrence claim |
 | `DeploymentRecord` / `DeploymentRunRecord` store adapters | `awaken-session-store` | SQLite/Postgres persistence without protocol DTO dependency |
-| `HttpDeploymentSessionLauncher` | Deployment adapter | invoke the same Session launch port across a process boundary |
-| `deployment_session_launch_router` | Coordinator adapter | authenticate and lower one DeploymentRun into the canonical Session command |
+| none | — | the former HTTP launcher/router/token were deleted with the duplicate Control-owned Deployment instance |
 
 There is no second cron parser, Session launcher, Agent registry, Deployment
 cache authority, webhook outbox, scheduler loop, or remote-only Session domain
@@ -72,11 +69,8 @@ HTTP adapter (official DTOs)
        |- ManagedAgentRepository (latest/pinned version resolution)
        |- DeploymentRepository (durability + occurrence claim + lifecycle fact)
        |- ManagedRateLimiter (create admission)
-       `- DeploymentSessionLauncher
-            |- LocalDeploymentSessionLauncher (AllInOne)
-            `- HttpDeploymentSessionLauncher
-                 `- deployment_session_launch_router
-                      `- ManagedState (ordinary Session/Event authority)
+       `- LocalDeploymentSessionLauncher
+            `- ManagedState (ordinary Session/Event authority)
 
 ManagedLifecycleFact outbox
   `- WebhookLifecycleSink -> official deployment.* / deployment_run.* events
@@ -133,13 +127,11 @@ Initial Events are never sent through a second best-effort call after Session
 creation. A request-level Session creation failure is DeploymentRun truth;
 subsequent Session execution remains Session truth.
 
-Transport unavailability before a conclusive launch outcome is retryable. It
-must not be persisted as a permanent business failure until the Coordinator can
-prove that no Session was created. This distinction prevents an ambiguous
-network timeout from becoming a duplicate Session or false terminal outcome.
-Control retries the authenticated private request with the unchanged
-`deployment_run_id`; after the bounded retry budget, the durable DeploymentRun
-remains pending. Authentication and typed Session rejection are not retried.
+An interruption before a conclusive launch outcome must not become a permanent
+business failure. The durable DeploymentRun remains pending; recovery invokes the
+same local command with the unchanged `deployment_run_id`, which returns the
+already-created Session when the first call committed. Typed Session rejection is
+terminal and is not retried.
 
 ### Scheduled occurrence and replica claim
 

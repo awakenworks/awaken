@@ -17,20 +17,20 @@ use awaken_runtime_host::{
     AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
     SandboxSettings, SandboxTier, StoreKind, Wake,
 };
-use serde::Deserialize;
-
+mod file_schema;
 mod file_support;
 mod report;
 mod role;
 mod service_boundary;
 mod worker_bootstrap;
 
+use file_schema::FileConfig;
 use file_support::{
     home_dir, is_postgres_url, override_port, read_management_database_url,
     read_or_create_local_key, validate_suite_hub_url,
 };
 pub use role::Role;
-pub use service_boundary::{DeploymentSessionLaunchConfig, ExecutableAgentRegistrationConfig};
+pub use service_boundary::ExecutableAgentRegistrationConfig;
 pub use worker_bootstrap::WorkerBootstrap;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
@@ -204,7 +204,6 @@ pub struct ResolvedDeployment {
     pub iam_workspaces: Vec<String>,
     pub cloud_iam: CloudIamConfig,
     pub executable_agent_registration: ExecutableAgentRegistrationConfig,
-    pub deployment_session_launch: DeploymentSessionLaunchConfig,
     pub mcp_bearer_token: Option<String>,
     pub admin_listen: Option<String>,
     pub runtime: DeploymentConfig,
@@ -342,6 +341,7 @@ impl ResolvedDeployment {
                 ("credential_db", file.credential_db.is_some()),
                 ("config_db", file.config_db.is_some()),
                 ("admin_db", file.admin_db.is_some()),
+                ("environment_db", file.environment_db.is_some()),
                 ("sessions_db", file.sessions_db.is_some()),
                 ("control_seal_key", file.control_seal_key.is_some()),
                 (
@@ -350,15 +350,17 @@ impl ResolvedDeployment {
                 ),
             ],
         )?;
+        service_boundary::enforce_control_execution_database_isolation(
+            role,
+            &[
+                ("runtime_database_url", file.runtime_database_url.is_some()),
+                ("sessions_db", file.sessions_db.is_some()),
+            ],
+        )?;
         let executable_agent_registration = ExecutableAgentRegistrationConfig::resolve(
             role,
             file.coordinator_internal_url.clone(),
             file.executable_agent_registration_token_file.clone(),
-        )?;
-        let deployment_session_launch = DeploymentSessionLaunchConfig::resolve(
-            role,
-            file.coordinator_internal_url.clone(),
-            file.deployment_session_launch_token_file.clone(),
         )?;
         let worker_server = overrides.worker_server.or(file.worker_server.clone());
         if role == Role::Worker && worker_server.is_none() {
@@ -666,6 +668,7 @@ impl ResolvedDeployment {
                 &file.credential_db,
                 &file.config_db,
                 &file.admin_db,
+                &file.environment_db,
                 &file.sessions_db,
             ]
             .into_iter()
@@ -693,6 +696,7 @@ impl ResolvedDeployment {
             store_url(&file.credential_db),
             store_url(&file.config_db),
             store_url(&file.admin_db),
+            store_url(&file.environment_db),
             store_url(&file.sessions_db),
         );
         let resources = match store_url(&file.resource_database_url) {
@@ -823,7 +827,6 @@ impl ResolvedDeployment {
             iam_workspaces: file.iam_workspaces.unwrap_or_default(),
             cloud_iam,
             executable_agent_registration,
-            deployment_session_launch,
             mcp_bearer_token: file.mcp_bearer_token,
             admin_listen: file.admin_listen,
             runtime,
@@ -902,94 +905,6 @@ pub(crate) fn worker_test_deployment(data_dir: PathBuf) -> ResolvedDeployment {
         FileConfig::default(),
     )
     .expect("test Worker deployment")
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FileConfig {
-    data_dir: Option<PathBuf>,
-    bind: Option<String>,
-    mode: Option<String>,
-    role: Option<String>,
-    worker_server: Option<String>,
-    worker_id: Option<String>,
-    worker_request_credential_file: Option<PathBuf>,
-    worker_trust_credentials_file: Option<PathBuf>,
-    worker_credential_material_root: Option<PathBuf>,
-    worker_credential_trust_domain: Option<String>,
-    worker_admin_listen: Option<String>,
-    worker_drain_grace_secs: Option<u64>,
-    worker_build_digest: Option<String>,
-    worker_zone: Option<String>,
-    worker_capabilities: Option<Vec<String>>,
-    worker_max_concurrent: Option<u32>,
-    worker_credential_probe_interval_secs: Option<u64>,
-    worker_credential_observation_ttl_secs: Option<u64>,
-    run_local_pool: Option<bool>,
-    no_browser: Option<bool>,
-    suite_hub_url: Option<String>,
-    runtime_database_url: Option<String>,
-    postgres_max_connections: Option<u32>,
-    hand_connections: Option<BTreeMap<String, awaken_connection_plan::ConnectionPlan>>,
-    log_filter: Option<String>,
-    log_format: Option<String>,
-    trace_file: Option<PathBuf>,
-    otlp_endpoint: Option<String>,
-    otlp_traces_endpoint: Option<String>,
-    otlp_protocol: Option<String>,
-    otlp_traces_protocol: Option<String>,
-    otlp_headers: Option<BTreeMap<String, String>>,
-    otlp_timeout_ms: Option<u64>,
-    otel_service_name: Option<String>,
-    otel_service_version: Option<String>,
-    otel_metric_export_interval_ms: Option<u64>,
-    management_database_url_file: Option<PathBuf>,
-    resource_database_url: Option<String>,
-    catalog_db: Option<String>,
-    credential_db: Option<String>,
-    config_db: Option<String>,
-    admin_db: Option<String>,
-    sessions_db: Option<String>,
-    identity_mode: Option<String>,
-    cloud_models: Option<String>,
-    org_id: Option<String>,
-    iam_workspaces: Option<Vec<String>>,
-    cloud_iam_url: Option<String>,
-    cloud_api_url: Option<String>,
-    cloud_iam_audience: Option<String>,
-    cloud_iam_issuer: Option<String>,
-    cloud_access_token: Option<String>,
-    cloud_iam_service_token: Option<String>,
-    coordinator_internal_url: Option<String>,
-    executable_agent_registration_token_file: Option<PathBuf>,
-    deployment_session_launch_token_file: Option<PathBuf>,
-    mcp_bearer_token: Option<String>,
-    cloud_iam_service_token_file: Option<PathBuf>,
-    admin_listen: Option<String>,
-    control_seal_key: Option<String>,
-    control_seal_key_file: Option<PathBuf>,
-    sandbox_tier: Option<String>,
-    sandbox_dir: Option<PathBuf>,
-    sandbox_allow_local_fallback: Option<bool>,
-    sandbox_warm_pool_size: Option<usize>,
-    container_forward_proxy: Option<String>,
-    k8s_namespace: Option<String>,
-    container_hand_bin: Option<String>,
-    podman_bin: Option<String>,
-    sandbox_inherit_agent_stderr: Option<bool>,
-    sandbox_reaper_enabled: Option<bool>,
-    sandbox_reaper_interval_secs: Option<u64>,
-    sandbox_reaper_max_age_secs: Option<u64>,
-    content_capture: Option<String>,
-    content_redaction: Option<String>,
-    acp_session_blob_root: Option<PathBuf>,
-    acp_clis: Option<Vec<String>>,
-    acp_default_cli: Option<String>,
-    container_image: Option<String>,
-    dispatch_wake: Option<String>,
-    dispatch_wake_channel: Option<String>,
-    nats_url: Option<String>,
-    dispatch_owner: Option<String>,
 }
 
 #[cfg(test)]
@@ -1811,6 +1726,47 @@ mod tests {
     }
 
     #[test]
+    fn control_environment_binding_does_not_grant_session_storage() {
+        // Cause/effect decision table:
+        // R1 Control + environment_db only -> Environment uses the shared backend
+        // while Session retains an unused local default. R2 Control + sessions_db
+        // -> reject before store assembly. This prevents both an Environment shadow
+        // registry and accidental Control ownership of Managed Execution.
+        let control = resolve(
+            FileConfig {
+                role: Some("control".to_owned()),
+                environment_db: Some("postgres://shared/environments".to_owned()),
+                ..Default::default()
+            },
+            Default::default(),
+        );
+        assert!(
+            matches!(control.control.environments, awaken_control::StoreBackend::Postgres(ref url) if url == "postgres://shared/environments"),
+            "R1"
+        );
+        assert!(
+            matches!(
+                control.control.sessions,
+                awaken_control::StoreBackend::Sqlite(_)
+            ),
+            "R1"
+        );
+
+        let error = ResolvedDeployment::resolve_file(
+            ConfigOverrides::default(),
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            FileConfig {
+                role: Some("control".to_owned()),
+                sessions_db: Some("postgres://shared/sessions".to_owned()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("sessions_db"), "R2: {error}");
+    }
+
+    #[test]
     fn worker_credential_observation_window_fails_closed() {
         let error = ResolvedDeployment::resolve_file(
             ConfigOverrides {
@@ -1891,6 +1847,7 @@ mod tests {
             &config.control.credential,
             &config.control.config,
             &config.control.admin,
+            &config.control.environments,
             &config.control.sessions,
         ] {
             assert!(matches!(backend, awaken_control::StoreBackend::Postgres(_)));

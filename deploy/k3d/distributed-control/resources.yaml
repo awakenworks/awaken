@@ -23,7 +23,6 @@ metadata: { name: adr71-control-auth }
 type: Opaque
 stringData:
   registration-token: "adr71-registration-token" # awaken-allow: secret
-  deployment-launch-token: "adr71-deployment-launch-token" # awaken-allow: secret
   seal-key: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff" # awaken-allow: secret
 ---
 apiVersion: v1
@@ -32,7 +31,6 @@ metadata: { name: adr71-coordinator-auth }
 type: Opaque
 stringData:
   registration-token: "adr71-registration-token" # awaken-allow: secret
-  deployment-launch-token: "adr71-deployment-launch-token" # awaken-allow: secret
   seal-key: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff" # awaken-allow: secret
   worker-trust.json: |
     [
@@ -72,17 +70,15 @@ stringData:
     identity_mode = "no-login"
     coordinator_internal_url = "http://coordinator:3000"
     executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
-    deployment_session_launch_token_file = "/etc/awaken-auth/deployment-launch-token"
     worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"
     control_seal_key_file = "/etc/awaken-auth/seal-key"
     catalog_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
     credential_db = "postgres://postgres:test@postgres:5432/credentials" # awaken-allow: secret
     config_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
     admin_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
-    # Deployment/Environment and Session use the existing shared repository
-    # adapter; tables remain owner-specific while both split roles see the same
-    # launch prerequisites and idempotency identity.
-    sessions_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
+    # Environment definitions are authored through Control's port and consumed by
+    # Coordinator; this explicit shared backend is not a Session database grant.
+    environment_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
   coordinator.toml: |
     data_dir = "/var/lib/awaken/coordinator"
     bind = "0.0.0.0:3000"
@@ -100,9 +96,9 @@ stringData:
     credential_db = "postgres://postgres:test@postgres:5432/credentials" # awaken-allow: secret
     config_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
     admin_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
+    environment_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
     sessions_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
     executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
-    deployment_session_launch_token_file = "/etc/awaken-auth/deployment-launch-token"
     worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"
     control_seal_key_file = "/etc/awaken-auth/seal-key"
     sandbox_tier = "namespace"
@@ -384,7 +380,7 @@ data:
       proxy_next_upstream_timeout 5s;
       location ^~ /internal/ { return 404; }
       location ^~ /v1/worker/ { return 404; }
-      location ~ ^/v1/(sessions|files|memory_stores|skills|models|dreams|ai-sdk|ag-ui|a2a|message|capabilities)(/|$) {
+      location ~ ^/v1/(sessions|deployments|deployment_runs|environments|files|memory_stores|skills|models|dreams|ai-sdk|ag-ui|a2a|message|capabilities)(/|$) {
         proxy_pass http://coordinator_api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;

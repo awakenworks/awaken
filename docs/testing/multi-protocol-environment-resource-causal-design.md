@@ -436,8 +436,8 @@ part of either persistence axis.
 
 For the common single-PostgreSQL management topology, the typed config contains
 only `management_database_url_file`. The operator projects one secret file; the
-resolver reads it once and supplies catalog, credential, config, admin, Session,
-and Resource stores. Combining that shared file with any direct per-store URL is
+resolver reads it once and supplies catalog, credential, config, admin,
+Environment, Session, and Resource stores. Combining that shared file with any direct per-store URL is
 rejected as ambiguous rather than creating two topology authorities.
 
 | Shared URL file | Per-store URL | File contents | Expected |
@@ -495,7 +495,7 @@ authority across both process lifetimes.
 
 ```text
 one typed deployment file
-  -> default data_dir owns admin + Session stores
+  -> default data_dir owns admin + Environment + Session stores
   -> exact catalog/credential/config fields select independent stores
   -> model publication resolves across those store boundaries
 ```
@@ -505,9 +505,10 @@ one typed deployment file
 | T1 | catalog_db | external A | catalog only at A |
 | T2 | credential_db | nested external B | credential only at B |
 | T3 | config_db | external C | Agent publication only at C |
-| T4 | admin_db / sessions_db absent | data_dir | default typed deployment root |
+| T4 | admin_db / environment_db / sessions_db absent | data_dir | default typed deployment root |
 | T5 | removed per-component environment variables | any inherited value | no topology effect |
 | T6 | `management_database_url_file` only | projected Secret file | all control + Resource stores share one URL |
+| T7 | Control has environment_db but no sessions_db | shared Environment URL | Admin Assistant and Coordinator see one registry; Control opens no Session store |
 
 `spawnProduction` accepts the same database map already owned by
 `deploymentEnv`; per-component tests no longer duplicate binary discovery,
@@ -584,7 +585,7 @@ Session deployment root owns runtime persistence.
 ## Phase 27: production Postgres sandbox-policy authority
 
 ```text
-typed sessions_db = Postgres
+typed environment_db = Postgres
   -> production EnvironmentState composition
   -> canonical SandboxExecutionPolicyStore port
   -> Postgres exact-version aggregate
