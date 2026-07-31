@@ -61,7 +61,12 @@ async function afterPendingActivation(operation) {
 
 async function exerciseContainerEnvironment(
   client, name, sandbox, expectSuccess,
-  { packages, expectedMarker = MARKER, expectedError } = {},
+  {
+    packages,
+    expectedMarker = MARKER,
+    expectedError,
+    proveImageReuse = false,
+  } = {},
 ) {
   const network = sandbox.network;
   const environment = await client.beta.environments.create({
@@ -92,47 +97,102 @@ async function exerciseContainerEnvironment(
     },
   );
   assert.equal(response.status, 200, await response.text());
-  const session = await client.beta.sessions.create({
-    agent: 'namespace-agent',
-    environment_id: environment.id,
-    betas: BETAS,
-  });
-  let sendFailure;
-  try {
-    await client.beta.sessions.events.send(session.id, {
-      events: [{ type: 'user.message', content: [{ type: 'text', text: `exercise ${name}` }] }],
+  const realizedImages = [];
+  const realizedContainers = [];
+  const attempts = proveImageReuse ? 2 : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const session = await client.beta.sessions.create({
+      agent: 'namespace-agent',
+      environment_id: environment.id,
       betas: BETAS,
     });
-  } catch (error) {
-    sendFailure = error;
-  }
-  const events = [];
-  for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
-    events.push(event);
-  }
-  if (expectSuccess) {
-    assert.equal(sendFailure, undefined, `${name} should realize: ${sendFailure}`);
-    assert.ok(
-      events.some(
-        (event) => event.type === 'agent.message'
-          && (event.content ?? []).some((content) => String(content.text ?? '').includes(expectedMarker)),
-      ),
-      `${name} must run the containerized agent: ${JSON.stringify(events)}`,
-    );
-  } else {
-    assert.ok(
-      sendFailure || events.some((event) => event.type === 'session.error'),
-      `${name} must fail closed instead of falling back to the default image: ${JSON.stringify(events)}`,
-    );
-    if (expectedError) {
-      assert.match(
-        `${sendFailure ?? ''} ${JSON.stringify(events)}`,
-        expectedError,
-        `${name} must expose the stable capability failure`,
-      );
+    let sendFailure;
+    try {
+      await client.beta.sessions.events.send(session.id, {
+        events: [{ type: 'user.message', content: [{ type: 'text', text: `exercise ${name}` }] }],
+        betas: BETAS,
+      });
+    } catch (error) {
+      sendFailure = error;
     }
+    const events = [];
+    for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
+      events.push(event);
+    }
+    if (expectSuccess) {
+      assert.equal(sendFailure, undefined, `${name} should realize: ${sendFailure}`);
+      assert.ok(
+        events.some(
+          (event) => event.type === 'agent.message'
+            && (event.content ?? []).some((content) => String(content.text ?? '').includes(expectedMarker)),
+        ),
+        `${name} must run the containerized agent: ${JSON.stringify(events)}`,
+      );
+      if (proveImageReuse) {
+        const names = execFileSync(ENGINE, ['ps', '--format', '{{.Names}}'], { encoding: 'utf8' })
+          .trim().split(/\s+/).filter((candidate) => candidate.includes(session.id));
+        assert.equal(names.length, 1, `${name} session must own one fresh container: ${names}`);
+        realizedContainers.push(names[0]);
+        realizedImages.push(
+          execFileSync(ENGINE, ['inspect', '--format', '{{.Config.Image}}|{{.Image}}|{{.Config.User}}', names[0]], {
+            encoding: 'utf8',
+          }).trim(),
+        );
+        assert.match(
+          realizedImages.at(-1),
+          /\|10001$/,
+          `${name} package build must restore the base image's non-root runtime user`,
+        );
+        if (process.env.AWAKEN_PACKAGE_IMAGE_REGISTRY) {
+          assert.match(
+            realizedImages.at(-1).split('|')[0],
+            new RegExp(`^${process.env.AWAKEN_PACKAGE_IMAGE_REGISTRY
+              .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/awaken-packages@sha256:`),
+            `${name} must run the registry-published immutable digest`,
+          );
+        }
+        if (process.env.AWAKEN_PACKAGE_REGISTRY_AUTH_FILE) {
+          const inspect = execFileSync(
+            ENGINE,
+            ['inspect', '--format', '{{json .Config.Env}}|{{json .Mounts}}', names[0]],
+            { encoding: 'utf8' },
+          );
+          assert.ok(
+            !inspect.includes(process.env.AWAKEN_PACKAGE_REGISTRY_AUTH_FILE)
+              && !inspect.includes('test-secret')
+              && !inspect.includes('YXdha2VuOnRlc3Qtc2VjcmV0'),
+            `${name} registry credentials must remain in the Worker-side builder`,
+          );
+        }
+      }
+    } else {
+      assert.ok(
+        sendFailure || events.some((event) => event.type === 'session.error'),
+        `${name} must fail closed instead of falling back to the default image: ${JSON.stringify(events)}`,
+      );
+      if (expectedError) {
+        assert.match(
+          `${sendFailure ?? ''} ${JSON.stringify(events)}`,
+          expectedError,
+          `${name} must expose the stable capability failure`,
+        );
+      }
+    }
+    await client.beta.sessions.delete(session.id, { betas: BETAS });
   }
-  await client.beta.sessions.delete(session.id, { betas: BETAS });
+  if (proveImageReuse) {
+    assert.equal(realizedImages.length, 2);
+    assert.notEqual(
+      realizedContainers[1],
+      realizedContainers[0],
+      `${name} sessions must remain isolated in distinct containers`,
+    );
+    assert.equal(
+      realizedImages[1],
+      realizedImages[0],
+      `${name} must reuse the exact content-addressed image while keeping sessions isolated`,
+    );
+  }
   await client.beta.environments.delete(environment.id, { betas: BETAS });
 }
 
@@ -160,14 +220,14 @@ async function exercisePodmanRootfsMatrix(client) {
   // (covered by the Rust provider decision table).
   //
   // | Rule | provider capability | requirements | observable behavior |
-  // | P1   | Podman: present      | exact pip pin | ACP workload reads installed marker |
-  // | P2   | Docker: absent       | exact pip pin | stable error; no default-image fallback |
+  // | P1   | Podman/Docker: present | exact pip pin | ACP workload reads installed marker |
   // | P3   | either               | absent        | ordinary selected-image execution |
   await exerciseContainerEnvironment(client, 'package-image', {
     environment: { kind: 'image', reference: PACKAGE_BASE_IMAGE },
   }, true, {
     packages: { pip: ['awaken-proof==1'] },
     expectedMarker: 'PACKAGE-PROVISIONED',
+    proveImageReuse: true,
   });
   await exerciseContainerEnvironment(client, 'scope-fallback', {
     environment: { kind: 'scope' },
@@ -229,7 +289,10 @@ function containerAvailable() {
   // A CLI can be installed while its daemon is unreachable. Bound the probe so
   // this optional E2E reaches its documented skip/fail-closed branch instead of
   // hanging the complete causal suite indefinitely.
-  return spawnSync(ENGINE, ['version'], { stdio: 'ignore', timeout: 10_000 }).status === 0;
+  return spawnSync(ENGINE, ['version'], {
+    stdio: 'ignore',
+    timeout: ENGINE_TIMEOUT_MS,
+  }).status === 0;
 }
 
 function testContainers({ all = false } = {}) {
@@ -271,10 +334,12 @@ function ensureSessionImage() {
 }
 
 function ensurePackageFixtureImage() {
-  if (ENGINE !== 'podman') return;
-  if (spawnSync(ENGINE, ['image', 'inspect', PACKAGE_BASE_IMAGE], {
-    stdio: 'ignore', timeout: ENGINE_TIMEOUT_MS,
-  }).status === 0) return;
+  const existing = spawnSync(
+    ENGINE,
+    ['image', 'inspect', '--format', '{{.Config.User}}', PACKAGE_BASE_IMAGE],
+    { encoding: 'utf8', timeout: ENGINE_TIMEOUT_MS },
+  );
+  if (existing.status === 0 && existing.stdout.trim() === '10001') return;
   const installer = [
     '#!/bin/sh',
     'mkdir -p /usr/local/share',
@@ -284,6 +349,7 @@ function ensurePackageFixtureImage() {
     `FROM ${IMAGE}`,
     'USER root',
     `RUN ["sh","-c",${JSON.stringify(`printf '%b\\n' ${JSON.stringify(installer)} > /usr/local/bin/pip && chmod 0755 /usr/local/bin/pip`)}]`,
+    'USER 10001',
     '',
   ].join('\n');
   const context = `${TMP}/package-base`;
@@ -380,6 +446,26 @@ async function main() {
   try {
     await waitForPort(PORT);
     let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
+    if (process.env.AWAKEN_E2E_PACKAGE_ONLY === '1') {
+      await client.post('/v1/skills', {
+        headers: SKILL_HEADERS,
+        body: {
+          id: 'delivered-container',
+          content: '---\ndescription: package e2e skill\nenvironment: filesystem\n---\nPACKAGE-E2E-SKILL',
+        },
+      });
+      await exerciseContainerEnvironment(client, `${ENGINE}-package-image`, {
+        environment: { kind: 'image', reference: PACKAGE_BASE_IMAGE },
+      }, true, {
+        packages: { pip: ['awaken-proof==1'] },
+        expectedMarker: 'PACKAGE-PROVISIONED',
+        proveImageReuse: true,
+      });
+      console.log(
+        `E2E PASS: identical Managed Environment packages reuse one immutable ${ENGINE} image across isolated Sessions.`,
+      );
+      return;
+    }
     const file = await client.beta.files.upload({
       file: await toFile(Buffer.from('CONTAINER-FILE-OK'), 'input.txt'),
       betas: BETAS,
@@ -586,15 +672,17 @@ async function main() {
       await exercisePodmanRootfsMatrix(client);
       console.log('  ok: Managed environments drive Podman package/image/private-root/network/limit behavior');
     } else {
-      // Same TS/Managed input, orthogonal provider verdict: Docker currently has
-      // no immutable package-image builder and must reject before workload launch.
-      await exerciseContainerEnvironment(client, 'docker-package-unsupported', {
-        environment: { kind: 'image', reference: IMAGE },
-      }, false, {
+      // Docker and Podman share the exact neutral package contract and immutable
+      // content-addressed image behavior. Docker does not implement Podman's
+      // private-root variants, so only the portable OCI-image package row runs here.
+      await exerciseContainerEnvironment(client, 'docker-package-image', {
+        environment: { kind: 'image', reference: PACKAGE_BASE_IMAGE },
+      }, true, {
         packages: { pip: ['awaken-proof==1'] },
-        expectedError: /package requirements requested but backend cannot provision packages/,
+        expectedMarker: 'PACKAGE-PROVISIONED',
+        proveImageReuse: true,
       });
-      console.log('  ok: Docker package requirements fail closed without a capability fallback');
+      console.log('  ok: Managed environments drive Docker immutable package-image behavior');
     }
 
     console.log(

@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use awaken_runtime_host::{
     AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
-    SandboxSettings, SandboxTier, StoreKind, Wake,
+    PackageImageBuilder, SandboxSettings, SandboxTier, StoreKind, Wake,
 };
 mod deployment;
 mod file_schema;
@@ -381,6 +381,14 @@ impl ResolvedDeployment {
                 .k8s_namespace
                 .clone()
                 .unwrap_or_else(|| "default".to_owned()),
+            k8s_image_pull_secrets: file
+                .k8s_image_pull_secrets
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+                .collect(),
             container_hand_bin: file
                 .container_hand_bin
                 .clone()
@@ -389,6 +397,44 @@ impl ResolvedDeployment {
                 .podman_bin
                 .clone()
                 .unwrap_or_else(|| sandbox_defaults.podman_bin.clone()),
+            package_image_registry: file
+                .package_image_registry
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.trim_end_matches('/').to_owned()),
+            package_registry_auth_file: file.package_registry_auth_file.clone(),
+            package_image_builder: file
+                .package_image_builder
+                .as_deref()
+                .map(|value| match value {
+                    "docker" => Ok(PackageImageBuilder::Docker),
+                    "podman" => Ok(PackageImageBuilder::Podman),
+                    other => Err(format!(
+                        "invalid package_image_builder={other:?}: expected docker or podman"
+                    )),
+                })
+                .transpose()?,
+            package_artifact_dir: Some(
+                file.package_artifact_dir
+                    .clone()
+                    .unwrap_or_else(|| data_dir.join("package-images")),
+            ),
+            package_build_lease_secs: file
+                .package_build_lease_secs
+                .unwrap_or(sandbox_defaults.package_build_lease_secs),
+            package_build_wait_secs: file
+                .package_build_wait_secs
+                .unwrap_or(sandbox_defaults.package_build_wait_secs),
+            package_failure_retry_secs: file
+                .package_failure_retry_secs
+                .unwrap_or(sandbox_defaults.package_failure_retry_secs),
+            package_state_ttl_secs: file
+                .package_state_ttl_secs
+                .unwrap_or(sandbox_defaults.package_state_ttl_secs),
+            package_local_cache_ttl_secs: file
+                .package_local_cache_ttl_secs
+                .unwrap_or(sandbox_defaults.package_local_cache_ttl_secs),
             inherit_agent_stderr: file.sandbox_inherit_agent_stderr.unwrap_or(false),
             reaper_enabled: file.sandbox_reaper_enabled.unwrap_or(true),
             reaper_interval_secs: file
@@ -406,11 +452,41 @@ impl ResolvedDeployment {
                 "k8s_namespace, container_hand_bin and podman_bin must not be empty".to_owned(),
             );
         }
+        if sandbox.package_image_builder.is_some() && sandbox.package_image_registry.is_none() {
+            return Err(
+                "package_image_builder requires a non-empty package_image_registry".to_owned(),
+            );
+        }
+        if sandbox.package_registry_auth_file.is_some() && sandbox.package_image_registry.is_none()
+        {
+            return Err(
+                "package_registry_auth_file requires a non-empty package_image_registry".to_owned(),
+            );
+        }
+        if sandbox_tier == SandboxTier::K8s
+            && (sandbox.package_image_builder.is_some() ^ sandbox.package_image_registry.is_some())
+        {
+            return Err(
+                "Kubernetes package provisioning requires package_image_builder and package_image_registry together"
+                    .to_owned(),
+            );
+        }
         if sandbox.reaper_enabled
             && (sandbox.reaper_interval_secs == 0 || sandbox.reaper_max_age_secs == 0)
         {
             return Err(
                 "sandbox reaper interval and max age must be non-zero when enabled".to_owned(),
+            );
+        }
+        if sandbox.package_build_lease_secs == 0
+            || sandbox.package_build_wait_secs < sandbox.package_build_lease_secs
+            || sandbox.package_failure_retry_secs == 0
+            || sandbox.package_state_ttl_secs == 0
+            || sandbox.package_local_cache_ttl_secs == 0
+        {
+            return Err(
+                "package build lease/retry/TTL must be non-zero and wait must be at least the lease"
+                    .to_owned(),
             );
         }
         let content_capture = ContentCaptureSettings {
@@ -1162,11 +1238,16 @@ mod tests {
         assert_eq!(defaults.warm_pool_size, 0, "S1");
         assert_eq!(defaults.container_forward_proxy, None, "S1");
         assert_eq!(defaults.k8s_namespace, "default", "S1");
+        assert!(defaults.k8s_image_pull_secrets.is_empty(), "S1");
         assert_eq!(
             defaults.container_hand_bin, "/usr/local/bin/awaken-sandbox",
             "S1"
         );
         assert_eq!(defaults.podman_bin, "podman", "S1");
+        assert_eq!(defaults.package_image_registry, None, "S1");
+        assert_eq!(defaults.package_registry_auth_file, None, "S1");
+        assert_eq!(defaults.package_image_builder, None, "S1");
+        assert!(defaults.package_artifact_dir.is_some(), "S1");
         assert!(!defaults.inherit_agent_stderr, "S1");
         assert!(defaults.reaper_enabled, "S1");
 
@@ -1176,8 +1257,18 @@ mod tests {
                 sandbox_warm_pool_size: Some(3),
                 container_forward_proxy: Some("http://proxy.internal:8080".into()),
                 k8s_namespace: Some("agents".into()),
+                k8s_image_pull_secrets: Some(vec![" registry-pull ".into(), String::new()]),
                 container_hand_bin: Some("/opt/awaken/bin/hand".into()),
                 podman_bin: Some("/opt/podman/bin/podman".into()),
+                package_image_registry: Some("registry.internal/agents/".into()),
+                package_registry_auth_file: Some(PathBuf::from("/run/secrets/registry.json")),
+                package_image_builder: Some("docker".into()),
+                package_artifact_dir: Some(PathBuf::from("/shared/package-images")),
+                package_build_lease_secs: Some(30),
+                package_build_wait_secs: Some(60),
+                package_failure_retry_secs: Some(5),
+                package_state_ttl_secs: Some(600),
+                package_local_cache_ttl_secs: Some(300),
                 sandbox_inherit_agent_stderr: Some(true),
                 sandbox_reaper_enabled: Some(true),
                 sandbox_reaper_interval_secs: Some(17),
@@ -1196,8 +1287,32 @@ mod tests {
             "S2"
         );
         assert_eq!(selected.k8s_namespace, "agents", "S2");
+        assert_eq!(selected.k8s_image_pull_secrets, ["registry-pull"], "S2");
         assert_eq!(selected.container_hand_bin, "/opt/awaken/bin/hand", "S2");
         assert_eq!(selected.podman_bin, "/opt/podman/bin/podman", "S2");
+        assert_eq!(
+            selected.package_image_registry.as_deref(),
+            Some("registry.internal/agents"),
+            "S2"
+        );
+        assert_eq!(
+            selected.package_image_builder,
+            Some(PackageImageBuilder::Docker),
+            "S2"
+        );
+        assert_eq!(
+            selected.package_registry_auth_file.as_deref(),
+            Some(Path::new("/run/secrets/registry.json")),
+            "S2"
+        );
+        assert_eq!(
+            selected.package_artifact_dir.as_deref(),
+            Some(Path::new("/shared/package-images")),
+            "S2"
+        );
+        assert_eq!(selected.package_build_lease_secs, 30, "S2");
+        assert_eq!(selected.package_build_wait_secs, 60, "S2");
+        assert_eq!(selected.package_local_cache_ttl_secs, 300, "S2");
         assert!(selected.inherit_agent_stderr, "S2");
         assert_eq!(selected.reaper_interval_secs, 17, "S2");
         assert_eq!(selected.reaper_max_age_secs, 91, "S2");
@@ -1214,6 +1329,8 @@ mod tests {
         // | V1 | empty | either | any | reject |
         // | V2 | valid | true | either zero | reject |
         // | V3 | valid | false | zero/zero | accept |
+        // | V4 | builder/auth without registry | either | any | reject |
+        // | V5 | package wait below lease | either | any | reject |
         let resolve_error = |file: FileConfig| {
             ResolvedDeployment::resolve_file(
                 ConfigOverrides::default(),
@@ -1254,6 +1371,31 @@ mod tests {
             })
             .contains("reaper"),
             "V2"
+        );
+        assert!(
+            resolve_error(FileConfig {
+                package_image_builder: Some("docker".into()),
+                ..FileConfig::default()
+            })
+            .contains("package_image_registry"),
+            "V4"
+        );
+        assert!(
+            resolve_error(FileConfig {
+                package_registry_auth_file: Some(PathBuf::from("/run/secrets/registry.json")),
+                ..FileConfig::default()
+            })
+            .contains("package_image_registry"),
+            "V4"
+        );
+        assert!(
+            resolve_error(FileConfig {
+                package_build_lease_secs: Some(60),
+                package_build_wait_secs: Some(30),
+                ..FileConfig::default()
+            })
+            .contains("package build lease"),
+            "V5"
         );
         let dormant = resolve(
             FileConfig {

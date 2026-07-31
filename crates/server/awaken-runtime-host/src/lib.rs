@@ -143,7 +143,8 @@ pub use crate::commit_ingest::{
 };
 pub use crate::deployment_config::{
     AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
-    SandboxSettings, SandboxTier, StoreKind, Wake, default_postgres_max_connections,
+    PackageImageBuilder, SandboxSettings, SandboxTier, StoreKind, Wake,
+    default_postgres_max_connections,
 };
 pub use crate::dispatch_transport::{
     WorkerDispatchService, dispatch_transport_router_with_service,

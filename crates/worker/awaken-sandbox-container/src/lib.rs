@@ -24,12 +24,14 @@ use environment_owned::EnvironmentOwnedProcess;
 mod cgroup;
 mod egress;
 mod files;
+mod package_coordinator;
 mod packages;
 mod podman_plan;
 mod recovery;
 mod secret;
 pub use cgroup::CgroupCaps;
 pub use egress::{EgressError, EgressRealization, ForwardProxy, NetworkMode, egress_plan};
+pub use package_coordinator::{CoordinatedPackageProvisioner, PackageCoordinatorPolicy};
 pub use packages::package_containerfile;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 pub use secret::SecretBytes;
@@ -1051,6 +1053,43 @@ pub struct RuntimeAgentProcess {
     pub channel: Box<dyn AgentChannel>,
 }
 
+/// Independent package-image build/publish port.
+///
+/// A Session runtime consumes only the returned immutable image reference. The
+/// provisioner may be the same local Docker/Podman engine, a remote builder, or
+/// a registry-backed service shared by Kubernetes workers.
+#[async_trait]
+pub trait PackageImageProvisioner: Send + Sync {
+    /// Return the semantic identity used to coordinate one package-image build.
+    ///
+    /// Builders that can resolve mutable image references must override this and
+    /// include the resolved base-image identity plus their destination scope. The
+    /// coordinator hashes the returned value before using it as a journal key.
+    async fn package_image_coordination_key(
+        &self,
+        base_image: &str,
+        packages: &pc::PackageRequirements,
+        network: &pc::NetworkPolicy,
+    ) -> Result<String, RuntimeError> {
+        serde_json::to_string(&(base_image, packages, network))
+            .map_err(|error| RuntimeError::Backend(error.to_string()))
+    }
+
+    async fn prepare_package_image(
+        &self,
+        base_image: &str,
+        packages: &pc::PackageRequirements,
+        _network: &pc::NetworkPolicy,
+    ) -> Result<String, RuntimeError>;
+
+    /// Verify that a previously persisted immutable reference is still
+    /// available to this builder/runtime. Coordinators use this before returning
+    /// a durable cache hit after an engine prune or registry outage.
+    async fn package_image_available(&self, _image: &str) -> Result<bool, RuntimeError> {
+        Ok(false)
+    }
+}
+
 /// The seam the provider drives — implemented by a bollard adapter (Docker) or a
 /// kube adapter (K8s), and by an in-memory fake in tests. Names no neutral-contract
 /// type beyond the value objects it must move.
@@ -1072,6 +1111,7 @@ pub trait ContainerRuntime: Send + Sync {
         &self,
         base_image: &str,
         packages: &pc::PackageRequirements,
+        _network: &pc::NetworkPolicy,
     ) -> Result<String, RuntimeError> {
         if packages.is_empty() {
             Ok(base_image.to_string())
@@ -1235,6 +1275,7 @@ fn err(e: RuntimeError) -> pc::SandboxError {
 /// Realizes [`pc::Sandbox`]es on a [`ContainerRuntime`].
 pub struct ContainerProvider<R: ContainerRuntime> {
     runtime: Arc<R>,
+    package_provisioner: Option<Arc<dyn PackageImageProvisioner>>,
     default_image: String,
     /// Optional connectivity proxy for unrestricted traffic. It is never treated
     /// as network-policy enforcement.
@@ -1258,6 +1299,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     pub fn new(runtime: Arc<R>, default_image: impl Into<String>) -> Self {
         Self {
             runtime,
+            package_provisioner: None,
             default_image: default_image.into(),
             forward_proxy: None,
             blobs: std::collections::HashMap::new(),
@@ -1278,6 +1320,17 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     #[must_use]
     pub fn with_forward_proxy(mut self, proxy: ForwardProxy) -> Self {
         self.forward_proxy = Some(proxy);
+        self
+    }
+
+    /// Use an independent image builder/publisher. This is required when the
+    /// execution runtime cannot build images itself (for example Kubernetes).
+    #[must_use]
+    pub fn with_package_provisioner(
+        mut self,
+        provisioner: Arc<dyn PackageImageProvisioner>,
+    ) -> Self {
+        self.package_provisioner = Some(provisioner);
         self
     }
 
@@ -1321,7 +1374,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             spec,
             &container_capabilities(
                 self.runtime.enforces_network_none(),
-                self.runtime.supports_package_provisioning(),
+                self.runtime.supports_package_provisioning() || self.package_provisioner.is_some(),
             ),
         )
         .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
@@ -1358,11 +1411,16 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     )));
                 }
             };
-            plan.image = self
-                .runtime
-                .prepare_package_image(&base_image, &plan.packages)
-                .await
-                .map_err(err)?;
+            plan.image = if let Some(provisioner) = &self.package_provisioner {
+                provisioner
+                    .prepare_package_image(&base_image, &plan.packages, &spec.network)
+                    .await
+            } else {
+                self.runtime
+                    .prepare_package_image(&base_image, &plan.packages, &spec.network)
+                    .await
+            }
+            .map_err(err)?;
             plan.rootfs = RootfsPlan::Image(plan.image.clone());
         }
         // Resolve + materialize each mount's bytes: self-contained content (codex config,
@@ -1530,7 +1588,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
     fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
         container_capabilities(
             self.runtime.enforces_network_none(),
-            self.runtime.supports_package_provisioning(),
+            self.runtime.supports_package_provisioning() || self.package_provisioner.is_some(),
         )
     }
 
@@ -1562,7 +1620,7 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
     fn capabilities(&self) -> pc::SandboxCapabilities {
         container_capabilities(
             self.runtime.enforces_network_none(),
-            self.runtime.supports_package_provisioning(),
+            self.runtime.supports_package_provisioning() || self.package_provisioner.is_some(),
         )
     }
 

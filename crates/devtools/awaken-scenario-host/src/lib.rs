@@ -788,6 +788,19 @@ pub async fn build_acp_container_router() -> Router {
     deployment.container_image = std::env::var("AWAKEN_CONTAINER_IMAGE")
         .ok()
         .filter(|value| !value.trim().is_empty());
+    deployment.sandbox.package_artifact_dir = Some(storage_dir.join("package-images"));
+    deployment.sandbox.package_image_registry = std::env::var("AWAKEN_PACKAGE_IMAGE_REGISTRY")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    deployment.sandbox.package_registry_auth_file =
+        std::env::var_os("AWAKEN_PACKAGE_REGISTRY_AUTH_FILE").map(std::path::PathBuf::from);
+    deployment.sandbox.package_image_builder =
+        match std::env::var("AWAKEN_PACKAGE_IMAGE_BUILDER").as_deref() {
+            Ok("docker") => Some(awaken_runtime_host::PackageImageBuilder::Docker),
+            Ok("podman") => Some(awaken_runtime_host::PackageImageBuilder::Podman),
+            Ok(other) => panic!("unsupported scenario package image builder: {other}"),
+            Err(_) => None,
+        };
     let delivered_skill = match deployment.sandbox_tier {
         awaken_runtime_host::SandboxTier::Docker
         | awaken_runtime_host::SandboxTier::Podman

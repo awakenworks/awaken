@@ -102,6 +102,79 @@ fn current_container_provider_rejects_egress_only_secret_injection() {
 }
 
 #[test]
+fn container_runtime_without_package_builder_rejects_before_launch() {
+    let mut requested = spec("packages");
+    requested.packages = pc::PackageRequirements {
+        managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+    assert_eq!(
+        pc::prepare_environment(&requested, &container_capabilities(true, false)),
+        Err(pc::PrepareError::PackageProvisioningUnsupported),
+        "Kubernetes and out-of-tree runtimes without immutable image builds must fail before a workload exists"
+    );
+}
+
+#[derive(Default)]
+struct RecordingPackageProvisioner {
+    calls: Mutex<Vec<(String, pc::PackageRequirements, pc::NetworkPolicy)>>,
+}
+
+#[async_trait]
+impl PackageImageProvisioner for RecordingPackageProvisioner {
+    async fn prepare_package_image(
+        &self,
+        base_image: &str,
+        packages: &pc::PackageRequirements,
+        network: &pc::NetworkPolicy,
+    ) -> Result<String, RuntimeError> {
+        self.calls.lock().unwrap().push((
+            base_image.to_string(),
+            packages.clone(),
+            network.clone(),
+        ));
+        Ok("registry.test/awaken-packages@sha256:prepared".into())
+    }
+}
+
+#[tokio::test]
+async fn an_external_package_provisioner_enables_a_non_building_runtime() {
+    let runtime = Arc::new(FakeRuntime::default());
+    let builder = Arc::new(RecordingPackageProvisioner::default());
+    let provider = provider(runtime.clone()).with_package_provisioner(builder.clone());
+    assert!(provider.capabilities().package_provisioning);
+
+    let mut requested = spec("external-package-builder");
+    requested.packages = pc::PackageRequirements {
+        managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+    provider
+        .create_container(&requested)
+        .await
+        .expect("external builder prepares the immutable image before create");
+
+    let calls = builder.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "ghcr.io/awaken/sandbox:latest");
+    assert_eq!(calls[0].2, pc::NetworkPolicy::Unrestricted);
+    assert_eq!(
+        runtime
+            .st
+            .lock()
+            .unwrap()
+            .created_images
+            .get("cid-external-package-builder")
+            .map(String::as_str),
+        Some("registry.test/awaken-packages@sha256:prepared")
+    );
+}
+
+#[test]
 fn command_of_reads_the_agent_argv_or_defaults_empty() {
     assert_eq!(
         command_of(&spec("s")),
@@ -373,6 +446,7 @@ struct FakeState {
     created_command: HashMap<String, Vec<String>>,
     created_env: HashMap<String, Vec<(String, String)>>,
     created_binds: HashMap<String, Vec<BindPlan>>,
+    created_images: HashMap<String, String>,
     exits: HashMap<String, pc::ExitStatus>,
     signals: Vec<(String, pc::Signal)>,
     lease_touches: u32,
@@ -486,6 +560,7 @@ impl ContainerRuntime for FakeRuntime {
         st.created_command.insert(cid.clone(), plan.command.clone());
         st.created_env.insert(cid.clone(), plan.env.clone());
         st.created_binds.insert(cid.clone(), plan.binds.clone());
+        st.created_images.insert(cid.clone(), plan.image.clone());
         st.exits.insert(
             cid.clone(),
             pc::ExitStatus {

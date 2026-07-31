@@ -9,6 +9,7 @@
 //! same dial the Docker adapter uses. Compile-verified here; running needs `podman`.
 
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,8 +21,9 @@ use tokio::process::{Child, Command as OsCommand};
 
 use crate::net::TcpAgentTransport;
 use crate::{
-    ContainerPlan, ContainerRuntime, ContainerState, ManagedContainer, REAPER_LABEL,
-    REAPER_OWNER_LABEL, RuntimeAgentProcess, RuntimeError, podman_run_argv, runtime_container_name,
+    ContainerPlan, ContainerRuntime, ContainerState, ManagedContainer, PackageImageProvisioner,
+    REAPER_LABEL, REAPER_OWNER_LABEL, RuntimeAgentProcess, RuntimeError, podman_run_argv,
+    runtime_container_name,
 };
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -173,6 +175,9 @@ pub struct PodmanRuntime {
     /// protected from this incarnation's crash reaper through this ownership set.
     adopted: std::sync::Mutex<std::collections::HashSet<String>>,
     package_builds: tokio::sync::Mutex<()>,
+    package_registry: Option<String>,
+    package_registry_auth_file: Option<PathBuf>,
+    package_cache_ttl: Option<std::time::Duration>,
 }
 
 impl PodmanRuntime {
@@ -192,6 +197,9 @@ impl PodmanRuntime {
             owner_id: crate::runtime_owner_id(),
             adopted: std::sync::Mutex::new(std::collections::HashSet::new()),
             package_builds: tokio::sync::Mutex::new(()),
+            package_registry: None,
+            package_registry_auth_file: None,
+            package_cache_ttl: None,
         }
     }
 
@@ -205,7 +213,102 @@ impl PodmanRuntime {
             owner_id: crate::runtime_owner_id(),
             adopted: std::sync::Mutex::new(std::collections::HashSet::new()),
             package_builds: tokio::sync::Mutex::new(()),
+            package_registry: None,
+            package_registry_auth_file: None,
+            package_cache_ttl: None,
         }
+    }
+
+    /// Publish content-addressed package images to a shared OCI registry.
+    #[must_use]
+    pub fn with_package_registry(mut self, registry: impl Into<String>) -> Self {
+        self.package_registry = Some(registry.into().trim_end_matches('/').to_string());
+        self
+    }
+
+    /// Bound unused Awaken-derived images in the local rootless engine cache.
+    #[must_use]
+    pub fn with_package_cache_ttl(mut self, ttl: std::time::Duration) -> Self {
+        self.package_cache_ttl = Some(ttl);
+        self
+    }
+
+    async fn resolve_package_build(
+        &self,
+        base_image: &str,
+        packages: &pc::PackageRequirements,
+    ) -> Result<(String, String, String), RuntimeError> {
+        let base_identity = self
+            .run(&[
+                "image".into(),
+                "inspect".into(),
+                "--format".into(),
+                "{{.Id}}\n{{.Config.User}}".into(),
+                base_image.into(),
+            ])
+            .await?;
+        let mut base_lines = base_identity.lines();
+        let base_identity = base_lines.next().unwrap_or_default();
+        let base_user = base_lines.next().unwrap_or_default();
+        if base_identity.is_empty() {
+            return Err(backend("podman returned an empty base-image identity"));
+        }
+        let (containerfile, fingerprint) =
+            crate::packages::package_image_recipe(base_identity, base_user, packages)?;
+        let image = self.package_registry.as_ref().map_or_else(
+            || format!("localhost/awaken-packages:{fingerprint}"),
+            |registry| format!("{registry}/awaken-packages:{fingerprint}"),
+        );
+        Ok((containerfile, fingerprint, image))
+    }
+
+    async fn prune_package_cache(&self) {
+        let Some(ttl) = self.package_cache_ttl else {
+            return;
+        };
+        let _ = self
+            .run(&[
+                "image".into(),
+                "prune".into(),
+                "--force".into(),
+                "--all".into(),
+                "--filter".into(),
+                "label=org.awaken.package-recipe".into(),
+                "--filter".into(),
+                format!("until={}s", ttl.as_secs()),
+            ])
+            .await;
+    }
+
+    /// Select a Docker/containers authentication file for registry pull/push.
+    /// Podman reads it only in the Worker-side builder process.
+    pub fn with_package_registry_auth_file(
+        mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, RuntimeError> {
+        if self.package_registry.is_none() {
+            return Err(backend(
+                "registry authentication requires a package registry",
+            ));
+        }
+        let path = path.as_ref();
+        if !path.is_file() {
+            return Err(backend(format!(
+                "registry authentication file `{}` is not a file",
+                path.display()
+            )));
+        }
+        self.package_registry_auth_file = Some(path.to_owned());
+        Ok(self)
+    }
+
+    fn registry_command(&self, command: &str, image: &str) -> Vec<String> {
+        let mut args = vec![command.to_owned()];
+        if let Some(path) = &self.package_registry_auth_file {
+            args.extend(["--authfile".to_owned(), path.to_string_lossy().into_owned()]);
+        }
+        args.push(image.to_owned());
+        args
     }
 
     /// Run a podman subcommand, returning trimmed stdout (or a backend error).
@@ -226,6 +329,26 @@ impl PodmanRuntime {
         self.run(&["info".into(), "--format".into(), "{{.Host.Arch}}".into()])
             .await
             .map(|_| ())
+    }
+
+    async fn package_image_reference(&self, image: &str) -> Result<String, RuntimeError> {
+        if self.package_registry.is_none() {
+            return Ok(image.to_string());
+        }
+        let digest = self
+            .run(&[
+                "image".into(),
+                "inspect".into(),
+                "--format".into(),
+                "{{index .RepoDigests 0}}".into(),
+                image.to_string(),
+            ])
+            .await?;
+        if digest.contains("@sha256:") {
+            Ok(digest)
+        } else {
+            Err(backend("package image has no immutable repository digest"))
+        }
     }
 
     /// The ephemeral host address the agent port was published to (`podman port`).
@@ -337,47 +460,67 @@ impl ContainerRuntime for PodmanRuntime {
         &self,
         base_image: &str,
         packages: &pc::PackageRequirements,
+        network: &pc::NetworkPolicy,
     ) -> Result<String, RuntimeError> {
         if packages.is_empty() {
             return Ok(base_image.to_string());
         }
         let _build_guard = self.package_builds.lock().await;
-        let base_identity = self
-            .run(&[
-                "image".into(),
-                "inspect".into(),
-                "--format".into(),
-                "{{.Id}}".into(),
-                base_image.into(),
-            ])
-            .await?;
-        if base_identity.is_empty() {
-            return Err(backend("podman returned an empty base-image identity"));
-        }
-        let dockerfile = crate::package_containerfile(&base_identity, packages)?;
-        let fingerprint = blake3::hash(dockerfile.as_bytes()).to_hex();
-        let image = format!("localhost/awaken-packages:{fingerprint}");
-        if self
-            .run(&["image".into(), "exists".into(), image.clone()])
-            .await
-            .is_ok()
+        self.prune_package_cache().await;
+        let (dockerfile, fingerprint, image) =
+            self.resolve_package_build(base_image, packages).await?;
+        if self.package_registry.is_none()
+            && self
+                .run(&["image".into(), "exists".into(), image.clone()])
+                .await
+                .is_ok()
         {
-            return Ok(image);
+            return self.package_image_reference(&image).await;
+        }
+        if self.package_registry.is_some()
+            && self
+                .run(&self.registry_command("pull", &image))
+                .await
+                .is_ok()
+        {
+            return self.package_image_reference(&image).await;
+        }
+        if self.package_registry.is_some()
+            && self
+                .run(&["image".into(), "exists".into(), image.clone()])
+                .await
+                .is_ok()
+        {
+            self.run(&self.registry_command("push", &image)).await?;
+            return self.package_image_reference(&image).await;
         }
         let mut guard = None;
         let root =
             crate::staging_dir(&mut guard, &format!("package-{fingerprint}")).map_err(backend)?;
         let containerfile = root.join("Containerfile");
         std::fs::write(&containerfile, dockerfile).map_err(backend)?;
-        self.run(&[
-            "build".into(),
+        let mut build = vec!["build".into()];
+        match network {
+            pc::NetworkPolicy::Unrestricted => {}
+            pc::NetworkPolicy::None => build.extend(["--network".into(), "none".into()]),
+            pc::NetworkPolicy::Allowlist { .. } => {
+                return Err(backend(
+                    "package image build has no no-bypass allowlist network",
+                ));
+            }
+        }
+        build.extend([
             "--tag".into(),
             image.clone(),
             "--file".into(),
             containerfile.to_string_lossy().into_owned(),
             root.to_string_lossy().into_owned(),
-        ])
-        .await?;
+        ]);
+        self.run(&build).await?;
+        if self.package_registry.is_some() {
+            self.run(&self.registry_command("push", &image)).await?;
+            return self.package_image_reference(&image).await;
+        }
         Ok(image)
     }
 
@@ -655,6 +798,44 @@ impl ContainerRuntime for PodmanRuntime {
     }
 }
 
+#[async_trait]
+impl PackageImageProvisioner for PodmanRuntime {
+    async fn package_image_coordination_key(
+        &self,
+        base_image: &str,
+        packages: &pc::PackageRequirements,
+        network: &pc::NetworkPolicy,
+    ) -> Result<String, RuntimeError> {
+        if packages.is_empty() {
+            return serde_json::to_string(&(base_image, packages, network)).map_err(backend);
+        }
+        let (_, _, image) = self.resolve_package_build(base_image, packages).await?;
+        serde_json::to_string(&(image, network)).map_err(backend)
+    }
+
+    async fn prepare_package_image(
+        &self,
+        base_image: &str,
+        packages: &pc::PackageRequirements,
+        network: &pc::NetworkPolicy,
+    ) -> Result<String, RuntimeError> {
+        ContainerRuntime::prepare_package_image(self, base_image, packages, network).await
+    }
+
+    async fn package_image_available(&self, image: &str) -> Result<bool, RuntimeError> {
+        if self.package_registry.is_none() {
+            return Ok(self
+                .run(&["image".into(), "exists".into(), image.to_string()])
+                .await
+                .is_ok());
+        }
+        Ok(self
+            .run(&self.registry_command("pull", image))
+            .await
+            .is_ok())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -791,6 +972,72 @@ mod tests {
         assert!(rt.ping().await.is_ok());
     }
 
+    #[test]
+    fn registry_auth_file_is_scoped_to_pull_and_push() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let rt = PodmanRuntime::with_exec(
+            9000,
+            Arc::new(FakeExec {
+                handler: Box::new(|_| ok("")),
+                calls: Mutex::new(Vec::new()),
+            }),
+        )
+        .with_package_registry("registry.internal")
+        .with_package_registry_auth_file(file.path())
+        .unwrap();
+        let pull = rt.registry_command("pull", "registry.internal/awaken-packages@sha256:abc");
+        assert_eq!(pull[0], "pull");
+        assert_eq!(pull[1], "--authfile");
+        assert_eq!(pull[2], file.path().to_string_lossy());
+        assert_eq!(pull[3], "registry.internal/awaken-packages@sha256:abc");
+    }
+
+    #[tokio::test]
+    async fn registry_mode_repairs_a_missing_remote_from_the_local_cache() {
+        let (rt, fake) = runtime_with(9000, |args| match args.first().map(String::as_str) {
+            Some("pull") => err("manifest unknown"),
+            Some("push") => ok(""),
+            Some("image") if args.get(1).map(String::as_str) == Some("exists") => ok(""),
+            Some("image") if args.iter().any(|arg| arg.contains("RepoDigests")) => {
+                ok("registry.internal/awaken-packages@sha256:remote")
+            }
+            Some("image") => ok("sha256:exact-base"),
+            other => panic!("unexpected podman command: {other:?}"),
+        });
+        let rt = rt.with_package_registry("registry.internal");
+        let requirements = pc::PackageRequirements {
+            managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let image = ContainerRuntime::prepare_package_image(
+            &rt,
+            "python:3.13",
+            &requirements,
+            &pc::NetworkPolicy::Unrestricted,
+        )
+        .await
+        .unwrap();
+        assert_eq!(image, "registry.internal/awaken-packages@sha256:remote");
+        let calls = fake.calls.lock().unwrap();
+        let pull = calls
+            .iter()
+            .position(|args| args.first().map(String::as_str) == Some("pull"))
+            .unwrap();
+        let push = calls
+            .iter()
+            .position(|args| args.first().map(String::as_str) == Some("push"))
+            .unwrap();
+        assert!(pull < push, "remote probe must precede repair push");
+        assert!(
+            !calls
+                .iter()
+                .any(|args| args.first().map(String::as_str) == Some("build")),
+            "a deterministic local hit repairs the registry without rebuilding"
+        );
+    }
+
     /// Podman package-image cause graph:
     /// mutable base reference -> exact local image ID; exact ID + exact package
     /// requirements -> content-addressed Containerfile/tag -> cache probe.
@@ -831,11 +1078,16 @@ mod tests {
             managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
                 .into_iter()
                 .collect(),
+            ..Default::default()
         };
-        let image = rt
-            .prepare_package_image("python:3.13", &requirements)
-            .await
-            .expect("cache miss builds");
+        let image = ContainerRuntime::prepare_package_image(
+            &rt,
+            "python:3.13",
+            &requirements,
+            &pc::NetworkPolicy::Unrestricted,
+        )
+        .await
+        .expect("cache miss builds");
         assert!(image.starts_with("localhost/awaken-packages:"));
         let calls = fake.calls.lock().unwrap();
         assert_eq!(calls.len(), 3, "P1: inspect, cache probe, then build");
@@ -863,12 +1115,17 @@ mod tests {
             managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
                 .into_iter()
                 .collect(),
+            ..Default::default()
         };
 
-        let image = rt
-            .prepare_package_image("python:3.13", &requirements)
-            .await
-            .expect("P2 cache hit");
+        let image = ContainerRuntime::prepare_package_image(
+            &rt,
+            "python:3.13",
+            &requirements,
+            &pc::NetworkPolicy::Unrestricted,
+        )
+        .await
+        .expect("P2 cache hit");
 
         assert!(image.starts_with("localhost/awaken-packages:"));
         let calls = fake.calls.lock().unwrap();
@@ -892,12 +1149,17 @@ mod tests {
             managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
                 .into_iter()
                 .collect(),
+            ..Default::default()
         };
 
-        let error = rt
-            .prepare_package_image("missing:latest", &requirements)
-            .await
-            .expect_err("P3 empty identity fails closed");
+        let error = ContainerRuntime::prepare_package_image(
+            &rt,
+            "missing:latest",
+            &requirements,
+            &pc::NetworkPolicy::Unrestricted,
+        )
+        .await
+        .expect_err("P3 empty identity fails closed");
 
         assert!(error.to_string().contains("empty base-image identity"));
         assert_eq!(fake.calls.lock().unwrap().len(), 1, "P3: inspect only");

@@ -770,6 +770,13 @@ fn decode_environment_projection(
         .filter(|(_, packages)| !packages.is_empty())
         .map(|(manager, packages)| (manager.to_string(), packages.clone()))
         .collect(),
+        // Unpinned requirements resolve once per concrete Environment revision.
+        // Two independently created Environments with identical config must not
+        // share an indefinitely frozen "latest" image.
+        resolution_id: Some(format!(
+            "{}:{}",
+            environment.environment_id, environment.revision.0
+        )),
     };
     let sandbox =
         awaken_provisioning_contract::SandboxOverride::from_config_value(&environment.sandbox)
@@ -903,5 +910,9 @@ mod network_policy_tests {
             .collect()
         );
         assert!(!projected.packages.managers.contains_key("apt"));
+        assert_eq!(
+            projected.packages.resolution_id.as_deref(),
+            Some("env_packages:3")
+        );
     }
 }
