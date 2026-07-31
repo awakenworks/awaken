@@ -5376,6 +5376,44 @@ async fn client_result_delivers_a_client_tool_result_and_ends_the_turn() {
     );
 }
 
+#[tokio::test]
+async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap() {
+    // Cause/effect graph: C1=the Runtime has atomically committed a client-tool
+    // call and its Awaiting ticket; C2=the foreground protocol has not yet copied
+    // that position into disposable SessionState; C3=a peer protocol queries the
+    // pending tool. E1=the exact committed call is returned as client-executed;
+    // E2=no pending tool is fabricated when committed truth has no open wait.
+    // Decision table:
+    // | Rule | C1 | C2 | C3 | Effect |
+    // | R1   | T  | T  | T  | E1     |
+    // | R2   | F  | T/F| T  | E2 (covered by resume_with_no_awaiting_run) |
+    let host = SharedHost::new(Arc::new(ClientLookupModel), "stub")
+        .with_client_tools(HashSet::from(["lookup".to_string()]));
+    let first = host
+        .run(None, "t-cross-protocol-pending", user("hi"))
+        .await
+        .expect("client tool awaits");
+    let expected = first.pending.expect("run exposes the pending client tool");
+
+    // Model the small cross-protocol window after the durable commit and before
+    // the foreground adapter finalizes its own in-memory projection.
+    let ctx = host
+        .ctx_for("t-cross-protocol-pending", None)
+        .await
+        .expect("session context");
+    ctx.state.lock().await.awaiting_run = None;
+
+    let observed = host
+        .pending_tool("t-cross-protocol-pending")
+        .await
+        .expect("committed ticket remains queryable");
+    assert_eq!(observed.tool_use_id, expected.tool_use_id);
+    assert_eq!(observed.name, "lookup");
+    assert_eq!(observed.input, serde_json::json!({ "q": "weather" }));
+    assert!(observed.client_executed);
+    assert!(host.is_awaiting("t-cross-protocol-pending").await);
+}
+
 /// Superseding a run requires durable ingress; a default (direct-ingress) host
 /// must fail closed rather than silently behave like a plain run.
 #[tokio::test]
