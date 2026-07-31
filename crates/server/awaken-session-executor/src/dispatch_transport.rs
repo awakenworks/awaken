@@ -209,6 +209,7 @@ fn registered_dispatch_router(
     directory: Arc<dyn WorkerDirectory>,
     policy: Arc<dyn PlacementPolicy>,
     application_session_control: Arc<dyn awaken_session_contract::ApplicationSessionControl>,
+    authenticator: Arc<dyn WorkerRequestAuthenticator>,
 ) -> Router {
     let dispatch = host
         .dispatch_store()
@@ -224,13 +225,18 @@ fn registered_dispatch_router(
     let completion = host.completion.clone() as Arc<dyn CompletionSink>;
     let recovery: Arc<dyn RunRecoverySource> = Arc::new(HostRunRecoverySource(host));
     dispatch_transport_router_with_service(Arc::new(
-        WorkerDispatchService::local(dispatch)
-            .with_worker_directory(directory, 30_000)
-            .with_placement_policy(policy)
-            .with_checkpoint_store(checkpoint)
-            .with_recovery_source(recovery)
-            .with_completion_sink(completion)
-            .with_application_session_control(application_session_control),
+        WorkerDispatchService::new(
+            dispatch,
+            authenticator,
+            Arc::new(SystemWorkerClock),
+            Arc::new(FixedWorkerLeasePolicy::default()),
+        )
+        .with_worker_directory(directory, 30_000)
+        .with_placement_policy(policy)
+        .with_checkpoint_store(checkpoint)
+        .with_recovery_source(recovery)
+        .with_completion_sink(completion)
+        .with_application_session_control(application_session_control),
     ))
 }
 
@@ -244,6 +250,7 @@ pub fn registered_worker_transport_router(
     policy: Arc<dyn PlacementPolicy>,
     application_session_control: Arc<dyn awaken_session_contract::ApplicationSessionControl>,
     resource_validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
+    authenticator: Arc<dyn WorkerRequestAuthenticator>,
 ) -> Router {
     let dispatch = host
         .dispatch_store()
@@ -253,12 +260,13 @@ pub fn registered_worker_transport_router(
         directory.clone(),
         policy,
         application_session_control,
+        authenticator.clone(),
     );
     let file_content = crate::worker_file_content_router(Arc::new(
         crate::WorkerFileContentService::new(
             host.file_content_source.clone(),
             dispatch.clone() as Arc<dyn DispatchQueue>,
-            Arc::new(HeaderWorkerAuthenticator),
+            authenticator.clone(),
         )
         .with_worker_directory(directory.clone()),
     ));
@@ -266,14 +274,14 @@ pub fn registered_worker_transport_router(
         host.memory_repository(),
         resource_validator.clone(),
         dispatch.clone() as Arc<dyn DispatchQueue>,
-        Arc::new(HeaderWorkerAuthenticator),
+        authenticator.clone(),
         directory.clone(),
     )));
     let repositories = crate::worker_repository_binding_router(Arc::new(
         crate::WorkerRepositoryBindingService::new(
             resource_validator,
             dispatch.clone() as Arc<dyn DispatchQueue>,
-            Arc::new(HeaderWorkerAuthenticator),
+            authenticator.clone(),
         )
         .with_worker_directory(directory.clone()),
     ));
@@ -282,7 +290,7 @@ pub fn registered_worker_transport_router(
             crate::WorkerSkillBundleService::new(
                 Arc::new(crate::StoreSkillBundleSource::new(store)),
                 dispatch.clone() as Arc<dyn DispatchQueue>,
-                Arc::new(HeaderWorkerAuthenticator),
+                authenticator.clone(),
             )
             .with_worker_directory(directory.clone()),
         ))
@@ -291,7 +299,7 @@ pub fn registered_worker_transport_router(
         dispatch as Arc<dyn DispatchQueue>,
         host,
         directory,
-        Arc::new(HeaderWorkerAuthenticator),
+        authenticator,
     ));
     let worker_resources = dispatch_router
         .merge(file_content)

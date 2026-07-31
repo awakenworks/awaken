@@ -132,6 +132,7 @@ async fn build_control_assembly_with_model_composition(
             web_search_publication_resolver: web_search.map(|value| value.1),
             executable_agent_wiring: Some(executable_agent_wiring),
             deployment_session_launch: Some(deployment.deployment_session_launch.clone()),
+            worker_authenticator: None,
         },
         None,
     )
