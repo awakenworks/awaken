@@ -77,6 +77,148 @@ async fn create(app: &Router) -> String {
     s["id"].as_str().unwrap().to_string()
 }
 
+/// Session-create idempotency cause/effect decision table.
+///
+/// | Rule | Key | Payload | Effect |
+/// |---|---|---|---|
+/// | I1 | absent | same | ordinary independent Sessions |
+/// | I2 | valid, repeated | same | one Session id and one durable aggregate |
+/// | I3 | valid, repeated | changed | 409 idempotency mismatch |
+/// | I4 | empty/overlong | any | 400 before Session creation |
+/// | I5 | same key, different owner | same | distinct owner-scoped Sessions |
+/// | I6 | valid | non-empty initial events | 400; never replay an event batch |
+#[tokio::test]
+async fn session_create_idempotency_replays_one_canonical_session() {
+    async fn post(
+        app: &Router,
+        key: Option<&str>,
+        title: &str,
+    ) -> (StatusCode, serde_json::Value, Option<String>) {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/v1/sessions")
+            .header("content-type", "application/json");
+        if let Some(key) = key {
+            request = request.header("idempotency-key", key);
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                request
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "agent": "coder",
+                            "title": title,
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let operation = response
+            .headers()
+            .get("x-awaken-operation-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, body, operation)
+    }
+
+    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    let first = post(&app, Some("design-project-a"), "Project A").await;
+    let replay = post(&app, Some("design-project-a"), "Project A").await;
+    assert_eq!(first.0, StatusCode::OK, "I2 first create succeeds");
+    assert_eq!(replay.0, StatusCode::OK, "I2 replay succeeds");
+    assert_eq!(first.1["id"], replay.1["id"], "I2 identity is stable");
+    assert!(first.2.is_some(), "I2 returns an operation receipt");
+    assert_eq!(first.2, replay.2, "I2 operation receipt is stable");
+
+    let mismatch = post(&app, Some("design-project-a"), "Changed").await;
+    assert_eq!(
+        mismatch.0,
+        StatusCode::CONFLICT,
+        "I3 changed payload conflicts"
+    );
+
+    let independent_a = post(&app, None, "ordinary").await;
+    let independent_b = post(&app, None, "ordinary").await;
+    assert_ne!(
+        independent_a.1["id"], independent_b.1["id"],
+        "I1 preserves ordinary create"
+    );
+
+    let invalid = post(&app, Some(""), "invalid").await;
+    assert_eq!(
+        invalid.0,
+        StatusCode::BAD_REQUEST,
+        "I4 rejects an empty key"
+    );
+    let overlong = "x".repeat(256);
+    let invalid = post(&app, Some(&overlong), "invalid").await;
+    assert_eq!(
+        invalid.0,
+        StatusCode::BAD_REQUEST,
+        "I4 rejects an overlong key"
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/sessions")
+                .header("content-type", "application/json")
+                .header("idempotency-key", "seeded-session")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "agent": "coder",
+                        "initial_events": [{
+                            "type": "user.message",
+                            "content": [{"type": "text", "text": "once"}]
+                        }]
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "I6 rejects a batch whose replay cannot yet be atomic"
+    );
+
+    let sessions = json_call(&app, "GET", "/v1/sessions", serde_json::Value::Null).await;
+    assert_eq!(
+        sessions["data"].as_array().unwrap().len(),
+        3,
+        "I2/I3/I4 add no duplicate"
+    );
+
+    let state = Arc::new(ManagedState::new(EchoFake));
+    let request = || serde_json::from_value(serde_json::json!({ "agent": "coder" })).unwrap();
+    let owner_a = state
+        .create_session_with_initial_events_idempotent(
+            request(),
+            Some("owner-a".into()),
+            "shared-key",
+        )
+        .await
+        .unwrap();
+    let owner_b = state
+        .create_session_with_initial_events_idempotent(
+            request(),
+            Some("owner-b".into()),
+            "shared-key",
+        )
+        .await
+        .unwrap();
+    assert_ne!(owner_a.id, owner_b.id, "I5 keys are owner-scoped");
+}
+
 fn ended(messages: Vec<Message>) -> StepOutcome {
     StepOutcome::ended(messages, EndCause::NaturalEnd, false, false)
 }

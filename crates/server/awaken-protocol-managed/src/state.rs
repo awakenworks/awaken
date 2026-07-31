@@ -56,6 +56,7 @@ mod realization;
 mod resource;
 mod resources;
 mod sandbox_provisioning;
+mod session_create_idempotency;
 mod session_record;
 mod session_update;
 pub(crate) use session_update::SessionUpdateCommand;
