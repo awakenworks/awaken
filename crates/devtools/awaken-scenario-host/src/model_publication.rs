@@ -69,18 +69,18 @@ impl ScenarioHostModelResolver {
 }
 
 #[async_trait::async_trait]
-impl awaken_runtime_host::ModelPublicationResolver for ScenarioHostModelResolver {
+impl awaken_config_service::ModelPublicationResolver for ScenarioHostModelResolver {
     async fn resolve_models(
         &self,
         _workspace: &awaken_tenancy::ScopeId,
         selection: &awaken_config_store::ModelSelection,
         fallbacks: &[ModelBinding],
     ) -> Result<
-        awaken_runtime_host::ResolvedPublicationModels,
-        awaken_runtime_host::PublicationResolutionError,
+        awaken_config_service::ResolvedPublicationModels,
+        awaken_config_service::PublicationResolutionError,
     > {
         let catalog = self.catalog.snapshot().await.map_err(|error| {
-            awaken_runtime_host::PublicationResolutionError::CatalogUnavailable(error.to_string())
+            awaken_config_service::PublicationResolutionError::CatalogUnavailable(error.to_string())
         })?;
         let (primary, fallbacks) = if let Some(primary) = selection.resolved() {
             (primary.clone(), fallbacks.to_vec())
@@ -88,7 +88,7 @@ impl awaken_runtime_host::ModelPublicationResolver for ScenarioHostModelResolver
             let mut offerings = catalog.offerings.iter();
             let primary = offerings
                 .next()
-                .ok_or(awaken_runtime_host::PublicationResolutionError::MissingPrimary)?;
+                .ok_or(awaken_config_service::PublicationResolutionError::MissingPrimary)?;
             let binding = |offering: &awaken_model_catalog::Offering| {
                 ModelBinding::new(&offering.provider_id.0, &offering.model_id, "genai")
             };
@@ -96,7 +96,7 @@ impl awaken_runtime_host::ModelPublicationResolver for ScenarioHostModelResolver
         };
         let context_window = catalog.context_window(&primary.model_ref);
         let max_output_tokens = catalog.max_output_tokens(&primary.model_ref);
-        Ok(awaken_runtime_host::ResolvedPublicationModels::host(
+        Ok(awaken_config_service::ResolvedPublicationModels::host(
             primary,
             fallbacks,
             context_window,
@@ -121,15 +121,15 @@ impl DistributedProviderPublicationResolver {
 }
 
 #[async_trait::async_trait]
-impl awaken_runtime_host::ModelPublicationResolver for DistributedProviderPublicationResolver {
+impl awaken_config_service::ModelPublicationResolver for DistributedProviderPublicationResolver {
     async fn resolve_models(
         &self,
         workspace: &awaken_tenancy::ScopeId,
         selection: &awaken_config_store::ModelSelection,
         fallbacks: &[ModelBinding],
     ) -> Result<
-        awaken_runtime_host::ResolvedPublicationModels,
-        awaken_runtime_host::PublicationResolutionError,
+        awaken_config_service::ResolvedPublicationModels,
+        awaken_config_service::PublicationResolutionError,
     > {
         let selected = self
             .catalog
@@ -169,7 +169,7 @@ impl awaken_runtime_host::ModelPublicationResolver for DistributedProviderPublic
                 },
             )
         };
-        Ok(awaken_runtime_host::ResolvedPublicationModels {
+        Ok(awaken_config_service::ResolvedPublicationModels {
             primary: candidate(selected.primary.binding),
             candidates: selected
                 .candidates
@@ -184,7 +184,7 @@ impl awaken_runtime_host::ModelPublicationResolver for DistributedProviderPublic
 
 #[cfg(test)]
 mod tests {
-    use awaken_runtime_host::ModelPublicationResolver as _;
+    use awaken_config_service::ModelPublicationResolver as _;
 
     use super::*;
 

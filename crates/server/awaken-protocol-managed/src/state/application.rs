@@ -70,7 +70,7 @@ pub(super) struct ManagedMcpCandidate {
 /// name precedence and target conflicts after canonical normalization.
 pub(super) fn initial_mcp_candidates(
     session: &[McpServer],
-    agent: Option<&awaken_session_contract::AgentConfigView>,
+    agent: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
     agent_override: Option<&[McpServer]>,
 ) -> Vec<ManagedMcpCandidate> {
     let agent_len = agent_override.map_or_else(
@@ -133,7 +133,7 @@ impl ManagedState {
             revision: session.revision,
             baseline,
             resources,
-            toolsets: crate::project::toolset_policies(&session.agent_tools),
+            toolsets: session.tools.toolsets.clone(),
             mcp: session.mcp.attachments.clone(),
         })
     }
@@ -414,7 +414,7 @@ mod tests {
             baseline: awaken_session_contract::SessionBaselineState::Preparing(intent),
             title: None,
             metadata: Default::default(),
-            agent_tools: Vec::new(),
+            tools: Default::default(),
             environment_binding: None,
             mcp: Default::default(),
             resources: Default::default(),
@@ -635,8 +635,8 @@ mod tests {
         name: &str,
         url: &str,
         credential: Option<(&str, u64)>,
-    ) -> awaken_session_contract::AgentMcpServerView {
-        awaken_session_contract::AgentMcpServerView {
+    ) -> awaken_executable_agent_contract::ExecutableAgentMcpServer {
+        awaken_executable_agent_contract::ExecutableAgentMcpServer {
             name: name.into(),
             url: url.into(),
             prompts_as_skills: false,
@@ -659,7 +659,7 @@ mod tests {
         // | C3 | Agent | absent | none | Agent candidate, never Session |
         // | C4 | Session+Agent | any | same name | retain both for precedence |
         // | C5 | Session+Agent | any | same target/different name | retain both for conflict check |
-        let view = awaken_session_contract::AgentConfigView {
+        let view = awaken_executable_agent_contract::ExecutableAgentSessionProfile {
             environment: None,
             model: None,
             execution_model_ref: None,

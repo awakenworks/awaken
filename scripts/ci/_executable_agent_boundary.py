@@ -1,11 +1,13 @@
 """Dependency allowlists for the ADR-0071 registration boundary."""
 
 EXECUTABLE_AGENT_ALLOWED_DEPS: dict[str, set[str]] = {
-    # The command composes the existing immutable snapshot and Session view;
-    # implementations, stores, and HTTP clients remain outside this port crate.
+    # The command composes the immutable runtime snapshot with the exact
+    # Session-facing publication profile. Implementations, stores, and HTTP clients
+    # remain outside this port crate.
     "awaken-executable-agent-contract": {
+        "awaken-agent-contract",
+        "awaken-resource-contract",
         "awaken-runtime-contract",
-        "awaken-session-contract",
         "async-trait",
         "serde",
         "serde_json",
@@ -19,7 +21,6 @@ EXECUTABLE_AGENT_ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-executable-agent-contract",
         "awaken-runtime-contract",
         "awaken-scoped-migration",
-        "awaken-session-contract",
         "awaken-resource-contract",
         "async-trait",
         "axum",

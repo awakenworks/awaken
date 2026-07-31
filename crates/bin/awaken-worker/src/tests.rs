@@ -15,12 +15,12 @@ struct ExternalCredentialResolver;
 struct UnusedContainerProvider;
 
 #[async_trait::async_trait]
-impl awaken_runtime_host::ContainerEnvironmentProvider for UnusedContainerProvider {
+impl awaken_sandbox_container::ContainerEnvironmentProvider for UnusedContainerProvider {
     async fn create_environment(
         &self,
         _spec: &awaken_provisioning_contract::SandboxSpec,
     ) -> Result<
-        Arc<dyn awaken_runtime_host::ContainerEnvironment>,
+        Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
         Err(awaken_provisioning_contract::SandboxError(
@@ -32,7 +32,7 @@ impl awaken_runtime_host::ContainerEnvironmentProvider for UnusedContainerProvid
         &self,
         _handle: &awaken_provisioning_contract::SandboxHandle,
     ) -> Result<
-        Arc<dyn awaken_runtime_host::ContainerEnvironment>,
+        Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
         Err(awaken_provisioning_contract::SandboxError(
@@ -205,8 +205,8 @@ fn worker_uses_the_injected_web_search_registry_as_its_only_catalog() {
     // exactly that catalog (the empty catalog is the minimal observable
     // replacement). This proves Cloud does not append a second provider path
     // beside the Worker's default registry.
-    let registry = awaken_runtime_host::WebSearchProviderRegistry::default();
-    let worker = WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new(
+    let registry = awaken_ext_builtin_tools::WebSearchProviderRegistry::default();
+    let worker = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
         "https://control.test",
     ))
     .with_standard_manifest(Default::default())
@@ -265,11 +265,13 @@ fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
 
 #[test]
 fn standard_builder_derives_from_its_installed_materializer() {
-    let worker = WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new("http://control"))
-        .with_inference_materializer(Arc::new(SchemeMaterializer))
-        .with_standard_manifest(Default::default())
-        .build()
-        .expect("installed standard topology is valid");
+    let worker = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
+        "http://control",
+    ))
+    .with_inference_materializer(Arc::new(SchemeMaterializer))
+    .with_standard_manifest(Default::default())
+    .build()
+    .expect("installed standard topology is valid");
 
     assert!(worker.manifest().capabilities.contains("test-access/v1"));
 }
@@ -299,7 +301,7 @@ fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
         custom_rootfs: true,
         package_provisioning: false,
     };
-    let worker = WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new(
+    let worker = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
         "https://control.test",
     ))
     .with_enclosing_sandbox_boundary("kubernetes-pod", capabilities.clone())
@@ -312,7 +314,7 @@ fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
         ["kubernetes-pod".to_string()].into_iter().collect()
     );
 
-    let error = WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new(
+    let error = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
         "https://control.test",
     ))
     .with_enclosing_sandbox_boundary(" ", worker.manifest().sandbox.clone())
@@ -325,7 +327,7 @@ fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
         "enclosing sandbox backend must not be empty"
     );
 
-    let error = WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new(
+    let error = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
         "https://control.test",
     ))
     .with_enclosing_sandbox_boundary("kubernetes-pod", worker.manifest().sandbox.clone())
@@ -351,16 +353,18 @@ fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
 /// | X2 | F | T | exact external source + Worker provider-adapter evidence |
 #[test]
 fn external_credential_resolver_has_one_canonical_composition_path() {
-    let worker = WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new("http://control"))
-        .with_credential_materializer(
-            awaken_runtime_host::PinnedCredentialMaterializer::external_only(Arc::new(
-                ExternalCredentialResolver,
-            )),
-        )
-        .with_worker_local_credential_resolver(Arc::new(ExternalCredentialResolver))
-        .with_standard_manifest(Default::default())
-        .build()
-        .expect("X1 exact resolver topology");
+    let worker = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
+        "http://control",
+    ))
+    .with_credential_materializer(
+        awaken_credential_materializer::PinnedCredentialMaterializer::external_only(Arc::new(
+            ExternalCredentialResolver,
+        )),
+    )
+    .with_worker_local_credential_resolver(Arc::new(ExternalCredentialResolver))
+    .with_standard_manifest(Default::default())
+    .build()
+    .expect("X1 exact resolver topology");
     assert!(
         worker
             .manifest()
@@ -806,10 +810,12 @@ fn a_configured_zero_grace_exits_immediately_even_on_sigterm() {
 /// must not advertise a capability backed only by a catalog handle.
 #[test]
 fn resource_capability_requires_the_registered_memory_projection() {
-    let worker = WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new("http://control"))
-        .with_standard_manifest(Default::default())
-        .build()
-        .expect("R1 no unsupported Resource claim");
+    let worker = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
+        "http://control",
+    ))
+    .with_standard_manifest(Default::default())
+    .build()
+    .expect("R1 no unsupported Resource claim");
     assert!(
         !worker
             .manifest()

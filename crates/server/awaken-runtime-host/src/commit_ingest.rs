@@ -26,7 +26,7 @@ use awaken_run_ingress::{
 use crate::host::HostError;
 use crate::host::SharedHost;
 use crate::worker_http::respond;
-use crate::worker_security::{
+use awaken_worker_transport_security::{
     VerifiedWorkerContext, WORKER_ID_HEADER, WorkerRequestAuthenticator,
     authenticate_worker_request, verify_current_worker_identity,
 };
@@ -334,7 +334,7 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
 }
 
 pub(crate) fn remote_claimed_commit(
-    upstream: &crate::worker_security::WorkerUpstream,
+    upstream: &awaken_worker_transport_security::WorkerUpstream,
 ) -> Result<Arc<dyn ClaimedRunCommit>, HostError> {
     let identity = upstream.worker_identity().cloned().ok_or_else(|| {
         HostError::internal("remote Worker commit transport requires a registered identity")

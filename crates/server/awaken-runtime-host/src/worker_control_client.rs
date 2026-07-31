@@ -7,7 +7,7 @@ use awaken_run_ingress::{
 };
 use serde_json::{Value, json};
 
-use crate::worker_security::WorkerUpstream;
+use awaken_worker_transport_security::WorkerUpstream;
 
 #[derive(Clone)]
 pub struct WorkerControlClient {

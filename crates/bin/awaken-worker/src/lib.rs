@@ -53,9 +53,10 @@ pub type RegisteredMemoryMounterFactory = Arc<
         + Sync,
 >;
 
+use awaken_runtime_host::WorkerControlClient;
 use awaken_runtime_host::{InferenceExecutorMaterializer, SharedHost};
-use awaken_runtime_host::{WorkerControlClient, WorkerUpstream};
 use awaken_worker_contract::{RegistryMutation, WorkerHeartbeat, WorkerManifest};
+use awaken_worker_transport_security::WorkerUpstream;
 
 struct WorkerProcessConfig {
     deployment: awaken_runtime_host::DeploymentConfig,
@@ -100,7 +101,7 @@ pub struct WorkerNodeBuilder {
     application_factory: Option<RegisteredApplicationFactory>,
     application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
-    credential_materializer: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
+    credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
     remote_attempt: Option<awaken_runtime_host::RemoteAttemptInstallation>,
     hand_executor_factory: Option<Arc<dyn awaken_runtime_host::HandExecutorFactory>>,
     worker_local_credential_resolver:
@@ -109,8 +110,8 @@ pub struct WorkerNodeBuilder {
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     enclosing_sandbox_boundary: Option<InstalledSandboxBoundary>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
-    mcp_attachment_realizer: Option<Arc<dyn awaken_runtime_host::McpAttachmentRealizer>>,
-    web_search_providers: awaken_runtime_host::WebSearchProviderRegistry,
+    mcp_attachment_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
+    web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
     admin_listen: Option<String>,
     graceful_drain: std::time::Duration,
@@ -137,7 +138,7 @@ impl WorkerNodeBuilder {
             enclosing_sandbox_boundary: None,
             session_container_provider: None,
             mcp_attachment_realizer: None,
-            web_search_providers: awaken_runtime_host::WebSearchProviderRegistry::builtins(),
+            web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
             memory_mounter_factory: None,
             admin_listen: Some("0.0.0.0:9090".to_string()),
             graceful_drain: std::time::Duration::from_secs(20),
@@ -253,7 +254,7 @@ impl WorkerNodeBuilder {
     #[must_use]
     pub fn with_web_search_provider_registry(
         mut self,
-        providers: awaken_runtime_host::WebSearchProviderRegistry,
+        providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     ) -> Self {
         self.web_search_providers = providers;
         self
@@ -306,7 +307,7 @@ impl WorkerNodeBuilder {
     #[must_use]
     pub fn with_credential_materializer(
         mut self,
-        credentials: awaken_runtime_host::PinnedCredentialMaterializer,
+        credentials: awaken_credential_materializer::PinnedCredentialMaterializer,
     ) -> Self {
         self.credential_materializer = Some(credentials);
         self
@@ -345,7 +346,7 @@ impl WorkerNodeBuilder {
     pub fn with_session_container_provider(
         mut self,
         backend: impl Into<String>,
-        provider: Arc<dyn awaken_runtime_host::ContainerEnvironmentProvider>,
+        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
     ) -> Self {
         self.session_container_provider = Some(InstalledSessionContainerProvider {
             backend: backend.into(),
@@ -379,7 +380,7 @@ impl WorkerNodeBuilder {
     #[must_use]
     pub fn with_mcp_attachment_realizer(
         mut self,
-        realizer: Arc<dyn awaken_runtime_host::McpAttachmentRealizer>,
+        realizer: Arc<dyn awaken_session_contract::McpAttachmentRealizer>,
     ) -> Self {
         self.mcp_attachment_realizer = Some(realizer);
         self
@@ -550,7 +551,7 @@ pub struct WorkerNode {
     application_factory: Option<RegisteredApplicationFactory>,
     application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
-    credential_materializer: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
+    credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
     remote_attempt: Option<awaken_runtime_host::RemoteAttemptInstallation>,
     hand_executor_factory: Option<Arc<dyn awaken_runtime_host::HandExecutorFactory>>,
     credential_observation_resolver:
@@ -558,8 +559,8 @@ pub struct WorkerNode {
     acp_capability_observation_source:
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
-    mcp_attachment_realizer: Option<Arc<dyn awaken_runtime_host::McpAttachmentRealizer>>,
-    web_search_providers: awaken_runtime_host::WebSearchProviderRegistry,
+    mcp_attachment_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
+    web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
     admin_listen: Option<String>,
     graceful_drain: std::time::Duration,
@@ -569,7 +570,7 @@ pub struct WorkerNode {
 
 struct InstalledSessionContainerProvider {
     backend: String,
-    provider: Arc<dyn awaken_runtime_host::ContainerEnvironmentProvider>,
+    provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
 }
 
 struct InstalledSandboxBoundary {
@@ -659,7 +660,7 @@ async fn build_secretless_worker(
     let mut builder = WorkerNodeBuilder::new(upstream).with_process_config(process);
     if let Some(resolver) = material_resolver {
         builder = builder.with_credential_materializer(
-            awaken_runtime_host::PinnedCredentialMaterializer::external_only(resolver),
+            awaken_credential_materializer::PinnedCredentialMaterializer::external_only(resolver),
         );
     }
     if let Some(resolver) = local_resolver {

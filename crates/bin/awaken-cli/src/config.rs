@@ -8,9 +8,10 @@
 //! typed value; they do not independently rediscover the deployment.
 
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
-use std::io::{Read as _, Write as _};
-use std::path::{Path, PathBuf};
+use std::fs;
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 use awaken_runtime_host::{
     AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
@@ -18,11 +19,16 @@ use awaken_runtime_host::{
 };
 use serde::Deserialize;
 
+mod file_support;
 mod report;
 mod role;
 mod service_boundary;
 mod worker_bootstrap;
 
+use file_support::{
+    home_dir, is_postgres_url, override_port, read_management_database_url,
+    read_or_create_local_key, validate_suite_hub_url,
+};
 pub use role::Role;
 pub use service_boundary::{DeploymentSessionLaunchConfig, ExecutableAgentRegistrationConfig};
 pub use worker_bootstrap::WorkerBootstrap;
@@ -534,11 +540,6 @@ impl ResolvedDeployment {
                     "hand_connections.{hand_id} must use dial = \"dial\""
                 ));
             }
-            if plan.credential.is_some() {
-                return Err(format!(
-                    "hand_connections.{hand_id}.credential is not supported until a Hand credential resolver is configured"
-                ));
-            }
             if !matches!(
                 plan.transport,
                 awaken_connection_plan::DialAddr::Unix(_)
@@ -873,32 +874,6 @@ impl ResolvedDeployment {
     }
 }
 
-fn validate_suite_hub_url(value: &str, mode: OperatingMode) -> Result<String, String> {
-    if value.trim() != value || value.is_empty() {
-        return Err("suite_hub_url must be a non-empty exact URL".to_owned());
-    }
-    let parsed = url::Url::parse(value).map_err(|_| "suite_hub_url must be an absolute URL")?;
-    let loopback_http = mode == OperatingMode::Local
-        && parsed.scheme() == "http"
-        && parsed.host_str().is_some_and(|host| {
-            host == "localhost"
-                || host
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        });
-    if parsed.scheme() != "https" && !loopback_http {
-        return Err("suite_hub_url must use HTTPS (or loopback HTTP in local mode)".to_owned());
-    }
-    if !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-    {
-        return Err("suite_hub_url must not contain credentials, query, or fragment".to_owned());
-    }
-    Ok(value.to_owned())
-}
-
 #[cfg(test)]
 pub(crate) fn local_test_deployment(data_dir: PathBuf) -> ResolvedDeployment {
     ResolvedDeployment::resolve_file(
@@ -1017,82 +992,6 @@ struct FileConfig {
     dispatch_owner: Option<String>,
 }
 
-fn read_management_database_url(path: &Path) -> Result<String, String> {
-    let value = fs::read_to_string(path)
-        .map_err(|error| format!("read management database URL {}: {error}", path.display()))?;
-    let value = value.trim();
-    if value.is_empty() {
-        return Err(format!(
-            "management database URL file {} is empty",
-            path.display()
-        ));
-    }
-    if !is_postgres_url(value) {
-        return Err("management_database_url_file must contain a postgres:// URL".to_owned());
-    }
-    Ok(value.to_owned())
-}
-
-fn override_port(bind: &str, port: u16) -> Result<String, String> {
-    let mut address = bind
-        .parse::<std::net::SocketAddr>()
-        .map_err(|_| format!("invalid bind address {bind:?}; expected IP:PORT"))?;
-    address.set_port(port);
-    Ok(address.to_string())
-}
-
-fn is_postgres_url(value: &str) -> bool {
-    let lower = value.trim().to_ascii_lowercase();
-    lower.starts_with("postgres://") || lower.starts_with("postgresql://")
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("USERPROFILE")
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-        })
-}
-
-fn read_or_create_local_key(path: &Path) -> Result<String, String> {
-    if path.exists() {
-        return fs::read_to_string(path)
-            .map_err(|error| format!("read local seal key {}: {error}", path.display()));
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("create {}: {error}", parent.display()))?;
-    }
-    let encoded = awaken_credential_vault::generate_seal_key_hex();
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    match options.open(path) {
-        Ok(mut file) => {
-            file.write_all(encoded.as_bytes())
-                .and_then(|()| file.write_all(b"\n"))
-                .and_then(|()| file.sync_all())
-                .map_err(|error| format!("write local seal key {}: {error}", path.display()))?;
-            Ok(encoded)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let mut value = String::new();
-            fs::File::open(path)
-                .and_then(|mut file| file.read_to_string(&mut value))
-                .map_err(|error| format!("read local seal key {}: {error}", path.display()))?;
-            Ok(value)
-        }
-        Err(error) => Err(format!("create local seal key {}: {error}", path.display())),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1131,7 +1030,7 @@ mod tests {
 
     #[test]
     fn declared_hand_connections_are_typed_and_fail_closed() {
-        use awaken_connection_plan::{ConnectionPlan, CredentialRef};
+        use awaken_connection_plan::ConnectionPlan;
 
         // Cause/effect graph:
         // typed deployment connection plan -> startup topology validation -> one
@@ -1145,7 +1044,6 @@ mod tests {
         // | empty | dial | Unix | none | reject |
         // | non-empty | listen | Unix | none | reject |
         // | non-empty | dial | in-process | none | reject |
-        // | non-empty | dial | Unix | present | reject until resolver exists |
         assert!(
             resolve(FileConfig::default(), ConfigOverrides::default())
                 .hand_connections
@@ -1172,11 +1070,6 @@ mod tests {
             ("", ConnectionPlan::unix_dial("/tmp/hand.sock")),
             ("listen", ConnectionPlan::unix_listen("/tmp/hand.sock")),
             ("in-process", ConnectionPlan::in_process()),
-            (
-                "credential",
-                ConnectionPlan::unix_dial("/tmp/hand.sock")
-                    .with_credential(CredentialRef("secret-ref".to_owned())),
-            ),
         ] {
             let result = ResolvedDeployment::resolve_file(
                 ConfigOverrides::default(),

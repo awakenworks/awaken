@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+awaken-agent-contract.workspace = true
 # The ManagedSessionRepository port + PersistedSession this crate implements a durable
 # backend for (SQLite embedded / Postgres distributed, at parity).
 awaken-session-contract = { workspace = true }

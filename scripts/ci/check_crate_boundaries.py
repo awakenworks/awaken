@@ -10,9 +10,17 @@ import _crate_dependency_fitness
 from _executable_agent_boundary import EXECUTABLE_AGENT_ALLOWED_DEPS
 import _provider_env_fitness
 import _resource_plane_fitness
+import _runtime_secret_boundary
 import _service_data_ownership_fitness
 from _sandbox_policy_boundary import SANDBOX_POLICY_ALLOWED_DEPS
-from _crate_boundary_workspace import iter_crate_manifests, load_manifest, package_name, text_files
+from _crate_boundary_workspace import (
+    architecture_fitness_specs,
+    check_bucket_direction,
+    iter_crate_manifests,
+    load_manifest,
+    package_name,
+    text_files,
+)
 from _managed_routers_boundary import MANAGED_ROUTERS_ALLOWED_DEPS
 from _managed_protocol_boundary import MANAGED_PROTOCOL_ALLOWED_DEPS
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -239,6 +247,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # the config service + CRUD/capabilities routers, the model-binding resolver, and the
     # scoped tool catalog — it names neither SharedHost nor run execution.
     "awaken-config-service": {
+        "awaken-agent-contract",
         "awaken-executable-agent-contract",
         "awaken-executable-agent-catalog",
         "awaken-runtime-contract",
@@ -249,6 +258,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-resource-contract",
         "awaken-tenancy",
         "awaken-ext-memory",
+        "awaken-ext-builtin-tools",
         "awaken-ext-compact",
         "awaken-ext-permission",
         "awaken-ext-state-machine",
@@ -438,6 +448,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # adapters, so the isolated worker contract remains store-free.
     "awaken-worker-contract": {
         "awaken-acp-contract",
+        # Credential identity and observation state have one canonical owner;
+        # Worker adds lease-validity evidence instead of redefining either value.
+        "awaken-credential-contract",
         "awaken-provisioning-contract",
         "async-trait",
         "serde",
@@ -778,6 +791,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # postgres at parity, implementing the session contract's repository port. Extracted
     # from awaken-runtime-host so the host stays lean (Step 3b).
     "awaken-session-store": {
+        "awaken-agent-contract",
         "awaken-session-contract",
         "awaken-deployment-contract",
         "awaken-credential-contract",
@@ -1317,6 +1331,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # tool catalog and the scoped config plane are keyed by.
         "awaken-tenancy",
         "awaken-run-ingress",
+        # Extracted implementation owners injected behind established ports.
+        "awaken-credential-materializer",
+        "awaken-worker-transport-security",
         # dev-only: the real worker HTTP adapter runs the shared dispatch suite.
         "awaken-run-ingress-testkit",
         "awaken-run-executor-acp",
@@ -1333,7 +1350,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "sqlx",
         "tempfile",
         "base64",
-        "hmac",  # HMAC-SHA256 Worker request assertions.
         "form_urlencoded",
         "reqwest",
         "serde_json",
@@ -1342,6 +1358,18 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "zip", "thiserror",
         "tokio",
         "tracing", "uuid",  # unpredictable one-shot process-secret capability ids
+    },
+    # Exact credential materialization adapter extracted from Runtime Host.
+    "awaken-credential-materializer": {
+        "awaken-agent-contract", "awaken-credential-vault",
+        "awaken-provisioning-contract", "awaken-run-executor-acp",
+        "awaken-runtime-contract", "async-trait", "base64", "serde",
+        "serde_json", "thiserror", "tokio", "uuid",
+    },
+    # Sole owner of Worker request authentication/signing and upstream identity.
+    "awaken-worker-transport-security": {
+        "awaken-run-ingress", "async-trait", "axum", "base64", "hmac",
+        "reqwest", "serde", "serde_json", "sha2", "thiserror", "tokio",
     },
     "awaken-resource-reclaimer": {"awaken-resource-contract", "async-trait", "tokio"},
 "awaken-resource-store": {"awaken-resource-contract", "awaken-scoped-migration", "awaken-scoped-migration-sqlite", "async-trait", "parking_lot", "proptest", "rusqlite", "serde_json", "sqlx", "tempfile", "tokio"},
@@ -1362,6 +1390,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-admin-config-api",
         "awaken-agent-contract",
         "awaken-authz-enforce",
+        "awaken-config-service",
         "awaken-config-resolver",
         "awaken-config-store",
         "awaken-executable-agent-catalog",
@@ -1369,6 +1398,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-credential-vault",
         "awaken-data-subject",
         "awaken-ext-builtin-tools",
+        "awaken-ext-skills",
         "awaken-ext-mcp",
         "awaken-iam-contract",
         "awaken-iam-core",
@@ -1381,6 +1411,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # Worker-fleet E2E reuses the production registration/heartbeat/drain
         # lifecycle and injects only a deterministic executor provider.
         "awaken-worker",
+        "awaken-worker-transport-security",
         "awaken-observability",
         "awaken-protocol-a2a",
         # The A2A remote-delegate adapter the delegate-remote scenario injects.
@@ -1391,11 +1422,13 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-transport",
         "awaken-provider-genai",
         "awaken-run-executor-acp",
+        "awaken-run-ingress",
         "awaken-runtime",
         "awaken-runtime-contract",
         "awaken-runtime-host",
         "awaken-managed-routers",
         "awaken-sandbox-policy-store",
+        "awaken-sandbox-local",
         "awaken-server",
         "awaken-tenancy",
         "awaken-tool-relay",
@@ -1418,6 +1451,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-scenario-host",
         # dev-only: transport conformance exercises dispatch + Worker registry.
         "awaken-run-ingress", "awaken-runtime-host",
+        "awaken-config-service", "awaken-credential-materializer",
+        "awaken-worker-transport-security",
         "awaken-session-store",
         "awaken-session-contract", "awaken-resource-contract",
         # Outer composition owns Hand topology/relay; runtime-host exposes only APIs/SPIs.
@@ -1432,6 +1467,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # ADR-0050: the data-subject consent/erasure store backing the erasure endpoint.
         "awaken-data-subject", "awaken-observability", "awaken-authz-enforce",
         "awaken-run-executor-acp", "awaken-acp-application", "awaken-protocol-acp",
+        "awaken-provisioning-contract",
         "awaken-protocol-managed",
         "awaken-protocol-ai-sdk", "awaken-protocol-ag-ui", "awaken-protocol-a2a",
         # Explicit MCP egress adapter, mounted by the data plane only when a
@@ -1439,7 +1475,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # AI SDK / AG-UI / A2A; it never reaches into the control plane.
         "awaken-protocol-mcp",
         "awaken-protocol-transport",
-        "awaken-provider-genai",
+        "awaken-provider-genai", "awaken-ext-skills", "awaken-sandbox-local",
         "awaken-memory-store",
         # The data-plane composition root opens the embedded File/Memory/Skill/
         # lifecycle family once and injects only its ports into runtime-host.
@@ -1562,7 +1598,14 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-authz-enforce",
         # The Worker role delegates lifecycle to the production execution worker.
         "awaken-worker",
+        "awaken-worker-transport-security",
         "awaken-runtime-host",
+        "awaken-config-service",
+        "awaken-credential-materializer",
+        "awaken-env-store",
+        "awaken-ext-builtin-tools",
+        "awaken-run-ingress",
+        "awaken-work-store",
         "awaken-sandbox-policy-store",
         "awaken-resource-store",
         "awaken-resource-reclaimer",
@@ -1644,6 +1687,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-worker": {
         "awaken-acp-contract",
         "awaken-runtime-host",
+        "awaken-credential-materializer",
+        "awaken-ext-builtin-tools",
+        "awaken-sandbox-container",
+        "awaken-session-contract",
+        "awaken-worker-transport-security",
         "awaken-resource-contract",
         "awaken-worker-contract",
         "awaken-provisioning-contract",
@@ -1891,61 +1939,6 @@ BUCKET_ALLOWED_DEPS = {
 }
 
 
-def normal_dependency_names(manifest: dict) -> set[str]:
-    """Normal + build deps only. Dev-dependencies are test/example wiring and may
-    cross buckets freely (a test is a composition root)."""
-    deps: set[str] = set()
-    for section in ("dependencies", "build-dependencies"):
-        deps.update(manifest.get(section, {}).keys())
-    return deps
-
-
-def check_bucket_direction() -> list[str]:
-    """The product-bucket order (see BUCKET_ALLOWED_DEPS). provisioning/config/
-    resources are runtime-independent; the runtime never depends on config or
-    agents. Keys off the actual directory a crate lives in, so it stays correct as
-    crates are added without touching any allowlist. Dev-deps are exempt."""
-    errors: list[str] = []
-    bucket: dict[str, str] = {}
-    for manifest_path in iter_crate_manifests():
-        name = package_name(load_manifest(manifest_path))
-        bucket[name] = manifest_path.parent.parent.name  # crates/<bucket>/<crate>
-    for manifest_path in iter_crate_manifests():
-        manifest = load_manifest(manifest_path)
-        name = package_name(manifest)
-        allowed = BUCKET_ALLOWED_DEPS.get(bucket.get(name), set())
-        for dep in normal_dependency_names(manifest):
-            dep_bucket = bucket.get(dep)
-            if dep_bucket is None or dep_bucket in allowed:
-                continue
-            errors.append(
-                f"{bucket.get(name)}/{name} depends on {dep_bucket}/{dep} "
-                f"(a {bucket.get(name)} crate may depend only on {sorted(allowed)})"
-            )
-    return errors
-
-def check_runtime_is_secret_resolution_free() -> list[str]:
-    """D6/D9 (ADR-0043): the runtime and its extensions receive an already-resolved
-    secret value (`RedactedString`) only — never a handle, a resolver, or a vault
-    ref. So the secret-*lifecycle* vocabulary must not appear anywhere under
-    crates/runtime/. `RedactedString` itself is fine (it is the resolved value)."""
-    banned = ("SecretHandle", "SecretResolver", "SecretStore", "CredentialBinding", "SecretRef")
-    errors: list[str] = []
-    runtime_dir = CRATES / "runtime"
-    if not runtime_dir.exists():
-        return errors
-    for path in runtime_dir.glob("**/*.rs"):
-        text = path.read_text(encoding="utf-8")
-        for token in banned:
-            # Ban exact identifiers, not compound secret-free execution facts.
-            if re.search(rf"\b{re.escape(token)}\b", text):
-                errors.append(
-                    f"{path.relative_to(REPO_ROOT)}: runtime must be secret-resolution-free "
-                    f"(D6/D9): found `{token}` — resolution lives in the host, not the runtime"
-                )
-    return errors
-
-
 # The neutral-core / crate-layout fitness rules (contract purity, protocol-leaf, god-hub
 # ratchet — Phases 0.1 / 0.2 / 3) live in `_arch_fitness.py` (pure predicates + cause-
 # effect selftests), imported and driven by `main()` over the parsed crate specs. Split
@@ -1959,21 +1952,6 @@ def check_runtime_is_secret_resolution_free() -> list[str]:
 # in-repo "BuSL" tier and no open-bin closure check: everything here ships open.
 
 
-def _arch_fitness_specs() -> list[_arch_fitness.CrateSpec]:
-    """Build filesystem-free architecture-fitness specs for every workspace crate."""
-    specs: list[_arch_fitness.CrateSpec] = []
-    for manifest_path in iter_crate_manifests():
-        manifest = load_manifest(manifest_path)
-        specs.append(
-            _arch_fitness.CrateSpec(
-                name=package_name(manifest),
-                normal_deps=frozenset(normal_dependency_names(manifest)),
-                bucket=manifest_path.parent.parent.name,
-            )
-        )
-    return specs
-
-
 def main() -> int:
     _arch_fitness.selftest()
     _coordinator_authority_fitness.selftest()
@@ -1983,11 +1961,11 @@ def main() -> int:
         + check_neutral_code_boundaries()
         + check_builtin_tool_ownership()
         + check_tests_are_not_arch_owners()
-        + check_bucket_direction()
+        + check_bucket_direction(BUCKET_ALLOWED_DEPS)
         + _resource_plane_fitness.check_all(REPO_ROOT, CRATES)
-        + check_runtime_is_secret_resolution_free()
+        + _runtime_secret_boundary.check_all(REPO_ROOT, CRATES)
         + _provider_env_fitness.check_all(REPO_ROOT, CRATES)
-        + _arch_fitness.check_all(_arch_fitness_specs())
+        + _arch_fitness.check_all(architecture_fitness_specs())
         + _coordinator_authority_fitness.check_all(REPO_ROOT, CRATES)
         + _service_data_ownership_fitness.check_all(REPO_ROOT)
     )

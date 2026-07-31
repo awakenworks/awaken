@@ -10,9 +10,10 @@ use awaken_run_ingress::{
     DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };
 use awaken_runtime_host::{
-    FileContentSource as _, HeaderWorkerAuthenticator, HttpFileContentSource,
-    StoreFileContentSource, WorkerFileContentService, WorkerUpstream, worker_file_content_router,
+    FileContentSource as _, HttpFileContentSource, StoreFileContentSource,
+    WorkerFileContentService, worker_file_content_router,
 };
+use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 fn resources(file_id: &str) -> awaken_session_contract::ResolvedSessionResources {
     awaken_session_contract::ResolvedSessionResources {

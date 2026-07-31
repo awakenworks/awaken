@@ -49,18 +49,17 @@ use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate, To
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use axum::Router;
 
-// The managed-agents service layer (`awaken-runtime-host`): the neutral host,
-// the two port adapters, the per-plane routers, and the authoring/transport
-// re-exports a composition root (and the integration tests) drive directly.
+// This scenario composition depends on each authoritative owner directly.
+pub use awaken_config_service::{ConfigService, capabilities_router, config_router};
+pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_managed_routers::{
     default_models, files_router, memory_stores_router_with_catalog, models_router, skills_router,
 };
 pub use awaken_runtime_host::{
-    ConfigService, ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost,
-    ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent, ThreadEventHub, VaultRefresher,
-    advertised_tools, capabilities_router, config_router, content_fingerprint, durable_ops_router,
-    parse_skill_md,
+    ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost, ProtocolHost, SharedHost,
+    ThreadEvent, ThreadEventHub, VaultRefresher, advertised_tools, durable_ops_router,
 };
+pub use awaken_sandbox_local::content_fingerprint;
 
 /// An [`InferenceExecutorMaterializer`] mapping a model ref to a labeled executor, so a
 /// session bound to `fast`/`slow` resolves a distinct model — the R1/R2/R5 demo
@@ -1064,7 +1063,7 @@ pub async fn build_resolved_real_router() -> Router {
         catalog_repo,
         cred_repo.clone(),
     );
-    let published = awaken_runtime_host::ModelPublicationResolver::resolve_models(
+    let published = awaken_config_service::ModelPublicationResolver::resolve_models(
         &resolver,
         &awaken_tenancy::ScopeId::from("ws"),
         &ModelSelection::Pinned(ModelBinding::new("anthropic", &model, "genai")),
@@ -1182,7 +1181,7 @@ pub async fn build_oauth_resolved_router() -> Router {
         catalog_repo,
         cred_repo.clone(),
     );
-    let published = awaken_runtime_host::ModelPublicationResolver::resolve_models(
+    let published = awaken_config_service::ModelPublicationResolver::resolve_models(
         &resolver,
         &awaken_tenancy::ScopeId::from("ws"),
         &ModelSelection::Pinned(ModelBinding::new("anthropic", &model, "genai")),
@@ -1705,9 +1704,9 @@ pub async fn build_config_router() -> Router {
     // (global) tools; only the reserved admin scope additionally sees the four
     // management descriptors, so a config naming an `admin_*` tool compiles only there.
     let global = awaken_runtime_host::authorable_tools();
-    let tools = Arc::new(awaken_runtime_host::ScopedToolCatalog::new(
+    let tools = Arc::new(awaken_config_service::ScopedToolCatalog::new(
         global.clone(),
-        awaken_runtime_host::RESERVED_ADMIN_SCOPE,
+        awaken_config_service::RESERVED_ADMIN_SCOPE,
         awaken_admin_assistant::admin_tool_descriptors(),
     ));
     // A minimal LIVE catalog repo with one provider + endpoint + offering for the
@@ -1726,7 +1725,7 @@ pub async fn build_config_router() -> Router {
             executable_agent_catalog.clone(),
         )),
     ));
-    let plane = awaken_runtime_host::ConfigPlane::new(service.clone(), store, tools);
+    let plane = awaken_config_service::ConfigPlane::new(service.clone(), store, tools);
     // The management tool executables, backed by real ports (D3/D4): the capability
     // reader reads the shared catalog + advertised tools; the validator runs the same
     // compile check as `/v1/config/agents/validate` on drafts (in the tenant scope).

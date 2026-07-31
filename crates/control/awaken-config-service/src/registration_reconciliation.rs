@@ -8,7 +8,7 @@ use awaken_executable_agent_contract::{ExecutableAgentRegistration, ExecutableAg
 use awaken_tenancy::ScopeId;
 
 use crate::ConfigService;
-use crate::agent_projection::{historical_agent_view, registered_agent_view};
+use crate::agent_projection::{historical_session_profile, registered_session_profile};
 
 impl ConfigService {
     /// Reconcile one Workspace's durable publications and lifecycle tombstones
@@ -87,14 +87,14 @@ impl ConfigService {
                     )
                 })?;
             let is_current = first_for_agent.insert(publication.agent_id.clone());
-            let agent_view = if is_current {
+            let session_profile = if is_current {
                 let defaults = self.resources.as_ref().and_then(|store| {
                     store
                         .get_agent_inputs(execution_workspace, &publication.agent_id)
                         .ok()
                         .flatten()
                 });
-                registered_agent_view(
+                registered_session_profile(
                     &publication.snapshot,
                     &source.config.model_binding,
                     defaults,
@@ -106,7 +106,7 @@ impl ConfigService {
                     )
                 })?
             } else {
-                historical_agent_view(&publication.snapshot, &source.config.model_binding)
+                historical_session_profile(&publication.snapshot, &source.config.model_binding)
             };
             self.registrar
                 .register(ExecutableAgentRegistration {
@@ -114,7 +114,7 @@ impl ConfigService {
                     agent_id: publication.agent_id,
                     source_revision: publication.source_revision,
                     snapshot: publication.snapshot,
-                    agent_view,
+                    session_profile,
                     declared_hand: source.config.hand,
                 })
                 .await

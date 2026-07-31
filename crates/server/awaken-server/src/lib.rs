@@ -46,22 +46,22 @@ use awaken_provider_genai::{GenaiExecutor, OpenAiResponsesExecutor};
 use awaken_runtime_contract::llm::LlmExecutor;
 use axum::Router;
 
-// The managed-agents service layer (`awaken-runtime-host`): the neutral host,
-// the two port adapters, the per-plane routers, and the authoring/transport
-// re-exports a composition root (and the integration tests) drive directly.
+// This data-plane composition depends on each authoritative owner directly.
 pub use awaken_acp_application::{
     LocalAcpPreparation, PreparedAcpCapabilities, ensure_workspace_bindings,
 };
+pub use awaken_config_service::{ConfigService, capabilities_router, config_router};
+pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_managed_routers::{
     consent_router, default_models, erasure_router, files_router,
     memory_stores_router_with_catalog, models_router, skills_router,
 };
 pub use awaken_runtime_host::{
-    ConfigService, ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost,
-    NoModelConfiguredExecutor, ProtocolHost, SharedHost, SkillContext, SkillSpec, ThreadEvent,
-    ThreadEventHub, UNCONFIGURED_MODEL_REF, VaultRefresher, advertised_tools, capabilities_router,
-    config_router, content_fingerprint, durable_ops_router, parse_skill_md,
+    ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost, NoModelConfiguredExecutor,
+    ProtocolHost, SharedHost, ThreadEvent, ThreadEventHub, UNCONFIGURED_MODEL_REF, VaultRefresher,
+    advertised_tools, durable_ops_router,
 };
+pub use awaken_sandbox_local::content_fingerprint;
 pub use deployment_session_launcher::HttpDeploymentSessionLauncher;
 pub use legacy_resource_migration::migrate_legacy_skill_registry;
 pub use relay_hand::relay_hand_executor_factory;
@@ -160,7 +160,7 @@ pub fn embedded_skill_store(
 }
 
 struct PinnedA2aTransportResolver {
-    credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
+    credentials: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
 }
 
 #[async_trait::async_trait]
@@ -237,11 +237,11 @@ impl awaken_run_executor_a2a::TransportResolver for PinnedA2aTransportResolver {
 /// The optional materializer is required only for an authenticated publication;
 /// anonymous Agent Cards remain valid without credential infrastructure.
 pub fn a2a_attempt_executor(
-    credentials: Option<awaken_runtime_host::PinnedCredentialMaterializer>,
+    credentials: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
 ) -> awaken_runtime_host::RemoteAttemptInstallation {
     let credential_realization = credentials.as_ref().map_or_else(
         awaken_runtime_contract::CredentialRealizationCapabilities::default,
-        awaken_runtime_host::PinnedCredentialMaterializer::worker_relay_capabilities,
+        awaken_credential_materializer::PinnedCredentialMaterializer::worker_relay_capabilities,
     );
     awaken_runtime_host::RemoteAttemptInstallation {
         executor: Arc::new(awaken_run_executor_a2a::A2aRunExecutor::new(Arc::new(
@@ -283,7 +283,7 @@ pub fn local_managed_state(
 pub fn local_managed_state_with_agent_source(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
-    agent_source: Arc<dyn awaken_protocol_managed::AgentConfigSource>,
+    agent_source: Arc<dyn awaken_protocol_managed::ExecutableAgentProfileSource>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(host, catalog, None, Some(agent_source))
 }
@@ -306,7 +306,7 @@ pub fn local_managed_state_with_environments_and_agent_source(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     environments: Arc<awaken_protocol_managed::EnvironmentState>,
-    agent_source: Arc<dyn awaken_protocol_managed::AgentConfigSource>,
+    agent_source: Arc<dyn awaken_protocol_managed::ExecutableAgentProfileSource>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(host, catalog, Some(environments), Some(agent_source))
 }
@@ -315,7 +315,7 @@ fn local_managed_state_over(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     environments: Option<Arc<awaken_protocol_managed::EnvironmentState>>,
-    agent_source: Option<Arc<dyn awaken_protocol_managed::AgentConfigSource>>,
+    agent_source: Option<Arc<dyn awaken_protocol_managed::ExecutableAgentProfileSource>>,
 ) -> Arc<ManagedState> {
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
@@ -427,7 +427,7 @@ pub fn mount_with_managed_and_application_access_and_models(
         Some(application_access),
         Some(model_directory),
         None,
-        Arc::new(awaken_runtime_host::HeaderWorkerAuthenticator),
+        Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator),
     )
     .0
 }
@@ -442,7 +442,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
     application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
     model_directory: Arc<dyn awaken_managed_routers::ModelDirectory>,
     dream_repository: Arc<dyn awaken_protocol_managed::DreamRepository>,
-    worker_authenticator: Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>,
+    worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
 ) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
     mount_with_managed_over_and_models(
         host,
@@ -468,7 +468,7 @@ fn mount_with_managed_over(
         application_access,
         None,
         None,
-        Arc::new(awaken_runtime_host::HeaderWorkerAuthenticator),
+        Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator),
     )
 }
 
@@ -479,7 +479,7 @@ fn mount_with_managed_over_and_models(
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
     model_directory: Option<Arc<dyn awaken_managed_routers::ModelDirectory>>,
     dream_repository: Option<Arc<dyn awaken_protocol_managed::DreamRepository>>,
-    worker_authenticator: Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>,
+    worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
 ) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
     install_platform_memory_data_plane(&host);
     // Spawn the process-level dispatch pool once when durable ingress is enabled

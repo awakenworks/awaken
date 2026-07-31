@@ -3,6 +3,7 @@
 use awaken_config_resolver::{
     CredentialCandidateSet, CredentialSelectionContext, credential_candidates, derive_vendor_pool,
 };
+use awaken_config_service::PublicationResolutionError;
 use awaken_credential_vault::{
     CredentialBinding, CredentialKind, CredentialSource, CredentialStatus,
 };
@@ -10,7 +11,6 @@ use awaken_runtime_contract::resolved::{Backend, ModelBinding, ResolvedModelCand
 use awaken_runtime_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
 };
-use awaken_runtime_host::PublicationResolutionError;
 use awaken_tenancy::ScopeId;
 
 use super::{CatalogModelPublicationResolver, PublicationCredentialLookup};
@@ -155,13 +155,13 @@ impl CatalogModelPublicationResolver {
 mod tests {
     use super::*;
     use awaken_agent_contract::RedactedString;
+    use awaken_config_service::ModelPublicationResolver;
     use awaken_config_store::ModelSelection;
     use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{CredentialCreateParams, InMemorySecretStore};
     use awaken_model_catalog::ProviderCatalog;
     use awaken_runtime_contract::CredentialUsage;
     use awaken_runtime_contract::resolved::ModelProvisioning;
-    use awaken_runtime_host::ModelPublicationResolver;
     use std::sync::Arc;
 
     struct FixedA2aCard(awaken_protocol_a2a::AgentCard);

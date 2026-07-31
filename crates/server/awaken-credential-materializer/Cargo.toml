@@ -1,0 +1,24 @@
+[package]
+name = "awaken-credential-materializer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-credential-vault.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-run-executor-acp.workspace = true
+awaken-runtime-contract.workspace = true
+async-trait.workspace = true
+base64 = "0.22"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

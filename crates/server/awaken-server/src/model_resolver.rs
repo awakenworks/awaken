@@ -12,6 +12,9 @@ use awaken_config_resolver::{
     ExecutorModelCapability, InferenceProfile, InferenceProfileStore, ModelTarget,
     derive_vendor_pool, get_workspace_profile, select_offering, validate_executor_offering,
 };
+use awaken_config_service::{
+    ModelPublicationResolver, PublicationResolutionError, ResolvedPublicationModels,
+};
 use awaken_config_store::ModelSelection;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::{
@@ -21,9 +24,6 @@ use awaken_model_catalog::{Offering, ProviderCatalog};
 use awaken_runtime_contract::CredentialRef;
 use awaken_runtime_contract::resolved::{
     Backend, BackendModelSelection, ModelBinding, ResolvedModelCandidate,
-};
-use awaken_runtime_host::{
-    ModelPublicationResolver, PublicationResolutionError, ResolvedPublicationModels,
 };
 use awaken_tenancy::ScopeId;
 

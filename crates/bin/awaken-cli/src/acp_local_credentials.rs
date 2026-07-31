@@ -75,9 +75,9 @@ pub fn registered_memory_mounter_factory() -> awaken_worker::RegisteredMemoryMou
 }
 
 fn configured_worker_builder(
-    upstream: awaken_runtime_host::WorkerUpstream,
+    upstream: awaken_worker_transport_security::WorkerUpstream,
     deployment: &crate::config::ResolvedDeployment,
-    credentials: awaken_runtime_host::PinnedCredentialMaterializer,
+    credentials: awaken_credential_materializer::PinnedCredentialMaterializer,
 ) -> awaken_worker::WorkerNodeBuilder {
     let worker = &deployment.worker;
     let mut manifest = worker
@@ -130,8 +130,9 @@ pub async fn build_configured_worker(
         &deployment.worker.credential_material_root,
         &deployment.worker.credential_trust_domain,
     ));
-    let credentials = awaken_runtime_host::PinnedCredentialMaterializer::external_only(resolver);
-    let mut worker_upstream = awaken_runtime_host::WorkerUpstream::new(upstream)
+    let credentials =
+        awaken_credential_materializer::PinnedCredentialMaterializer::external_only(resolver);
+    let mut worker_upstream = awaken_worker_transport_security::WorkerUpstream::new(upstream)
         .with_worker_id(&deployment.worker.worker_id);
     if let Some(authorizer) = crate::worker_transport_security::request_authorizer(deployment)? {
         worker_upstream = worker_upstream.with_request_authorizer(authorizer);
@@ -202,12 +203,12 @@ impl PreparedLocalAcp {
         deployment: &crate::config::ResolvedDeployment,
     ) -> Result<awaken_worker::WorkerNode, String> {
         let resolver = self.resolver;
-        let credentials = awaken_runtime_host::PinnedCredentialMaterializer::new(
+        let credentials = awaken_credential_materializer::PinnedCredentialMaterializer::new(
             self.stores.credentials,
             self.stores.secrets,
         );
         configured_worker_builder(
-            awaken_runtime_host::WorkerUpstream::new(upstream)
+            awaken_worker_transport_security::WorkerUpstream::new(upstream)
                 .with_worker_id(&deployment.worker.worker_id),
             deployment,
             credentials,
@@ -641,12 +642,14 @@ mod tests {
             "B1"
         );
         let worker = awaken_worker::WorkerNodeBuilder::new(
-            awaken_runtime_host::WorkerUpstream::new("http://control"),
+            awaken_worker_transport_security::WorkerUpstream::new("http://control"),
         )
-        .with_credential_materializer(awaken_runtime_host::PinnedCredentialMaterializer::new(
-            credentials,
-            Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-        ))
+        .with_credential_materializer(
+            awaken_credential_materializer::PinnedCredentialMaterializer::new(
+                credentials,
+                Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+            ),
+        )
         .with_worker_local_credential_resolver(resolver.clone())
         .with_standard_manifest(Default::default())
         .build()

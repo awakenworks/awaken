@@ -347,32 +347,6 @@ pub awaken_session_contract::AgentCapabilities::builtin_tools: alloc::vec::Vec<a
 pub awaken_session_contract::AgentCapabilities::custom_tools: alloc::vec::Vec<awaken_session_contract::CustomTool>
 pub awaken_session_contract::AgentCapabilities::delegates: alloc::vec::Vec<alloc::string::String>
 pub awaken_session_contract::AgentCapabilities::skills: alloc::vec::Vec<alloc::string::String>
-pub struct awaken_session_contract::AgentClientToolView
-pub awaken_session_contract::AgentClientToolView::description: alloc::string::String
-pub awaken_session_contract::AgentClientToolView::input_schema: serde_json::value::Value
-pub awaken_session_contract::AgentClientToolView::name: alloc::string::String
-pub struct awaken_session_contract::AgentConfigView
-pub awaken_session_contract::AgentConfigView::backend_ref: alloc::string::String
-pub awaken_session_contract::AgentConfigView::client_tools: alloc::vec::Vec<awaken_session_contract::AgentClientToolView>
-pub awaken_session_contract::AgentConfigView::delegate_ids: alloc::vec::Vec<alloc::string::String>
-pub awaken_session_contract::AgentConfigView::environment: core::option::Option<awaken_session_contract::AgentEnvironmentBindingView>
-pub awaken_session_contract::AgentConfigView::execution_model_ref: core::option::Option<alloc::string::String>
-pub awaken_session_contract::AgentConfigView::mcp_servers: alloc::vec::Vec<awaken_session_contract::AgentMcpServerView>
-pub awaken_session_contract::AgentConfigView::model: core::option::Option<alloc::string::String>
-pub awaken_session_contract::AgentConfigView::resources: alloc::vec::Vec<awaken_resource_contract::input::InputBinding>
-pub awaken_session_contract::AgentConfigView::skills: alloc::vec::Vec<awaken_agent_contract::skill::AgentSkillBinding>
-pub awaken_session_contract::AgentConfigView::system: core::option::Option<alloc::string::String>
-pub awaken_session_contract::AgentConfigView::tool_ids: alloc::vec::Vec<alloc::string::String>
-pub awaken_session_contract::AgentConfigView::toolsets: alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
-pub struct awaken_session_contract::AgentEnvironmentBindingView
-pub awaken_session_contract::AgentEnvironmentBindingView::environment_id: alloc::string::String
-pub awaken_session_contract::AgentEnvironmentBindingView::revision: u64
-pub struct awaken_session_contract::AgentMcpServerView
-pub awaken_session_contract::AgentMcpServerView::credential_revision: core::option::Option<u64>
-pub awaken_session_contract::AgentMcpServerView::credential_source_id: core::option::Option<alloc::string::String>
-pub awaken_session_contract::AgentMcpServerView::name: alloc::string::String
-pub awaken_session_contract::AgentMcpServerView::prompts_as_skills: bool
-pub awaken_session_contract::AgentMcpServerView::url: alloc::string::String
 pub struct awaken_session_contract::AgentToolConfig
 pub awaken_session_contract::AgentToolConfig::enabled: core::option::Option<bool>
 pub awaken_session_contract::AgentToolConfig::name: alloc::string::String
@@ -531,7 +505,6 @@ pub awaken_session_contract::Pending::input: serde_json::value::Value
 pub awaken_session_contract::Pending::name: alloc::string::String
 pub awaken_session_contract::Pending::tool_use_id: alloc::string::String
 pub struct awaken_session_contract::PersistedSession
-pub awaken_session_contract::PersistedSession::agent_tools: alloc::vec::Vec<awaken_session_contract::AgentTool>
 pub awaken_session_contract::PersistedSession::archived_at: core::option::Option<alloc::string::String>
 pub awaken_session_contract::PersistedSession::baseline: awaken_session_contract::SessionBaselineState
 pub awaken_session_contract::PersistedSession::environment_binding: core::option::Option<alloc::string::String>
@@ -543,6 +516,7 @@ pub awaken_session_contract::PersistedSession::revision: awaken_session_contract
 pub awaken_session_contract::PersistedSession::session_id: alloc::string::String
 pub awaken_session_contract::PersistedSession::status: alloc::string::String
 pub awaken_session_contract::PersistedSession::title: core::option::Option<alloc::string::String>
+pub awaken_session_contract::PersistedSession::tools: awaken_session_contract::SessionToolConfiguration
 impl awaken_session_contract::PersistedSession
 pub fn awaken_session_contract::PersistedSession::agent_id(&self) -> core::option::Option<&str>
 pub fn awaken_session_contract::PersistedSession::environment_id(&self) -> &str
@@ -739,6 +713,9 @@ pub struct awaken_session_contract::SessionTombstone
 pub awaken_session_contract::SessionTombstone::deleted_at: alloc::string::String
 pub awaken_session_contract::SessionTombstone::deleted_revision: awaken_session_contract::SessionRevision
 pub awaken_session_contract::SessionTombstone::session_id: alloc::string::String
+pub struct awaken_session_contract::SessionToolConfiguration
+pub awaken_session_contract::SessionToolConfiguration::client_tools: alloc::vec::Vec<awaken_agent_contract::toolset::ClientToolDescriptor>
+pub awaken_session_contract::SessionToolConfiguration::toolsets: alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
 pub struct awaken_session_contract::SessionUsage
 pub awaken_session_contract::SessionUsage::cache_creation_tokens: u64
 pub awaken_session_contract::SessionUsage::cache_read_tokens: u64
@@ -777,10 +754,6 @@ pub awaken_session_contract::VisibleMcpServer::name: alloc::string::String
 pub awaken_session_contract::VisibleMcpServer::prompts_as_skills: bool
 pub awaken_session_contract::VisibleMcpServer::url: alloc::string::String
 pub const awaken_session_contract::AGENT_TOOLSET_TOOL_IDS: [&str; 7]
-pub trait awaken_session_contract::AgentConfigSource: core::marker::Send + core::marker::Sync
-pub fn awaken_session_contract::AgentConfigSource::agent_unavailable_in(&self, &str, &str) -> bool
-pub fn awaken_session_contract::AgentConfigSource::agent_view_in(&self, &str, &str) -> core::option::Option<awaken_session_contract::AgentConfigView>
-pub fn awaken_session_contract::AgentConfigSource::unavailable_delegate_in(&self, &str, &str) -> core::option::Option<alloc::string::String>
 pub trait awaken_session_contract::ApplicationSessionContributionApi: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::ApplicationSessionContributionApi::contribute_application<'life0, 'async_trait>(&'life0 self, awaken_session_contract::ApplicationSessionContribution) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::ApplicationSessionContributionReceipt, awaken_session_contract::ApplicationSessionContributionFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_session_contract::ApplicationSessionControl: awaken_session_contract::ApplicationSessionContributionApi + awaken_session_contract::SessionRealizationControl

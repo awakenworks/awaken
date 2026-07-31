@@ -3,6 +3,7 @@
 use awaken_config_resolver::{
     CredentialCandidateSet, CredentialSelectionContext, SourceLookup, credential_candidates,
 };
+use awaken_config_service::PublicationResolutionError;
 use awaken_credential_vault::{
     CredentialBinding, CredentialMaterialOrigin, CredentialPool, CredentialSource,
     CredentialStatus, SelectionPolicy,
@@ -14,7 +15,6 @@ use awaken_runtime_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
     CredentialUsage, InferenceEndpoint,
 };
-use awaken_runtime_host::PublicationResolutionError;
 use awaken_tenancy::ScopeId;
 
 use super::CatalogModelPublicationResolver;

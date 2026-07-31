@@ -35,6 +35,7 @@ mod transport_client;
 mod wake;
 mod worker;
 mod worker_context;
+mod worker_transport;
 
 pub use any::{AnyDispatchStore, DispatchEnqueue};
 pub use capability::RunIngressCapabilities;
@@ -45,19 +46,16 @@ pub use awaken_run_ingress_contract::operational::{
     DispatchPage, LeaseLossReason,
 };
 pub use awaken_run_ingress_contract::{
-    AssignmentRejection, BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest,
-    ClaimRunRequest, ClaimWorkerRequest, ClaimedCommitCommand, ClaimedCommitRequest,
-    CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest, ExecutionLocation,
-    ExecutionScopeRef, HOST_EXECUTOR_CAPABILITY, HeartbeatWorkerRequest, LeastLoadedPolicy,
-    PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext, PlacementError, PlacementPolicy,
-    PlacementRequirements, REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RecoveryRequest,
-    RegisterWorkerRequest, RegisteredWorker, RegistryError, RegistryMutation, RenewRequest,
-    RunDispatch, SESSION_RESOURCES_CAPABILITY, SessionResourceEnvelope, SessionRuntimeEnvelope,
-    SettleRequest, WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAcpCapabilityObservation,
+    AssignmentRejection, ClaimedCommitCommand, ExecutionLocation, ExecutionScopeRef,
+    HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
+    PlacementContext, PlacementError, PlacementPolicy, PlacementRequirements,
+    REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RegisteredWorker, RegistryError,
+    RegistryMutation, RunDispatch, SESSION_RESOURCES_CAPABILITY, SessionResourceEnvelope,
+    SessionRuntimeEnvelope, WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAcpCapabilityObservation,
     WorkerAcpCapabilityRequirement, WorkerAssignment, WorkerCredentialObservation,
     WorkerCredentialRevision, WorkerCredentialState, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerIdentityRequest, WorkerManifest, WorkerRecoveryMode, WorkerRegistration,
-    WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally, place_assignment,
+    WorkerIdentity, WorkerManifest, WorkerRecoveryMode, WorkerRegistration, WorkerSnapshot,
+    WorkerState, can_assign, can_claim, can_claim_locally, place_assignment,
     worker_credential_realization_capabilities,
 };
 pub use clock::{Clock, ManualClock, SystemClock};
@@ -88,6 +86,12 @@ pub use wake::NatsWakeSignal;
 pub use wake::{LocalWakeSignal, PgNotifyWake, WakeSignal};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker, claim_bound_ownership_verifier};
 pub use worker_context::InferenceMaterializerFn;
+pub use worker_transport::{
+    BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest,
+    ClaimedCommitRequest, CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest,
+    HeartbeatWorkerRequest, RecoveryRequest, RegisterWorkerRequest, RenewRequest, SettleRequest,
+    WorkerIdentityRequest,
+};
 
 /// A durable-ingress failure: either the dispatch store rejected an operation or
 /// a runtime attempt failed. Kept as two arms so a queue-storage failure never

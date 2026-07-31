@@ -21,10 +21,10 @@ pub(super) fn typed_mcp_servers(
 use crate::types::AgentRef;
 
 fn validate_session_skill_total(
-    source: Option<&dyn awaken_session_contract::AgentConfigSource>,
+    source: Option<&dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     workspace_id: &str,
     root_agent_id: &str,
-    root_view: Option<&awaken_session_contract::AgentConfigView>,
+    root_view: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
     root_skills: &[awaken_agent_contract::AgentSkillBinding],
 ) -> Result<(), RunError> {
     const MAX_SESSION_SKILLS: usize = 500;
@@ -47,7 +47,8 @@ fn validate_session_skill_total(
         if !seen.insert(agent_id.clone()) {
             continue;
         }
-        let Some(view) = source.and_then(|source| source.agent_view_in(workspace_id, &agent_id))
+        let Some(view) =
+            source.and_then(|source| source.session_profile_in(workspace_id, &agent_id))
         else {
             continue;
         };
@@ -116,7 +117,7 @@ impl ManagedState {
                 "dream agent Agent `{agent_id}` is unavailable"
             ))));
         };
-        if source.agent_view_in(workspace_id, agent_id).is_none()
+        if source.session_profile_in(workspace_id, agent_id).is_none()
             || source.agent_unavailable_in(workspace_id, agent_id)
         {
             return Err(StateError::Run(RunError::bad_request(format!(
@@ -581,7 +582,7 @@ impl ManagedState {
         let config_view = self
             .config_source
             .as_ref()
-            .and_then(|source| source.agent_view_in(&owner_scope, &agent_id));
+            .and_then(|source| source.session_profile_in(&owner_scope, &agent_id));
         let is_built_in_dream_agent = agent_id == crate::dream::BUILT_IN_DREAM_AGENT_ID
             && req
                 .metadata
@@ -911,20 +912,28 @@ impl ManagedState {
             project::validate_custom_tool(tool)
                 .map_err(|msg| StateError::Run(RunError::bad_request(msg)))?;
         }
-        let inherited_toolsets = config_view
-            .as_ref()
-            .filter(|view| !view.toolsets.is_empty())
-            .map(|view| view.toolsets.clone())
-            .unwrap_or_else(|| project::toolset_policies(&project::agent_tools(&caps)));
-        let effective_toolsets = match &req.agent {
+        let capability_tools = project::session_tool_configuration(&project::agent_tools(&caps));
+        let inherited_tools = config_view.as_ref().map_or_else(
+            || capability_tools.clone(),
+            |profile| awaken_session_contract::SessionToolConfiguration {
+                toolsets: if profile.toolsets.is_empty() {
+                    capability_tools.toolsets.clone()
+                } else {
+                    profile.toolsets.clone()
+                },
+                client_tools: profile.client_tools.clone(),
+            },
+        );
+        let effective_tools = match &req.agent {
             AgentRef::Object(reference) => reference
                 .tools
                 .as_ref()
-                .map(|tools| project::toolset_policies(tools.as_deref().unwrap_or_default()))
-                .unwrap_or(inherited_toolsets),
-            AgentRef::Id(_) => inherited_toolsets,
+                .map(|tools| {
+                    project::session_tool_configuration(tools.as_deref().unwrap_or_default())
+                })
+                .unwrap_or(inherited_tools),
+            AgentRef::Id(_) => inherited_tools,
         };
-        let initial_agent_toolsets = project::resolved_toolsets(&effective_toolsets);
         let resolved_model = selected_model
             .clone()
             .unwrap_or_else(|| ModelConfig::new(self.runtime.model()));
@@ -944,7 +953,7 @@ impl ManagedState {
                 execution_model_ref,
                 runtime: published_backend_ref,
                 delegate_ids: delegate_ids.clone(),
-                toolsets: effective_toolsets,
+                toolsets: effective_tools.toolsets.clone(),
                 mounts: Vec::new(),
                 env: Vec::new(),
                 prompts: Vec::new(),
@@ -976,7 +985,7 @@ impl ManagedState {
             baseline: awaken_session_contract::SessionBaselineState::Preparing(creation_intent),
             title: req.title.clone(),
             metadata: req.metadata.clone(),
-            agent_tools: initial_agent_toolsets,
+            tools: effective_tools.clone(),
             environment_binding: None,
             mcp: Default::default(),
             resources: Default::default(),
@@ -1005,25 +1014,7 @@ impl ManagedState {
             };
         }
         let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
-        let session_tools = if let Some(view) = &config_view {
-            let mut tools = if view.toolsets.is_empty() {
-                project::agent_tools(&caps)
-            } else {
-                project::resolved_toolsets(&view.toolsets)
-            };
-            let client_tools = project::agent_client_tools(&view.client_tools)
-                .map_err(|error| StateError::Run(RunError::bad_request(error)))?;
-            tools.retain(|candidate| match candidate {
-                crate::types::agent::AgentTool::Custom { name, .. } => !client_tools.iter().any(
-                    |tool| matches!(tool, crate::types::agent::AgentTool::Custom { name: client_name, .. } if client_name == name),
-                ),
-                _ => true,
-            });
-            tools.extend(client_tools);
-            tools
-        } else {
-            project::agent_tools(&caps)
-        };
+        let session_tools = project::managed_tools(&effective_tools);
         let mut session = Session {
             id: id.clone(),
             kind: "session",
@@ -1090,7 +1081,7 @@ impl ManagedState {
                 session.agent.tools = project::resolved_tools(tools.as_deref().unwrap_or_default());
             }
         }
-        persisted.agent_tools = session.agent.tools.clone();
+        persisted.tools = project::session_tool_configuration(&session.agent.tools);
         // Persist the session's config (secret-free) so a restart or a peer process
         // rehydrates its real agent/model/title/metadata/MCP, not a placeholder.
         // The core session record is tenancy-agnostic (authz is an edge aspect) —
@@ -1484,7 +1475,7 @@ impl ManagedState {
                     environment_id,
                     p.title,
                     p.metadata,
-                    p.agent_tools,
+                    project::managed_tools(&p.tools),
                     mcp_servers,
                     Self::wire_session_status(&p.status),
                     p.archived_at,
@@ -1588,7 +1579,7 @@ impl ManagedState {
                             workspace_id: owner_scope.clone(),
                             agent_id: baseline.agent_id.clone(),
                             delegate_ids: baseline.delegate_ids.clone(),
-                            toolsets: Some(project::toolset_policies(&session.agent_tools)),
+                            toolsets: Some(session.tools.toolsets.clone()),
                             resources: session.resources.active.clone(),
                             model: Some(baseline.execution_model_ref.clone()),
                             runtime: baseline.runtime.clone(),

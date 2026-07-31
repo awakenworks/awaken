@@ -12,8 +12,8 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_run_ingress::{
-    CredentialRealizationReceipt, DispatchOutcome, DispatchQueue, MemoryDispatchStore,
-    PendingInput, RunClaim, RunDispatch, WorkerIdentity,
+    CredentialRealizationReceipt, DispatchOutcome, DispatchQueue, HttpDispatchQueue,
+    MemoryDispatchStore, PendingInput, RunClaim, RunDispatch, WorkerIdentity,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
@@ -27,9 +27,9 @@ use awaken_runtime_contract::{
     CredentialRealizationCapabilities, CredentialRealizationKind, CredentialRef, CredentialUsage,
     InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
-use awaken_runtime_host::{
-    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, HttpDispatchQueue, ManualWorkerClock,
-    WorkerDispatchService, dispatch_transport_router_with_service,
+use awaken_runtime_host::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_worker_transport_security::{
+    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock,
 };
 
 fn activation(run: &str, thread: &str) -> RunActivation {

@@ -129,7 +129,7 @@ fn published_delegating_host(
     endpoint: &str,
     credential: CredentialAccess,
     security_fingerprint: String,
-    materializer: awaken_runtime_host::PinnedCredentialMaterializer,
+    materializer: awaken_credential_materializer::PinnedCredentialMaterializer,
 ) -> SharedHost {
     let parent = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", "parent", "default"))
@@ -290,7 +290,7 @@ async fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
         &endpoint,
         access,
         security_fingerprint,
-        awaken_runtime_host::PinnedCredentialMaterializer::new(credentials, secrets),
+        awaken_credential_materializer::PinnedCredentialMaterializer::new(credentials, secrets),
     );
 
     host.run(

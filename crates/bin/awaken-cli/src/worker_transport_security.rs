@@ -24,11 +24,11 @@ struct ProjectedWorkerCredential {
 impl ProjectedWorkerCredential {
     fn into_signing_credential(
         self,
-    ) -> Result<awaken_runtime_host::WorkerSigningCredential, String> {
+    ) -> Result<awaken_worker_transport_security::WorkerSigningCredential, String> {
         let secret = base64::engine::general_purpose::STANDARD
             .decode(self.secret_base64.trim())
             .map_err(|_| "worker transport credential secret_base64 is invalid".to_owned())?;
-        awaken_runtime_host::WorkerSigningCredential::new(
+        awaken_worker_transport_security::WorkerSigningCredential::new(
             self.worker_id,
             self.key_id,
             self.credential_id,
@@ -49,7 +49,7 @@ fn read_projected_file(path: &Path) -> Result<String, String> {
 
 pub(crate) fn request_authorizer(
     deployment: &ResolvedDeployment,
-) -> Result<Option<Arc<dyn awaken_runtime_host::WorkerRequestAuthorizer>>, String> {
+) -> Result<Option<Arc<dyn awaken_run_ingress::WorkerRequestAuthorizer>>, String> {
     let Some(path) = deployment.worker.request_credential_file.as_deref() else {
         return match deployment.mode {
             OperatingMode::Local => Ok(None),
@@ -67,7 +67,7 @@ pub(crate) fn request_authorizer(
 pub fn load_request_authorizer(
     path: &Path,
     worker_id: &str,
-) -> Result<Arc<dyn awaken_runtime_host::WorkerRequestAuthorizer>, String> {
+) -> Result<Arc<dyn awaken_run_ingress::WorkerRequestAuthorizer>, String> {
     let projected: ProjectedWorkerCredential = serde_json::from_str(&read_projected_file(path)?)
         .map_err(|error| {
             format!(
@@ -80,16 +80,18 @@ pub fn load_request_authorizer(
         return Err("Worker request credential does not match configured worker_id".to_owned());
     }
     Ok(Arc::new(
-        awaken_runtime_host::SignedWorkerRequestAuthorizer::new(credential),
+        awaken_worker_transport_security::SignedWorkerRequestAuthorizer::new(credential),
     ))
 }
 
 pub(crate) fn authenticator(
     deployment: &ResolvedDeployment,
-) -> Result<Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>, String> {
+) -> Result<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>, String> {
     let Some(path) = deployment.worker_trust_credentials_file.as_deref() else {
         return match deployment.mode {
-            OperatingMode::Local => Ok(Arc::new(awaken_runtime_host::HeaderWorkerAuthenticator)),
+            OperatingMode::Local => Ok(Arc::new(
+                awaken_worker_transport_security::HeaderWorkerAuthenticator,
+            )),
             OperatingMode::Server => Err(
                 "server-mode Coordinator/AllInOne requires worker_trust_credentials_file"
                     .to_owned(),
@@ -106,7 +108,7 @@ pub(crate) fn authenticator(
     let first = credentials
         .next()
         .ok_or_else(|| "Worker trust credentials must contain at least one entry".to_owned())??;
-    let authenticator = awaken_runtime_host::SignedWorkerAuthenticator::new(first);
+    let authenticator = awaken_worker_transport_security::SignedWorkerAuthenticator::new(first);
     for credential in credentials {
         authenticator.enroll(credential?);
     }

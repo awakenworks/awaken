@@ -8,7 +8,7 @@ use axum::Router;
 pub(crate) fn finish(
     mut flat: Router,
     mcp_export: Router,
-    reconciler: Option<Arc<dyn awaken_runtime_host::PublicationBindingReconciler>>,
+    reconciler: Option<Arc<dyn awaken_config_service::PublicationBindingReconciler>>,
     platform_workspace: String,
     managed_rate_limiter: Arc<awaken_protocol_managed::ManagedRateLimiter>,
 ) -> Router {
@@ -75,7 +75,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_runtime_host::PublicationBindingReconciler for RecordingReconciler {
+    impl awaken_config_service::PublicationBindingReconciler for RecordingReconciler {
         async fn reconcile(&self) -> Result<usize, String> {
             self.fixed.fetch_add(1, Ordering::SeqCst);
             Ok(1)

@@ -47,14 +47,13 @@ awaken-store-postgres = { workspace = true }
 awaken-work-store = { workspace = true }
 awaken-session-store = { workspace = true }
 awaken-env-store = { workspace = true }
-# The config-authoring plane, extracted so awaken-control can share it without
-# depending on this execution host. Re-exported below for the composition root.
-awaken-config-service = { workspace = true }
 awaken-tenancy = { workspace = true }
 awaken-run-ingress = { workspace = true }
+awaken-worker-transport-security = { workspace = true }
 awaken-run-executor-acp = { workspace = true }
 awaken-config-resolver = { workspace = true }
 awaken-credential-vault = { workspace = true }
+awaken-credential-materializer = { workspace = true }
 awaken-protocol-transport = { workspace = true }
 async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -72,7 +71,6 @@ axum = { version = "0.8", features = ["multipart"] }
 # refresh grant to the credential's token endpoint.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 base64 = "0.22"
-hmac = "0.12"
 form_urlencoded = "1"
 # Content SHA-256 for the memory_stores memories/versions API (`content_sha256`).
 sha2 = "0.10"

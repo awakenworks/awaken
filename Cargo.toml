@@ -2,7 +2,9 @@
 resolver = "2"
 # Plane-aligned buckets by directory (single workspace). Shared foundation +
 # three deployment planes; dependencies point inward toward contract/kernel:
-#   crates/contract/*   → shared vocabulary + ports (agent-contract, tenancy); depends on nothing.
+#   crates/contract/*   → foundation authorities commonly shared by several roles.
+#                         Contract semantics are declared in package metadata, not inferred
+#                         from this directory or from the number of consuming planes.
 #   crates/runtime/*    → the kernel: agent loop + ext plugins + telemetry + the in-memory default backend; contract only.
 #   crates/stores/*     → DURABLE backend for ANY port (fs/sqlite/postgres commit stores +
 #                         domain-specific work-queue/session/env registries); a replaceable
@@ -118,6 +120,7 @@ awaken-resource-store = { path = "crates/stores/awaken-resource-store" }
 awaken-env-store = { path = "crates/stores/awaken-env-store" }
 awaken-config-store = { path = "crates/control/awaken-config-store" }
 awaken-config-service = { path = "crates/control/awaken-config-service" }
+awaken-credential-materializer = { path = "crates/server/awaken-credential-materializer" }
 awaken-provisioning-contract = { path = "crates/worker/awaken-provisioning-contract" }
 awaken-local-process = { path = "crates/worker/awaken-local-process" }
 awaken-sandbox-policy-store = { path = "crates/server/awaken-sandbox-policy-store" }
@@ -137,6 +140,7 @@ awaken-runtime-examples = { path = "crates/devtools/awaken-runtime-examples" }
 awaken-run-ingress-contract = { path = "crates/server/awaken-run-ingress-contract" }
 awaken-run-ingress = { path = "crates/server/awaken-run-ingress" }
 awaken-run-ingress-testkit = { path = "crates/server/awaken-run-ingress-testkit" }
+awaken-worker-transport-security = { path = "crates/server/awaken-worker-transport-security" }
 awaken-runtime-host = { path = "crates/server/awaken-runtime-host" }
 awaken-managed-routers = { path = "crates/server/awaken-managed-routers" }
 awaken-admin-assistant = { path = "crates/control/awaken-admin-assistant" }

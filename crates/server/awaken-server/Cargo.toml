@@ -9,6 +9,13 @@ license.workspace = true
 # The extracted service layer: SharedHost / ManagedHost / ProtocolHost and all
 # host modules live here; this bin only composes them into router modes.
 awaken-runtime-host = { workspace = true }
+awaken-config-service.workspace = true
+awaken-credential-materializer.workspace = true
+awaken-ext-skills.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-run-ingress.workspace = true
+awaken-sandbox-local.workspace = true
+awaken-worker-transport-security.workspace = true
 awaken-worker-registry = { workspace = true }
 awaken-acp-contract = { workspace = true }
 awaken-managed-routers = { workspace = true }

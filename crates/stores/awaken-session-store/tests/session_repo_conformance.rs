@@ -75,7 +75,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
         ),
         title: Some(title.to_string()),
         metadata: std::collections::BTreeMap::from([("k".into(), "v".into())]),
-        agent_tools: Vec::new(),
+        tools: Default::default(),
         environment_binding: None,
         mcp: awaken_session_contract::SessionMcpAttachmentSet::from_initial(
             vec![McpAttachmentDraft {

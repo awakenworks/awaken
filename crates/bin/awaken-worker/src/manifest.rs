@@ -131,13 +131,13 @@ pub(crate) enum ResourceManifestSupport {
 impl
     From<(
         bool,
-        Option<&awaken_runtime_host::PinnedCredentialMaterializer>,
+        Option<&awaken_credential_materializer::PinnedCredentialMaterializer>,
     )> for ResourceManifestSupport
 {
     fn from(
         (memory_mounter, credentials): (
             bool,
-            Option<&awaken_runtime_host::PinnedCredentialMaterializer>,
+            Option<&awaken_credential_materializer::PinnedCredentialMaterializer>,
         ),
     ) -> Self {
         match (memory_mounter, credentials) {
@@ -171,8 +171,10 @@ pub(crate) struct CredentialMaterializerSupport {
     pub(crate) worker_relay: awaken_runtime_contract::CredentialRealizationCapabilities,
 }
 
-impl From<&awaken_runtime_host::PinnedCredentialMaterializer> for CredentialMaterializerSupport {
-    fn from(materializer: &awaken_runtime_host::PinnedCredentialMaterializer) -> Self {
+impl From<&awaken_credential_materializer::PinnedCredentialMaterializer>
+    for CredentialMaterializerSupport
+{
+    fn from(materializer: &awaken_credential_materializer::PinnedCredentialMaterializer) -> Self {
         Self {
             provider_adapter: materializer.provider_adapter_capabilities(),
             process_secret: materializer.process_secret_capabilities(),

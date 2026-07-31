@@ -1,0 +1,105 @@
+pub mod awaken_worker_transport_security
+pub enum awaken_worker_transport_security::WorkerAuthError
+pub awaken_worker_transport_security::WorkerAuthError::Invalid(alloc::string::String)
+pub awaken_worker_transport_security::WorkerAuthError::Missing
+pub enum awaken_worker_transport_security::WorkerCredentialError
+pub awaken_worker_transport_security::WorkerCredentialError::Encode
+pub awaken_worker_transport_security::WorkerCredentialError::Invalid
+pub struct awaken_worker_transport_security::FixedWorkerLeasePolicy
+impl awaken_worker_transport_security::FixedWorkerLeasePolicy
+pub fn awaken_worker_transport_security::FixedWorkerLeasePolicy::new(u64) -> Self
+impl awaken_worker_transport_security::WorkerLeasePolicy for awaken_worker_transport_security::FixedWorkerLeasePolicy
+pub fn awaken_worker_transport_security::FixedWorkerLeasePolicy::lease_ms(&self, &awaken_worker_transport_security::VerifiedWorkerContext) -> u64
+impl core::default::Default for awaken_worker_transport_security::FixedWorkerLeasePolicy
+pub fn awaken_worker_transport_security::FixedWorkerLeasePolicy::default() -> Self
+pub struct awaken_worker_transport_security::HeaderWorkerAuthenticator
+impl awaken_worker_transport_security::WorkerRequestAuthenticator for awaken_worker_transport_security::HeaderWorkerAuthenticator
+pub fn awaken_worker_transport_security::HeaderWorkerAuthenticator::authenticate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 http::request::Parts) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_transport_security::VerifiedWorkerContext, awaken_worker_transport_security::WorkerAuthError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_worker_transport_security::ManualWorkerClock(_)
+impl awaken_worker_transport_security::ManualWorkerClock
+pub fn awaken_worker_transport_security::ManualWorkerClock::new(u64) -> Self
+pub fn awaken_worker_transport_security::ManualWorkerClock::set(&self, u64)
+impl awaken_worker_transport_security::WorkerClock for awaken_worker_transport_security::ManualWorkerClock
+pub fn awaken_worker_transport_security::ManualWorkerClock::now_ms(&self) -> u64
+pub struct awaken_worker_transport_security::MtlsWorkerAuthenticator
+impl awaken_worker_transport_security::WorkerRequestAuthenticator for awaken_worker_transport_security::MtlsWorkerAuthenticator
+pub fn awaken_worker_transport_security::MtlsWorkerAuthenticator::authenticate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 http::request::Parts) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_transport_security::VerifiedWorkerContext, awaken_worker_transport_security::WorkerAuthError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_worker_transport_security::MtlsWorkerPrincipal
+impl awaken_worker_transport_security::MtlsWorkerPrincipal
+pub fn awaken_worker_transport_security::MtlsWorkerPrincipal::bootstrap(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_worker_transport_security::WorkerCredentialError>
+pub fn awaken_worker_transport_security::MtlsWorkerPrincipal::certificate_sha256(&self) -> &str
+pub fn awaken_worker_transport_security::MtlsWorkerPrincipal::registered(awaken_worker_contract::WorkerIdentity, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_worker_transport_security::WorkerCredentialError>
+pub struct awaken_worker_transport_security::SignedWorkerAuthenticator
+impl awaken_worker_transport_security::SignedWorkerAuthenticator
+pub fn awaken_worker_transport_security::SignedWorkerAuthenticator::enroll(&self, awaken_worker_transport_security::WorkerSigningCredential)
+pub fn awaken_worker_transport_security::SignedWorkerAuthenticator::new(awaken_worker_transport_security::WorkerSigningCredential) -> Self
+pub fn awaken_worker_transport_security::SignedWorkerAuthenticator::remove_key(&self, &str)
+pub fn awaken_worker_transport_security::SignedWorkerAuthenticator::revoke_credential(&self, impl core::convert::Into<alloc::string::String>)
+pub fn awaken_worker_transport_security::SignedWorkerAuthenticator::with_clock(self, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerClock>) -> Self
+pub fn awaken_worker_transport_security::SignedWorkerAuthenticator::with_time_policy(self, u64, u64) -> Self
+impl awaken_worker_transport_security::WorkerRequestAuthenticator for awaken_worker_transport_security::SignedWorkerAuthenticator
+pub fn awaken_worker_transport_security::SignedWorkerAuthenticator::authenticate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 http::request::Parts) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_transport_security::VerifiedWorkerContext, awaken_worker_transport_security::WorkerAuthError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_worker_transport_security::SignedWorkerRequestAuthorizer
+impl awaken_worker_transport_security::SignedWorkerRequestAuthorizer
+pub fn awaken_worker_transport_security::SignedWorkerRequestAuthorizer::new(awaken_worker_transport_security::WorkerSigningCredential) -> Self
+pub fn awaken_worker_transport_security::SignedWorkerRequestAuthorizer::with_assertion_ttl_ms(self, u64) -> Self
+pub fn awaken_worker_transport_security::SignedWorkerRequestAuthorizer::with_clock(self, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerClock>) -> Self
+impl awaken_run_ingress::transport_client::WorkerRequestAuthorizer for awaken_worker_transport_security::SignedWorkerRequestAuthorizer
+pub fn awaken_worker_transport_security::SignedWorkerRequestAuthorizer::authorize(&self, &str, &str, &str, reqwest::async_impl::request::RequestBuilder) -> core::result::Result<reqwest::async_impl::request::RequestBuilder, alloc::string::String>
+pub fn awaken_worker_transport_security::SignedWorkerRequestAuthorizer::bind_worker_identity(&self, &awaken_worker_contract::WorkerIdentity) -> alloc::sync::Arc<dyn awaken_run_ingress::transport_client::WorkerRequestAuthorizer>
+pub struct awaken_worker_transport_security::SystemWorkerClock
+impl awaken_worker_transport_security::WorkerClock for awaken_worker_transport_security::SystemWorkerClock
+pub fn awaken_worker_transport_security::SystemWorkerClock::now_ms(&self) -> u64
+pub struct awaken_worker_transport_security::VerifiedWorkerContext
+impl awaken_worker_transport_security::VerifiedWorkerContext
+pub fn awaken_worker_transport_security::VerifiedWorkerContext::authenticated(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_worker_transport_security::VerifiedWorkerContext::credential_id(&self) -> core::option::Option<&str>
+pub fn awaken_worker_transport_security::VerifiedWorkerContext::identity(&self) -> core::option::Option<&awaken_worker_contract::WorkerIdentity>
+pub fn awaken_worker_transport_security::VerifiedWorkerContext::worker_id(&self) -> &str
+pub struct awaken_worker_transport_security::WorkerSigningCredential
+impl awaken_worker_transport_security::WorkerSigningCredential
+pub fn awaken_worker_transport_security::WorkerSigningCredential::credential_id(&self) -> &str
+pub fn awaken_worker_transport_security::WorkerSigningCredential::key_id(&self) -> &str
+pub fn awaken_worker_transport_security::WorkerSigningCredential::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>) -> core::result::Result<Self, awaken_worker_transport_security::WorkerCredentialError>
+pub fn awaken_worker_transport_security::WorkerSigningCredential::worker_id(&self) -> &str
+impl core::fmt::Debug for awaken_worker_transport_security::WorkerSigningCredential
+pub fn awaken_worker_transport_security::WorkerSigningCredential::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_worker_transport_security::WorkerUpstream
+impl awaken_worker_transport_security::WorkerUpstream
+pub fn awaken_worker_transport_security::WorkerUpstream::authorize(&self, &str, &str, reqwest::async_impl::request::RequestBuilder) -> core::result::Result<reqwest::async_impl::request::RequestBuilder, alloc::string::String>
+pub fn awaken_worker_transport_security::WorkerUpstream::authorize_request(&self, &str, &str, reqwest::async_impl::request::RequestBuilder) -> core::result::Result<reqwest::async_impl::request::RequestBuilder, alloc::string::String>
+pub fn awaken_worker_transport_security::WorkerUpstream::base_url(&self) -> &str
+pub fn awaken_worker_transport_security::WorkerUpstream::client(&self) -> &reqwest::async_impl::client::Client
+pub fn awaken_worker_transport_security::WorkerUpstream::http_client(&self) -> reqwest::async_impl::client::Client
+pub fn awaken_worker_transport_security::WorkerUpstream::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_worker_transport_security::WorkerUpstream::request_authorizer(&self) -> alloc::sync::Arc<dyn awaken_run_ingress::transport_client::WorkerRequestAuthorizer>
+pub fn awaken_worker_transport_security::WorkerUpstream::with_client(self, reqwest::async_impl::client::Client) -> Self
+pub fn awaken_worker_transport_security::WorkerUpstream::with_request_authorizer(self, alloc::sync::Arc<dyn awaken_run_ingress::transport_client::WorkerRequestAuthorizer>) -> Self
+pub fn awaken_worker_transport_security::WorkerUpstream::with_worker_id(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_worker_transport_security::WorkerUpstream::with_worker_identity(self, awaken_worker_contract::WorkerIdentity) -> Self
+pub fn awaken_worker_transport_security::WorkerUpstream::worker_id(&self) -> &str
+pub fn awaken_worker_transport_security::WorkerUpstream::worker_identity(&self) -> core::option::Option<&awaken_worker_contract::WorkerIdentity>
+pub const awaken_worker_transport_security::SIGNED_WORKER_SCHEME: &str
+pub const awaken_worker_transport_security::WORKER_ID_HEADER: &str
+pub trait awaken_worker_transport_security::WorkerClock: core::marker::Send + core::marker::Sync
+pub fn awaken_worker_transport_security::WorkerClock::now_ms(&self) -> u64
+impl awaken_worker_transport_security::WorkerClock for awaken_worker_transport_security::ManualWorkerClock
+pub fn awaken_worker_transport_security::ManualWorkerClock::now_ms(&self) -> u64
+impl awaken_worker_transport_security::WorkerClock for awaken_worker_transport_security::SystemWorkerClock
+pub fn awaken_worker_transport_security::SystemWorkerClock::now_ms(&self) -> u64
+pub trait awaken_worker_transport_security::WorkerLeasePolicy: core::marker::Send + core::marker::Sync
+pub fn awaken_worker_transport_security::WorkerLeasePolicy::lease_ms(&self, &awaken_worker_transport_security::VerifiedWorkerContext) -> u64
+impl awaken_worker_transport_security::WorkerLeasePolicy for awaken_worker_transport_security::FixedWorkerLeasePolicy
+pub fn awaken_worker_transport_security::FixedWorkerLeasePolicy::lease_ms(&self, &awaken_worker_transport_security::VerifiedWorkerContext) -> u64
+pub trait awaken_worker_transport_security::WorkerRequestAuthenticator: core::marker::Send + core::marker::Sync
+pub fn awaken_worker_transport_security::WorkerRequestAuthenticator::authenticate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 http::request::Parts) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_transport_security::VerifiedWorkerContext, awaken_worker_transport_security::WorkerAuthError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_worker_transport_security::WorkerRequestAuthenticator for awaken_worker_transport_security::HeaderWorkerAuthenticator
+pub fn awaken_worker_transport_security::HeaderWorkerAuthenticator::authenticate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 http::request::Parts) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_transport_security::VerifiedWorkerContext, awaken_worker_transport_security::WorkerAuthError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_worker_transport_security::WorkerRequestAuthenticator for awaken_worker_transport_security::MtlsWorkerAuthenticator
+pub fn awaken_worker_transport_security::MtlsWorkerAuthenticator::authenticate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 http::request::Parts) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_transport_security::VerifiedWorkerContext, awaken_worker_transport_security::WorkerAuthError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_worker_transport_security::WorkerRequestAuthenticator for awaken_worker_transport_security::SignedWorkerAuthenticator
+pub fn awaken_worker_transport_security::SignedWorkerAuthenticator::authenticate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 http::request::Parts) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_transport_security::VerifiedWorkerContext, awaken_worker_transport_security::WorkerAuthError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub async fn awaken_worker_transport_security::authenticate_worker_request(axum::extract::state::State<alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response
+pub async fn awaken_worker_transport_security::verify_claim_owner(core::option::Option<&dyn awaken_worker_contract::WorkerDirectory>, &awaken_worker_transport_security::VerifiedWorkerContext, core::option::Option<&awaken_worker_contract::WorkerIdentity>, &awaken_run_ingress_contract::dispatch::RunClaim, u64) -> core::result::Result<(), alloc::string::String>
+pub async fn awaken_worker_transport_security::verify_current_worker_identity(&dyn awaken_worker_contract::WorkerDirectory, &awaken_worker_transport_security::VerifiedWorkerContext, &awaken_worker_contract::WorkerIdentity, u64, bool) -> core::result::Result<awaken_worker_contract::WorkerSnapshot, alloc::string::String>
+pub fn awaken_worker_transport_security::verify_worker_identity(&awaken_worker_transport_security::VerifiedWorkerContext, &awaken_worker_contract::WorkerIdentity) -> core::result::Result<(), alloc::string::String>

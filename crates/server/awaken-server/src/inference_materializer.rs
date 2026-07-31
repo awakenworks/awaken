@@ -28,7 +28,7 @@ use crate::executor_from_materialized_endpoint;
 /// different credential.
 #[derive(Clone)]
 pub struct CredentialInferenceMaterializer {
-    credentials: awaken_runtime_host::PinnedCredentialMaterializer,
+    credentials: awaken_credential_materializer::PinnedCredentialMaterializer,
     brokered: Option<Arc<dyn crate::brokered_inference::BrokeredInferenceClient>>,
     brokered_mode_enabled: bool,
 }
@@ -63,16 +63,17 @@ impl LlmExecutor for PinnedModelExecutor {
 
 impl CredentialInferenceMaterializer {
     pub fn new(credentials: Arc<dyn CredentialRepo>, secrets: Arc<dyn SecretStore>) -> Self {
-        Self::from_pinned(awaken_runtime_host::PinnedCredentialMaterializer::new(
-            credentials,
-            secrets,
-        ))
+        Self::from_pinned(
+            awaken_credential_materializer::PinnedCredentialMaterializer::new(credentials, secrets),
+        )
     }
 
     /// Reuse the one exact credential materializer installed for inference,
     /// ACP, MCP and Repository realization on a Worker.
     #[must_use]
-    pub fn from_pinned(credentials: awaken_runtime_host::PinnedCredentialMaterializer) -> Self {
+    pub fn from_pinned(
+        credentials: awaken_credential_materializer::PinnedCredentialMaterializer,
+    ) -> Self {
         Self {
             credentials,
             brokered: None,
@@ -237,11 +238,11 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
     fn supported_access_schemes(&self) -> &'static [&'static str] {
         if self.brokered.is_some() {
             &[
-                awaken_runtime_host::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
+                awaken_run_ingress::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
                 crate::brokered_inference::BROKERED_INFERENCE_ACCESS_CAPABILITY,
             ]
         } else {
-            &[awaken_runtime_host::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY]
+            &[awaken_run_ingress::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY]
         }
     }
 
@@ -362,6 +363,7 @@ mod tests {
     use awaken_agent_contract::RedactedString;
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_config_service::{ModelPublicationResolver, ResolvedPublicationModels};
     use awaken_config_store::ModelSelection;
     use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{
@@ -377,7 +379,6 @@ mod tests {
     use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
-    use awaken_runtime_host::{ModelPublicationResolver, ResolvedPublicationModels};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use crate::model_resolver::CatalogModelPublicationResolver;
@@ -887,7 +888,7 @@ mod tests {
     async fn resolve_activation(
         resolver: &CatalogModelPublicationResolver,
         activation: &RunActivation,
-    ) -> Result<ResolvedPublicationModels, awaken_runtime_host::PublicationResolutionError> {
+    ) -> Result<ResolvedPublicationModels, awaken_config_service::PublicationResolutionError> {
         let (primary, fallbacks) = if let Some(model_ref) = activation.model_ref_override.as_ref() {
             (
                 activation
@@ -895,7 +896,7 @@ mod tests {
                     .resolved_spec
                     .candidate_for_model(model_ref)
                     .ok_or_else(|| {
-                        awaken_runtime_host::PublicationResolutionError::Invalid(format!(
+                        awaken_config_service::PublicationResolutionError::Invalid(format!(
                             "model {model_ref} is outside the published candidate set"
                         ))
                     })?

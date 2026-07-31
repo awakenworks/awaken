@@ -1,11 +1,10 @@
-//! ADR-0045 first vertical slice: InProcess and Unix channels round-trip, and a
-//! plan carrying a credential reference serializes without any secret material.
+//! ADR-0045 topology contract: InProcess, Unix, and TCP channels round-trip while
+//! unsupported topology/authentication fields fail closed.
 
 #[cfg(unix)]
 use awaken_connection_plan::bind_unix;
 use awaken_connection_plan::{
-    ChannelFactory, ConnectionPlan, CredentialRef, DialAddr, DialPolicy, TokioChannelFactory,
-    in_process_pair,
+    ChannelFactory, ConnectionPlan, DialAddr, DialPolicy, TokioChannelFactory, in_process_pair,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -95,60 +94,6 @@ async fn tcp_direct_dial_round_trips() {
 }
 
 #[tokio::test]
-async fn credential_resolver_and_applied_auth() {
-    use awaken_connection_plan::{AppliedAuth, CredentialResolver, NoAuth};
-    // NoAuth (the loopback default) grants nothing.
-    let applied = NoAuth
-        .resolve(&CredentialRef("vault://x".into()))
-        .await
-        .expect("resolve");
-    assert!(applied.is_empty());
-    assert!(applied.headers().is_empty());
-    // Bearer material presents an authorization header.
-    let bearer = AppliedAuth::bearer("tok-123");
-    assert!(!bearer.is_empty());
-    assert_eq!(bearer.headers()[0].0, "authorization");
-    assert!(bearer.headers()[0].1.contains("Bearer tok-123"));
-    // none() is the empty material.
-    assert!(AppliedAuth::none().is_empty());
-}
-
-#[tokio::test]
-async fn a_credential_resolver_surfaces_unknown_and_failed_errors() {
-    // The resolver error arms (an unknown ref vs a broker failure) — only the NoAuth
-    // success path was covered before.
-    use awaken_connection_plan::{AppliedAuth, CredentialError, CredentialResolver};
-
-    struct FailingResolver;
-    #[async_trait::async_trait]
-    impl CredentialResolver for FailingResolver {
-        async fn resolve(
-            &self,
-            credential: &CredentialRef,
-        ) -> Result<AppliedAuth, CredentialError> {
-            if credential.0.contains("missing") {
-                Err(CredentialError::Unknown(credential.0.clone()))
-            } else {
-                Err(CredentialError::Failed("broker unreachable".into()))
-            }
-        }
-    }
-
-    assert!(matches!(
-        FailingResolver
-            .resolve(&CredentialRef("vault://missing".into()))
-            .await,
-        Err(CredentialError::Unknown(_))
-    ));
-    assert!(matches!(
-        FailingResolver
-            .resolve(&CredentialRef("vault://present".into()))
-            .await,
-        Err(CredentialError::Failed(_))
-    ));
-}
-
-#[tokio::test]
 async fn factory_and_bind_error_paths() {
     use awaken_connection_plan::{bind_tcp, bind_unix, connect_with_retry};
     // InProcess must be established via in_process_pair(), not connect().
@@ -192,23 +137,6 @@ async fn connect_rejects_a_listen_plan() {
 }
 
 #[tokio::test]
-async fn a_plan_serializes_a_credential_reference_but_no_material() {
-    let plan = ConnectionPlan::unix_dial("/run/hand.sock")
-        .with_credential(CredentialRef("vault://hand-bearer".to_string()));
-
-    let json = serde_json::to_string(&plan).unwrap();
-    // The reference is present…
-    assert!(json.contains("vault://hand-bearer"));
-    // …but no resolved secret material of any recognizable shape leaks.
-    assert!(!json.to_lowercase().contains("bearer "));
-    assert!(!json.to_lowercase().contains("authorization"));
-
-    // Round-trips back to the same value object.
-    let back: ConnectionPlan = serde_json::from_str(&json).unwrap();
-    assert_eq!(back, plan);
-}
-
-#[tokio::test]
 async fn topology_axes_compose_the_four_named_cases() {
     // InProcess degenerate.
     assert_eq!(ConnectionPlan::in_process().transport, DialAddr::InProcess);
@@ -219,12 +147,14 @@ async fn topology_axes_compose_the_four_named_cases() {
 }
 
 #[test]
-fn constructors_set_transport_dial_and_no_credential() {
-    // Every constructor is loopback-default: no credential attached.
+fn constructors_set_only_transport_and_dial() {
+    // Cause/effect inventory: each supported constructor fixes exactly one
+    // transport/direction pair; no speculative authentication state exists.
+    // Decision rules: in-process => InProcess+Dial, *_dial => Dial,
+    // *_listen => Listen, and TCP/Unix preserve their exact address.
     let ip = ConnectionPlan::in_process();
     assert_eq!(ip.transport, DialAddr::InProcess);
     assert_eq!(ip.dial, DialPolicy::Dial);
-    assert!(ip.credential.is_none());
 
     assert_eq!(
         ConnectionPlan::unix_dial("/s").transport,
@@ -237,39 +167,33 @@ fn constructors_set_transport_dial_and_no_credential() {
     let td = ConnectionPlan::tcp_dial("10.0.0.1:9000");
     assert_eq!(td.transport, DialAddr::Tcp("10.0.0.1:9000".to_string()));
     assert_eq!(td.dial, DialPolicy::Dial);
-    assert!(td.credential.is_none());
 
     let tl = ConnectionPlan::tcp_listen("0.0.0.0:0");
     assert_eq!(tl.transport, DialAddr::Tcp("0.0.0.0:0".to_string()));
     assert_eq!(tl.dial, DialPolicy::Listen);
-
-    // with_credential attaches Some(ref) and leaves the axes intact.
-    let c = ConnectionPlan::unix_dial("/s").with_credential(CredentialRef("vault://k".to_string()));
-    assert_eq!(c.credential, Some(CredentialRef("vault://k".to_string())));
-    assert_eq!(c.transport, DialAddr::Unix("/s".to_string()));
-    assert_eq!(c.dial, DialPolicy::Dial);
 }
 
 #[test]
-fn plan_wire_shape_uses_snake_case_and_omits_absent_credential() {
-    // snake_case variant tags are the persisted wire contract.
+fn plan_wire_shape_is_closed_over_topology_axes() {
+    // Cause/effect decision table:
+    // R1 known transport+direction -> decode and round-trip;
+    // R2 legacy credential field -> reject instead of silently accepting an
+    // authentication promise no factory realizes; R3 snake_case tags remain stable.
     let ip = serde_json::to_string(&ConnectionPlan::in_process()).unwrap();
     assert!(ip.contains("\"in_process\""), "{ip}");
-    // A None credential is omitted entirely (skip_serializing_if), not `null`.
-    assert!(
-        !ip.contains("credential"),
-        "an absent credential must not serialize: {ip}"
-    );
     // The Listen policy tag is snake_case too.
     let listen = serde_json::to_string(&ConnectionPlan::unix_listen("/s")).unwrap();
     assert!(listen.contains("\"listen\""), "{listen}");
 
-    // Deserializing a plan with no credential field defaults it to None (serde
-    // `default`), so a persisted loopback plan round-trips without the field.
     let back: ConnectionPlan =
         serde_json::from_str(r#"{"transport":"in_process","dial":"dial"}"#).unwrap();
     assert_eq!(back, ConnectionPlan::in_process());
-    assert!(back.credential.is_none());
+    assert!(
+        serde_json::from_str::<ConnectionPlan>(
+            r#"{"transport":"in_process","dial":"dial","credential":"legacy"}"#
+        )
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -280,7 +204,6 @@ async fn connect_rejects_unsupported_transports() {
     let http = ConnectionPlan {
         transport: DialAddr::Http("https://peer".to_string()),
         dial: DialPolicy::Dial,
-        credential: None,
     };
     match TokioChannelFactory.connect(&http).await {
         Err(ConnectError::Unsupported(_)) => {}
@@ -296,7 +219,6 @@ async fn connect_rejects_unsupported_transports() {
             outbox: "out".to_string(),
         },
         dial: DialPolicy::Dial,
-        credential: None,
     };
     assert!(matches!(
         TokioChannelFactory.connect(&nats).await,

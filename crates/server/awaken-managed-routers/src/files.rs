@@ -4,7 +4,8 @@
 
 use std::sync::Arc;
 
-use awaken_runtime_host::{FileRecord, ResourcePurgeError, SharedHost};
+use awaken_resource_contract::{FileRecord, ResourcePurgeError};
+use awaken_runtime_host::SharedHost;
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;

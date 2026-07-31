@@ -21,18 +21,19 @@ mod executable_agent_registration;
 mod identity;
 mod observation_reconcile;
 mod process_surface;
+mod resource_plane;
 mod worker_transport_security;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use awaken_config_service::{
+    ConfigPlane, ConfigService, RESERVED_ADMIN_SCOPE, ScopedToolCatalog, ToolCatalogSource,
+};
 use awaken_protocol_managed::{EnvironmentState, ManagedState, VaultState};
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_host::{
-    ConfigPlane, ConfigService, ExtMcpProbe, ManagedHost, RESERVED_ADMIN_SCOPE, ScopedToolCatalog,
-    SharedHost, ToolCatalogSource,
-};
+use awaken_runtime_host::{ExtMcpProbe, ManagedHost, SharedHost};
 use axum::Router;
 use exact_host_model::ExactHostModelPublicationResolver;
 
@@ -51,6 +52,7 @@ pub use control::{
     build_control_router_with_publication_resolver_and_web_search,
 };
 use identity::identity_wiring;
+use resource_plane::{ephemeral_resource_plane, open_resource_plane};
 pub use worker_transport_security::load_request_authorizer as load_worker_request_authorizer;
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
 // constants a test / operator embedding drives — re-exported from the authoring plane.
@@ -72,7 +74,7 @@ enum PublicationModelComposition {
     /// control-only surface: the separate hosted Worker owns runtime
     /// materialization.
     HostedPublication {
-        resolver: Arc<dyn awaken_runtime_host::ModelPublicationResolver>,
+        resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
     },
     Host {
         executor: Arc<dyn LlmExecutor>,
@@ -86,7 +88,7 @@ enum PublicationModelComposition {
 struct PublicationModelWiring {
     executor: Arc<dyn LlmExecutor>,
     model_ref: String,
-    publication_resolver: Arc<dyn awaken_runtime_host::ModelPublicationResolver>,
+    publication_resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
     materializer: Option<Arc<dyn awaken_runtime_host::InferenceExecutorMaterializer>>,
 }
 
@@ -100,12 +102,13 @@ struct ProcessAssemblyOptions {
     cloud_models_enabled: bool,
     local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
     hand_executors: BTreeMap<String, Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>,
-    web_search_providers: Option<awaken_runtime_host::WebSearchProviderRegistry>,
+    web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
     web_search_publication_resolver:
-        Option<Arc<dyn awaken_runtime_host::PluginPublicationResolver>>,
+        Option<Arc<dyn awaken_config_service::PluginPublicationResolver>>,
     executable_agent_wiring: Option<executable_agent_registration::ExecutableAgentWiring>,
     deployment_session_launch: Option<config::DeploymentSessionLaunchConfig>,
-    worker_authenticator: Option<Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>>,
+    worker_authenticator:
+        Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
 }
 
 /// Router plus the cleartext local setup handoff printed by the CLI once.
@@ -153,78 +156,6 @@ struct DeploymentStores {
 enum PostgresSchemaMode {
     Migrate,
     Verify,
-}
-
-fn ephemeral_resource_plane() -> awaken_runtime_host::ResourcePlane {
-    let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-    awaken_runtime_host::ResourcePlane::new(
-        files.clone(),
-        files,
-        Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
-        Arc::new(awaken_skill_store::InMemorySkillStore::new()),
-        Arc::new(
-            awaken_resource_store::SqliteResourceStore::in_memory()
-                .expect("open ephemeral resource lifecycle sqlite"),
-        ),
-    )
-}
-
-async fn open_resource_plane(
-    backend: config::ResourcePlaneStoreBackend,
-    postgres_schema: PostgresSchemaMode,
-) -> Result<awaken_runtime_host::ResourcePlane, String> {
-    match backend {
-        config::ResourcePlaneStoreBackend::Embedded(root) => {
-            Ok(awaken_server::embedded_resource_plane(&root))
-        }
-        config::ResourcePlaneStoreBackend::Postgres(url) => {
-            let lifecycle = match postgres_schema {
-                PostgresSchemaMode::Migrate => {
-                    awaken_resource_store::PostgresResourceStore::connect(&url).await
-                }
-                PostgresSchemaMode::Verify => {
-                    awaken_resource_store::PostgresResourceStore::connect_existing(&url).await
-                }
-            }
-            .map_err(|error| format!("connect resource lifecycle Postgres: {error}"))?;
-            let files = Arc::new(
-                match postgres_schema {
-                    PostgresSchemaMode::Migrate => {
-                        awaken_file_store::postgres::PgFileStore::connect(&url).await
-                    }
-                    PostgresSchemaMode::Verify => {
-                        awaken_file_store::postgres::PgFileStore::connect_existing(&url).await
-                    }
-                }
-                .map_err(|error| format!("connect resource file Postgres: {error}"))?,
-            );
-            let memory = match postgres_schema {
-                PostgresSchemaMode::Migrate => {
-                    awaken_memory_store::PostgresMemoryRepository::connect(&url).await
-                }
-                PostgresSchemaMode::Verify => {
-                    awaken_memory_store::PostgresMemoryRepository::connect_existing(&url).await
-                }
-            }
-            .map_err(|error| format!("connect resource memory Postgres: {error}"))?;
-            let skills = match postgres_schema {
-                PostgresSchemaMode::Migrate => {
-                    awaken_skill_store::PgSkillStore::connect(&url).await
-                }
-                PostgresSchemaMode::Verify => {
-                    awaken_skill_store::PgSkillStore::connect_existing(&url).await
-                }
-            }
-            .map_err(|error| format!("connect resource skill Postgres: {error}"))?;
-            Ok(awaken_runtime_host::ResourcePlane::new(
-                files.clone(),
-                files,
-                Arc::new(memory),
-                Arc::new(skills),
-                Arc::new(lifecycle),
-            ))
-        }
-    }
 }
 
 const CREDENTIAL_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(60);
@@ -527,13 +458,13 @@ async fn open_deployment_stores(
         StoreBackend::Sqlite(sp) => Arc::new(
             EnvironmentState::with_stores(
                 Arc::new(
-                    awaken_runtime_host::SqliteEnvRegistry::open(&path(
+                    awaken_env_store::SqliteEnvRegistry::open(&path(
                         &sp.with_file_name("environments.db"),
                     ))
                     .map_err(|error| format!("open environments SQLite: {error}"))?,
                 ),
                 Arc::new(
-                    awaken_runtime_host::SqliteWorkQueue::open(&path(
+                    awaken_work_store::SqliteWorkQueue::open(&path(
                         &sp.with_file_name("work_queue.db"),
                     ))
                     .map_err(|error| format!("open work queue SQLite: {error}"))?,
@@ -549,19 +480,19 @@ async fn open_deployment_stores(
         StoreBackend::Postgres(url) => {
             let environments = match postgres_schema {
                 PostgresSchemaMode::Migrate => {
-                    awaken_runtime_host::PostgresEnvRegistry::connect(url).await
+                    awaken_env_store::PostgresEnvRegistry::connect(url).await
                 }
                 PostgresSchemaMode::Verify => {
-                    awaken_runtime_host::PostgresEnvRegistry::connect_existing(url).await
+                    awaken_env_store::PostgresEnvRegistry::connect_existing(url).await
                 }
             }
             .map_err(|error| format!("connect environments Postgres: {error}"))?;
             let work = match postgres_schema {
                 PostgresSchemaMode::Migrate => {
-                    awaken_runtime_host::PostgresWorkQueue::connect(url).await
+                    awaken_work_store::PostgresWorkQueue::connect(url).await
                 }
                 PostgresSchemaMode::Verify => {
-                    awaken_runtime_host::PostgresWorkQueue::connect_existing(url).await
+                    awaken_work_store::PostgresWorkQueue::connect_existing(url).await
                 }
             }
             .map_err(|error| format!("connect work queue Postgres: {error}"))?;
@@ -979,8 +910,8 @@ async fn assemble_process_router(
 ) -> Router {
     let role = assembly.role;
     let worker_authenticator = assembly.worker_authenticator.unwrap_or_else(|| {
-        Arc::new(awaken_runtime_host::HeaderWorkerAuthenticator)
-            as Arc<dyn awaken_runtime_host::WorkerRequestAuthenticator>
+        Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator)
+            as Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
     });
     let (
         executable_agent_catalog,
@@ -1093,13 +1024,13 @@ async fn assemble_process_router(
     // resolves an environment's networking policy (egress on/off) at creation.
     let env_state = environments;
 
-    let credential_materializer = awaken_runtime_host::PinnedCredentialMaterializer::new(
+    let credential_materializer = awaken_credential_materializer::PinnedCredentialMaterializer::new(
         credentials.clone(),
         secrets.clone(),
     );
     let web_search_providers = assembly
         .web_search_providers
-        .unwrap_or_else(awaken_runtime_host::WebSearchProviderRegistry::builtins);
+        .unwrap_or_else(awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins);
     let executor_model_capabilities =
         Arc::new(awaken_server::model_directory::installed_executor_model_capabilities());
     let model_wiring = match model_composition {
@@ -1152,7 +1083,7 @@ async fn assemble_process_router(
     // be constructed with an implicit model fallback.
     let web_search_publication_resolver =
         assembly.web_search_publication_resolver.unwrap_or_else(|| {
-            Arc::new(awaken_runtime_host::WebSearchPublicationResolver::new(
+            Arc::new(awaken_config_service::WebSearchPublicationResolver::new(
                 web_search_providers.clone(),
             ))
         });
@@ -1215,7 +1146,7 @@ async fn assemble_process_router(
     // Same reserved scope + agent id `seed_admin_assistant` published under, so the
     // reconcile targets exactly the seeded agent (ADR-0052 D2). Fired by the middleware
     // layer below on a successful catalog write. `ConfigPlane` is `Clone`.
-    let reconciler = Arc::new(awaken_runtime_host::ConfigServiceReconciler::new(
+    let reconciler = Arc::new(awaken_config_service::ConfigServiceReconciler::new(
         plane.clone(),
         RESERVED_ADMIN_SCOPE,
         platform_workspace.clone(),
@@ -1553,7 +1484,7 @@ async fn assemble_process_router(
         flat,
         mcp_export,
         (role == config::Role::AllInOne)
-            .then_some(reconciler as Arc<dyn awaken_runtime_host::PublicationBindingReconciler>),
+            .then_some(reconciler as Arc<dyn awaken_config_service::PublicationBindingReconciler>),
         platform_workspace,
         managed_rate_limiter,
     )
@@ -1572,12 +1503,12 @@ fn local_org_id() -> String {
 #[cfg(test)]
 mod runtime_session_store_tests {
     use super::*;
+    use awaken_config_service::ModelPublicationResolver;
     use awaken_protocol_managed::{
         ApplicationContributionState, ControlSessionCreationInputs, EnvironmentFingerprint,
         EnvironmentRevision, EnvironmentSnapshot, IdempotencyRecord, PersistedSession,
         SessionBaselineState, SessionCreationIntent, SessionNetworkPolicy, stable_fingerprint,
     };
-    use awaken_runtime_host::ModelPublicationResolver;
 
     fn creation_intent() -> SessionCreationIntent {
         SessionCreationIntent {
@@ -1629,7 +1560,7 @@ mod runtime_session_store_tests {
             baseline: SessionBaselineState::Preparing(creation_intent()),
             title: None,
             metadata: Default::default(),
-            agent_tools: Vec::new(),
+            tools: Default::default(),
             environment_binding: None,
             mcp: Default::default(),
             resources: Default::default(),
@@ -1916,18 +1847,18 @@ mod process_role_surface_tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_runtime_host::ModelPublicationResolver for RecordingHostedResolver {
+    impl awaken_config_service::ModelPublicationResolver for RecordingHostedResolver {
         async fn resolve_models(
             &self,
             _workspace: &awaken_tenancy::ScopeId,
             _selection: &awaken_config_store::ModelSelection,
             _candidates: &[awaken_runtime_contract::resolved::ModelBinding],
         ) -> Result<
-            awaken_runtime_host::ResolvedPublicationModels,
-            awaken_runtime_host::PublicationResolutionError,
+            awaken_config_service::ResolvedPublicationModels,
+            awaken_config_service::PublicationResolutionError,
         > {
             self.called.store(true, Ordering::SeqCst);
-            Err(awaken_runtime_host::PublicationResolutionError::MissingPrimary)
+            Err(awaken_config_service::PublicationResolutionError::MissingPrimary)
         }
     }
 

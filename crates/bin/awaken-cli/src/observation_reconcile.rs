@@ -2,7 +2,7 @@
 //! reconciler. Heartbeats remain the retry clock; identical evidence does no
 //! repeated authoring work after a successful reconcile.
 
-use awaken_runtime_host::PublicationBindingReconciler;
+use awaken_config_service::PublicationBindingReconciler;
 
 #[derive(Default)]
 pub(crate) struct WorkerObservationReconcileGate {

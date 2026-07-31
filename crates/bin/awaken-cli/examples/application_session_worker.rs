@@ -48,7 +48,7 @@ struct HostMaterializer;
 
 impl InferenceExecutorMaterializer for HostMaterializer {
     fn supported_access_schemes(&self) -> &'static [&'static str] {
-        &[awaken_runtime_host::HOST_EXECUTOR_CAPABILITY]
+        &[awaken_run_ingress::HOST_EXECUTOR_CAPABILITY]
     }
 
     fn materialize_pinned(
@@ -128,17 +128,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     awaken_observability::init(&Default::default());
     let upstream = std::env::var("AWAKEN_UPSTREAM_URL")?;
     let decorator: awaken_runtime_host::AttemptExecutorDecorator = Arc::new(|inner| inner);
-    awaken_worker::WorkerNodeBuilder::new(awaken_runtime_host::WorkerUpstream::new(upstream))
-        .with_inference_materializer(Arc::new(HostMaterializer))
-        .with_application_factory(Arc::new(move |_| {
-            Ok(
-                awaken_worker::RegisteredWorkerApplication::new(decorator.clone())
-                    .with_session_provisioner(Arc::new(ApplicationProvisioner)),
-            )
-        }))
-        .with_standard_manifest(Default::default())
-        .without_admin_surface()
-        .build()?
-        .run_until_shutdown()
-        .await
+    awaken_worker::WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
+        upstream,
+    ))
+    .with_inference_materializer(Arc::new(HostMaterializer))
+    .with_application_factory(Arc::new(move |_| {
+        Ok(
+            awaken_worker::RegisteredWorkerApplication::new(decorator.clone())
+                .with_session_provisioner(Arc::new(ApplicationProvisioner)),
+        )
+    }))
+    .with_standard_manifest(Default::default())
+    .without_admin_surface()
+    .build()?
+    .run_until_shutdown()
+    .await
 }

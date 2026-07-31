@@ -32,7 +32,7 @@ use awaken_run_ingress::{
 
 use crate::host::{HostError, SharedHost};
 use crate::worker_http::respond;
-use crate::worker_security::{
+use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, SystemWorkerClock, VerifiedWorkerContext,
     WorkerClock, WorkerLeasePolicy, WorkerRequestAuthenticator, WorkerUpstream,
     authenticate_worker_request, verify_current_worker_identity, verify_worker_identity,

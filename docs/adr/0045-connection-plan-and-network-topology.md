@@ -2,17 +2,18 @@
 
 - Status: Accepted
 - Date: 2026-07-08
-- Implemented: 2026-07-08 — `awaken-connection-plan` (`ConnectionPlan`,
-  `DialAddr`/`Wiring`/`DialPolicy`/`CredentialRef`, `ChannelFactory`,
-  `in_process_pair`, `bind_unix`, `CredentialResolver`/`NoAuth`); guardrail G34.
+- Implemented: 2026-07-08; authority correction 2026-07-31 —
+  `awaken-connection-plan` owns only `ConnectionPlan`, `DialAddr`/`Wiring`/
+  `DialPolicy`, `ChannelFactory`, `in_process_pair`, and `bind_unix`. Transport
+  authentication is configured by the transport-security owner, not embedded
+  in topology; guardrail G34.
   InProcess + Unix arms green; Tcp/Nats and the foundation-transport adoption
   (D1/D5) remain follow-on slices.
 - Depends on: [ADR-0044](0044-remote-hand-tool-executor-over-a-channel.md) (the
   first consumer that needs a channel), foundation crate `awaken-connection`
   (already a transitive dependency of this workspace)
 - Relates to: [ADR-0043](0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md)
-  (only resolved secrets cross into execution; the plan carries a `CredentialRef`,
-  not material)
+  (credential custody remains outside topology)
 - Prior art: awaken-next `awaken-connection-plan` — the policy layer this ADR
   ports/trims. Its mechanism layer (`awaken-connection*`) is the same
   `awakenworks/awaken-foundation` this workspace already pulls.
@@ -39,8 +40,8 @@ dependency of this workspace (`awaken-foundation`, rev pinned in
 So the topology work is **not** "build a transport layer." The mechanism is done.
 What is missing is exactly the one layer foundation excludes on purpose: the
 Awaken **connection plan** — a data value that names transport address, wiring,
-dial direction, and a credential *reference*, and a factory that turns a plan into
-a live foundation `Channel`.
+and dial direction, plus a factory that turns a plan into a live foundation
+`Channel`. Authentication is an orthogonal transport concern.
 
 ## Decision
 
@@ -65,7 +66,6 @@ ConnectionPlan {
     transport:  DialAddr,             // where
     wiring:     Wiring,               // direct, or via a broker
     dial:       DialPolicy,           // who initiates
-    credential: Option<CredentialRef>,// which secret (a reference, never material)
 }
 DialAddr   = InProcess | Unix(path) | Tcp(addr) | Http(url) | Nats { url, inbox, outbox }
 Wiring     = Direct | Relay { broker }
@@ -82,7 +82,7 @@ The four topologies are expressions of these axes, not a fifth enum:
 | **Relay** (both meet at a broker) | `Nats` + `Relay{broker}` + `ViaBroker` |
 
 `ConnectionPlan` is a serializable value object with no product-hosting vocabulary
-and no resolved secret (G16, G8): it is safe to log, persist, and carry across the
+and no credential reference or resolved secret (G16, G8): it is safe to log, persist, and carry across the
 config-to-host edge.
 
 ### D3: One `ChannelFactory` maps a plan to a live channel; InProcess is degenerate
@@ -91,25 +91,21 @@ config-to-host edge.
 ChannelFactory::connect(&ConnectionPlan) -> Result<Box<dyn Channel>, ConnectError>
 ```
 
-The factory selects the matching foundation `Transport`, resolves
-`HandshakeMaterial` from `credential` (D4), and dials or `bind_pair`s per
-`dial`. The `InProcess` arm returns an in-memory duplex with **no serialization**
+The factory selects the matching foundation `Transport` and dials or `bind_pair`s
+per `dial`. A composition root supplies any authenticated transport/client before
+the plan is executed. The `InProcess` arm returns an in-memory duplex with **no serialization**
 and no transport at all — the zero-cost degenerate case. Because every consumer
 (remote hand, remote brain) takes a `Channel`, the **same consumer code runs from
 a laptop (`InProcess`/`Unix`) to a fleet (`Tcp`/`Nats`)**. This is the simple-
 design rule already stated in `neutral-waist.md`: keep in-process, server-hosted,
 and out-of-process execution on one path.
 
-### D4: The plan carries a `CredentialRef`, never resolved material
+### D4: Topology carries no authentication state
 
-Following ADR-0043's boundary, `ConnectionPlan.credential` is a `CredentialRef`
-only. `ChannelFactory` resolves it to an opaque `awaken-connection-auth`
-`HandshakeMaterial` (e.g. `HeaderAuthMaterial::bearer`) **in the host**, via the
-existing `awaken-credential-vault`, immediately before dialing. Resolved material
-never lives in the plan, never serializes, never logs. A loopback `InProcess`/
-`Unix` plan uses no credential. This reuses `connection-auth`'s bearer material
-instead of inventing a bespoke proof (contrast awaken-next's HMAC
-`LeaseCallbackProof`).
+`ConnectionPlan` contains neither credentials nor credential references. The
+transport-security owner binds authentication to the concrete client/listener at
+composition time. This prevents a second credential-resolution path from forming
+beside the credential materialization and Worker transport-security authorities.
 
 ### D5: Missing local transports are contributed upstream, not forked
 
@@ -134,10 +130,10 @@ the ADR-0044 hand channel then sit on one mechanism.
 |---|---|
 | Bounded context | **Neutral Platform** (README: "reusable connection and control mechanisms, free of product DTOs") |
 | Model element | Value objects `ConnectionPlan`, `DialAddr`, `Wiring`, `DialPolicy`; reuses foundation `Channel`/`Transport` and `connection-auth` material |
-| Port / repository | `ChannelFactory` (plan → `Channel`); `CredentialResolver` (ref → `HandshakeMaterial`, backed by `awaken-credential-vault`) |
+| Port / repository | `ChannelFactory` (plan → `Channel`); authentication is supplied by the selected transport adapter |
 | Owning crate | new `awaken-connection-plan` (Neutral Platform), depending on foundation `awaken-connection*`; local transports contributed to foundation `-transports` |
-| Guardrail + enforcer | **G34** (new): `ConnectionPlan` and the plan crate carry no product-hosting vocabulary and no resolved secret — only `CredentialRef`. `lefthook.yml` vocabulary deny-list + no-secret-serialization test + `deny.toml` (plan crate must not depend on runtime core) |
-| First vertical slice | `ChannelFactory` with `InProcess` + `Unix` arms; ADR-0044's `RemoteToolExecutor` takes a `ConnectionPlan` instead of a hardcoded channel; a `bearer`-authed `Unix` plan resolves its `CredentialRef` through the vault; a no-secret-serialization test asserts material never appears in the serialized plan |
+| Guardrail + enforcer | **G34**: `ConnectionPlan` carries topology only—no product-hosting vocabulary, credential reference, or resolved secret. `deny_unknown_fields` rejects the retired credential field. |
+| First vertical slice | `ChannelFactory` with `InProcess` + `Unix` arms; ADR-0044's `RemoteToolExecutor` takes a `ConnectionPlan` instead of a hardcoded channel; transport authentication is composed separately |
 
 ## Consequences
 
@@ -159,7 +155,7 @@ the ADR-0044 hand channel then sit on one mechanism.
   boundary this ADR fills.
 - awaken-next `awaken-connection-plan` — the ported reference for `ConnectionPlan`.
 - [ADR-0043](0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md)
-  — resolved-secret boundary the `CredentialRef` respects.
+  — credential custody remains orthogonal to topology.
 - [neutral-waist.md](../design/neutral-waist.md) — "one path" simple-design rule.
 - [INVARIANTS.md](../INVARIANTS.md) — G8 (opaque secret refs), G16 (neutral
   vocabulary), G34 (new: plan carries refs, not material).

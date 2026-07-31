@@ -15,12 +15,14 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_host::{
-    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, WorkerControlClient,
-    WorkerDispatchService, WorkerUpstream, dispatch_transport_router_with_service,
+    WorkerControlClient, WorkerDispatchService, dispatch_transport_router_with_service,
 };
 use awaken_worker_registry::{
     MemoryWorkerDirectory, RegistryMutation, WorkerCredentialObservation, WorkerCredentialRevision,
     WorkerDirectory, WorkerHeartbeat, WorkerManifest, WorkerState,
+};
+use awaken_worker_transport_security::{
+    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, WorkerUpstream,
 };
 
 #[tokio::test]

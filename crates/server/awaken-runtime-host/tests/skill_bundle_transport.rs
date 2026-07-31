@@ -10,14 +10,15 @@ use awaken_run_ingress::{
     DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };
 use awaken_runtime_host::{
-    HeaderWorkerAuthenticator, HttpSkillBundleSource, SkillBundleSource as _,
-    StoreSkillBundleSource, WorkerSkillBundleService, WorkerUpstream, worker_skill_bundle_router,
+    HttpSkillBundleSource, SkillBundleSource as _, StoreSkillBundleSource,
+    WorkerSkillBundleService, worker_skill_bundle_router,
 };
 use awaken_session_contract::{ResolvedSessionResources, ResolvedSkillBinding};
 use awaken_skill_store::{
     InMemorySkillStore, SkillBundleFile, SkillDefinition, SkillStore as _, SkillVersion,
     bundle_sha256,
 };
+use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 fn version(skill_id: &str, ordinal: u64, body: &[u8]) -> SkillVersion {
     let files = vec![SkillBundleFile {

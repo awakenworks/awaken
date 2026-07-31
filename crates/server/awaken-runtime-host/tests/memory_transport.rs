@@ -11,9 +11,10 @@ use awaken_resource_contract::{
 };
 use awaken_run_ingress::{DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch};
 use awaken_runtime_host::{
-    HeaderWorkerAuthenticator, HttpMemoryRepository, WorkerMemoryService, WorkerUpstream,
-    memory_materialization_reference, worker_memory_router,
+    HttpMemoryRepository, WorkerMemoryService, memory_materialization_reference,
+    worker_memory_router,
 };
+use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 fn memory_input(
     binding: &str,

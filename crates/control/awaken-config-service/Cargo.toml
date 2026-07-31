@@ -9,20 +9,21 @@ license.workspace = true
 # depending on the execution host: the config service + its CRUD router, the
 # advertised-capabilities router, the model-binding resolver, and the scoped tool
 # catalog. It is pure config-plane logic — it knows nothing of SharedHost or run
-# execution (the control ⊥ execution invariant). The data-plane host re-exports it
-# for the composition root; awaken-control depends on it directly.
+# execution (the control ⊥ execution invariant). Every composition root depends
+# on this authoritative owner directly.
 [dependencies]
+awaken-agent-contract.workspace = true
 awaken-executable-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-ext-permission = { workspace = true }
+awaken-ext-builtin-tools = { workspace = true }
 awaken-config-store = { workspace = true }
 awaken-tenancy = { workspace = true }
 awaken-config-resolver = { workspace = true }
 # Shared typed File/Memory/Repository binding vocabulary; contains no policy.
 awaken-resource-contract = { workspace = true }
-# The agent-config port lives in the session contract (a contract/ leaf), not the
-# Managed wire adapter — config-service implements it inward, not reverse-depending
-# on a protocol adapter.
+# Managed authoring normalization still consumes the Session tool policy helpers;
+# executable publication profiles live in awaken-executable-agent-contract.
 awaken-session-contract = { workspace = true }
 async-trait.workspace = true
 serde_json.workspace = true

@@ -44,6 +44,6 @@ pub use thread::read::transcript::{
     TranscriptSnapshotRef, TranscriptView,
 };
 pub use toolset::{
-    ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
-    ToolsetSource,
+    ClientToolDescriptor, ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride,
+    ToolsetPolicy, ToolsetSource,
 };

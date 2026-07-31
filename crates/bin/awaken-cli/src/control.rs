@@ -43,15 +43,15 @@ pub async fn build_control_assembly(
 ///
 /// Awaken continues to own Agent authoring, compilation, fingerprinting, and
 /// publication persistence. A closed deployment supplies only the existing
-/// [`ModelPublicationResolver`](awaken_runtime_host::ModelPublicationResolver)
+/// [`ModelPublicationResolver`](awaken_config_service::ModelPublicationResolver)
 /// interface; it does not replace the router, config service, or publication store.
 pub async fn build_control_router_with_publication_resolver(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
-    resolver: Arc<dyn awaken_runtime_host::ModelPublicationResolver>,
+    resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
 ) -> Result<Router, String> {
-    let providers = awaken_runtime_host::WebSearchProviderRegistry::builtins();
-    let publication_resolver = Arc::new(awaken_runtime_host::WebSearchPublicationResolver::new(
+    let providers = awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins();
+    let publication_resolver = Arc::new(awaken_config_service::WebSearchPublicationResolver::new(
         providers.clone(),
     ));
     build_control_router_with_publication_resolver_and_web_search(
@@ -70,9 +70,9 @@ pub async fn build_control_router_with_publication_resolver(
 pub async fn build_control_router_with_publication_resolver_and_web_search(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
-    resolver: Arc<dyn awaken_runtime_host::ModelPublicationResolver>,
-    web_search_providers: awaken_runtime_host::WebSearchProviderRegistry,
-    web_search_publication_resolver: Arc<dyn awaken_runtime_host::PluginPublicationResolver>,
+    resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
+    web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
+    web_search_publication_resolver: Arc<dyn awaken_config_service::PluginPublicationResolver>,
 ) -> Result<Router, String> {
     build_control_assembly_with_model_composition(
         deployment,
@@ -89,8 +89,8 @@ async fn build_control_assembly_with_model_composition(
     key: &[u8; 32],
     model_composition: PublicationModelComposition,
     web_search: Option<(
-        awaken_runtime_host::WebSearchProviderRegistry,
-        Arc<dyn awaken_runtime_host::PluginPublicationResolver>,
+        awaken_ext_builtin_tools::WebSearchProviderRegistry,
+        Arc<dyn awaken_config_service::PluginPublicationResolver>,
     )>,
 ) -> Result<ProcessAssembly, String> {
     let identity = identity_wiring(

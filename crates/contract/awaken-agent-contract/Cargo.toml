@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+package-class = "contract"
+authority = "agent"
+
 [dependencies]
 async-trait.workspace = true
 serde.workspace = true

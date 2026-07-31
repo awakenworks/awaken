@@ -7,11 +7,11 @@
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_agent_contract::thread::commit::operation::CommitOperation;
 use awaken_runtime_contract::CredentialRealizationReceipt;
-use awaken_worker_contract::{WorkerHeartbeat, WorkerIdentity, WorkerRegistration};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     ClaimedCommitCommand, DispatchOutcome, PendingInput, RunClaim, RunDispatch, SubmitOptions,
+    WorkerHeartbeat, WorkerIdentity, WorkerRegistration,
 };
 
 /// Complete Worker-to-Coordinator envelope for one claim-fenced committed-truth
@@ -150,7 +150,7 @@ mod tests {
     /// Cause/effect design: an older Worker omits optional identity/options fields;
     /// the Coordinator must decode the request with `None` rather than dead-letter
     /// it. Required business data remains mandatory. This covers the compatibility
-    /// rule shared by every client/server user of these authoritative DTOs.
+    /// rule shared by every client/server user of these authoritative wire values.
     #[test]
     fn optional_transport_fields_default_when_older_writers_omit_them() {
         let request: ClaimWorkerRequest = serde_json::from_str("{}").unwrap();

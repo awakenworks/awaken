@@ -649,7 +649,7 @@ impl SharedHost {
     /// operation coordinator; the Worker holds no authoritative store.
     #[must_use]
     pub fn with_upstream(mut self, url: impl Into<String>) -> Self {
-        self.upstream = Some(crate::worker_security::WorkerUpstream::new(url));
+        self.upstream = Some(awaken_worker_transport_security::WorkerUpstream::new(url));
         self
     }
 
@@ -658,7 +658,7 @@ impl SharedHost {
     #[must_use]
     pub fn with_worker_upstream(
         mut self,
-        upstream: crate::worker_security::WorkerUpstream,
+        upstream: awaken_worker_transport_security::WorkerUpstream,
     ) -> Self {
         self.upstream = Some(upstream);
         self

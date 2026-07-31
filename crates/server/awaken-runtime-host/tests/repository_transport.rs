@@ -10,9 +10,10 @@ use awaken_run_ingress::{
     DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };
 use awaken_runtime_host::{
-    HeaderWorkerAuthenticator, HttpRepositoryBindingVerifier, RepositoryBindingVerifier as _,
-    WorkerRepositoryBindingService, WorkerUpstream, worker_repository_binding_router,
+    HttpRepositoryBindingVerifier, RepositoryBindingVerifier as _, WorkerRepositoryBindingService,
+    worker_repository_binding_router,
 };
+use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 struct ExactRepositoryCatalog {
     active: bool,

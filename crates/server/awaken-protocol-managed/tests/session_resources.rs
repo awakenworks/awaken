@@ -10,8 +10,9 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::run::EndCause;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_protocol_managed::{
-    AgentClientToolView, AgentConfigSource, AgentConfigView, ManagedState, OutcomeReport, RunError,
-    SessionInit, SessionRuntime, StepOutcome, ToolPermissionDecision, router,
+    ClientToolDescriptor, ExecutableAgentProfileSource, ExecutableAgentSessionProfile,
+    ManagedState, OutcomeReport, RunError, SessionInit, SessionRuntime, StepOutcome,
+    ToolPermissionDecision, router,
 };
 use awaken_resource_contract::{
     BindingId, ClonePolicy, ConfigVersion, ExtractionPolicy, FileId, InputBinding, InputResourceId,
@@ -107,8 +108,12 @@ struct LifecycleAgent {
     unavailable: std::sync::atomic::AtomicBool,
 }
 
-impl AgentConfigSource for LifecycleAgent {
-    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
+impl ExecutableAgentProfileSource for LifecycleAgent {
+    fn session_profile_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<ExecutableAgentSessionProfile> {
         (agent_id == "lifecycle" && !self.unavailable.load(std::sync::atomic::Ordering::SeqCst))
             .then(|| empty_agent_view("genai"))
     }
@@ -118,8 +123,8 @@ impl AgentConfigSource for LifecycleAgent {
     }
 }
 
-fn empty_agent_view(backend_ref: &str) -> AgentConfigView {
-    AgentConfigView {
+fn empty_agent_view(backend_ref: &str) -> ExecutableAgentSessionProfile {
+    ExecutableAgentSessionProfile {
         environment: None,
         model: None,
         execution_model_ref: None,
@@ -135,9 +140,13 @@ fn empty_agent_view(backend_ref: &str) -> AgentConfigView {
     }
 }
 
-impl AgentConfigSource for AgentWithResources {
-    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
-        (agent_id == "a").then(|| AgentConfigView {
+impl ExecutableAgentProfileSource for AgentWithResources {
+    fn session_profile_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<ExecutableAgentSessionProfile> {
+        (agent_id == "a").then(|| ExecutableAgentSessionProfile {
             resources: vec![input(
                 "release-notes",
                 InputResourceId::File(FileId::from("file-release")),
@@ -156,14 +165,18 @@ struct SkillGraphAgent {
     child_count: usize,
 }
 
-impl AgentConfigSource for SkillGraphAgent {
-    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
+impl ExecutableAgentProfileSource for SkillGraphAgent {
+    fn session_profile_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<ExecutableAgentSessionProfile> {
         let (prefix, count, delegate) = match agent_id {
             "root" => ("root", self.root_count, "child"),
             "child" => ("child", self.child_count, "root"),
             _ => return None,
         };
-        Some(AgentConfigView {
+        Some(ExecutableAgentSessionProfile {
             skills: skill_bindings(prefix, count),
             // A legacy cycle must not count either Agent twice.
             delegate_ids: vec![delegate.into()],
@@ -185,18 +198,22 @@ fn skill_graph_source(root_count: usize, child_count: usize) -> SkillGraphAgent 
     }
 }
 
-impl AgentConfigSource for AgentWithIntegrations {
-    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
-        (agent_id == "integrated").then(|| AgentConfigView {
+impl ExecutableAgentProfileSource for AgentWithIntegrations {
+    fn session_profile_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<ExecutableAgentSessionProfile> {
+        (agent_id == "integrated").then(|| ExecutableAgentSessionProfile {
             mcp_servers: vec![
-                awaken_protocol_managed::AgentMcpServerView {
+                awaken_protocol_managed::ExecutableAgentMcpServer {
                     name: "docs".into(),
                     url: "https://mcp.example.test".into(),
                     credential_source_id: Some("cred:workspace:docs".into()),
                     credential_revision: Some(7),
                     prompts_as_skills: false,
                 },
-                awaken_protocol_managed::AgentMcpServerView {
+                awaken_protocol_managed::ExecutableAgentMcpServer {
                     name: "public-docs".into(),
                     url: "https://public.example.test".into(),
                     credential_source_id: None,
@@ -271,10 +288,14 @@ async fn session_skill_limit_counts_the_effective_unique_agent_graph() {
 
 struct AgentWithClientTool;
 
-impl AgentConfigSource for AgentWithClientTool {
-    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
-        (agent_id == "client-tool-agent").then(|| AgentConfigView {
-            client_tools: vec![AgentClientToolView {
+impl ExecutableAgentProfileSource for AgentWithClientTool {
+    fn session_profile_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<ExecutableAgentSessionProfile> {
+        (agent_id == "client-tool-agent").then(|| ExecutableAgentSessionProfile {
+            client_tools: vec![ClientToolDescriptor {
                 name: "lookup".into(),
                 description: "exact client lookup".into(),
                 input_schema: json!({
@@ -290,9 +311,13 @@ impl AgentConfigSource for AgentWithClientTool {
 
 struct AgentWithPlatformRepository;
 
-impl AgentConfigSource for AgentWithPlatformRepository {
-    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
-        (agent_id == "repo-agent").then(|| AgentConfigView {
+impl ExecutableAgentProfileSource for AgentWithPlatformRepository {
+    fn session_profile_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<ExecutableAgentSessionProfile> {
+        (agent_id == "repo-agent").then(|| ExecutableAgentSessionProfile {
             resources: vec![input(
                 "platform-repository",
                 InputResourceId::Repository(RepositoryId::from("platform-repository")),
@@ -306,9 +331,13 @@ impl AgentConfigSource for AgentWithPlatformRepository {
 
 struct WorkspaceScopedAgent;
 
-impl AgentConfigSource for WorkspaceScopedAgent {
-    fn agent_view_in(&self, workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
-        (workspace_id == "default" && agent_id == "scoped").then(|| AgentConfigView {
+impl ExecutableAgentProfileSource for WorkspaceScopedAgent {
+    fn session_profile_in(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<ExecutableAgentSessionProfile> {
+        (workspace_id == "default" && agent_id == "scoped").then(|| ExecutableAgentSessionProfile {
             resources: vec![
                 input(
                     "agent-memory",
@@ -333,10 +362,14 @@ struct AgentWithEnvironment {
     revision: u64,
 }
 
-impl AgentConfigSource for AgentWithEnvironment {
-    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
-        (agent_id == "environment-agent").then(|| AgentConfigView {
-            environment: Some(awaken_session_contract::AgentEnvironmentBindingView {
+impl ExecutableAgentProfileSource for AgentWithEnvironment {
+    fn session_profile_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<ExecutableAgentSessionProfile> {
+        (agent_id == "environment-agent").then(|| ExecutableAgentSessionProfile {
+            environment: Some(awaken_protocol_managed::ExecutableAgentEnvironment {
                 environment_id: self.environment_id.clone(),
                 revision: self.revision,
             }),
@@ -347,17 +380,25 @@ impl AgentConfigSource for AgentWithEnvironment {
 
 struct AgentWithBackend(&'static str);
 
-impl AgentConfigSource for AgentWithBackend {
-    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
+impl ExecutableAgentProfileSource for AgentWithBackend {
+    fn session_profile_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<ExecutableAgentSessionProfile> {
         (agent_id == "backend-agent").then(|| empty_agent_view(self.0))
     }
 }
 
 struct AgentWithPublishedModel;
 
-impl AgentConfigSource for AgentWithPublishedModel {
-    fn agent_view_in(&self, _workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
-        (agent_id == "model-agent").then(|| AgentConfigView {
+impl ExecutableAgentProfileSource for AgentWithPublishedModel {
+    fn session_profile_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<ExecutableAgentSessionProfile> {
+        (agent_id == "model-agent").then(|| ExecutableAgentSessionProfile {
             model: Some("openai@edge/gpt-5".into()),
             execution_model_ref: Some("gpt-5-upstream".into()),
             ..empty_agent_view("genai")

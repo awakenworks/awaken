@@ -9,9 +9,9 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use awaken_executable_agent_contract::{
-    ExecutableAgentRegistrar, ExecutableAgentRegistration, ExecutableAgentRegistrationError,
-    ExecutableAgentRegistrationOutcome, ExecutableAgentWithdrawal,
-    ExecutableAgentWithdrawalOutcome,
+    ExecutableAgentProfileSource, ExecutableAgentRegistrar, ExecutableAgentRegistration,
+    ExecutableAgentRegistrationError, ExecutableAgentRegistrationOutcome,
+    ExecutableAgentSessionProfile, ExecutableAgentWithdrawal, ExecutableAgentWithdrawalOutcome,
 };
 use awaken_resource_contract::{
     AgentResourceReferenceSource, InputResourceId, ResourceKind, ResourceTarget,
@@ -20,7 +20,6 @@ use awaken_runtime_contract::snapshot::AgentId;
 use awaken_runtime_contract::{
     CatalogFingerprint, ExecutableAgentSnapshot, PublishedAgentSnapshotSource,
 };
-use awaken_session_contract::{AgentConfigSource, AgentConfigView};
 
 mod http;
 mod postgres;
@@ -310,10 +309,14 @@ impl PublishedAgentSnapshotSource for ExecutableAgentCatalog {
     }
 }
 
-impl AgentConfigSource for ExecutableAgentCatalog {
-    fn agent_view_in(&self, workspace_id: &str, agent_id: &str) -> Option<AgentConfigView> {
+impl ExecutableAgentProfileSource for ExecutableAgentCatalog {
+    fn session_profile_in(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<ExecutableAgentSessionProfile> {
         self.current(workspace_id, agent_id)
-            .map(|registration| registration.agent_view)
+            .map(|registration| registration.session_profile)
     }
 
     fn agent_unavailable_in(&self, workspace_id: &str, agent_id: &str) -> bool {
@@ -334,22 +337,22 @@ impl AgentResourceReferenceSource for ExecutableAgentCatalog {
                 }
                 let bound = match target.kind {
                     ResourceKind::Skill => registration
-                        .agent_view
+                        .session_profile
                         .skills
                         .iter()
                         .any(|skill| skill.skill_id == target.resource_id),
-                    ResourceKind::File => registration.agent_view.resources.iter().any(|binding| {
+                    ResourceKind::File => registration.session_profile.resources.iter().any(|binding| {
                         matches!(&binding.target, InputResourceId::File(id) if id.as_str() == target.resource_id)
                     }),
                     ResourceKind::MemoryStore => registration
-                        .agent_view
+                        .session_profile
                         .resources
                         .iter()
                         .any(|binding| {
                             matches!(&binding.target, InputResourceId::MemoryStore(id) if id.as_str() == target.resource_id)
                         }),
                     ResourceKind::Repository => registration
-                        .agent_view
+                        .session_profile
                         .resources
                         .iter()
                         .any(|binding| {
@@ -367,12 +370,12 @@ impl AgentResourceReferenceSource for ExecutableAgentCatalog {
 #[cfg(test)]
 mod test_support {
     use awaken_executable_agent_contract::ExecutableAgentRegistration;
+    use awaken_executable_agent_contract::ExecutableAgentSessionProfile;
     use awaken_runtime_contract::snapshot::AgentId;
     use awaken_runtime_contract::{
         AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
         AgentSnapshotMetadata, ExecutableAgentSnapshot,
     };
-    use awaken_session_contract::AgentConfigView;
 
     pub(crate) fn registration(revision: u64, fingerprint: &str) -> ExecutableAgentRegistration {
         let mut snapshot = ExecutableAgentSnapshot::builder("agent-a")
@@ -392,7 +395,7 @@ mod test_support {
             agent_id: "agent-a".into(),
             source_revision: revision,
             snapshot,
-            agent_view: AgentConfigView::default(),
+            session_profile: ExecutableAgentSessionProfile::default(),
             declared_hand: Some("hand-a".into()),
         }
     }

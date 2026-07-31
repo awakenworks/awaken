@@ -29,6 +29,13 @@ awaken-worker = { workspace = true }
 # The service layer: SharedHost / ManagedHost / ConfigService / ConfigPlane and the
 # durable session repositories the composition opens.
 awaken-runtime-host = { workspace = true }
+awaken-config-service.workspace = true
+awaken-credential-materializer.workspace = true
+awaken-env-store.workspace = true
+awaken-ext-builtin-tools.workspace = true
+awaken-run-ingress.workspace = true
+awaken-work-store.workspace = true
+awaken-worker-transport-security.workspace = true
 awaken-sandbox-policy-store = { workspace = true }
 awaken-resource-store = { workspace = true, features = ["postgres"] }
 awaken-resource-reclaimer = { workspace = true }

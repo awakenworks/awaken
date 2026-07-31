@@ -68,10 +68,10 @@ pub struct PersistedSession {
     pub baseline: crate::SessionBaselineState,
     pub title: Option<String>,
     pub metadata: BTreeMap<String, String>,
-    /// Exact durable Managed mutable tool projection. Empty is an intentional
-    /// clear; a missing field is invalid persisted state and never substitutes
-    /// the current Worker's Runtime capabilities.
-    pub agent_tools: Vec<crate::AgentTool>,
+    /// Exact durable neutral mutable tool policy. Empty is an intentional clear;
+    /// public protocol tool unions are projections and never persistence truth.
+    #[serde(default)]
+    pub tools: crate::SessionToolConfiguration,
     /// Opaque, secret-free binding to the runtime-owned Session environment.
     /// The Session context persists the bytes but never interprets them; only the
     /// runtime that produced the binding may validate and adopt it after restart.
@@ -435,7 +435,7 @@ mod mutation_tests {
             }),
             title: None,
             metadata: Default::default(),
-            agent_tools: Vec::new(),
+            tools: Default::default(),
             environment_binding: None,
             mcp: Default::default(),
             resources: Default::default(),

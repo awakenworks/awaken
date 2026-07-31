@@ -236,59 +236,6 @@ pub struct awaken_run_ingress_contract::run_dispatch::SessionRuntimeEnvelope
 pub awaken_run_ingress_contract::run_dispatch::SessionRuntimeEnvelope::projection_json: alloc::string::String
 impl awaken_run_ingress_contract::run_dispatch::SessionRuntimeEnvelope
 pub fn awaken_run_ingress_contract::run_dispatch::SessionRuntimeEnvelope::new(impl core::convert::Into<alloc::string::String>) -> Self
-pub mod awaken_run_ingress_contract::transport
-pub struct awaken_run_ingress_contract::transport::BindSandboxRequest
-pub awaken_run_ingress_contract::transport::BindSandboxRequest::claim: awaken_run_ingress_contract::dispatch::RunClaim
-pub awaken_run_ingress_contract::transport::BindSandboxRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_run_ingress_contract::transport::BindSandboxRequest::sandbox_ref: alloc::string::String
-pub struct awaken_run_ingress_contract::transport::CheckpointRequest
-pub awaken_run_ingress_contract::transport::CheckpointRequest::checkpoint: core::option::Option<awaken_agent_contract::stream::checkpoint::StreamCheckpoint>
-pub awaken_run_ingress_contract::transport::CheckpointRequest::claim: awaken_run_ingress_contract::dispatch::RunClaim
-pub awaken_run_ingress_contract::transport::CheckpointRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub struct awaken_run_ingress_contract::transport::ClaimNewRunRequest
-pub awaken_run_ingress_contract::transport::ClaimNewRunRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_run_ingress_contract::transport::ClaimNewRunRequest::request: awaken_run_ingress_contract::run_dispatch::RunDispatch
-pub struct awaken_run_ingress_contract::transport::ClaimRunRequest
-pub awaken_run_ingress_contract::transport::ClaimRunRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_run_ingress_contract::transport::ClaimRunRequest::run_id: alloc::string::String
-pub struct awaken_run_ingress_contract::transport::ClaimWorkerRequest
-pub awaken_run_ingress_contract::transport::ClaimWorkerRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub struct awaken_run_ingress_contract::transport::ClaimedCommitRequest
-pub awaken_run_ingress_contract::transport::ClaimedCommitRequest::claim: awaken_run_ingress_contract::dispatch::RunClaim
-pub awaken_run_ingress_contract::transport::ClaimedCommitRequest::identity: awaken_worker_contract::WorkerIdentity
-pub awaken_run_ingress_contract::transport::ClaimedCommitRequest::operation: awaken_agent_contract::thread::commit::operation::CommitOperation
-impl awaken_run_ingress_contract::transport::ClaimedCommitRequest
-pub fn awaken_run_ingress_contract::transport::ClaimedCommitRequest::new(awaken_run_ingress_contract::dispatch::ClaimedCommitCommand, awaken_worker_contract::WorkerIdentity) -> Self
-pub struct awaken_run_ingress_contract::transport::CredentialRealizationRequest
-pub awaken_run_ingress_contract::transport::CredentialRealizationRequest::claim: awaken_run_ingress_contract::dispatch::RunClaim
-pub awaken_run_ingress_contract::transport::CredentialRealizationRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_run_ingress_contract::transport::CredentialRealizationRequest::receipt: awaken_runtime_contract::credential::CredentialRealizationReceipt
-pub struct awaken_run_ingress_contract::transport::DeliverAndClaimRequest
-pub awaken_run_ingress_contract::transport::DeliverAndClaimRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_run_ingress_contract::transport::DeliverAndClaimRequest::input: awaken_run_ingress_contract::dispatch::PendingInput
-pub struct awaken_run_ingress_contract::transport::EnqueueRequest
-pub awaken_run_ingress_contract::transport::EnqueueRequest::options: core::option::Option<awaken_run_ingress_contract::dispatch::SubmitOptions>
-pub awaken_run_ingress_contract::transport::EnqueueRequest::request: awaken_run_ingress_contract::run_dispatch::RunDispatch
-pub struct awaken_run_ingress_contract::transport::HeartbeatWorkerRequest
-pub awaken_run_ingress_contract::transport::HeartbeatWorkerRequest::heartbeat: awaken_worker_contract::WorkerHeartbeat
-pub awaken_run_ingress_contract::transport::HeartbeatWorkerRequest::identity: awaken_worker_contract::WorkerIdentity
-pub struct awaken_run_ingress_contract::transport::RecoveryRequest
-pub awaken_run_ingress_contract::transport::RecoveryRequest::claim: awaken_run_ingress_contract::dispatch::RunClaim
-pub awaken_run_ingress_contract::transport::RecoveryRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub struct awaken_run_ingress_contract::transport::RegisterWorkerRequest
-pub awaken_run_ingress_contract::transport::RegisterWorkerRequest::registration: awaken_worker_contract::WorkerRegistration
-pub struct awaken_run_ingress_contract::transport::RenewRequest
-pub awaken_run_ingress_contract::transport::RenewRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_run_ingress_contract::transport::RenewRequest::run_id: alloc::string::String
-pub struct awaken_run_ingress_contract::transport::SettleRequest
-pub awaken_run_ingress_contract::transport::SettleRequest::consumed: alloc::vec::Vec<alloc::string::String>
-pub awaken_run_ingress_contract::transport::SettleRequest::epoch: u64
-pub awaken_run_ingress_contract::transport::SettleRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_run_ingress_contract::transport::SettleRequest::outcome: awaken_run_ingress_contract::dispatch::DispatchOutcome
-pub awaken_run_ingress_contract::transport::SettleRequest::run_id: alloc::string::String
-pub struct awaken_run_ingress_contract::transport::WorkerIdentityRequest
-pub awaken_run_ingress_contract::transport::WorkerIdentityRequest::deadline_ms: core::option::Option<u64>
-pub awaken_run_ingress_contract::transport::WorkerIdentityRequest::identity: awaken_worker_contract::WorkerIdentity
 pub enum awaken_run_ingress_contract::CasOutcome
 pub awaken_run_ingress_contract::CasOutcome::Applied
 pub awaken_run_ingress_contract::CasOutcome::NotFound
@@ -332,22 +279,6 @@ pub awaken_run_ingress_contract::SettleOutcome::Applied
 pub awaken_run_ingress_contract::SettleOutcome::Fenced
 impl awaken_run_ingress_contract::dispatch::SettleOutcome
 pub fn awaken_run_ingress_contract::dispatch::SettleOutcome::applied(self) -> bool
-pub struct awaken_run_ingress_contract::BindSandboxRequest
-pub awaken_run_ingress_contract::BindSandboxRequest::claim: awaken_run_ingress_contract::dispatch::RunClaim
-pub awaken_run_ingress_contract::BindSandboxRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_run_ingress_contract::BindSandboxRequest::sandbox_ref: alloc::string::String
-pub struct awaken_run_ingress_contract::CheckpointRequest
-pub awaken_run_ingress_contract::CheckpointRequest::checkpoint: core::option::Option<awaken_agent_contract::stream::checkpoint::StreamCheckpoint>
-pub awaken_run_ingress_contract::CheckpointRequest::claim: awaken_run_ingress_contract::dispatch::RunClaim
-pub awaken_run_ingress_contract::CheckpointRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub struct awaken_run_ingress_contract::ClaimNewRunRequest
-pub awaken_run_ingress_contract::ClaimNewRunRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_run_ingress_contract::ClaimNewRunRequest::request: awaken_run_ingress_contract::run_dispatch::RunDispatch
-pub struct awaken_run_ingress_contract::ClaimRunRequest
-pub awaken_run_ingress_contract::ClaimRunRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_run_ingress_contract::ClaimRunRequest::run_id: alloc::string::String
-pub struct awaken_run_ingress_contract::ClaimWorkerRequest
-pub awaken_run_ingress_contract::ClaimWorkerRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
 pub struct awaken_run_ingress_contract::Claimed
 pub awaken_run_ingress_contract::Claimed::assignment: core::option::Option<awaken_worker_contract::WorkerAssignment>
 pub awaken_run_ingress_contract::Claimed::cancellation_requested: bool
@@ -360,24 +291,11 @@ pub awaken_run_ingress_contract::Claimed::sandbox: core::option::Option<alloc::s
 pub struct awaken_run_ingress_contract::ClaimedCommitCommand
 pub awaken_run_ingress_contract::ClaimedCommitCommand::claim: awaken_run_ingress_contract::dispatch::RunClaim
 pub awaken_run_ingress_contract::ClaimedCommitCommand::operation: awaken_agent_contract::thread::commit::operation::CommitOperation
-pub struct awaken_run_ingress_contract::ClaimedCommitRequest
-pub awaken_run_ingress_contract::ClaimedCommitRequest::claim: awaken_run_ingress_contract::dispatch::RunClaim
-pub awaken_run_ingress_contract::ClaimedCommitRequest::identity: awaken_worker_contract::WorkerIdentity
-pub awaken_run_ingress_contract::ClaimedCommitRequest::operation: awaken_agent_contract::thread::commit::operation::CommitOperation
-impl awaken_run_ingress_contract::transport::ClaimedCommitRequest
-pub fn awaken_run_ingress_contract::transport::ClaimedCommitRequest::new(awaken_run_ingress_contract::dispatch::ClaimedCommitCommand, awaken_worker_contract::WorkerIdentity) -> Self
 pub struct awaken_run_ingress_contract::CommitEpochGuard
 impl awaken_run_ingress_contract::dispatch::CommitEpochGuard
 pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::is_live_at(&self, u64) -> bool
 pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::new(impl core::marker::Send + 'static, awaken_run_ingress_contract::run_dispatch::RunDispatch, u64) -> Self
 pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::request(&self) -> &awaken_run_ingress_contract::run_dispatch::RunDispatch
-pub struct awaken_run_ingress_contract::CredentialRealizationRequest
-pub awaken_run_ingress_contract::CredentialRealizationRequest::claim: awaken_run_ingress_contract::dispatch::RunClaim
-pub awaken_run_ingress_contract::CredentialRealizationRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_run_ingress_contract::CredentialRealizationRequest::receipt: awaken_runtime_contract::credential::CredentialRealizationReceipt
-pub struct awaken_run_ingress_contract::DeliverAndClaimRequest
-pub awaken_run_ingress_contract::DeliverAndClaimRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_run_ingress_contract::DeliverAndClaimRequest::input: awaken_run_ingress_contract::dispatch::PendingInput
 pub struct awaken_run_ingress_contract::DispatchCompletion
 pub awaken_run_ingress_contract::DispatchCompletion::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_run_ingress_contract::DispatchCompletion::sequence: u64
@@ -396,12 +314,6 @@ pub awaken_run_ingress_contract::DispatchSummary::run_id: awaken_agent_contract:
 pub awaken_run_ingress_contract::DispatchSummary::sandbox_bound: bool
 pub awaken_run_ingress_contract::DispatchSummary::state: awaken_run_ingress_contract::dispatch::DispatchState
 pub awaken_run_ingress_contract::DispatchSummary::thread_id: awaken_agent_contract::agent::thread::Id
-pub struct awaken_run_ingress_contract::EnqueueRequest
-pub awaken_run_ingress_contract::EnqueueRequest::options: core::option::Option<awaken_run_ingress_contract::dispatch::SubmitOptions>
-pub awaken_run_ingress_contract::EnqueueRequest::request: awaken_run_ingress_contract::run_dispatch::RunDispatch
-pub struct awaken_run_ingress_contract::HeartbeatWorkerRequest
-pub awaken_run_ingress_contract::HeartbeatWorkerRequest::heartbeat: awaken_worker_contract::WorkerHeartbeat
-pub awaken_run_ingress_contract::HeartbeatWorkerRequest::identity: awaken_worker_contract::WorkerIdentity
 pub struct awaken_run_ingress_contract::Lease
 pub awaken_run_ingress_contract::Lease::epoch: u64
 pub awaken_run_ingress_contract::Lease::expires_ms: u64
@@ -419,14 +331,6 @@ pub awaken_run_ingress_contract::PendingInput::thread_id: awaken_agent_contract:
 pub struct awaken_run_ingress_contract::PendingRecord
 pub awaken_run_ingress_contract::PendingRecord::input: awaken_run_ingress_contract::dispatch::PendingInput
 pub awaken_run_ingress_contract::PendingRecord::revision: u64
-pub struct awaken_run_ingress_contract::RecoveryRequest
-pub awaken_run_ingress_contract::RecoveryRequest::claim: awaken_run_ingress_contract::dispatch::RunClaim
-pub awaken_run_ingress_contract::RecoveryRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub struct awaken_run_ingress_contract::RegisterWorkerRequest
-pub awaken_run_ingress_contract::RegisterWorkerRequest::registration: awaken_worker_contract::WorkerRegistration
-pub struct awaken_run_ingress_contract::RenewRequest
-pub awaken_run_ingress_contract::RenewRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_run_ingress_contract::RenewRequest::run_id: alloc::string::String
 pub struct awaken_run_ingress_contract::RunClaim
 pub awaken_run_ingress_contract::RunClaim::epoch: u64
 pub awaken_run_ingress_contract::RunClaim::owner: alloc::string::String
@@ -463,19 +367,10 @@ pub struct awaken_run_ingress_contract::SessionRuntimeEnvelope
 pub awaken_run_ingress_contract::SessionRuntimeEnvelope::projection_json: alloc::string::String
 impl awaken_run_ingress_contract::run_dispatch::SessionRuntimeEnvelope
 pub fn awaken_run_ingress_contract::run_dispatch::SessionRuntimeEnvelope::new(impl core::convert::Into<alloc::string::String>) -> Self
-pub struct awaken_run_ingress_contract::SettleRequest
-pub awaken_run_ingress_contract::SettleRequest::consumed: alloc::vec::Vec<alloc::string::String>
-pub awaken_run_ingress_contract::SettleRequest::epoch: u64
-pub awaken_run_ingress_contract::SettleRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_run_ingress_contract::SettleRequest::outcome: awaken_run_ingress_contract::dispatch::DispatchOutcome
-pub awaken_run_ingress_contract::SettleRequest::run_id: alloc::string::String
 pub struct awaken_run_ingress_contract::SubmitOptions
 pub awaken_run_ingress_contract::SubmitOptions::dedupe_key: core::option::Option<alloc::string::String>
 pub awaken_run_ingress_contract::SubmitOptions::priority: i64
 pub awaken_run_ingress_contract::SubmitOptions::supersede: bool
-pub struct awaken_run_ingress_contract::WorkerIdentityRequest
-pub awaken_run_ingress_contract::WorkerIdentityRequest::deadline_ms: core::option::Option<u64>
-pub awaken_run_ingress_contract::WorkerIdentityRequest::identity: awaken_worker_contract::WorkerIdentity
 pub trait awaken_run_ingress_contract::Dispatch: awaken_run_ingress_contract::dispatch::DispatchQueue + awaken_run_ingress_contract::dispatch::Inbox + awaken_run_ingress_contract::dispatch::Outbox
 impl<T: awaken_run_ingress_contract::dispatch::DispatchQueue + awaken_run_ingress_contract::dispatch::Inbox + awaken_run_ingress_contract::dispatch::Outbox> awaken_run_ingress_contract::dispatch::Dispatch for T
 pub trait awaken_run_ingress_contract::DispatchOperationalFeed: core::marker::Send + core::marker::Sync

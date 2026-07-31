@@ -8,15 +8,15 @@ pub(super) struct ExactHostModelPublicationResolver {
 }
 
 #[async_trait::async_trait]
-impl awaken_runtime_host::ModelPublicationResolver for ExactHostModelPublicationResolver {
+impl awaken_config_service::ModelPublicationResolver for ExactHostModelPublicationResolver {
     async fn resolve_models(
         &self,
         _workspace: &awaken_tenancy::ScopeId,
         selection: &awaken_config_store::ModelSelection,
         candidates: &[awaken_runtime_contract::resolved::ModelBinding],
     ) -> Result<
-        awaken_runtime_host::ResolvedPublicationModels,
-        awaken_runtime_host::PublicationResolutionError,
+        awaken_config_service::ResolvedPublicationModels,
+        awaken_config_service::PublicationResolutionError,
     > {
         if let Some(authored) = selection.resolved() {
             let matches_host = authored.model_ref == self.binding.model_ref
@@ -35,7 +35,7 @@ impl awaken_runtime_host::ModelPublicationResolver for ExactHostModelPublication
         if !candidates.is_empty() {
             return Err("a single host executor cannot publish fallback candidates".into());
         }
-        Ok(awaken_runtime_host::ResolvedPublicationModels::host(
+        Ok(awaken_config_service::ResolvedPublicationModels::host(
             self.binding.clone(),
             Vec::new(),
             None,

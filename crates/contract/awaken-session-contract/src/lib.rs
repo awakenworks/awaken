@@ -24,6 +24,7 @@ mod resource_activation;
 mod session;
 mod session_realization;
 mod session_repo;
+mod tool_configuration;
 pub mod work_queue;
 
 /// Resource-plane vocabulary used by Session APIs. Runtime implementors can
@@ -34,10 +35,9 @@ pub mod resource_plane {
 }
 
 pub use agent_config::{
-    AGENT_TOOLSET_TOOL_IDS, AgentClientToolView, AgentConfigSource, AgentConfigView,
-    AgentEnvironmentBindingView, AgentMcpServerView, AgentTool, AgentToolConfig,
-    AgentToolDefaultConfig, AgentToolPermissionPolicy, CustomToolInputSchema, ObjectSchemaKind,
-    is_agent_toolset_member, resolved_toolsets, toolset_policies,
+    AGENT_TOOLSET_TOOL_IDS, AgentTool, AgentToolConfig, AgentToolDefaultConfig,
+    AgentToolPermissionPolicy, CustomToolInputSchema, ObjectSchemaKind, is_agent_toolset_member,
+    resolved_toolsets, toolset_policies,
 };
 pub use application_contribution::{
     ApplicationSessionContribution, ApplicationSessionContributionApi,
@@ -90,3 +90,4 @@ pub use session_repo::{
     SessionMutationValidationError, SessionRealizationLease, SessionRepositoryError,
     SessionRevision, SessionTombstone, VisibleMcpServer,
 };
+pub use tool_configuration::SessionToolConfiguration;

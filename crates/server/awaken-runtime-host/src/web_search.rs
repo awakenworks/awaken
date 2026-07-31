@@ -11,39 +11,7 @@ use awaken_runtime_contract::{
     PlaintextBoundary, PlaintextHolder,
 };
 
-use crate::credential_materializer::PinnedCredentialMaterializer;
-
-/// Config-plane adapter over the same provider registry Session execution uses.
-pub struct WebSearchPublicationResolver {
-    providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
-}
-
-impl WebSearchPublicationResolver {
-    #[must_use]
-    pub fn new(providers: awaken_ext_builtin_tools::WebSearchProviderRegistry) -> Self {
-        Self { providers }
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_config_service::PluginPublicationResolver for WebSearchPublicationResolver {
-    fn plugin_id(&self) -> &str {
-        awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID
-    }
-
-    async fn resolve(
-        &self,
-        _workspace: &awaken_tenancy::ScopeId,
-        config: Option<&serde_json::Value>,
-    ) -> Result<serde_json::Value, String> {
-        awaken_ext_builtin_tools::WebSearchPlugin::new(self.providers.clone(), None)
-            .validate_config(config)
-            .map_err(|error| error.to_string())?;
-        Ok(config
-            .cloned()
-            .expect("validated WebSearch config is present"))
-    }
-}
+use awaken_credential_materializer::PinnedCredentialMaterializer;
 
 #[derive(Clone)]
 pub(crate) struct HostWebSearchCredentialResolver {
@@ -98,7 +66,6 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use awaken_config_service::PluginPublicationResolver;
     use awaken_runtime_contract::tool::{ToolCall, ToolError};
 
     struct PaidProbe;
@@ -137,38 +104,6 @@ mod tests {
                 snippet: "vault material reached the selected provider".into(),
             }])
         }
-    }
-
-    #[tokio::test]
-    async fn publication_resolver_reuses_provider_semantics() {
-        // Cause/effect: owned free config succeeds; owned paid config without an
-        // exact pin fails; another plugin id is outside this catalog. No network
-        // or credential materialization occurs during publication validation.
-        let resolver = WebSearchPublicationResolver::new(
-            awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
-        );
-        assert_eq!(
-            resolver
-                .resolve(
-                    &awaken_tenancy::ScopeId::from("workspace-a"),
-                    Some(&serde_json::json!({ "provider_id": "duckduckgo", "options": {} })),
-                )
-                .await,
-            Ok(serde_json::json!({ "provider_id": "duckduckgo", "options": {} }))
-        );
-        assert!(
-            resolver
-                .resolve(
-                    &awaken_tenancy::ScopeId::from("workspace-a"),
-                    Some(&serde_json::json!({ "provider_id": "brave", "options": {} })),
-                )
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            resolver.plugin_id(),
-            awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID
-        );
     }
 
     #[tokio::test]

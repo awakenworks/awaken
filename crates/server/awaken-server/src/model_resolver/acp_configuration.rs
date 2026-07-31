@@ -1,5 +1,5 @@
+use awaken_config_service::PublicationResolutionError;
 use awaken_runtime_contract::resolved::{AcpSessionConfiguration, ModelBinding};
-use awaken_runtime_host::PublicationResolutionError;
 
 pub(super) fn validate_acp_session_configuration(
     binding: &ModelBinding,

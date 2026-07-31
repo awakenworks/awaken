@@ -16,11 +16,15 @@ from typing import NamedTuple
 
 class CrateSpec(NamedTuple):
     """One crate as the fitness rules see it: its package name, its NORMAL (non-dev)
-    dependency names, and the workspace bucket directory it lives in (crates/<bucket>/)."""
+    dependency names, its declared package class/authority, and the workspace bucket
+    directory it lives in (crates/<bucket>/)."""
 
     name: str
     normal_deps: frozenset[str]
+    package_class: str
+    authority: str
     bucket: str
+    public_first_party_reexports: frozenset[str]
 
 
 # ── Phase 0.1: contract/ crates are port + value-object leaves ───────────────────
@@ -49,6 +53,39 @@ def contract_purity_violations(name: str, normal_deps: frozenset[str]) -> list[s
     ]
 
 
+CONTRACT_PACKAGE_CLASS = "contract"
+RUNTIME_INTERFACE_PACKAGE_CLASS = "runtime-interface"
+CONTRACT_SUFFIX_CLASSES: frozenset[str] = frozenset(
+    {CONTRACT_PACKAGE_CLASS, RUNTIME_INTERFACE_PACKAGE_CLASS}
+)
+
+
+def package_classification_violations(
+    name: str, package_class: str, authority: str
+) -> list[str]:
+    """Require every `*-contract` package to declare its semantic class and owner.
+
+    Directory buckets describe deployment/linkage location; they are not a proxy for
+    contract semantics. Runtime's live execution interface is explicitly distinct from
+    a data/port-only contract because it intentionally carries cancellation/runtime
+    handles.
+    """
+    errors: list[str] = []
+    if name.endswith("-contract") and package_class not in CONTRACT_SUFFIX_CLASSES:
+        errors.append(
+            f"{name} must declare [package.metadata.awaken] package-class as one of "
+            f"{sorted(CONTRACT_SUFFIX_CLASSES)}; a directory bucket does not classify a contract"
+        )
+    if package_class in CONTRACT_SUFFIX_CLASSES and not authority.strip():
+        errors.append(f"{name} declares package-class `{package_class}` without an authority")
+    if package_class == RUNTIME_INTERFACE_PACKAGE_CLASS and name != "awaken-runtime-contract":
+        errors.append(
+            f"{name} declares runtime-interface, reserved for awaken-runtime-contract's "
+            "live execution boundary"
+        )
+    return errors
+
+
 def _selftest_contract_purity() -> None:
     """Causes: C2 = a banned crate appears in NORMAL deps; C3 = the banned crate is
     dev-only. Effects: E1 = one violation per banned normal dep; E2 = none. (C1 = "lives
@@ -60,6 +97,21 @@ def _selftest_contract_purity() -> None:
     assert len(v) == 2 and "axum" in v[0] and "rusqlite" in v[1], v  # T2 multiple, sorted
     assert contract_purity_violations("x-contract", frozenset({"serde", "async-trait"})) == []  # T3
     assert contract_purity_violations("x-contract", frozenset()) == []  # T4 empty
+
+
+def _selftest_package_classification() -> None:
+    """Cause/effect decision table:
+    C1 contract suffix, C2 recognized class, C3 non-empty authority, C4 runtime-interface
+    owner. R1 C1+C2+C3(+valid C4) -> accepted; R2 missing/unknown class -> reject;
+    R3 missing authority -> reject; R4 runtime-interface on another owner -> reject.
+    """
+    assert package_classification_violations("awaken-agent-contract", "contract", "agent") == []
+    assert package_classification_violations(
+        "awaken-runtime-contract", "runtime-interface", "runtime"
+    ) == []
+    assert package_classification_violations("awaken-agent-contract", "", "agent")
+    assert package_classification_violations("awaken-agent-contract", "contract", "")
+    assert package_classification_violations("awaken-other-contract", "runtime-interface", "x")
 
 
 # ── Phase 0.2: protocol-* adapters are leaves ────────────────────────────────────
@@ -157,16 +209,15 @@ def _selftest_resource_authz_separation() -> None:
 
 
 # ── Phase 3: the runtime-host god-hub dependency ratchet ─────────────────────────
-# `awaken-runtime-host` is the historical god-hub (~6 bounded contexts, now 33 first-party
-# deps). Its full crate-split is a multi-session, port-first effort — each extraction must
-# introduce a narrow port at the `SharedHost` boundary first, because the modules own the
-# host's fields, add `impl SharedHost` methods, and the host itself depends on
-# `awaken-run-ingress` (so dispatch glue cannot move DOWN without a cycle). This RATCHET
-# makes the split monotone: the hub's first-party dep count may only ever DROP. When a
-# context is extracted, LOWER this ceiling in the same commit. NEVER raise it — a new hub
-# dependency means the substrate grew a responsibility, the regression we are undoing.
+# `awaken-runtime-host` is the historical god-hub. Extracted domain implementations remain
+# injected collaborators, so their dependency edges do not mean the host still owns their
+# implementation. The ratchet counts non-extracted first-party responsibilities, while a
+# separate facade rule forbids laundering any dependency's public API through the host.
 GOD_HUB_CRATE = "awaken-runtime-host"
-GOD_HUB_FIRST_PARTY_DEP_CEILING = 33
+GOD_HUB_EXTRACTED_OWNER_DEPS: frozenset[str] = frozenset(
+    {"awaken-credential-materializer", "awaken-worker-transport-security"}
+)
+GOD_HUB_FIRST_PARTY_DEP_CEILING = 32
 
 
 def god_hub_ratchet_violation(dep_count: int, ceiling: int) -> list[str]:
@@ -188,6 +239,30 @@ def _selftest_god_hub_ratchet() -> None:
     assert god_hub_ratchet_violation(30, 36) == []  # C1=F shrunk -> E2
     v = god_hub_ratchet_violation(40, 36)
     assert len(v) == 1 and "40" in v[0] and "36" in v[0], v  # E1 names both counts
+
+
+def runtime_host_facade_violations(reexports: frozenset[str]) -> list[str]:
+    """Reject public re-exports from first-party crates at the Runtime Host boundary."""
+    return [
+        f"{GOD_HUB_CRATE} publicly re-exports `{owner}` — callers must depend on the "
+        "authoritative owner directly; Runtime Host exports only behavior it owns"
+        for owner in sorted(reexports)
+    ]
+
+
+def _selftest_runtime_host_facade() -> None:
+    """Cause/effect decision table:
+    R1 no first-party public re-export -> accepted; R2 one owner -> one violation;
+    R3 several owners -> stable one-per-owner violations. Private imports and owned
+    `crate::` exports are excluded by the parser and therefore follow R1.
+    """
+    assert runtime_host_facade_violations(frozenset()) == []
+    one = runtime_host_facade_violations(frozenset({"awaken-config-service"}))
+    assert len(one) == 1 and "awaken-config-service" in one[0]
+    many = runtime_host_facade_violations(
+        frozenset({"awaken-work-store", "awaken-config-service"})
+    )
+    assert len(many) == 2 and "awaken-config-service" in many[0]
 
 
 def _property_check() -> None:
@@ -247,9 +322,11 @@ def selftest() -> None:
     """Run every rule's cause-effect decision table + the property checks (called on each
     CI invocation)."""
     _selftest_contract_purity()
+    _selftest_package_classification()
     _selftest_protocol_leaves()
     _selftest_resource_authz_separation()
     _selftest_god_hub_ratchet()
+    _selftest_runtime_host_facade()
     _property_check()
 
 
@@ -257,12 +334,23 @@ def check_all(specs: list[CrateSpec]) -> list[str]:
     """Run the architecture fitness rules over already-parsed crate specs."""
     errors: list[str] = []
     for spec in specs:
-        if spec.bucket == "contract":
+        errors.extend(
+            package_classification_violations(
+                spec.name, spec.package_class, spec.authority
+            )
+        )
+        if spec.package_class == CONTRACT_PACKAGE_CLASS:
             errors.extend(contract_purity_violations(spec.name, spec.normal_deps))
         errors.extend(protocol_leaf_violations(spec.name, spec.normal_deps))
         errors.extend(resource_authz_coupling_violations(spec.name, spec.normal_deps))
     hub = next((s for s in specs if s.name == GOD_HUB_CRATE), None)
     if hub is not None:
         first_party = frozenset(d for d in hub.normal_deps if d.startswith("awaken-"))
-        errors.extend(god_hub_ratchet_violation(len(first_party), GOD_HUB_FIRST_PARTY_DEP_CEILING))
+        retained_responsibilities = first_party - GOD_HUB_EXTRACTED_OWNER_DEPS
+        errors.extend(
+            god_hub_ratchet_violation(
+                len(retained_responsibilities), GOD_HUB_FIRST_PARTY_DEP_CEILING
+            )
+        )
+        errors.extend(runtime_host_facade_violations(hub.public_first_party_reexports))
     return errors

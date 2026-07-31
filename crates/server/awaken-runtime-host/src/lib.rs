@@ -24,8 +24,6 @@ mod commit_ingest;
 mod compact;
 mod config;
 mod container_environment;
-mod credential_artifact;
-mod credential_materializer;
 mod delegate;
 mod deployment_config;
 mod dispatch_backend;
@@ -67,16 +65,6 @@ mod test_mcp;
 mod tool_output_spill;
 mod web_search;
 mod worker_http;
-mod worker_security;
-
-// The config-authoring plane now lives in the shared `awaken-config-service` crate
-// (control ⊥ execution: `awaken-control` depends on it directly, not on this host).
-// These thin aliases keep the historical `crate::{config_plane,binding_resolver,…}`
-// module paths resolving for this host's internal consumers and the re-exports below.
-use awaken_config_service as config_plane;
-use awaken_config_service as binding_resolver;
-use awaken_config_service as tool_catalog;
-use awaken_config_service as capabilities;
 
 use std::sync::Arc;
 
@@ -87,7 +75,6 @@ use awaken_protocol_transport::{
     DriverError, Pending as PortPending, ProtocolRuntime, Resume as PortResume,
     StepFailure as PortStepFailure, StepOutcome as PortStepOutcome, Terminal,
 };
-pub use awaken_resource_contract::{FileCatalog, FileRecord, ResourcePurgeError};
 use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, MessageOrigin, Offer};
 use awaken_session_contract::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
@@ -106,9 +93,6 @@ pub use crate::application::{
     ApplicationSessionProvisioner, WorkerControlApplicationSessionClient,
 };
 pub use crate::commit_backend::init_shared_postgres_commit;
-pub use crate::credential_materializer::{
-    CredentialExtensionRegistryError, PinnedCredentialMaterializer,
-};
 pub use crate::dispatch_backend::init_shared_postgres_dispatch_with_config;
 pub use crate::file_content_transport::{
     FileContentSource, FileContentSourceError, HttpFileContentSource, StoreFileContentSource,
@@ -133,16 +117,8 @@ pub use crate::skill_bundle_transport::{
     HttpSkillBundleSource, SkillBundleSource, SkillBundleSourceError, StoreSkillBundleSource,
     WorkerSkillBundleService, worker_skill_bundle_router,
 };
-pub use crate::web_search::WebSearchPublicationResolver;
 pub use crate::worker_control_client::WorkerControlClient;
-pub use awaken_config_service::PluginPublicationResolver;
-pub use awaken_ext_builtin_tools::{
-    WEB_SEARCH_PLUGIN_ID, WebSearchCredentialRequirement, WebSearchProvider,
-    WebSearchProviderDescriptor, WebSearchProviderRegistry, WebSearchRegistryError,
-    WebSearchRequest, WebSearchResult,
-};
-pub use awaken_sandbox_container::{ContainerEnvironment, ContainerEnvironmentProvider};
-pub use awaken_session_contract::McpAttachmentRealizer;
+use awaken_credential_materializer::PinnedCredentialMaterializer;
 // ACP launch projection consumes the Session environment selected by the host.
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::redact::PiiRedactor;
@@ -152,19 +128,10 @@ pub use crate::skills::SkillForkPlacement;
 // advertised-tools helper the composition root builds a config host from.
 pub use crate::acp_provision::PublishedAcpLaunchResolver;
 pub use crate::acp_serve::{AcpServeHost, AcpStop, AcpTurn};
-pub use crate::binding_resolver::{
-    ConfigServiceReconciler, ModelPublicationResolver, PublicationBindingReconciler,
-    PublicationResolutionError, ResolvedPublicationModels,
-};
-pub use crate::capabilities::capabilities_router;
 pub use crate::config::{
     advertised_tools, authorable_config_sections, authorable_config_sections_with_web_search,
     authorable_tools, block_text, platform_plugin_capabilities,
     platform_plugin_capabilities_with_web_search,
-};
-pub use crate::config_plane::{ConfigPlane, ConfigService, PublishError, config_router};
-pub use crate::tool_catalog::{
-    RESERVED_ADMIN_SCOPE, ScopedToolCatalog, StaticToolCatalog, ToolCatalogSource,
 };
 // The per-plane resource routers the composition root merges over one host.
 pub use crate::commit_ingest::{
@@ -179,41 +146,13 @@ pub use crate::dispatch_transport::{
     registered_worker_transport_router, registered_worker_transport_router_with_services,
     worker_dispatch_store_with_upstream,
 };
-pub use crate::worker_security::{
-    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, MtlsWorkerAuthenticator,
-    MtlsWorkerPrincipal, SIGNED_WORKER_SCHEME, SignedWorkerAuthenticator,
-    SignedWorkerRequestAuthorizer, SystemWorkerClock, VerifiedWorkerContext, WORKER_ID_HEADER,
-    WorkerAuthError, WorkerClock, WorkerCredentialError, WorkerLeasePolicy,
-    WorkerRequestAuthenticator, WorkerSigningCredential, WorkerUpstream,
-};
-// The worker HTTP dispatch client now lives in awaken-run-ingress; re-exported so
-// composition roots keep using the typed `awaken_runtime_host::HttpDispatchQueue`.
 pub use crate::durable_ops::durable_ops_router;
-pub use awaken_env_store::{PostgresEnvRegistry, SqliteEnvRegistry};
-pub use awaken_run_ingress::{
-    HOST_EXECUTOR_CAPABILITY, HttpDispatchQueue, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
-    WorkerRequestAuthorizer,
-};
-// Neutral sandbox vocabulary surfaced to the outer composition root. Runtime Host
-// remains the only server-layer owner that depends on the provisioning contract.
-pub use awaken_provisioning_contract::{
-    MemoryMount, MemoryMounter, MemoryWriteConsistency, MountAccess, MountLifetime,
-    MountRequirement, MountSource, Realization, SandboxError,
-};
-
-// The durable WorkQueue backends now live in `awaken-work-store` (a stores/ leaf);
-// re-exported so composition roots keep using `awaken_runtime_host::{Sqlite,Postgres}WorkQueue`.
-pub use awaken_work_store::{PostgresWorkQueue, SqliteWorkQueue};
 // The model-route seam (R1/R2/R5): a composition root supplies its own
 // `InferenceExecutorMaterializer` to map a session's model ref to a labeled executor.
 pub use crate::inference_routing::InferenceExecutorMaterializer;
 // The managed-vault OAuth seams (ADR-0043): the transport-level refresher, its
 // prepared configuration, and the live MCP credential probe.
 pub use crate::mcp::{ExtMcpProbe, VaultRefresher};
-// Skill authoring inputs (ADR-0036): a composition root supplies these to
-// `SharedHost::with_skills`. The whole set is fronted by the single `Skill` tool.
-pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
-pub use awaken_sandbox_local::content_fingerprint;
 // ── Managed Agents adapter over the shared host ─────────────────────────────
 
 /// Translate the runtime contract's edit refusal into the wire-facing error.

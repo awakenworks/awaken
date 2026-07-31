@@ -211,7 +211,7 @@ pub struct SharedHost {
     /// every thread's read boundary is a non-authoritative recovery projection;
     /// writes use the attempt's claim-fenced operation coordinator. Set via
     /// [`with_upstream`](Self::with_upstream); `None` is a store-owning server/host.
-    pub(crate) upstream: Option<crate::worker_security::WorkerUpstream>,
+    pub(crate) upstream: Option<awaken_worker_transport_security::WorkerUpstream>,
     /// Sole adapter for opaque credentials owned by this Worker process. Control
     /// and Session code retain only exact non-secret references.
     pub(crate) worker_credential_resolver:

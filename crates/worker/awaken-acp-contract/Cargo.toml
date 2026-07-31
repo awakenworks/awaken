@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+package-class = "contract"
+authority = "acp-capability"
+
 [dependencies]
 awaken-agent-channel.workspace = true
 async-trait.workspace = true

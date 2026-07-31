@@ -2,10 +2,9 @@
 
 use std::sync::Arc;
 
-use awaken_runtime_host::{
-    ApplicationSessionProvisioner, AttemptExecutorDecorator, WorkerUpstream,
-};
+use awaken_runtime_host::{ApplicationSessionProvisioner, AttemptExecutorDecorator};
 use awaken_worker_contract::{RegisteredWorker, WorkerIdentity, WorkerSnapshot};
+use awaken_worker_transport_security::WorkerUpstream;
 
 /// Immutable application assembly context created only after the Coordinator
 /// allocates this process's Worker identity.

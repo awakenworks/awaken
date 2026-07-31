@@ -60,8 +60,13 @@ the outermost layer.
 
 ### 2. Placement criteria (four admission tests, in priority order)
 
-1. **Shared across planes → `contract/`.** Two-plus planes need the type/port → it is
-   vocabulary; it lives in a contract leaf with **no IO, no runtime, no backend**.
+1. **Authority and wrong-direction dependency → contract.** A contract exists only when
+   one stable domain authority owns the vocabulary/port and keeping it with an adapter or
+   implementation would create an actual wrong-direction dependency. Consumer count is
+   evidence to inspect, never an ownership rule: two planes may correctly consume an
+   implementation owned by one of them, while a single store/adapter pair may require a
+   contract to avoid depending on each other. A data/port-only contract has **no IO, no
+   runtime, no backend**.
 2. **Survives wire-erasure → neutral.** Erase the wire format and logic remains → it is a
    neutral implementation: protocol-and-backend-free logic in `runtime/` (the kernel), or
    port-composing service logic in the host layer.
@@ -71,11 +76,12 @@ the outermost layer.
 4. **Deployment role → `server/` / `worker/` / `control/`.** Otherwise place by *which
    process links it*: resident daemon, on-demand isolated execution, or authoring/authz.
 
-A `protocol-*` crate is the residue that passes none of these: only DTO mirrors + route
+A `protocol-*` crate is the residue that passes none of these: only wire mirrors + route
 handlers + exactly one neutral→wire projection. It is therefore always thin and always a
-leaf. Contract extraction is **demand-driven, never symmetry-driven**: a contract crate is
-born from an actual wrong-direction dependency (as `run-ingress-contract` and
-`session-contract` were), not from "each plane should have one." This is why there is no
+leaf. Contract extraction is **demand-driven, never symmetry- or consumer-count-driven**:
+a contract crate is born from an actual wrong-direction dependency (as
+`run-ingress-contract` and `session-contract` were), not from "each plane should have
+one" or "two planes import it." This is why there is no
 `config-contract` (the config→execution seam is the ADR-0057 snapshot — a deliberate
 *data* boundary, not a port) and no `distributed-contract` (distribution decomposes into
 four orthogonal seams that already have homes: the `DispatchQueue` in
@@ -115,8 +121,12 @@ fitness functions, using the existing enforcement layers, hold it (the first thr
 with this ADR, living as pure predicates + cause-effect selftests in
 `scripts/ci/_arch_fitness.py`):
 
-- **Contract purity** — a `contract/` crate may not carry a normal dep on an async
-  runtime, a DB driver, or an HTTP/wire framework. Catches drift (2) recurring.
+- **Contract classification and purity** — every `*-contract` crate declares its package
+  class and domain authority in Cargo metadata. Data/port-only contracts may not carry a
+  normal dep on an async runtime, a DB driver, or an HTTP/wire framework, regardless of
+  their deployment bucket. `awaken-runtime-contract` is explicitly classified as the
+  live runtime interface because cancellation/runtime handles are part of that boundary.
+  Directory placement is never used as a semantic proxy. Catches drift (2) recurring.
 - **Protocol leaves** — nothing may depend on a `protocol-*` crate except a composition
   root, the host/control service layer, or a sibling/executor adapter (crate-name prefix
   rule, so it holds for every current and future adapter, including zero-depender ones).

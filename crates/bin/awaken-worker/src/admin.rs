@@ -118,7 +118,7 @@ mod tests {
         let lifecycle = Arc::new(crate::WorkerLifecycle {
             host,
             control: awaken_runtime_host::WorkerControlClient::new(
-                awaken_runtime_host::WorkerUpstream::new("http://127.0.0.1:1")
+                awaken_worker_transport_security::WorkerUpstream::new("http://127.0.0.1:1")
                     .with_worker_id("admin-test"),
             ),
             identity: awaken_worker_contract::WorkerIdentity::new("admin-test", "boot", 1),

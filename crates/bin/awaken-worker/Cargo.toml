@@ -30,6 +30,11 @@ container-k8s = ["awaken-runtime-host/container-k8s"]
 # store that routes the drain over HTTP to the cell server.
 awaken-runtime-host = { workspace = true }
 awaken-runtime-contract = { workspace = true }
+awaken-credential-materializer.workspace = true
+awaken-ext-builtin-tools.workspace = true
+awaken-sandbox-container.workspace = true
+awaken-session-contract.workspace = true
+awaken-worker-transport-security.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "fs"] }
 # The cloud-native admin surface (readyz / livez / metrics / drain) on a separate
 # port, so an orchestrator can gate routing and drain the worker gracefully.

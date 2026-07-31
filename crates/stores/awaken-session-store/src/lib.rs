@@ -1203,7 +1203,7 @@ mod tests {
             )),
             title: Some("My session".to_string()),
             metadata,
-            agent_tools: Vec::new(),
+            tools: Default::default(),
             environment_binding: None,
             mcp: SessionMcpAttachmentSet::from_initial(
                 vec![McpAttachmentDraft {
@@ -1753,6 +1753,43 @@ mod tests {
             )
             .unwrap();
         assert_eq!(repo.get("sesn_1").await, Some(expected), "P1");
+    }
+
+    #[tokio::test]
+    async fn legacy_managed_tool_projection_migrates_to_neutral_session_configuration() {
+        // Cause/effect decision table: R1 canonical `tools` exists -> use it;
+        // R2 only legacy `agent_tools` exists -> lower toolsets and client tools
+        // once; R3 neither exists -> explicit empty default. This test covers R2
+        // and proves protocol encoding does not remain persistence authority.
+        let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+        create_fixture(&repo, "default", sample("legacy-tools"), Vec::new()).await;
+        let mut legacy = serde_json::to_value(sample("legacy-tools")).unwrap();
+        legacy.as_object_mut().unwrap().remove("tools");
+        legacy.as_object_mut().unwrap().insert(
+            "agent_tools".into(),
+            serde_json::json!([
+                {"type": "agent_toolset_20260401", "configs": []},
+                {
+                    "type": "custom",
+                    "name": "client_lookup",
+                    "description": "Client lookup",
+                    "input_schema": {"type": "object"}
+                }
+            ]),
+        );
+        repo.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE managed_session SET aggregate_json = ?2 WHERE session_id = ?1",
+                params!["legacy-tools", serde_json::to_string(&legacy).unwrap()],
+            )
+            .unwrap();
+
+        let loaded = repo.get("legacy-tools").await.unwrap();
+        assert_eq!(loaded.tools.toolsets.len(), 1, "R2 toolset");
+        assert_eq!(loaded.tools.client_tools.len(), 1, "R2 client tool");
+        assert_eq!(loaded.tools.client_tools[0].name, "client_lookup");
     }
 
     #[tokio::test]
