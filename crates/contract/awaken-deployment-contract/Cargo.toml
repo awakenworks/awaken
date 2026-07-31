@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+package-class = "contract"
+authority = "deployment"
+
 [dependencies]
 async-trait.workspace = true
 thiserror.workspace = true

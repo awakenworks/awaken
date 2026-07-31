@@ -10,6 +10,9 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use async_trait::async_trait;
 use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationState};
+pub use awaken_credential_contract::{
+    CredentialObservationState as WorkerCredentialState, CredentialRef as WorkerCredentialRevision,
+};
 use awaken_provisioning_contract::{
     IsolationClass, ResourceLimits, SandboxCapabilities, capability_requirements_satisfied,
 };
@@ -40,26 +43,6 @@ pub const REPOSITORY_CREDENTIALS_CAPABILITY: &str = "repository-credentials/v1";
 /// current observation for every pinned revision, so this capability alone
 /// grants no access.
 pub const WORKER_LOCAL_CREDENTIALS_CAPABILITY: &str = "worker-local-credentials/v1";
-
-/// Non-secret worker-side observation key for one locally materializable source
-/// revision. This Worker wire type deliberately does not depend on the credential
-/// execution contract; the composition root translates resolver observations into it.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct WorkerCredentialRevision {
-    pub id: String,
-    pub revision: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkerCredentialState {
-    Available,
-    LoginRequired,
-    Expired,
-    Invalid,
-    Disabled,
-    ProbeFailed,
-}
 
 /// Point-in-time, non-secret credential evidence published by one Worker.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1029,6 +1012,29 @@ mod tests {
             previous_worker: None,
             attributes: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn worker_credential_evidence_reuses_the_canonical_credential_identity_and_state() {
+        // Cause/effect decision table: R1 a canonical CredentialRef is accepted by
+        // Worker placement without translation; R2 the canonical observation state
+        // is stored unchanged. This compile-time assignment prevents a second Worker
+        // identity/state representation from returning.
+        let canonical = awaken_credential_contract::CredentialRef {
+            id: "cred:canonical".into(),
+            revision: 11,
+        };
+        let worker_key: WorkerCredentialRevision = canonical.clone();
+        let canonical_again: awaken_credential_contract::CredentialRef = worker_key.clone();
+        assert_eq!(canonical_again, canonical);
+
+        let state = awaken_credential_contract::CredentialObservationState::Available;
+        let worker_state: WorkerCredentialState = state;
+        assert_eq!(worker_state, state);
+        assert!(
+            WorkerCredentialObservation::available(worker_key, 5, 10)
+                .is_selectable_at(&canonical, 5)
+        );
     }
 
     #[test]

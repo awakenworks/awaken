@@ -48,10 +48,7 @@ fn worker_local_credentials(
             awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
                 credential,
                 ..
-            } => Some(awaken_dispatch::WorkerCredentialRevision {
-                id: credential.id.clone(),
-                revision: credential.revision,
-            }),
+            } => Some(credential.clone()),
             awaken_runtime_contract::resolved::ModelProvisioning::Provider {
                 credential: Some(credential),
                 ..
@@ -60,10 +57,7 @@ fn worker_local_credentials(
                 credential: Some(credential),
                 ..
             } if credential.material_source == CredentialMaterialSource::WorkerReference => {
-                Some(awaken_dispatch::WorkerCredentialRevision {
-                    id: credential.credential.id.clone(),
-                    revision: credential.credential.revision,
-                })
+                Some(credential.credential.clone())
             }
             _ => None,
         })

@@ -18,7 +18,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use crate::worker_security::{
+use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
 };
 
@@ -169,7 +169,7 @@ async fn read_file_content(
 ) -> Response<Body> {
     if request.workspace_id.trim().is_empty()
         || request.file_id.trim().is_empty()
-        || crate::worker_security::verify_claim_owner(
+        || awaken_worker_transport_security::verify_claim_owner(
             service.directory.as_deref(),
             &worker,
             request.identity.as_ref(),

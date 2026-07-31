@@ -120,6 +120,12 @@ pub fn awaken_config_service::StaticToolCatalog::catalog_for(&self, &awaken_tena
 pub struct awaken_config_service::ValidationIssue
 pub awaken_config_service::ValidationIssue::message: alloc::string::String
 pub awaken_config_service::ValidationIssue::path: alloc::string::String
+pub struct awaken_config_service::WebSearchPublicationResolver
+impl awaken_config_service::WebSearchPublicationResolver
+pub fn awaken_config_service::WebSearchPublicationResolver::new(awaken_ext_builtin_tools::web::WebSearchProviderRegistry) -> Self
+impl awaken_config_service::PluginPublicationResolver for awaken_config_service::WebSearchPublicationResolver
+pub fn awaken_config_service::WebSearchPublicationResolver::plugin_id(&self) -> &str
+pub fn awaken_config_service::WebSearchPublicationResolver::resolve<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, core::option::Option<&'life2 serde_json::value::Value>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub const awaken_config_service::RESERVED_ADMIN_SCOPE: &str
 pub trait awaken_config_service::CredentialReferenceValidator: core::marker::Send + core::marker::Sync
 pub fn awaken_config_service::CredentialReferenceValidator::validate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_credential_contract::CredentialRef) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
@@ -128,6 +134,9 @@ pub fn awaken_config_service::ModelPublicationResolver::resolve_models<'life0, '
 pub trait awaken_config_service::PluginPublicationResolver: core::marker::Send + core::marker::Sync
 pub fn awaken_config_service::PluginPublicationResolver::plugin_id(&self) -> &str
 pub fn awaken_config_service::PluginPublicationResolver::resolve<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, core::option::Option<&'life2 serde_json::value::Value>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+impl awaken_config_service::PluginPublicationResolver for awaken_config_service::WebSearchPublicationResolver
+pub fn awaken_config_service::WebSearchPublicationResolver::plugin_id(&self) -> &str
+pub fn awaken_config_service::WebSearchPublicationResolver::resolve<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, core::option::Option<&'life2 serde_json::value::Value>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_config_service::PublicationBindingReconciler: core::marker::Send + core::marker::Sync
 pub fn awaken_config_service::PublicationBindingReconciler::reconcile<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_config_service::PublicationBindingReconciler::reconcile_all<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

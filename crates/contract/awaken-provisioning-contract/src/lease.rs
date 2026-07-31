@@ -91,31 +91,6 @@ pub struct LivenessSignals {
     pub transport_lost: bool,
 }
 
-/// Cap a credential's expiry at the lease deadline: `min(now + default_ttl, lease
-/// deadline)` (oversight ADR-0023 — an injected secret must never outlive its lease).
-/// Pure and neutral: a credential minter calls this to bound a short-lived token's
-/// `exp` so a revoked/expired lease can never leave a live credential behind. An
-/// indefinite lease returns just `now + default_ttl_ms` (the token's own TTL still
-/// applies).
-#[must_use]
-pub fn capped_expiry(default_ttl_ms: u64, now_ms: u64, grant: &LeaseGrant) -> u64 {
-    let token_exp = now_ms.saturating_add(default_ttl_ms);
-    match grant.expires_ms {
-        Some(lease_exp) => token_exp.min(lease_exp),
-        None => token_exp,
-    }
-}
-
-/// Whether a side-effecting outbound (egress) call is still permitted for a leased
-/// worker — the per-call fence (oversight ADR-0016): a **revoked** or **past-deadline**
-/// lease denies egress, so a fenced worker's external effects are rejected just like
-/// its callbacks. Pure; the egress chokepoint re-checks this on every call (it does
-/// not renew the lease).
-#[must_use]
-pub fn egress_permitted(grant: &LeaseGrant, now_ms: u64, revoked: bool) -> bool {
-    !revoked && !matches!(grant.liveness(now_ms, 0), LeaseLiveness::Reapable)
-}
-
 /// Decide whether to reap a leased sandbox, collapsing the signals with the fixed
 /// priority **Revoked > Expired(deadline) > TransportLost** (awaken-next parity): a
 /// revoke always wins; else a passed deadline; else a lost transport; else keep it
@@ -241,28 +216,6 @@ pub async fn reconcile_and_apply(
 #[cfg(kani)]
 mod verification {
     use super::*;
-
-    #[kani::proof]
-    fn credential_expiry_never_exceeds_lease_or_own_ttl() {
-        let now = kani::any::<u64>();
-        let ttl = kani::any::<u64>();
-        let lease_expiry = kani::any::<u64>();
-        let grant = LeaseGrant::until(lease_expiry);
-        let expiry = capped_expiry(ttl, now, &grant);
-        assert!(expiry <= lease_expiry);
-        assert!(expiry <= now.saturating_add(ttl));
-    }
-
-    #[kani::proof]
-    fn revoked_or_expired_lease_always_denies_egress() {
-        let now = kani::any::<u64>();
-        let expiry = kani::any::<u64>();
-        let revoked = kani::any::<bool>();
-        let grant = LeaseGrant::until(expiry);
-        if revoked || now >= expiry {
-            assert!(!egress_permitted(&grant, now, revoked));
-        }
-    }
 
     #[kani::proof]
     fn reap_reason_obeys_fixed_fail_closed_priority() {
@@ -410,66 +363,6 @@ mod tests {
         assert_eq!(
             decide_reap(&g, signals(u64::MAX, false, true)),
             Some(ReapCause::TransportLost)
-        );
-    }
-
-    #[test]
-    fn capped_expiry_never_outlives_the_lease() {
-        // Lease ends at 1_000; a 500ms token from now=800 would reach 1_300 → capped.
-        let g = LeaseGrant::until(1_000);
-        assert_eq!(capped_expiry(500, 800, &g), 1_000);
-        // A token that ends before the lease keeps its own (shorter) TTL.
-        assert_eq!(capped_expiry(100, 800, &g), 900);
-        // An indefinite lease → just the token's TTL.
-        assert_eq!(capped_expiry(500, 800, &LeaseGrant::indefinite()), 1_300);
-    }
-
-    #[test]
-    fn capped_expiry_saturates_instead_of_overflowing() {
-        // Boundary: now + ttl near u64::MAX must saturate (never wrap/panic). An
-        // indefinite lease then returns the saturated ceiling; a real lease still caps.
-        assert_eq!(
-            capped_expiry(u64::MAX, u64::MAX, &LeaseGrant::indefinite()),
-            u64::MAX
-        );
-        assert_eq!(
-            capped_expiry(u64::MAX, u64::MAX, &LeaseGrant::until(1_000)),
-            1_000,
-            "a saturated token is still capped to the lease deadline"
-        );
-    }
-
-    #[test]
-    fn egress_is_denied_once_the_lease_is_revoked_or_expired() {
-        let g = LeaseGrant::until(1_000);
-        assert!(egress_permitted(&g, 500, false)); // live
-        assert!(!egress_permitted(&g, 500, true)); // revoked mid-flight
-        assert!(!egress_permitted(&g, 1_500, false)); // past the deadline
-    }
-
-    #[test]
-    fn an_indefinite_lease_permits_egress_but_a_revoke_still_fences_it() {
-        // An indefinite (never-expiring) lease is never `Reapable`, so egress stays
-        // permitted at any wall-clock — the deadline arm of the fence never fires. But
-        // the revoke arm is independent of expiry: a revoked worker holding an
-        // indefinite lease must STILL be denied egress (the row the finite-lease test
-        // could not exercise, since there expiry and revoke coincide at the tail).
-        let g = LeaseGrant::indefinite();
-        assert!(egress_permitted(&g, u64::MAX, false)); // never expires → permitted
-        assert!(!egress_permitted(&g, u64::MAX, true)); // revoke fences it regardless
-    }
-
-    #[test]
-    fn capped_expiry_holds_even_when_the_lease_already_expired() {
-        // The "a secret must never outlive its lease" invariant at its degenerate edge:
-        // when the lease deadline is already in the past relative to `now`, a freshly
-        // minted token is capped BELOW `now` (i.e. born already-expired) rather than
-        // being granted its full TTL. `min` clamps to the lease deadline unconditionally.
-        let g = LeaseGrant::until(1_000);
-        assert_eq!(
-            capped_expiry(500, 2_000, &g),
-            1_000,
-            "cap to the (already-passed) lease deadline, not now+ttl=2_500"
         );
     }
 }

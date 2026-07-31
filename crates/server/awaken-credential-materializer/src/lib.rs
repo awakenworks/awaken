@@ -5,6 +5,8 @@
 //! Workspace/revision/usage pins against the persisted row, then materializes that exact secret. Native
 //! provider execution and ACP provisioning share this adapter so they cannot drift.
 
+mod credential_artifact;
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -751,7 +753,8 @@ impl PinnedCredentialMaterializer {
         })
     }
 
-    pub(crate) async fn resolve_for_workspace(
+    /// Resolve one exact credential within the selected Workspace boundary.
+    pub async fn resolve_for_workspace(
         &self,
         access: &CredentialAccess,
         selected_holder: &PlaintextHolder,
@@ -777,12 +780,10 @@ impl PinnedCredentialMaterializer {
         .await
     }
 
-    /// Resolve one exact credential for a provider-owned adapter. This is the
-    /// provider-bound sibling of [`Self::resolve_for_workspace`]: a credential
-    /// explicitly namespaced to another provider is rejected before material is
-    /// returned. Sources without a provider hint remain valid for open external
-    /// providers whose namespace is carried only by plugin configuration.
-    pub(crate) async fn resolve_for_workspace_and_provider(
+    /// Resolve one exact credential for a provider-owned adapter. A source
+    /// explicitly namespaced to another provider is rejected before material
+    /// crosses the plaintext boundary.
+    pub async fn resolve_for_workspace_and_provider(
         &self,
         access: &CredentialAccess,
         selected_holder: &PlaintextHolder,
@@ -839,7 +840,7 @@ impl PinnedCredentialMaterializer {
             .map_err(|_| CredentialMaterialError::Unavailable)
     }
 
-    pub(crate) fn local_stores(&self) -> Option<(Arc<dyn CredentialRepo>, Arc<dyn SecretStore>)> {
+    pub fn local_stores(&self) -> Option<(Arc<dyn CredentialRepo>, Arc<dyn SecretStore>)> {
         Some((self.credentials.clone()?, self.secrets.clone()?))
     }
 }

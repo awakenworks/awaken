@@ -550,7 +550,7 @@ C67 → E59     (C68∧~C74) → E60     C69 → ~E61(暖) → 恒新建/非池�
 
 `awaken-sandbox-manager`、`awaken-connection-plan`、`awaken-tool-relay`
 
-### 因(C74–C81)
+### 因(C74–C77)
 
 | ID | 因 | 锚点 |
 |---|---|---|
@@ -558,12 +558,8 @@ C67 → E59     (C68∧~C74) → E60     C69 → ~E61(暖) → 恒新建/非池�
 | C75 | 回收信号优先级:Revoked > Expired > TransportLost | lease.rs:125 |
 | C76 | 协调三集:live∩ref(adopt)/ live∖ref(reap)/ ref∖live(orphan) | lease.rs:165 |
 | C77 | 跨重启:容器 Exited > AgedOut(`age>max`)/ native-GC 空 | reaper.rs:42 |
-| C78 | 中毒:末 `threshold` 次全 InfraFault → Quarantine | poison.rs:32 |
-| C79 | 崩溃时在飞:`resolve_inflight` → Indeterminate(绝不伪造成功) | poison.rs:68 |
-| C80 | egress 每调用栅栏:`!revoked ∧ !Reapable` | lease.rs:115 |
-| C81 | 回调令牌校验链:TupleMismatch > BadSignature > Expired > NotYetValid;nonce 重放 | token.rs:82/126 |
 
-### 果(E64–E70)
+### 果(E64–E67)
 
 | ID | 果 | 锚点 |
 |---|---|---|
@@ -571,38 +567,27 @@ C67 → E59     (C68∧~C74) → E60     C69 → ~E61(暖) → 恒新建/非池�
 | E65 | reap 未引用沙箱(adopt→dispose);`ReapCause::{Revoked,Expired,TransportLost}` | lease.rs:219 / mgr lib.rs:128 |
 | E66 | orphan 已引用但已死→重新放置 | lease.rs:196 |
 | E67 | 跨重启 reaper:清 Exited/AgedOut、留年轻活体、native-GC no-op;失败 remove 重试 | reaper.rs:94/102 |
-| E68 | 中毒 Quarantine→停止重投(死信) vs Healthy→重投 | poison.rs:32/49 |
-| E69 | egress 一经 revoked/expired 即拒;凭证 `capped_expiry` 夹到租约期 | lease.rs:116/101 |
-| E70 | 令牌拒绝 `TokenError::{TupleMismatch,BadSignature,Expired,NotYetValid}`;nonce 重放拒 | token.rs:55/126 |
 
 ### 因果图与约束
 
 ```
 C74=Reapable ∨ C75 → E65     C76(adopt) → E64     C76(orphan) → E66
-C77 → E67     C78 → E68(Quarantine)     C79 → (Indeterminate, 不判成功)     C80=false → E69     C81 → E70
+C77 → E67
 ```
 
-- **O**{ReapCause};**M 优先级**(全为 fail-closed 短路,低优先级故障保持被遮):`verify` TupleMismatch>BadSignature>Expired>NotYetValid;`decide_reap` Revoked>Expired>TransportLost;`should_reap` Exited>AgedOut;`classify` 末尾任一 Settled 遮蔽 Quarantine。
+- **O**{ReapCause};**M 优先级**:`decide_reap` Revoked>Expired>TransportLost;`should_reap` Exited>AgedOut。
 - **R**:C76 peer 再收养要求共享底座 tier(容器/k8s,沙箱寿命长于创建者);Workdir/local 恒 orphan(随属主死)。
 
 ### 判定表 M9
 
-| 因\用例 | T60 | T61 | T62 | T63 | T64 | T65 | T66 |
-|---|---|---|---|---|---|---|---|
-| C74 Reapable | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
-| C76 adopt(live∩ref) | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
-| C76 orphan(ref∖live) | 0 | 0 | 1 | 0 | 0 | 0 | 0 |
-| C78 中毒 Quarantine | 0 | 0 | 0 | 1 | 0 | 0 | 0 |
-| C79 在飞崩溃 | 0 | 0 | 0 | 0 | 1 | 0 | 0 |
-| C80 egress revoked | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
-| C81 令牌签名坏 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
-| **E65 reap** | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **E64 adopt** | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
-| **E66 orphan 重放置** | 0 | 0 | 1 | 0 | 0 | 0 | 0 |
-| **E68 Quarantine 死信** | 0 | 0 | 0 | 1 | 0 | 0 | 0 |
-| **E: Indeterminate** | 0 | 0 | 0 | 0 | 1 | 0 | 0 |
-| **E69 egress 拒** | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
-| **E70 令牌拒** | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
+| 因\用例 | T60 | T61 | T62 |
+|---|---|---|---|
+| C74 Reapable | 1 | 0 | 0 |
+| C76 adopt(live∩ref) | 0 | 1 | 0 |
+| C76 orphan(ref∖live) | 0 | 0 | 1 |
+| **E65 reap** | 1 | 0 | 0 |
+| **E64 adopt** | 0 | 1 | 0 |
+| **E66 orphan 重放置** | 0 | 0 | 1 |
 
 ---
 

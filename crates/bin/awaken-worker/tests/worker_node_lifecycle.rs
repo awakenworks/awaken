@@ -1,6 +1,8 @@
-use awaken_session_executor::{SignedWorkerRequestAuthorizer, WorkerSigningCredential, WorkerUpstream};
 use awaken_worker::{StandardManifestConfig, WorkerNodeBuilder, WorkerShutdown};
 use awaken_worker_contract::{VersionRange, WorkerManifest};
+use awaken_worker_transport_security::{
+    SignedWorkerRequestAuthorizer, WorkerSigningCredential, WorkerUpstream,
+};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::Ordering;
@@ -59,7 +61,7 @@ fn poll_status(address: &str, method: &str, path: &str, expected: u16) -> bool {
 struct ExternalSessionProvider;
 
 #[async_trait::async_trait]
-impl awaken_session_executor::ContainerEnvironmentProvider for ExternalSessionProvider {
+impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionProvider {
     fn sandbox_capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
         awaken_provisioning_contract::SandboxCapabilities {
             isolation: awaken_provisioning_contract::IsolationClass::Container,
@@ -79,7 +81,7 @@ impl awaken_session_executor::ContainerEnvironmentProvider for ExternalSessionPr
         &self,
         _spec: &awaken_provisioning_contract::SandboxSpec,
     ) -> Result<
-        Arc<dyn awaken_session_executor::ContainerEnvironment>,
+        Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
         Err(awaken_provisioning_contract::SandboxError::new(
@@ -91,7 +93,7 @@ impl awaken_session_executor::ContainerEnvironmentProvider for ExternalSessionPr
         &self,
         _handle: &awaken_provisioning_contract::SandboxHandle,
     ) -> Result<
-        Arc<dyn awaken_session_executor::ContainerEnvironment>,
+        Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
         Err(awaken_provisioning_contract::SandboxError::new(

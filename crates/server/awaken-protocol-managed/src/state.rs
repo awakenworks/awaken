@@ -51,6 +51,7 @@ mod deployment_sessions;
 mod environment;
 mod events;
 mod helpers;
+mod mcp_attachment;
 mod realization;
 mod resource;
 mod resources;
@@ -63,6 +64,7 @@ mod threads;
 mod types;
 
 pub(crate) use helpers::{content_text, lifecycle_fact, rubric_text, session_usage_value};
+use mcp_attachment::UnsupportedMcpAttachmentRealizer;
 pub(crate) use resource::{
     ParsedInputTarget, ParsedSessionInput, input_binding, resolved_resource_dto,
     resource_binding_id,
@@ -93,9 +95,10 @@ pub struct ManagedState {
     /// referencing an agent published on the config plane inherits that agent's
     /// authoritative `model` (the config plane owns model/system/tools), so it runs
     /// the agent's model instead of the host default. Reuses the same
-    /// [`crate::routes::agents_registry::AgentConfigSource`] port `/v1/agents` reads —
-    /// no second source of agent truth. `None` → fall back to the host default model.
-    config_source: Option<Arc<dyn crate::routes::agents_registry::AgentConfigSource>>,
+    /// [`awaken_executable_agent_contract::ExecutableAgentProfileSource`] port
+    /// `/v1/agents` reads — no second source of agent truth. `None` → fall back
+    /// to the host default model.
+    config_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
     /// Resource authoring/resolution port. The Managed ACL lowers compatibility
     /// Repository URL/token input into catalog/vault references; the catalog owns
     /// no principal or authorization policy.
@@ -337,12 +340,12 @@ impl ManagedState {
 
     /// Wire the config-plane agent projection source so a session inherits a
     /// published agent's authoritative `model`. Share the same
-    /// [`crate::routes::agents_registry::AgentConfigSource`] that `/v1/agents` uses,
-    /// or the session and the agent view disagree on the model.
+    /// [`awaken_executable_agent_contract::ExecutableAgentProfileSource`] that
+    /// `/v1/agents` uses, or the Session and executable profile disagree.
     #[must_use]
     pub fn with_config_source(
         mut self,
-        source: Arc<dyn crate::routes::agents_registry::AgentConfigSource>,
+        source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     ) -> Self {
         self.config_source = Some(source);
         self
@@ -402,13 +405,6 @@ impl ManagedState {
         }
     }
 }
-
-/// Private fail-closed null adapter for applications that do not enable MCP
-/// attachment commands. It is composition policy, not part of the public port.
-struct UnsupportedMcpAttachmentRealizer;
-
-#[async_trait::async_trait]
-impl awaken_session_contract::McpAttachmentRealizer for UnsupportedMcpAttachmentRealizer {}
 
 #[cfg(test)]
 mod tests {
@@ -1178,7 +1174,7 @@ mod tests {
             ),
             title: Some("My session".to_string()),
             metadata,
-            agent_tools: Vec::new(),
+            tools: Default::default(),
             environment_binding: None,
             mcp,
             resources: awaken_session_contract::SessionResourceState::from_legacy(sample_inputs()),
@@ -1420,14 +1416,15 @@ mod tests {
         // | T2 | no durable row | Runtime default for transient projection |
         let state = ManagedState::new_with_mcp(RehydrateFake::default());
         let mut persisted = sample_persisted("sesn_1");
-        persisted.agent_tools = vec![crate::types::agent::AgentTool::Custom {
-            name: "durable-tool".into(),
-            description: "Client-executed tool".into(),
-            input_schema: crate::types::agent::CustomToolInputSchema::from_value(
-                serde_json::json!({"type": "object"}),
-            )
-            .unwrap(),
-        }];
+        persisted.tools =
+            crate::project::session_tool_configuration(&[crate::types::agent::AgentTool::Custom {
+                name: "durable-tool".into(),
+                description: "Client-executed tool".into(),
+                input_schema: crate::types::agent::CustomToolInputSchema::from_value(
+                    serde_json::json!({"type": "object"}),
+                )
+                .unwrap(),
+            }]);
         let session = state
             .rehydrated_session("sesn_1", Some(persisted))
             .expect("valid durable projection");
@@ -1475,12 +1472,12 @@ mod tests {
         //
         // Decision table:
         // | Durable field | Shape | Expected behavior |
-        // | absent | n/a | decoding error; no Runtime substitution |
+        // | absent | n/a | decode the explicit empty default for legacy rows |
         // | present | valid typed tool | restore exact tool |
         // | present | invalid | decoding error; no fallback |
         let persisted = sample_persisted("sesn_corrupt");
         let mut value = serde_json::to_value(persisted).unwrap();
-        value["agent_tools"] = serde_json::json!([{"unexpected": true}]);
+        value["tools"] = serde_json::json!({"unexpected": true});
 
         assert!(
             serde_json::from_value::<PersistedSession>(value).is_err(),

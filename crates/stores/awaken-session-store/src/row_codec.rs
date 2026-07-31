@@ -80,7 +80,45 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         u64::try_from(row.revision).expect("managed Session revision is non-negative"),
     );
     if let Some(aggregate_json) = row.aggregate_json {
-        let mut aggregate: PersistedSession = serde_json::from_str(&aggregate_json)?;
+        let mut value: serde_json::Value = serde_json::from_str(&aggregate_json)?;
+        if value.get("tools").is_none()
+            && let Some(agent_tools) = value
+                .as_object_mut()
+                .and_then(|object| object.remove("agent_tools"))
+        {
+            let legacy: Vec<awaken_session_contract::AgentTool> =
+                serde_json::from_value(agent_tools)?;
+            let toolsets = awaken_session_contract::toolset_policies(&legacy);
+            let client_tools = legacy
+                .into_iter()
+                .filter_map(|tool| match tool {
+                    awaken_session_contract::AgentTool::Custom {
+                        name,
+                        description,
+                        input_schema,
+                    } => Some(awaken_agent_contract::ClientToolDescriptor {
+                        name,
+                        description,
+                        input_schema: serde_json::to_value(input_schema)
+                            .expect("legacy custom tool schema serializes"),
+                    }),
+                    awaken_session_contract::AgentTool::AgentToolset20260401 { .. }
+                    | awaken_session_contract::AgentTool::McpToolset { .. } => None,
+                })
+                .collect();
+            value
+                .as_object_mut()
+                .expect("Session aggregate is an object")
+                .insert(
+                    "tools".into(),
+                    serde_json::to_value(awaken_session_contract::SessionToolConfiguration {
+                        toolsets,
+                        client_tools,
+                    })
+                    .expect("neutral Session tool configuration serializes"),
+                );
+        }
+        let mut aggregate: PersistedSession = serde_json::from_value(value)?;
         aggregate.revision = revision;
         return Ok(aggregate);
     }
@@ -170,7 +208,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         baseline: SessionBaselineState::Frozen(baseline),
         title: row.title,
         metadata: serde_json::from_str(&row.metadata_json)?,
-        agent_tools: Vec::new(),
+        tools: Default::default(),
         environment_binding: row.environment_binding,
         mcp,
         resources,

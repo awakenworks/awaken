@@ -7,8 +7,8 @@
 //! advertised-capabilities router, the model-binding resolver, and the scoped tool
 //! catalog. It references neither `SharedHost` nor run execution.
 //!
-//! The data-plane host re-exports these types for the single-machine composition
-//! root; `awaken-control` depends on this crate directly.
+//! Composition roots and `awaken-control` depend on this authoritative owner
+//! directly; the Runtime Host does not act as a public facade.
 
 mod agent_projection;
 mod binding_resolver;
@@ -26,6 +26,7 @@ mod registration_reconciliation;
 mod service_access;
 mod service_wiring;
 mod tool_catalog;
+mod web_search_publication;
 
 pub use binding_resolver::{
     ConfigServiceReconciler, ModelPublicationResolver, PublicationBindingReconciler,
@@ -47,3 +48,4 @@ pub use publication::{PublishError, ValidationIssue};
 pub use tool_catalog::{
     RESERVED_ADMIN_SCOPE, ScopedToolCatalog, StaticToolCatalog, ToolCatalogSource,
 };
+pub use web_search_publication::WebSearchPublicationResolver;

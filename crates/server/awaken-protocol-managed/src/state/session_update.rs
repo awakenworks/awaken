@@ -132,7 +132,7 @@ impl ManagedState {
         }
         let initial_title = persisted.title.clone();
         let initial_metadata = persisted.metadata.clone();
-        let initial_tools = persisted.agent_tools.clone();
+        let initial_tools = persisted.tools.clone();
         let command_receipt_key = command_record.as_ref().map(|record| record.key.clone());
         let mut mcp_changed = false;
         let mcp_in_request = command.mcp_servers.is_some();
@@ -242,11 +242,11 @@ impl ManagedState {
             }
         }
         if let Some(tools) = &command.tools {
-            persisted.agent_tools = crate::project::resolved_tools(tools);
+            persisted.tools = crate::project::session_tool_configuration(tools);
         }
         let title_changed = persisted.title != initial_title;
         let metadata_changed = persisted.metadata != initial_metadata;
-        let tools_changed = persisted.agent_tools != initial_tools;
+        let tools_changed = persisted.tools != initial_tools;
         let semantic_changed = title_changed || metadata_changed || tools_changed || mcp_changed;
         let mut command_applied = true;
         if title_changed || metadata_changed || tools_changed || command_record.is_some() {
@@ -299,7 +299,7 @@ impl ManagedState {
             record.session.metadata = persisted.metadata.clone();
             let agent_changed = tools_changed || mcp_changed;
             if command.tools.is_some() {
-                record.session.agent.tools = crate::project::resolved_tools(&persisted.agent_tools);
+                record.session.agent.tools = crate::project::managed_tools(&persisted.tools);
             }
             if let Some(visible_mcp_servers) = visible_mcp_servers {
                 record.session.agent.mcp_servers =
@@ -325,10 +325,7 @@ impl ManagedState {
         // tool policy behind the successful command receipt.
         if command.tools.is_some() && (tools_changed || !command_applied) {
             self.runtime
-                .replace_session_toolsets(
-                    id,
-                    crate::project::toolset_policies(&persisted.agent_tools),
-                )
+                .replace_session_toolsets(id, persisted.tools.toolsets.clone())
                 .await
                 .map_err(StateError::Run)?;
         }

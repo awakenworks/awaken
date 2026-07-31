@@ -790,6 +790,10 @@ pub enum awaken_agent_contract::toolset::ToolsetSource
 pub awaken_agent_contract::toolset::ToolsetSource::Agent
 pub awaken_agent_contract::toolset::ToolsetSource::Mcp
 pub awaken_agent_contract::toolset::ToolsetSource::Mcp::server_name: alloc::string::String
+pub struct awaken_agent_contract::toolset::ClientToolDescriptor
+pub awaken_agent_contract::toolset::ClientToolDescriptor::description: alloc::string::String
+pub awaken_agent_contract::toolset::ClientToolDescriptor::input_schema: serde_json::value::Value
+pub awaken_agent_contract::toolset::ClientToolDescriptor::name: alloc::string::String
 pub struct awaken_agent_contract::toolset::ToolExecutionPolicy
 pub awaken_agent_contract::toolset::ToolExecutionPolicy::enabled: bool
 pub awaken_agent_contract::toolset::ToolExecutionPolicy::permission: awaken_agent_contract::toolset::ToolPermissionRequirement
@@ -871,6 +875,10 @@ impl awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed
 pub fn awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed::new(alloc::sync::Arc<dyn awaken_agent_contract::thread::read::checkpoint::CheckpointReader>) -> Self
 impl awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed for awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed
 pub fn awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFeed::events_after<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::read::lifecycle::LifecycleCursor, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::lifecycle::LifecyclePage, awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_agent_contract::ClientToolDescriptor
+pub awaken_agent_contract::ClientToolDescriptor::description: alloc::string::String
+pub awaken_agent_contract::ClientToolDescriptor::input_schema: serde_json::value::Value
+pub awaken_agent_contract::ClientToolDescriptor::name: alloc::string::String
 pub struct awaken_agent_contract::DelegationId(pub alloc::string::String)
 impl awaken_agent_contract::agent::delegation::DelegationId
 pub fn awaken_agent_contract::agent::delegation::DelegationId::child_run_id(&self) -> awaken_agent_contract::agent::run::Id

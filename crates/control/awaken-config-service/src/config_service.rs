@@ -16,7 +16,7 @@ use awaken_executable_agent_contract::{ExecutableAgentRegistrar, ExecutableAgent
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
 
-use crate::agent_projection::registered_agent_view;
+use crate::agent_projection::registered_session_profile;
 use crate::binding_resolver::ModelPublicationResolver;
 use crate::credential_reference::{CredentialReferenceValidator, validate_credential_references};
 use crate::plugin_validation::{PluginPublicationResolver, resolve_plugin_configuration};
@@ -293,8 +293,8 @@ impl ConfigService {
         if let ConfigWrite::Conflict { current_revision } = write {
             return Err(PublishError::StaleRevision(current_revision));
         }
-        let agent_view =
-            registered_agent_view(&snapshot, &resolved.authored_model_selection, defaults)
+        let session_profile =
+            registered_session_profile(&snapshot, &resolved.authored_model_selection, defaults)
                 .ok_or_else(|| {
                     PublishError::Registration(
                         awaken_executable_agent_contract::ExecutableAgentRegistrationError::Invalid(
@@ -309,7 +309,7 @@ impl ConfigService {
                 agent_id: id.to_owned(),
                 source_revision,
                 snapshot,
-                agent_view,
+                session_profile,
                 declared_hand: resolved.config.hand.clone(),
             })
             .await
@@ -1060,9 +1060,9 @@ pub(crate) mod resource_prompt_tests {
             awaken_runtime_contract::ResolvedInputVersion::ContentHash(tool.content_hash)
         );
 
-        use awaken_session_contract::AgentConfigSource as _;
+        use awaken_executable_agent_contract::ExecutableAgentProfileSource as _;
         let view = catalog
-            .agent_view_in(DEFAULT_SCOPE, "pinned-inputs")
+            .session_profile_in(DEFAULT_SCOPE, "pinned-inputs")
             .expect("matching published defaults");
         assert_eq!(view.environment.unwrap().revision, 9);
 
@@ -1082,7 +1082,7 @@ pub(crate) mod resource_prompt_tests {
             .unwrap();
         assert!(
             catalog
-                .agent_view_in(DEFAULT_SCOPE, "pinned-inputs")
+                .session_profile_in(DEFAULT_SCOPE, "pinned-inputs")
                 .is_some(),
             "registered Coordinator view remains frozen when Control defaults later change"
         );
@@ -1139,8 +1139,10 @@ pub(crate) mod resource_prompt_tests {
         plane.put(&scope, &config).await.unwrap();
         plane.publish(&scope, &config.id).await.unwrap();
 
-        use awaken_session_contract::AgentConfigSource as _;
-        let view = catalog.agent_view_in(DEFAULT_SCOPE, &config.id).unwrap();
+        use awaken_executable_agent_contract::ExecutableAgentProfileSource as _;
+        let view = catalog
+            .session_profile_in(DEFAULT_SCOPE, &config.id)
+            .unwrap();
         // Cause/effect rule: a provider-qualified Managed target (C1) projects
         // its full display id for the API (E1) and the already-published exact
         // candidate model_ref for execution (E2); neither string substitutes for
@@ -1699,8 +1701,10 @@ pub(crate) mod resource_prompt_tests {
             installed.snapshot.resolved_spec.instructions, "version two",
             "the latest publication wins on rehydrate"
         );
-        use awaken_session_contract::AgentConfigSource as _;
-        let view = catalog.agent_view_in(scope.as_str(), "warm-agent").unwrap();
+        use awaken_executable_agent_contract::ExecutableAgentProfileSource as _;
+        let view = catalog
+            .session_profile_in(scope.as_str(), "warm-agent")
+            .unwrap();
         assert_eq!(
             view.model.as_deref(),
             Some("openai@warm/m-first"),

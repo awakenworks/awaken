@@ -36,7 +36,7 @@ pub const SIGNED_WORKER_SCHEME: &str = "AwakenWorker";
 /// configured authenticator. Keeping the protocol response and extension logic
 /// here prevents dispatch, commit, and Resource adapters from drifting into
 /// separate authentication paths.
-pub(crate) async fn authenticate_worker_request(
+pub async fn authenticate_worker_request(
     State(authenticator): State<Arc<dyn WorkerRequestAuthenticator>>,
     request: Request,
     next: Next,
@@ -58,7 +58,7 @@ pub(crate) async fn authenticate_worker_request(
 
 /// Verify the authenticated transport identity against one exact registered
 /// Worker incarnation carried by an application request.
-pub(crate) fn verify_worker_identity(
+pub fn verify_worker_identity(
     worker: &VerifiedWorkerContext,
     identity: &WorkerIdentity,
 ) -> Result<(), String> {
@@ -74,7 +74,7 @@ pub(crate) fn verify_worker_identity(
 /// Resolve and verify the one live Coordinator-owned registration record.
 /// Dispatch, claimed commit, and per-kind Resource handlers reuse this check so
 /// registry state and signed/mTLS incarnation semantics cannot drift.
-pub(crate) async fn verify_current_worker_identity(
+pub async fn verify_current_worker_identity(
     directory: &dyn WorkerDirectory,
     worker: &VerifiedWorkerContext,
     identity: &WorkerIdentity,
@@ -102,7 +102,7 @@ pub(crate) async fn verify_current_worker_identity(
 /// Verify that one authenticated Worker is the exact current incarnation that
 /// owns a dispatch claim. Local compatibility routers may omit a directory;
 /// registered production Resource routers always provide one.
-pub(crate) async fn verify_claim_owner(
+pub async fn verify_claim_owner(
     directory: Option<&dyn WorkerDirectory>,
     worker: &VerifiedWorkerContext,
     identity: Option<&WorkerIdentity>,
@@ -674,19 +674,19 @@ impl WorkerUpstream {
         self.authorize(method, path, request)
     }
 
-    pub(crate) fn client(&self) -> &reqwest::Client {
+    pub fn client(&self) -> &reqwest::Client {
         &self.client
     }
 
-    pub(crate) fn worker_id(&self) -> &str {
+    pub fn worker_id(&self) -> &str {
         &self.worker_id
     }
 
-    pub(crate) fn worker_identity(&self) -> Option<&WorkerIdentity> {
+    pub fn worker_identity(&self) -> Option<&WorkerIdentity> {
         self.worker_identity.as_ref()
     }
 
-    pub(crate) fn authorize(
+    pub fn authorize(
         &self,
         method: &str,
         path: &str,
@@ -696,7 +696,7 @@ impl WorkerUpstream {
             .authorize(method, path, &self.worker_id, request)
     }
 
-    pub(crate) fn request_authorizer(&self) -> Arc<dyn WorkerRequestAuthorizer> {
+    pub fn request_authorizer(&self) -> Arc<dyn WorkerRequestAuthorizer> {
         self.request_authorizer.clone()
     }
 }

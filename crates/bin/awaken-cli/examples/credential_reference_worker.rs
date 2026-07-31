@@ -205,12 +205,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
             deployment.durable = true;
             deployment.storage_dir = Some(storage_dir.into());
-            let credentials = awaken_session_executor::PinnedCredentialMaterializer::external_only(
-                materializer.clone(),
-            );
-            awaken_worker::WorkerNodeBuilder::new(awaken_session_executor::WorkerUpstream::new(
-                upstream,
-            ))
+            let credentials =
+                awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
+                    materializer.clone(),
+                );
+            awaken_worker::WorkerNodeBuilder::new(
+                awaken_worker_transport_security::WorkerUpstream::new(upstream),
+            )
             .with_deployment_config(deployment)
             .with_registered_memory_mounter_factory(awaken_cli::registered_memory_mounter_factory())
             .with_inference_materializer(materializer.clone())

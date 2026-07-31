@@ -3,19 +3,19 @@
 
 use awaken_config_resolver::AgentInputConfig;
 use awaken_config_store::ModelSelection;
-use awaken_runtime_contract::{ExecutableAgentSnapshot, ResolvedInputVersion};
-use awaken_session_contract::{
-    AgentClientToolView, AgentConfigView, AgentEnvironmentBindingView, AgentMcpServerView,
+use awaken_executable_agent_contract::{
+    ExecutableAgentEnvironment, ExecutableAgentMcpServer, ExecutableAgentSessionProfile,
 };
+use awaken_runtime_contract::{ExecutableAgentSnapshot, ResolvedInputVersion};
 
 /// Build the Session-facing projection from the exact publication and the
 /// current Agent-default inputs. A pinned defaults revision mismatch fails
 /// closed so Control cannot register a mixed-revision application view.
-pub(crate) fn registered_agent_view(
+pub(crate) fn registered_session_profile(
     snapshot: &ExecutableAgentSnapshot,
     authored_model_selection: &ModelSelection,
     current_defaults: Option<AgentInputConfig>,
-) -> Option<AgentConfigView> {
+) -> Option<ExecutableAgentSessionProfile> {
     project(snapshot, authored_model_selection, current_defaults, true)
 }
 
@@ -23,10 +23,10 @@ pub(crate) fn registered_agent_view(
 /// current defaults repository no longer retains their old value. They never
 /// become current during reconciliation: newest registrations are submitted
 /// first, and this projection intentionally carries no guessed defaults.
-pub(crate) fn historical_agent_view(
+pub(crate) fn historical_session_profile(
     snapshot: &ExecutableAgentSnapshot,
     authored_model_selection: &ModelSelection,
-) -> AgentConfigView {
+) -> ExecutableAgentSessionProfile {
     project(snapshot, authored_model_selection, None, false)
         .expect("historical projection ignores unavailable Session defaults")
 }
@@ -36,7 +36,7 @@ fn project(
     authored_model_selection: &ModelSelection,
     current_defaults: Option<AgentInputConfig>,
     require_exact_defaults: bool,
-) -> Option<AgentConfigView> {
+) -> Option<ExecutableAgentSessionProfile> {
     let spec = &snapshot.resolved_spec;
     let bindings = spec.plugin_config.agent.clone();
     let pinned_defaults_revision = snapshot
@@ -68,7 +68,7 @@ fn project(
             ))
         })
         .ok();
-    Some(AgentConfigView {
+    Some(ExecutableAgentSessionProfile {
         model: managed_model,
         execution_model_ref: Some(spec.model_binding.binding.model_ref.clone()),
         backend_ref: spec.model_binding.backend_ref.clone(),
@@ -88,7 +88,7 @@ fn project(
             .filter(|descriptor| {
                 descriptor.kind == awaken_runtime_contract::resolved::ToolKind::ClientExecuted
             })
-            .map(|descriptor| AgentClientToolView {
+            .map(|descriptor| awaken_agent_contract::ClientToolDescriptor {
                 name: descriptor.id.clone(),
                 description: descriptor.description.clone(),
                 input_schema: descriptor.parameters.clone(),
@@ -97,7 +97,7 @@ fn project(
         mcp_servers: bindings
             .mcp_servers
             .into_iter()
-            .map(|server| AgentMcpServerView {
+            .map(|server| ExecutableAgentMcpServer {
                 name: server.name,
                 url: server.url,
                 prompts_as_skills: server.prompts_as_skills,
@@ -120,7 +120,7 @@ fn project(
         resources: defaults.inputs,
         environment: defaults
             .environment
-            .map(|binding| AgentEnvironmentBindingView {
+            .map(|binding| ExecutableAgentEnvironment {
                 environment_id: binding.environment_id,
                 revision: binding.revision,
             }),
@@ -179,18 +179,18 @@ mod tests {
             revision,
         };
         let model = ModelSelection::Pinned(spec_model(&snapshot));
-        let exact = registered_agent_view(&snapshot, &model, Some(defaults(2))).unwrap();
+        let exact = registered_session_profile(&snapshot, &model, Some(defaults(2))).unwrap();
         assert_eq!(exact.resources.len(), 1, "P1");
         assert!(
-            registered_agent_view(&snapshot, &model, Some(defaults(3))).is_none(),
+            registered_session_profile(&snapshot, &model, Some(defaults(3))).is_none(),
             "P2"
         );
         assert!(
-            registered_agent_view(&snapshot, &model, None).is_none(),
+            registered_session_profile(&snapshot, &model, None).is_none(),
             "P3"
         );
         assert!(
-            historical_agent_view(&snapshot, &model)
+            historical_session_profile(&snapshot, &model)
                 .resources
                 .is_empty(),
             "P4"

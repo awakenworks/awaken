@@ -11,13 +11,8 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use awaken_acp_contract::AcpCapabilityObservationSource;
-use awaken_runtime_contract::{
-    CredentialMaterialError, CredentialObservationState, WorkerLocalCredentialResolver,
-};
-use awaken_worker_contract::{
-    WorkerAcpCapabilityObservation, WorkerCredentialObservation, WorkerCredentialRevision,
-    WorkerCredentialState,
-};
+use awaken_runtime_contract::{CredentialMaterialError, WorkerLocalCredentialResolver};
+use awaken_worker_contract::{WorkerAcpCapabilityObservation, WorkerCredentialObservation};
 
 #[derive(Default)]
 pub(crate) struct WorkerObservationCache {
@@ -120,24 +115,8 @@ pub(crate) async fn credential_observations(
                 observations
                     .into_iter()
                     .map(|observation| WorkerCredentialObservation {
-                        credential: WorkerCredentialRevision {
-                            id: observation.credential.id,
-                            revision: observation.credential.revision,
-                        },
-                        state: match observation.state {
-                            CredentialObservationState::Available => {
-                                WorkerCredentialState::Available
-                            }
-                            CredentialObservationState::LoginRequired => {
-                                WorkerCredentialState::LoginRequired
-                            }
-                            CredentialObservationState::Expired => WorkerCredentialState::Expired,
-                            CredentialObservationState::Invalid => WorkerCredentialState::Invalid,
-                            CredentialObservationState::Disabled => WorkerCredentialState::Disabled,
-                            CredentialObservationState::ProbeFailed => {
-                                WorkerCredentialState::ProbeFailed
-                            }
-                        },
+                        credential: observation.credential,
+                        state: observation.state,
                         observed_at_ms: now_ms,
                         valid_until_ms,
                         reason_code: observation.reason_code,
@@ -181,6 +160,7 @@ mod tests {
         CredentialObservation, CredentialObservationSource, CredentialRef,
         WorkerLocalReferenceRevalidator,
     };
+    use awaken_worker_contract::WorkerCredentialRevision;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct AvailableResolver;

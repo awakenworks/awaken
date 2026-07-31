@@ -17,7 +17,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use crate::worker_security::{
+use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
 };
 
@@ -288,7 +288,7 @@ async fn memory_operation(
     let Ok(reference) = parse_reference(&request.reference) else {
         return StatusCode::FORBIDDEN.into_response();
     };
-    if crate::worker_security::verify_claim_owner(
+    if awaken_worker_transport_security::verify_claim_owner(
         Some(service.directory.as_ref()),
         &worker,
         request.identity.as_ref(),

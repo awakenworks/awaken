@@ -12,9 +12,6 @@ pub awaken_provisioning_contract::ApprovalDecision::RequireApproval
 pub enum awaken_provisioning_contract::ApprovalPolicy
 pub awaken_provisioning_contract::ApprovalPolicy::Autonomous
 pub awaken_provisioning_contract::ApprovalPolicy::HumanApproval
-pub enum awaken_provisioning_contract::AttemptSignal
-pub awaken_provisioning_contract::AttemptSignal::InfraFault
-pub awaken_provisioning_contract::AttemptSignal::Settled
 pub enum awaken_provisioning_contract::EnvValue
 pub awaken_provisioning_contract::EnvValue::Inline
 pub awaken_provisioning_contract::EnvValue::Inline::value: alloc::string::String
@@ -38,9 +35,6 @@ pub awaken_provisioning_contract::EnvironmentKind::Scope
 pub enum awaken_provisioning_contract::ExecutionShape
 pub awaken_provisioning_contract::ExecutionShape::NoSandbox
 pub awaken_provisioning_contract::ExecutionShape::Sandbox
-pub enum awaken_provisioning_contract::InFlightOutcome
-pub awaken_provisioning_contract::InFlightOutcome::Indeterminate
-pub awaken_provisioning_contract::InFlightOutcome::Settled
 pub enum awaken_provisioning_contract::IsolationClass
 pub awaken_provisioning_contract::IsolationClass::Container
 pub awaken_provisioning_contract::IsolationClass::Namespace
@@ -105,9 +99,6 @@ pub fn awaken_provisioning_contract::NetworkPolicy::rank(&self) -> u8
 pub enum awaken_provisioning_contract::OnUnmet
 pub awaken_provisioning_contract::OnUnmet::DegradeWithConsent
 pub awaken_provisioning_contract::OnUnmet::FailClosed
-pub enum awaken_provisioning_contract::PoisonVerdict
-pub awaken_provisioning_contract::PoisonVerdict::Healthy
-pub awaken_provisioning_contract::PoisonVerdict::Quarantine
 pub enum awaken_provisioning_contract::PrepareError
 pub awaken_provisioning_contract::PrepareError::EgressSecretUnsupported(alloc::string::String)
 pub awaken_provisioning_contract::PrepareError::InsufficientIsolation
@@ -158,11 +149,6 @@ pub enum awaken_provisioning_contract::Stdio
 pub awaken_provisioning_contract::Stdio::Inherit
 pub awaken_provisioning_contract::Stdio::Null
 pub awaken_provisioning_contract::Stdio::Piped
-pub enum awaken_provisioning_contract::TokenError
-pub awaken_provisioning_contract::TokenError::BadSignature
-pub awaken_provisioning_contract::TokenError::Expired
-pub awaken_provisioning_contract::TokenError::NotYetValid
-pub awaken_provisioning_contract::TokenError::TupleMismatch
 pub struct awaken_provisioning_contract::AdoptionPlan
 pub awaken_provisioning_contract::AdoptionPlan::adopt: alloc::vec::Vec<awaken_provisioning_contract::SandboxHandle>
 pub awaken_provisioning_contract::AdoptionPlan::orphan: alloc::vec::Vec<awaken_provisioning_contract::SandboxHandle>
@@ -205,20 +191,6 @@ pub struct awaken_provisioning_contract::IsolationPolicy
 pub awaken_provisioning_contract::IsolationPolicy::on_unmet: awaken_provisioning_contract::OnUnmet
 pub awaken_provisioning_contract::IsolationPolicy::prefer: awaken_provisioning_contract::IsolationClass
 pub awaken_provisioning_contract::IsolationPolicy::require: awaken_provisioning_contract::IsolationClass
-pub struct awaken_provisioning_contract::LeaseCallbackClaims
-pub awaken_provisioning_contract::LeaseCallbackClaims::expires_ms: u64
-pub awaken_provisioning_contract::LeaseCallbackClaims::issued_ms: u64
-pub awaken_provisioning_contract::LeaseCallbackClaims::lease_id: alloc::string::String
-pub awaken_provisioning_contract::LeaseCallbackClaims::nonce: u64
-pub awaken_provisioning_contract::LeaseCallbackClaims::run_id: alloc::string::String
-pub awaken_provisioning_contract::LeaseCallbackClaims::worker_id: alloc::string::String
-impl awaken_provisioning_contract::LeaseCallbackClaims
-pub fn awaken_provisioning_contract::LeaseCallbackClaims::sign(self, impl core::ops::function::Fn(&[u8]) -> alloc::vec::Vec<u8>) -> awaken_provisioning_contract::LeaseCallbackToken
-pub struct awaken_provisioning_contract::LeaseCallbackToken
-pub awaken_provisioning_contract::LeaseCallbackToken::claims: awaken_provisioning_contract::LeaseCallbackClaims
-pub awaken_provisioning_contract::LeaseCallbackToken::mac: alloc::vec::Vec<u8>
-impl awaken_provisioning_contract::LeaseCallbackToken
-pub fn awaken_provisioning_contract::LeaseCallbackToken::verify(&self, &str, &str, &str, u64, u64, impl core::ops::function::Fn(&[u8]) -> alloc::vec::Vec<u8>) -> core::result::Result<(), awaken_provisioning_contract::TokenError>
 pub struct awaken_provisioning_contract::LeaseGrant
 pub awaken_provisioning_contract::LeaseGrant::expires_ms: core::option::Option<u64>
 impl awaken_provisioning_contract::LeaseGrant
@@ -248,10 +220,6 @@ pub awaken_provisioning_contract::MountRequirement::required: bool
 pub awaken_provisioning_contract::MountRequirement::source: awaken_provisioning_contract::MountSource
 impl awaken_provisioning_contract::MountRequirement
 pub fn awaken_provisioning_contract::MountRequirement::is_secret_writeback(&self) -> bool
-pub struct awaken_provisioning_contract::NonceWatermark
-impl awaken_provisioning_contract::NonceWatermark
-pub fn awaken_provisioning_contract::NonceWatermark::admit(&mut self, &str, u64) -> bool
-pub fn awaken_provisioning_contract::NonceWatermark::new() -> Self
 pub struct awaken_provisioning_contract::PackageRequirements
 pub awaken_provisioning_contract::PackageRequirements::managers: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>
 impl awaken_provisioning_contract::PackageRequirements
@@ -392,18 +360,13 @@ pub fn awaken_provisioning_contract::SecretBroker::write_back<'life0, 'life1, 'a
 pub async fn awaken_provisioning_contract::apply_adoption_plan(&dyn awaken_provisioning_contract::SandboxProvider, &awaken_provisioning_contract::AdoptionPlan) -> awaken_provisioning_contract::ReconcileOutcome
 pub fn awaken_provisioning_contract::approval_decide(awaken_provisioning_contract::ApprovalPolicy, awaken_provisioning_contract::SandboxAction) -> awaken_provisioning_contract::ApprovalDecision
 pub const fn awaken_provisioning_contract::capability_requirements_satisfied(awaken_provisioning_contract::IsolationClass, awaken_provisioning_contract::IsolationClass, bool, bool, bool, bool) -> bool
-pub fn awaken_provisioning_contract::capped_expiry(u64, u64, &awaken_provisioning_contract::LeaseGrant) -> u64
 pub fn awaken_provisioning_contract::check_environment_soundness(&awaken_provisioning_contract::EnvironmentDecl) -> core::result::Result<(), awaken_provisioning_contract::AdmissionError>
-pub fn awaken_provisioning_contract::classify_poison(&[awaken_provisioning_contract::AttemptSignal], usize) -> awaken_provisioning_contract::PoisonVerdict
 pub fn awaken_provisioning_contract::decide_reap(&awaken_provisioning_contract::LeaseGrant, awaken_provisioning_contract::LivenessSignals) -> core::option::Option<awaken_provisioning_contract::ReapCause>
-pub fn awaken_provisioning_contract::egress_permitted(&awaken_provisioning_contract::LeaseGrant, u64, bool) -> bool
 pub async fn awaken_provisioning_contract::materialize_process_command(&[awaken_provisioning_contract::EnvVar], awaken_provisioning_contract::Command, core::option::Option<&alloc::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>>) -> core::result::Result<awaken_provisioning_contract::MaterializedCommand, awaken_provisioning_contract::SandboxError>
 pub fn awaken_provisioning_contract::plan_shape(&awaken_provisioning_contract::SandboxSpec) -> awaken_provisioning_contract::ExecutionShape
 pub fn awaken_provisioning_contract::prepare_environment(&awaken_provisioning_contract::SandboxSpec, &awaken_provisioning_contract::SandboxCapabilities) -> core::result::Result<awaken_provisioning_contract::EnvironmentPlan, awaken_provisioning_contract::PrepareError>
 pub fn awaken_provisioning_contract::reconcile_adoption(&[awaken_provisioning_contract::SandboxHandle], &[awaken_provisioning_contract::SandboxHandle]) -> awaken_provisioning_contract::AdoptionPlan
 pub async fn awaken_provisioning_contract::reconcile_and_apply(&dyn awaken_provisioning_contract::SandboxProvider, &[awaken_provisioning_contract::SandboxHandle], &[awaken_provisioning_contract::SandboxHandle]) -> awaken_provisioning_contract::ReconcileOutcome
-pub fn awaken_provisioning_contract::resolve_inflight(bool) -> awaken_provisioning_contract::InFlightOutcome
 pub async fn awaken_provisioning_contract::select_provider<'a>(&'a [alloc::boxed::Box<dyn awaken_provisioning_contract::SandboxProvider>], &awaken_provisioning_contract::SandboxSpec) -> core::result::Result<&'a dyn awaken_provisioning_contract::SandboxProvider, awaken_provisioning_contract::SelectionError>
 pub async fn awaken_provisioning_contract::select_provider_with_policy<'a>(&'a [alloc::boxed::Box<dyn awaken_provisioning_contract::SandboxProvider>], &awaken_provisioning_contract::SandboxSpec, &awaken_provisioning_contract::IsolationPolicy) -> core::result::Result<awaken_provisioning_contract::PolicySelection<'a>, awaken_provisioning_contract::SelectionError>
-pub fn awaken_provisioning_contract::should_redispatch(awaken_provisioning_contract::PoisonVerdict) -> bool
 pub fn awaken_provisioning_contract::validate_mount_requirements(&[awaken_provisioning_contract::MountRequirement], &awaken_provisioning_contract::SandboxCapabilities) -> core::result::Result<(), awaken_provisioning_contract::PrepareError>
