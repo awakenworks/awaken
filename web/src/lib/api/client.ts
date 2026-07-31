@@ -6,8 +6,12 @@
 const CLOUD_SESSION_TOKEN_KEY = "awaken.product.session-bearer";
 
 export function getToken(): string {
-  return globalThis.sessionStorage?.getItem(CLOUD_SESSION_TOKEN_KEY)
-    ?? "";
+  try {
+    return globalThis.sessionStorage?.getItem(CLOUD_SESSION_TOKEN_KEY)
+      ?? "";
+  } catch {
+    return "";
+  }
 }
 
 // ---- workspace scope seam (ADR-0048 path addressing / ADR-0051 tenancy) ----
