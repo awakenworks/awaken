@@ -28,8 +28,12 @@ describe("built-in protocol guide", () => {
   it("documents the complete backend exchange and frontend AI SDK wiring", () => {
     expect(APPLICATION_TOKEN_CURL).toContain("/v1/application-access-tokens");
     expect(APPLICATION_TOKEN_CURL).toContain("$AWAKEN_API_KEY");
+    expect(APPLICATION_TOKEN_CURL).toContain('"protocols": ["ai-sdk"]');
+    expect(APPLICATION_TOKEN_CURL).toContain('"managed_session_id": "sesn_123"');
+    expect(APPLICATION_TOKEN_CURL).not.toContain("thread_namespace");
     expect(FRONTEND_AI_SDK).toContain("DefaultChatTransport");
     expect(FRONTEND_AI_SDK).toContain("Bearer ${access_token}");
+    expect(FRONTEND_AI_SDK).toContain("thread_id: threadId");
     expect(MANAGED_CURL).toContain("/v1/sessions");
     expect(MANAGED_CURL).toContain("$AWAKEN_API_KEY");
   });

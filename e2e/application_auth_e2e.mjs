@@ -1,6 +1,6 @@
 // Complete phase-one application-authentication flow over the production
 // management composition: service credential -> short-lived application token
-// -> official Vercel AI SDK client -> isolated Awaken thread.
+// -> explicit Managed Session binding -> official Vercel AI SDK client.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -38,7 +38,20 @@ async function request(base, method, route, body, token) {
   };
 }
 
-async function mint(base, serviceToken, scope, agents = ['assistant']) {
+async function createSession(base, serviceToken, title) {
+  const response = await request(
+    base,
+    'POST',
+    '/v1/sessions',
+    { agent: 'assistant', title },
+    serviceToken,
+  );
+  assert.equal(response.status, 200, `create Managed Session: ${response.text}`);
+  assert.ok(response.body.id.startsWith('sesn_'));
+  return response.body;
+}
+
+async function mint(base, serviceToken, scope, managedSessionId, externalThreadId = 'shared') {
   const response = await request(
     base,
     'POST',
@@ -46,11 +59,13 @@ async function mint(base, serviceToken, scope, agents = ['assistant']) {
     {
       authority_id: 'e2e-customer-backend',
       application_scope: scope,
-      thread_namespace: 'customer-chat',
       actor_key: 'opaque-e2e-user',
-      operations: ['thread.run', 'thread.read'],
-      agent_ids: agents,
-      default_agent_id: agents[0],
+      protocols: ['ai-sdk'],
+      operations: ['thread.run', 'thread.messages.read'],
+      thread_bindings: [{
+        external_thread_id: externalThreadId,
+        managed_session_id: managedSessionId,
+      }],
       expires_in_seconds: 300,
     },
     serviceToken,
@@ -95,7 +110,13 @@ async function main() {
     assert.equal(response.status, 200, response.text);
     pass('Managed Agents requires and accepts the workspace service credential');
 
-    const projectA = await mint(base, serviceToken, 'project-a');
+    const sessionA = await createSession(base, serviceToken, 'project A');
+    const sessionB = await createSession(base, serviceToken, 'project B');
+    const beforeRuns = await request(base, 'GET', '/v1/sessions', undefined, serviceToken);
+    assert.equal(beforeRuns.status, 200, beforeRuns.text);
+    const sessionIdsBeforeRuns = beforeRuns.body.data.map((session) => session.id).sort();
+
+    const projectA = await mint(base, serviceToken, 'project-a', sessionA.id);
     response = await request(
       base,
       'POST',
@@ -113,7 +134,7 @@ async function main() {
     assert.match(assistantText(clientA), /message from project A/);
     pass('official AI SDK Chat streams through the application-authenticated route');
 
-    const projectB = await mint(base, serviceToken, 'project-b');
+    const projectB = await mint(base, serviceToken, 'project-b', sessionB.id);
     const clientB = chat(base, 'shared', projectB.access_token);
     await clientB.sendMessage({ text: 'message from project B' });
     assert.match(assistantText(clientB), /message from project B/);
@@ -138,17 +159,47 @@ async function main() {
     assert.doesNotMatch(historyA.text, /message from project B/);
     assert.match(historyB.text, /message from project B/);
     assert.doesNotMatch(historyB.text, /message from project A/);
-    pass('the same external thread id is isolated by opaque application scope');
+    pass('the same external thread id resolves to each token\'s explicit Managed Session binding');
+
+    const afterRuns = await request(base, 'GET', '/v1/sessions', undefined, serviceToken);
+    assert.equal(afterRuns.status, 200, afterRuns.text);
+    assert.deepEqual(
+      afterRuns.body.data.map((session) => session.id).sort(),
+      sessionIdsBeforeRuns,
+      'application protocol runs must not create a second Session',
+    );
+    assert.ok(afterRuns.body.data.every((session) => !session.id.startsWith('app_')));
+    pass('AI SDK runs reuse the two pre-existing Managed Sessions without app_* duplicates');
+
+    response = await request(
+      base,
+      'POST',
+      '/v1/ag-ui',
+      { threadId: 'shared', messages: [] },
+      projectA.access_token,
+    );
+    assert.equal(response.status, 403);
+    pass('an AI SDK token cannot be replayed against AG-UI');
 
     response = await request(
       base,
       'POST',
       '/v1/ai-sdk/agents/not-allowed/runs',
-      { threadId: 'agent-denied', messages: [] },
+      { threadId: 'shared', messages: [] },
       projectA.access_token,
     );
     assert.equal(response.status, 403);
-    pass('Agent allow-list rejects an out-of-scope Agent');
+    pass('the frozen Managed Session Agent cannot be overridden by a request');
+
+    response = await request(
+      base,
+      'POST',
+      '/v1/ai-sdk/threads/unbound/runs',
+      { messages: [] },
+      projectA.access_token,
+    );
+    assert.equal(response.status, 403);
+    pass('an unbound external thread cannot fall back to a derived Session');
 
     response = await request(
       base,
@@ -168,7 +219,7 @@ async function main() {
     assert.equal(response.status, 401);
     pass('revocation immediately invalidates the application token');
 
-    console.log('E2E PASS: complete service-key -> application-token -> AI SDK flow.');
+    console.log('E2E PASS: service-key -> Managed Session -> bound application-token -> AI SDK.');
   } finally {
     await stopServer(server);
     upstream.close();

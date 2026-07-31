@@ -20,11 +20,13 @@ export const APPLICATION_TOKEN_CURL = `curl http://localhost:8080/v1/application
   -d '{
     "authority_id": "my-backend",
     "application_scope": "project_42",
-    "thread_namespace": "customer-chat",
     "actor_key": "opaque-user-ref",
-    "operations": ["thread.run", "thread.read"],
-    "agent_ids": ["support"],
-    "default_agent_id": "support",
+    "protocols": ["ai-sdk"],
+    "operations": ["thread.run", "thread.messages.read"],
+    "thread_bindings": [{
+      "external_thread_id": "chat_thread_7",
+      "managed_session_id": "sesn_123"
+    }],
     "expires_in_seconds": 300
   }'`;
 
@@ -32,8 +34,8 @@ export const FRONTEND_AI_SDK = `import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 
 // Implement this against YOUR backend. Never put AWAKEN_API_KEY in browser code.
-const { access_token } = await getApplicationToken();
-const threadId = crypto.randomUUID();
+// The backend returns the external id that it bound to an existing Managed Session.
+const { access_token, thread_id: threadId } = await getApplicationToken();
 
 const chat = useChat({
   id: threadId,
@@ -79,8 +81,8 @@ export default function ProtocolsSurface() {
                   )
                 : protocol.token === "application"
                   ? app.t(
-                      "Browser/application route: send a short-lived application token scoped to opaque application and thread namespaces plus an Agent allow-list.",
-                      "浏览器/应用入口：使用短期应用令牌，并限制到不透明的应用作用域、thread 命名空间和 Agent 白名单。",
+                      "Browser/application route: send a short-lived token limited by protocol, operation, and explicit existing-Session bindings.",
+                      "浏览器/应用入口：使用按协议、操作和既有 Session 显式绑定限制的短期令牌。",
                     )
                 : app.t(
                     "Server-to-server route: use a workspace-scoped service API key. Never expose it to browser or mobile clients.",
@@ -94,8 +96,8 @@ export default function ProtocolsSurface() {
         <h3>{app.t("Backend integration · mint application access", "后端集成 · 签发应用访问令牌")}</h3>
         <p className="mut">
           {app.t(
-            "Your backend authenticates the end user with its own model, maps its project/tenant to application_scope, and asks Awaken for a token. Awaken never needs the user's roles or permissions.",
-            "你的后端继续使用自己的用户与权限模型，只需把项目/租户映射为 application_scope 后向 Awaken 申请令牌。Awaken 无需理解用户角色或权限。",
+            "After authorizing the end user, your backend creates or resolves one Managed Session, then asks Awaken for a token bound to that Session. Awaken never needs the user's roles or permissions.",
+            "后端完成用户鉴权后，先创建或解析唯一的 Managed Session，再申请绑定该 Session 的令牌。Awaken 无需理解用户角色或权限。",
           )}
         </p>
         <pre className="code-block"><code>{APPLICATION_TOKEN_CURL}</code></pre>
@@ -104,8 +106,8 @@ export default function ProtocolsSurface() {
         <h3>{app.t("Frontend integration · Vercel AI SDK", "前端集成 · Vercel AI SDK")}</h3>
         <p className="mut">
           {app.t(
-            "Return only access_token to the browser, keep it in memory, and use the application's own thread id. Token rotation preserves the same scoped thread mapping.",
-            "只把 access_token 返回浏览器并保存在内存中，thread id 继续使用应用自己的标识。令牌轮换后仍会映射到同一作用域内的 thread。",
+            "Return only access_token and the bound external thread id to the browser. A replacement token continues the conversation only when it carries the same explicit Managed Session binding.",
+            "只把 access_token 和已绑定的外部 thread id 返回浏览器。轮换令牌只有携带相同 Managed Session 显式绑定时才会继续同一对话。",
           )}
         </p>
         <pre className="code-block"><code>{FRONTEND_AI_SDK}</code></pre>

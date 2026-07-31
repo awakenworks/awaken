@@ -20,13 +20,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::body::{Body, to_bytes};
-use axum::extract::{Request, State};
-use axum::http::{HeaderMap, StatusCode, Uri, header};
-use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
-use sha2::{Digest, Sha256};
-
 use awaken_iam_contract::{
     ActionKey, AuthorizationDecision, AuthorizationRequest, PrincipalRef, ScopeRef, Timestamp,
     WorkspaceId,
@@ -37,6 +30,11 @@ use awaken_iam_core::{
 };
 use awaken_iam_preset::named_role_catalog;
 use awaken_tenancy::{Authority, ScopeClaim, ScopeId, resolve_scope};
+use axum::body::{Body, to_bytes};
+use axum::extract::{Request, State};
+use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 
 /// The managed-agent / session surface's action namespace. The preset role
 /// catalog grants `workspace.*` / `apikey.* / file.* / skill.*` but NOT this, so
@@ -67,36 +65,34 @@ pub struct EnforceEngine {
 
 /// The deliberately small authority Awaken accepts from a customer application.
 ///
-/// `application_scope` and `thread_namespace` are opaque strings chosen by the
+/// `application_scope` and `actor_key` are opaque strings chosen by the
 /// embedding application. Awaken does not interpret them as users, roles, or
-/// projects; it only uses their exact values to isolate thread ids.
+/// projects. Runtime identity comes only from explicit Managed Session bindings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplicationGrant {
     pub authority_id: String,
     pub application_scope: String,
-    pub thread_namespace: String,
     pub actor_key: Option<String>,
+    pub protocols: HashSet<String>,
     pub operations: HashSet<String>,
-    pub agent_ids: HashSet<String>,
-    pub default_agent_id: Option<String>,
+    pub thread_bindings: HashMap<String, ApplicationThreadBinding>,
+}
+
+/// One application-visible thread alias resolved to an existing Managed Session.
+///
+/// The Managed Session remains the resource authority. This value is only the
+/// short-lived authorization projection carried by an application grant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplicationThreadBinding {
+    pub managed_session_id: String,
+    pub agent_id: String,
 }
 
 impl ApplicationGrant {
-    /// Convert an application-visible id into a stable, scope-isolated host id.
+    /// Resolve only an alias explicitly authorized by this short-lived grant.
     #[must_use]
-    pub fn bind_thread(&self, workspace_id: &str, external_thread_id: &str) -> String {
-        let mut digest = Sha256::new();
-        for part in [
-            workspace_id,
-            self.authority_id.as_str(),
-            self.application_scope.as_str(),
-            self.thread_namespace.as_str(),
-            external_thread_id,
-        ] {
-            digest.update(part.len().to_be_bytes());
-            digest.update(part.as_bytes());
-        }
-        format!("app_{:x}", digest.finalize())
+    pub fn binding(&self, external_thread_id: &str) -> Option<&ApplicationThreadBinding> {
+        self.thread_bindings.get(external_thread_id)
     }
 }
 
@@ -111,7 +107,8 @@ pub struct ApplicationIdentity {
 /// Process-local short-lived application credentials.
 ///
 /// Restarting the binary invalidates these credentials, which is a safe default
-/// for phase one. Their thread mapping remains stable across token rotation.
+/// for phase one. Continuing a conversation after rotation requires the issuer
+/// to project the same explicit Managed Session binding into the replacement.
 pub struct ApplicationAccessStore {
     engine: EnforceEngine,
     grants: Mutex<HashMap<String, ApplicationGrant>>,
@@ -203,9 +200,11 @@ impl ApplicationRejection {
 
 /// Blanket PEP for browser/application protocol routes.
 ///
-/// It accepts only an application credential, checks the route operation and
-/// Agent allow-list, then replaces every external thread id with the stable
-/// scope-isolated host id before a protocol adapter sees the request.
+/// It accepts only an application credential, classifies the exact public route,
+/// checks protocol/action authority, then resolves one explicitly bound external
+/// thread id to its existing Managed Session before a protocol adapter sees the
+/// request. Unknown routes and unbound ids fail closed; this guard never creates
+/// or derives a second runtime identity.
 pub async fn application_guard(
     State(store): State<Arc<ApplicationAccessStore>>,
     request: Request,
@@ -217,53 +216,100 @@ pub async fn application_guard(
     let Some(identity) = store.authenticate(&presented) else {
         return reject(StatusCode::UNAUTHORIZED, "invalid application access token");
     };
-    let operation = if matches!(request.method().as_str(), "GET" | "HEAD") {
-        "thread.read"
-    } else {
-        "thread.run"
+    let path = request.uri().path().to_string();
+    let Some(route) = classify_application_route(request.method(), &path) else {
+        return reject(
+            StatusCode::FORBIDDEN,
+            "application token does not allow this route",
+        );
     };
-    if !identity.grant.operations.contains(operation) {
+    if !identity.grant.protocols.contains(route.protocol) {
+        return reject(
+            StatusCode::FORBIDDEN,
+            "application token does not allow this protocol",
+        );
+    }
+    if !identity.grant.operations.contains(route.operation) {
         return reject(
             StatusCode::FORBIDDEN,
             "application token does not allow this operation",
         );
     }
-    match scope_application_request(request, &identity).await {
+    match scope_application_request(request, &identity, route).await {
         Ok(request) => next.run(request).await,
         Err(rejection) => rejection.into_response(),
     }
 }
 
-async fn scope_application_request(
-    mut request: Request,
+#[derive(Debug, Clone, Copy)]
+struct ApplicationRoute<'a> {
+    protocol: &'static str,
+    operation: &'static str,
+    path_thread: Option<&'a str>,
+    path_agent: Option<&'a str>,
+}
+
+/// The single default-deny route-to-authority table for application protocols.
+/// Adding a GET route does not silently grant it history access merely because of
+/// its HTTP method.
+fn classify_application_route<'a>(method: &Method, path: &'a str) -> Option<ApplicationRoute<'a>> {
+    let segments = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let route = match (method, segments.as_slice()) {
+        (&Method::POST, ["v1", "ai-sdk", "chat"]) => ApplicationRoute::run("ai-sdk", None, None),
+        (&Method::POST, ["v1", "ai-sdk", "threads", thread, "runs"]) => {
+            ApplicationRoute::run("ai-sdk", Some(thread), None)
+        }
+        (&Method::POST, ["v1", "ai-sdk", "agents", agent, "runs"]) => {
+            ApplicationRoute::run("ai-sdk", None, Some(agent))
+        }
+        (&Method::GET | &Method::HEAD, ["v1", "ai-sdk", "threads", thread, "messages"]) => {
+            ApplicationRoute::messages("ai-sdk", thread)
+        }
+        (&Method::POST, ["v1", "ag-ui"]) => ApplicationRoute::run("ag-ui", None, None),
+        (&Method::POST, ["v1", "ag-ui", "agents", agent]) => {
+            ApplicationRoute::run("ag-ui", None, Some(agent))
+        }
+        (&Method::GET | &Method::HEAD, ["v1", "ag-ui", "threads", thread, "messages"]) => {
+            ApplicationRoute::messages("ag-ui", thread)
+        }
+        _ => return None,
+    };
+    Some(route)
+}
+
+impl<'a> ApplicationRoute<'a> {
+    const fn run(
+        protocol: &'static str,
+        path_thread: Option<&'a str>,
+        path_agent: Option<&'a str>,
+    ) -> Self {
+        Self {
+            protocol,
+            operation: "thread.run",
+            path_thread,
+            path_agent,
+        }
+    }
+
+    const fn messages(protocol: &'static str, path_thread: &'a str) -> Self {
+        Self {
+            protocol,
+            operation: "thread.messages.read",
+            path_thread: Some(path_thread),
+            path_agent: None,
+        }
+    }
+}
+
+async fn scope_application_request<'a>(
+    request: Request,
     identity: &ApplicationIdentity,
+    route: ApplicationRoute<'a>,
 ) -> Result<Request, ApplicationRejection> {
-    let path = request.uri().path().to_string();
-    let segments: Vec<&str> = path.split('/').collect();
-    let path_agent = segments
-        .windows(2)
-        .find(|pair| pair[0] == "agents")
-        .map(|pair| pair[1].to_string());
-    if path_agent.is_some() {
-        authorize_agent(identity, path_agent.as_deref())?;
-    }
-
-    if let Some(index) = segments.iter().position(|segment| *segment == "threads")
-        && let Some(external) = segments.get(index + 1)
-    {
-        let internal = identity.grant.bind_thread(&identity.workspace_id, external);
-        request
-            .extensions_mut()
-            .insert(awaken_tenancy::ResolvedResourceId(internal.clone()));
-        let new_path = path.replacen(
-            &format!("/threads/{external}"),
-            &format!("/threads/{internal}"),
-            1,
-        );
-        replace_path(request.uri_mut(), &new_path)?;
-    }
-
-    if matches!(request.method().as_str(), "POST" | "PUT" | "PATCH") {
+    if request.method() == Method::POST {
         let (mut parts, body) = request.into_parts();
         let bytes = to_bytes(body, MAX_APPLICATION_BODY).await.map_err(|_| {
             ApplicationRejection::new(StatusCode::BAD_REQUEST, "invalid application request body")
@@ -277,28 +323,6 @@ async fn scope_application_request(
                 "application request must be an object",
             )
         })?;
-        let agent = object
-            .get("agentId")
-            .or_else(|| object.get("agent_id"))
-            .and_then(serde_json::Value::as_str)
-            .or(path_agent.as_deref())
-            .or(identity.grant.default_agent_id.as_deref());
-        authorize_agent(identity, agent)?;
-        if let Some(agent) = agent {
-            parts
-                .extensions
-                .insert(awaken_tenancy::ResolvedAgentId(agent.to_string()));
-        }
-        if path_agent.is_none()
-            && object.get("agentId").is_none()
-            && object.get("agent_id").is_none()
-            && let Some(default_agent) = &identity.grant.default_agent_id
-        {
-            object.insert(
-                "agentId".to_string(),
-                serde_json::Value::String(default_agent.clone()),
-            );
-        }
         let thread_key = if object.contains_key("threadId") {
             Some("threadId")
         } else if object.contains_key("thread_id") {
@@ -306,59 +330,120 @@ async fn scope_application_request(
         } else {
             None
         };
-        if let Some(key) = thread_key {
-            let external = object
-                .get(key)
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| {
-                    ApplicationRejection::new(StatusCode::BAD_REQUEST, "thread id must be a string")
-                })?;
-            let internal = identity.grant.bind_thread(&identity.workspace_id, external);
-            object.insert(key.to_string(), serde_json::Value::String(internal));
-        } else if !parts.uri.path().contains("/threads/") {
+        let body_thread = match thread_key {
+            Some(key) => Some(
+                object
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| {
+                        ApplicationRejection::new(
+                            StatusCode::BAD_REQUEST,
+                            "thread id must be a string",
+                        )
+                    })?,
+            ),
+            None => None,
+        };
+        if let (Some(path_thread), Some(body_thread)) = (route.path_thread, body_thread)
+            && path_thread != body_thread
+        {
             return Err(ApplicationRejection::new(
                 StatusCode::BAD_REQUEST,
-                "application protocol requests require a thread id",
+                "path and body thread ids must match",
             ));
         }
+        let external = route.path_thread.or(body_thread).ok_or_else(|| {
+            ApplicationRejection::new(
+                StatusCode::BAD_REQUEST,
+                "application protocol requests require a thread id",
+            )
+        })?;
+        let binding = resolve_binding(identity, external)?;
+        authorize_bound_agent(route.path_agent, object, binding)?;
+
+        if let Some(key) = thread_key {
+            object.insert(
+                key.to_string(),
+                serde_json::Value::String(binding.managed_session_id.clone()),
+            );
+        }
+        if route.protocol == "ai-sdk" {
+            object.insert(
+                "agentId".to_string(),
+                serde_json::Value::String(binding.agent_id.clone()),
+            );
+            object.remove("agent_id");
+        }
+        parts.extensions.insert(awaken_tenancy::ResolvedResourceId(
+            binding.managed_session_id.clone(),
+        ));
+        parts
+            .extensions
+            .insert(awaken_tenancy::ResolvedAgentId(binding.agent_id.clone()));
         let encoded = serde_json::to_vec(&value).map_err(|_| {
             ApplicationRejection::new(StatusCode::BAD_REQUEST, "invalid application request body")
         })?;
         parts.headers.remove(header::CONTENT_LENGTH);
-        request = Request::from_parts(parts, Body::from(encoded));
+        return Ok(Request::from_parts(parts, Body::from(encoded)));
     }
+
+    let external = route.path_thread.ok_or_else(|| {
+        ApplicationRejection::new(
+            StatusCode::BAD_REQUEST,
+            "application protocol requests require a thread id",
+        )
+    })?;
+    let binding = resolve_binding(identity, external)?;
+    let (mut parts, body) = request.into_parts();
+    parts.extensions.insert(awaken_tenancy::ResolvedResourceId(
+        binding.managed_session_id.clone(),
+    ));
+    parts
+        .extensions
+        .insert(awaken_tenancy::ResolvedAgentId(binding.agent_id.clone()));
+    let request = Request::from_parts(parts, body);
     Ok(request)
 }
 
-fn authorize_agent(
-    identity: &ApplicationIdentity,
-    agent_id: Option<&str>,
-) -> Result<(), ApplicationRejection> {
-    let Some(agent_id) = agent_id else {
-        return Err(ApplicationRejection::new(
-            StatusCode::BAD_REQUEST,
-            "application protocol requests require an agent id",
-        ));
-    };
-    if identity.grant.agent_ids.contains(agent_id) {
-        Ok(())
-    } else {
-        Err(ApplicationRejection::new(
+fn resolve_binding<'a>(
+    identity: &'a ApplicationIdentity,
+    external_thread_id: &str,
+) -> Result<&'a ApplicationThreadBinding, ApplicationRejection> {
+    identity.grant.binding(external_thread_id).ok_or_else(|| {
+        ApplicationRejection::new(
             StatusCode::FORBIDDEN,
-            "application token does not allow this agent",
-        ))
-    }
+            "application token does not allow this thread",
+        )
+    })
 }
 
-fn replace_path(uri: &mut Uri, path: &str) -> Result<(), ApplicationRejection> {
-    let query = uri
-        .query()
-        .map(|query| format!("?{query}"))
-        .unwrap_or_default();
-    *uri = format!("{path}{query}")
-        .parse()
-        .map_err(|_| ApplicationRejection::new(StatusCode::BAD_REQUEST, "invalid thread id"))?;
+fn authorize_bound_agent(
+    path_agent: Option<&str>,
+    object: &serde_json::Map<String, serde_json::Value>,
+    binding: &ApplicationThreadBinding,
+) -> Result<(), ApplicationRejection> {
+    let body_agent_value = object.get("agentId").or_else(|| object.get("agent_id"));
+    let body_agent = match body_agent_value {
+        Some(serde_json::Value::String(agent)) => Some(agent.as_str()),
+        Some(_) => {
+            return Err(ApplicationRejection::new(
+                StatusCode::BAD_REQUEST,
+                "agent id must be a string",
+            ));
+        }
+        None => None,
+    };
+    if path_agent
+        .into_iter()
+        .chain(body_agent)
+        .any(|agent| agent != binding.agent_id)
+    {
+        return Err(ApplicationRejection::new(
+            StatusCode::FORBIDDEN,
+            "application token does not allow this agent",
+        ));
+    }
     Ok(())
 }
 
