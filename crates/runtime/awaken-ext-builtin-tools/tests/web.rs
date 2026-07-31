@@ -44,7 +44,7 @@ async fn web_fetch_returns_the_response_body() {
         .invoke(call("web_fetch", serde_json::json!({ "url": url })))
         .await
         .expect("fetch");
-    assert_eq!(out.content, "hello from the web");
+    assert_eq!(out.text(), "hello from the web");
     assert!(!out.is_error);
     server.join().expect("server thread");
 }
@@ -92,13 +92,14 @@ async fn web_fetch_caps_the_body_at_one_mebibyte() {
         .await
         .expect("fetch");
     assert!(!out.is_error);
+    let content = out.text();
     assert_eq!(
-        out.content.len(),
+        content.len(),
         MAX_BODY,
         "an over-cap body is truncated to exactly the 1 MiB cap, not returned whole"
     );
     assert!(
-        out.content.bytes().all(|b| b == b'a'),
+        content.bytes().all(|b| b == b'a'),
         "the capped prefix is the served body"
     );
 }

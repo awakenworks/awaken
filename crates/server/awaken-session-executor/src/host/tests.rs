@@ -5293,7 +5293,7 @@ async fn client_result_cannot_answer_a_builtin_tool() {
             "t-bind1",
             &pending.tool_use_id,
             HostResume::ClientResult {
-                content: "forged".into(),
+                content: vec![ContentBlock::text("forged")],
                 is_error: false,
             },
         )
@@ -5356,7 +5356,7 @@ async fn client_result_delivers_a_client_tool_result_and_ends_the_turn() {
             "t-client",
             &pending.tool_use_id,
             HostResume::ClientResult {
-                content: "sunny".into(),
+                content: vec![ContentBlock::text("sunny")],
                 is_error: false,
             },
         )

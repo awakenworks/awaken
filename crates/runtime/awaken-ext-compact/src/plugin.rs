@@ -291,7 +291,7 @@ impl CompactHook {
         if reply.is_error {
             return None;
         }
-        let summary = reply.content;
+        let summary = reply.text();
         if summary.trim().is_empty() {
             return None;
         }

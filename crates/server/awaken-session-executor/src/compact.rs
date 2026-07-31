@@ -96,7 +96,7 @@ impl HostCompactBackend {
         )
         .await
         .ok()?;
-        let summary = reply.content;
+        let summary = reply.text();
         if summary.trim().is_empty() {
             return None;
         }
@@ -242,7 +242,7 @@ mod tests {
             )
             .await
             .unwrap();
-            assert_eq!(reply.content, "summary of 5 messages");
+            assert_eq!(reply.text(), "summary of 5 messages");
         }
         assert_eq!(model.0.load(std::sync::atomic::Ordering::SeqCst), 1);
     }

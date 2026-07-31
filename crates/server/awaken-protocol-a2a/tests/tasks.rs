@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Message;
 use awaken_protocol_a2a::router;
 use awaken_protocol_transport::{
@@ -175,7 +176,7 @@ impl ProtocolRuntime for ClientToolRuntime {
     ) -> Result<StepOutcome, DriverError> {
         if let Resume::ClientResult { content, is_error } = resume {
             assert!(!is_error, "a plain answer is not an error result");
-            *self.delivered.lock().unwrap() = Some(content);
+            *self.delivered.lock().unwrap() = Some(extract_text(&content));
         } else {
             panic!("a client-executed tool must be resumed with a ClientResult, got {resume:?}");
         }

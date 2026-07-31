@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::event::{AgentEvent, Fact, Transcoder};
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
@@ -242,19 +243,19 @@ fn to_resume(kind: &DecisionKind, pending: &Pending) -> Resume {
     if pending.client_executed {
         match kind {
             DecisionKind::Output(v) => Resume::ClientResult {
-                content: result_text(v),
+                content: vec![ContentBlock::text(result_text(v))],
                 is_error: false,
             },
             DecisionKind::Error(e) => Resume::ClientResult {
-                content: e.clone(),
+                content: vec![ContentBlock::text(e)],
                 is_error: true,
             },
             DecisionKind::Denied => Resume::ClientResult {
-                content: "client denied the tool".into(),
+                content: vec![ContentBlock::text("client denied the tool")],
                 is_error: true,
             },
             DecisionKind::Approved => Resume::ClientResult {
-                content: String::new(),
+                content: Vec::new(),
                 is_error: false,
             },
         }
@@ -373,13 +374,17 @@ mod tests {
             &DecisionKind::Output(serde_json::json!("42")),
             &pending(true),
         );
-        assert!(matches!(r, Resume::ClientResult { content, is_error: false } if content == "42"));
+        assert!(
+            matches!(r, Resume::ClientResult { content, is_error: false } if content == vec![ContentBlock::text("42")])
+        );
     }
 
     #[test]
     fn client_error_delivers_an_error_result() {
         let r = to_resume(&DecisionKind::Error("boom".into()), &pending(true));
-        assert!(matches!(r, Resume::ClientResult { content, is_error: true } if content == "boom"));
+        assert!(
+            matches!(r, Resume::ClientResult { content, is_error: true } if content == vec![ContentBlock::text("boom")])
+        );
     }
 
     #[test]

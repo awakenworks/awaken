@@ -71,7 +71,7 @@ impl SessionRuntime for PreparingFake {
         &self,
         _t: &str,
         _tid: &str,
-        _c: &str,
+        _c: Vec<ContentBlock>,
         _e: bool,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
@@ -187,7 +187,7 @@ impl SessionRuntime for HotRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _content: &str,
+        _content: Vec<ContentBlock>,
         _is_error: bool,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
@@ -1813,7 +1813,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
             &self,
             _thread: &str,
             _tool_use_id: &str,
-            _content: &str,
+            _content: Vec<ContentBlock>,
             _is_error: bool,
         ) -> Result<StepOutcome, RunError> {
             unreachable!()

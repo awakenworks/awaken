@@ -410,7 +410,7 @@ mod tests {
             })
             .await
             .expect("tool invocation completes");
-        assert!(!output.is_error, "{}", output.content);
-        assert!(output.content.contains("Review with focus correctness"));
+        assert!(!output.is_error, "{}", output.text());
+        assert!(output.text().contains("Review with focus correctness"));
     }
 }

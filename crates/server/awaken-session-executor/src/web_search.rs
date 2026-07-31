@@ -186,7 +186,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(output.content.contains("https://paid.test/result"));
+        assert!(output.text().contains("https://paid.test/result"));
         let stale = CredentialRef {
             revision: 2,
             ..exact.clone()

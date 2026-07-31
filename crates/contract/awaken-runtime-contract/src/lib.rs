@@ -76,6 +76,7 @@ pub use plugin::{
 // `RunEndContext.conversation: &[Message]`). Re-exported so an extension that
 // consumes those ports names them here, without a direct `agent-contract` edge.
 pub use awaken_agent_contract::agent::awaiting::ResumeTicket;
+pub use awaken_agent_contract::agent::content::{ContentBlock, ImageSource, extract_text};
 pub use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 pub use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 pub use awaken_agent_contract::agent::state::{Command as StateCommand, Key as StateKey};

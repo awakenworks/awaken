@@ -334,7 +334,7 @@ mod tests {
             &self,
             _thread: &str,
             _tool_use_id: &str,
-            _content: &str,
+            _content: Vec<ContentBlock>,
             _is_error: bool,
         ) -> Result<StepOutcome, RunError> {
             Err(RunError::internal("unused"))

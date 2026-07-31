@@ -584,8 +584,10 @@ impl RawTool for SkillTool {
             )
             .await;
             return Ok(match result {
-                Ok(output) if !output.is_error => ToolOutput::ok(call.call_id, output.content),
-                Ok(output) => ToolOutput::error(call.call_id, output.content),
+                Ok(output) if !output.is_error => {
+                    ToolOutput::ok_blocks(call.call_id, output.content)
+                }
+                Ok(output) => ToolOutput::error_blocks(call.call_id, output.content),
                 Err(err) => ToolOutput::error(call.call_id, format!("skill fork failed: {err}")),
             });
         }
@@ -650,7 +652,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.is_error);
-        let v: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out.text()).unwrap();
         let skills = v["skills"].as_array().unwrap();
         assert_eq!(skills.len(), 1, "hidden skill excluded");
         assert_eq!(skills[0]["id"], "commit");
@@ -658,7 +660,7 @@ mod tests {
         assert_eq!(skills[0]["provenance"], "delivered");
         assert_eq!(skills[0]["environment"], "instruction_only");
         // tier-1 is metadata only — the body must not appear in discovery.
-        assert!(!out.content.contains("SECRET-STEP"));
+        assert!(!out.text().contains("SECRET-STEP"));
     }
 
     #[tokio::test]
@@ -673,7 +675,7 @@ mod tests {
             .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
             .await
             .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out.text()).unwrap();
         let desc = v["skills"][0]["description"].as_str().unwrap();
         assert!(
             desc.chars().count() <= CATALOG_FIELD_CAP,
@@ -697,11 +699,11 @@ mod tests {
             .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
             .await
             .unwrap();
-        assert!(before.content.contains("always"));
+        assert!(before.text().contains("always"));
         assert!(
-            !before.content.contains("rusty"),
+            !before.text().contains("rusty"),
             "conditional hidden: {}",
-            before.content
+            before.text()
         );
 
         // Touch a non-matching then a matching path.
@@ -713,9 +715,9 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            after.content.contains("rusty"),
+            after.text().contains("rusty"),
             "surfaced after match: {}",
-            after.content
+            after.text()
         );
     }
 
@@ -729,7 +731,7 @@ mod tests {
             .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
             .await
             .unwrap();
-        assert!(!out.content.contains("rusty"));
+        assert!(!out.text().contains("rusty"));
     }
 
     #[tokio::test]
@@ -742,7 +744,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert!(hit.content.contains("commit"));
+        assert!(hit.text().contains("commit"));
         let miss = tool
             .invoke(call(
                 SKILL_LIST_TOOL_ID,
@@ -750,7 +752,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&miss.content).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&miss.text()).unwrap();
         assert!(v["skills"].as_array().unwrap().is_empty());
     }
 
@@ -767,7 +769,7 @@ mod tests {
             .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
             .await
             .unwrap();
-        assert!(out.content.contains("agent_created"));
+        assert!(out.text().contains("agent_created"));
     }
 
     #[tokio::test]
@@ -781,9 +783,9 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.is_error);
-        assert!(out.content.contains("Skill: Commit"));
-        assert!(out.content.contains("SECRET-STEP: sign it"));
-        assert!(out.content.contains("Arguments: -m fix"));
+        assert!(out.text().contains("Skill: Commit"));
+        assert!(out.text().contains("SECRET-STEP: sign it"));
+        assert!(out.text().contains("Arguments: -m fix"));
     }
 
     #[tokio::test]
@@ -827,14 +829,14 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert!(out.content.contains("first=a"));
-        assert!(out.content.contains("rest=a"));
+        assert!(out.text().contains("first=a"));
+        assert!(out.text().contains("rest=a"));
         assert!(
-            out.content.contains("missing="),
+            out.text().contains("missing="),
             "out-of-range positional is empty"
         );
         // the body used tokens, so no raw-args footer is appended.
-        assert!(!out.content.contains("Arguments:"));
+        assert!(!out.text().contains("Arguments:"));
     }
 
     #[tokio::test]
@@ -855,14 +857,14 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert!(out.content.contains("price=$0"), "{}", out.content);
-        assert!(out.content.contains("flag=$x"), "{}", out.content);
-        assert!(out.content.contains("tail=$"), "{}", out.content);
+        assert!(out.text().contains("price=$0"), "{}", out.text());
+        assert!(out.text().contains("flag=$x"), "{}", out.text());
+        assert!(out.text().contains("tail=$"), "{}", out.text());
         // No positional/ARGUMENTS token was consumed, so the footer echoes the args.
         assert!(
-            out.content.contains("Arguments: hi there"),
+            out.text().contains("Arguments: hi there"),
             "unused-token body still echoes raw args: {}",
-            out.content
+            out.text()
         );
     }
 
@@ -879,9 +881,9 @@ mod tests {
             .unwrap();
         assert!(!out.is_error);
         assert!(
-            !out.content.contains("Arguments:"),
+            !out.text().contains("Arguments:"),
             "whitespace-only args must not emit a footer: {}",
-            out.content
+            out.text()
         );
     }
 
@@ -902,9 +904,9 @@ mod tests {
             .unwrap();
         assert!(!out.is_error);
         assert!(
-            !out.content.contains("broken"),
+            !out.text().contains("broken"),
             "an uncompilable glob stays hidden: {}",
-            out.content
+            out.text()
         );
     }
 
@@ -929,9 +931,9 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            out.content.contains("run skills/deploy/x.sh in sess-1"),
+            out.text().contains("run skills/deploy/x.sh in sess-1"),
             "{}",
-            out.content
+            out.text()
         );
     }
 
@@ -948,8 +950,8 @@ mod tests {
             .invoke(call(SKILL_TOOL_ID, serde_json::json!({ "skill": "d" })))
             .await
             .unwrap();
-        assert!(out.content.contains("dir=${SKILL_DIR}"));
-        assert!(out.content.contains("sess=${SESSION_ID}"));
+        assert!(out.text().contains("dir=${SKILL_DIR}"));
+        assert!(out.text().contains("sess=${SESSION_ID}"));
     }
 
     #[tokio::test]
@@ -962,7 +964,7 @@ mod tests {
             .await
             .unwrap();
         // `commit` body has no $-token, so the raw args are echoed.
-        assert!(out.content.contains("Arguments: -m x"));
+        assert!(out.text().contains("Arguments: -m x"));
     }
 
     struct EchoRunner;
@@ -1004,7 +1006,7 @@ mod tests {
             .unwrap();
         assert!(!out.is_error);
         // The runner's reply is returned verbatim — not the inline "Skill:" header.
-        assert_eq!(out.content, "forked[review]: do the review of PR-7");
+        assert_eq!(out.text(), "forked[review]: do the review of PR-7");
     }
 
     #[tokio::test]
@@ -1041,7 +1043,7 @@ mod tests {
             out.is_error,
             "a fork runner failure is a model-visible error"
         );
-        assert!(out.content.contains("skill fork failed"));
+        assert!(out.text().contains("skill fork failed"));
     }
 
     #[tokio::test]
@@ -1060,7 +1062,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            !listed.content.contains("deploy"),
+            !listed.text().contains("deploy"),
             "a conditional skill is hidden from the catalog until surfaced"
         );
 
@@ -1073,7 +1075,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.is_error);
-        assert!(out.content.contains("the deploy steps"));
+        assert!(out.text().contains("the deploy steps"));
     }
 
     #[tokio::test]
@@ -1092,8 +1094,8 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert!(out.content.contains("Skill: Review"));
-        assert!(out.content.contains("inline body"));
+        assert!(out.text().contains("Skill: Review"));
+        assert!(out.text().contains("inline body"));
     }
 
     struct AllowGate;
@@ -1270,7 +1272,7 @@ mod tests {
                 .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({ "query": q })))
                 .await
                 .unwrap();
-            let v: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&out.text()).unwrap();
             assert_eq!(
                 v["skills"].as_array().unwrap().len(),
                 1,
@@ -1292,9 +1294,9 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            out.content.contains("commit"),
+            out.text().contains("commit"),
             "when_to_use match surfaces the skill: {}",
-            out.content
+            out.text()
         );
     }
 

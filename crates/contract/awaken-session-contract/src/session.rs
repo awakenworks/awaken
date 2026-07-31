@@ -364,7 +364,7 @@ pub trait SessionRuntime: Send + Sync {
         &self,
         thread: &str,
         tool_use_id: &str,
-        content: &str,
+        content: Vec<ContentBlock>,
         is_error: bool,
     ) -> Result<StepOutcome, RunError>;
 
@@ -692,7 +692,7 @@ mod tests {
             &self,
             _thread: &str,
             _tool_use_id: &str,
-            _content: &str,
+            _content: Vec<ContentBlock>,
             _is_error: bool,
         ) -> Result<StepOutcome, RunError> {
             unreachable!("not exercised by the default-method tests")

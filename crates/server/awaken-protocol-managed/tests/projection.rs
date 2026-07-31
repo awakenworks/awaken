@@ -146,7 +146,7 @@ impl SessionRuntime for ScriptFake {
         &self,
         _t: &str,
         _tid: &str,
-        _c: &str,
+        _c: Vec<ContentBlock>,
         _e: bool,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no custom"))
