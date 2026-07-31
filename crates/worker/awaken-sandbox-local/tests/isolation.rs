@@ -73,7 +73,7 @@ async fn sandboxes_are_isolated_and_escapes_fail_closed() {
     )
     .await
     .unwrap();
-    assert!(read_a.content.contains("A-SECRET"));
+    assert!(read_a.text().contains("A-SECRET"));
 
     // B cannot see A's file by the same logical path (isolation).
     assert!(
@@ -159,9 +159,9 @@ async fn deny_egress_blocks_bash_network_but_unrestricted_allows_it() {
     .await
     .unwrap();
     assert!(
-        out.content.contains("NET-DOWN"),
+        out.text().contains("NET-DOWN"),
         "deny_egress must block network: {}",
-        out.content
+        out.text()
     );
 
     // Same command, egress allowed → resolution works (proves the flag is the cause).
@@ -174,9 +174,9 @@ async fn deny_egress_blocks_bash_network_but_unrestricted_allows_it() {
     .await
     .unwrap();
     assert!(
-        out.content.contains("NET-UP"),
+        out.text().contains("NET-UP"),
         "unrestricted egress must reach the network: {}",
-        out.content
+        out.text()
     );
 }
 
@@ -243,9 +243,9 @@ async fn deny_egress_blocks_a_host_loopback_listener_deterministically() {
     .await
     .unwrap();
     assert!(
-        out.content.contains("NET-DOWN"),
+        out.text().contains("NET-DOWN"),
         "deny_egress must not reach the host loopback listener: {}",
-        out.content
+        out.text()
     );
 
     // Egress allowed → shares the host netns → the same listener is reachable (proves the
@@ -262,9 +262,9 @@ async fn deny_egress_blocks_a_host_loopback_listener_deterministically() {
     .await
     .unwrap();
     assert!(
-        out.content.contains("NET-UP"),
+        out.text().contains("NET-UP"),
         "unrestricted egress must reach the host loopback listener: {}",
-        out.content
+        out.text()
     );
     drop(listener);
 }
@@ -305,11 +305,11 @@ async fn workdir_bash_cwd_is_a_lexical_convenience_not_a_security_boundary() {
     .await
     .unwrap();
     assert_eq!(
-        pwd.content.trim(),
+        pwd.text().trim(),
         "/",
         "cd / escapes the lexical Workdir cwd (by design — it is a convenience, not a \
          boundary; the namespace tier is the enforcement seam): {}",
-        pwd.content
+        pwd.text()
     );
 
     // A relative climb likewise reads a host file ABOVE the root — the lexical `cwd` does
@@ -324,10 +324,10 @@ async fn workdir_bash_cwd_is_a_lexical_convenience_not_a_security_boundary() {
     .await
     .unwrap();
     assert!(
-        leak.content.contains("ABOVE-ROOT-SECRET"),
+        leak.text().contains("ABOVE-ROOT-SECRET"),
         "bash relative path reads above the root (by design — a trusted, non-confining \
          tier): {}",
-        leak.content
+        leak.text()
     );
 
     sandbox.dispose().await.unwrap();

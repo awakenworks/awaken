@@ -11,11 +11,19 @@ pub(super) async fn spill_tool_output(
     run_id: &RunId,
     mut output: ToolOutput,
 ) -> Result<ToolOutput> {
-    if let Some(spiller) = &context.tool_output_spiller {
-        output.content = spiller
-            .spill(run_id, &output.call_id, output.content)
-            .await
-            .map_err(|error| Error::Execution(error.to_string()))?;
+    if let Some(spiller) = &context.tool_output_spiller
+        && output
+            .content
+            .iter()
+            .all(|block| matches!(block, ContentBlock::Text { .. }))
+    {
+        let text = output.text();
+        output.content = vec![ContentBlock::text(
+            spiller
+                .spill(run_id, &output.call_id, text)
+                .await
+                .map_err(|error| Error::Execution(error.to_string()))?,
+        )];
     }
     Ok(output)
 }

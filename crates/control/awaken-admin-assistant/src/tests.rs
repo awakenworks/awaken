@@ -263,11 +263,11 @@ async fn capabilities_returns_the_redacted_org_shared_view() {
         .await
         .unwrap();
     assert!(!out.is_error);
-    let caps: PlatformCapabilities = serde_json::from_str(&out.content).unwrap();
+    let caps: PlatformCapabilities = serde_json::from_str(&out.text()).unwrap();
     assert_eq!(caps.models, vec!["m-1", "m-2"]);
     assert_eq!(caps.plugins[0].id, "state_machine");
     // No secret-bearing field exists on the view — it is redacted by construction.
-    assert!(!out.content.contains("api_key") && !out.content.contains("credential"));
+    assert!(!out.text().contains("api_key") && !out.text().contains("credential"));
 }
 
 #[tokio::test]
@@ -286,8 +286,8 @@ async fn draft_agent_persists_an_unpublished_draft_and_returns_it() {
         ))
         .await
         .unwrap();
-    assert!(!out.is_error, "{}", out.content);
-    let returned = parse_saved(&out.content);
+    assert!(!out.is_error, "{}", out.text());
+    let returned = parse_saved(&out.text());
     assert_eq!(returned.id, "support");
     assert_eq!(returned.max_steps, 5);
     assert_eq!(returned.tool_ids, vec!["read".to_string()]);
@@ -335,7 +335,7 @@ async fn draft_agent_round_trips_tool_overrides() {
         ))
         .await
         .unwrap();
-    assert!(!out.is_error, "{}", out.content);
+    assert!(!out.is_error, "{}", out.text());
     // The persisted config carries the override (previously impossible to set at all).
     let stored = h.store.stored("authoring").expect("persisted");
     assert_eq!(stored.tool_overrides.len(), 1);
@@ -344,7 +344,7 @@ async fn draft_agent_round_trips_tool_overrides() {
     assert_eq!(ov.alias.as_deref(), Some("peek"));
     assert!(ov.defer);
     // And the returned envelope reflects it too.
-    let returned = parse_saved(&out.content);
+    let returned = parse_saved(&out.text());
     assert_eq!(returned.tool_overrides, stored.tool_overrides);
 }
 
@@ -365,7 +365,7 @@ async fn draft_agent_binds_a_resource_into_the_separate_store() {
         ))
         .await
         .unwrap();
-    assert!(!out.is_error, "{}", out.content);
+    assert!(!out.is_error, "{}", out.text());
     // The config persisted, AND the binding landed in the SEPARATE resource store.
     assert!(h.store.stored("researcher").is_some());
     let bound = h.store.stored_resources("researcher");
@@ -393,7 +393,7 @@ async fn draft_agent_round_trips_mcp_skills_multiagent_and_metadata() {
         ))
         .await
         .unwrap();
-    assert!(!out.is_error, "{}", out.content);
+    assert!(!out.is_error, "{}", out.text());
     let stored = h.store.stored("full").unwrap();
     assert_eq!(
         stored.mcp_servers,
@@ -462,7 +462,7 @@ async fn patch_agent_replaces_the_whole_resource_set() {
         ))
         .await
         .unwrap();
-    assert!(!out.is_error, "{}", out.content);
+    assert!(!out.is_error, "{}", out.text());
     let bound = h.store.stored_resources("r");
     assert_eq!(bound.len(), 1);
     assert_eq!(bound[0].kind, "repository");
@@ -493,7 +493,7 @@ async fn patch_agent_leaves_resources_untouched_when_absent() {
         ))
         .await
         .unwrap();
-    assert!(!out.is_error, "{}", out.content);
+    assert!(!out.is_error, "{}", out.text());
     let bound = h.store.stored_resources("r");
     assert_eq!(bound.len(), 1);
     assert_eq!(bound[0].resource_id, "mem_1");
@@ -514,7 +514,7 @@ async fn draft_agent_derives_plugin_ids_and_size_bounds_sections() {
         ))
         .await
         .unwrap();
-    assert!(!out.is_error, "{}", out.content);
+    assert!(!out.is_error, "{}", out.text());
     let stored = h.store.stored("p").unwrap();
     // plugin_ids are derived from the plugin_config keys.
     assert_eq!(stored.plugin_ids, vec!["state_machine".to_string()]);
@@ -536,7 +536,7 @@ async fn draft_agent_derives_plugin_ids_and_size_bounds_sections() {
         .await
         .unwrap();
     assert!(out.is_error);
-    assert!(out.content.contains("over the"));
+    assert!(out.text().contains("over the"));
     assert!(
         h.store.stored("toobig").is_none(),
         "oversized not persisted"
@@ -560,8 +560,8 @@ async fn draft_agent_that_fails_validation_does_not_persist() {
         .unwrap();
     // Fail-closed: a validation failure is a soft error and nothing is written.
     assert!(out.is_error);
-    assert!(out.content.contains("does not validate"));
-    assert!(out.content.contains("unknown tool"));
+    assert!(out.text().contains("does not validate"));
+    assert!(out.text().contains("unknown tool"));
     assert!(h.store.is_empty(), "invalid draft must not be persisted");
 }
 
@@ -575,7 +575,7 @@ async fn draft_agent_rejects_bad_arguments_without_aborting() {
         .unwrap();
     // Missing `instructions` is a model-visible error, not a hard abort.
     assert!(out.is_error);
-    assert!(out.content.contains("invalid arguments"));
+    assert!(out.text().contains("invalid arguments"));
     assert!(h.store.is_empty());
 }
 
@@ -641,7 +641,7 @@ async fn patch_agent_reads_merges_and_persists() {
         ))
         .await
         .unwrap();
-    assert!(!out.is_error, "{}", out.content);
+    assert!(!out.is_error, "{}", out.text());
 
     let stored = h.store.stored("support").unwrap();
     // Patched field applied.
@@ -676,7 +676,7 @@ async fn patch_agent_errors_when_the_draft_is_absent() {
         .await
         .unwrap();
     assert!(out.is_error);
-    assert!(out.content.contains("no saved draft"));
+    assert!(out.text().contains("no saved draft"));
 }
 
 #[tokio::test]
@@ -700,7 +700,7 @@ async fn patch_agent_failing_validation_does_not_overwrite() {
         .await
         .unwrap();
     assert!(out.is_error);
-    assert!(out.content.contains("does not validate"));
+    assert!(out.text().contains("does not validate"));
     assert_eq!(h.store.stored("s").unwrap(), before, "not overwritten");
 }
 
@@ -721,7 +721,7 @@ async fn validate_reads_the_saved_draft_by_id() {
         .unwrap();
     assert!(!out.is_error);
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&out.content).unwrap()["valid"],
+        serde_json::from_str::<serde_json::Value>(&out.text()).unwrap()["valid"],
         true
     );
 }
@@ -750,7 +750,7 @@ async fn validate_reports_invalid_for_a_saved_draft_with_an_unknown_tool() {
         .unwrap();
     // A failed validation is still a successful (soft) tool call — verdict is the body.
     assert!(!out.is_error);
-    let parsed: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&out.text()).unwrap();
     assert_eq!(parsed["valid"], false);
     assert!(parsed["error"].as_str().unwrap().contains("unknown tool"));
 }
@@ -764,7 +764,7 @@ async fn validate_errors_when_the_draft_is_absent() {
         .await
         .unwrap();
     assert!(out.is_error);
-    assert!(out.content.contains("no saved draft"));
+    assert!(out.text().contains("no saved draft"));
 }
 
 #[tokio::test]
@@ -776,7 +776,7 @@ async fn validate_rejects_bad_arguments() {
         .await
         .unwrap();
     assert!(out.is_error);
-    assert!(out.content.contains("invalid arguments"));
+    assert!(out.text().contains("invalid arguments"));
 }
 
 #[tokio::test]
@@ -1026,8 +1026,8 @@ async fn draft_naming_an_admin_tool_is_rejected_and_not_persisted() {
         .await
         .unwrap();
     assert!(out.is_error);
-    assert!(out.content.contains("does not validate"));
-    assert!(out.content.contains(CAPABILITIES_TOOL));
+    assert!(out.text().contains("does not validate"));
+    assert!(out.text().contains(CAPABILITIES_TOOL));
     assert!(h.store.is_empty());
 }
 
@@ -1068,9 +1068,9 @@ async fn explain_console_tool_returns_a_topic_without_durable_change_audit() {
         ))
         .await
         .unwrap();
-    assert!(!out.is_error, "{}", out.content);
+    assert!(!out.is_error, "{}", out.text());
     // The tool projects the pure `explain` payload verbatim (the full 5 sections).
-    let payload: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&out.text()).unwrap();
     assert_eq!(payload["topic"], "connect-model");
     for k in ["what", "why", "where", "how", "gotchas"] {
         assert!(payload[k].as_str().is_some_and(|s| !s.is_empty()));
@@ -1087,8 +1087,8 @@ async fn explain_console_tool_with_no_topic_returns_the_index_without_change_aud
         .invoke(call(EXPLAIN_TOOL, serde_json::json!({})))
         .await
         .unwrap();
-    assert!(!out.is_error, "{}", out.content);
-    let payload: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+    assert!(!out.is_error, "{}", out.text());
+    let payload: serde_json::Value = serde_json::from_str(&out.text()).unwrap();
     assert!(payload["topics"].as_array().is_some_and(|a| !a.is_empty()));
     assert!(h.audit.0.lock().unwrap().is_empty());
 }
@@ -1105,8 +1105,8 @@ async fn explain_console_tool_falls_back_to_index_for_an_unknown_topic() {
         .await
         .unwrap();
     // An unknown topic is still a successful (soft) call — the body carries the note.
-    assert!(!out.is_error, "{}", out.content);
-    let payload: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+    assert!(!out.is_error, "{}", out.text());
+    let payload: serde_json::Value = serde_json::from_str(&out.text()).unwrap();
     assert_eq!(payload["unknown_topic"], "does-not-exist");
     assert!(payload["topics"].as_array().is_some_and(|a| !a.is_empty()));
     assert!(h.audit.0.lock().unwrap().is_empty());
@@ -1226,10 +1226,10 @@ async fn draft_agent_surfaces_a_store_put_failure() {
     assert!(
         out.is_error,
         "a store put failure must be an error: {}",
-        out.content
+        out.text()
     );
-    assert!(out.content.contains("validated but could not be saved"));
-    assert!(out.content.contains("disk full"));
+    assert!(out.text().contains("validated but could not be saved"));
+    assert!(out.text().contains("disk full"));
 }
 
 // Task 3b: on the PATCH path, a `store.put` failure on the re-save likewise surfaces.
@@ -1262,9 +1262,9 @@ async fn patch_agent_surfaces_a_store_put_failure() {
         ))
         .await
         .unwrap();
-    assert!(out.is_error, "{}", out.content);
-    assert!(out.content.contains("validated but could not be saved"));
-    assert!(out.content.contains("disk full"));
+    assert!(out.is_error, "{}", out.text());
+    assert!(out.text().contains("validated but could not be saved"));
+    assert!(out.text().contains("disk full"));
 }
 
 // Task 3c: `persist_resources_after` — the config saves, but binding the SEPARATE
@@ -1290,9 +1290,9 @@ async fn draft_agent_surfaces_a_resource_bind_failure_after_saving_the_config() 
         ))
         .await
         .unwrap();
-    assert!(out.is_error, "{}", out.content);
-    assert!(out.content.contains("resources could not be bound"));
-    assert!(out.content.contains("resource store offline"));
+    assert!(out.is_error, "{}", out.text());
+    assert!(out.text().contains("resources could not be bound"));
+    assert!(out.text().contains("resource store offline"));
     // Characterization: the CONFIG was still saved (partial write) even though the
     // resource bind failed — the config store shows the draft.
     assert!(
@@ -1335,9 +1335,9 @@ async fn patch_agent_surfaces_a_resource_bind_failure() {
         ))
         .await
         .unwrap();
-    assert!(out.is_error, "{}", out.content);
-    assert!(out.content.contains("resources could not be bound"));
-    assert!(out.content.contains("resource store offline"));
+    assert!(out.is_error, "{}", out.text());
+    assert!(out.text().contains("resources could not be bound"));
+    assert!(out.text().contains("resource store offline"));
 }
 
 // ===================================================================================
@@ -1375,9 +1375,9 @@ async fn patch_agent_rechecks_plugin_config_size_after_merge() {
         ))
         .await
         .unwrap();
-    assert!(out.is_error, "{}", out.content);
-    assert!(out.content.contains("over the"));
-    assert!(out.content.contains("state_machine"));
+    assert!(out.is_error, "{}", out.text());
+    assert!(out.text().contains("over the"));
+    assert!(out.text().contains("state_machine"));
     // The oversized patch did NOT overwrite the stored draft (fail-closed).
     assert_eq!(
         h.store.stored("p").unwrap(),

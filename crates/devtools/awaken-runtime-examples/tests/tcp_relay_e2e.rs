@@ -84,7 +84,7 @@ async fn remote_tool_runs_over_real_tcp() {
         .await
         .expect("remote invoke over tcp");
 
-    assert_eq!(output.content, "over the wire");
+    assert_eq!(output.text(), "over the wire");
     assert!(!output.is_error);
     assert_eq!(
         runs.load(Ordering::SeqCst),

@@ -897,7 +897,7 @@ async fn replay_safe_crash_recovery_produces_a_refinement_trace() {
         .expect("recovered batch remains durable");
     assert!(matches!(
         &batch.calls[0].phase,
-        ToolCallPhase::Completed(output) if output.content == "recovered-preview: ok"
+        ToolCallPhase::Completed(output) if output.text() == "recovered-preview: ok"
     ));
     emit_trace("replay_safe_recovery", &trace);
 }

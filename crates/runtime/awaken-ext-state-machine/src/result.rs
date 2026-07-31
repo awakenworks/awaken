@@ -1,14 +1,14 @@
 //! Tool-result matching for result-conditioned transitions.
 //!
 //! Built directly on [`awaken_tool_pattern`]. A result is viewed through
-//! [`ToolResultView`], a thin adapter over the runtime `ToolOutput` (a status
-//! bit plus stringified content), so a transition can route on success/error and
-//! on the content payload.
+//! [`ToolResultView`], a derived text adapter over the runtime's structured
+//! `ToolOutput`, so a transition can route on success/error and textual content
+//! without becoming a second stored result representation.
 
 use awaken_tool_pattern::{FieldCondition, MatchOp, evaluate_field_condition, evaluate_op};
 
 /// A tool result as the state machine sees it: a success/error status and the
-/// stringified content. Adapted from the runtime `ToolOutput`.
+/// derived textual content. Adapted from the runtime `ToolOutput`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolResultView<'a> {
     pub is_error: bool,

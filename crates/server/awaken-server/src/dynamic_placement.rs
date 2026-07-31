@@ -381,7 +381,7 @@ mod tests {
             })
             .await
             .unwrap()
-            .content
+            .text()
     }
 
     #[tokio::test]

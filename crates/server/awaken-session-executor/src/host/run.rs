@@ -545,7 +545,13 @@ impl SharedHost {
                 .await?
                 .messages
                 .len();
-            let command = ResumeCommand::from_ticket(&ticket, ResumeResult::Input(content), 0);
+            let command = ResumeCommand::from_ticket(
+                &ticket,
+                ResumeResult::Input(awaken_agent_contract::agent::content::extract_text(
+                    &content,
+                )),
+                0,
+            );
             let state = self.drive_resume(&ctx, activation, command).await?;
             let mut st = ctx.state.lock().await;
             let result = self
@@ -581,9 +587,9 @@ impl SharedHost {
                     }
                     HostResume::ClientResult { content, is_error } => {
                         let output = if is_error {
-                            ToolOutput::error(tool_use_id, content)
+                            ToolOutput::error_blocks(tool_use_id, content)
                         } else {
-                            ToolOutput::ok(tool_use_id, content)
+                            ToolOutput::ok_blocks(tool_use_id, content)
                         };
                         ResumeResult::ToolResult(output)
                     }
@@ -602,7 +608,9 @@ impl SharedHost {
                         "awaiting remote Agent input requires a client result",
                     ));
                 };
-                ResumeResult::Input(content)
+                ResumeResult::Input(awaken_agent_contract::agent::content::extract_text(
+                    &content,
+                ))
             };
             let activation = ctx.resume_activation(&ticket);
             let before = self
@@ -631,9 +639,9 @@ impl SharedHost {
             HostResume::ClientResult { content, is_error } => {
                 let call_id = ticket.call_id.clone().unwrap_or_default();
                 let output = if is_error {
-                    ToolOutput::error(call_id, content)
+                    ToolOutput::error_blocks(call_id, content)
                 } else {
-                    ToolOutput::ok(call_id, content)
+                    ToolOutput::ok_blocks(call_id, content)
                 };
                 ResumeResult::ToolResult(output)
             }

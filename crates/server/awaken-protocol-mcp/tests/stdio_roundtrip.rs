@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use awaken_ext_mcp::transport::McpToolTransport;
 use awaken_ext_mcp::{DEFAULT_TIMEOUT, StdioTransport, connect_tools};
+use awaken_runtime_contract::ContentBlock;
 use awaken_runtime_contract::tool::ToolCall;
 
 async fn demo_server() -> StdioTransport {
@@ -42,7 +43,7 @@ async fn discovery_and_echo_round_trip_through_the_raw_tool_port() {
         .await
         .expect("echo invokes");
     assert!(!out.is_error);
-    assert_eq!(out.content, "echo: hello server");
+    assert_eq!(out.content, vec![ContentBlock::text("echo: hello server")]);
 }
 
 #[tokio::test]

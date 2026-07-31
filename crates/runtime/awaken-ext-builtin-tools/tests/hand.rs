@@ -29,7 +29,7 @@ async fn read_returns_file_contents() {
         .invoke(call("read", serde_json::json!({ "path": path })))
         .await
         .expect("read");
-    assert_eq!(out.content, "hello\nworld");
+    assert_eq!(out.text(), "hello\nworld");
     assert!(!out.is_error);
 }
 
@@ -54,9 +54,10 @@ async fn glob_lists_matching_paths() {
         .invoke(call("glob", serde_json::json!({ "pattern": pattern })))
         .await
         .expect("glob");
-    let mut lines: Vec<&str> = out.content.lines().collect();
+    let content = out.text();
+    let mut lines: Vec<&str> = content.lines().collect();
     lines.sort_unstable();
-    assert_eq!(lines.len(), 2, "two .rs files: {:?}", out.content);
+    assert_eq!(lines.len(), 2, "two .rs files: {content:?}");
     assert!(lines.iter().all(|l| l.ends_with(".rs")));
 }
 
@@ -73,7 +74,8 @@ async fn grep_finds_matching_lines_with_line_numbers() {
         ))
         .await
         .expect("grep");
-    let lines: Vec<&str> = out.content.lines().collect();
+    let content = out.text();
+    let lines: Vec<&str> = content.lines().collect();
     assert_eq!(lines.len(), 2);
     assert!(lines[0].contains(":2:beta error"));
     assert!(lines[1].contains(":4:delta error"));
@@ -90,7 +92,7 @@ async fn write_creates_a_file_with_contents() {
         ))
         .await
         .expect("write");
-    assert!(out.content.contains("wrote"));
+    assert!(out.text().contains("wrote"));
     assert_eq!(
         std::fs::read_to_string(&path).expect("read back"),
         "payload"
@@ -173,7 +175,7 @@ async fn bash_runs_a_command_and_returns_stdout() {
         .invoke(call("bash", serde_json::json!({ "command": "echo hello" })))
         .await
         .expect("bash");
-    assert_eq!(out.content.trim(), "hello");
+    assert_eq!(out.text().trim(), "hello");
 }
 
 #[tokio::test]
@@ -256,7 +258,7 @@ async fn glob_with_no_matches_returns_empty_success_not_an_error() {
         .await
         .expect("glob with no matches is not an error");
     assert!(!out.is_error);
-    assert_eq!(out.content, "", "no matches renders as empty output");
+    assert_eq!(out.text(), "", "no matches renders as empty output");
 }
 
 #[tokio::test]
@@ -273,7 +275,7 @@ async fn grep_with_no_matching_lines_returns_empty_success_not_an_error() {
         .await
         .expect("grep with no hits is not an error");
     assert!(!out.is_error);
-    assert_eq!(out.content, "", "no hits renders as empty output");
+    assert_eq!(out.text(), "", "no hits renders as empty output");
 }
 
 #[tokio::test]

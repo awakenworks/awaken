@@ -887,7 +887,7 @@ impl SessionRuntime for ManagedHost {
         &self,
         thread: &str,
         tool_use_id: &str,
-        content: &str,
+        content: Vec<ContentBlock>,
         is_error: bool,
     ) -> Result<StepOutcome, RunError> {
         self.validate_thread_resource_bindings(thread).await?;
@@ -896,10 +896,7 @@ impl SessionRuntime for ManagedHost {
             .resume(
                 thread,
                 tool_use_id,
-                HostResume::ClientResult {
-                    content: content.to_string(),
-                    is_error,
-                },
+                HostResume::ClientResult { content, is_error },
             )
             .await;
         self.finish_step(thread, result).await

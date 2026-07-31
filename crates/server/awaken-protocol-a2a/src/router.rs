@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use axum::Router;
@@ -1781,7 +1782,7 @@ fn rpc_fault(err: DriverError) -> (i32, String) {
 fn to_resume(text: &str, pending: &Pending) -> Resume {
     if pending.client_executed {
         Resume::ClientResult {
-            content: text.to_string(),
+            content: vec![ContentBlock::text(text)],
             is_error: false,
         }
     } else {
@@ -1966,7 +1967,7 @@ mod tests {
     fn to_resume_delivers_the_text_to_a_client_executed_tool() {
         let r = to_resume("the answer", &pending(true));
         assert!(
-            matches!(r, Resume::ClientResult { content, is_error: false } if content == "the answer")
+            matches!(r, Resume::ClientResult { content, is_error: false } if content == vec![ContentBlock::text("the answer")])
         );
     }
 

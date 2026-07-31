@@ -85,7 +85,7 @@ async fn send_message_forwards_to_the_sender() {
         ))
         .await
         .expect("send");
-    assert_eq!(out.content, "message sent to thread-9");
+    assert_eq!(out.text(), "message sent to thread-9");
     assert_eq!(
         sender.sent.lock().unwrap().as_slice(),
         &["thread-9:hi team"]
@@ -128,7 +128,7 @@ async fn cancel_task_forwards_the_task_id() {
         ))
         .await
         .expect("cancel");
-    assert_eq!(out.content, "cancelled run-9");
+    assert_eq!(out.text(), "cancelled run-9");
     assert_eq!(canceller.cancelled.lock().unwrap().as_slice(), &["run-9"]);
 }
 
@@ -165,5 +165,5 @@ async fn recover_failed_messages_takes_no_args_and_returns_a_summary() {
         .invoke(call("recover_failed_messages", serde_json::Value::Null))
         .await
         .expect("recover");
-    assert_eq!(out.content, "recovered 2 messages");
+    assert_eq!(out.text(), "recovered 2 messages");
 }
