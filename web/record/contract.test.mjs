@@ -30,10 +30,21 @@ test("every recording has a hard sub-three-minute budget", () => {
   assert.match(harness, /runtime failed before the claimed effect/);
 });
 
+test("the recording browser uses the one-time local setup handoff, not a service credential", () => {
+  const harness = readFileSync(resolve(here, "harness.mjs"), "utf8");
+  const models = readFileSync(resolve(here, "support/models.mjs"), "utf8");
+  assert.match(harness, /AWAKEN_RECORD_SETUP_TOKEN/);
+  assert.match(harness, /\/v1\/auth\/local\/exchange/);
+  assert.match(harness, /HttpOnly browser/);
+  assert.doesNotMatch(harness, /admin-token/);
+  assert.match(models, /\/v1\/config\/workspace-context/);
+  assert.doesNotMatch(models, /wrkspc_default/);
+});
+
 test("the state-machine recording proves runtime enforcement, not just configuration", () => {
   const source = readFileSync(resolve(flowsDir, "06-ai-state-machine.mjs"), "utf8");
-  assert.match(source, /Try it\|试运行/);
-  assert.match(source, /Start session\|开始会话/);
+  assert.match(source, /Try draft\|试运行草稿/);
+  assert.match(source, /Start preview\|开始预览/);
   assert.match(source, /State Machine blocks the unread write at runtime/);
   assert.match(source, /getByText\("error"/);
   assert.ok(source.includes("getByText(/blocked|Read .* before writing/i)"));
@@ -63,17 +74,28 @@ test("MCP and Memory videos prove runtime-relevant effects", () => {
   assert.ok([...memory.matchAll(/\/v1\/sessions/g)].length >= 2);
   assert.match(memory, /persisted\.content/);
   assert.match(memory, /getByText\(secret/);
+  assert.doesNotMatch(memory, /Save resources|保存资源/);
+  assert.match(memory, /publication\.agent_inputs\.inputs/);
+  assert.match(memory, /MEMORY_HEADERS/);
+  assert.match(memory, /MANAGED_HEADERS/);
 });
 
-test("live-model videos assert agent output, never the user's prompt or page copy", () => {
+test("the live-model connection video asserts agent output, never page copy", () => {
   const model = readFileSync(resolve(flowsDir, "01-connect-model.mjs"), "utf8");
-  const agent = readFileSync(resolve(flowsDir, "02-build-agent.mjs"), "utf8");
-  for (const source of [model, agent]) {
-    assert.match(source, /locator\("\.card"\)\.filter\(\{ hasText: "⬡ agent" \}\)/);
-    assert.doesNotMatch(source, /document\.body\.innerText/);
-  }
+  assert.match(model, /locator\("\.card"\)\.filter\(\{ hasText: "⬡ agent" \}\)/);
+  assert.doesNotMatch(model, /document\.body\.innerText/);
   assert.match(model, /expect\(agentReply\)\.toContainText\("MODEL READY"/);
-  assert.match(agent, /expect\(agentReply\)\.toContainText\(\/Features\|Fixes\|Breaking changes\/i/);
+});
+
+test("the Agent authoring video proves unsaved Resource Preview and an exact combined publication", () => {
+  const agent = readFileSync(resolve(flowsDir, "02-build-agent.mjs"), "utf8");
+  assert.match(agent, /status\(\)\)\.toBe\(404\)/);
+  assert.match(agent, /Start preview\|开始预览/);
+  assert.match(agent, /Publication snapshot\|发布快照/);
+  assert.match(agent, /publication\.source_revision/);
+  assert.match(agent, /publication\.agent_inputs\.inputs/);
+  assert.match(agent, /MEMORY_HEADERS/);
+  assert.doesNotMatch(agent, /Save resources|保存资源/);
 });
 
 test("model setup records the single Provider Connection workflow", () => {

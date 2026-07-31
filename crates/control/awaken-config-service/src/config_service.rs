@@ -311,11 +311,30 @@ impl ConfigService {
         id: &str,
         catalog: &[ToolDescriptor],
     ) -> Result<StoredPublication, PublishError> {
+        self.publish_at_revisions(workspace, registry, id, catalog, None, None)
+            .await
+    }
+
+    /// Publish one reviewed Agent aggregate only when both mutable sources still
+    /// have the revisions observed by the caller, then freeze the exact Resource
+    /// defaults into the durable publication and Coordinator registration.
+    pub async fn publish_at_revisions(
+        &self,
+        workspace: &ScopeId,
+        registry: &dyn ConfigRegistry,
+        id: &str,
+        catalog: &[ToolDescriptor],
+        expected_source_revision: Option<u64>,
+        expected_resource_revision: Option<i64>,
+    ) -> Result<StoredPublication, PublishError> {
         let versioned = registry
             .get_config_revision(id)
             .await
             .map_err(|e| PublishError::Store(e.to_string()))?
             .ok_or_else(|| PublishError::NotStored(id.to_string()))?;
+        if expected_source_revision.is_some_and(|expected| expected != versioned.revision) {
+            return Err(PublishError::StaleRevision(Some(versioned.revision)));
+        }
         if versioned.config.lifecycle() != awaken_config_store::AgentLifecycle::Published {
             return Err(PublishError::Unavailable(id.to_string()));
         }
@@ -345,12 +364,19 @@ impl ConfigService {
             PublishError::Unresolvable(format!("{}: {}", error.path, error.message))
         })?;
         let mut metadata = snapshot_metadata(&resolved);
-        let defaults = self.resources.as_ref().and_then(|store| {
-            store
+        let defaults = match self.resources.as_ref() {
+            Some(store) => store
                 .get_agent_inputs(workspace.as_str(), id)
-                .ok()
-                .flatten()
-        });
+                .map_err(|error| PublishError::Store(error.to_string()))?,
+            None => None,
+        };
+        let current_resource_revision = defaults.as_ref().map_or(0, |inputs| inputs.revision);
+        if expected_resource_revision.is_some_and(|expected| expected != current_resource_revision)
+        {
+            return Err(PublishError::StaleResourceRevision(
+                current_resource_revision,
+            ));
+        }
         if let Some(defaults) = &defaults {
             let mut inputs = std::mem::take(&mut metadata.resolution.inputs);
             inputs.push(awaken_runtime_contract::ResolvedInputRef {
@@ -371,8 +397,14 @@ impl ConfigService {
             resolved.models.candidates,
         )
         .map_err(|e| PublishError::Compile(e.to_string()))?;
+        let stored_inputs = defaults
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|error| PublishError::Store(error.to_string()))?;
         let publication =
-            StoredPublication::published_at_revision(snapshot.clone(), id, source_revision);
+            StoredPublication::published_at_revision(snapshot.clone(), id, source_revision)
+                .with_agent_inputs(stored_inputs);
         let write = registry
             .put_publication_if_config_revision(&publication, source_revision)
             .await
@@ -1226,6 +1258,53 @@ pub(crate) mod resource_prompt_tests {
                 .is_some(),
             "registered Coordinator view remains frozen when Control defaults later change"
         );
+        assert_eq!(
+            publication.agent_inputs.as_ref().unwrap()["revision"],
+            1,
+            "the publication owns the exact Resource defaults used at compile time"
+        );
+    }
+
+    #[tokio::test]
+    async fn reviewed_publish_fences_config_and_resource_revisions() {
+        // Reviewed-publish cause/effect table: R1 stale config + exact resources
+        // -> StaleRevision; R2 exact config + stale resources ->
+        // StaleResourceRevision; R3 both exact -> one self-contained publication.
+        let resources =
+            Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new());
+        resources
+            .put_agent_inputs(
+                DEFAULT_SCOPE,
+                AgentInputConfig {
+                    agent_id: "reviewed".into(),
+                    environment: None,
+                    inputs: vec![],
+                    revision: 1,
+                },
+            )
+            .unwrap();
+        let plane = plane_with(
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+            None,
+            Some(resources),
+        );
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+        plane.put(&scope, &agent_config("reviewed")).await.unwrap();
+
+        assert!(matches!(
+            plane.publish_at_revisions(&scope, "reviewed", 99, 1).await,
+            Err(PublishError::StaleRevision(Some(1)))
+        ));
+        assert!(matches!(
+            plane.publish_at_revisions(&scope, "reviewed", 1, 99).await,
+            Err(PublishError::StaleResourceRevision(1))
+        ));
+        let publication = plane
+            .publish_at_revisions(&scope, "reviewed", 1, 1)
+            .await
+            .expect("R3 matching reviewed aggregate publishes");
+        assert_eq!(publication.source_revision, 1);
+        assert_eq!(publication.agent_inputs.unwrap()["revision"], 1);
     }
 
     #[tokio::test]
@@ -1644,7 +1723,7 @@ pub(crate) mod resource_prompt_tests {
         let scope = ScopeId::from(DEFAULT_SCOPE);
         plane.put(&scope, &agent_config("mgmt")).await.unwrap();
         let (status, Json(body)) =
-            super::publish(State(plane), None, None, Path("mgmt".to_string())).await;
+            super::publish(State(plane), None, None, Path("mgmt".to_string()), None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["installed"], json!(true));
     }
@@ -1656,7 +1735,7 @@ pub(crate) mod resource_prompt_tests {
         let scope = ScopeId::from(DEFAULT_SCOPE);
         plane.put(&scope, &auto_config("mgmt")).await.unwrap();
         let (status, _body) =
-            super::publish(State(plane), None, None, Path("mgmt".to_string())).await;
+            super::publish(State(plane), None, None, Path("mgmt".to_string()), None).await;
         assert_eq!(status, StatusCode::CONFLICT);
     }
 
@@ -1665,7 +1744,7 @@ pub(crate) mod resource_prompt_tests {
         // F23c: any other publish failure (here NotStored) stays a 400.
         let plane = static_plane(None);
         let (status, _body) =
-            super::publish(State(plane), None, None, Path("ghost".to_string())).await;
+            super::publish(State(plane), None, None, Path("ghost".to_string()), None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
@@ -1863,6 +1942,57 @@ pub(crate) mod resource_prompt_tests {
     }
 
     #[tokio::test]
+    async fn startup_reconciliation_uses_frozen_publication_inputs() {
+        // Recovery cause/effect table: F1 publication freezes Resource rev1;
+        // F2 mutable draft advances to rev2; F3 a fresh Coordinator reconciles
+        // -> the current Session profile still carries rev1's mount, with no
+        // fallback read from the mutable Resource repository.
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let resources =
+            Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new());
+        let scope = ScopeId::from("wrkspc_frozen_inputs");
+        let inputs = |revision, mount_path: &str| AgentInputConfig {
+            agent_id: "frozen-agent".into(),
+            environment: None,
+            inputs: vec![InputBinding {
+                binding_id: BindingId::from("memory"),
+                target: InputResourceId::MemoryStore(MemoryStoreId::from("memory-a")),
+                mount_path: mount_path.into(),
+                access: ResourceAccess::ReadWrite,
+                instructions: None,
+            }],
+            revision,
+        };
+        resources
+            .put_agent_inputs(scope.as_str(), inputs(1, "/published"))
+            .unwrap();
+        let author_service = test_service().with_resources(resources.clone());
+        let author = ConfigPlane::new(
+            Arc::new(author_service),
+            store.clone(),
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        );
+        author
+            .put(&scope, &agent_config("frozen-agent"))
+            .await
+            .unwrap();
+        author.publish(&scope, "frozen-agent").await.unwrap();
+        resources
+            .put_agent_inputs(scope.as_str(), inputs(2, "/draft-v2"))
+            .unwrap();
+
+        let (cold, catalog) = test_service_and_catalog();
+        cold.reconcile_registrations(store.as_ref(), &scope)
+            .await
+            .unwrap();
+        use awaken_executable_agent_contract::ExecutableAgentProfileSource as _;
+        let view = catalog
+            .session_profile_in(scope.as_str(), "frozen-agent")
+            .expect("F3 frozen publication survives restart");
+        assert_eq!(view.resources[0].mount_path, "/published");
+    }
+
+    #[tokio::test]
     async fn registration_reconciliation_keeps_archived_publications_unavailable() {
         // Lifecycle decision table: R1 current Published + durable publication ->
         // register; R2 current Disabled/Archived + old publication -> withdraw and
@@ -1946,6 +2076,7 @@ pub(crate) mod resource_prompt_tests {
             Some(Extension(WorkspaceScope(scope.as_str().into()))),
             None,
             Path("retry-agent".into()),
+            None,
         )
         .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "R1/E2");

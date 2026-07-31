@@ -315,6 +315,28 @@ impl ConfigPlane {
             .await
     }
 
+    /// Publish only if the reviewed config and Resource defaults still have the
+    /// exact revisions supplied by the caller.
+    pub async fn publish_at_revisions(
+        &self,
+        scope: &ScopeId,
+        id: &str,
+        expected_source_revision: u64,
+        expected_resource_revision: i64,
+    ) -> Result<StoredPublication, PublishError> {
+        if scope.as_str() == RESERVED_ADMIN_SCOPE {
+            return Err(PublishError::ExecutionWorkspaceRequired);
+        }
+        self.publish_for_execution_workspace_at_revisions(
+            scope,
+            scope.as_str(),
+            id,
+            Some(expected_source_revision),
+            Some(expected_resource_revision),
+        )
+        .await
+    }
+
     /// Publish from an authoring namespace into an explicit execution Workspace.
     pub async fn publish_for_execution_workspace(
         &self,
@@ -322,12 +344,32 @@ impl ConfigPlane {
         execution_workspace: &str,
         id: &str,
     ) -> Result<StoredPublication, PublishError> {
+        self.publish_for_execution_workspace_at_revisions(
+            configuration_scope,
+            execution_workspace,
+            id,
+            None,
+            None,
+        )
+        .await
+    }
+
+    pub async fn publish_for_execution_workspace_at_revisions(
+        &self,
+        configuration_scope: &ScopeId,
+        execution_workspace: &str,
+        id: &str,
+        expected_source_revision: Option<u64>,
+        expected_resource_revision: Option<i64>,
+    ) -> Result<StoredPublication, PublishError> {
         self.service
-            .publish(
+            .publish_at_revisions(
                 &ScopeId::from(execution_workspace),
                 &self.registry_for(configuration_scope),
                 id,
                 &self.catalog_for(configuration_scope),
+                expected_source_revision,
+                expected_resource_revision,
             )
             .await
     }

@@ -9,6 +9,7 @@ import { Link, useParams } from "react-router";
 import Transcript from "../components/session/Transcript";
 import TraceView from "../components/session/TraceView";
 import SessionFiles from "../components/session/SessionFiles";
+import SessionIntegrations from "../components/session/SessionIntegrations";
 import { Button, Card, Modal, Pill, Segmented, TextField, useConfirm, useToast } from "../components/ui";
 import { api, ws } from "../lib/api/client";
 import type { InboundEvent, SendEventsResponse, Session } from "../lib/api/types";
@@ -30,7 +31,7 @@ export default function SessionDetailSurface() {
   // Workspace-scoped via ws() (tenancy is an edge aspect); flat under default scope.
   const base = ws(`/v1/sessions/${sid}`);
   const eventsKey = ["session-events", wsId, sid];
-  const [view, setView] = useState<"chat" | "trace" | "files">("chat");
+  const [view, setView] = useState<"chat" | "inputs" | "artifacts" | "integrations" | "trace">("chat");
   const [controlResult, setControlResult] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -135,15 +136,19 @@ export default function SessionDetailSurface() {
             className="segmented"
             options={[
               { value: "chat", label: app.t("Chat", "对话") },
+              { value: "inputs", label: app.t("Inputs", "输入") },
+              { value: "artifacts", label: app.t("Artifacts", "产物") },
+              { value: "integrations", label: app.t("Integrations", "集成") },
               { value: "trace", label: app.t("Trace", "追踪") },
-              { value: "files", label: app.t("Files", "文件") },
             ]}
             value={view}
             onChange={setView}
           />
           {view === "chat" && <Transcript base={base} queryKey={eventsKey} modelOverride />}
+          {view === "inputs" && <SessionFiles base={base} sid={sid} view="inputs" />}
+          {view === "artifacts" && <SessionFiles base={base} sid={sid} view="artifacts" />}
+          {view === "integrations" && <SessionIntegrations session={session.data} />}
           {view === "trace" && <TraceView base={base} queryKey={eventsKey} />}
-          {view === "files" && <SessionFiles base={base} sid={sid} />}
         </div>
 
         <aside style={{ width: 300, flex: "none", display: "flex", flexDirection: "column", gap: 12 }}>

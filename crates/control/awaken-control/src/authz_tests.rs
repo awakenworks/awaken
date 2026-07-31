@@ -384,8 +384,9 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     // | Family                         | Method | Expected action |
     // | provider-connections           | GET    | model_supply.read    |
     // | provider-connections           | POST   | model_supply.connect |
-    // | publications/{fingerprint}     | GET    | workspace.read  |
-    // | publications/{fingerprint}     | POST   | workspace.write |
+    // | executable-models              | GET    | model_supply.read    |
+    // | publications/{fingerprint}     | GET    | workspace.read       |
+    // | publications/{fingerprint}     | POST   | workspace.write      |
     // | unknown config family          | any    | unmapped/deny   |
     // The aggregate contains no credential material; secret entry remains
     // delegated to the credential boundary inside the write command.
@@ -421,6 +422,10 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     assert_eq!(
         action_for(&post, "/v1/config/provider-connections"),
         Some(MODEL_SUPPLY_CONNECT)
+    );
+    assert_eq!(
+        action_for(&get, "/v1/config/executable-models"),
+        Some(MODEL_SUPPLY_READ)
     );
     assert_eq!(
         action_for(&get, "/v1/config/publications/fingerprint"),

@@ -35,12 +35,16 @@ printf 'data_dir = ".recording-awaken/data"\nbind = "127.0.0.1:38080"\n' \
 CLOUDSDK_CORE_ACCOUNT=you@example.com cargo run -p awaken-cli --bin awaken \
   -- serve --config .recording-awaken/config.toml
 pnpm dev
-GEMINI_PROJECT=my-project pnpm -C web record 01-connect-model
+AWAKEN_RECORD_SETUP_TOKEN=the-one-time-token \
+  GEMINI_PROJECT=my-project pnpm -C web record 01-connect-model
 pnpm record 06-ai-state-machine
 ```
 
 The explicit data root persists the recording Workspace id; the console and backend
 therefore use the same authoritative Workspace without an environment override.
+For a fresh local data root, pass the one-time setup token printed by `awaken serve`.
+The harness exchanges it for the normal HttpOnly browser session; it never copies the
+long-lived management service credential into browser storage.
 
 Recommended release order (see `VIDEO_STRATEGY.md` for the user-value map):
 

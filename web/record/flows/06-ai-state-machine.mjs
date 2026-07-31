@@ -65,8 +65,9 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
   await click(openBtn.first());
   await wait(1500);
 
-  // Behavior section shows the state_machine as a named, enabled behavior card.
-  await click(page.getByRole("tab", { name: /Behavior|行为/ }));
+  // Advanced orchestration shows the state_machine as a named, enabled behavior card.
+  await click(page.getByRole("tab", { name: /Advanced|高级/, exact: true }));
+  await click(page.getByRole("tab", { name: /Orchestration|编排/, exact: true }));
   await wait(1000);
   await say("This diagram is executable policy: unread → read → written, with repeated writes still valid per path.", 4800);
   await wait(2000);
@@ -82,8 +83,8 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
   // Prove the policy in the product, not just in JSON: explicitly order the model to
   // violate it. The write tool card must show an error and expose the State Machine reason.
   await say("Now the challenge: order the model to write immediately, without reading.", 3600);
-  await click(page.getByRole("button", { name: /Try it|试运行/ }));
-  await click(page.getByRole("button", { name: /Start session|开始会话/ }));
+  await click(page.getByRole("button", { name: /Try draft|试运行草稿/ }));
+  await click(page.getByRole("button", { name: /Start preview|开始预览/ }));
   const ask = page.getByPlaceholder(/Ask the agent|问问这个 agent/);
   await type(
     ask,

@@ -1,90 +1,126 @@
-// V — "Build an agent, prove it live." Configure an agent from empty in the
-// intent-sectioned editor (model, system prompt, behavior), Save, Publish (with a
-// domain-labeled config diff — transparency), then Try it in the Sandbox for a REAL
-// live-model reply. Agents are configured, not coded.
-import { LIVE_MODEL_ID, LIVE_MODEL_LABEL, configureLiveModel } from "../support/models.mjs";
+// Build one unsaved Agent draft, bind a Resource, start an isolated Preview, and
+// only then Publish the exact Agent + Resource snapshot. This chapter proves the
+// low-friction authoring contract without requiring a model inference.
+import { configureSyntheticModel } from "../support/models.mjs";
+import { MEMORY_HEADERS } from "../support/betas.mjs";
 
-const AGENT_ID = "release-notes-writer";
+const RUN = Date.now();
+const AGENT_ID = `release-notes-${RUN}`;
+const MODEL_ID = "draft-preview-model";
 const SYSTEM =
-  "You are a release-notes writer. Given a list of merged PRs, produce concise, " +
-  "friendly notes grouped into Features, Fixes, and Breaking changes. Keep each " +
-  "bullet under 100 characters.";
-const ASK_HEAD = "Draft release notes from these merged PRs:";
-const ASK_DETAIL = "#482 dark mode · #491 export crash · #500 drop Node 18";
+  "You are a release-notes writer. Produce concise notes grouped into Features, " +
+  "Fixes, and Breaking changes. Use the mounted release memory for team conventions.";
+const RESOURCE_INSTRUCTIONS =
+  "Read this store for release-writing conventions and preserve them across sessions.";
 
 export const story = {
-  promise: "Convert a recurring release-note task into a versioned specialist and verify its output in one workflow.",
-  effect: "Publish automatically saves and validates the Draft, then the live Agent returns structured release notes.",
-  aha: "One config became a live, versioned specialist—and the answer on screen is from the real model.",
-  loyalty: "A repeatable Draft-to-proof workflow gives teams a dependable reason to build their next specialist here.",
-  satisfaction: "Automatic validation and an immediate Sandbox result minimize setup friction and uncertainty.",
-  advocacy: "The before-and-after transformation from three PR titles to polished notes is naturally shareable.",
+  promise: "Build and test a complete Agent with a bound Resource before committing anything to the shared control plane.",
+  effect: "An isolated Preview runs from unsaved fields and Resource bindings, then Publish freezes both as one exact snapshot.",
+  aha: "Resource bound, Preview ready, nothing saved—then one Publish freezes the exact Agent and Resource versions.",
+  loyalty: "Safe experimentation before commitment makes teams comfortable refining more specialists in the same workspace.",
+  satisfaction: "Removing mandatory saves and showing the publication contents makes every transition predictable.",
+  advocacy: "The visible unsaved-to-preview-to-fingerprint sequence is a compact proof viewers can repeat themselves.",
 };
 
-export async function run({ page, goto, say, clearCaption, intro, checkpoint, runtimeCheckpoint, aha, expect, click, type, wait }) {
-  await configureLiveModel(page);
-  // Fresh start (idempotent): drop any prior agent so the walkthrough always creates.
-  await page.request.delete(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`).catch(() => {});
+export async function run({ page, goto, say, clearCaption, intro, checkpoint, aha, expect, click, type, wait, beat }) {
+  await configureSyntheticModel(page, MODEL_ID);
+  const storeResponse = await page.request.post("http://127.0.0.1:38080/v1/memory_stores", {
+    headers: MEMORY_HEADERS,
+    data: { name: `Release conventions ${RUN}` },
+  });
+  expect(storeResponse.ok()).toBeTruthy();
+  const store = await storeResponse.json();
 
   await goto("/w/default/agents/new");
   await intro(
-    "Convert a repeatable job into a governed agent without writing orchestration code.",
-    "Configure behavior, publish an exact diff, then prove the installed agent against a live model.",
+    "Experiment with a complete Agent and its Resources before creating shared control-plane state.",
+    "Awaken compiles unsaved fields and bindings into an isolated Preview, then publishes one exact combined snapshot.",
   );
 
   await type(page.getByPlaceholder("coding-agent"), AGENT_ID);
-  await say("Pick a model from the catalog — only credentialed models are offered.", 3600);
-  await click(page.locator("select").first());
-  await page.locator("select").first().selectOption(LIVE_MODEL_ID);
-  await wait(400);
+  await page.getByLabel(/Model \(references workspace catalog\)|模型/).selectOption({ label: MODEL_ID });
+  await click(page.getByRole("tab", { name: /Build|构建/, exact: true }));
+  await click(page.getByRole("tab", { name: /Instructions|提示词/, exact: true }));
+  await type(page.getByLabel(/System instructions|系统指令/), SYSTEM, { delay: 10 });
 
-  await say("Its behavior is just the system prompt — no code, no redeploy.", 3600);
-  await type(page.locator("textarea").first(), SYSTEM, { delay: 12 });
+  await click(page.getByRole("tab", { name: /Memory & resources|Memory 与资源/, exact: true }));
+  await say("Resources belong to the same browser draft—there is no separate Resource save step.", 3400);
+  await click(page.getByRole("button", { name: /bind a store|绑定记忆库/ }));
+  await page.getByLabel(/Store|记忆库/).selectOption(store.id);
+  await type(page.getByLabel(/Mount path|挂载路径/), "/mnt/memory/releases");
+  await type(page.getByLabel(/Instructions for this resource|该资源的注入提示词/), RESOURCE_INSTRUCTIONS, { delay: 9 });
 
-  await say("Numbered chapters organize every knob by intent: Behavior, Tools, Integrations, and Resources.", 4000);
-  await click(page.getByRole("tab", { name: /Behavior|行为/ }));
+  await checkpoint("the Resource is bound while Agent and bindings are still unsaved", async () => {
+    await expect(page.locator(".pill").filter({ hasText: /unsaved|未保存/ })).toBeVisible();
+    await expect(page.getByText("Resource changes are part of this Agent draft and are used by Try immediately.")).toBeVisible();
+    const config = await page.request.get(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`);
+    const resources = await page.request.get(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}/resources`);
+    expect(config.status()).toBe(404);
+    expect(resources.status()).toBe(404);
+  });
+
+  await say("Try uses the current fields and Resource binding immediately; Save draft remains optional.", 3400);
+  await click(page.getByRole("button", { name: /Try draft|试运行草稿/ }));
+  await beat(
+    "The drawer states the contract before execution: this temporary snapshot is never saved or published.",
+    page.getByText(/isolated, temporary snapshot|隔离的临时快照/),
+    3400,
+  );
+  await click(page.getByRole("button", { name: /Start preview|开始预览/ }));
+  await checkpoint("an isolated Preview starts without saving the Agent", async () => {
+    await expect(page.getByText("AI SDK", { exact: true })).toBeVisible();
+    await expect(page.getByText(/Ask the current Agent draft anything|向当前 Agent 草稿提问/)).toBeVisible();
+    const config = await page.request.get(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`);
+    const resources = await page.request.get(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}/resources`);
+    expect(config.status()).toBe(404);
+    expect(resources.status()).toBe(404);
+  });
   await wait(900);
-  await click(page.getByRole("tab", { name: /Overview|概览/ }));
-  await wait(600);
-  await clearCaption();
+  await click(page.getByRole("button", { name: /Close|关闭/ }));
 
-  await say("Publish automatically saves and validates the Draft before asking for the only confirmation.", 4000);
-  await click(page.getByRole("button", { name: /Publish/ }));
+  await say("Publish now saves and validates once, then shows the combined snapshot before confirmation.", 3600);
+  await click(page.getByRole("button", { name: /Publish|发布/, exact: true }));
   const publishModal = page.locator(".modal");
-  await checkpoint("the Draft is saved, compiled, and previewed before publication", async () => {
+  let savedConfig;
+  let savedResources;
+  await checkpoint("the confirmation shows the saved Agent and Resource snapshot together", async () => {
     await expect(publishModal.getByText(/Draft compiled successfully|草稿已通过编译/)).toBeVisible();
-    const response = await page.request.get(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`);
-    expect(response.ok()).toBeTruthy();
-    const config = await response.json();
-    expect(config.id).toBe(AGENT_ID);
-    expect(config.model?.id).toBe(LIVE_MODEL_ID);
+    await expect(publishModal.getByText(/Publication snapshot|发布快照/)).toBeVisible();
+    await expect(publishModal.getByText("/mnt/memory/releases", { exact: true })).toBeVisible();
+    savedConfig = await (await page.request.get(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`)).json();
+    savedResources = await (await page.request.get(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}/resources`)).json();
+    expect(savedConfig.model).toBe(MODEL_ID);
+    expect(savedResources.revision).toBe(1);
+    expect(savedResources.inputs[0]).toMatchObject({
+      target: { kind: "memory_store", id: store.id },
+      mount_path: "/mnt/memory/releases",
+      access: "read_write",
+      instructions: RESOURCE_INSTRUCTIONS,
+    });
   });
-  await say("The exact domain-labeled diff is visible; this is the one decision the user owns.", 4000);
-  await click(publishModal.getByRole("button", { name: /Publish/ }));
-  await wait(1200);
-  await say("Published — compiled to a content-addressed fingerprint.", 3400);
-  await clearCaption();
 
-  await say("Now prove it. Try it opens a live Sandbox from any section.", 3600);
-  await click(page.getByRole("button", { name: /Try it/ }));
-  await wait(700);
-  await click(page.getByRole("button", { name: /Start session|开始会话/ }));
-  await wait(800);
-  const ask = page.getByPlaceholder(/Ask the agent|问问这个 agent/);
-  await say("Keep the request concise. Shift+Enter adds context; the bound Skill and tools own procedural detail.", 3600);
-  await type(ask, ASK_HEAD, { delay: 14 });
-  await ask.press("Shift+Enter");
-  await ask.pressSequentially(ASK_DETAIL, { delay: 12 });
-  await ask.press("Enter");
-  await expect(page.locator(".transcript-pending-message")).toContainText(ASK_DETAIL);
-  await expect(page.locator(".agent-working")).toBeVisible();
-  await say(`The full multiline request stays visible and the Agent shows work immediately while ${LIVE_MODEL_LABEL} executes.`, 3800);
-  const agentReply = page.locator(".card").filter({ hasText: "⬡ agent" }).last();
-  await runtimeCheckpoint("the published agent returns structured release notes from the live model", async () => {
-    await expect(agentReply).toContainText(/Features|Fixes|Breaking changes/i, { timeout: 60_000 });
+  const publishResponse = page.waitForResponse((response) =>
+    response.url().endsWith(`/v1/config/agents/${AGENT_ID}/publish`) &&
+    response.request().method() === "POST",
+  );
+  await click(publishModal.getByRole("button", { name: /Publish|发布/, exact: true }));
+  const publishedHttp = await publishResponse;
+  expect(publishedHttp.ok()).toBeTruthy();
+  const published = await publishedHttp.json();
+
+  await checkpoint("the publication freezes the exact Agent and Resource revisions", async () => {
+    const publicationResponse = await page.request.get(
+      `http://127.0.0.1:38080/v1/config/publications/${published.fingerprint}`,
+    );
+    expect(publicationResponse.ok()).toBeTruthy();
+    const publication = await publicationResponse.json();
+    expect(publication.source_revision).toBe(savedConfig.generation);
+    expect(publication.agent_inputs.revision).toBe(savedResources.revision);
+    expect(publication.agent_inputs.inputs).toEqual(savedResources.inputs);
+    await expect(page.getByText(new RegExp(published.fingerprint.slice(0, 12)))).toBeVisible();
   });
-  await wait(2500);
+  await clearCaption();
   await aha(story.aha);
-  await wait(1500);
+  await wait(900);
   await clearCaption();
 }

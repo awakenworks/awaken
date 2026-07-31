@@ -395,12 +395,26 @@ pub(crate) async fn publish(
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
     execution: Option<Extension<ExecutionWorkspace>>,
     Path(id): Path<String>,
+    request: Option<Json<Value>>,
 ) -> (StatusCode, Json<Value>) {
     let scope = request_scope(scope);
+    let request = match request
+        .map(|Json(request)| PublishRequest::try_from(request))
+        .transpose()
+    {
+        Ok(request) => request.unwrap_or_default(),
+        Err(error) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
+    };
     let result = match publication_workspace(&scope, execution.as_ref()) {
         Some(workspace) => {
             plane
-                .publish_for_execution_workspace(&scope, workspace, &id)
+                .publish_for_execution_workspace_at_revisions(
+                    &scope,
+                    workspace,
+                    &id,
+                    request.source_revision,
+                    request.resource_revision,
+                )
                 .await
         }
         None => Err(PublishError::ExecutionWorkspaceRequired),
@@ -415,7 +429,11 @@ pub(crate) async fn publish(
                 "installed": true,
             })),
         ),
-        Err(error @ (PublishError::Unresolvable(_) | PublishError::StaleRevision(_))) => (
+        Err(
+            error @ (PublishError::Unresolvable(_)
+            | PublishError::StaleRevision(_)
+            | PublishError::StaleResourceRevision(_)),
+        ) => (
             StatusCode::CONFLICT,
             Json(json!({ "error": error.to_string() })),
         ),
@@ -441,6 +459,33 @@ pub(crate) async fn publish(
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": error.to_string() })),
         ),
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct PublishRequest {
+    source_revision: Option<u64>,
+    resource_revision: Option<i64>,
+}
+
+impl TryFrom<Value> for PublishRequest {
+    type Error = String;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        let source_revision =
+            serde_json::from_value(value.get("source_revision").cloned().unwrap_or(Value::Null))
+                .map_err(|error| format!("invalid source_revision: {error}"))?;
+        let resource_revision = serde_json::from_value(
+            value
+                .get("resource_revision")
+                .cloned()
+                .unwrap_or(Value::Null),
+        )
+        .map_err(|error| format!("invalid resource_revision: {error}"))?;
+        Ok(Self {
+            source_revision,
+            resource_revision,
+        })
     }
 }
 

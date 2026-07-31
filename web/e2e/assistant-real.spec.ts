@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
+import { MANAGED_HEADERS, MEMORY_HEADERS } from "./betas";
 
 // Real-model e2e for the Admin Assistant's authoring. The assistant runs on a real model
 // (KIMI, submitted through the credential API — no server env), and authors a FULL agent
@@ -43,12 +44,15 @@ async function configureKimi(request: APIRequestContext) {
 
 async function runTurn(request: APIRequestContext, sessionId: string, prompt: string): Promise<string> {
   await request.post(`/v1/sessions/${sessionId}/events`, {
+    headers: MANAGED_HEADERS,
     data: { events: [{ type: "user.message", content: [{ type: "text", text: prompt }] }] },
   });
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 1500));
-    const events = (await (await request.get(`/v1/sessions/${sessionId}/events`)).json()).data as Array<{
+    const events = (await (await request.get(`/v1/sessions/${sessionId}/events`, {
+      headers: MANAGED_HEADERS,
+    })).json()).data as Array<{
       type: string;
       content?: Array<{ text?: string }>;
       stop_reason?: { type?: string };
@@ -66,7 +70,10 @@ async function runTurn(request: APIRequestContext, sessionId: string, prompt: st
 
 test("Admin Assistant authors an agent with tools + a memory-store binding (real model)", async ({ page, request }) => {
   await configureKimi(request);
-  const ms = (await (await request.post("/v1/memory_stores", { data: { name: "e2e-notes" } })).json()).id as string;
+  const ms = (await (await request.post("/v1/memory_stores", {
+    headers: MEMORY_HEADERS,
+    data: { name: "e2e-notes" },
+  })).json()).id as string;
   const agentId = `bound-agent-${Date.now()}`;
 
   // Drive the assistant in the console (the same chat engine the FAB uses).
@@ -98,6 +105,7 @@ test("KIMI writes and recalls an Agent-bound memory store across fresh sessions"
   const secret = `KIMI-MEMORY-${Date.now()}`;
   const agent = `kimi-memory-${Date.now()}`;
   const store = await (await request.post("/v1/memory_stores", {
+    headers: MEMORY_HEADERS,
     data: { name: `kimi-brain-${Date.now()}` },
   })).json();
 
@@ -116,21 +124,30 @@ test("KIMI writes and recalls an Agent-bound memory store across fresh sessions"
   });
 
   await page.goto(`/w/default/agents/${agent}`);
-  await page.getByRole("tab", { name: "Resources", exact: true }).click();
+  await page.getByRole("tab", { name: "Build", exact: true }).click();
+  await page.getByRole("tab", { name: "Memory & resources", exact: true }).click();
   await page.getByRole("button", { name: /bind a store/ }).click();
   await page.locator("select").nth(1).selectOption({ label: store.name });
-  await page.getByRole("button", { name: /Save resources/ }).click();
-  await expect(page.locator(".ui-toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
+  await page.getByRole("button", { name: /Save draft/ }).click();
+  await expect(page.locator(".ui-toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
   const published = await request.post(`/v1/config/agents/${agent}/publish`);
   expect(published.ok()).toBe(true);
 
-  const first = await (await request.post("/v1/sessions", { data: { agent, title: "remember" } })).json();
+  const first = await (await request.post("/v1/sessions", {
+    headers: MANAGED_HEADERS,
+    data: { agent, title: "remember" },
+  })).json();
   await runTurn(request, first.id, `Remember this exact code: ${secret}. Write it to your persistent memory file now.`);
   await request.get(`/v1/files?scope_id=${first.id}`);
-  const persisted = await (await request.get(`/v1/memory_stores/${store.id}`)).json();
+  const persisted = await (await request.get(`/v1/memory_stores/${store.id}`, {
+    headers: MEMORY_HEADERS,
+  })).json();
   expect(persisted.content ?? "").toContain(secret);
 
-  const second = await (await request.post("/v1/sessions", { data: { agent, title: "recall" } })).json();
+  const second = await (await request.post("/v1/sessions", {
+    headers: MANAGED_HEADERS,
+    data: { agent, title: "recall" },
+  })).json();
   const recalled = await runTurn(request, second.id, "Read your persistent memory and answer with only the exact code I asked you to remember.");
   expect(recalled).toContain(secret);
 });
@@ -139,8 +156,12 @@ test("Admin Assistant authors an official self-hosted environment from plain Eng
   await configureKimi(request);
   // Drive the assistant via its session API (no browser) — it should call
   // admin_draft_environment and persist a real environment through /v1/environments.
-  const s = await (await request.post("/v1/sessions", { data: { agent: "__admin_assistant", title: "env-author" } })).json();
+  const s = await (await request.post("/v1/sessions", {
+    headers: MANAGED_HEADERS,
+    data: { agent: "__admin_assistant", title: "env-author" },
+  })).json();
   await request.post(`/v1/sessions/${s.id}/events`, {
+    headers: MANAGED_HEADERS,
     data: { events: [{ type: "user.message", content: [{ type: "text", text:
       'Create a self-hosted execution environment named "e2e-self-hosted". Use admin_draft_environment.' }] }] },
   });
@@ -151,7 +172,9 @@ test("Admin Assistant authors an official self-hosted environment from plain Eng
   let env: { name: string; config: { type?: string } } | undefined;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 2500));
-    const envs = (await (await request.get("/v1/environments")).json()).data as typeof env[];
+    const envs = (await (await request.get("/v1/environments", {
+      headers: MANAGED_HEADERS,
+    })).json()).data as typeof env[];
     env = envs.find((e) => e!.name === "e2e-self-hosted");
     if (env) break;
     await throwOnSessionFailure(request, s.id);
@@ -181,9 +204,11 @@ test("Admin Assistant authors a repeat-safe read-before-write machine (real mode
   await configureKimi(request);
   const id = `sm-generated-${Date.now()}`;
   const session = await (await request.post("/v1/sessions", {
+    headers: MANAGED_HEADERS,
     data: { agent: "__admin_assistant", title: "sm-author-candidate" },
   })).json();
   await request.post(`/v1/sessions/${session.id}/events`, {
+    headers: MANAGED_HEADERS,
     data: { events: [{ type: "user.message", content: [{ type: "text", text:
       `Draft an unpublished coding agent with id ${id}. Give it the built-in read and write tools. ` +
       "Configure a thread-scoped State Machine that blocks write before execution until the same " +
@@ -239,11 +264,13 @@ test("Publish hands an invalid Draft to KIMI, highlights the repair, then asks o
   await expect(modal.getByText(/Draft compiled successfully|草稿已通过编译/)).toBeVisible();
   const repaired = await (await request.get(`/v1/config/agents/${id}`)).json();
   expect(repaired.tools).not.toContain("tool_that_does_not_exist");
-  await expect(page.getByRole("tab", { name: "Tools" }).locator(".agent-change-dot")).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Build" }).locator(".agent-change-dot")).toBeVisible();
 });
 
 async function throwOnSessionFailure(request: APIRequestContext, sessionId: string) {
-  const response = await request.get(`/v1/sessions/${sessionId}/events`);
+  const response = await request.get(`/v1/sessions/${sessionId}/events`, {
+    headers: MANAGED_HEADERS,
+  });
   const events = (await response.json()).data as Array<{ type: string; stop_reason?: { type?: string } }>;
   const failed = events.find((event) => event.type === "session.error")
     ?? events.find((event) => event.type === "session.status_idle" && event.stop_reason?.type === "retries_exhausted");

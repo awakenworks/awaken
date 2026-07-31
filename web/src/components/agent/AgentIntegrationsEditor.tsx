@@ -4,7 +4,8 @@
 // editor for less common SDK union variants.
 
 import { useEffect, useState } from "react";
-import type { AgentConfig } from "../../lib/api/types";
+import { Link } from "react-router";
+import type { AgentConfig, CredentialSource } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
 import { Button, Card, TextAreaField, TextField } from "../ui";
 
@@ -17,22 +18,35 @@ function objectOf(value: unknown): JsonObject {
 function referenceId(value: unknown): string {
   if (typeof value === "string") return value;
   const object = objectOf(value);
+  if (typeof object.skill_id === "string") return object.skill_id;
   return typeof object.id === "string" ? object.id : "";
+}
+
+function credentialValue(value: unknown): string {
+  const credential = objectOf(value);
+  return typeof credential.id === "string" && typeof credential.revision === "number"
+    ? `${credential.id}@${credential.revision}`
+    : "";
 }
 
 export default function AgentIntegrationsEditor({
   config,
+  credentials,
   onChange,
   onValidityChange,
+  section = "all",
 }: {
   config: AgentConfig;
+  credentials: CredentialSource[];
   onChange: (patch: Partial<AgentConfig>) => void;
   onValidityChange: (valid: boolean) => void;
+  section?: "bindings" | "topology" | "all";
 }) {
   const app = useApp();
   const servers = config.mcp_servers ?? [];
   const skills = config.skills ?? [];
   const metadata = config.metadata ?? {};
+  const activeCredentials = credentials.filter((credential) => credential.status === "active");
   const [multiagentText, setMultiagentText] = useState(() =>
     config.multiagent == null ? "" : JSON.stringify(config.multiagent, null, 2));
   const [multiagentError, setMultiagentError] = useState("");
@@ -48,14 +62,25 @@ export default function AgentIntegrationsEditor({
 
   return (
     <div className="agent-integration-stack">
+      {(section === "bindings" || section === "all") && (
+      <>
       <Card className="agent-config-card">
         <h2>{app.t("Direct MCP servers", "直接 MCP 服务器")}</h2>
         <p className="hint">
           {app.t(
-            "Managed Agents-compatible name + URL bindings. Runtime tools appear as mcp__server__tool and can be renamed or deferred in Tools.",
-            "兼容 Managed Agents 的名称 + URL 绑定。运行时工具以 mcp__server__tool 出现，可在 Tools 中改名或延迟加载。",
+            "MCP endpoints belong to this Agent draft and are frozen into its publication. Runtime tools are discovered when the server connects; policy and presentation remain under Tools.",
+            "MCP endpoint 属于当前 Agent 草稿，并固化到发布版本中。运行时工具在服务器连接时发现；策略与呈现仍在 Tools 中配置。",
           )}
         </p>
+        <div className="banner info">
+          <span>ⓘ</span>
+          <span>{app.t(
+            "Credentials are exact secret-free references validated at publication. Session Vault ids remain a separate run-scoped mechanism.",
+            "凭据是不含秘密的精确引用，并在发布时校验。Session Vault id 仍是独立的运行级机制。",
+          )}{" "}
+            <Link to={`/w/${app.workspaceId}/credentials`}>{app.t("Manage credential sources ↗", "管理凭据来源 ↗")}</Link>
+          </span>
+        </div>
         {servers.map((server, index) => {
           const value = objectOf(server);
           return (
@@ -73,6 +98,32 @@ export default function AgentIntegrationsEditor({
                 value={typeof value.url === "string" ? value.url : ""}
                 onChange={(event) => setServer(index, { type: "url", url: event.target.value })}
               />
+              <label className="field">
+                <span>{app.t("Credential source", "凭据来源")}</span>
+                <select
+                  className="input mono"
+                  value={credentialValue(value.credential)}
+                  onChange={(event) => {
+                    const selected = activeCredentials.find((credential) =>
+                      `${credential.id}@${credential.version}` === event.target.value);
+                    setServer(index, {
+                      credential: selected
+                        ? { id: selected.id, revision: selected.version }
+                        : undefined,
+                    });
+                  }}
+                >
+                  <option value="">{app.t("Unauthenticated", "无认证")}</option>
+                  {activeCredentials.map((credential) => (
+                    <option
+                      key={`${credential.id}@${credential.version}`}
+                      value={`${credential.id}@${credential.version}`}
+                    >
+                      {credential.id}@{credential.version} · {credential.kind}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label className="field" style={{ alignSelf: "center" }}>
                 <span>{app.t("Prompts as skills", "将 Prompt 作为 Skill")}</span>
                 <input
@@ -89,13 +140,12 @@ export default function AgentIntegrationsEditor({
           + {app.t("MCP server", "MCP 服务器")}
         </Button>
       </Card>
-
       <Card className="agent-config-card">
         <h2>{app.t("Skill bindings", "Skill 绑定")}</h2>
         <p className="hint">
           {app.t(
-            "Bind focused instructions so the operator can state only the goal; the Agent discovers and activates detailed procedure at runtime.",
-            "绑定聚焦的指令，让用户只需说明目标；Agent 在运行时发现并激活详细流程。",
+            "Bind durable managed Skills so the operator can state only the goal. MCP Prompt Skills stay remote and instruction-only; enable Prompts as skills on the owning MCP server instead of creating fake local files.",
+            "绑定持久化 Managed Skills，让操作者只需说明目标。MCP Prompt Skills 保持远程且仅含指令；请在对应 MCP 服务器上启用“Prompt 作为 Skill”，不要创建虚假的本地文件。",
           )}
         </p>
         {skills.map((skill, index) => (
@@ -111,7 +161,10 @@ export default function AgentIntegrationsEditor({
         ))}
         <Button onClick={() => onChange({ skills: [...skills, { id: "" }] })}>+ Skill</Button>
       </Card>
+      </>
+      )}
 
+      {(section === "topology" || section === "all") && (
       <Card className="agent-config-card">
         <h2>{app.t("Metadata & multi-agent topology", "元数据与多 Agent 拓扑")}</h2>
         <p className="hint">
@@ -162,6 +215,7 @@ export default function AgentIntegrationsEditor({
         />
         {multiagentError && <span className="err" role="alert">{multiagentError}</span>}
       </Card>
+      )}
     </div>
   );
 }

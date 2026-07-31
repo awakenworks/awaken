@@ -187,14 +187,7 @@ export interface SessionResourceDto {
   resource_id?: string;
   instructions?: string;
 }
-/** An output artifact a session produced — a file the agent wrote under `outputs/`,
- * harvested into the blob store (`GET /v1/files?scope_id=<session>`). */
-export interface FileArtifact {
-  id: string;
-  type: string;
-  filename: string;
-  downloadable?: boolean;
-}
+export type { FileArtifact, FileListResponse } from "./file-types";
 
 // ---- environments ----
 
@@ -333,6 +326,10 @@ export interface InputBinding {
 }
 export interface AgentInputConfig {
   agent_id: string;
+  environment?: {
+    environment_id: string;
+    revision: number;
+  } | null;
   inputs: InputBinding[];
   revision: number;
 }
@@ -437,6 +434,8 @@ export type ContextPolicy = { kind: "keep_all" } | { kind: "keep_last"; keep_las
 
 export interface AgentConfig {
   id: string;
+  /** Optimistic-concurrency revision returned by the config plane. */
+  generation?: number;
   type?: "agent";
   // managed Agent object fields:
   name?: string | null;
@@ -586,28 +585,4 @@ export interface PermissionConfig {
   rules?: PermissionRuleConfig[];
 }
 
-// ---- vaults ----
-
-export interface Vault {
-  id: string;
-  type: "vault";
-  display_name?: string;
-  archived_at?: string | null;
-  [k: string]: unknown;
-}
-/** The secret-free credential projection: `type` is the object type
- * ("vault_credential"); the credential kind + fields are under `auth`. */
-export interface VaultCredentialAuth {
-  type: "environment_variable" | "static_bearer" | "mcp_oauth";
-  mcp_server_url?: string;
-  secret_name?: string;
-  expires_at?: string;
-  [k: string]: unknown;
-}
-export interface VaultCredential {
-  id: string;
-  type: string;
-  auth?: VaultCredentialAuth;
-  display_name?: string;
-  [k: string]: unknown;
-}
+export type { Vault, VaultCredential, VaultCredentialAuth } from "./vault-types";

@@ -1,5 +1,5 @@
 // Agent default inputs (ADR-0063): typed File/Memory/Repository identities composed
-// with temporary Session attachments. Skills are configured in Integrations and
+// with temporary Session attachments. Skills are configured under Build / Skills & MCP and
 // outputs belong to the Environment, so neither appears in this input editor.
 
 import { useQuery } from "@tanstack/react-query";
@@ -87,8 +87,8 @@ export default function ResourcesTab({ inputs, onChange }: { inputs: InputBindin
         <label>{app.t("Resources mounted for this agent", "本 agent 挂载的资源")}</label>
         <span className="mut">
           {app.t(
-            "Bind memory stores, immutable files, and managed repositories as Agent defaults. Add Skills under Integrations; outputs are configured by the Environment.",
-            "把记忆库、不可变文件和平台管理的代码仓绑定为 Agent 默认输入。技能在集成中配置；输出由环境配置。",
+            "Bind memory stores, immutable files, and managed repositories as Agent defaults. Add Skills under Build / Skills & MCP; outputs are configured by the Environment.",
+            "把记忆库、不可变文件和平台管理的代码仓绑定为 Agent 默认输入。技能在构建 / Skills 与 MCP 中配置；输出由 Environment 配置。",
           )}
         </span>
       </div>
