@@ -24,6 +24,7 @@ pub mod admin;
 pub mod application_access;
 pub mod brokered_inference;
 pub mod console;
+pub mod control_service_boundary;
 mod coordinator_component;
 pub mod dynamic_placement;
 pub mod inference_materializer;
@@ -38,6 +39,7 @@ pub mod webhooks;
 mod worker_registry;
 pub mod workspace_path;
 
+pub use awaken_managed_routers::ModelDirectory;
 pub use coordinator_component::{
     CoordinatorBuildError, CoordinatorComponent, CoordinatorDependencies,
     build_coordinator_component,
@@ -119,6 +121,12 @@ pub fn embedded_resource_component(
     root: &std::path::Path,
 ) -> awaken_resource_contract::ResourceComponent {
     std::fs::create_dir_all(root).expect("create resource-plane directory");
+    let resource_catalog = Arc::new(
+        awaken_admin_config_api::SqliteAdminStore::open(
+            &root.join("resource-catalog.db").to_string_lossy(),
+        )
+        .expect("open resource catalog sqlite"),
+    );
     let memory = awaken_memory_store::SqliteMemoryRepository::open(
         root.join("memory_fs.db")
             .to_str()
@@ -138,6 +146,7 @@ pub fn embedded_resource_component(
     );
     awaken_resource_contract::build_resource_component(
         awaken_resource_contract::ResourceDependencies {
+            resource_catalog,
             file_store: files.clone(),
             file_catalog: files,
             memory_repository: Arc::new(memory),

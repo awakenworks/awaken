@@ -16,7 +16,7 @@ use awaken_agent_contract::page::paginate_by_id;
 
 use crate::preview::{PreviewAllocations, PreviewSink};
 use crate::project::{self, project_messages, project_messages_with_mcp_ids, project_step};
-use crate::routes::vaults::VaultState;
+use crate::routes::vaults::{SessionCredentialSource, VaultState};
 use crate::types::{
     ConfirmResult, Event, EventReceipt, InboundEvent, ListEventsResponse, ModelConfig,
     ModelOverride, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
@@ -51,6 +51,8 @@ mod deployment_sessions;
 mod environment;
 mod events;
 mod helpers;
+#[path = "state/lifecycle_event.rs"]
+pub mod lifecycle_event;
 mod mcp_attachment;
 mod realization;
 mod resource;
@@ -87,7 +89,7 @@ pub struct ManagedState {
     /// The vault surface, when the server mounts one (ADR-0043 Phase 3): a
     /// session's `mcp_servers` are bound to vault credentials through it at
     /// creation. `None` means every binding resolves to no credential.
-    vaults: Option<Arc<VaultState>>,
+    credential_source: Option<Arc<dyn SessionCredentialSource>>,
     /// The environments surface, when the server mounts one: a session's
     /// `environment_id` is resolved to its networking policy (egress on/off) at
     /// creation. `None` → every session gets host network (unrestricted).
@@ -146,35 +148,6 @@ pub struct ManagedState {
 /// here so existing `awaken_protocol_managed::…` paths keep resolving. The fact
 /// catalog below (the projected wire event names) stays in this adapter.
 pub use awaken_session_contract::SessionLifecycleSink;
-
-/// The webhook lifecycle-fact catalog projected through [`SessionLifecycleSink`],
-/// named to match Anthropic's official Managed Agents webhook event set. These are
-/// a distinct vocabulary from the in-session SSE `OutboundKind` stream names: a
-/// webhook consumer's `data.type` carries these past-tense *fact* names (the SSE
-/// stream carries the present-tense transition names). Keeping them here — one
-/// place, owned by the projecting crate — is why the wire crate needs no dependency
-/// on the webhook delivery machinery: it emits fact names, the sink maps them.
-///
-/// Wired to the sink today: [`SESSION_IDLED`] (on create), [`SESSION_TERMINATED`]
-/// (on archive), and [`SESSION_DELETED`] (on delete) — the session-level transitions
-/// a webhook consumer acts on.
-///
-/// The rest of Anthropic's catalog is projected onto the SSE stream but not yet
-/// fanned to webhooks, and maps to existing `OutboundKind` events: `session.status_
-/// run_started` (`SessionStatusRunning`), `session.thread_created` (`SessionThread
-/// Created`, whose webhook payload would carry `session_thread_id`), and `session.
-/// outcome_evaluation_ended` (`SpanOutcomeEvaluationEnd`). Wiring one is additive —
-/// add its const here and one `sink.emit` at the projection point — not a rename.
-pub mod lifecycle_event {
-    /// Session created, or a turn settled — now idle. Anthropic `session.status_idled`.
-    pub const SESSION_IDLED: &str = "session.status_idled";
-    /// Session terminated (archived). Anthropic `session.status_terminated`.
-    pub const SESSION_TERMINATED: &str = "session.status_terminated";
-    /// Session deleted (record dropped, not tombstoned). Matches the SSE
-    /// terminal transition name `session.deleted` — the delete edge carries no
-    /// status, so the fact is the past-tense event, not a `status_*` name.
-    pub const SESSION_DELETED: &str = "session.deleted";
-}
 
 /// Why a session operation failed (mapped to an HTTP status by the router).
 #[derive(Debug, thiserror::Error)]
@@ -265,7 +238,7 @@ impl ManagedState {
         Self {
             runtime,
             mcp_realizer,
-            vaults: None,
+            credential_source: None,
             environments: None,
             config_source: None,
             resource_catalog: None,
@@ -335,7 +308,15 @@ impl ManagedState {
     /// routes see different credentials.
     #[must_use]
     pub fn with_vaults(mut self, vaults: Arc<VaultState>) -> Self {
-        self.vaults = Some(vaults);
+        self.credential_source = Some(vaults);
+        self
+    }
+
+    /// Wire the same secret-free credential-selection port through either the
+    /// local VaultState adapter or the authenticated split-service adapter.
+    #[must_use]
+    pub fn with_credential_source(mut self, source: Arc<dyn SessionCredentialSource>) -> Self {
+        self.credential_source = Some(source);
         self
     }
 

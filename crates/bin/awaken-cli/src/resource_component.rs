@@ -6,8 +6,13 @@ use super::{PostgresSchemaMode, config};
 
 pub(super) fn ephemeral_resource_component() -> awaken_resource_contract::ResourceComponent {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+    let resource_catalog = Arc::new(
+        awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+            .expect("open ephemeral Resource Catalog"),
+    );
     awaken_resource_contract::build_resource_component(
         awaken_resource_contract::ResourceDependencies {
+            resource_catalog,
             file_store: files.clone(),
             file_catalog: files,
             memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
@@ -29,6 +34,23 @@ pub(super) async fn open_resource_component(
             Ok(awaken_server::embedded_resource_component(&root))
         }
         config::ResourcePlaneStoreBackend::Postgres(url) => {
+            // The existing AdminStore implementation is the authoritative
+            // ResourceCatalog adapter. It is opened against the Resources
+            // backend and only its narrow catalog port escapes this module.
+            let catalog_url = url.clone();
+            let resource_catalog = Arc::new(
+                tokio::task::spawn_blocking(move || match postgres_schema {
+                    PostgresSchemaMode::Migrate => {
+                        awaken_admin_config_api::PostgresAdminStore::connect(&catalog_url)
+                    }
+                    PostgresSchemaMode::Verify => {
+                        awaken_admin_config_api::PostgresAdminStore::connect_existing(&catalog_url)
+                    }
+                })
+                .await
+                .map_err(|error| format!("join Resource Catalog Postgres connection: {error}"))?
+                .map_err(|error| format!("connect Resource Catalog Postgres: {error}"))?,
+            );
             let lifecycle = match postgres_schema {
                 PostgresSchemaMode::Migrate => {
                     awaken_resource_store::PostgresResourceStore::connect(&url).await
@@ -69,6 +91,7 @@ pub(super) async fn open_resource_component(
             .map_err(|error| format!("connect resource skill Postgres: {error}"))?;
             Ok(awaken_resource_contract::build_resource_component(
                 awaken_resource_contract::ResourceDependencies {
+                    resource_catalog,
                     file_store: files.clone(),
                     file_catalog: files,
                     memory_repository: Arc::new(memory),
@@ -87,11 +110,13 @@ mod tests {
     #[tokio::test]
     async fn every_local_backend_returns_one_complete_resource_component() {
         // Cause/effect decision table:
-        // R1 ephemeral selection -> all five per-kind/lifecycle ports exist;
-        // R2 embedded selection -> all five ports exist over one durable root.
+        // R1 ephemeral selection -> the catalog plus all five per-kind/lifecycle
+        // ports exist; R2 embedded selection -> the same six ports exist over one
+        // durable root.
         // PostgreSQL adapter selection is covered by backend integration suites;
         // this unit test owns the no-parallel-construction component invariant.
         let assert_complete = |component: &awaken_resource_contract::ResourceComponent| {
+            let _ = component.resource_catalog();
             let _ = component.file_store();
             let _ = component.file_catalog();
             let _ = component.memory_repository();

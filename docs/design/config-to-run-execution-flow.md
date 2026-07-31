@@ -38,7 +38,8 @@ Distributed:  application port -> network adapter -> same authority
 | Concern | Authoritative owner | Worker access |
 |---|---|---|
 | Agent drafts, revisions, publication history | Control | carried as a registered immutable snapshot; no Control database access |
-| Resource definitions and immutable config versions | Control / Resource Catalog | exact resolved values in the Session manifest plus per-kind clients |
+| Agent Resource-reference authoring and immutable config versions | Control | exact resolved references in the Session manifest |
+| Resource lifecycle metadata/catalog | Resources | exact resolved values plus per-kind clients |
 | credential metadata, policy, and encrypted material | Control / Vault | exact claim-fenced materialization only |
 | executable Agent catalog | Coordinator | exact snapshot carried by dispatch or resolved through Coordinator |
 | Deployment, DeploymentRun, and Environment execution state | Coordinator | none; launch is a local Session application call |
@@ -56,11 +57,12 @@ or Resource Catalog database. Its standard capability manifest is derived from
 the installed adapters rather than from a marker composition value.
 
 An owner in this table is a component boundary, not necessarily a dedicated
-process. AllInOne co-locates every component. A distributed Coordinator process
-may co-locate the File, Memory, Skill, Repository-verification, and credential
-projection handlers, but each handler still delegates only to its named owner
-port. Separating one of those providers later changes composition and routing;
-it does not introduce another domain service or data model.
+process. AllInOne co-locates every component. The current distributed
+Coordinator process co-locates the canonical Resources component and its File,
+Memory, Skill, and Repository-verification handlers, but delegates only through
+the named Resources ports. Credential selection instead crosses the authenticated
+Control application boundary. Separating a provider later changes composition
+and routing; it does not introduce another domain service or data model.
 
 ## Flow One: Configuration To Application
 
@@ -315,6 +317,8 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - `DeploymentSessionLauncher` as the sole application port;
 - Session creation, `SessionInputResolver`, and `SessionResourceManifest`;
 - exact `CredentialMaterialResolver` semantics;
+- `ScopedConfigRegistry` management-audit state and the Session lifecycle outbox;
+- the existing `ResourceCatalog` implementation, now exposed by Resources;
 - per-kind File, Memory, Skill, and Repository ports;
 - authenticated Worker registration, claim, recovery, commit, and settle;
 - committed-event projection and HTTP/SSE response behavior.
@@ -329,12 +333,22 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - disable/archive emits a monotonic withdrawal while exact history remains
   addressable;
 - registration availability/storage failures return HTTP 503 after durable
-  publication persistence.
+  publication persistence;
 - Deployment, DeploymentRun, scheduler, and Session launch now share one
   Coordinator-owned application composition. The Environment API and work
   execution are Coordinator-mounted; Control's Admin Assistant still uses the
   existing shared `EnvironmentAuthor` registry port until definition commands
-  are separated from execution/work ownership.
+  are separated from execution/work ownership;
+- process stores are role-owned groups: split Coordinator acquires no Control
+  store or seal key, and split Control acquires no Session or Resources content
+  store;
+- split Coordinator model discovery projects current executable-Agent
+  registrations instead of reading Control Catalog/Credential stores;
+- Session binding, management audit, and webhook delivery consume narrow Control
+  ports; AllInOne supplies local adapters and split Coordinator supplies one
+  authenticated HTTP adapter;
+- `ResourceComponent` exposes the authoritative `ResourceCatalog` beside its
+  existing File, Memory, Skill, repository-verification, and lifecycle ports.
 
 ### New boundary code (implemented)
 
@@ -363,7 +377,10 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - atomic Memory and Skill snapshot operations reused by both local and remote
   adapters instead of reconstructing a snapshot through parallel read paths;
 - role-specific provider composition and the service-data-ownership fitness
-  check in `scripts/ci/check_crate_boundaries.py`.
+  check in `scripts/ci/check_crate_boundaries.py`;
+- authenticated Control application router/client for audit, secret-free
+  credential selection, and lifecycle-fact delivery; the adapter is transport
+  only and preserves the existing state machines.
 
 No new Agent, Deployment, Session, Resource, Credential, Run, or response domain
 model is introduced.
@@ -388,6 +405,9 @@ cite the rule they cover.
 | E11 | a peer Coordinator commits while this replica has a warm Session cache | refresh from the committed transcript and project each Runtime message id once |
 | E12 | Coordinator authority disappears or rejects the Worker incarnation | stop claim admission, drain, terminate, and restart as a fresh registered incarnation |
 | E13 | public write has no idempotency identity and its response is ambiguous | do not auto-replay; reconcile/read until routing is stable, then require one explicit write decision |
+| E14 | split Coordinator config includes a Control DB or seal key; split Control includes Session DB | reject before store or key acquisition |
+| E15 | Control service bearer is missing or wrong | reject before audit, credential, or webhook authority is invoked |
+| E16 | Control service is unavailable during lifecycle delivery | keep the existing Coordinator outbox fact pending and retry its stable identity |
 
 The concrete multi-process topology, cluster lifecycle, and fault-injection
 entry points are owned by the
@@ -396,7 +416,7 @@ overlays reuse one Postgres fixture and one Direct brain/hand fixture so these
 verification rules cannot pass through a stale parallel deployment path.
 The dedicated ADR-0071 overlay crosses both canonical flows through the shipped
 Control and Coordinator composition roots, a database-less Worker, authenticated
-registration and launch adapters, isolated component databases, an unavailable
+registration and Control-application adapters, isolated component databases, an unavailable
 Coordinator, and forced authority-role restarts. Adapter and repository tests
 remain the owners of rule combinations that do not require a real cluster.
 

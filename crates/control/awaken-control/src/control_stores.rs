@@ -1,21 +1,19 @@
-//! Per-component database selection for the control (config) plane.
+//! Compatibility database-address bundle consumed by the process composition root.
 //!
-//! The management plane owns several independent stores — the model catalog, the
-//! credential vault (+ sealed secrets), the config authoring registry, the admin
-//! aggregate (inference profiles / MCP defs / webhook subscriptions), Environment
-//! registry/work state, plus the AllInOne/Coordinator Managed Execution repository. They default to
-//! SQLite files under one typed deployment `data_dir`; this compatibility bundle
-//! lets each one use its **own** database
-//! independently, so an operator can isolate (e.g.) credentials on a hardened Postgres
-//! while config stays on another — the precondition for splitting control / server
-//! into separate services that share per-component databases (ADR: shared-DB, Option A).
+//! The legacy type name predates the service split; it does not grant every field
+//! to Control. Control owns Catalog, Credential, Config, and Admin. Coordinator
+//! owns Session/Deployment. The Resources component owns Resource contents and
+//! its catalog through its own backend configuration. Environment remains the
+//! one explicit transition shared by Control authoring and Coordinator execution.
+//! The composition root selects only the fields owned by the current role.
 //!
 //! Each component receives one typed deployment store value:
 //!   - a `postgres://` / `postgresql://` URL  → the Postgres backend,
 //!   - any other value                        → a SQLite file at that path,
 //!   - absent                                 → `<data_dir>/<name>.db` (SQLite).
 //!
-//! The bundle default preserves today's behavior exactly when no override is set.
+//! AllInOne resolves the complete bundle to local SQLite by default. Split roles
+//! reject explicitly configured foreign-domain fields before store acquisition.
 
 use std::path::{Path, PathBuf};
 
@@ -43,8 +41,8 @@ fn is_postgres_url(value: &str) -> bool {
     value.starts_with("postgres://") || value.starts_with("postgresql://")
 }
 
-/// Typed database configuration for the process composition bundle.
-/// Split Control ignores `sessions`; Coordinator/AllInOne owns it.
+/// Typed database addresses for the process composition compatibility bundle.
+/// Role-aware resolution and acquisition decide which fields a process may use.
 #[derive(Debug, Clone)]
 pub struct ControlStoreConfig {
     pub catalog: StoreBackend,
@@ -54,8 +52,8 @@ pub struct ControlStoreConfig {
     pub config: StoreBackend,
     /// The admin aggregate: inference profiles, MCP server defs, webhook subscriptions.
     pub admin: StoreBackend,
-    /// Environment definitions plus their execution work and sandbox-policy state.
-    /// Control and Coordinator currently share this explicit boundary.
+    /// Environment definitions plus execution work and sandbox-policy state.
+    /// This is the one documented Control/Coordinator transition.
     pub environments: StoreBackend,
     pub sessions: StoreBackend,
 }

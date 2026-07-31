@@ -24,6 +24,8 @@ pub(super) struct ProcessAssemblyOptions {
         Option<executable_agent_registration::ExecutableAgentWiring>,
     pub(super) worker_authenticator:
         Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
+    pub(super) control_service_token: Option<String>,
+    pub(super) control_service: Option<super::ControlServicePorts>,
 }
 
 pub(super) fn local_model_supply(

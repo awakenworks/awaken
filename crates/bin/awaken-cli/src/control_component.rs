@@ -23,8 +23,12 @@ pub(super) async fn control_component_for_process(
     local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
 ) -> awaken_control::ControlComponent {
-    let assistant_catalog = stores.catalog.snapshot().await.unwrap_or_default();
-    let assistant_credentials = stores
+    let control = stores
+        .control
+        .as_ref()
+        .expect("Control process requires Control stores");
+    let assistant_catalog = control.catalog.snapshot().await.unwrap_or_default();
+    let assistant_credentials = control
         .credentials
         .list(execution_workspace)
         .await
@@ -36,19 +40,19 @@ pub(super) async fn control_component_for_process(
     );
     awaken_control::build_control_component(awaken_control::ControlDependencies {
         execution_workspace: execution_workspace.to_owned(),
-        catalog: stores.catalog.clone(),
-        credentials: stores.credentials.clone(),
-        secrets: stores.secrets.clone(),
-        profiles: stores.profiles.clone(),
-        webhook_store: stores.webhooks.clone(),
-        resource_store: stores.resources.clone(),
-        config_store: stores.config.clone(),
+        catalog: control.catalog.clone(),
+        credentials: control.credentials.clone(),
+        secrets: control.secrets.clone(),
+        profiles: control.profiles.clone(),
+        webhook_store: control.webhooks.clone(),
+        resource_store: control.resources.clone(),
+        config_store: control.config.clone(),
         executable_agent_registrar,
         model_publication_resolver,
         plugin_publication_resolvers: vec![web_search_publication_resolver],
         credential_probe: Arc::new(credential_probe::GenaiProbe),
         model_discovery: Arc::new(awaken_server::model_discovery::GenaiModelDiscovery::new(
-            stores.secrets.clone(),
+            control.secrets.clone(),
         )),
         brokered_catalog: injected_brokered_catalog.or_else(|| {
             brokered_client
@@ -117,7 +121,12 @@ pub(super) async fn assemble_control_process_router(
     let runtimes = Arc::new(LiveRuntimeCapabilities {
         initial: assembly.local_acp_observations.clone(),
         workers: awaken_server::worker_directory(),
-        credentials: stores.credentials.clone(),
+        credentials: stores
+            .control
+            .as_ref()
+            .expect("Control process requires Control stores")
+            .credentials
+            .clone(),
         workspace: execution_workspace.clone(),
     });
     let component = control_component_for_process(
@@ -138,13 +147,36 @@ pub(super) async fn assemble_control_process_router(
         remote_iam,
     )
     .await;
+    let webhook_delivery = {
+        let control = stores
+            .control
+            .as_ref()
+            .expect("Control process requires Control stores");
+        awaken_webhook_managed::config_plane_lifecycle_delivery(
+            control.webhooks.clone(),
+            control.secrets.clone(),
+            assembly.org_id.clone(),
+        )
+    };
+    let router = match assembly.control_service_token.as_deref() {
+        Some(token) => component.router.merge(
+            awaken_server::control_service_boundary::router(
+                component.management_audit.clone(),
+                component.vault_state.clone(),
+                webhook_delivery,
+                token,
+            )
+            .unwrap_or_else(|error| panic!("build Control service boundary: {error}")),
+        ),
+        None => component.router,
+    };
     let mcp_export = awaken_server::mcp_export::router(
         awaken_admin_assistant::admin_tool_descriptors(),
         component.admin_tools,
         assembly.mcp_bearer_token,
     );
     process_surface::finish(
-        component.router,
+        router,
         mcp_export,
         Some(component.publication_reconciler),
         execution_workspace,

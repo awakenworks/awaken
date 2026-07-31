@@ -11,18 +11,36 @@ use awaken_config_store::{
 };
 use awaken_tenancy::ScopeId;
 
-#[derive(Clone)]
-pub struct ManagementAuditPlane {
+#[async_trait::async_trait]
+pub trait ManagementAuditRepository: Send + Sync {
+    async fn record(
+        &self,
+        scope: &ScopeId,
+        audit: &ManagementAuditRecord,
+    ) -> Result<AuditedConfigWrite, String>;
+
+    async fn get(
+        &self,
+        scope: &ScopeId,
+        tool: &str,
+        call_id: &str,
+    ) -> Result<Option<ManagementAuditEntry>, String>;
+
+    async fn mark_committed(
+        &self,
+        scope: &ScopeId,
+        tool: &str,
+        call_id: &str,
+    ) -> Result<(), String>;
+}
+
+struct ScopedConfigManagementAuditRepository {
     store: Arc<dyn ScopedConfigRegistry>,
 }
 
-impl ManagementAuditPlane {
-    #[must_use]
-    pub fn new(store: Arc<dyn ScopedConfigRegistry>) -> Self {
-        Self { store }
-    }
-
-    pub async fn record(
+#[async_trait::async_trait]
+impl ManagementAuditRepository for ScopedConfigManagementAuditRepository {
+    async fn record(
         &self,
         scope: &ScopeId,
         audit: &ManagementAuditRecord,
@@ -33,7 +51,7 @@ impl ManagementAuditPlane {
             .map_err(|error| error.to_string())
     }
 
-    pub async fn get(
+    async fn get(
         &self,
         scope: &ScopeId,
         tool: &str,
@@ -45,7 +63,7 @@ impl ManagementAuditPlane {
             .map_err(|error| error.to_string())
     }
 
-    pub async fn mark_committed(
+    async fn mark_committed(
         &self,
         scope: &ScopeId,
         tool: &str,
@@ -55,5 +73,77 @@ impl ManagementAuditPlane {
             .mark_management_audit_committed_scoped(scope, tool, call_id)
             .await
             .map_err(|error| error.to_string())
+    }
+}
+
+#[derive(Clone)]
+pub struct ManagementAuditPlane {
+    repository: Arc<dyn ManagementAuditRepository>,
+}
+
+impl ManagementAuditPlane {
+    #[must_use]
+    pub fn new(store: Arc<dyn ScopedConfigRegistry>) -> Self {
+        Self::from_repository(Arc::new(ScopedConfigManagementAuditRepository { store }))
+    }
+
+    #[must_use]
+    pub fn from_repository(repository: Arc<dyn ManagementAuditRepository>) -> Self {
+        Self { repository }
+    }
+
+    pub async fn record(
+        &self,
+        scope: &ScopeId,
+        audit: &ManagementAuditRecord,
+    ) -> Result<AuditedConfigWrite, String> {
+        self.repository.record(scope, audit).await
+    }
+
+    pub async fn get(
+        &self,
+        scope: &ScopeId,
+        tool: &str,
+        call_id: &str,
+    ) -> Result<Option<ManagementAuditEntry>, String> {
+        self.repository.get(scope, tool, call_id).await
+    }
+
+    pub async fn mark_committed(
+        &self,
+        scope: &ScopeId,
+        tool: &str,
+        call_id: &str,
+    ) -> Result<(), String> {
+        self.repository.mark_committed(scope, tool, call_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl ManagementAuditRepository for ManagementAuditPlane {
+    async fn record(
+        &self,
+        scope: &ScopeId,
+        audit: &ManagementAuditRecord,
+    ) -> Result<AuditedConfigWrite, String> {
+        ManagementAuditPlane::record(self, scope, audit).await
+    }
+
+    async fn get(
+        &self,
+        scope: &ScopeId,
+        tool: &str,
+        call_id: &str,
+    ) -> Result<Option<ManagementAuditEntry>, String> {
+        ManagementAuditPlane::get(self, scope, tool, call_id).await
+    }
+
+    async fn mark_committed(
+        &self,
+        scope: &ScopeId,
+        tool: &str,
+        call_id: &str,
+    ) -> Result<(), String> {
+        ManagementAuditPlane::mark_committed(self, scope, tool, call_id).await
     }
 }

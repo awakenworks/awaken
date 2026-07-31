@@ -66,7 +66,7 @@ impl ManagedState {
             }
             return Ok(());
         }
-        let vaults = self.vaults.as_ref().ok_or_else(|| {
+        let vaults = self.credential_source.as_ref().ok_or_else(|| {
             StateError::Run(RunError::bad_request(
                 "Repository credential requires a configured credential vault",
             ))

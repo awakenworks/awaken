@@ -44,7 +44,7 @@ pub use config_service::ConfigService;
 pub use credential_reference::CredentialReferenceValidator;
 pub use managed_agent::{agent_config_from_managed, managed_from_agent_config};
 pub use managed_model_id::{ManagedModelIdError, parse_managed_model_id, render_managed_model_id};
-pub use management_audit::ManagementAuditPlane;
+pub use management_audit::{ManagementAuditPlane, ManagementAuditRepository};
 pub use plugin_validation::PluginPublicationResolver;
 pub use publication::{PublishError, ValidationIssue};
 pub use tool_catalog::{

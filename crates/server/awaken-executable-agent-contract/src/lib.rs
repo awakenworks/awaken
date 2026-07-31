@@ -174,6 +174,17 @@ pub trait ExecutableAgentRegistrationSource: Send + Sync {
     ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError>;
 }
 
+/// Coordinator-owned inventory view used by projections such as `/v1/models`.
+/// It enumerates the same current registrations as exact Session resolution and
+/// exposes no Control catalog or credential repository.
+#[async_trait]
+pub trait ExecutableAgentInventorySource: Send + Sync {
+    async fn current_registrations(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<ExecutableAgentRegistration>, ExecutableAgentRegistrationError>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

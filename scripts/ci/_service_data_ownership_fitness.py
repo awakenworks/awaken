@@ -20,6 +20,7 @@ CLI_SOURCE = "crates/bin/awaken-cli/src"
 COORDINATOR_COMPONENT = "crates/server/awaken-server/src/coordinator_component.rs"
 RESOURCE_COMPONENT = "crates/contract/awaken-resource-contract/src/component.rs"
 RUNTIME_HOST_BUILD = "crates/server/awaken-runtime-host/src/host/build.rs"
+PROCESS_STORES = "crates/bin/awaken-cli/src/process_stores.rs"
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -176,6 +177,59 @@ def domain_component_violations(
     return errors
 
 
+def _struct_body(source: str, name: str) -> str:
+    match = re.search(rf"\bstruct\s+{re.escape(name)}\s*\{{(.*?)\n\}}", source, re.S)
+    return match.group(1) if match else ""
+
+
+def process_store_ownership_violations(
+    process_stores_source: str, cli_source: str, resource_source: str
+) -> list[str]:
+    """Enforce physical store acquisition at the four domain boundaries."""
+
+    errors: list[str] = []
+    process_body = _struct_body(process_stores_source, "ProcessStores")
+    control_body = _struct_body(process_stores_source, "ControlStores")
+    coordinator_body = _struct_body(process_stores_source, "CoordinatorStores")
+    for required in ("Option<ControlStores>", "Option<CoordinatorStores>"):
+        if required not in process_body:
+            errors.append(f"ProcessStores is missing role-owned group `{required}`")
+    for forbidden in (
+        "ManagedSessionRepository",
+        "DeploymentRepository",
+        "DreamRepository",
+        "MemoryExtractionRepository",
+        "ResourceComponent",
+        "ResourceCatalog",
+    ):
+        if forbidden in control_body:
+            errors.append(f"ControlStores acquires foreign authority `{forbidden}`")
+    for forbidden in (
+        "CatalogRepo",
+        "CredentialRepo",
+        "SecretStore",
+        "ScopedConfigRegistry",
+        "InferenceProfileStore",
+        "WebhookStore",
+    ):
+        if forbidden in coordinator_body:
+            errors.append(f"CoordinatorStores acquires Control authority `{forbidden}`")
+    for required in (
+        "let opens_control = role_owns_control_component(role);",
+        "let coordinator = if role_owns_managed_execution(role)",
+        "let resource_component = if role_owns_managed_execution(deployment.role)",
+    ):
+        if required not in cli_source:
+            errors.append(f"role-aware store assembly is missing `{required}`")
+    for required in (
+        "pub resource_catalog: Arc<dyn ResourceCatalog>",
+        "pub fn resource_catalog(&self) -> Arc<dyn ResourceCatalog>",
+    ):
+        if required not in resource_source:
+            errors.append(f"Resources component does not own `{required}`")
+    return errors
+
+
 def _normal_dependencies(manifest: dict) -> set[str]:
     dependencies: set[str] = set()
     for section in ("dependencies", "build-dependencies"):
@@ -197,8 +251,10 @@ def selftest() -> None:
     -> rejected; O8 one Control builder -> accepted; O9 duplicate/wrong Control
     path -> rejected; O10 the four canonical component owners -> accepted; O11
     cross-owner or parallel component construction -> rejected; O12 standalone
-    Control constructs Resources -> rejected. Together the rules cover compile-time
-    acquisition, production call paths, and component ownership.
+    Control constructs Resources -> rejected; O13 grouped role-owned stores and
+    Resources catalog -> accepted; O14 a cross-domain store field or unconditional
+    migration acquisition -> rejected. Together the rules cover compile-time
+    acquisition, production call paths, component ownership, and schema acquisition.
     """
 
     assert dependency_violations({"awaken-runtime-host", "awaken-runtime-contract"}) == []  # O1
@@ -258,6 +314,31 @@ def selftest() -> None:
         "ResourcePlane",
         "pub struct WorkerNodeBuilder build_worker_component",
     )  # O11 parallel or cross-owner component construction
+    process_stores = (
+        "struct ProcessStores { control: Option<ControlStores>, "
+        "coordinator: Option<CoordinatorStores>\n}\n"
+        "struct ControlStores { catalog: CatalogRepo\n}\n"
+        "struct CoordinatorStores { sessions: ManagedSessionRepository\n}\n"
+    )
+    role_aware = (
+        "let opens_control = role_owns_control_component(role); "
+        "let coordinator = if role_owns_managed_execution(role) "
+        "let resource_component = if role_owns_managed_execution(deployment.role)"
+    )
+    resource_owner = (
+        "pub resource_catalog: Arc<dyn ResourceCatalog> "
+        "pub fn resource_catalog(&self) -> Arc<dyn ResourceCatalog>"
+    )
+    assert process_store_ownership_violations(
+        process_stores, role_aware, resource_owner
+    ) == []  # O13
+    assert process_store_ownership_violations(
+        process_stores.replace("catalog: CatalogRepo", "sessions: ManagedSessionRepository"),
+        role_aware.replace(
+            "let resource_component = if role_owns_managed_execution(deployment.role)", ""
+        ),
+        resource_owner,
+    )  # O14
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -325,6 +406,13 @@ def check_all(repo_root: Path) -> list[str]:
                 path.read_text(encoding="utf-8")
                 for path in sorted((repo_root / WORKER_SOURCE).rglob("*.rs"))
             ),
+        )
+    )
+    errors.extend(
+        process_store_ownership_violations(
+            (repo_root / PROCESS_STORES).read_text(encoding="utf-8"),
+            "\n".join(cli_sources),
+            (repo_root / RESOURCE_COMPONENT).read_text(encoding="utf-8"),
         )
     )
     return errors

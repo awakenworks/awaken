@@ -118,6 +118,27 @@ Environment execution state, Session, dispatch, and commit stores. Resource
 providers own their content. Worker owns only ephemeral execution state and must
 not receive authority database connections.
 
+The process store bundle is split into optional Control and Coordinator groups.
+Split Coordinator cannot configure or acquire Catalog, Credential, Config,
+Admin, or the Control seal key; split Control cannot configure or acquire
+Session/Deployment or Resources content stores. `ResourceComponent` owns the
+existing `ResourceCatalog` implementation together with its per-kind ports, so
+Coordinator may mount the component without borrowing Control's Admin store.
+
+Coordinator-to-Control calls cross one authenticated application boundary:
+`ManagementAuditRepository` preserves the existing audit state machine,
+`SessionCredentialSource` returns only secret-free credential access pins, and
+`LifecycleFactDelivery` delivers the existing durable lifecycle-outbox fact.
+AllInOne injects local implementations of the same ports. The HTTP adapter owns
+serialization, authentication, and bounded idempotent retry only; it owns no
+business state. Authentication precedes handler dispatch, so a rejected request
+cannot mutate an authority before returning 401.
+
+Coordinator model discovery is derived from
+`ExecutableAgentInventorySource`, the same current immutable registrations used
+for Session resolution. It does not reopen Control's mutable model or credential
+catalogs merely to populate `/v1/models`.
+
 Environment is the remaining deliberate transition: the public Environment API
 and work execution run in Coordinator, while Control's Admin Assistant still
 authors definitions through the existing `EnvironmentAuthor` port backed by the
@@ -138,6 +159,9 @@ The enforced boundary is G45 in [INVARIANTS](../INVARIANTS.md). In addition to
 the adapter decision tables, `scripts/ci/check_crate_boundaries.py` verifies
 that production Worker code cannot link or acquire a Control, Coordinator,
 Credential, or Resource authority store.
+The same fitness rule also rejects Control/Coordinator cross-owned store fields,
+unconditional Resources migration by a Control role, and a Resources component
+that loses ownership of `ResourceCatalog`.
 
 ## Consequences
 
@@ -149,6 +173,9 @@ Credential, or Resource authority store.
   write-back have stable idempotency or fencing identities.
 - Resource semantics remain type-specific instead of accumulating optional
   behavior in a generic service.
+- Split Coordinator no longer needs Control database credentials or the Control
+  seal key; loss of the reverse Control boundary fails closed while durable
+  Coordinator outbox/audit identities remain retryable.
 - The service split requires boundary adapters, handlers, configuration checks,
   and tests, but no new domain model or general-purpose framework.
 

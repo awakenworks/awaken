@@ -4,6 +4,7 @@
 //! ConfigService, publication persistence, and schema ownership remain in their
 //! existing modules.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -136,19 +137,24 @@ async fn build_control_assembly_with_model_composition(
         // opens no File, Memory, Skill-content, or lifecycle authority.
         None,
         deployment.data_dir.clone(),
-        key,
+        Some(key),
         config::Role::Control,
         PostgresSchemaMode::Verify,
     )
     .await?;
+    let catalog = stores
+        .control
+        .as_ref()
+        .expect("Control role opens Control stores")
+        .catalog
+        .clone();
     if let Some(discovery) = brokered_catalog.as_ref() {
-        awaken_admin_config_api::reconcile_brokered_catalog(
-            discovery.as_ref(),
-            stores.catalog.as_ref(),
-        )
-        .await
-        .map_err(|error| format!("initial hosted model catalog reconciliation failed: {error}"))?;
-        spawn_hosted_model_catalog_reconciliation(stores.catalog.clone(), discovery.clone());
+        awaken_admin_config_api::reconcile_brokered_catalog(discovery.as_ref(), catalog.as_ref())
+            .await
+            .map_err(|error| {
+                format!("initial hosted model catalog reconciliation failed: {error}")
+            })?;
+        spawn_hosted_model_catalog_reconciliation(catalog, discovery.clone());
     }
     let executable_agent_wiring =
         executable_agent_registration::ExecutableAgentWiring::control(deployment)?;
@@ -177,6 +183,8 @@ async fn build_control_assembly_with_model_composition(
             web_search_publication_resolver: web_search.map(|value| value.1),
             executable_agent_wiring: Some(executable_agent_wiring),
             worker_authenticator: None,
+            control_service_token: Some(deployment.control_service.control_token()?),
+            control_service: None,
         },
     )
     .await;

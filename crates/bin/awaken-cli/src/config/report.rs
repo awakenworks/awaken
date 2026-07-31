@@ -4,26 +4,44 @@ use std::collections::BTreeMap;
 
 use awaken_runtime_host::DispatchBackend;
 
-use super::ResolvedDeployment;
+use super::{ResolvedDeployment, Role};
 
 impl ResolvedDeployment {
     pub fn report(&self, json: bool) -> String {
-        let resource_backend = if self.resources.is_shared() {
+        let owns_control = matches!(self.role, Role::AllInOne | Role::Control);
+        let owns_coordinator = matches!(self.role, Role::AllInOne | Role::Coordinator);
+        let resource_backend = if !owns_coordinator {
+            "not owned by this role"
+        } else if self.resources.is_shared() {
             "postgres"
         } else {
             "embedded"
         };
-        let runtime_backend = match self.runtime.dispatch_backend {
-            DispatchBackend::Sqlite => "sqlite",
-            DispatchBackend::Postgres => "postgres",
+        let runtime_backend = if owns_coordinator {
+            match self.runtime.dispatch_backend {
+                DispatchBackend::Sqlite => "sqlite",
+                DispatchBackend::Postgres => "postgres",
+            }
+        } else {
+            "not owned by this role"
         };
-        let databases = BTreeMap::from([
-            ("catalog", render_store_backend(&self.control.catalog)),
-            ("credential", render_store_backend(&self.control.credential)),
-            ("config", render_store_backend(&self.control.config)),
-            ("admin", render_store_backend(&self.control.admin)),
-            ("sessions", render_store_backend(&self.control.sessions)),
-        ]);
+        let control_databases = if owns_control {
+            BTreeMap::from([
+                ("catalog", render_store_backend(&self.control.catalog)),
+                ("credential", render_store_backend(&self.control.credential)),
+                ("config", render_store_backend(&self.control.config)),
+                ("admin", render_store_backend(&self.control.admin)),
+            ])
+        } else {
+            BTreeMap::new()
+        };
+        let coordinator_databases = if owns_coordinator {
+            BTreeMap::from([("sessions", render_store_backend(&self.control.sessions))])
+        } else {
+            BTreeMap::new()
+        };
+        let environment_database = (owns_control || owns_coordinator)
+            .then(|| render_store_backend(&self.control.environments));
         let database_migrations = match self.mode {
             super::OperatingMode::Local => "automatic at startup",
             super::OperatingMode::Server => {
@@ -44,7 +62,9 @@ impl ResolvedDeployment {
                 "cloud_models": self.cloud_models.as_str(),
                 "runtime_dispatch_backend": runtime_backend,
                 "resource_backend": resource_backend,
-                "control_databases": databases,
+                "control_databases": control_databases,
+                "coordinator_databases": coordinator_databases,
+                "environment_database": environment_database,
                 "database_migrations": database_migrations,
                 "seal_key": self.seal_key.description(),
                 "origins": self.origins,
@@ -71,11 +91,26 @@ impl ResolvedDeployment {
             resources = resource_backend,
             key = self.seal_key.description(),
         );
-        report.push_str(&format!(
-            "\nControl databases (schema: {database_migrations})\n"
-        ));
-        for (name, backend) in databases {
-            report.push_str(&format!("  {name:<20} {backend}\n"));
+        if owns_control {
+            report.push_str(&format!(
+                "\nControl databases (schema: {database_migrations})\n"
+            ));
+            for (name, backend) in control_databases {
+                report.push_str(&format!("  {name:<20} {backend}\n"));
+            }
+        }
+        if owns_coordinator {
+            report.push_str(&format!(
+                "\nCoordinator databases (schema: {database_migrations})\n"
+            ));
+            for (name, backend) in coordinator_databases {
+                report.push_str(&format!("  {name:<20} {backend}\n"));
+            }
+        }
+        if let Some(environment_database) = environment_database {
+            report.push_str(&format!(
+                "\nTransitional shared Environment database\n  {environment_database}\n"
+            ));
         }
         report
     }

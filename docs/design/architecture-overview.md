@@ -44,6 +44,27 @@ context or implementation. It calls the canonical Control, Coordinator, and
 Resources builders; an optional local Worker uses the same `WorkerNodeBuilder`
 as the split Worker process.
 
+### 1.1 Physical role and authority map
+
+| Process role | Canonical components | Durable authority acquired | Cross-context ports |
+|---|---|---|---|
+| Control | `awaken_control::build_control_component` | Catalog, Credential/secret, Config/publication, Admin; transitional Environment authoring | registers immutable executable Agents in Coordinator; exposes authenticated audit, secret-free credential selection, and webhook-delivery ports |
+| Coordinator | `awaken_server::build_coordinator_component`; currently co-locates the canonical Resources component | executable-Agent projection, Deployment/Session, dispatch/commit; Resources content/catalog; transitional Environment execution | calls Control application ports; dispatches to and settles Workers |
+| Worker | `WorkerNodeBuilder` | none; execution state is ephemeral | claim-fenced Coordinator and per-kind Resources/Credential clients |
+| AllInOne | the same Control, Coordinator, Resources, and optional Worker components | the union of those authorities in one process | local adapters implement the same ports |
+
+`ProcessStores` contains optional `ControlStores` and `CoordinatorStores`
+groups; it is not a shared bag of database handles. A split Coordinator receives
+no Control Catalog, Credential, Config, Admin, or seal-key value. A split Control
+receives no Session/Deployment or Resources content store. The legacy
+`ControlStoreConfig` name is only a backend-address compatibility bundle;
+role-aware validation and acquisition define authority.
+
+The only deliberate physical transition is Environment. Control still authors
+definitions through `EnvironmentAuthor`, while Coordinator owns execution work
+and sandbox policy over the explicit `environment_db`. This shared backend is
+named as a transition and must not be generalized into shared database access.
+
 The Runtime Core is the domain center. It runs tools in-process but must not know
 public protocols, registry publication workflow, vault schemas, remote execution
 placement, or product-specific session names. Server and product code adapt into
@@ -55,6 +76,15 @@ subsystem. Control persists one immutable `StoredPublication`, then invokes
 `ExecutableAgentCatalog` projection for future Session resolution. The complete
 decision and transition plan is
 [ADR-0071](../adr/0071-distributed-service-boundaries-and-executable-agent-registration.md).
+
+The reverse direction is equally explicit. Before Coordinator management
+effects it records the stable audit identity through `ManagementAuditRepository`;
+Session binding asks `SessionCredentialSource` only for secret-free credential
+pins; lifecycle outbox delivery calls `LifecycleFactDelivery`. Split roles use
+one authenticated HTTP adapter and AllInOne uses local adapters over the same
+ports. Authentication runs before a handler reaches any authority. Network or
+5xx failures are retried only for these idempotent commands; an unavailable
+webhook delivery leaves the Coordinator outbox fact pending for later drain.
 
 Contract names follow authority, not implementation convenience. Agent-domain
 truth, run-ingress delivery, protocol projection, and concrete stores are

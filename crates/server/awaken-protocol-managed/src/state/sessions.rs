@@ -229,7 +229,7 @@ impl ManagedState {
             let credential = match candidate.published_credential {
                 Some((id, revision)) => {
                     let source_id = awaken_credential_vault::CredentialSourceId(id.clone());
-                    let access = if let Some(vaults) = &self.vaults {
+                    let access = if let Some(vaults) = &self.credential_source {
                         let access =
                             vaults
                                 .mcp_access_for_source(&source_id)
@@ -258,9 +258,16 @@ impl ManagedState {
                     };
                     Some(access)
                 }
-                None => match &self.vaults {
+                None => match &self.credential_source {
                     Some(vaults) => {
-                        match vaults.mcp_credential_source_for_url(ordered_vault_ids, &server.url) {
+                        match vaults
+                            .mcp_credential_source_for_url(ordered_vault_ids, &server.url)
+                            .await
+                            .map_err(|error| {
+                                StateError::Run(RunError::bad_request(format!(
+                                    "MCP credential selection failed: {error}"
+                                )))
+                            })? {
                             Some(source_id) => {
                                 Some(vaults.mcp_access_for_source(&source_id).await.map_err(
                                     |error| {
@@ -481,11 +488,18 @@ impl ManagedState {
     /// the one validation that must hold *before* an id is minted or a thread is
     /// prepared, so it lives in a single method rather than inline — a dry-run
     /// bind check calls exactly this, and gets exactly the error create would.
-    pub fn check_bind(&self, req: &SessionCreateParams) -> Result<(), StateError> {
-        if let Some(vaults) = &self.vaults
-            && let Some(unknown) = req.vault_ids.iter().find(|v| !vaults.has_vault(v))
-        {
-            return Err(StateError::VaultNotFound(unknown.clone()));
+    pub async fn check_bind(&self, req: &SessionCreateParams) -> Result<(), StateError> {
+        if let Some(vaults) = &self.credential_source {
+            for vault_id in &req.vault_ids {
+                let exists = vaults.has_vault(vault_id).await.map_err(|error| {
+                    StateError::Run(RunError::internal(format!(
+                        "credential authority unavailable: {error}"
+                    )))
+                })?;
+                if !exists {
+                    return Err(StateError::VaultNotFound(vault_id.clone()));
+                }
+            }
         }
         Ok(())
     }
@@ -571,7 +585,7 @@ impl ManagedState {
         // Runtime preparation. The shared validator is also used by Deployments.
         req.validate_initial_events()
             .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
-        self.check_bind(&req)?;
+        self.check_bind(&req).await?;
         // Mint from the process-incarnation namespace so active-active peers and
         // restarted processes cannot choose the same Session id. The repository
         // check remains the final collision fence; `ensure_session` is still the

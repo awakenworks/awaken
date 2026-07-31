@@ -67,6 +67,8 @@ pub(super) struct FileConfig {
     pub(super) cloud_iam_service_token: Option<String>,
     pub(super) coordinator_internal_url: Option<String>,
     pub(super) executable_agent_registration_token_file: Option<PathBuf>,
+    pub(super) control_internal_url: Option<String>,
+    pub(super) control_service_token_file: Option<PathBuf>,
     pub(super) mcp_bearer_token: Option<String>,
     pub(super) cloud_iam_service_token_file: Option<PathBuf>,
     pub(super) admin_listen: Option<String>,

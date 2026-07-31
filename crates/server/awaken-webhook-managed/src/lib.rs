@@ -59,13 +59,68 @@ pub async fn stamp_workspace_scope(
 /// lifecycle fact it builds the Anthropic-shaped event (stamping the session's
 /// owner) and delivers out-of-band, so a slow endpoint never blocks the session.
 pub struct WebhookLifecycleSink {
-    dispatcher: Arc<WebhookDispatcher>,
-    /// The owning org, stamped on every event — `None` self-hosted (ADR-0048 D4/D6).
-    org_id: Option<String>,
+    delivery: Arc<dyn LifecycleFactDelivery>,
     /// Monotonic event-id source (`event_<n>`).
     seq: AtomicU64,
     session_outbox: Arc<dyn ManagedSessionRepository>,
     draining: Arc<tokio::sync::Mutex<()>>,
+}
+
+/// Delivery half of the lifecycle projection. AllInOne injects the local
+/// config-plane dispatcher; split Coordinator injects an authenticated Control
+/// adapter. The Session outbox and its completion rules remain here exactly once.
+#[async_trait::async_trait]
+pub trait LifecycleFactDelivery: Send + Sync {
+    async fn deliver(&self, fact: &ManagedLifecycleFact) -> Result<(), String>;
+}
+
+struct ConfigPlaneLifecycleDelivery {
+    dispatcher: Arc<WebhookDispatcher>,
+    org_id: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl LifecycleFactDelivery for ConfigPlaneLifecycleDelivery {
+    async fn deliver(&self, fact: &ManagedLifecycleFact) -> Result<(), String> {
+        let Some(workspace_id) = fact.workspace_id.clone() else {
+            return Ok(());
+        };
+        let event = WebhookEvent::new(
+            fact.id.clone(),
+            rfc3339(fact.timestamp),
+            fact.event_type.clone(),
+            fact.object_id.clone(),
+            workspace_id,
+            self.org_id.clone(),
+        );
+        let report = self.dispatcher.dispatch(&event, fact.timestamp).await;
+        if report.failed.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "{} webhook subscription(s) remain pending",
+                report.failed.len()
+            ))
+        }
+    }
+}
+
+/// Build the Control-owned delivery adapter without acquiring a Session
+/// repository. A split Control exposes this adapter behind its private service
+/// router; Coordinator remains the sole owner of the durable lifecycle outbox.
+pub fn config_plane_lifecycle_delivery(
+    store: Arc<dyn WebhookStore>,
+    secrets: Arc<dyn SecretStore>,
+    org_id: Option<String>,
+) -> Arc<dyn LifecycleFactDelivery> {
+    let source = Arc::new(ConfigPlaneSubscriptionSource::new(store, secrets));
+    Arc::new(ConfigPlaneLifecycleDelivery {
+        dispatcher: Arc::new(WebhookDispatcher::new(
+            source,
+            Arc::new(ReqwestSender::guarded()),
+        )),
+        org_id,
+    })
 }
 
 const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
@@ -78,7 +133,18 @@ impl WebhookLifecycleSink {
         org_id: Option<String>,
         outbox: Arc<dyn ManagedSessionRepository>,
     ) -> Self {
-        Self::with_session_outbox_interval(dispatcher, org_id, outbox, RECONCILIATION_INTERVAL)
+        Self::with_delivery(
+            Arc::new(ConfigPlaneLifecycleDelivery { dispatcher, org_id }),
+            outbox,
+        )
+    }
+
+    #[must_use]
+    pub fn with_delivery(
+        delivery: Arc<dyn LifecycleFactDelivery>,
+        outbox: Arc<dyn ManagedSessionRepository>,
+    ) -> Self {
+        Self::with_delivery_interval(delivery, outbox, RECONCILIATION_INTERVAL)
     }
 
     #[doc(hidden)]
@@ -88,9 +154,20 @@ impl WebhookLifecycleSink {
         outbox: Arc<dyn ManagedSessionRepository>,
         interval: Duration,
     ) -> Self {
+        Self::with_delivery_interval(
+            Arc::new(ConfigPlaneLifecycleDelivery { dispatcher, org_id }),
+            outbox,
+            interval,
+        )
+    }
+
+    fn with_delivery_interval(
+        delivery: Arc<dyn LifecycleFactDelivery>,
+        outbox: Arc<dyn ManagedSessionRepository>,
+        interval: Duration,
+    ) -> Self {
         let sink = Self {
-            dispatcher,
-            org_id,
+            delivery,
             seq: AtomicU64::new(0),
             session_outbox: outbox,
             draining: Arc::new(tokio::sync::Mutex::new(())),
@@ -104,9 +181,8 @@ impl WebhookLifecycleSink {
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let dispatcher = self.dispatcher.clone();
+        let delivery = self.delivery.clone();
         let session_outbox = self.session_outbox.clone();
-        let org_id = self.org_id.clone();
         let draining = self.draining.clone();
         handle.spawn(async move {
             let mut ticker = tokio::time::interval(interval);
@@ -114,7 +190,7 @@ impl WebhookLifecycleSink {
             ticker.tick().await;
             loop {
                 ticker.tick().await;
-                Self::drain_once(&dispatcher, &session_outbox, org_id.as_ref(), &draining).await;
+                Self::drain_once(&delivery, &session_outbox, &draining).await;
             }
         });
     }
@@ -123,37 +199,22 @@ impl WebhookLifecycleSink {
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let dispatcher = self.dispatcher.clone();
+        let delivery = self.delivery.clone();
         let session_outbox = self.session_outbox.clone();
-        let org_id = self.org_id.clone();
         let draining = self.draining.clone();
         handle.spawn(async move {
-            Self::drain_once(&dispatcher, &session_outbox, org_id.as_ref(), &draining).await;
+            Self::drain_once(&delivery, &session_outbox, &draining).await;
         });
     }
 
     async fn drain_once(
-        dispatcher: &Arc<WebhookDispatcher>,
+        delivery: &Arc<dyn LifecycleFactDelivery>,
         session_outbox: &Arc<dyn ManagedSessionRepository>,
-        org_id: Option<&String>,
         draining: &Arc<tokio::sync::Mutex<()>>,
     ) {
         let _guard = draining.lock().await;
         for row in session_outbox.pending_lifecycle().await {
-            let Some(workspace_id) = row.workspace_id.clone() else {
-                session_outbox.complete_lifecycle(&row.id).await;
-                continue;
-            };
-            let event = WebhookEvent::new(
-                row.id.clone(),
-                rfc3339(row.timestamp),
-                row.event_type.clone(),
-                row.object_id.clone(),
-                workspace_id,
-                org_id.cloned(),
-            );
-            let report = dispatcher.dispatch(&event, row.timestamp).await;
-            if report.failed.is_empty() {
+            if delivery.deliver(&row).await.is_ok() {
                 session_outbox.complete_lifecycle(&row.id).await;
             }
         }

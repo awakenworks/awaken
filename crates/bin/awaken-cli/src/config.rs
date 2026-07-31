@@ -33,7 +33,7 @@ use file_support::{
 };
 pub use role::Role;
 pub use seal_key::SealKeySource;
-pub use service_boundary::ExecutableAgentRegistrationConfig;
+pub use service_boundary::{ControlServiceConfig, ExecutableAgentRegistrationConfig};
 pub use worker_bootstrap::WorkerBootstrap;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
@@ -65,6 +65,7 @@ pub struct ResolvedDeployment {
     pub iam_workspaces: Vec<String>,
     pub cloud_iam: CloudIamConfig,
     pub executable_agent_registration: ExecutableAgentRegistrationConfig,
+    pub control_service: ControlServiceConfig,
     pub mcp_bearer_token: Option<String>,
     pub admin_listen: Option<String>,
     pub runtime: DeploymentConfig,
@@ -218,6 +219,24 @@ impl ResolvedDeployment {
                 ("sessions_db", file.sessions_db.is_some()),
             ],
         )?;
+        service_boundary::enforce_coordinator_control_database_isolation(
+            role,
+            &[
+                (
+                    "management_database_url_file",
+                    file.management_database_url_file.is_some(),
+                ),
+                ("catalog_db", file.catalog_db.is_some()),
+                ("credential_db", file.credential_db.is_some()),
+                ("config_db", file.config_db.is_some()),
+                ("admin_db", file.admin_db.is_some()),
+                ("control_seal_key", file.control_seal_key.is_some()),
+                (
+                    "control_seal_key_file",
+                    file.control_seal_key_file.is_some(),
+                ),
+            ],
+        )?;
         let executable_agent_registration = ExecutableAgentRegistrationConfig::resolve(
             role,
             file.coordinator_internal_url.clone(),
@@ -313,6 +332,11 @@ impl ResolvedDeployment {
         {
             return Err("run_local_pool=false requires runtime_database_url".to_owned());
         }
+        let control_service = ControlServiceConfig::resolve(
+            role,
+            file.control_internal_url.clone(),
+            file.control_service_token_file.clone(),
+        )?;
         let sandbox_tier = match file.sandbox_tier.as_deref() {
             Some("local" | "none") => SandboxTier::Local,
             Some("docker") => SandboxTier::Docker,
@@ -565,14 +589,9 @@ impl ResolvedDeployment {
             Some(_) => return Err("resource_database_url must be postgres://".to_owned()),
             None => ResourcePlaneStoreBackend::Embedded(data_dir.clone()),
         };
-        let shared_resource_catalog =
-            matches!(&control.admin, awaken_control::StoreBackend::Postgres(_));
-        if dispatch_backend == DispatchBackend::Postgres
-            && (!resources.is_shared() || !shared_resource_catalog)
-        {
+        if dispatch_backend == DispatchBackend::Postgres && !resources.is_shared() {
             return Err(
-                "a shared runtime requires resource_database_url and admin_db to use Postgres"
-                    .to_owned(),
+                "a shared runtime requires resource_database_url to use Postgres".to_owned(),
             );
         }
         let seal_key = match (
@@ -581,7 +600,10 @@ impl ResolvedDeployment {
             &file.control_seal_key_file,
             mode,
         ) {
-            (Role::Worker, None, None, _) => SealKeySource::NotOwnedByRole,
+            (Role::Coordinator | Role::Worker, None, None, _) => SealKeySource::NotOwnedByRole,
+            (Role::Coordinator | Role::Worker, _, _, _) => {
+                return Err("Control seal-key settings are not owned by this process role".into());
+            }
             (_, Some(_), Some(_), _) => {
                 return Err(
                     "configure exactly one of control_seal_key or control_seal_key_file".to_owned(),
@@ -688,6 +710,7 @@ impl ResolvedDeployment {
             iam_workspaces: file.iam_workspaces.unwrap_or_default(),
             cloud_iam,
             executable_agent_registration,
+            control_service,
             mcp_bearer_token: file.mcp_bearer_token,
             admin_listen: file.admin_listen,
             runtime,
@@ -1546,7 +1569,10 @@ mod tests {
         }
 
         let control = resolve(
-            FileConfig::default(),
+            FileConfig {
+                control_service_token_file: Some("/run/control-service-token".into()),
+                ..Default::default()
+            },
             ConfigOverrides {
                 role: Some(Role::Control),
                 ..Default::default()
@@ -1574,7 +1600,8 @@ mod tests {
             FileConfig {
                 runtime_database_url: Some("postgres://coordinator/db".to_owned()),
                 resource_database_url: Some("postgres://resource/db".to_owned()),
-                admin_db: Some("postgres://control/admin".to_owned()),
+                control_internal_url: Some("http://control:3000".to_owned()),
+                control_service_token_file: Some("/run/control-service-token".into()),
                 ..Default::default()
             },
             ConfigOverrides {
@@ -1597,6 +1624,7 @@ mod tests {
             FileConfig {
                 role: Some("control".to_owned()),
                 environment_db: Some("postgres://shared/environments".to_owned()),
+                control_service_token_file: Some("/run/control-service-token".into()),
                 ..Default::default()
             },
             Default::default(),
@@ -1689,6 +1717,74 @@ mod tests {
             assert!(report.contains("startup verifies"), "R2: {report}");
             assert!(!report.contains("postgres://"), "R3: {report}");
         }
+    }
+
+    #[test]
+    fn reports_only_role_owned_database_groups() {
+        // Cause/effect decision table:
+        // R1 split Control -> report only Control plus transitional Environment;
+        // R2 split Coordinator -> report only Coordinator, Resources, runtime, and
+        // transitional Environment; R3 either JSON report -> the unowned database
+        // group is an empty map. This prevents resolved compatibility defaults from
+        // being presented as database authority granted to the process.
+        let control = resolve(
+            FileConfig {
+                control_service_token_file: Some("/run/control-service-token".into()),
+                ..Default::default()
+            },
+            ConfigOverrides {
+                role: Some(Role::Control),
+                ..Default::default()
+            },
+        );
+        let control_text = control.report(false);
+        assert!(
+            control_text.contains("Control databases"),
+            "R1: {control_text}"
+        );
+        assert!(
+            control_text.contains("Transitional shared Environment"),
+            "R1"
+        );
+        assert!(!control_text.contains("Coordinator databases"), "R1");
+        assert!(
+            control_text.contains("resource plane       not owned"),
+            "R1"
+        );
+        let control_json: serde_json::Value = serde_json::from_str(&control.report(true)).unwrap();
+        assert_eq!(
+            control_json["coordinator_databases"],
+            serde_json::json!({}),
+            "R3"
+        );
+
+        let coordinator = resolve(
+            FileConfig {
+                runtime_database_url: Some("postgres://coordinator/runtime".to_owned()),
+                resource_database_url: Some("postgres://resources/content".to_owned()),
+                control_internal_url: Some("http://control:3000".to_owned()),
+                control_service_token_file: Some("/run/control-service-token".into()),
+                ..Default::default()
+            },
+            ConfigOverrides {
+                role: Some(Role::Coordinator),
+                ..Default::default()
+            },
+        );
+        let coordinator_text = coordinator.report(false);
+        assert!(
+            coordinator_text.contains("Coordinator databases"),
+            "R2: {coordinator_text}"
+        );
+        assert!(!coordinator_text.contains("Control databases"), "R2");
+        assert!(!coordinator_text.contains("catalog"), "R2");
+        let coordinator_json: serde_json::Value =
+            serde_json::from_str(&coordinator.report(true)).unwrap();
+        assert_eq!(
+            coordinator_json["control_databases"],
+            serde_json::json!({}),
+            "R3"
+        );
     }
 
     #[test]

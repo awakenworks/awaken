@@ -9,10 +9,10 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use awaken_executable_agent_contract::{
-    ExecutableAgentProfileSource, ExecutableAgentRegistrar, ExecutableAgentRegistration,
-    ExecutableAgentRegistrationError, ExecutableAgentRegistrationOutcome,
-    ExecutableAgentRegistrationSource, ExecutableAgentSessionProfile, ExecutableAgentWithdrawal,
-    ExecutableAgentWithdrawalOutcome,
+    ExecutableAgentInventorySource, ExecutableAgentProfileSource, ExecutableAgentRegistrar,
+    ExecutableAgentRegistration, ExecutableAgentRegistrationError,
+    ExecutableAgentRegistrationOutcome, ExecutableAgentRegistrationSource,
+    ExecutableAgentSessionProfile, ExecutableAgentWithdrawal, ExecutableAgentWithdrawalOutcome,
 };
 use awaken_resource_contract::{
     AgentResourceReferenceSource, InputResourceId, ResourceKind, ResourceTarget,
@@ -261,6 +261,27 @@ impl ExecutableAgentRegistrationSource for ExecutableAgentCatalog {
         source_revision: u64,
     ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
         Ok(self.at_revision(workspace_id, agent_id, source_revision))
+    }
+}
+
+#[async_trait]
+impl ExecutableAgentInventorySource for ExecutableAgentCatalog {
+    async fn current_registrations(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
+        let state = self.state.read().expect("executable Agent catalog");
+        let mut registrations = state
+            .current
+            .iter()
+            .filter_map(|((workspace, _), entry)| {
+                (workspace == workspace_id)
+                    .then(|| entry.registration.clone())
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        registrations.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+        Ok(registrations)
     }
 }
 

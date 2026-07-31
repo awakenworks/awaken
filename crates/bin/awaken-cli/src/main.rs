@@ -61,8 +61,8 @@ async fn run(command: console::Command) -> Result<(), String> {
             let deployment = load_migration_deployment(config_path)?;
             warn_deprecations(&deployment);
             deployment.ensure_data_layout()?;
-            let seal_key = deployment.seal_key.load_or_create()?;
-            awaken_cli::migrate_deployment_schema(&deployment, &seal_key).await
+            let seal_key = role_seal_key(&deployment)?;
+            awaken_cli::migrate_deployment_schema(&deployment, seal_key.as_ref()).await
         }
         console::Command::ControlIamProfile => {
             println!(
@@ -139,6 +139,13 @@ fn load_migration_deployment(
     })
 }
 
+fn role_seal_key(deployment: &ResolvedDeployment) -> Result<Option<[u8; 32]>, String> {
+    match deployment.role {
+        Role::AllInOne | Role::Control => deployment.seal_key.load_or_create().map(Some),
+        Role::Coordinator | Role::Worker => Ok(None),
+    }
+}
+
 async fn run_service(
     args: console::ServiceArgs,
     presentation: Presentation,
@@ -164,9 +171,13 @@ async fn run_service(
     }
     warn_deprecations(&deployment);
     deployment.ensure_data_layout()?;
-    let seal_key = deployment.seal_key.load_or_create()?;
+    let seal_key = role_seal_key(&deployment)?;
     let local_acp = if role == Role::AllInOne {
-        awaken_cli::prepare_local_acp(&mut deployment, &seal_key).await?
+        awaken_cli::prepare_local_acp(
+            &mut deployment,
+            seal_key.as_ref().expect("AllInOne owns Control seal key"),
+        )
+        .await?
     } else {
         None
     };
@@ -184,7 +195,7 @@ async fn run_service(
 
 async fn serve_resolved(
     deployment: ResolvedDeployment,
-    seal_key: [u8; 32],
+    seal_key: Option<[u8; 32]>,
     presentation: Presentation,
     role: Role,
     local_acp: Option<awaken_cli::PreparedLocalAcp>,
@@ -236,9 +247,21 @@ async fn serve_resolved(
     }
 
     let assembly = match role {
-        Role::AllInOne => awaken_cli::build_all_in_one_assembly(&deployment, &seal_key).await?,
-        Role::Control => awaken_cli::build_control_assembly(&deployment, &seal_key).await?,
-        Role::Coordinator => awaken_cli::build_coordinator_assembly(&deployment, &seal_key).await?,
+        Role::AllInOne => {
+            awaken_cli::build_all_in_one_assembly(
+                &deployment,
+                seal_key.as_ref().expect("AllInOne owns Control seal key"),
+            )
+            .await?
+        }
+        Role::Control => {
+            awaken_cli::build_control_assembly(
+                &deployment,
+                seal_key.as_ref().expect("Control owns Control seal key"),
+            )
+            .await?
+        }
+        Role::Coordinator => awaken_cli::build_coordinator_assembly(&deployment).await?,
         Role::Worker => unreachable!("Worker has its own process composition"),
     };
     let local_setup = assembly.local_setup;
@@ -456,9 +479,9 @@ mode = "server"
 role = "coordinator"
 runtime_database_url = "postgres://127.0.0.1/runtime"
 resource_database_url = "postgres://127.0.0.1/resources"
-admin_db = "postgres://127.0.0.1/control"
 executable_agent_registration_token_file = {token:?}
-control_seal_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+control_internal_url = "http://127.0.0.1:3000"
+control_service_token_file = {token:?}
 "#,
                 data = dir.path().join("coordinator-data"),
                 token = token,
