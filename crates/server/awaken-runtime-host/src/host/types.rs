@@ -38,7 +38,10 @@ pub enum HostResume {
     ToolPermission { allow: bool, note: Option<String> },
     /// Client-executed tool result (Managed `user.custom_tool_result`; AI SDK
     /// `output-available` / `output-error` on a client tool part).
-    ClientResult { content: String, is_error: bool },
+    ClientResult {
+        content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        is_error: bool,
+    },
 }
 
 impl HostResume {

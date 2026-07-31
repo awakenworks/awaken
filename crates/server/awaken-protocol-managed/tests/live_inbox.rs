@@ -111,7 +111,7 @@ impl SessionRuntime for QueueFake {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _content: &str,
+        _content: Vec<ContentBlock>,
         _is_error: bool,
     ) -> Result<StepOutcome, RunError> {
         Err(unsupported_runtime_operation())
@@ -256,7 +256,7 @@ fn app(fake: Arc<QueueFake>) -> Router {
             &self,
             t: &str,
             i: &str,
-            c: &str,
+            c: Vec<ContentBlock>,
             e: bool,
         ) -> Result<StepOutcome, RunError> {
             self.0.resume_custom(t, i, c, e).await

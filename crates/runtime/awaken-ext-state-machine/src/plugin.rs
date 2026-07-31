@@ -300,7 +300,8 @@ impl PhaseHook for StateMachineObserver {
             _ => {}
         }
 
-        let result = ToolResultView::new(output.is_error, &output.content);
+        let result_text = output.text();
+        let result = ToolResultView::new(output.is_error, &result_text);
         for op in advance_evaluate(
             &self.machines,
             &thread_base,

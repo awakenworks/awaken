@@ -154,7 +154,7 @@ impl RunDelegationService for AwaitingResolver {
         );
         let input = match request.result {
             ResumeResult::Input(text) => text,
-            ResumeResult::ToolResult(output) => output.content,
+            ResumeResult::ToolResult(output) => output.text(),
             ResumeResult::Decision { allow, note } => {
                 note.unwrap_or_else(|| if allow { "allow" } else { "deny" }.into())
             }

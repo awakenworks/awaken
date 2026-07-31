@@ -186,7 +186,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(visible.content.trim(), oversized.len().to_string(), "S3");
+        assert_eq!(visible.text().trim(), oversized.len().to_string(), "S3");
 
         let replacement = "z".repeat(MAX_INLINE_TOOL_OUTPUT_CHARS + 1);
         let retried_preview = spiller

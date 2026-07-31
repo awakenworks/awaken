@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use serde::{Deserialize, Serialize};
@@ -189,7 +190,7 @@ pub enum ToolRecoveryError {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolOutput {
     pub call_id: String,
-    pub content: String,
+    pub content: Vec<ContentBlock>,
     pub is_error: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub state: Vec<StateCommand>,
@@ -197,21 +198,36 @@ pub struct ToolOutput {
 
 impl ToolOutput {
     pub fn ok(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::ok_blocks(call_id, vec![ContentBlock::text(content)])
+    }
+
+    pub fn ok_blocks(call_id: impl Into<String>, content: Vec<ContentBlock>) -> Self {
         Self {
             call_id: call_id.into(),
-            content: content.into(),
+            content,
             is_error: false,
             state: Vec::new(),
         }
     }
 
     pub fn error(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::error_blocks(call_id, vec![ContentBlock::text(content)])
+    }
+
+    pub fn error_blocks(call_id: impl Into<String>, content: Vec<ContentBlock>) -> Self {
         Self {
             call_id: call_id.into(),
-            content: content.into(),
+            content,
             is_error: true,
             state: Vec::new(),
         }
+    }
+
+    /// A derived plain-text view for policies that intentionally match, log, or
+    /// spill text. The structured blocks remain the sole stored result.
+    #[must_use]
+    pub fn text(&self) -> String {
+        extract_text(&self.content)
     }
 
     /// Stage state transitions to be committed with this tool's result.
@@ -408,6 +424,34 @@ pub trait ToolExecutorProvider: Send + Sync {
         &self,
         activation: &crate::activation::RunActivation,
     ) -> Result<Option<Arc<dyn ToolExecutor>>, ToolExecutorSelectionError>;
+}
+
+#[cfg(test)]
+mod tool_output_content_tests {
+    use super::*;
+
+    #[test]
+    fn multimodal_output_round_trips_without_a_text_shadow() {
+        // Cause/effect rule T1: ordered text + base64 image -> one serialized
+        // ToolOutput whose canonical `content` round-trips byte-for-byte; the
+        // plain-text view is derived and excludes image bytes. T2 text-only
+        // constructors still produce exactly one Text block.
+        let output = ToolOutput::ok_blocks(
+            "call-1",
+            vec![
+                ContentBlock::text("review"),
+                ContentBlock::image_base64("image/png", "iVBORw0KGgo="),
+            ],
+        );
+        let encoded = serde_json::to_vec(&output).expect("serialize");
+        let restored: ToolOutput = serde_json::from_slice(&encoded).expect("deserialize");
+        assert_eq!(restored, output);
+        assert_eq!(restored.text(), "review");
+        assert_eq!(
+            ToolOutput::ok("call-2", "done").content,
+            vec![ContentBlock::text("done")]
+        );
+    }
 }
 
 #[cfg(test)]

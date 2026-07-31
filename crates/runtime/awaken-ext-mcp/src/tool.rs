@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_mcp_wire::{McpToolDefinition, ToolContent};
+use awaken_runtime_contract::ContentBlock;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use serde_json::Value;
@@ -65,31 +66,34 @@ impl RawTool for McpRawTool {
             // the loop surfaces to the model without a tool result.
             Err(err) => Err(ToolError::Execution(err.to_string())),
             Ok(result) => {
-                let content = flatten_content(&result.content);
+                let content = content_blocks(&result.content);
                 if result.is_error.unwrap_or(false) {
                     // Tool-level error: model-visible, the run continues.
-                    Ok(ToolOutput::error(call.call_id, content))
+                    Ok(ToolOutput::error_blocks(call.call_id, content))
                 } else {
-                    Ok(ToolOutput::ok(call.call_id, content))
+                    Ok(ToolOutput::ok_blocks(call.call_id, content))
                 }
             }
         }
     }
 }
 
-/// Render MCP tool content into the model-visible string. Text blocks pass
-/// through, joined by newlines; a non-text block (image/audio/resource) becomes
-/// a compact JSON marker so the model still sees that content came back.
-pub(crate) fn flatten_content(content: &[ToolContent]) -> String {
+/// Preserve MCP text and image payloads in the runtime's canonical multimodal
+/// blocks. Media without a neutral consumer remains an explicit text marker.
+pub(crate) fn content_blocks(content: &[ToolContent]) -> Vec<ContentBlock> {
     content
         .iter()
         .map(|block| match block {
-            ToolContent::Text { text, .. } => text.clone(),
-            other => serde_json::to_string(other)
-                .unwrap_or_else(|_| "[unrenderable mcp content]".to_string()),
+            ToolContent::Text { text, .. } => ContentBlock::text(text),
+            ToolContent::Image {
+                data, mime_type, ..
+            } => ContentBlock::image_base64(mime_type, data),
+            other => ContentBlock::text(
+                serde_json::to_string(other)
+                    .unwrap_or_else(|_| "[unrenderable mcp content]".to_string()),
+            ),
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect()
 }
 
 /// Build the model-visible descriptor for an MCP tool: namespaced id, the
@@ -204,7 +208,7 @@ mod tests {
         );
         let out = tool.invoke(call()).await.expect("invokes");
         assert!(!out.is_error);
-        assert_eq!(out.content, "pong");
+        assert_eq!(out.text(), "pong");
         assert_eq!(out.call_id, "c1");
     }
 
@@ -223,7 +227,7 @@ mod tests {
         // error result, not a `ToolError`.
         let out = tool.invoke(call()).await.expect("invokes");
         assert!(out.is_error);
-        assert_eq!(out.content, "boom");
+        assert_eq!(out.text(), "boom");
     }
 
     #[tokio::test]
@@ -255,7 +259,7 @@ mod tests {
         let mut c = call();
         c.arguments = Value::Null;
         let out = tool.invoke(c).await.expect("invokes");
-        assert_eq!(out.content, "ok");
+        assert_eq!(out.text(), "ok");
     }
 
     #[test]
@@ -280,7 +284,10 @@ mod tests {
     }
 
     #[test]
-    fn multiple_text_blocks_join_with_newlines() {
+    fn multiple_text_blocks_keep_order_without_flattening() {
+        // Cause/effect rule M1: two ordered MCP text blocks -> two ordered
+        // neutral Text blocks. No synthesized delimiter or parallel string
+        // representation may become authoritative.
         let content = vec![
             ToolContent::Text {
                 text: "line one".to_string(),
@@ -293,14 +300,20 @@ mod tests {
                 meta: None,
             },
         ];
-        assert_eq!(flatten_content(&content), "line one\nline two");
+        assert_eq!(
+            content_blocks(&content),
+            vec![
+                ContentBlock::text("line one"),
+                ContentBlock::text("line two")
+            ]
+        );
     }
 
     #[test]
-    fn a_non_text_block_renders_as_a_json_marker_interleaved_with_text() {
-        // Image/audio/resource content the model cannot read as prose still has to
-        // be *seen* — it becomes a compact JSON marker (carrying its type), joined
-        // with any surrounding text so the model knows non-text content came back.
+    fn an_image_block_preserves_pixels_interleaved_with_text() {
+        // Cause/effect rule M2: MCP text + base64 image -> ordered Text + Image
+        // with exact MIME/data. Unsupported media alone may use a marker; an image
+        // must never be demoted to JSON text.
         let content = vec![
             ToolContent::Text {
                 text: "here is a chart".to_string(),
@@ -314,23 +327,20 @@ mod tests {
                 meta: None,
             },
         ];
-        let flat = flatten_content(&content);
-        let lines: Vec<&str> = flat.split('\n').collect();
-        assert_eq!(lines[0], "here is a chart");
-        // The image line is the block's JSON, tagged with its wire type — not dropped.
-        assert!(
-            lines[1].contains("\"type\":\"image\""),
-            "marker: {}",
-            lines[1]
+        assert_eq!(
+            content_blocks(&content),
+            vec![
+                ContentBlock::text("here is a chart"),
+                ContentBlock::image_base64("image/png", "AAAA"),
+            ]
         );
-        assert!(lines[1].contains("image/png"));
     }
 
     #[tokio::test]
-    async fn a_non_text_result_reaches_the_model_as_the_json_marker() {
-        // End to end: a successful call whose content is a lone non-text block still
-        // yields a non-empty, non-error output carrying the marker (never an empty
-        // string that would hide the returned content from the model).
+    async fn an_image_result_reaches_the_runtime_as_pixels() {
+        // Cause/effect rule M3: a successful MCP image-only result -> successful
+        // ToolOutput with the exact Image block; error status and pixel bytes are
+        // independent dimensions and neither is flattened.
         struct ImageTransport;
         #[async_trait]
         impl McpToolTransport for ImageTransport {
@@ -357,7 +367,9 @@ mod tests {
         let tool = McpRawTool::new("srv", "shot", Arc::new(ImageTransport)).expect("builds");
         let out = tool.invoke(call()).await.expect("invokes");
         assert!(!out.is_error);
-        assert!(out.content.contains("\"type\":\"image\""));
-        assert!(out.content.contains("image/jpeg"));
+        assert_eq!(
+            out.content,
+            vec![ContentBlock::image_base64("image/jpeg", "ZZZZ")]
+        );
     }
 }

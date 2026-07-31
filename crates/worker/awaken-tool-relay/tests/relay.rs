@@ -88,7 +88,7 @@ async fn remote_tool_runs_out_of_process_and_returns_output() {
         .await
         .expect("remote invoke");
 
-    assert_eq!(output.content, "hello from the hand");
+    assert_eq!(output.text(), "hello from the hand");
     assert!(!output.is_error);
     assert_eq!(
         runs.load(Ordering::SeqCst),
@@ -124,7 +124,7 @@ async fn concurrent_calls_serialize_and_never_cross_their_correlation() {
                 .invoke(&call(&format!("c{i}"), "echo", &text))
                 .await
                 .expect("concurrent invoke");
-            (text, out.content)
+            (text, out.text())
         }));
     }
     for h in handles {
@@ -418,7 +418,7 @@ async fn the_brain_stamps_its_catalog_fingerprint_and_a_matching_hand_accepts() 
         .invoke(&call("c1", "echo", "ok"))
         .await
         .expect("a matching fingerprint is accepted");
-    assert_eq!(out.content, "ok");
+    assert_eq!(out.text(), "ok");
     drop(executor);
     let _ = hand.await;
 }
@@ -487,7 +487,7 @@ async fn a_hand_fingerprint_with_an_unstamped_request_runs_permissively() {
         .handle(HandRequest::new(7, call("c1", "echo", "ok")))
         .await;
     match reply.result {
-        HandResult::Ok { output } => assert_eq!(output.content, "ok"),
+        HandResult::Ok { output } => assert_eq!(output.text(), "ok"),
         other => panic!("an unstamped request should run, got {other:?}"),
     }
     assert_eq!(runs.load(Ordering::SeqCst), 1);

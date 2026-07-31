@@ -583,10 +583,14 @@ impl ManagedState {
                 content,
                 is_error,
             } => {
-                let text = content.as_deref().map(content_text).unwrap_or_default();
                 let outcome = self
                     .runtime
-                    .resume_custom(session_id, custom_tool_use_id, &text, *is_error)
+                    .resume_custom(
+                        session_id,
+                        custom_tool_use_id,
+                        content.clone().unwrap_or_default(),
+                        *is_error,
+                    )
                     .await?;
                 self.append_step(session_id, outcome, PreviewAllocations::default())?;
             }
@@ -595,10 +599,14 @@ impl ManagedState {
                 content,
                 is_error,
             } => {
-                let text = content.as_deref().map(content_text).unwrap_or_default();
                 let outcome = self
                     .runtime
-                    .resume_custom(session_id, tool_use_id, &text, *is_error)
+                    .resume_custom(
+                        session_id,
+                        tool_use_id,
+                        content.clone().unwrap_or_default(),
+                        *is_error,
+                    )
                     .await?;
                 self.append_step(session_id, outcome, PreviewAllocations::default())?;
             }

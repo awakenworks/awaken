@@ -996,7 +996,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(result.content.contains("bound-hand-ok"));
+        assert!(result.text().contains("bound-hand-ok"));
         let skills = environment.scan_skill_dir("skills");
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].id, "authored");

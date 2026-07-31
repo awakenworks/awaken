@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_ext_builtin_tools::executable_hand_tools;
+use awaken_runtime_contract::ContentBlock;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use serde_json::Value;
@@ -254,8 +255,8 @@ pub trait HandTool: Send + Sync {
 /// from mutating runtime state.
 #[derive(Debug, Clone)]
 pub struct HandOutput {
-    /// The tool's textual result.
-    pub content: String,
+    /// The tool's structured model-visible result.
+    pub content: Vec<ContentBlock>,
     /// Whether this is a tool-level error (model-visible; the run continues).
     pub is_error: bool,
 }
@@ -264,7 +265,7 @@ impl HandOutput {
     /// A successful result carrying `content`.
     pub fn ok(content: impl Into<String>) -> Self {
         Self {
-            content: content.into(),
+            content: vec![ContentBlock::text(content)],
             is_error: false,
         }
     }
@@ -272,9 +273,15 @@ impl HandOutput {
     /// A tool-level error carrying `content` (model-visible; the run continues).
     pub fn error(content: impl Into<String>) -> Self {
         Self {
-            content: content.into(),
+            content: vec![ContentBlock::text(content)],
             is_error: true,
         }
+    }
+
+    /// Derived text for diagnostics and text-only relay assertions.
+    #[must_use]
+    pub fn text(&self) -> String {
+        awaken_runtime_contract::extract_text(&self.content)
     }
 }
 
@@ -352,9 +359,9 @@ impl RawTool for HandToolAsRaw {
         let call_id = call.call_id.clone();
         let out = self.0.run(call).await?;
         Ok(if out.is_error {
-            ToolOutput::error(call_id, out.content)
+            ToolOutput::error_blocks(call_id, out.content)
         } else {
-            ToolOutput::ok(call_id, out.content)
+            ToolOutput::ok_blocks(call_id, out.content)
         })
     }
 }
@@ -1071,7 +1078,7 @@ mod tests {
     #[test]
     fn hand_output_constructors() {
         let ok = HandOutput::ok("a");
-        assert_eq!(ok.content, "a");
+        assert_eq!(ok.text(), "a");
         assert!(!ok.is_error);
         assert!(HandOutput::error("b").is_error);
     }
@@ -1096,7 +1103,7 @@ mod tests {
             .invoke(call("good", serde_json::json!({})))
             .await
             .unwrap();
-        assert_eq!(o.content, "done");
+        assert_eq!(o.text(), "done");
         assert!(!o.is_error && o.state.is_empty());
 
         let e = bad

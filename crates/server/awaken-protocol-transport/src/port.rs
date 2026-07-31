@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::event::{Fact, terminal_awaiting};
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
@@ -104,7 +105,10 @@ pub enum Resume {
     /// Answer a built-in tool's permission gate.
     Confirm { allow: bool, note: Option<String> },
     /// Deliver a client-executed tool's result.
-    ClientResult { content: String, is_error: bool },
+    ClientResult {
+        content: Vec<ContentBlock>,
+        is_error: bool,
+    },
 }
 
 /// A driver failure classified by fault.

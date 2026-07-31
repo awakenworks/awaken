@@ -53,7 +53,7 @@ async fn everything_server_echo_round_trips() {
         .await
         .expect("echo invokes");
     assert!(!out.is_error);
-    assert!(out.content.contains("hello mcp"));
+    assert!(out.text().contains("hello mcp"));
 
     // The everything server also exposes prompts and resources.
     let prompts = conn_transport.list_prompts().await.expect("list prompts");

@@ -271,7 +271,7 @@ fn ensure_endpoint(reference: &TaskReference, endpoint: &str) -> Result<()> {
 
 fn resume_text(result: &ResumeResult) -> String {
     match result {
-        ResumeResult::ToolResult(output) => output.content.clone(),
+        ResumeResult::ToolResult(output) => output.text(),
         ResumeResult::Input(text) => text.clone(),
         ResumeResult::Decision { allow, note } => note
             .clone()

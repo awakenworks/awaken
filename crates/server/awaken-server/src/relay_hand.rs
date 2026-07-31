@@ -62,6 +62,6 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(output.content, "relay-bound");
+        assert_eq!(output.text(), "relay-bound");
     }
 }

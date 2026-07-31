@@ -132,7 +132,7 @@ mod tests {
             .invoke(call(serde_json::json!({ "text": "hi" })))
             .await
             .unwrap();
-        assert_eq!(out.content, "echoed: hi");
+        assert_eq!(out.text(), "echoed: hi");
         assert_eq!(out.call_id, "c1", "the call id is echoed back");
         assert!(!out.is_error);
     }
@@ -141,13 +141,13 @@ mod tests {
     async fn echo_defaults_to_empty_when_text_is_missing_or_not_a_string() {
         // Missing key → the fail-safe empty default, not an error.
         let missing = EchoTool.invoke(call(serde_json::json!({}))).await.unwrap();
-        assert_eq!(missing.content, "echoed: ");
+        assert_eq!(missing.text(), "echoed: ");
         // Present but not a string → also the empty default (as_str is None).
         let non_string = EchoTool
             .invoke(call(serde_json::json!({ "text": 42 })))
             .await
             .unwrap();
-        assert_eq!(non_string.content, "echoed: ");
+        assert_eq!(non_string.text(), "echoed: ");
     }
 
     #[tokio::test]

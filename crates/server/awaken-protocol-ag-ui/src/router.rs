@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::event::{AgentEvent, Fact, Transcoder};
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
@@ -263,7 +264,7 @@ async fn resume_step(
 fn to_resume(content: &str, error: Option<&str>, pending: &Pending) -> Resume {
     if pending.client_executed {
         Resume::ClientResult {
-            content: content.to_string(),
+            content: vec![ContentBlock::text(content)],
             is_error: error.is_some(),
         }
     } else {
@@ -344,7 +345,7 @@ mod tests {
     fn client_executed_tool_delivers_the_content_as_its_result() {
         let r = to_resume("the answer", None, &pending(true));
         assert!(
-            matches!(r, Resume::ClientResult { content, is_error: false } if content == "the answer")
+            matches!(r, Resume::ClientResult { content, is_error: false } if content == vec![ContentBlock::text("the answer")])
         );
     }
 
@@ -352,7 +353,7 @@ mod tests {
     fn a_client_executed_tool_error_is_delivered_as_an_error_result() {
         let r = to_resume("it failed", Some("it failed"), &pending(true));
         assert!(
-            matches!(r, Resume::ClientResult { content, is_error: true } if content == "it failed")
+            matches!(r, Resume::ClientResult { content, is_error: true } if content == vec![ContentBlock::text("it failed")])
         );
     }
 

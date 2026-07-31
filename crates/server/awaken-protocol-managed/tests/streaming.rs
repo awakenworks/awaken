@@ -83,7 +83,7 @@ impl SessionRuntime for EchoFake {
         &self,
         _t: &str,
         _tid: &str,
-        _c: &str,
+        _c: Vec<ContentBlock>,
         _e: bool,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no custom"))
@@ -184,7 +184,7 @@ impl SessionRuntime for StreamingFake {
         &self,
         _t: &str,
         _tid: &str,
-        _c: &str,
+        _c: Vec<ContentBlock>,
         _e: bool,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no custom"))
@@ -260,7 +260,7 @@ impl SessionRuntime for DelegateFake {
         &self,
         _t: &str,
         _tid: &str,
-        _c: &str,
+        _c: Vec<ContentBlock>,
         _e: bool,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no custom"))

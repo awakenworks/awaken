@@ -26,6 +26,7 @@ use awaken_mcp_wire::progress::McpProgressUpdate;
 use awaken_mcp_wire::{CallToolResult, McpToolDefinition, ToolContent};
 use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
 use awaken_runtime_contract::tool::{ToolCall, ToolError, ToolOutput};
+use awaken_runtime_contract::{ContentBlock, ImageSource};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
@@ -277,17 +278,37 @@ async fn invoke(
     result
 }
 
-/// Project the neutral output onto the wire result: the content string as one
-/// text block, `is_error` preserved. `state` is run-internal and dropped here.
+/// Project the neutral output onto MCP without flattening text/image blocks.
+/// Runtime-only state is intentionally omitted from the wire result.
 fn call_result(output: &ToolOutput) -> CallToolResult {
     CallToolResult {
-        content: vec![ToolContent::Text {
-            text: output.content.clone(),
-            annotations: None,
-            meta: None,
-        }],
+        content: output.content.iter().map(to_mcp_content).collect(),
         structured_content: None,
         is_error: Some(output.is_error),
+    }
+}
+
+fn to_mcp_content(block: &ContentBlock) -> ToolContent {
+    match block {
+        ContentBlock::Text { text } => ToolContent::Text {
+            text: text.clone(),
+            annotations: None,
+            meta: None,
+        },
+        ContentBlock::Image {
+            source: ImageSource::Base64 { media_type, data },
+        } => ToolContent::Image {
+            data: data.clone(),
+            mime_type: media_type.clone(),
+            annotations: None,
+            meta: None,
+        },
+        other => ToolContent::Text {
+            text: serde_json::to_string(other)
+                .unwrap_or_else(|_| "[unrenderable tool content]".to_string()),
+            annotations: None,
+            meta: None,
+        },
     }
 }
 

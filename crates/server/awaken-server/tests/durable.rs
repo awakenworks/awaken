@@ -82,7 +82,7 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
         thread,
         &pending_id,
         HostResume::ClientResult {
-            content: "42".into(),
+            content: vec![ContentBlock::text("42")],
             is_error: false,
         },
     )

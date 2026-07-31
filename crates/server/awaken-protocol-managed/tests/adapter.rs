@@ -6,7 +6,7 @@ mod support;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::EndCause;
 use awaken_protocol_managed::{
@@ -273,7 +273,7 @@ impl SessionRuntime for EchoFake {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _content: &str,
+        _content: Vec<ContentBlock>,
         _is_error: bool,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no custom"))
@@ -334,7 +334,7 @@ impl SessionRuntime for FailingFake {
         &self,
         _t: &str,
         _tid: &str,
-        _c: &str,
+        _c: Vec<ContentBlock>,
         _e: bool,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no custom"))
@@ -855,7 +855,7 @@ impl SessionRuntime for CapableFake {
         &self,
         _t: &str,
         _tid: &str,
-        _c: &str,
+        _c: Vec<ContentBlock>,
         _e: bool,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
@@ -1073,7 +1073,7 @@ impl SessionRuntime for AwaitingFake {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _content: &str,
+        _content: Vec<ContentBlock>,
         _is_error: bool,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no custom"))
@@ -1143,7 +1143,7 @@ impl SessionRuntime for OutcomeFake {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _content: &str,
+        _content: Vec<ContentBlock>,
         _is_error: bool,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("no custom"))
@@ -1470,20 +1470,21 @@ impl SessionRuntime for CustomToolFake {
         &self,
         _t: &str,
         _tid: &str,
-        content: &str,
+        content: Vec<ContentBlock>,
         _e: bool,
     ) -> Result<StepOutcome, RunError> {
         *self.awaiting.lock().unwrap() = false;
+        let text = extract_text(&content);
         Ok(ended(vec![
             Message {
                 id: Id("tr".into()),
                 role: Role::Tool,
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "cc1".into(),
-                    content: vec![ContentBlock::text(content)],
+                    content,
                 }],
             },
-            Message::text(Id("a2".into()), Role::Assistant, format!("got: {content}")),
+            Message::text(Id("a2".into()), Role::Assistant, format!("got: {text}")),
         ]))
     }
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
@@ -1513,6 +1514,12 @@ impl SessionRuntime for CustomToolFake {
 
 #[tokio::test]
 async fn custom_tool_use_await_and_result() {
+    // Custom-result cause/effect decision table:
+    // R1 matching pending id + text only -> resume and end; R2 matching id +
+    // text/image blocks -> preserve ordered blocks through SessionRuntime and the
+    // committed agent.tool_result; R3 wrong id/kind (covered by batch validation)
+    // -> reject without a partial event. This test exercises R2 while retaining
+    // the text-derived assistant behavior expected by text-only consumers.
     let app = router(Arc::new(ManagedState::new(CustomToolFake::default())));
     let id = create(&app).await;
 
@@ -1562,7 +1569,14 @@ async fn custom_tool_use_await_and_result() {
         &app,
         "POST",
         &format!("/v1/sessions/{id}/events"),
-        serde_json::json!({ "events": [{ "type": "user.custom_tool_result", "custom_tool_use_id": "cc1", "content": [{ "type": "text", "text": "42" }] }] }),
+        serde_json::json!({ "events": [{
+            "type": "user.custom_tool_result",
+            "custom_tool_use_id": "cc1",
+            "content": [
+                { "type": "text", "text": "42" },
+                { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo=" } }
+            ]
+        }] }),
     )
     .await;
     let list = json_call(
@@ -1583,6 +1597,18 @@ async fn custom_tool_use_await_and_result() {
         msgs.iter().any(|m| m.contains("got: 42")),
         "messages: {msgs:?}"
     );
+    let tool_result = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["type"] == "agent.tool_result")
+        .expect("runtime result is projected");
+    assert_eq!(tool_result["content"][0]["text"], "42");
+    assert_eq!(
+        tool_result["content"][1]["source"]["media_type"],
+        "image/png"
+    );
+    assert_eq!(tool_result["content"][1]["source"]["data"], "iVBORw0KGgo=");
     let last = list["data"].as_array().unwrap().last().unwrap();
     assert_eq!(last["stop_reason"]["type"], "end_turn");
 }
@@ -1728,7 +1754,7 @@ impl SessionRuntime for RecordingFake {
         &self,
         _t: &str,
         _tid: &str,
-        _c: &str,
+        _c: Vec<ContentBlock>,
         _e: bool,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
@@ -1940,7 +1966,7 @@ impl SessionRuntime for InterruptRedirectFake {
         &self,
         _t: &str,
         _tid: &str,
-        _c: &str,
+        _c: Vec<ContentBlock>,
         _e: bool,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))

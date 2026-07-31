@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -101,7 +101,7 @@ impl RecallSelector for AgentSelector {
         .filter(|output| !output.is_error)
         .map(|output| output.content)
         .unwrap_or_default();
-        parse_indices(&reply, manifest.len(), max)
+        parse_indices(&extract_text(&reply), manifest.len(), max)
     }
 }
 

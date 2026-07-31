@@ -71,6 +71,8 @@ struct EchoTool {
     ran: Arc<AtomicUsize>,
 }
 
+struct MultimodalTool;
+
 struct OperationProbe {
     seen: Arc<Mutex<Option<String>>>,
 }
@@ -122,6 +124,23 @@ impl RawTool for EchoTool {
         Ok(ToolOutput::ok(
             call.call_id,
             format!("echoed: {}", call.arguments),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl RawTool for MultimodalTool {
+    fn id(&self) -> &str {
+        "echo"
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput::ok_blocks(
+            call.call_id,
+            vec![
+                ContentBlock::text("pixels"),
+                ContentBlock::image_base64("image/png", "iVBORw0KGgo="),
+            ],
         ))
     }
 }
@@ -235,13 +254,16 @@ async fn allowed_tool_call_executes_and_feeds_result_back() {
 #[tokio::test]
 async fn native_tool_results_use_the_bound_spiller_and_fail_closed() {
     // Cause-effect graph:
-    // C1=Native executor produced a result; C2=spiller succeeds; C3=spiller fails.
-    // C1+C2 -> transformed content is the only durable/model-visible result.
-    // C1+C3 -> Run errors before a Tool result or completed payload commits.
+    // C1=Native executor produced a result; C2=text-only; C3=spiller succeeds;
+    // C4=spiller fails; C5=result contains image blocks.
+    // C1+C2+C3 -> transformed content is the only durable/model-visible result.
+    // C1+C2+C4 -> Run errors before a Tool result or completed payload commits.
+    // C1+C5 -> bypass text spiller and preserve exact structured blocks.
     //
     // | Rule | Native result | spill | Expected effect |
-    // | N1 | yes | success | one call with stable run/call; preview committed |
-    // | N2 | yes | failure | execution error; no Tool-role result committed |
+    // | N1 | text | success | one call with stable run/call; preview committed |
+    // | N2 | text | failure | execution error; no Tool-role result committed |
+    // | N3 | image | any | spiller untouched; ordered pixels committed |
     let seen = Arc::new(Mutex::new(Vec::new()));
     let runtime = Runtime::new()
         .with_llm(Arc::new(ToolThenText::new()))
@@ -299,6 +321,38 @@ async fn native_tool_results_use_the_bound_spiller_and_fail_closed() {
             .iter()
             .all(|message| message.role != Role::Tool),
         "N2"
+    );
+
+    let multimodal_seen = Arc::new(Mutex::new(Vec::new()));
+    let multimodal_commit = Arc::new(MemoryCommitCoordinator::new());
+    Runtime::new()
+        .with_llm(Arc::new(ToolThenText::new()))
+        .with_tool(Arc::new(MultimodalTool))
+        .execute(
+            activation(),
+            RuntimeRunContext::new()
+                .with_commit(multimodal_commit.clone())
+                .with_tool_output_spiller(Arc::new(SpillProbe {
+                    fail: true,
+                    seen: multimodal_seen.clone(),
+                })),
+        )
+        .await
+        .expect("N3");
+    assert!(multimodal_seen.lock().unwrap().is_empty(), "N3");
+    let image = multimodal_commit
+        .committed()
+        .messages
+        .into_iter()
+        .find(|message| message.role == Role::Tool)
+        .and_then(|message| match message.content.as_slice() {
+            [ContentBlock::ToolResult { content, .. }] => content.get(1).cloned(),
+            _ => None,
+        });
+    assert_eq!(
+        image,
+        Some(ContentBlock::image_base64("image/png", "iVBORw0KGgo=")),
+        "N3"
     );
 }
 

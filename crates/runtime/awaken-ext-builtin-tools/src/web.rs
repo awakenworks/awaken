@@ -795,7 +795,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(output.content.contains("https://result.test"));
+        assert!(output.text().contains("https://result.test"));
         assert_eq!(*free.seen_secret.lock().unwrap(), None);
 
         let (_, paid_tool) = plugin

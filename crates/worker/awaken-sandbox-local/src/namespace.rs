@@ -1550,7 +1550,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(output.content.contains("complete"), "W1/E1");
+        assert!(output.text().contains("complete"), "W1/E1");
         assert!(
             !sandbox
                 .root
