@@ -461,11 +461,31 @@ mod completion_tests {
     use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
     use std::sync::Arc;
 
+    use crate::{NoModelConfiguredExecutor, SharedHost, UNCONFIGURED_MODEL_REF};
+
     fn host_models() -> awaken_runtime_contract::resolved::ResolvedSpec {
         awaken_runtime_contract::ExecutableAgentSnapshot::builder("test")
             .model(ModelBinding::new("host", "primary", "native"))
             .build()
             .resolved_spec
+    }
+
+    #[test]
+    fn exported_dispatch_completion_sink_is_the_host_owned_projection() {
+        // Cause graph: one SharedHost owns one CompletionRegistry; an embedding
+        // requests the Worker-settle projection; cloning must preserve that exact
+        // registry rather than constructing a peer notification path.
+        // Decision table:
+        // | host mode | exported sink | effect |
+        // | local pool | exact host registry | local settle and export converge |
+        // | coordinator-only | exact host registry | remote settle wakes Session |
+        // Mode does not alter sink identity, so pointer identity covers both rules
+        // without manufacturing two deployment configurations in this unit test.
+        let host = SharedHost::new(Arc::new(NoModelConfiguredExecutor), UNCONFIGURED_MODEL_REF);
+        let expected = host.completion.clone() as Arc<dyn CompletionSink>;
+        let exported = host.dispatch_completion_sink();
+
+        assert!(Arc::ptr_eq(&expected, &exported));
     }
 
     /// A3: dropping the guard (caller future dropped / timed out) removes the
