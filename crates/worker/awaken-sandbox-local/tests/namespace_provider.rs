@@ -98,6 +98,56 @@ async fn probe_ready_reflects_the_os_native_sandbox_availability() {
 }
 
 #[tokio::test]
+async fn native_bash_tool_writes_to_the_artifact_scan_output_root() {
+    // Cause/effect graph: C1=Namespace sandbox is available; C2=native bash uses
+    // the reserved project/output paths; C3=artifact scan reads provider outputs.
+    // Effects: E1=PWD/project path is /workspace; E2=output write succeeds through
+    // the authoritative bind; E3=scan returns exactly those bytes.
+    //
+    // | Rule | C1 | C2 | C3 | Effects |
+    // | T1   | no  | -   | -   | gated skip (host lacks the OS primitive) |
+    // | T2   | yes | yes | yes | E1,E2,E3 |
+    if !os_native_sandbox_works().await {
+        eprintln!("skipping: OS-native sandbox unavailable");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let sandbox = NamespaceProvider::new(tmp.path())
+        .create_sandbox(&spec("t-native-tool-outputs"))
+        .await
+        .unwrap();
+    let bash = sandbox
+        .rooted_tools()
+        .into_iter()
+        .find(|tool| tool.id() == "bash")
+        .expect("bash tool");
+    let output = bash
+        .invoke(awaken_runtime_contract::llm::ToolCall {
+            call_id: "write-output".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({
+                "command": "test \"$PWD\" = \"$AWAKEN_PROJECT_DIR\" && printf staged > \"$AWAKEN_OUTPUTS_DIR/result.txt\""
+            }),
+        })
+        .await
+        .unwrap();
+    assert!(!output.is_error, "T2/E1,E2: {}", output.text());
+
+    let artifact = sandbox
+        .artifacts()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|artifact| artifact.path.ends_with("/result.txt"))
+        .expect("T2/E3 artifact");
+    assert_eq!(
+        sandbox.read_artifact(&artifact.id).await.unwrap(),
+        b"staged"
+    );
+    sandbox.dispose().await.unwrap();
+}
+
+#[tokio::test]
 async fn seatbelt_enforces_files_env_cwd_and_outputs_on_macos() {
     if !seatbelt_works().await {
         eprintln!("skipping: Seatbelt/sandbox-exec unavailable (non-macOS)");

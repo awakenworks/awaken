@@ -96,6 +96,63 @@ pub struct RenderInput<'a> {
     pub argv: &'a [String],
 }
 
+/// Adapts a native hand-tool shell call to the same OS launcher and realized
+/// layout used by spawned Namespace processes. This is intentionally a view of
+/// the provider-owned layout, not a second launcher or mount source of truth.
+#[derive(Clone)]
+pub(crate) struct NamespaceToolShell {
+    host_workspace: PathBuf,
+    host_outputs: PathBuf,
+    outputs_path: String,
+    mounts: Vec<RenderMount>,
+    network: pc::NetworkPolicy,
+    path_env: Vec<(String, String)>,
+}
+
+impl NamespaceToolShell {
+    fn new(sandbox: &NamespaceSandbox) -> Self {
+        Self {
+            host_workspace: sandbox.host_workspace.clone(),
+            host_outputs: sandbox.host_outputs.clone(),
+            outputs_path: sandbox.outputs_path.clone(),
+            mounts: sandbox
+                .layout
+                .read()
+                .expect("namespace layout lock poisoned")
+                .clone(),
+            network: sandbox.network.clone(),
+            path_env: std::env::var("PATH")
+                .ok()
+                .map(|value| vec![("PATH".to_string(), value)])
+                .unwrap_or_default(),
+        }
+    }
+
+    pub(crate) fn wrap_command(&self, command: &str) -> String {
+        let argv = vec![s("/bin/sh"), s("-c"), s(command)];
+        let input = RenderInput {
+            host_workspace: &self.host_workspace,
+            host_outputs: &self.host_outputs,
+            outputs_path: &self.outputs_path,
+            mounts: &self.mounts,
+            env: &self.path_env,
+            network: &self.network,
+            cwd: "",
+            argv: &argv,
+        };
+        let rendered = if cfg!(target_os = "macos") {
+            sandbox_exec_argv(&input)
+        } else {
+            bubblewrap_argv(&input)
+        };
+        rendered
+            .iter()
+            .map(|token| crate::sh_squote(token))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
 fn s(v: impl Into<String>) -> String {
     v.into()
 }
@@ -842,7 +899,7 @@ impl NamespaceSandbox {
             } else {
                 crate::RuntimePathEnv::new("/workspace", self.outputs_path.clone())
             },
-            matches!(self.network, pc::NetworkPolicy::None),
+            NamespaceToolShell::new(self),
         )
     }
 
@@ -1648,6 +1705,47 @@ mod tests {
                     ]
             }),
             "NetworkManager's resolv.conf target is visible"
+        );
+    }
+
+    #[test]
+    fn namespace_tool_shell_reuses_the_process_layout_and_quotes_the_payload() {
+        // Cause/effect graph: C1=Namespace tool has one authoritative workspace/output
+        // layout; C2=network is denied; C3=payload contains a shell quote. Effects:
+        // E1=tool binds the same host roots at /workspace and outputs_path;
+        // E2=the same network restriction is rendered; E3=payload remains one argv token.
+        //
+        // | Rule | C1 | C2 | C3 | Effects |
+        // | N1   | yes | yes | yes | E1,E2,E3 |
+        let shell = NamespaceToolShell {
+            host_workspace: PathBuf::from("/host/session/workspace"),
+            host_outputs: PathBuf::from("/host/session/outputs"),
+            outputs_path: "/outputs".into(),
+            mounts: Vec::new(),
+            network: pc::NetworkPolicy::None,
+            path_env: Vec::new(),
+        };
+        let rendered = shell.wrap_command("printf '%s' ok > \"$AWAKEN_OUTPUTS_DIR/out\"");
+
+        if cfg!(target_os = "macos") {
+            assert!(rendered.starts_with("'sandbox-exec'"));
+            assert!(rendered.contains("/host/session/workspace"), "N1/E1");
+            assert!(rendered.contains("/host/session/outputs"), "N1/E1");
+        } else {
+            assert!(
+                rendered.contains("'--bind' '/host/session/workspace' '/workspace'"),
+                "N1/E1: {rendered}"
+            );
+            assert!(
+                rendered.contains("'--bind' '/host/session/outputs' '/outputs'"),
+                "N1/E1: {rendered}"
+            );
+            assert!(rendered.contains("'--unshare-net'"), "N1/E2");
+        }
+        assert!(
+            rendered
+                .ends_with(r#"'/bin/sh' '-c' 'printf '\''%s'\'' ok > "$AWAKEN_OUTPUTS_DIR/out"'"#),
+            "N1/E3: {rendered}"
         );
     }
 
