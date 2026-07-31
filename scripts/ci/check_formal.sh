@@ -2,6 +2,8 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+source scripts/ci/_cargo_target.sh
+awaken_configure_cargo_target "$PWD"
 
 require_tools=0
 if [ "${1:-}" = "--require-tools" ]; then

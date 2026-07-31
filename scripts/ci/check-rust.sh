@@ -7,6 +7,8 @@
 # never buried under build spam.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
+source scripts/ci/_cargo_target.sh
+awaken_configure_cargo_target "$PWD"
 
 mode="${1:---full}"
 
