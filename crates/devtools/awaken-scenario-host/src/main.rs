@@ -131,6 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Real split-Control composition with only its model-publication SPI
         // supplied by the deterministic scenario adapter.
         Ok("distributed-control") => awaken_scenario_host::build_distributed_control_router().await,
+        Ok("distributed-provider") => awaken_scenario_host::build_distributed_provider_router(),
         // The production management composition (durable stores + config plane +
         // resource PEP) with only its deterministic fallback model replaced. Used
         // by the Skill pin/restart e2e; resource repositories remain auth-agnostic.

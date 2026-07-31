@@ -20,6 +20,7 @@ pub use composition::build_unscoped_resource_router;
 pub use delegation::build_delegation_router;
 pub use deployment::scenario_deployment;
 pub use distributed_control::build_distributed_control_router;
+pub use distributed_control::build_distributed_provider_router;
 pub use dream::{build_dream_router, build_dream_router_and_host};
 pub use worker::run_echo_worker;
 
