@@ -108,8 +108,9 @@ pub(crate) fn sandbox_requirements(
 pub(crate) fn encode_session_resource_envelope(
     manifest: &awaken_session_contract::SessionResourceManifest,
 ) -> Result<awaken_run_ingress::SessionResourceEnvelope, serde_json::Error> {
-    Ok(awaken_run_ingress::SessionResourceEnvelope::new(
+    Ok(awaken_run_ingress::SessionResourceEnvelope::at_revision(
         manifest.workspace_id.clone(),
+        manifest.revision,
         serde_json::to_string(&manifest.resources)?,
     ))
 }
@@ -119,10 +120,13 @@ pub(crate) fn encode_session_resource_envelope(
 pub(crate) fn decode_session_resource_envelope(
     envelope: &awaken_run_ingress::SessionResourceEnvelope,
 ) -> Result<awaken_session_contract::SessionResourceManifest, serde_json::Error> {
-    Ok(awaken_session_contract::SessionResourceManifest::new(
-        envelope.workspace_id.clone(),
-        serde_json::from_str(&envelope.resolved_resources_json)?,
-    ))
+    Ok(
+        awaken_session_contract::SessionResourceManifest::at_revision(
+            envelope.workspace_id.clone(),
+            envelope.resource_revision,
+            serde_json::from_str(&envelope.resolved_resources_json)?,
+        ),
+    )
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

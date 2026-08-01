@@ -4962,12 +4962,16 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
     assert!(ctx.tool_executor.is_some(), "R3 Hand");
 }
 
+/// Dispatch projection rule: a registered manifest's Workspace, generation, and
+/// resolved values are one cause tuple; the envelope decode must reproduce that
+/// tuple exactly and select the Session-resource worker capability.
 #[test]
 fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
     let host = SharedHost::new(Arc::new(OkModel), "host-default");
     let thread = "t-dispatch-resources";
-    let manifest = awaken_session_contract::SessionResourceManifest::new(
+    let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
         "workspace-a",
+        7,
         awaken_session_contract::ResolvedSessionResources {
             inputs: Vec::new(),
             skills: Some(Vec::new()),
