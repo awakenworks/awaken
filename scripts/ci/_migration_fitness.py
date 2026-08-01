@@ -31,9 +31,6 @@ PUBLISHED_CONDITIONAL_MIGRATION_SHA256: dict[str, str] = {
     "V0009__retire_legacy_mcp_config.sql": (
         "76ead211069b2c6e63df28828230ade1878aa3610223b623960af1290c31bf59"
     ),
-    "crates/control/awaken-config-store/src/schema.rs": (
-        "74bb948d2064c31ebb4ae4a76d0a3d6854931960875f1e1aebc5f4c13e646785"
-    ),
     "crates/server/awaken-run-ingress/src/migrations/"
     "V0016__drop_legacy_delegation_group.sql": (
         "05badef821e61ad295baa783f2c25e5e4c09e5399abcf8a12b9b4086bc806f18"
