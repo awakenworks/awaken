@@ -468,6 +468,12 @@ test("Models either tests a discovered model or closes the provider prerequisite
     await expect(page.getByRole("button", { name: "Author", exact: true })).toHaveCount(0);
     return;
   }
+  if (await testBtn.isDisabled()) {
+    // A discovered but inactive offering is truthfully visible and not runnable;
+    // the Console must not open a transcript for it.
+    await expect(testBtn).toBeDisabled();
+    return;
+  }
   await testBtn.click();
   // The modal mounts the shared transcript against the pinned model.
   await expect(page.getByRole("heading", { name: /Test model ·/ })).toBeVisible();
