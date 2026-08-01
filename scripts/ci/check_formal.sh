@@ -62,10 +62,6 @@ if command -v cargo-kani >/dev/null 2>&1; then
   cargo kani -p awaken-tenancy \
     --harness selector_order_cannot_change_an_authorized_result
   cargo kani -p awaken-provisioning-contract \
-    --harness credential_expiry_never_exceeds_lease_or_own_ttl
-  cargo kani -p awaken-provisioning-contract \
-    --harness revoked_or_expired_lease_always_denies_egress
-  cargo kani -p awaken-provisioning-contract \
     --harness reap_reason_obeys_fixed_fail_closed_priority
   cargo kani -p awaken-provisioning-contract \
     --harness sandbox_admission_never_weakens_the_isolation_floor

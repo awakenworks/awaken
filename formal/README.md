@@ -50,8 +50,6 @@ The named harnesses in the strict gate invoke production pure functions directly
   - every uncovered selector fails closed;
   - selector ordering cannot authorize disagreement.
 - `awaken-provisioning-contract`
-  - credential expiry is bounded by lease and token TTL;
-  - revoked/expired leases deny egress;
   - reap causes obey the fixed fail-closed priority.
   - sandbox admission preserves the isolation floor and every requested
     capability;

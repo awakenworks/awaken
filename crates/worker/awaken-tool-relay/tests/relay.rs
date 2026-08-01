@@ -529,10 +529,16 @@ async fn a_re_drive_of_a_failed_execution_returns_the_cached_error_without_re_ru
 
 #[test]
 fn hand_result_serializes_with_an_internally_tagged_snake_case_status() {
-    // Wire-shape lock: HandResult is `#[serde(tag = "status", rename_all = "snake_case")]`.
+    // Wire-shape coverage: C1 success/error/indeterminate variant determines
+    // E1 the stable snake_case tag and E2 its sole typed payload. The success
+    // payload uses the canonical ordered content-block wire, not the retired
+    // scalar-content compatibility shape.
     let ok = serde_json::to_value(HandResult::ok(ToolOutput::ok("c1", "hi"))).unwrap();
     assert_eq!(ok["status"], "ok");
-    assert_eq!(ok["output"]["content"], "hi");
+    assert_eq!(
+        ok["output"]["content"],
+        serde_json::json!([{ "type": "text", "text": "hi" }])
+    );
 
     let err = serde_json::to_value(HandResult::err(HandError::new(
         HandErrorKind::FingerprintMismatch,

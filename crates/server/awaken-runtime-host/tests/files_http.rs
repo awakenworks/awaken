@@ -391,7 +391,11 @@ async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session
         downloadable: true,
         scope_id: Some("deleted-session".into()),
         logical_path: Some("report.txt".into()),
-        harvest_key: Some("deleted-session\0report.txt\0hash".into()),
+        harvest_key: Some(awaken_file_store::harvest_idempotency_key(
+            "deleted-session",
+            "report.txt",
+            "hash",
+        )),
         deleted: false,
     };
     host.file_catalog().create_file(record).await.unwrap();

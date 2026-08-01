@@ -788,7 +788,11 @@ impl SharedHost {
                     true,
                     Some(thread.to_string()),
                     Some(logical_path.clone()),
-                    Some(format!("{thread}\0{logical_path}\0{content_id}")),
+                    Some(awaken_file_store::harvest_idempotency_key(
+                        thread,
+                        &logical_path,
+                        &content_id,
+                    )),
                 )
                 .await?;
             out.push(record);

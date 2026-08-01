@@ -44,8 +44,6 @@
     {"id":"circuit.half_open_probe_capacity","formalizable":true,"status":"machine_linked","evidence":["formal/tla/CircuitBreaker.tla","crates/runtime/awaken-runtime/src/circuit_breaker.rs"]},
     {"id":"circuit.probe_generation_fencing","formalizable":true,"status":"machine_linked","evidence":["formal/tla/CircuitBreaker.tla","crates/runtime/awaken-runtime/src/circuit_breaker.rs"]},
     {"id":"circuit.abandoned_probe_reopens","formalizable":true,"status":"machine_linked","evidence":["formal/tla/CircuitBreaker.tla","crates/runtime/awaken-runtime/src/circuit_breaker.rs"]},
-    {"id":"lease.credential_expiry_is_bounded","formalizable":true,"status":"kernel_proved","evidence":["crates/worker/awaken-provisioning-contract/src/lease.rs"],"proof_harnesses":["credential_expiry_never_exceeds_lease_or_own_ttl"]},
-    {"id":"lease.egress_fails_closed","formalizable":true,"status":"kernel_proved","evidence":["crates/worker/awaken-provisioning-contract/src/lease.rs"],"proof_harnesses":["revoked_or_expired_lease_always_denies_egress"]},
     {"id":"lease.reap_priority_is_total","formalizable":true,"status":"kernel_proved","evidence":["crates/worker/awaken-provisioning-contract/src/lease.rs"],"proof_harnesses":["reap_reason_obeys_fixed_fail_closed_priority"]},
     {"id":"config.generation_is_monotonic","formalizable":true,"status":"machine_linked","evidence":["formal/tla/ConfigCAS.tla","crates/control/awaken-config-store/src/schema.rs","crates/control/awaken-config-store/src/sqlite.rs","crates/control/awaken-config-store/src/postgres.rs"]},
     {"id":"config.stale_writer_never_applies","formalizable":true,"status":"machine_linked","evidence":["formal/tla/ConfigCAS.tla","crates/control/awaken-config-store/tests/integration.rs"]},

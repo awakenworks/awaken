@@ -23,6 +23,8 @@ use awaken_run_ingress_contract::dispatch::{
 };
 use awaken_runtime_contract::activation::RunActivation;
 
+mod harness;
+
 fn activation(run: &str, thread: &str) -> RunActivation {
     use awaken_runtime_contract::resolved::{
         CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
@@ -75,11 +77,6 @@ fn req(run: &str, thread: &str) -> RunDispatch {
 /// re-claim returns the SAME sandbox binding.
 async fn binding_survives_a_recovery_claim(store: &dyn DispatchQueue) {
     let run = RunId("run-1".into());
-    // Settle any leftover run-1 from a prior run on a shared schema (idempotent), so
-    // single-writer-per-thread (ADR-0022) does not see a stale in-flight run here. A
-    // leftover un-reclaimed row is at epoch 1 (claimed once by the crashed prior
-    // run); a clean schema has no row and the settle is a benign fenced no-op.
-    let _ = store.settle(&run, 1, DispatchOutcome::Done, &[]).await;
     store.enqueue(req("run-1", "thread-1")).await.unwrap();
 
     // First claim: no sandbox yet.
@@ -141,15 +138,15 @@ async fn runtime_selected_store_delegates_the_sandbox_binding() {
 
 #[tokio::test]
 async fn postgres_backend_binds_and_recovers() {
-    // The standard test-DB var every other pg suite uses (`AWAKEN_TEST_DATABASE_URL`).
-    // It previously read a bespoke `AWAKEN_TEST_PG_URL`, so it self-skipped even under
-    // the pg CI harness — a false green for the durable-binding guarantee.
-    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
-        eprintln!("skip: AWAKEN_TEST_DATABASE_URL unset");
+    // Cause/effect decision table: C1=PostgreSQL reachable; C2=the test owns a
+    // fresh search_path. R1 C1+C2 -> exercise durable bind/recovery; R2 !C1 ->
+    // explicit local skip. Sharing the default schema is forbidden because
+    // parallel workspace tests use the same logical Run ids.
+    let Some(pool) = harness::schema_pool("t_sandbox_binding").await else {
         return;
     };
-    let store = awaken_run_ingress::PostgresDispatchStore::connect(&url, 10)
+    let store = awaken_run_ingress::PostgresDispatchStore::with_pool(pool)
         .await
-        .expect("connect + migrate (incl. V0011 sandbox column)");
+        .expect("migrate isolated schema (incl. V0011 sandbox column)");
     binding_survives_a_recovery_claim(&store).await;
 }

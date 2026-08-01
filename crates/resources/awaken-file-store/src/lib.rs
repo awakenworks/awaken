@@ -38,6 +38,20 @@ pub fn content_id(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
 }
 
+/// Stable, database-portable identity for one Sandbox artifact harvest.
+/// Length framing prevents tuple ambiguity; the digest keeps internal tuple
+/// components and PostgreSQL-forbidden NUL separators out of persistence.
+#[must_use]
+pub fn harvest_idempotency_key(thread: &str, logical_path: &str, content_id: &str) -> String {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"awaken-file-harvest-v1\0");
+    for component in [thread, logical_path, content_id] {
+        hash.update(&(component.len() as u64).to_be_bytes());
+        hash.update(component.as_bytes());
+    }
+    hash.finalize().to_hex().to_string()
+}
+
 /// Whether `id` names exactly one file directly under the base — non-empty and made
 /// only of `[A-Za-z0-9_-]`. Ids minted by [`content_id`] are BLAKE3 hex and always
 /// pass, but `get`/`delete` take an id off the wire, so a crafted `../` or absolute id
@@ -377,19 +391,20 @@ mod tests {
         // E3 isolation + newest-first order, E4 active-byte decrement and hidden read.
         // Decision rules R1..R4 are exercised in order below for every backend.
         let old = file_record("file_old", "w1", "2026-01-01T00:00:00Z", None, None);
+        let harvest_key = harvest_idempotency_key("session-1", "out.txt", "hash");
         let scoped = file_record(
             "file_scoped",
             "w1",
             "2026-01-02T00:00:00Z",
             Some("session-1"),
-            Some("session-1\0out.txt\0hash"),
+            Some(&harvest_key),
         );
         let other_workspace = file_record(
             "file_other",
             "w2",
             "2026-01-03T00:00:00Z",
             Some("session-1"),
-            Some("session-1\0out.txt\0hash"),
+            Some(&harvest_key),
         );
         assert!(matches!(
             store.create_file(old.clone()).await.unwrap(),
@@ -464,6 +479,21 @@ mod tests {
             store.create_file(replacement).await.unwrap(),
             CreateFileRecordOutcome::Inserted(_)
         ));
+    }
+
+    #[test]
+    fn harvest_key_is_framed_portable_and_sensitive_to_every_component() {
+        // Cause/effect decision table: C1=the same ordered tuple; C2=one tuple
+        // component changes; C3=components contain delimiter-like text. R1 C1
+        // -> the same key; R2 C2 -> a different key; R3 C3 -> printable,
+        // NUL-free key. Length framing makes R3 independent of delimiters.
+        let key = harvest_idempotency_key("thread", "a\0b", "content");
+        assert_eq!(key, harvest_idempotency_key("thread", "a\0b", "content"));
+        assert_ne!(key, harvest_idempotency_key("thread-2", "a\0b", "content"));
+        assert_ne!(key, harvest_idempotency_key("thread", "a\0b-2", "content"));
+        assert_ne!(key, harvest_idempotency_key("thread", "a\0b", "content-2"));
+        assert!(!key.contains('\0'));
+        assert!(key.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 
     #[tokio::test]
