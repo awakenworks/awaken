@@ -79,9 +79,9 @@ pub(crate) use resource::{
 };
 use session_record::SessionRecord;
 pub(crate) use types::{
-    AgentCapabilities, CustomTool, DelegatedRun, LiveInboxError, LiveInboxSnapshot,
-    OutcomeIteration, OutcomeReport, RunError, RunErrorKind, SessionInit, SessionRuntime,
-    SessionUsage, StepOutcome, ToolPermissionDecision,
+    AgentCapabilities, CustomTool, DelegatedRun, LiveInboxSnapshot, OutcomeIteration,
+    OutcomeReport, RunError, RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepOutcome,
+    ToolPermissionDecision,
 };
 
 /// The adapter's in-memory session store plus the runtime port.
@@ -592,6 +592,7 @@ mod tests {
     struct EndSessionRecorder {
         ended: Arc<std::sync::Mutex<Vec<String>>>,
         interrupted: Arc<std::sync::Mutex<Vec<String>>>,
+        prepared: Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     #[async_trait]
@@ -622,6 +623,10 @@ mod tests {
             unreachable!()
         }
         async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+            Ok(())
+        }
+        async fn prepare_session(&self, thread: &str, _init: SessionInit) -> Result<(), RunError> {
+            self.prepared.lock().unwrap().push(thread.to_string());
             Ok(())
         }
         async fn define_outcome(
@@ -905,8 +910,6 @@ mod tests {
         );
     }
 
-    /// Terminal cleanup is retried after crashes, so archive must recover the
-    /// durable Session before consulting a fresh process's empty memory index.
     #[tokio::test]
     async fn archive_session_rehydrates_after_process_restart() {
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
@@ -918,17 +921,17 @@ mod tests {
             .expect("create")
             .id;
         drop(original);
-
         let runtime = EndSessionRecorder::default();
         let ended = runtime.ended.clone();
+        let prepared = runtime.prepared.clone();
         let restarted = ManagedState::new(runtime).with_session_repo(repo.clone());
         let archived = restarted
             .archive_session(&id)
             .await
             .expect("archive durable Session after restart");
-
         assert_eq!(archived.status, "terminated");
         assert_eq!(*ended.lock().unwrap(), vec![id.clone()]);
+        assert!(prepared.lock().unwrap().is_empty());
         assert_eq!(repo.get(&id).await.unwrap().status, "terminated");
     }
 
