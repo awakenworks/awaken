@@ -7,7 +7,6 @@ import { Button, Card, Modal, Pill, Skeleton, UsageBadges } from "../components/
 import { api, ws } from "../lib/api/client";
 import type {
   CatalogSyncResult,
-  ConfigCapabilitiesView,
   CredentialSource,
   ProviderCatalog,
   ProviderConnectionSummary,
@@ -15,11 +14,13 @@ import type {
   Session,
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import { useConfigCapabilities } from "../lib/useConfigCapabilities";
 import {
   cloudModelUiState,
   CloudModelBadge,
   CloudModelNotice,
   CloudModelRefresh,
+  modelCatalogPresentation,
 } from "./model-cloud-capability";
 import ProviderConnectionPanel from "./provider-connection-panel";
 
@@ -65,7 +66,34 @@ function TestChat({ model }: { model: string }) {
     queryFn: () => api.get<Session>(ws(`/v1/sessions/${sid}`)),
     refetchInterval: 4_000,
   });
-  if (!sid) return <Skeleton height={60} />;
+  if (start.error instanceof Error) {
+    return (
+      <div className="banner gate">
+        <span>!</span>
+        <span style={{ flex: 1 }}>
+          <strong>{app.t("Connection test could not start", "连接测试无法启动")}</strong>
+          <small>{start.error.message}</small>
+        </span>
+        <Button
+          disabled={start.isPending}
+          onClick={() => {
+            start.reset();
+            start.mutate();
+          }}
+        >
+          {app.t("Retry", "重试")}
+        </Button>
+      </div>
+    );
+  }
+  if (!sid) {
+    return (
+      <div>
+        <Skeleton height={60} />
+        <p className="hint">{app.t("Starting a secure test session…", "正在启动安全测试会话…")}</p>
+      </div>
+    );
+  }
   return (
     <>
       <div className="row" style={{ margin: "4px 0 8px" }}>
@@ -76,6 +104,10 @@ function TestChat({ model }: { model: string }) {
         base={ws(`/v1/sessions/${sid}`)}
         queryKey={["test-events", sid]}
         fixedModel={model}
+        autoMessage={{
+          id: `model-test-${sid}`,
+          text: "Reply with a short confirmation that this model connection is working.",
+        }}
         placeholder={app.t("Say hello…", "打个招呼…")}
         onLatency={setLatencyMs}
       />
@@ -91,11 +123,7 @@ export default function ModelsSurface() {
     queryKey: ["catalog", workspace],
     queryFn: () => api.get<ProviderCatalog>(ws("/v1/config/catalog")),
   });
-  const capabilities = useQuery({
-    queryKey: ["config-capabilities", workspace],
-    queryFn: () => api.get<ConfigCapabilitiesView>(ws("/v1/config/capabilities")),
-    staleTime: Infinity,
-  });
+  const capabilities = useConfigCapabilities();
   const descriptors = useQuery({
     queryKey: ["provider-descriptors", workspace],
     queryFn: () => api.get<ProviderDriverDescriptor[]>(ws("/v1/config/provider-descriptors")),
@@ -127,6 +155,8 @@ export default function ModelsSurface() {
 
   const c = catalog.data;
   const cloudState = cloudModelUiState(capabilities.data);
+  const managedSupply = cloudState === "managed";
+  const presentation = modelCatalogPresentation(cloudState);
   const byokEnabled = capabilities.data?.models.byok_enabled === true;
   const offeringsByProvider = new Map<string, ProviderCatalog["offerings"]>();
   for (const offering of c?.offerings ?? []) {
@@ -143,7 +173,9 @@ export default function ModelsSurface() {
           <CloudModelBadge state={cloudState} />
           <span className="mut">
             {c
-              ? `${Object.keys(c.providers).length} providers · ${Object.keys(c.endpoints).length} endpoints · ${c.offerings.length} offerings`
+              ? managedSupply
+                ? `${Object.keys(c.providers).length} providers · ${c.offerings.length} models`
+                : `${Object.keys(c.providers).length} providers · ${Object.keys(c.endpoints).length} endpoints · ${c.offerings.length} offerings`
               : "…"}
           </span>
           </div>
@@ -163,13 +195,13 @@ export default function ModelsSurface() {
           <thead>
             <tr>
               <th>Model</th>
-              <th>Provider</th>
-              <th>Endpoint</th>
-              <th>Dialect</th>
+              {presentation.showSupplyInfrastructure && <th>Provider</th>}
+              {presentation.showSupplyInfrastructure && <th>Endpoint</th>}
+              {presentation.showSupplyInfrastructure && <th>Dialect</th>}
               <th>Status</th>
               <th>{app.t("Context", "上下文")}</th>
               <th>{app.t("Max output", "最大输出")}</th>
-              <th style={{ textAlign: "right" }}></th>
+              {presentation.allowSessionTest && <th style={{ textAlign: "right" }}></th>}
             </tr>
           </thead>
           <tbody>
@@ -178,24 +210,24 @@ export default function ModelsSurface() {
               .map(([providerId, offerings]) => (
               <Fragment key={providerId}>
                 <tr>
-                  <td colSpan={8} style={{ fontWeight: 650, background: "var(--surface-subtle)" }}>
+                  <td colSpan={managedSupply ? 4 : 8} style={{ fontWeight: 650, background: "var(--surface-subtle)" }}>
                     {c?.providers?.[providerId]?.display_name ?? providerId}
-                    <span className="mut" style={{ marginLeft: 8 }}>{providerId}</span>
+                    {!managedSupply && <span className="mut" style={{ marginLeft: 8 }}>{providerId}</span>}
                   </td>
                 </tr>
                 {offerings.map((o, i) => (
               <tr key={`${o.model_id}-${o.protocol_endpoint_id}-${i}`}>
                 <td className="mono">{o.model_id}</td>
-                <td>{o.provider_id}</td>
-                <td className="mono mut">{o.protocol_endpoint_id}</td>
-                <td>
+                {presentation.showSupplyInfrastructure && <td>{o.provider_id}</td>}
+                {presentation.showSupplyInfrastructure && <td className="mono mut">{o.protocol_endpoint_id}</td>}
+                {presentation.showSupplyInfrastructure && <td>
                   <Pill tone="neutral">{o.dialect}</Pill>
-                </td>
+                </td>}
                 <td>
                   <Pill tone={(o.status ?? "active") === "active" ? "agent" : "neutral"}>
-                    {o.status ?? "active"} · {o.source ?? "manual"}
+                    {o.status ?? "active"}{managedSupply ? "" : ` · ${o.source ?? "manual"}`}
                   </Pill>
-                  {(o.source ?? "manual") === "provider_api" && (
+                  {!managedSupply && (o.source ?? "manual") === "provider_api" && (
                     <div
                       className="mut"
                       title={
@@ -231,7 +263,7 @@ export default function ModelsSurface() {
                     </div>
                   )}
                 </td>
-                <td style={{ textAlign: "right" }}>
+                {presentation.allowSessionTest && <td style={{ textAlign: "right" }}>
                   <Button
                     style={{ height: 24 }}
                     disabled={(o.status ?? "active") !== "active"}
@@ -239,14 +271,14 @@ export default function ModelsSurface() {
                   >
                     {app.t("Test", "测试")}
                   </Button>
-                </td>
+                </td>}
               </tr>
                 ))}
               </Fragment>
             ))}
             {(c?.offerings ?? []).length === 0 && (
               <tr>
-                <td colSpan={8} className="mut">
+                <td colSpan={managedSupply ? 4 : 8} className="mut">
                   {app.t(
                     byokEnabled
                       ? "No models yet — connect a provider below."
@@ -270,7 +302,7 @@ export default function ModelsSurface() {
         />
       )}
 
-      {testModel && (
+      {presentation.allowSessionTest && testModel && (
         <Modal
           title={app.t(`Test model · ${testModel}`, `测试模型 · ${testModel}`)}
           onClose={() => setTestModel(null)}

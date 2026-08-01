@@ -82,6 +82,7 @@ a {
   flex-direction: column;
   gap: 2px;
   overflow-y: auto;
+  overflow-x: hidden;
   z-index: 1;
 }
 .main {
@@ -224,6 +225,15 @@ a {
   flex-direction: column;
   line-height: 1.15;
 }
+.workspace-context {
+  min-width: 0;
+  max-width: min(30vw, 220px);
+}
+.workspace-context strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .brand-copy strong,
 .workspace-context strong {
   color: var(--fg);
@@ -306,6 +316,9 @@ a {
   text-transform: uppercase;
   color: var(--fg3);
   padding: 10px 10px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .nav-item {
   display: flex;
@@ -323,6 +336,8 @@ a {
   color: var(--fg2);
   font-weight: 500;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .nav-item[data-active="true"] {
   background: var(--surface);
@@ -1093,8 +1108,8 @@ textarea.input {
   .content-inner { padding-left: 16px; padding-right: 16px; }
 }
 
-/* Narrow: the sidebar becomes a horizontal, scrollable nav strip on top so the
-   content gets the full width; nav stays reachable without a JS drawer. */
+/* Narrow: the sidebar becomes a wrapped nav strip. It never creates a second
+   horizontal scrolling surface beside responsive data tables. */
 @media (max-width: 760px) {
   .shell-body { flex-direction: column; }
   .sidebar {
@@ -1102,17 +1117,18 @@ textarea.input {
     height: auto;
     flex-direction: row;
     align-items: center;
-    overflow-x: auto;
-    overflow-y: hidden;
+    flex-wrap: wrap;
+    overflow-x: hidden;
+    overflow-y: auto;
     gap: 6px;
     border-right: 0;
     border-bottom: 1px solid var(--line-strong);
     padding: 8px 10px;
   }
-  .sidebar .nav-group { flex-direction: row; align-items: center; gap: 4px; }
+  .sidebar .nav-group { display: contents; }
   .sidebar .nav-caption,
   .sidebar-footer { display: none; }
-  .sidebar .btn { white-space: nowrap; }
+  .sidebar .nav-item { width: auto; max-width: 11rem; }
   .topbar { height: auto; min-height: 52px; flex-wrap: wrap; padding: 6px 8px; }
   .content-inner { padding-left: 12px; padding-right: 12px; }
   .page-intro,
