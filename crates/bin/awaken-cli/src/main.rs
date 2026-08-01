@@ -206,10 +206,10 @@ async fn serve_resolved(
     if runs_coordinator {
         match deployment.mode {
             awaken_cli::config::OperatingMode::Local => {
-                awaken_server::init_postgres_coordinator(&deployment.runtime).await?
+                awaken_coordinator::init_postgres_coordinator(&deployment.runtime).await?
             }
             awaken_cli::config::OperatingMode::Server => {
-                awaken_server::init_existing_postgres_coordinator(&deployment.runtime).await?
+                awaken_coordinator::init_existing_postgres_coordinator(&deployment.runtime).await?
             }
         }
     }
@@ -247,7 +247,7 @@ async fn serve_resolved(
     let _active_streams_gauge = awaken_cli::register_active_streams_gauge(ctrl.clone());
     let app = match &deployment.admin_listen {
         Some(_) => awaken_cli::with_connection_metric(app, ctrl.clone()),
-        None => awaken_cli::with_brain_admin(app, ctrl.clone()),
+        None => awaken_cli::with_process_admin(app, ctrl.clone()),
     };
     let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));
     let app = awaken_cli::mount_console_with_navigation(
@@ -261,7 +261,7 @@ async fn serve_resolved(
         let listener = tokio::net::TcpListener::bind(admin_addr)
             .await
             .map_err(|error| friendly_bind_error("admin", admin_addr, error))?;
-        let admin = awaken_cli::brain_admin_router(ctrl);
+        let admin = awaken_cli::process_admin_router(ctrl);
         eprintln!("awaken: admin http://{admin_addr} (/readyz /metrics /admin/drain)");
         tokio::spawn(async move {
             if let Err(error) = axum::serve(listener, admin).await {

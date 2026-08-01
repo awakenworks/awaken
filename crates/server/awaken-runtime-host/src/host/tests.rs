@@ -434,7 +434,7 @@ fn memory_mount_store_id(mount: &awaken_provisioning_contract::MountRequirement)
 }
 
 /// Test composition adapter for runtime-host's dependency-inverted MemoryMounter
-/// port. Production installs `awaken-sandbox-memoryd` from awaken-server.
+/// port. Production installs `awaken-sandbox-memoryd` from awaken-coordinator.
 struct TestMemoryMounter {
     fs: Arc<dyn awaken_memory_store::MemoryRepository>,
 }

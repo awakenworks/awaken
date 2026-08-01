@@ -57,7 +57,7 @@ tokio = { workspace = true, features = [
 # `hand` role only (optional): serve_hand + the executable hand tools over a unix / TCP
 # (listen or reverse-dial) / NATS channel — the transports a sandboxed hand reaches its
 # brain over (unix crosses a `--network none` boundary; reverse-dial an egress-fenced
-# k8s Pod; NATS a relay fleet). Supersedes awaken-server's hand_server.rs.
+# k8s Pod; NATS a relay fleet). Supersedes awaken-coordinator's hand_server.rs.
 awaken-tool-relay = { workspace = true, optional = true }
 awaken-ext-builtin-tools = { workspace = true, optional = true }
 awaken-connection-plan = { workspace = true, optional = true }

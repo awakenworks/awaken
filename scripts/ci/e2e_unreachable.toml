@@ -71,7 +71,7 @@ reason = "Only the startup acquisition service can install resolved ACP argv, an
 evidence = "e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-runtime-host deployment_config"
 
 [[waiver]]
-path = "crates/server/awaken-server/src/model_resolver.rs"
+path = "crates/server/awaken-coordinator/src/model_resolver.rs"
 ranges = ["633-651"]
 reason = "These failures require multiple private WorkerLocal sources for one deterministic driver without an exact identity, or a non-positive WorkerLocal revision. Repository identity makes startup registration idempotent, the row is created at revision one, and the public credential API cannot author or mutate WorkerLocal sources."
-evidence = "e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-server model_resolver"
+evidence = "e2e/acp_local_discovery_e2e.mjs; cargo test -p awaken-coordinator model_resolver"

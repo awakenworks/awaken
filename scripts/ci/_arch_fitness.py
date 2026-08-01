@@ -123,9 +123,7 @@ def _selftest_package_classification() -> None:
 # an adapter (the root disease) — the fix is to move the port inward to a contract/ leaf.
 PROTOCOL_LEAF_CONSUMERS: frozenset[str] = frozenset(
     {
-        "awaken-cli", "awaken-server", "awaken-scenario-host",  # composition roots
-        "awaken-managed-routers",  # driving HTTP adapters over neutral host APIs/SPIs
-        "awaken-runtime-host",  # implements the neutral RunApplication seam
+        "awaken-cli", "awaken-coordinator", "awaken-scenario-host",  # composition roots
         "awaken-control",  # mounts the managed routes + reuses its wire ErrorResponse
     }
 )
@@ -149,7 +147,7 @@ def protocol_leaf_violations(name: str, normal_deps: frozenset[str]) -> list[str
     return [
         f"{name} depends on protocol adapter `{dep}` — a `protocol-*` crate is a leaf "
         f"(wire translator). If you need a type it holds, move that neutral port/value to "
-        f"a contract/ leaf; only composition roots, the host/control service layer, and "
+        f"a contract/ leaf; only composition roots, an authorized control service, and "
         f"sibling/executor adapters may mount an adapter."
         for dep in sorted(normal_deps)
         if dep.startswith("awaken-protocol-")
@@ -161,14 +159,13 @@ def _selftest_protocol_leaves() -> None:
     `awaken-protocol-*`; C4 = `awaken-run-executor-*`. Effects: E1 = one per dep; E2 = none."""
     v = protocol_leaf_violations("awaken-config-store", frozenset({"awaken-protocol-managed", "serde"}))
     assert len(v) == 1 and "awaken-protocol-managed" in v[0], v  # T1 C1∧¬C2..4 -> E1
-    assert protocol_leaf_violations("awaken-runtime-host", frozenset({"awaken-protocol-a2a"})) == []  # T2 service seam allowed
-    assert protocol_leaf_violations("awaken-managed-routers", frozenset({"awaken-protocol-managed"})) == []  # T2 adapter allowed
-    assert protocol_leaf_violations("awaken-server", frozenset({"awaken-protocol-a2a"})) == []  # T2
+    assert protocol_leaf_violations("awaken-coordinator", frozenset({"awaken-protocol-a2a"})) == []  # T2
     assert protocol_leaf_violations("awaken-protocol-a2a", frozenset({"awaken-protocol-ag-ui"})) == []  # T3 C3
     assert protocol_leaf_violations("awaken-run-executor-a2a", frozenset({"awaken-protocol-a2a"})) == []  # T4 C4
     assert protocol_leaf_violations("awaken-config-store", frozenset({"serde", "tokio"})) == []  # T5 ¬C1
+    assert protocol_leaf_violations("awaken-runtime-host", frozenset({"awaken-protocol-a2a"}))  # T6 host is not a composition root
     v = protocol_leaf_violations("awaken-data-subject", frozenset({"awaken-protocol-managed", "awaken-protocol-a2a"}))
-    assert len(v) == 2 and "awaken-protocol-a2a" in v[0] and "awaken-protocol-managed" in v[1], v  # T6 sorted
+    assert len(v) == 2 and "awaken-protocol-a2a" in v[0] and "awaken-protocol-managed" in v[1], v  # T7 sorted
 
 
 # Resource persistence owns intrinsic identity, Workspace ownership and consistency.

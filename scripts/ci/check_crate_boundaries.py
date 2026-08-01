@@ -27,7 +27,7 @@ from _crate_boundary_workspace import (
     package_name,
     text_files,
 )
-from _managed_routers_boundary import MANAGED_ROUTERS_ALLOWED_DEPS
+from _managed_resources_protocol_boundary import MANAGED_RESOURCES_PROTOCOL_ALLOWED_DEPS
 from _managed_protocol_boundary import MANAGED_PROTOCOL_ALLOWED_DEPS
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CRATES = REPO_ROOT / "crates"
@@ -38,7 +38,7 @@ CRATES = REPO_ROOT / "crates"
 ALLOWED_DEPS: dict[str, set[str]] = {
     **SANDBOX_POLICY_ALLOWED_DEPS,
     **SANDBOX_PROVIDER_ALLOWED_DEPS,
-    **MANAGED_ROUTERS_ALLOWED_DEPS,
+    **MANAGED_RESOURCES_PROTOCOL_ALLOWED_DEPS,
     **MANAGED_PROTOCOL_ALLOWED_DEPS,
     **EXECUTABLE_AGENT_ALLOWED_DEPS,
     **DOMAIN_APPLICATION_ALLOWED_DEPS,
@@ -1240,7 +1240,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tower",
         # dev-only: the files/models routers were extracted to this sibling adapter;
         # runtime-host's files + resource-composition HTTP tests drive them.
-        "awaken-managed-routers",
+        "awaken-protocol-managed-resources",
         # The OTel-backed metrics recorder injected into each per-thread runtime
         # (#2), so a server with OTLP configured exports model/tool metrics.
         "awaken-observability",
@@ -1332,12 +1332,12 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # Single-machine assembly binary: the composition root. Since the service
     # layer moved to awaken-runtime-host; it composes host/protocol/management router modes.
     # Test-only scenario host (Stage A): the mock models + build_*_router scenario
-    # assemblies extracted from awaken-server. Depends on the product crate
+    # assemblies extracted from awaken-coordinator. Depends on the product crate
     # for its now-pub assembly helpers + production executors.
     "awaken-scenario-host": {
         "async-nats",
         "async-trait",
-        # Stage B2: the `management` scenario mode + brain-admin surface live in the
+        # Stage B2: the `management` scenario mode + process-admin surface live in the
         # composition root; the config-router mode seeds the assistant via the
         # authoring plane. Dev-dep cycle-free (awaken-cli dev-depends back for mocks).
         "awaken-cli",
@@ -1388,10 +1388,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime",
         "awaken-runtime-contract",
         "awaken-runtime-host",
-        "awaken-managed-routers",
+        "awaken-protocol-managed-resources",
         "awaken-sandbox-policy-store",
         "awaken-sandbox-local",
-        "awaken-server",
+        "awaken-coordinator",
         "awaken-tenancy",
         "awaken-tool-relay",
         "awaken-webhook",
@@ -1408,7 +1408,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tokio",
         "tower",
     },
-    "awaken-server": {
+    "awaken-coordinator": {
         "awaken-environment-contract",
         "awaken-acp-contract",
         "awaken-scenario-host",
@@ -1427,7 +1427,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-session-contract", "awaken-resource-contract",
         "awaken-ext-memory",
         # Outer composition owns Hand topology/relay; runtime-host exposes only APIs/SPIs.
-        "awaken-connection-plan", "awaken-tool-relay", "awaken-worker-registry", "awaken-managed-routers",
+        "awaken-connection-plan", "awaken-tool-relay", "awaken-worker-registry", "awaken-protocol-managed-resources",
         # dev-only: A2A loopback wraps mocks in the remote-Agent adapter.
         "awaken-run-executor-a2a",
         # ADR-0052: the management assistant's descriptors seed the scope-keyed tool
@@ -1454,7 +1454,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-file-store", "awaken-skill-store", "awaken-resource-store",
         "awaken-resource-application",
         # Composition-only adapter: runtime-host exposes MemoryRepository + MemoryMounter
-        # ports; awaken-server installs the FUSE/copy implementation without
+        # ports; awaken-coordinator installs the FUSE/copy implementation without
         # coupling the host substrate to the worker implementation crate.
         "awaken-sandbox-memoryd",
         "awaken-config-store",
@@ -1512,7 +1512,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tempfile",
     },
     # Authoring / authz plane (Stage B2): the management CRUD surfaces + the embedded
-    # IAM guard, split out of awaken-server. A sibling of the awaken-server data plane —
+    # IAM guard, split out of awaken-coordinator. A sibling of the awaken-coordinator data plane —
     # the two never depend on each other; awaken-cli is the composition root that weaves
     # them. It names the Managed wire (protocol-managed) + host ports (runtime-host) +
     # the webhook bridge it constructs the authoring routers over.
@@ -1575,7 +1575,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "http-body-util",
     },
     # The single aggregated command + the single-machine composition root (Stage B2):
-    # it weaves the authoring plane (awaken-control) and the data plane (awaken-server)
+    # it weaves the authoring plane (awaken-control) and the data plane (awaken-coordinator)
     # into one management router. A composition root, so it may name them all.
     "awaken-cli": {
         # Neutral HTTP DTOs shared with composed distributions. Keeping the
@@ -1588,7 +1588,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # composition root; protocol and sandbox providers receive injected ports.
         "awaken-environment-image-build",
         "awaken-environment-package-image-builder",
-        "awaken-server",
+        "awaken-coordinator",
         "awaken-authz-enforce",
         # The Worker role delegates lifecycle to the production execution worker.
         "awaken-worker",
@@ -1650,7 +1650,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "axum",
         "tokio",
-        # dev-only: the management integration tests moved here from awaken-server.
+        # dev-only: the management integration tests moved here from awaken-coordinator.
         "awaken-scenario-host",
         "awaken-runtime", "awaken-provisioning-contract", "awaken-worker-contract",
         "awaken-ext-mcp",
@@ -1898,7 +1898,7 @@ def check_tests_are_not_arch_owners() -> list[str]:
 #   resources  → mountable agent-resource backends
 #   worker     → isolated execution; kernel + contract only, NEVER a store/resource
 #   control    → self-hosted config/vault/iam authoring plane
-#   server     → resident daemon; consumes every substrate + worker(-contract) + control
+#   server     → Coordinator application/host and protocol/ingress adapters
 #   bin        → composed deployables / harnesses
 BUCKET_ALLOWED_DEPS = {
     "contract": {"contract"},
@@ -1914,7 +1914,7 @@ BUCKET_ALLOWED_DEPS = {
     # The authoring plane's assembly crate (awaken-control, Stage B2) names the Managed
     # wire (protocol-managed) + host ports (runtime-host) + the webhook bridge — all in
     # the `server` bucket — because the management CRUD it assembles is expressed in
-    # those types. It stays a sibling of the awaken-server data-plane bin: neither
+    # those types. It stays a sibling of the awaken-coordinator data-plane bin: neither
     # depends on the other (the composition root, awaken-cli, weaves them).
     "control": {"contract", "runtime", "stores", "resources", "control", "server"},
     "server": {"contract", "runtime", "stores", "resources", "worker", "control", "server"},

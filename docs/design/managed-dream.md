@@ -48,7 +48,7 @@ path.
 | Managed Session/Event application | `awaken-protocol-managed::ManagedState` | validates Sessions, reads committed Messages, creates and archives the auxiliary Session |
 | ordinary Agent execution | `awaken-runtime-host::SessionRuntime` | executes the Dream Agent through the normal Run path |
 | Memory file truth | `awaken-resource-contract::MemoryRepository` | reads and commits path-addressed Memory content |
-| Files data plane | `awaken-server::SharedHost` | stores transient JSONL artifacts using the canonical File record and purge lifecycle |
+| Files data plane | `awaken-coordinator::SharedHost` | stores transient JSONL artifacts using the canonical File record and purge lifecycle |
 | Resource catalog | `ResourceCatalog` | validates source ownership |
 | Resources application | `MemoryStoreApplicationService` | is the sole output-store identity, lifecycle, retention, and purge command path |
 | mount realization | provisioning and sandbox providers | realizes InlineBytes and MemoryStore inputs for the ordinary Session |

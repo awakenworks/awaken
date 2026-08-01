@@ -48,10 +48,30 @@ Resources component builders; an optional local Worker uses the same
 | Deployment unit or context | Canonical components | Durable authority acquired | Cross-context ports |
 |---|---|---|---|
 | Control | `awaken_control::build_control_component` | Agent/config publication, Environment definitions/revisions and sandbox-policy versions, Catalog, Credential/secret, Admin, IAM, Data Subject consent/accountability | registers exact executable Agent and Environment facts; exposes authenticated audit, credential, webhook, and consent-read ports |
-| Coordinator | `awaken_server::build_coordinator_component`; currently co-deploys the canonical Resources component | executable-Agent and executable-Environment projections, Deployment/DeploymentRun, Session, WorkQueue, captured content, dispatch/commit | reads only rebuildable Control projections; calls narrow Control ports; dispatches to and settles Workers; mounts Resources ports without owning their stores |
+| Coordinator | `awaken_coordinator::build_coordinator_component`; currently co-deploys the canonical Resources component | executable-Agent and executable-Environment projections, Deployment/DeploymentRun, Session, WorkQueue, captured content, dispatch/commit | reads only rebuildable Control projections; calls narrow Control ports; dispatches to and settles Workers; mounts Resources ports without owning their stores |
 | Resources (currently co-deployed with Coordinator) | `awaken_resource_application::ResourcesApplication` over `build_resource_component` | Resource Catalog/lifecycle, File logical metadata and immutable blobs, Memory content/history, Skill versions | exposes public application ports and claim-fenced per-kind Worker ports; never opens Control or Coordinator stores |
 | Worker | `WorkerNodeBuilder` | none; execution state is ephemeral | claim-fenced Coordinator and per-kind Resources/Credential clients |
 | AllInOne | the same Control, Coordinator, Resources, and optional Worker components | the union of those authorities in one process | local adapters implement the same ports |
+
+Package names make the application and adapter roles explicit even though several
+live under the technical `crates/server/` workspace bucket:
+
+| Package | DDD role | Rule |
+|---|---|---|
+| `awaken-control` | Control application component | owns authored facts and publication; never schedules Runs |
+| `awaken-coordinator` | Coordinator application component | owns dynamic scheduling, dispatch, settlement, and replay; it is not a generic “server” |
+| `awaken-worker` | Worker process composition | advertises capabilities and executes claim-fenced work; native, ACP, and outbound A2A are execution adapters, not public ingress owners |
+| `awaken-resource-application` | Resources application component | sole composition of File, MemoryStore, Skill, and lifecycle ports |
+| `awaken-protocol-managed` | Anthropic-compatible Agent/Session/Environment anti-corruption layer | translates wire DTOs only; domain behavior stays behind application ports |
+| `awaken-protocol-managed-resources` | Anthropic-compatible File/MemoryStore/Skill/Model anti-corruption layer | one public resource route family, with no Runtime Host dependency |
+| `awaken-protocol-awaken` | Awaken extension protocol | owns only explicitly namespaced `/v1/awaken/*` routes |
+| `awaken-protocol-a2a`, `-ai-sdk`, `-ag-ui`, `-mcp` | other ingress anti-corruption layers | each method + normalized path has exactly one source owner |
+
+Protocol packages are always-on ingress adapters when mounted by a process. They
+do not become services or execution authorities themselves. A protocol handler
+validates and translates, calls the owning application port, and projects the
+result. Worker-side ACP/A2A adapters are different: they execute an already
+admitted claim and never own the public route that admitted it.
 
 `ProcessStores` contains optional `ControlStores` and `CoordinatorStores`
 groups; it is not a shared bag of database handles. A split Coordinator receives
@@ -138,7 +158,7 @@ crate name.
 | Runtime implementation | live execution behavior over agent-domain vocabulary | agent loop, resolver implementation, provider routing, plugin execution, retry/backoff modules |
 | Run-ingress contract | durable delivery and dispatch vocabulary | submit/input records, dispatch records, claims, leases, wake hints, live-command delivery stores |
 | Run-ingress implementation | buffering, host supervision, recovery, and live delivery | `DurableRunIngress`, input buffer, dispatch coordinator, recovery replay |
-| Protocol projection | public protocol and product-facing replay shapes outside the runtime slice | `awaken-protocol-managed` owns only the exact Anthropic surface; `/v1/awaken/*` lives in the separate `awaken-protocol-awaken` crate |
+| Protocol projection | public protocol and product-facing replay shapes outside the runtime slice | `awaken-protocol-managed` and `awaken-protocol-managed-resources` jointly own only the exact Anthropic-compatible surface; `/v1/awaken/*` lives in the separate `awaken-protocol-awaken` crate |
 | Concrete stores | backend implementations of multiple ports | SQL/in-memory adapters that implement both agent-truth and ingress stores |
 
 If a type describes durable agent truth, it belongs to the agent-domain contract.

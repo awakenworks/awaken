@@ -7,9 +7,9 @@ license.workspace = true
 # The authoring / authz plane (Stage B2): the management CRUD surfaces (admin
 # config, vault front door, webhook subscriptions, user profiles, config authoring,
 # and capabilities) plus the embedded IAM guard. Deployment/Session application
-# composition belongs to awaken-server's Coordinator component.
+# composition belongs to awaken-coordinator's Coordinator component.
 # It knows nothing of the single-machine composition root (awaken-cli) and does
-# NOT depend on the awaken-server data-plane bin — the two planes are siblings the
+# NOT depend on the awaken-coordinator data-plane bin — the two planes are siblings the
 # composition root (awaken-cli) weaves together.
 [dependencies]
 # The config-authoring plane (config service + routers + resolver + tool catalog).

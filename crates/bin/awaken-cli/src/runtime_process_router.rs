@@ -63,7 +63,7 @@ pub(super) async fn assemble_runtime_process_router(
     let executable_environment_private_router = executable_environment_wiring.private_router;
     let executable_environment_image_builds = executable_environment_wiring.image_builds;
     let coordinator_content_eraser =
-        awaken_server::data_subject_boundary::coordinator_content_eraser(
+        awaken_coordinator::data_subject_boundary::coordinator_content_eraser(
             coordinator_stores.captured_content_eraser.clone(),
             deployment
                 .as_ref()
@@ -130,7 +130,7 @@ pub(super) async fn assemble_runtime_process_router(
     let live_runtime_capabilities = stores.control.as_ref().map(|control| {
         Arc::new(LiveRuntimeCapabilities {
             initial: assembly.local_acp_observations.clone(),
-            workers: awaken_server::worker_directory(),
+            workers: awaken_coordinator::worker_directory(),
             credentials: control.credentials.clone(),
             workspace: platform_workspace.clone(),
         })
@@ -260,7 +260,7 @@ pub(super) async fn assemble_runtime_process_router(
             let control_stores = control_stores
                 .as_ref()
                 .expect("AllInOne Control component has Control stores");
-            let mcp_export = awaken_server::mcp_export::router(
+            let mcp_export = awaken_coordinator::mcp_export::router(
                 awaken_admin_assistant::admin_tool_descriptors(),
                 component.admin_tools.clone(),
                 mcp_bearer_token,
@@ -352,8 +352,10 @@ pub(super) async fn assemble_runtime_process_router(
         .with_file_application(resource_application.files())
         .with_local_workspace(platform_workspace.clone())
         .with_web_search_provider_registry(web_search_providers)
-        .with_acp_tool_exporter(Arc::new(awaken_server::mcp_export::SessionToolExporter))
-        .with_remote_attempt_executor(awaken_server::a2a_attempt_executor(
+        .with_acp_tool_exporter(Arc::new(
+            awaken_coordinator::mcp_export::SessionToolExporter,
+        ))
+        .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(
             credential_materializer.clone(),
         ))
         .with_agent_publications(executable_agent_catalog.clone())
@@ -368,11 +370,11 @@ pub(super) async fn assemble_runtime_process_router(
         host_builder = host_builder.with_inference_materializer(materializer);
     }
     host_builder.install_memory_extraction_repository(memory_extractions);
-    awaken_server::install_platform_memory_data_plane(&host_builder);
+    awaken_coordinator::install_platform_memory_data_plane(&host_builder);
     // Production ACP wiring (`acp:*` threads): the environment advertises only the
     // installed CLI/sandbox capability. Provider coordinates and credentials are
     // realized from the same publication-pinned DB facts as native inference.
-    let hand_factory = awaken_server::relay_hand_executor_factory();
+    let hand_factory = awaken_coordinator::relay_hand_executor_factory();
     let host_builder = host_builder
         .with_session_environment_from_deployment(Some(hand_factory))
         .await
@@ -446,16 +448,17 @@ pub(super) async fn assemble_runtime_process_router(
     // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
     // routing. Flat requests fall through unchanged. The same assembly returns the
     // DreamApplication it mounted, so scheduling cannot target a parallel instance.
-    let model_directory: Arc<dyn awaken_server::ModelDirectory> = match control_stores.as_ref() {
+    let model_directory: Arc<dyn awaken_coordinator::ModelDirectory> = match control_stores.as_ref()
+    {
         Some(control) => Arc::new(
-            awaken_server::model_directory::CatalogModelDirectory::with_source(
+            awaken_coordinator::model_directory::CatalogModelDirectory::with_source(
                 control.catalog.clone(),
                 control.credentials.clone(),
                 live_runtime_capabilities.expect("AllInOne composes live Control capabilities"),
             ),
         ),
         None => Arc::new(
-            awaken_server::model_directory::ExecutableAgentModelDirectory::new(
+            awaken_coordinator::model_directory::ExecutableAgentModelDirectory::new(
                 executable_agent_catalog.clone(),
             ),
         ),
@@ -467,15 +470,15 @@ pub(super) async fn assemble_runtime_process_router(
     );
     let resource_ports = resource_application.ports();
     let resource_management_router =
-        awaken_server::resources_router(awaken_server::ResourcesRouterInput {
+        awaken_coordinator::resources_router(awaken_coordinator::ResourcesRouterInput {
             files: resource_application.files(),
             memories: resource_ports.memory_repository(),
             memory_stores: resource_application.memory_stores(),
             skills: Some(resource_ports.skill_store()),
             purge: resource_application.purge_scheduler(),
         });
-    let coordinator =
-        awaken_server::build_coordinator_component(awaken_server::CoordinatorDependencies {
+    let coordinator = awaken_coordinator::build_coordinator_component(
+        awaken_coordinator::CoordinatorDependencies {
             host,
             managed_state,
             resource_catalog,
@@ -491,9 +494,10 @@ pub(super) async fn assemble_runtime_process_router(
             sessions,
             default_workspace: platform_workspace.clone(),
             registration_router,
-        })
-        .await
-        .unwrap_or_else(|error| panic!("build Coordinator component: {error}"));
+        },
+    )
+    .await
+    .unwrap_or_else(|error| panic!("build Coordinator component: {error}"));
     let coordinator_management = awaken_control::protect_management_router(
         coordinator.management_router,
         deployment_audit_plane,

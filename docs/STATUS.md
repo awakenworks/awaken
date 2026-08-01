@@ -65,7 +65,6 @@ consistent vocabulary. This affects the documentation layers differently:
 | `design/managed-dream.md` | Product-owned | Owns the Managed Dream API and Dream job, frozen JSONL/session evidence, read-only source snapshot, required write-through result MemoryStore, restricted ordinary Agent execution, recovery, and test design |
 | `design/managed-deployments.md` | Product-owned | Owns durable Managed Deployment/DeploymentRun scheduling, Workspace scope, Agent version freezing, occurrence claims, lifecycle facts, and Dream scheduler coordination |
 | `design/web-ui.md` | Product-owned | Web console blueprint: Oversight two-scope shell over the management plane, session surface, design tokens, contract-first frontend engineering plan |
-| `design/awaken-server-local-overview.md` | Product-owned | Single-machine assembly overview; navigation map linking component owners; sandbox/relay, managed adapter, and goal are to-build |
 | `design/credentials-and-vaults.md` | Product-owned | Credential/product concern; runtime sees opaque refs only |
 | `design/resources-memory-files-skills.md` | Product-owned | Normative Resources application composition and File/Memory/Repository/Skill lifecycles, including command ownership, config resolution, activation, recovery, and reclamation |
 | `design/runtime-persistence.md` | Runtime-owned | Expands ADR-0039: persistence bounded contexts (agent-truth / dispatch / config / protocol-projection), port surface, `awaken-store-<medium>` backend matrix, atomic staged commit (G13), and fact-authority reads (D4) |
@@ -116,7 +115,6 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/managed-dream.md` | Role owner | Required | self |
 | `design/managed-deployments.md` | Role owner | Required | self |
 | `design/web-ui.md` | Product/downstream mapping | Not required | n/a |
-| `design/awaken-server-local-overview.md` | Product/downstream mapping | Not required | n/a |
 | `design/credentials-and-vaults.md` | Product/downstream mapping | Not required | n/a |
 | `design/resources-memory-files-skills.md` | Role owner | Required | self |
 | `design/observability-eval-dataset-boundary.md` | Product/downstream mapping | Not required | n/a |

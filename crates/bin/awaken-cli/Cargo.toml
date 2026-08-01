@@ -15,13 +15,13 @@ path = "src/main.rs"
 # The single aggregated command + the single-machine composition root. Config
 # (AWAKEN_ROLE + the deployment axes) decides the deployment: single-machine all-in-one,
 # a coordinator, a registered execution worker, or a hand executor endpoint. The Serve role
-# weaves the authoring plane (awaken-control) and the data plane (awaken-server) — two
+# weaves the authoring plane (awaken-control) and the data plane (awaken-coordinator) — two
 # siblings that never depend on each other — into one management router here.
 [dependencies]
 awaken-api-contract = { workspace = true }
 # The two management planes this composition root weaves together.
 awaken-control = { workspace = true }
-awaken-server = { workspace = true }
+awaken-coordinator = { workspace = true }
 awaken-authz-enforce = { workspace = true }
 # The production Worker executor: the Worker role delegates lifecycle to it while
 # this CLI composition still supplies the selected Credential/Resource adapters.
@@ -113,7 +113,7 @@ container-podman = ["awaken-runtime-host/container-podman"]
 container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
-# The management integration tests moved here from awaken-server (they drive
+# The management integration tests moved here from awaken-coordinator (they drive
 # build_all_in_one_router* over this composition root).
 awaken-scenario-host = { workspace = true }
 awaken-runtime = { workspace = true }

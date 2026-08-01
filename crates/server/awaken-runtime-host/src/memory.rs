@@ -63,7 +63,7 @@ impl AgentSelector {
         let agent_id = snapshot.root_agent_id.0.clone();
         let catalog = Arc::new(AgentCatalog::new().with_agent(snapshot));
         let base = std::env::temp_dir()
-            .join("awaken-server")
+            .join("awaken-coordinator")
             .join(format!("{}-mem-select", std::process::id()));
         Self {
             agent_tool: Arc::new(AuxAgentTool {

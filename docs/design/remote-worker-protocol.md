@@ -351,7 +351,7 @@ are constructed from that identity-bound upstream. Resource capability is
 derived from the installed Memory mounter; Repository credential capability also
 requires the exact credential materializer. No marker object or Resource Catalog
 connection is installed. The boundary check rejects any direct `awaken-worker`
-dependency on `awaken-server`, `awaken-control`, `awaken-resource-contract`, or
+dependency on `awaken-coordinator`, `awaken-control`, `awaken-resource-contract`, or
 `awaken-sandbox-memoryd`.
 
 `build()` is synchronous and side-effect free: it derives or accepts one

@@ -308,7 +308,7 @@ namespace (`<prefix>`), tables (`<prefix>_*`), and (for external ones) route bas
 One `MigrationBundle` per prefix (as today's `config`/`commit`) makes deployment
 **mergeable or splittable with zero schema change**: apply all bundles to one DB
 (single service) or move a context to its own DB/service. **Default: one service**
-(`awaken-server-local` assembly); **credential is the first split candidate**
+(`awaken-coordinator-local` assembly); **credential is the first split candidate**
 (blast-radius / `secretd`).
 
 ### Store vs resolver (DDD service vs aggregate)
@@ -330,7 +330,7 @@ into `awaken-model-catalog`.
 | Managed Agents wire | `awaken-protocol-managed` | front door |
 | Managed wire ⇄ domain ACL | `awaken-managed-bridge` | ACL |
 | admin config API (provider/endpoint/inference-profile) | `awaken-admin-config-api` | API assembly |
-| the one service | `awaken-server-local` | assembly |
+| the one service | `awaken-coordinator-local` | assembly |
 
 Rule: **name = responsibility, not layer.** "inference" is reserved for where
 inference actually runs (`awaken-provider-genai`); "resolver" for config→executable;

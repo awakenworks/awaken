@@ -189,7 +189,7 @@ async fn connect_postgres_with_nats_wake(
 ) -> Result<Arc<AnyDispatchStore>, String> {
     Err(
         "AWAKEN_DISPATCH_WAKE=nats requested but binary built without --features nats \
-         (rebuild awaken-server with --features nats to enable the NATS wake)"
+         (rebuild awaken-coordinator with --features nats to enable the NATS wake)"
             .to_string(),
     )
 }

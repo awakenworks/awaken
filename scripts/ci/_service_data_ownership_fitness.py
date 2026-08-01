@@ -17,7 +17,7 @@ WORKER_MANIFEST = "crates/bin/awaken-worker/Cargo.toml"
 WORKER_SOURCE = "crates/bin/awaken-worker/src"
 CONTROL_SOURCE = "crates/control/awaken-control/src"
 CLI_SOURCE = "crates/bin/awaken-cli/src"
-COORDINATOR_COMPONENT = "crates/server/awaken-server/src/coordinator_component.rs"
+COORDINATOR_COMPONENT = "crates/server/awaken-coordinator/src/coordinator_component.rs"
 RESOURCE_COMPONENT = "crates/contract/awaken-resource-contract/src/component.rs"
 RUNTIME_HOST_BUILD = "crates/server/awaken-runtime-host/src/host/build.rs"
 PROCESS_STORES = "crates/bin/awaken-cli/src/process_stores.rs"
@@ -139,11 +139,11 @@ def domain_component_violations(
     """Enforce the four domain component owners without compatibility tracks."""
 
     errors: list[str] = []
-    coordinator_calls = cli_source.count("awaken_server::build_coordinator_component(")
+    coordinator_calls = cli_source.count("awaken_coordinator::build_coordinator_component(")
     if coordinator_calls != 1:
         errors.append(
             "awaken-cli must contain exactly one call to "
-            f"awaken_server::build_coordinator_component (found {coordinator_calls})"
+            f"awaken_coordinator::build_coordinator_component (found {coordinator_calls})"
         )
     for forbidden in (
         "DeploymentState::with_repository(",
@@ -158,7 +158,7 @@ def domain_component_violations(
         "mount_with_managed_application_access_models_and_dreams(",
     ):
         if required not in coordinator_source:
-            errors.append(f"awaken-server Coordinator component is missing `{required}`")
+            errors.append(f"awaken-coordinator Coordinator component is missing `{required}`")
     for required in (
         "pub fn build_resource_component(",
         "pub struct ResourceDependencies",
@@ -300,7 +300,7 @@ def selftest() -> None:
         " pub struct ResourceDependencies pub struct ResourceComponent"
     )
     assert domain_component_violations(
-        "awaken_server::build_coordinator_component(",
+        "awaken_coordinator::build_coordinator_component(",
         "",
         coordinator,
         resources,

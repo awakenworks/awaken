@@ -66,7 +66,7 @@ wrappers = [
     "awaken-protocol-ag-ui",
     "awaken-protocol-a2a",
     "awaken-protocol-mcp",
-    "awaken-server",
+    "awaken-coordinator",
     # Stage B2: the authoring plane + the composition root.
     "awaken-control",
     "awaken-cli",
@@ -75,7 +75,7 @@ wrappers = [
     "awaken-worker",
     "awaken-credential-vault",
     "awaken-data-subject",
-    "awaken-managed-routers",
+    "awaken-protocol-managed-resources",
     "awaken-config-resolver",
     "awaken-managed-bridge",
     "awaken-admin-config-api",
@@ -152,7 +152,7 @@ wrappers = [
     # the remote executor; dev-dep for its integration test (C5, ADR-0044/0045).
     "awaken-sandbox",
     "awaken-protocol-mcp",
-    "awaken-server",
+    "awaken-coordinator",
     # The execution-plane composition root implements the public ExecutorProvider
     # SPI in dev-only E2E fixtures; it may depend on runtime-contract value objects.
     "awaken-worker",
@@ -164,7 +164,7 @@ wrappers = [
     # Coordinator persistence implements the neutral CaptureSink/ContentEraser
     # ports; it does not depend on Runtime Core or Host behavior.
     "awaken-captured-content-store",
-    "awaken-managed-routers",
+    "awaken-protocol-managed-resources",
     # Worker-side ACP discovery/binding application service consumes credential
     # liveness values from the runtime contract without implementing execution.
     "awaken-acp-application",
@@ -206,7 +206,7 @@ wrappers = [
     "awaken-run-ingress",
     "awaken-ext-mcp",
     "awaken-ext-state-machine",
-    "awaken-server",
+    "awaken-coordinator",
     # The product composition root drives online export into the embedded SDK
     # in a dev-only whole-boundary test.
     "awaken-cli",
@@ -255,10 +255,21 @@ wrappers = [
     "awaken-runtime-host",
     "awaken-control",
     "awaken-cli",
-    "awaken-server",
+    "awaken-coordinator",
     "awaken-scenario-host",
 ]
 reason = "protocol adapters are leaves; a new reverse edge onto the managed adapter means a neutral port must move to a contract/ leaf first (Phase 0.2 neutral-core)"
+
+# Anthropic-compatible Resources adapter. It is mounted only by process
+# composition roots and depends directly on Resources application ports, never
+# on Runtime Host.
+[[bans.deny]]
+name = "awaken-protocol-managed-resources"
+wrappers = [
+    "awaken-coordinator",
+    "awaken-scenario-host",
+]
+reason = "managed Resources protocol is a leaf; Files, MemoryStore, Skill, and Model behavior stays behind inward application ports"
 
 # Awaken-owned extensions. Only product composition roots mount this leaf; the
 # live-inbox and Environment policy behaviors enter through neutral application
@@ -267,7 +278,7 @@ reason = "protocol adapters are leaves; a new reverse edge onto the managed adap
 name = "awaken-protocol-awaken"
 wrappers = [
     "awaken-cli",
-    "awaken-server",
+    "awaken-coordinator",
     "awaken-scenario-host",
 ]
 reason = "Awaken extension protocol is a leaf; composition roots inject neutral application ports"
@@ -278,7 +289,7 @@ reason = "Awaken extension protocol is a leaf; composition roots inject neutral 
 name = "awaken-protocol-a2a"
 wrappers = [
     "awaken-run-executor-a2a",
-    "awaken-server",
+    "awaken-coordinator",
     "awaken-scenario-host",
 ]
 reason = "protocol adapters are leaves; the host holds the neutral RemoteAgent interface, not the A2A wire (Phase 0.2 neutral-core)"
@@ -287,7 +298,7 @@ reason = "protocol adapters are leaves; the host holds the neutral RemoteAgent i
 [[bans.deny]]
 name = "awaken-protocol-ai-sdk"
 wrappers = [
-    "awaken-server",
+    "awaken-coordinator",
     "awaken-scenario-host",
 ]
 reason = "protocol adapters are leaves; only composition roots mount the AI SDK adapter (Phase 0.2 neutral-core)"
@@ -296,7 +307,7 @@ reason = "protocol adapters are leaves; only composition roots mount the AI SDK 
 [[bans.deny]]
 name = "awaken-protocol-ag-ui"
 wrappers = [
-    "awaken-server",
+    "awaken-coordinator",
     "awaken-scenario-host",
 ]
 reason = "protocol adapters are leaves; only composition roots mount the AG-UI adapter (Phase 0.2 neutral-core)"

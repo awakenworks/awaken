@@ -25,10 +25,10 @@ ROUTE_OWNER_FILES = (
     "crates/control/awaken-control/src/authz.rs",
     "crates/control/awaken-control/src/data_subject.rs",
     "crates/control/awaken-control/src/lib.rs",
-    "crates/server/awaken-managed-routers/src/files.rs",
-    "crates/server/awaken-managed-routers/src/memory_stores.rs",
-    "crates/server/awaken-managed-routers/src/models.rs",
-    "crates/server/awaken-managed-routers/src/skills.rs",
+    "crates/server/awaken-protocol-managed-resources/src/files.rs",
+    "crates/server/awaken-protocol-managed-resources/src/memory_stores.rs",
+    "crates/server/awaken-protocol-managed-resources/src/models.rs",
+    "crates/server/awaken-protocol-managed-resources/src/skills.rs",
     "crates/server/awaken-protocol-a2a/src/router.rs",
     "crates/server/awaken-protocol-ag-ui/src/router.rs",
     "crates/server/awaken-protocol-ai-sdk/src/router.rs",
@@ -43,21 +43,21 @@ ROUTE_OWNER_FILES = (
     "crates/server/awaken-protocol-managed/src/routes/user_profiles.rs",
     "crates/server/awaken-protocol-managed/src/routes/vaults.rs",
     "crates/server/awaken-protocol-mcp/src/http.rs",
-    "crates/server/awaken-server/src/application_access.rs",
+    "crates/server/awaken-coordinator/src/application_access.rs",
 )
 
 # Public ingress code is discovered as well as explicitly registered. This
 # prevents a new router source from silently escaping the ownership inventory.
 PUBLIC_ROUTE_ROOTS = (
     "crates/control",
-    "crates/server/awaken-managed-routers/src",
+    "crates/server/awaken-protocol-managed-resources/src",
     "crates/server/awaken-protocol-a2a/src",
     "crates/server/awaken-protocol-ag-ui/src",
     "crates/server/awaken-protocol-ai-sdk/src",
     "crates/server/awaken-protocol-awaken/src",
     "crates/server/awaken-protocol-managed/src",
     "crates/server/awaken-protocol-mcp/src",
-    "crates/server/awaken-server/src",
+    "crates/server/awaken-coordinator/src",
 )
 
 ROUTE_START = re.compile(r'\.route\(\s*"(?P<path>[^"]+)"\s*,', re.MULTILINE)

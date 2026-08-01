@@ -17,7 +17,7 @@ awaken-ext-skills.workspace = true
 awaken-run-ingress.workspace = true
 awaken-sandbox-local.workspace = true
 awaken-worker-transport-security.workspace = true
-awaken-managed-routers = { workspace = true }
+awaken-protocol-managed-resources = { workspace = true }
 awaken-admin-assistant = { workspace = true }
 awaken-tenancy = { workspace = true }
 # Cross-cutting telemetry: the tracing subscriber + OTLP/AWAKEN_TRACE_FILE span
@@ -108,7 +108,7 @@ tower = { version = "0.5", features = ["util"] }
 
 # Depends on the product crate for the now-pub assembly helpers + production executors.
 awaken-environment-application.workspace = true
-awaken-server = { workspace = true }
+awaken-coordinator = { workspace = true }
 # Reuse the production worker lifecycle/registration/heartbeat/dispatch wiring in
 # the worker-failover scenario; only its deterministic executor provider differs.
 awaken-worker = { workspace = true }
@@ -122,15 +122,15 @@ awaken-control = { workspace = true }
 
 [features]
 # Cross-node dispatch wake over NATS (AWAKEN_DISPATCH_WAKE=nats), passed through to
-# the served binary via awaken-server → awaken-runtime-host. Used by the k3d
+# the served binary via awaken-coordinator → awaken-runtime-host. Used by the k3d
 # nats_wake e2e, which builds the scenario-host bin with `--features nats`.
-nats = ["awaken-server/nats"]
-# Container sandbox tiers, passed through to the served binary via awaken-server →
+nats = ["awaken-coordinator/nats"]
+# Container sandbox tiers, passed through to the served binary via awaken-coordinator →
 # awaken-runtime-host → awaken-sandbox-container. The k3d managed-protocol e2e builds
 # the scenario-host bin with `--features container-k8s` to realize ACP sessions in Pods.
-container-docker = ["awaken-server/container-docker"]
-container-podman = ["awaken-server/container-podman"]
-container-k8s = ["awaken-server/container-k8s"]
+container-docker = ["awaken-coordinator/container-docker"]
+container-podman = ["awaken-coordinator/container-podman"]
+container-k8s = ["awaken-coordinator/container-k8s"]
 
 [lints]
 workspace = true

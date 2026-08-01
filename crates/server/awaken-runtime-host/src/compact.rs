@@ -44,7 +44,7 @@ pub(crate) fn compact_runner(
 ) -> Arc<dyn RawTool> {
     let catalog = Arc::new(AgentCatalog::new().with_agent(snapshot));
     let base = std::env::temp_dir()
-        .join("awaken-server")
+        .join("awaken-coordinator")
         .join(format!("{}-compact", std::process::id()));
     Arc::new(AuxAgentTool {
         llm,

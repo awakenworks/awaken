@@ -96,7 +96,7 @@ fn sub_base(kind: &str) -> PathBuf {
     } else {
         format!("{pid}-{kind}-{n}")
     };
-    std::env::temp_dir().join("awaken-server").join(name)
+    std::env::temp_dir().join("awaken-coordinator").join(name)
 }
 
 pub(crate) use crate::store::sanitize_thread;
@@ -150,7 +150,7 @@ pub struct SharedHost {
     pub(crate) acp: Option<Arc<crate::acp_backend::AcpBackend>>,
     /// Higher-layer transport adapter for Session-owned tools exposed to ACP.
     /// The Host names only this port; concrete MCP server assembly remains in
-    /// `awaken-server` and does not add a protocol dependency to the substrate.
+    /// `awaken-coordinator` and does not add a protocol dependency to the substrate.
     pub(crate) acp_tool_exporter: Option<Arc<dyn crate::AcpToolExporter>>,
     /// Remote attempt adapter injected by the composition root. The neutral host
     /// owns only the `RunAttemptExecutor` port and never names the A2A protocol.

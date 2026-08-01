@@ -133,14 +133,14 @@ fn configured_worker_builder(
         .with_deployment_config(deployment.runtime.clone())
         .with_standard_manifest_config(manifest)
         .with_inference_materializer(Arc::new(
-            awaken_server::inference_materializer::CredentialInferenceMaterializer::from_pinned(
+            awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::from_pinned(
                 credentials.clone(),
             ),
         ))
-        .with_remote_attempt_executor(awaken_server::a2a_attempt_executor(Some(
+        .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(
             credentials.clone(),
         )))
-        .with_hand_executor_factory(awaken_server::relay_hand_executor_factory())
+        .with_hand_executor_factory(awaken_coordinator::relay_hand_executor_factory())
         .with_credential_materializer(credentials)
         .with_graceful_drain(std::time::Duration::from_secs(worker.drain_grace_secs))
         .with_credential_observation_window(

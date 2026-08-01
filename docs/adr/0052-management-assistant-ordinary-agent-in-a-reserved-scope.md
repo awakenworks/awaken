@@ -28,7 +28,7 @@
 ## Context
 
 We want the platform equivalent of the "FAB" management assistant shipped elsewhere
-in the product line (the `__admin_assistant` in `awaken-server` on `origin/main` and
+in the product line (the `__admin_assistant` in `awaken-coordinator` on `origin/main` and
 in the `goal` reimplementation — a right-hand-corner console helper that reads
 platform capabilities, drafts and validates `AgentConfig`s, but never publishes and
 never touches secrets). That crate does **not** exist on this `1.0.0-dev` branch, so
@@ -66,7 +66,7 @@ Two facts about the current code make the mechanism concrete:
   name that is absent (`compile.rs:56`, fail-closed). There is **no per-scope
   visibility fence today**.
 - The model catalog is **org/deployment-shared and readable from any scope**
-  (ADR-0051's settled decision; `awaken-server/src/resource_scope_fence.rs`).
+  (ADR-0051's settled decision; `awaken-coordinator/src/resource_scope_fence.rs`).
   `compile` requires `model_binding` to be already filled (`compile.rs:82`, a plain
   clone with no default). There is **no auto-selection of a model today**.
 

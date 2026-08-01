@@ -126,6 +126,31 @@ ANTHROPIC_MANAGED_ROUTES = frozenset(
         ("DELETE", "/v1/vaults/{}/credentials/{}"),
         ("POST", "/v1/vaults/{}/credentials/{}/archive"),
         ("POST", "/v1/vaults/{}/credentials/{}/mcp_oauth_validate"),
+        ("GET", "/v1/files"), ("POST", "/v1/files"),
+        ("GET", "/v1/files/{}"), ("DELETE", "/v1/files/{}"),
+        ("GET", "/v1/files/{}/content"),
+        ("GET", "/v1/memory_stores"), ("POST", "/v1/memory_stores"),
+        ("GET", "/v1/memory_stores/{}"),
+        ("POST", "/v1/memory_stores/{}"),
+        ("DELETE", "/v1/memory_stores/{}"),
+        ("POST", "/v1/memory_stores/{}/archive"),
+        ("GET", "/v1/memory_stores/{}/memories"),
+        ("POST", "/v1/memory_stores/{}/memories"),
+        ("GET", "/v1/memory_stores/{}/memories/{}"),
+        ("POST", "/v1/memory_stores/{}/memories/{}"),
+        ("DELETE", "/v1/memory_stores/{}/memories/{}"),
+        ("GET", "/v1/memory_stores/{}/memory_versions"),
+        ("GET", "/v1/memory_stores/{}/memory_versions/{}"),
+        ("POST", "/v1/memory_stores/{}/memory_versions/{}/redact"),
+        ("GET", "/v1/models"), ("GET", "/v1/models/{*}"),
+        ("GET", "/v1/skills"), ("POST", "/v1/skills"),
+        ("GET", "/v1/skills/{}"), ("DELETE", "/v1/skills/{}"),
+        ("GET", "/v1/skills/{}/versions"),
+        ("POST", "/v1/skills/{}/versions"),
+        ("GET", "/v1/skills/{}/versions/{}"),
+        ("DELETE", "/v1/skills/{}/versions/{}"),
+        ("GET", "/v1/skills/{}/versions/{}/content"),
+        ("GET", "/v1/skills/{}/versions/{}/files/{*}"),
     }
 )
 
@@ -163,11 +188,15 @@ def managed_route_inventory_violations(
 
 
 def check_managed_route_inventory(repo_root: Path) -> list[str]:
-    root = repo_root / "crates/server/awaken-protocol-managed/src"
+    compatible_roots = (
+        repo_root / "crates/server/awaken-protocol-managed/src",
+        repo_root / "crates/server/awaken-protocol-managed-resources/src",
+    )
     extension_root = repo_root / "crates/server/awaken-protocol-awaken/src"
     core: set[tuple[str, str]] = set()
-    for path in sorted(root.glob("**/*.rs")):
-        core.update(_execution_ownership_fitness._owned_routes(path))
+    for root in compatible_roots:
+        for path in sorted(root.glob("**/*.rs")):
+            core.update(_execution_ownership_fitness._owned_routes(path))
     extensions: set[tuple[str, str]] = set()
     for path in sorted(extension_root.glob("**/*.rs")):
         extensions.update(_execution_ownership_fitness._owned_routes(path))
@@ -176,7 +205,7 @@ def check_managed_route_inventory(repo_root: Path) -> list[str]:
 
 def selftest() -> None:
     # Cause/effect graph and decision table:
-    # C1 exact official managed-crate inventory, C2 exact separately packaged and
+    # C1 exact official compatible protocol-family inventory, C2 exact separately packaged and
     # namespaced extension inventory, C3 unknown core route, C4 unknown extension.
     # R1 C1+C2 -> accept; R2 C3 -> reject compatibility contamination;
     # R3 C4 -> reject implicit extension; R4 missing declared route -> reject drift.
