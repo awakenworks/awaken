@@ -1149,7 +1149,12 @@ impl ManagedState {
                     .await?;
                 if let Err(error) = self
                     .runtime
-                    .apply_session_inputs(&session_id, owner_scope, &desired)
+                    .apply_session_inputs(
+                        &session_id,
+                        owner_scope,
+                        session.resources.revision,
+                        &desired,
+                    )
                     .await
                 {
                     session
@@ -1210,7 +1215,12 @@ impl ManagedState {
                 return Ok(session);
             }
             self.runtime
-                .apply_session_inputs(&session_id, owner_scope, &session.resources.active)
+                .apply_session_inputs(
+                    &session_id,
+                    owner_scope,
+                    session.resources.revision,
+                    &session.resources.active,
+                )
                 .await?;
             if session.resources.activations.is_empty() {
                 session.resources.adopt_legacy_active(&session_id);

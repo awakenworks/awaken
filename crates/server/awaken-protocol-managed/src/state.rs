@@ -555,6 +555,7 @@ mod tests {
             &self,
             thread: &str,
             workspace_id: &str,
+            _resource_revision: u64,
             inputs: &awaken_session_contract::ResolvedSessionResources,
         ) -> Result<(), RunError> {
             self.order.lock().unwrap().push("resources");

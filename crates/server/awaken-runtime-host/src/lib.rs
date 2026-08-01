@@ -279,13 +279,18 @@ impl DispatchSessionRuntime {
     ) -> Result<(), RunError> {
         let managed = self.managed()?;
         let previous = managed.host.thread_resource_manifest(thread);
-        if previous
-            .as_ref()
-            .is_some_and(|previous| previous != manifest)
-        {
-            return Err(RunError::bad_request(
-                "a claimed Worker cannot replace the frozen Session Resource manifest",
-            ));
+        if let Some(previous) = previous.as_ref().filter(|previous| *previous != manifest) {
+            // A claimed Run may advance a live Session only to a strictly newer
+            // durable Resource generation. Exact replay is handled above; an
+            // older generation or same-generation/different-value envelope is
+            // stale or corrupt and must never replace the active projection.
+            if previous.workspace_id != manifest.workspace_id
+                || manifest.revision <= previous.revision
+            {
+                return Err(RunError::bad_request(
+                    "a claimed Worker cannot replace the active Session Resource generation",
+                ));
+            }
         }
         // Re-stage even when the manifest is unchanged: immutable File bytes,
         // config-version integrity, and credential revocation are live-deny checks
@@ -295,6 +300,7 @@ impl DispatchSessionRuntime {
             .stage_resource_manifest(
                 thread,
                 &manifest.workspace_id,
+                manifest.revision,
                 &manifest.resources,
                 claim,
                 false,
@@ -569,6 +575,7 @@ impl ManagedHost {
         &self,
         thread: &str,
         workspace: &str,
+        resource_revision: u64,
         inputs: &awaken_session_contract::ResolvedSessionResources,
         staged: crate::provisioning::StagedResources,
         bound_memory: Option<Arc<crate::memory::BoundMemory>>,
@@ -585,7 +592,11 @@ impl ManagedHost {
         self.host.register_thread_resources(thread, staged);
         self.host.register_thread_resource_manifest(
             thread,
-            awaken_session_contract::SessionResourceManifest::new(workspace, inputs.clone()),
+            awaken_session_contract::SessionResourceManifest::at_revision(
+                workspace,
+                resource_revision,
+                inputs.clone(),
+            ),
         );
         // Every Session records an explicit selection (including none). There is
         // no Host-global or directory fallback.
@@ -600,6 +611,7 @@ impl ManagedHost {
         &self,
         thread: &str,
         workspace: &str,
+        resource_revision: u64,
         inputs: &awaken_session_contract::ResolvedSessionResources,
         claim: Option<&awaken_run_ingress::RunClaim>,
         update_authority_references: bool,
@@ -610,6 +622,7 @@ impl ManagedHost {
         self.install_effective_inputs(
             thread,
             workspace,
+            resource_revision,
             inputs,
             staged,
             bound_memory,
@@ -625,13 +638,17 @@ impl ManagedHost {
         &self,
         thread: &str,
         workspace: &str,
+        resource_revision: u64,
         resources: &awaken_session_contract::ResolvedSessionResources,
         claim: Option<&awaken_run_ingress::RunClaim>,
         update_authority_references: bool,
     ) -> Result<(), RunError> {
         self.host.register_thread_workspace(thread, workspace);
-        let desired =
-            awaken_session_contract::SessionResourceManifest::new(workspace, resources.clone());
+        let desired = awaken_session_contract::SessionResourceManifest::at_revision(
+            workspace,
+            resource_revision,
+            resources.clone(),
+        );
         // The authority-side recovery path may first reconcile a retained or
         // pending generation and then prepare the complete Session projection.
         // Both operations carry the same canonical manifest. Avoid compiling and
@@ -669,6 +686,7 @@ impl ManagedHost {
         self.stage_effective_inputs(
             thread,
             workspace,
+            desired.revision,
             resources,
             claim,
             update_authority_references,
@@ -1068,6 +1086,7 @@ impl SessionRuntime for ManagedHost {
         &self,
         thread: &str,
         workspace_id: &str,
+        resource_revision: u64,
         inputs: &awaken_session_contract::ResolvedSessionResources,
     ) -> Result<(), RunError> {
         // Reuse the Session slot's canonical realization mutex. Cold active-active
@@ -1079,8 +1098,11 @@ impl SessionRuntime for ManagedHost {
             .update(thread, |slot| slot.lifecycle.clone());
         let _lifecycle = lifecycle.lock().await;
         self.host.register_thread_workspace(thread, workspace_id);
-        let desired_manifest =
-            awaken_session_contract::SessionResourceManifest::new(workspace_id, inputs.clone());
+        let desired_manifest = awaken_session_contract::SessionResourceManifest::at_revision(
+            workspace_id,
+            resource_revision,
+            inputs.clone(),
+        );
         // Exact replays are the recovery/idempotency case, not a live mutation.
         // Return before the create-time-only Memory guard so concurrent/cold
         // Session rehydration cannot reject the already-installed generation.
@@ -1233,8 +1255,16 @@ impl SessionRuntime for ManagedHost {
                 }
             }
         }
-        self.install_effective_inputs(thread, workspace_id, inputs, new, bound_memory, true)
-            .await?;
+        self.install_effective_inputs(
+            thread,
+            workspace_id,
+            resource_revision,
+            inputs,
+            new,
+            bound_memory,
+            true,
+        )
+        .await?;
         self.host
             .session_slots
             .update(thread, |slot| slot.skills = skill_versions);
@@ -1297,7 +1327,7 @@ impl SessionRuntime for ManagedHost {
         });
         // Stage only the already-resolved manifest. Runtime never reads the Agent
         // binding repository or composes defaults again.
-        self.stage_resource_manifest(thread, &init.workspace_id, &init.resources, None, true)
+        self.stage_resource_manifest(thread, &init.workspace_id, 0, &init.resources, None, true)
             .await?;
         Ok(())
     }

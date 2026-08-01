@@ -493,6 +493,7 @@ pub trait SessionRuntime: Send + Sync {
         &self,
         _thread: &str,
         _workspace_id: &str,
+        _resource_revision: u64,
         _inputs: &crate::ResolvedSessionResources,
     ) -> Result<(), RunError> {
         Ok(())
