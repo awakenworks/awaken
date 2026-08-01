@@ -29,6 +29,17 @@ fn plan(cmd: &[&str]) -> ContainerPlan {
 
 #[tokio::test]
 async fn k8s_pod_lifecycle_against_a_real_cluster() {
+    // Cause/effect decision-table rule K1:
+    // - Cause: a managed Session scope contains `_` and `:`, both invalid in a
+    //   Kubernetes DNS label, while the cluster is reachable.
+    // - Effect: create maps the opaque scope to the exact reversible runtime
+    //   identity, the apiserver accepts it, inspect observes a live sandbox, and
+    //   remove deletes that same Pod.
+    // This is the original production failure path; using a DNS-safe fixture
+    // here would not prove the adapter boundary handles managed Session IDs.
+    const SCOPE: &str = "sesn_fnv1a64:a13b83a56e2f77d0";
+    const POD_NAME: &str = "awaken-sesn-5ffnv1a64-3aa13b83a56e2f77d0";
+
     let addr = "127.0.0.1:8080".parse().unwrap();
     let Ok(rt) = K8sRuntime::connect("default", addr).await else {
         eprintln!("skipping: no kube client (no in-cluster SA / kubeconfig)");
@@ -40,20 +51,20 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
     }
 
     // Clear a leftover pod and wait for termination to settle.
-    let _ = rt.remove("awaken-it-pod").await;
+    let _ = rt.remove(POD_NAME).await;
     for _ in 0..30 {
-        if rt.inspect("awaken-it-pod").await.is_err() {
-            break; // gone
+        if matches!(rt.inspect(POD_NAME).await, Ok(ContainerState::Gone)) {
+            break;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
     // process-as-container Pod (busybox sleep as the container command).
     let id = rt
-        .create("it-pod", &plan(&["sleep", "30"]))
+        .create(SCOPE, &plan(&["sleep", "30"]))
         .await
         .expect("create a real Pod via the apiserver");
-    assert_eq!(id, "awaken-it-pod");
+    assert_eq!(id, POD_NAME);
 
     // Pending/Running both project to a live sandbox.
     assert!(matches!(

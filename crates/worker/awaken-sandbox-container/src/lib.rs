@@ -979,51 +979,6 @@ fn rootfs_of(spec: &pc::SandboxSpec, default_image: &str) -> RootfsPlan {
     declared.unwrap_or_else(|| RootfsPlan::Image(image_of(spec, default_image)))
 }
 
-/// A neutral Kubernetes Pod plan with native GC (an `owner_uid` ownerReference) and
-/// the outputs volume for out-of-band artifacts. Pure.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PodPlan {
-    pub name: String,
-    pub image: String,
-    /// The Session environment's PID-1 command.
-    pub command: Vec<String>,
-    pub env: Vec<(String, String)>,
-    pub binds: Vec<BindPlan>,
-    pub outputs_volume: String,
-    pub network: NetworkMode,
-    pub limits: pc::ResourceLimits,
-    /// ownerReference UID; the platform garbage-collects the Pod when the owner
-    /// (e.g. a lease object) is deleted — no custom reaper.
-    pub owner_uid: String,
-    /// Never restart in place: a finished agent Pod is reaped, not looped.
-    pub restart_never: bool,
-}
-
-/// Render a [`PodPlan`] through the same egress authority as container creation.
-pub fn pod_plan(
-    spec: &pc::SandboxSpec,
-    command: &pc::Command,
-    default_image: &str,
-    owner_uid: &str,
-    forward_proxy: Option<&ForwardProxy>,
-) -> Result<PodPlan, EgressError> {
-    let egress = egress_plan(&spec.network, forward_proxy)?;
-    let mut env = inline_env(spec);
-    env.extend(egress.proxy_env);
-    Ok(PodPlan {
-        name: format!("awaken-{}", spec.scope),
-        image: image_of(spec, default_image),
-        command: command.argv.clone(),
-        env,
-        binds: binds_of(spec),
-        outputs_volume: spec.outputs_path.clone(),
-        network: egress.network,
-        limits: spec.limits.clone(),
-        owner_uid: owner_uid.to_string(),
-        restart_never: true,
-    })
-}
-
 // ── Runtime port (dependency inversion) ─────────────────────────────────────────
 
 /// A container/pod runtime failure.

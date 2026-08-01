@@ -2,7 +2,7 @@
 //!
 //! Implements [`ContainerRuntime`] over **kube** — the kube-apiserver via the SDK,
 //! never `kubectl`. Faithful to awaken-next's `K3sHandWorker` + this crate's
-//! [`crate::pod_plan`]: a **Session-owned Pod** (PID 1 retains its namespaces while
+//! [`K8sRuntime`]: a **Session-owned Pod** (PID 1 retains its namespaces while
 //! attempts run through attached exec, `restartPolicy: Never`), **native GC** (an
 //! `ownerReference` reaps orphans),
 //! memory stores realized as **memoryd sidecars + emptyDir**, the untrusted agent
@@ -33,6 +33,9 @@ use crate::net::TcpAgentTransport;
 use crate::{
     BindPlan, ContainerPlan, ContainerRuntime, ContainerState, RuntimeAgentProcess, RuntimeError,
 };
+
+mod names;
+use names::{cfg_owner_label, configmap_name, credential_secret_name, k8s_runtime_id, pod_name};
 
 pub use crate::k8s_package_image::K8sPackageImageProvisioner;
 
@@ -212,27 +215,12 @@ fn credential_binds(plan: &ContainerPlan) -> Vec<&BindPlan> {
         .collect()
 }
 
-/// Deterministic ConfigMap name for the i-th inline-content mount of Pod `awaken-{id}`.
-fn configmap_name(id: &str, i: usize) -> String {
-    format!("awaken-{id}-cfg-{i}")
-}
-
-fn credential_secret_name(id: &str, i: usize) -> String {
-    format!("awaken-{id}-credential-{i}")
-}
-
 fn credential_key(bind: &BindPlan) -> &str {
     bind.credential_file_path
         .as_deref()
         .and_then(|path| path.rsplit('/').next())
         .filter(|name| !name.is_empty())
         .unwrap_or(CONFIGMAP_KEY)
-}
-
-/// Label the Pod's ConfigMaps carry so `remove` can reap them by selector — value is the
-/// Pod name (`awaken-{id}`), which is also the `container_id` handed back to `remove`.
-fn cfg_owner_label(id: &str) -> String {
-    format!("awaken-{id}")
 }
 
 /// Build a ConfigMap holding one inline-content mount's bytes under [`CONFIGMAP_KEY`].
@@ -702,7 +690,7 @@ fn build_pod(
 
         Pod {
             metadata: ObjectMeta {
-                name: Some(format!("awaken-{id}")),
+                name: Some(pod_name(id)),
                 labels: Some(labels),
                 // native GC: the platform reaps this Pod when the owner is deleted.
                 owner_references: owner.clone().map(|o| vec![o]),
@@ -806,16 +794,17 @@ impl ContainerRuntime for K8sRuntime {
             return Err(RuntimeError::Backend(format!(
                 "k8s cannot enforce a per-Pod `{limit}` limit (it is a node/kubelet \
                  setting, not a Pod-spec field); refusing to place a `{limit}`-limited \
-                 spec on the k8s tier rather than silently dropping the cap"
+                spec on the k8s tier rather than silently dropping the cap"
             )));
         }
+        let runtime_id = k8s_runtime_id(id)?;
         // Realize inline-content mounts as ConfigMaps *before* the Pod: the Pod's volumes
         // reference them by name, and the kubelet blocks the Pod as `ContainerCreating`
         // until they exist. Ordered + named identically to `build_pod`'s projection.
         let cms = self.configmaps();
         for (i, bind) in content_binds(plan).iter().enumerate() {
             let cm = build_configmap(
-                id,
+                &runtime_id,
                 i,
                 bind.content.as_deref(),
                 bind.content_bytes.as_deref(),
@@ -828,7 +817,7 @@ impl ContainerRuntime for K8sRuntime {
         let secrets = self.secrets();
         for (i, bind) in credential_binds(plan).iter().enumerate() {
             let secret = build_credential_secret(
-                id,
+                &runtime_id,
                 i,
                 credential_key(bind),
                 bind.secret_content
@@ -842,7 +831,7 @@ impl ContainerRuntime for K8sRuntime {
                 .await
                 .map_err(backend)?;
         }
-        let pod = self.pod(id, plan);
+        let pod = self.pod(&runtime_id, plan);
         let created = self
             .pods()
             .create(&PostParams::default(), &pod)
@@ -1096,6 +1085,20 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[tokio::test]
+    async fn overlong_or_empty_scope_fails_before_the_first_k8s_write() {
+        /* Boundary rules extending the table above: N5 an empty scope or an
+         * injective encoding whose Pod/owner-label exceeds 63 bytes produces an
+         * explicit adapter error before the lazy test client can reach its
+         * deliberately unavailable API server. */
+        let runtime = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
+        let plan = plan_with_memory(Vec::new());
+        for scope in [String::new(), "x".repeat(57)] {
+            let error = runtime.create(&scope, &plan).await.unwrap_err();
+            assert!(error.to_string().contains("sandbox scope"), "N5: {error}");
+        }
+    }
 
     #[tokio::test]
     async fn package_builder_job_is_rootless_bounded_and_registry_backed() {

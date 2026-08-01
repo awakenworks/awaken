@@ -419,25 +419,6 @@ impl pc::MemoryMount for FakeMemoryMount {
     }
 }
 
-#[test]
-fn pod_plan_is_process_as_container_with_native_gc() {
-    let cmd = pc::Command::new(["claude", "--acp"]);
-    let plan = pod_plan(&spec("run-7"), &cmd, "img:1", "owner-uid-123", None).unwrap();
-    assert_eq!(plan.name, "awaken-run-7");
-    // The agent argv IS the container command (not exec-into-idle).
-    assert_eq!(
-        plan.command,
-        vec!["claude".to_string(), "--acp".to_string()]
-    );
-    assert_eq!(plan.owner_uid, "owner-uid-123");
-    assert!(
-        plan.restart_never,
-        "a finished agent pod is reaped, not looped"
-    );
-    assert_eq!(plan.outputs_volume, "/mnt/session/outputs");
-    assert_eq!(plan.binds.len(), 2);
-}
-
 // ── Fake runtime + provider lifecycle ───────────────────────────────────────────
 
 #[derive(Default)]
