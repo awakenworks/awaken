@@ -26,9 +26,6 @@ pub struct ExecutableAgentRegistration {
     pub snapshot: ExecutableAgentSnapshot,
     /// Session-facing defaults frozen from the same publication.
     pub session_profile: ExecutableAgentSessionProfile,
-    /// Optional logical Hand placement intent. Placement remains outside the
-    /// executable snapshot and is joined to deployment-owned executors later.
-    pub declared_hand: Option<String>,
 }
 
 impl ExecutableAgentRegistration {
@@ -66,13 +63,6 @@ impl ExecutableAgentRegistration {
             || self.snapshot.metadata.fingerprint.0 != fingerprint
         {
             return invalid("snapshot fingerprints must be non-empty and identical");
-        }
-        if self
-            .declared_hand
-            .as_ref()
-            .is_some_and(|hand| hand.trim().is_empty())
-        {
-            return invalid("declared_hand must be absent or non-empty");
         }
         Ok(())
     }
@@ -213,7 +203,6 @@ mod tests {
             source_revision: 7,
             snapshot,
             session_profile: ExecutableAgentSessionProfile::default(),
-            declared_hand: Some("hand-a".into()),
         }
     }
 
@@ -221,8 +210,8 @@ mod tests {
     fn registration_identity_and_fingerprints_fail_closed() {
         // Cause/effect decision table:
         // V1 exact non-empty identity + matching source/fingerprints -> valid;
-        // V2 boundary Agent mismatch, V3 source revision mismatch, V4 any
-        // fingerprint mismatch, V5 empty optional Hand -> Invalid.
+        // V2 boundary Agent mismatch, V3 source revision mismatch and V4 any
+        // fingerprint mismatch -> Invalid. Placement is intentionally absent.
         let valid = registration();
         assert_eq!(valid.validate(), Ok(()), "V1");
 
@@ -243,16 +232,12 @@ mod tests {
         let mut mismatch = valid.clone();
         mismatch.snapshot.metadata.fingerprint.0 = "other".into();
         assert!(mismatch.validate().is_err(), "V4");
-
-        let mut mismatch = valid;
-        mismatch.declared_hand = Some(" ".into());
-        assert!(mismatch.validate().is_err(), "V5");
     }
 
     #[test]
     fn registration_wire_round_trip_preserves_existing_values() {
         // One boundary command owns the wire shape. A serde round trip must keep
-        // the exact snapshot, Session view, revision and placement intent; no
+        // the exact snapshot, Session view and revision; no
         // parallel DTO is reconstructed by an adapter.
         let value = registration();
         let encoded = serde_json::to_vec(&value).unwrap();

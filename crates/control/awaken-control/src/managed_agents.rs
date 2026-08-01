@@ -343,7 +343,6 @@ fn config_from_create(
         mcp_servers: typed_mcp_servers(params.mcp_servers),
         skills: typed_skills(params.skills),
         multiagent,
-        hand: None,
         disabled_at: None,
         archived_at: None,
         tool_overrides: Vec::new(),

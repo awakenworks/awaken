@@ -11,6 +11,7 @@ import _migration_fitness
 from _domain_application_boundary import DOMAIN_APPLICATION_ALLOWED_DEPS
 from _executable_agent_boundary import EXECUTABLE_AGENT_ALLOWED_DEPS
 import _provider_env_fitness
+import _execution_ownership_fitness
 from _privacy_boundary import PRIVACY_ALLOWED_DEPS
 import _resource_plane_fitness
 import _runtime_secret_boundary
@@ -1955,6 +1956,7 @@ def main() -> int:
     _coordinator_authority_fitness.selftest()
     _migration_fitness.selftest()
     _service_data_ownership_fitness.selftest()
+    _execution_ownership_fitness.selftest()
     errors = (
         check_dependencies()
         + check_neutral_code_boundaries()
@@ -1968,6 +1970,7 @@ def main() -> int:
         + _coordinator_authority_fitness.check_all(REPO_ROOT, CRATES)
         + _migration_fitness.check_all(REPO_ROOT)
         + _service_data_ownership_fitness.check_all(REPO_ROOT)
+        + _execution_ownership_fitness.check_all(REPO_ROOT)
     )
     if errors:
         for error in errors:

@@ -19,6 +19,89 @@ use awaken_runtime_contract::resolved::ToolDescriptor;
 /// resolved under the root to `<root>/outputs`, which `list_files("outputs")` reads.
 const OUTPUTS_PATH: &str = "/outputs";
 
+/// Canonical projection from the frozen Session Environment into neutral
+/// provisioning vocabulary. Admission and realization both consume this value,
+/// so a Worker cannot claim requirements different from those it materializes.
+pub(crate) fn project_environment(
+    environment: &awaken_session_contract::EnvironmentSnapshot,
+) -> crate::session_slot::FrozenEnvironmentRuntimeProjection {
+    let network = match &environment.network {
+        awaken_session_contract::SessionNetworkPolicy::Unrestricted => {
+            pc::NetworkPolicy::Unrestricted
+        }
+        awaken_session_contract::SessionNetworkPolicy::Allowlist { hosts } => {
+            pc::NetworkPolicy::Allowlist {
+                hosts: hosts.clone(),
+            }
+        }
+        awaken_session_contract::SessionNetworkPolicy::None => pc::NetworkPolicy::None,
+    };
+    let packages = environment.prepared_image.as_ref().map_or_else(
+        || pc::PackageRequirements {
+            managers: environment
+                .packages
+                .manager_packages()
+                .into_iter()
+                .filter(|(_, packages)| !packages.is_empty())
+                .map(|(manager, packages)| (manager.to_owned(), packages.to_vec()))
+                .collect(),
+            resolution_id: Some(format!(
+                "{}:{}",
+                environment.environment_id, environment.revision.0
+            )),
+        },
+        |_| pc::PackageRequirements::default(),
+    );
+    let mut sandbox =
+        pc::SandboxOverride::from_config_value(&environment.sandbox).and_then(|mut sandbox| {
+            // EnvironmentSnapshot.network is the sole reachability authority. Old
+            // retained blobs may still contain sandbox.network; ignoring it prevents
+            // a late widening override.
+            sandbox.network = None;
+            (!sandbox.is_empty()).then_some(sandbox)
+        });
+    if let Some(image) = &environment.prepared_image {
+        sandbox.get_or_insert_with(Default::default).environment =
+            Some(pc::EnvironmentKind::Image {
+                reference: image.clone(),
+            });
+    }
+    crate::session_slot::FrozenEnvironmentRuntimeProjection {
+        fingerprint: environment.config_fingerprint.clone(),
+        network,
+        packages,
+        sandbox,
+        provisioning: environment.sandbox_provisioning,
+        credential_realization: environment.credential_realization.clone(),
+    }
+}
+
+/// Exact admission vector derived from the same canonical projection used by
+/// Session realization. `opaque_process` distinguishes ACP, whose process must
+/// see sandbox paths, from cooperative Native execution.
+pub(crate) fn sandbox_requirements(
+    environment: &awaken_session_contract::EnvironmentSnapshot,
+    opaque_process: bool,
+) -> pc::SandboxRequirements {
+    let projection = project_environment(environment);
+    let base = pc::SandboxSpec {
+        scope: environment.environment_id.clone(),
+        isolation: pc::IsolationClass::Workdir,
+        mounts: Vec::new(),
+        env: Vec::new(),
+        packages: projection.packages,
+        network: projection.network,
+        outputs_path: OUTPUTS_PATH.to_owned(),
+        limits: pc::ResourceLimits::default(),
+        lease_ttl_secs: None,
+        extra: None,
+    };
+    let spec = projection
+        .sandbox
+        .map_or(base.clone(), |sandbox| sandbox.apply(base));
+    pc::SandboxRequirements::from_spec(&spec, opaque_process)
+}
+
 /// Serialize the Session-domain resource manifest into the dispatch context's
 /// opaque envelope. This one ACL keeps durable ingress independent of Session
 /// vocabulary while preserving a lossless, secret-free payload.

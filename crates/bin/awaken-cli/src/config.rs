@@ -69,8 +69,6 @@ pub struct ResolvedDeployment {
     pub mcp_bearer_token: Option<String>,
     pub admin_listen: Option<String>,
     pub runtime: DeploymentConfig,
-    /// Deployment-owned topology for logical Agent `hand` declarations.
-    pub hand_connections: BTreeMap<String, awaken_connection_plan::ConnectionPlan>,
     /// Process-global logging, tracing and metrics policy.
     pub observability: awaken_observability::ObservabilityConfig,
     /// Secret-free local ACP observations captured once during product startup.
@@ -362,26 +360,6 @@ impl ResolvedDeployment {
             })
             .transpose()?
             .unwrap_or_else(awaken_runtime_host::default_postgres_max_connections);
-        let hand_connections = file.hand_connections.clone().unwrap_or_default();
-        for (hand_id, plan) in &hand_connections {
-            if hand_id.trim().is_empty() {
-                return Err("hand_connections keys must be non-empty".to_owned());
-            }
-            if plan.dial != awaken_connection_plan::DialPolicy::Dial {
-                return Err(format!(
-                    "hand_connections.{hand_id} must use dial = \"dial\""
-                ));
-            }
-            if !matches!(
-                plan.transport,
-                awaken_connection_plan::DialAddr::Unix(_)
-                    | awaken_connection_plan::DialAddr::Tcp(_)
-            ) {
-                return Err(format!(
-                    "hand_connections.{hand_id} must use a unix or tcp transport"
-                ));
-            }
-        }
         for (field, value) in [
             ("otlp_protocol", file.otlp_protocol.as_deref()),
             ("otlp_traces_protocol", file.otlp_traces_protocol.as_deref()),
@@ -671,7 +649,6 @@ impl ResolvedDeployment {
             mcp_bearer_token: file.mcp_bearer_token,
             admin_listen: file.admin_listen,
             runtime,
-            hand_connections,
             observability,
             local_acp_observations: Vec::new(),
             control,
@@ -782,62 +759,6 @@ mod tests {
                 == awaken_acp_application::AcpDetectionState::Detected)
                 .then(|| "fixture".to_string()),
             capability_reason_code: None,
-        }
-    }
-
-    #[test]
-    fn declared_hand_connections_are_typed_and_fail_closed() {
-        use awaken_connection_plan::ConnectionPlan;
-
-        // Cause/effect graph:
-        // typed deployment connection plan -> startup topology validation -> one
-        // live executor table; unsupported topology or unresolved credentials
-        // must stop startup before Runtime can observe an incomplete placement.
-        //
-        // Decision table:
-        // | id | direction | transport | credential | result |
-        // | absent | - | - | - | empty table |
-        // | non-empty | dial | Unix/TCP | none | accepted exactly |
-        // | empty | dial | Unix | none | reject |
-        // | non-empty | listen | Unix | none | reject |
-        // | non-empty | dial | in-process | none | reject |
-        assert!(
-            resolve(FileConfig::default(), ConfigOverrides::default())
-                .hand_connections
-                .is_empty()
-        );
-
-        let valid_plan = ConnectionPlan::tcp_dial("127.0.0.1:7000");
-        let valid = resolve(
-            FileConfig {
-                hand_connections: Some(BTreeMap::from([(
-                    "research-hand".to_owned(),
-                    valid_plan.clone(),
-                )])),
-                ..Default::default()
-            },
-            ConfigOverrides::default(),
-        );
-        assert_eq!(
-            valid.hand_connections.get("research-hand"),
-            Some(&valid_plan)
-        );
-
-        for (id, plan) in [
-            ("", ConnectionPlan::unix_dial("/tmp/hand.sock")),
-            ("listen", ConnectionPlan::unix_listen("/tmp/hand.sock")),
-            ("in-process", ConnectionPlan::in_process()),
-        ] {
-            let result = ResolvedDeployment::resolve_file(
-                ConfigOverrides::default(),
-                Some(PathBuf::from("/home/dev")),
-                PathBuf::from("/home/dev/.awaken/config.toml"),
-                FileConfig {
-                    hand_connections: Some(BTreeMap::from([(id.to_owned(), plan)])),
-                    ..Default::default()
-                },
-            );
-            assert!(result.is_err(), "invalid Hand rule {id:?} was accepted");
         }
     }
 

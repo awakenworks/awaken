@@ -92,6 +92,24 @@ fn worker_acp_capabilities(
         .collect()
 }
 
+/// Whether any publication-pinned execution candidate needs the Session's local
+/// Environment. This is deliberately a set-wide decision: an A2A primary with a
+/// Native/ACP fallback is not A2A-only and must retain one realizable Environment.
+pub(crate) fn requires_local_environment(
+    models: &awaken_runtime_contract::resolved::ResolvedSpec,
+) -> bool {
+    std::iter::once(&models.model_binding)
+        .chain(models.model_candidates.iter())
+        .any(|candidate| {
+            !matches!(
+                awaken_runtime_contract::resolved::Backend::from_ref(
+                    &candidate.binding.backend_ref
+                ),
+                awaken_runtime_contract::resolved::Backend::Remote { .. }
+            )
+        })
+}
+
 /// Resolve the canonical cold-start inference holder from immutable candidate
 /// backends. Embedded applications that author their own `RunDispatch` use this
 /// same decision instead of duplicating the self-hosted boundary mapping.
@@ -149,6 +167,7 @@ pub fn self_hosted_inference_holder(
 #[must_use]
 pub fn remote_worker_placement(
     models: &awaken_runtime_contract::resolved::ResolvedSpec,
+    environment: Option<&awaken_session_contract::EnvironmentSnapshot>,
     resources: Option<&awaken_session_contract::SessionResourceManifest>,
     remote_required: bool,
 ) -> PlacementRequirements {
@@ -160,6 +179,30 @@ pub fn remote_worker_placement(
     };
     placement.required_credentials = required_credentials;
     placement.required_acp_capabilities = worker_acp_capabilities(models);
+    let requires_local_environment = requires_local_environment(models);
+    let requires_opaque_process = std::iter::once(&models.model_binding)
+        .chain(models.model_candidates.iter())
+        .any(|candidate| {
+            matches!(
+                awaken_runtime_contract::resolved::Backend::from_ref(
+                    &candidate.binding.backend_ref
+                ),
+                awaken_runtime_contract::resolved::Backend::Acp { .. }
+            ) && !matches!(
+                candidate.provisioning,
+                awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. }
+            )
+        });
+    if requires_local_environment {
+        placement.sandbox = environment.map_or_else(
+            || awaken_provisioning_contract::SandboxRequirements {
+                ..Default::default()
+            },
+            |environment| {
+                crate::provisioning::sandbox_requirements(environment, requires_opaque_process)
+            },
+        );
+    }
     for candidate in std::iter::once(&models.model_binding).chain(models.model_candidates.iter()) {
         placement.required_capabilities.insert(
             awaken_runtime_contract::execution::execution_capability(
@@ -173,6 +216,11 @@ pub fn remote_worker_placement(
         }
     }
     if let Some(resources) = resources {
+        placement.sandbox.enforced_readonly |= resources
+            .resources
+            .inputs
+            .iter()
+            .any(|input| input.access == awaken_resource_contract::ResourceAccess::ReadOnly);
         placement
             .required_capabilities
             .insert(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY.to_string());
@@ -221,6 +269,9 @@ impl SharedHost {
                     .map(|environment| (environment, slot.toolsets.clone()))
             })
             .flatten();
+        let environment_snapshot = runtime_projection
+            .as_ref()
+            .map(|(environment, _)| environment);
         let inference_holder = self.inference_plaintext_holder(&activation)?;
         // A mixed deployment may have both the local pool and remote workers.
         // Any carried manifest still needs capability admission: an explicit empty
@@ -230,6 +281,7 @@ impl SharedHost {
             .then(|| {
                 remote_worker_placement(
                     &activation.snapshot.resolved_spec,
+                    environment_snapshot,
                     resources.as_ref(),
                     self.deployment.disable_local_pool,
                 )
@@ -492,6 +544,124 @@ mod completion_tests {
             .resolved_spec
     }
 
+    fn environment() -> awaken_session_contract::EnvironmentSnapshot {
+        awaken_session_contract::EnvironmentSnapshot {
+            environment_id: "env-1".into(),
+            revision: awaken_session_contract::EnvironmentRevision(3),
+            config_fingerprint: awaken_session_contract::EnvironmentFingerprint("fp-env".into()),
+            sandbox: serde_json::json!({
+                "isolation": "container",
+                "limits": {"memory_bytes": 67108864}
+            }),
+            sandbox_provisioning: Default::default(),
+            packages: awaken_session_contract::EnvironmentPackages {
+                npm: vec!["tsx@4".into()],
+                ..Default::default()
+            },
+            prepared_image: None,
+            network: awaken_session_contract::SessionNetworkPolicy::Allowlist {
+                hosts: vec!["api.example.test".into()],
+            },
+            credential_realization:
+                awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+        }
+    }
+
+    #[test]
+    fn environment_and_backend_compile_one_worker_sandbox_requirement_vector() {
+        use awaken_provisioning_contract::IsolationClass;
+        use awaken_runtime_contract::resolved::{
+            BackendModelSelection, ModelProvisioning, ResolvedModelCandidate,
+        };
+
+        // Cause/effect graph:
+        // C1=Native; C2=projected ACP opaque process; C3=trusted BackendOwned ACP;
+        // C4=A2A-only; C5=frozen Environment isolation/network/limits/packages;
+        // C6=prepared image. Effects: E1=one PlacementRequirements.sandbox vector;
+        // E2=opaque ACP adds transparent Namespace semantics; E3=A2A adds no local
+        // Sandbox demand; E4=image replaces package provisioning with rootfs demand.
+        // Constraint: candidates are conjunctive for admission; any local candidate
+        // keeps the local Environment requirement.
+        //
+        // Decision table:
+        // R1 C1+C5 -> exact Environment enforcement, cooperative Hand paths.
+        // R2 C2+C5 -> R1 plus transparent/path-fidelity.
+        // R3 C3+C5 -> trusted Workdir semantics; no artificial Namespace demand.
+        // R4 C4+C5 -> default (no local Environment) vector.
+        // R5 C1+C5+C6 -> custom-rootfs=true, package-provisioning=false.
+        // R6 C4 plus any Native fallback -> R1 (the candidate set is not A2A-only).
+        let frozen = environment();
+
+        let native = remote_worker_placement(&host_models(), Some(&frozen), None, true);
+        assert_eq!(native.sandbox.isolation, IsolationClass::Container, "R1");
+        assert!(native.sandbox.network_isolation, "R1 network");
+        assert!(native.sandbox.enforced_network_allowlist, "R1 allowlist");
+        assert!(native.sandbox.resource_limits, "R1 limits");
+        assert!(native.sandbox.package_provisioning, "R1 packages");
+        assert!(
+            !native.sandbox.tool_transparent && !native.sandbox.path_fidelity,
+            "R1 hand"
+        );
+
+        let mut projected_acp = host_models();
+        projected_acp.model_binding = ResolvedModelCandidate::provider(
+            ModelBinding::new("provider", "model", "acp:claude"),
+            "provider@1",
+            "route@1",
+            "workspace",
+            None,
+            awaken_runtime_contract::InferenceEndpoint {
+                adapter_kind: "anthropic".into(),
+                api_dialect: "anthropic_messages".into(),
+                base_url: "https://example.test".into(),
+                upstream_model: "model".into(),
+            },
+        );
+        let acp = remote_worker_placement(&projected_acp, Some(&frozen), None, true);
+        assert!(
+            acp.sandbox.tool_transparent && acp.sandbox.path_fidelity,
+            "R2"
+        );
+
+        let mut trusted = host_models();
+        trusted.model_binding.provisioning = ModelProvisioning::BackendOwned {
+            credential: awaken_runtime_contract::CredentialRef {
+                id: "local".into(),
+                revision: 1,
+            },
+            model_selection: BackendModelSelection::Default,
+            acp: Default::default(),
+        };
+        trusted.model_binding.binding.backend_ref = "acp:codex".into();
+        let mut workdir = frozen.clone();
+        workdir.sandbox = serde_json::json!({});
+        workdir.network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
+        workdir.packages = Default::default();
+        let trusted = remote_worker_placement(&trusted, Some(&workdir), None, true);
+        assert_eq!(trusted.sandbox.isolation, IsolationClass::Workdir, "R3");
+        assert!(!trusted.sandbox.tool_transparent, "R3");
+
+        let mut remote = host_models();
+        remote.model_binding = ResolvedModelCandidate::remote(
+            ModelBinding::new("agent", "", "a2a:https://agent.test"),
+            "workspace",
+            None,
+            "security-fp",
+        );
+        let remote_placement = remote_worker_placement(&remote, Some(&frozen), None, true);
+        assert_eq!(remote_placement.sandbox, Default::default(), "R4");
+
+        remote.model_candidates.push(host_models().model_binding);
+        let mixed = remote_worker_placement(&remote, Some(&frozen), None, true);
+        assert_eq!(mixed.sandbox.isolation, IsolationClass::Container, "R6");
+
+        let mut prepared = frozen;
+        prepared.prepared_image = Some("image@sha256:abc".into());
+        let image = remote_worker_placement(&host_models(), Some(&prepared), None, true);
+        assert!(image.sandbox.custom_rootfs, "R5 rootfs");
+        assert!(!image.sandbox.package_provisioning, "R5 packages");
+    }
+
     #[test]
     fn exported_dispatch_completion_sink_is_the_host_owned_projection() {
         // Cause graph: one SharedHost owns one CompletionRegistry; an embedding
@@ -554,7 +724,7 @@ mod completion_tests {
                     upstream_model: "fallback".into(),
                 },
             ));
-        let placement = remote_worker_placement(&models, None, true);
+        let placement = remote_worker_placement(&models, None, None, true);
         assert_eq!(placement.contract_version, 1);
         assert_eq!(placement.dispatch_contract_version, 1);
         assert_eq!(placement.runtime_protocol_version, 1);
@@ -579,7 +749,7 @@ mod completion_tests {
         remote.binding.backend_ref = "a2a:https://agent.example".to_string();
         models.model_candidates.push(remote);
 
-        let placement = remote_worker_placement(&models, None, true);
+        let placement = remote_worker_placement(&models, None, None, true);
         assert!(
             placement.required_capabilities.contains("acp:claude"),
             "ACP CLI identity is part of claim compatibility"
@@ -632,7 +802,7 @@ mod completion_tests {
             .model_candidates
             .push(worker_candidate("fallback", "cred:fallback", 5));
 
-        let placement = remote_worker_placement(&models, None, false);
+        let placement = remote_worker_placement(&models, None, None, false);
         assert_eq!(
             placement.location,
             awaken_run_ingress::ExecutionLocation::RemoteRequired
@@ -678,7 +848,7 @@ mod completion_tests {
             Default::default(),
         );
 
-        let placement = remote_worker_placement(&models, None, false);
+        let placement = remote_worker_placement(&models, None, None, false);
         assert_eq!(
             placement.location,
             awaken_run_ingress::ExecutionLocation::RemoteRequired
@@ -716,6 +886,11 @@ mod completion_tests {
             ResolvedInput, ResolvedInputSource, ResolvedSessionResources, SessionResourceManifest,
         };
 
+        // Cause/effect graph: C1=resource manifest exists; C2=repository has a
+        // credential; C3=input is read-only. Effects: E1=resource realization
+        // capability; E2=repository credential capability; E3=enforced read-only
+        // Sandbox capability. One row with C1+C2+C3 covers all conjunctive effects;
+        // the following empty-manifest test owns the !C2/!C3 revocation row.
         let resources = SessionResourceManifest::new(
             "workspace-a",
             ResolvedSessionResources {
@@ -735,13 +910,13 @@ mod completion_tests {
                         credential: None,
                     },
                     mount_path: "/workspace/repo".into(),
-                    access: ResourceAccess::ReadWrite,
+                    access: ResourceAccess::ReadOnly,
                     instructions: None,
                 }],
                 skills: Some(Vec::new()),
             },
         );
-        let placement = remote_worker_placement(&host_models(), Some(&resources), true);
+        let placement = remote_worker_placement(&host_models(), None, Some(&resources), true);
         assert!(
             placement
                 .required_capabilities
@@ -752,6 +927,7 @@ mod completion_tests {
                 .required_capabilities
                 .contains(awaken_run_ingress::REPOSITORY_CREDENTIALS_CAPABILITY)
         );
+        assert!(placement.sandbox.enforced_readonly);
     }
 
     #[test]
@@ -763,7 +939,7 @@ mod completion_tests {
                 skills: Some(Vec::new()),
             },
         );
-        let placement = remote_worker_placement(&host_models(), Some(&resources), true);
+        let placement = remote_worker_placement(&host_models(), None, Some(&resources), true);
         assert!(
             placement
                 .required_capabilities

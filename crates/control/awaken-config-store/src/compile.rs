@@ -111,17 +111,6 @@ fn compile_with_models(
     primary: Option<ResolvedModelCandidate>,
     candidates: Vec<ResolvedModelCandidate>,
 ) -> Result<ExecutableAgentSnapshot, CompileError> {
-    if config
-        .hand
-        .as_ref()
-        .is_some_and(|hand| hand.trim().is_empty())
-    {
-        return Err(CompileError::InvalidBinding {
-            agent: config.id.clone(),
-            axis: "hand",
-            reason: "declared Hand id must be non-empty".to_string(),
-        });
-    }
     let mut descriptors = Vec::with_capacity(config.tool_ids.len());
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     // Exact tool ids: each must resolve (unknown references are rejected, fail-closed).
@@ -555,8 +544,8 @@ fn glob_match(pattern: &str, id: &str) -> bool {
 /// tool descriptors, and resolved publication metadata. Session resources are not
 /// Agent publication inputs; they are composed later by `SessionInputResolver`.
 ///
-/// Managed-Agent wire-identity metadata (`name` / `description` / `metadata`) and
-/// the logical deployment placement (`hand`) are **excluded**: none is executable
+/// Managed-Agent wire-identity metadata (`name` / `description` / `metadata`) is
+/// **excluded**: none is executable
 /// snapshot behavior. Otherwise editing presentation or moving an unchanged Agent
 /// would mint a new fingerprint for byte-identical execution — polluting the
 /// "same fingerprint ⇒ same behavior" contract. Configs that never set these fields
@@ -572,7 +561,6 @@ fn fingerprint_of(
     behavioral.name = None;
     behavioral.description = None;
     behavioral.metadata.clear();
-    behavioral.hand = None;
     let mut bytes =
         serde_json::to_vec(&behavioral).map_err(|err| CompileError::Serialize(err.to_string()))?;
     if !metadata.is_legacy_default() {
@@ -626,31 +614,6 @@ mod tests {
 
     fn tool(id: &str) -> ToolDescriptor {
         ToolDescriptor::pinned("test", id, "a tool", serde_json::json!({"type": "object"}))
-    }
-
-    #[test]
-    fn declared_hand_is_validated_but_excluded_from_the_executable_snapshot() {
-        // Cause/effect graph:
-        // logical Hand declaration -> authoring validation + placement projection;
-        // executable compilation must not carry topology or change content identity.
-        //
-        // Decision table:
-        // | hand value | compile | snapshot/fingerprint versus no declaration |
-        // | absent | success | baseline |
-        // | non-empty logical id | success | identical |
-        // | empty/whitespace | InvalidBinding(hand) | no snapshot |
-        let baseline = compile(&config(&[]), &[]).expect("baseline compiles");
-
-        let mut declared = config(&[]);
-        declared.hand = Some("research-hand".to_owned());
-        let with_hand = compile(&declared, &[]).expect("logical Hand compiles");
-        assert_eq!(with_hand, baseline);
-
-        declared.hand = Some("  ".to_owned());
-        assert!(matches!(
-            compile(&declared, &[]),
-            Err(CompileError::InvalidBinding { axis: "hand", .. })
-        ));
     }
 
     #[test]

@@ -15,6 +15,7 @@ mod binding_resolver;
 mod capabilities;
 mod compaction;
 mod config_plane;
+mod config_preview;
 mod config_routes;
 mod config_service;
 mod credential_reference;

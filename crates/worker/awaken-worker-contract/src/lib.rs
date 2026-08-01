@@ -14,7 +14,7 @@ pub use awaken_credential_contract::{
     CredentialObservationState as WorkerCredentialState, CredentialRef as WorkerCredentialRevision,
 };
 use awaken_provisioning_contract::{
-    IsolationClass, ResourceLimits, SandboxCapabilities, capability_requirements_satisfied,
+    IsolationClass, ResourceLimits, SandboxCapabilities, SandboxRequirements,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -337,14 +337,8 @@ pub struct PlacementRequirements {
     pub required_acp_capabilities: BTreeSet<WorkerAcpCapabilityRequirement>,
     pub required_zone: Option<String>,
     pub architecture: Option<String>,
-    #[serde(default = "workdir_isolation")]
-    pub isolation: IsolationClass,
     #[serde(default)]
-    pub require_tool_transparent: bool,
-    #[serde(default)]
-    pub require_network_isolation: bool,
-    #[serde(default)]
-    pub require_resource_limits: bool,
+    pub sandbox: SandboxRequirements,
     pub sandbox_backend: Option<String>,
     #[serde(default)]
     pub dispatch_contract_version: u32,
@@ -357,10 +351,6 @@ pub struct PlacementRequirements {
     pub recovery: WorkerRecoveryMode,
 }
 
-const fn workdir_isolation() -> IsolationClass {
-    IsolationClass::Workdir
-}
-
 impl Default for PlacementRequirements {
     fn default() -> Self {
         Self {
@@ -370,10 +360,7 @@ impl Default for PlacementRequirements {
             required_acp_capabilities: BTreeSet::new(),
             required_zone: None,
             architecture: None,
-            isolation: IsolationClass::Workdir,
-            require_tool_transparent: false,
-            require_network_isolation: false,
-            require_resource_limits: false,
+            sandbox: SandboxRequirements::default(),
             sandbox_backend: None,
             dispatch_contract_version: 0,
             runtime_protocol_version: 0,
@@ -421,8 +408,6 @@ pub enum Incompatibility {
     Architecture { required: String, actual: String },
     #[error("sandbox isolation or enforcement capabilities are insufficient")]
     SandboxCapabilities,
-    #[error("worker is not tool-transparent")]
-    ToolTransparency,
     #[error("sandbox backend {0} is unsupported")]
     SandboxBackend(String),
     #[error("dispatch contract version {0} is unsupported")]
@@ -468,18 +453,11 @@ pub fn can_claim(
             actual: manifest.architecture.clone(),
         });
     }
-    if !capability_requirements_satisfied(
-        manifest.sandbox.isolation,
-        requirements.isolation,
-        manifest.sandbox.network_isolation,
-        requirements.require_network_isolation,
-        manifest.sandbox.resource_limits,
-        requirements.require_resource_limits,
-    ) {
+    if !manifest
+        .sandbox
+        .satisfies_requirements(&requirements.sandbox)
+    {
         return Err(Incompatibility::SandboxCapabilities);
-    }
-    if requirements.require_tool_transparent && !manifest.sandbox.tool_transparent {
-        return Err(Incompatibility::ToolTransparency);
     }
     if let Some(backend) = &requirements.sandbox_backend
         && !manifest.sandbox_backends.contains(backend)
@@ -991,10 +969,17 @@ mod tests {
             required_capabilities: BTreeSet::from(["github".to_string()]),
             required_zone: Some("cn-a".to_string()),
             architecture: Some("x86_64".to_string()),
-            isolation: IsolationClass::Container,
-            require_tool_transparent: true,
-            require_network_isolation: true,
-            require_resource_limits: true,
+            sandbox: SandboxRequirements {
+                isolation: IsolationClass::Container,
+                tool_transparent: true,
+                path_fidelity: true,
+                enforced_readonly: true,
+                network_isolation: true,
+                enforced_network_allowlist: true,
+                resource_limits: true,
+                custom_rootfs: true,
+                package_provisioning: false,
+            },
             sandbox_backend: Some("kubernetes".to_string()),
             dispatch_contract_version: 1,
             runtime_protocol_version: 2,
@@ -1039,7 +1024,67 @@ mod tests {
 
     #[test]
     fn full_manifest_satisfies_full_requirements() {
+        // Decision-table success row: every protocol, capability, topology and
+        // Sandbox cause is present, therefore claim admission has no rejection
+        // effect. Negative rows are partitioned by the two tests below.
         assert!(can_claim(&manifest("a", 0).manifest, &requirements()).is_ok());
+    }
+
+    #[test]
+    fn every_sandbox_capability_axis_fails_closed_through_one_predicate() {
+        // Cause/effect graph: each SandboxRequirements bit is a conjunctive cause;
+        // E1=all are satisfied -> claimable; E2=any one absent -> the single
+        // SandboxCapabilities incompatibility. Isolation is ordered, boolean axes
+        // are implication constraints, and unrelated Worker axes stay fixed.
+        //
+        // Decision table: R1 full vector -> accept (owned by the preceding test);
+        // R2 weaker isolation -> reject; R3..R10 one missing enforcement bit ->
+        // reject. Package provisioning is added to both sides for its positive row
+        // before being removed from the Worker for its negative row.
+        let required = requirements();
+        let assert_rejected = |worker: WorkerManifest, rule: &str| {
+            assert_eq!(
+                can_claim(&worker, &required),
+                Err(Incompatibility::SandboxCapabilities),
+                "{rule}"
+            );
+        };
+
+        let mut worker = manifest("a", 0).manifest;
+        worker.sandbox.isolation = IsolationClass::Namespace;
+        assert_rejected(worker, "R2 isolation");
+
+        for axis in [
+            "tool_transparent",
+            "path_fidelity",
+            "enforced_readonly",
+            "network_isolation",
+            "enforced_network_allowlist",
+            "resource_limits",
+            "custom_rootfs",
+        ] {
+            let mut worker = manifest("a", 0).manifest;
+            match axis {
+                "tool_transparent" => worker.sandbox.tool_transparent = false,
+                "path_fidelity" => worker.sandbox.path_fidelity = false,
+                "enforced_readonly" => worker.sandbox.enforced_readonly = false,
+                "network_isolation" => worker.sandbox.network_isolation = false,
+                "enforced_network_allowlist" => worker.sandbox.enforced_network_allowlist = false,
+                "resource_limits" => worker.sandbox.resource_limits = false,
+                "custom_rootfs" => worker.sandbox.custom_rootfs = false,
+                _ => unreachable!(),
+            }
+            assert_rejected(worker, axis);
+        }
+
+        let mut package_required = required;
+        package_required.sandbox.package_provisioning = true;
+        let worker = manifest("a", 0).manifest;
+        assert_eq!(
+            can_claim(&worker, &package_required),
+            Err(Incompatibility::SandboxCapabilities),
+            "R10 package_provisioning"
+        );
     }
 
     #[test]

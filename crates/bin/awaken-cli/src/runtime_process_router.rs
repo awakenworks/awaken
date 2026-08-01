@@ -34,7 +34,6 @@ pub(super) async fn assemble_runtime_process_router(
     ) = executable_agent_registration::process_parts(assembly.executable_agent_wiring);
     let content_capture_ceiling = assembly.content_capture_ceiling;
     let deployment = assembly.deployment;
-    let hand_executors = assembly.hand_executors;
     let cloud_api_base_url = assembly.cloud_api_base_url;
     let model_supply = assembly.model_supply.clone();
     let cloud_models_enabled = model_supply.cloud_models_enabled;
@@ -355,14 +354,6 @@ pub(super) async fn assemble_runtime_process_router(
     if let Some(credentials) = credential_materializer.clone() {
         host_builder = host_builder.with_credential_materializer(credentials);
     }
-    host_builder = host_builder.with_tool_executor_provider(Arc::new(
-        awaken_server::placement::ConfigToolExecutorProvider::from_declared_hands(
-            Arc::new(executable_agent_registration::CatalogDeclaredHandSource(
-                executable_agent_catalog.clone(),
-            )),
-            hand_executors,
-        ),
-    ));
     if let Some(materializer) = model_wiring.materializer {
         host_builder = host_builder.with_inference_materializer(materializer);
     }

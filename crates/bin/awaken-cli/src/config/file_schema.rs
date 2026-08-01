@@ -34,7 +34,6 @@ pub(super) struct FileConfig {
     pub(super) suite_hub_url: Option<String>,
     pub(super) runtime_database_url: Option<String>,
     pub(super) postgres_max_connections: Option<u32>,
-    pub(super) hand_connections: Option<BTreeMap<String, awaken_connection_plan::ConnectionPlan>>,
     pub(super) log_filter: Option<String>,
     pub(super) log_format: Option<String>,
     pub(super) trace_file: Option<PathBuf>,

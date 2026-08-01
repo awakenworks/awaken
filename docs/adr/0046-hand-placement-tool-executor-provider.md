@@ -1,6 +1,7 @@
 # ADR-0046: Hand Placement — the `ToolExecutorProvider` Seam
 
-- Status: Accepted
+- Status: Superseded
+- Superseded by: [ADR-0073](0073-session-environment-owned-hand-and-worker-capability-placement.md)
 - Date: 2026-07-09
 - Implemented: 2026-07-09 — `ToolExecutorProvider` port in `awaken-runtime-contract`
   (`provide(&RunActivation) -> Option<Arc<dyn ToolExecutor>>`); host seam

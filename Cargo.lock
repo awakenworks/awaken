@@ -707,7 +707,7 @@ dependencies = [
  "awaken-environment-realization-contract",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
- "awaken-scoped-migration",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "serde_json",

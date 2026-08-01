@@ -529,15 +529,17 @@ async fn a_re_drive_of_a_failed_execution_returns_the_cached_error_without_re_ru
 
 #[test]
 fn hand_result_serializes_with_an_internally_tagged_snake_case_status() {
-    // Wire-shape coverage: C1 success/error/indeterminate variant determines
-    // E1 the stable snake_case tag and E2 its sole typed payload. The success
-    // payload uses the canonical ordered content-block wire, not the retired
-    // scalar-content compatibility shape.
+    // Cause/effect graph: C1=Ok with one text ContentBlock; C2=typed Hand error;
+    // C3=indeterminate transport outcome. Effects: E1=snake_case status plus the
+    // lossless ContentBlock array; E2=typed error payload; E3=tag only. Decision
+    // rows R1/R2/R3 below lock the canonical ToolOutput wire rather than reviving
+    // the retired scalar-content compatibility shape.
     let ok = serde_json::to_value(HandResult::ok(ToolOutput::ok("c1", "hi"))).unwrap();
-    assert_eq!(ok["status"], "ok");
+    assert_eq!(ok["status"], "ok", "R1 status");
     assert_eq!(
         ok["output"]["content"],
-        serde_json::json!([{ "type": "text", "text": "hi" }])
+        serde_json::json!([{"type": "text", "text": "hi"}]),
+        "R1 content"
     );
 
     let err = serde_json::to_value(HandResult::err(HandError::new(
@@ -545,14 +547,14 @@ fn hand_result_serializes_with_an_internally_tagged_snake_case_status() {
         "drift",
     )))
     .unwrap();
-    assert_eq!(err["status"], "err");
-    assert_eq!(err["error"]["kind"], "fingerprint_mismatch");
-    assert_eq!(err["error"]["message"], "drift");
+    assert_eq!(err["status"], "err", "R2 status");
+    assert_eq!(err["error"]["kind"], "fingerprint_mismatch", "R2 kind");
+    assert_eq!(err["error"]["message"], "drift", "R2 message");
 
     let ind = serde_json::to_value(HandResult::Indeterminate).unwrap();
-    assert_eq!(ind["status"], "indeterminate");
+    assert_eq!(ind["status"], "indeterminate", "R3 status");
     // A unit-like variant carries no payload key beyond the tag.
-    assert_eq!(ind.as_object().unwrap().len(), 1);
+    assert_eq!(ind.as_object().unwrap().len(), 1, "R3 payload");
 }
 
 #[test]

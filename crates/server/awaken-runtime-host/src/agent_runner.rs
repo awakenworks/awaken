@@ -242,6 +242,7 @@ fn child_dispatch_request(
 ) -> Result<RunDispatch, AgentRunError> {
     let placement = crate::host::remote_worker_placement(
         &activation.snapshot.resolved_spec,
+        None,
         session_resources.as_ref(),
         false,
     );

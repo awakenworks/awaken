@@ -31,7 +31,6 @@ mod dispatch_backend;
 mod dispatch_transport;
 mod durable_ops;
 mod file_content_transport;
-mod hand_placement;
 mod host;
 mod hub;
 mod inference_routing;

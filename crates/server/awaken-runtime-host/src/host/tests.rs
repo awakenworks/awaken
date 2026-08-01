@@ -636,7 +636,7 @@ async fn attributed_run_meets_deployment_capture_with_control_consent() {
             user("hello"),
         );
         activation.data_subject_id = Some(awaken_runtime_contract::DataSubjectId(subject.into()));
-        let context = session.context_for(&activation).await.unwrap();
+        let context = session.context_for(&activation).await;
         assert_eq!(context.capture.decision.level, expected, "{rule}");
     }
 }
@@ -2728,11 +2728,7 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
         .unwrap();
     let ctx = host.ctx_for("deferred-hand", None).await.unwrap();
     assert!(ctx.env.is_none());
-    let hand = ctx
-        .hand_placement
-        .session_hand()
-        .expect("deferred hand")
-        .clone();
+    let hand = ctx.tool_executor.as_ref().expect("deferred hand").clone();
     let left = awaken_runtime_contract::tool::ToolCall {
         call_id: "read-left".into(),
         tool_id: "read".into(),
@@ -2780,11 +2776,7 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
         .await
         .unwrap();
     let ctx = host.ctx_for("deferred-failure", None).await.unwrap();
-    let hand = ctx
-        .hand_placement
-        .session_hand()
-        .expect("deferred hand")
-        .clone();
+    let hand = ctx.tool_executor.as_ref().expect("deferred hand").clone();
     let call = awaken_runtime_contract::tool::ToolCall {
         call_id: "read-failure".into(),
         tool_id: "read".into(),
@@ -4877,6 +4869,94 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
         ctx.config.resolved_spec.catalog_fingerprint.0,
         "sha256:published"
     );
+}
+
+#[tokio::test]
+async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
+    // Cause/effect graph: C1=remote A2A backend; C2=local Environment input.
+    // Effects: E1=A2A-only IO context has no Environment and no Hand;
+    // E2=A2A plus a local mount is rejected before provisioning; E3=adding a
+    // Native fallback makes the candidate set local-capable and retains an
+    // Environment. Constraint: inbound A2A is only a protocol adapter and does
+    // not alter this backend rule. Decision table: R1 C1&&!C2 -> no Environment;
+    // R2 C1&&C2 -> BadRequest; R3 C1+Native fallback -> one Environment/Hand.
+    let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("remote-agent")
+        .model(awaken_runtime_contract::resolved::ModelBinding::new(
+            "remote-agent",
+            "",
+            "a2a:https://agent.example.test",
+        ))
+        .build();
+    let host = SharedHost::new(Arc::new(OkModel), "host-default");
+    let ctx = host
+        .ctx_for_snapshot_with_sandbox(
+            "a2a-io-only",
+            Some("remote-agent"),
+            Some(snapshot.clone()),
+            None,
+        )
+        .await
+        .expect("R1 A2A context");
+    assert!(ctx.env.is_none(), "R1 Environment");
+    assert!(ctx.tool_executor.is_none(), "R1 Hand");
+    assert!(
+        host.session_environment("a2a-io-only").await.is_none(),
+        "R1 owner"
+    );
+
+    host.register_thread_resources(
+        "a2a-with-mount",
+        crate::provisioning::StagedResources {
+            mounts: vec![awaken_provisioning_contract::MountRequirement {
+                mount_id: "input".into(),
+                source: awaken_provisioning_contract::MountSource::File {
+                    file_id: "file".into(),
+                    content_hash: None,
+                },
+                mount_path: "/workspace/input".into(),
+                access: awaken_provisioning_contract::MountAccess::ReadOnly,
+                lifetime: awaken_provisioning_contract::MountLifetime::Session,
+                required: true,
+            }],
+            ..Default::default()
+        },
+    );
+    let error = match host
+        .ctx_for_snapshot_with_sandbox("a2a-with-mount", Some("remote-agent"), Some(snapshot), None)
+        .await
+    {
+        Ok(_) => panic!("R2 local input was accepted"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, crate::host::HostErrorKind::BadRequest, "R2");
+    assert!(
+        host.session_environment("a2a-with-mount").await.is_none(),
+        "R2"
+    );
+
+    let mixed = awaken_runtime_contract::ExecutableAgentSnapshot::builder("mixed-agent")
+        .model(awaken_runtime_contract::resolved::ModelBinding::new(
+            "remote-agent",
+            "",
+            "a2a:https://agent.example.test",
+        ))
+        .model_candidates([awaken_runtime_contract::resolved::ModelBinding::new(
+            "native-fallback",
+            "native-model",
+            "native",
+        )])
+        .build();
+    let ctx = host
+        .ctx_for_snapshot_with_sandbox(
+            "a2a-native-fallback",
+            Some("mixed-agent"),
+            Some(mixed),
+            None,
+        )
+        .await
+        .expect("R3 mixed candidate context");
+    assert!(ctx.env.is_some(), "R3 Environment");
+    assert!(ctx.tool_executor.is_some(), "R3 Hand");
 }
 
 #[test]

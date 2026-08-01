@@ -642,7 +642,7 @@ impl crate::SharedHost {
         thread: &str,
         environment: &awaken_session_contract::EnvironmentSnapshot,
     ) -> Result<(), crate::HostError> {
-        let projection = decode_environment_projection(environment);
+        let projection = crate::provisioning::project_environment(environment);
         if let Some(existing) = self
             .session_slots
             .read(thread, |slot| slot.environment_projection.clone())
@@ -743,63 +743,6 @@ fn decode_baseline_projection(
     })
 }
 
-fn decode_environment_projection(
-    environment: &awaken_session_contract::EnvironmentSnapshot,
-) -> crate::session_slot::FrozenEnvironmentRuntimeProjection {
-    let network = match &environment.network {
-        awaken_session_contract::SessionNetworkPolicy::Unrestricted => {
-            awaken_provisioning_contract::NetworkPolicy::Unrestricted
-        }
-        awaken_session_contract::SessionNetworkPolicy::Allowlist { hosts } => {
-            awaken_provisioning_contract::NetworkPolicy::Allowlist {
-                hosts: hosts.clone(),
-            }
-        }
-        awaken_session_contract::SessionNetworkPolicy::None => {
-            awaken_provisioning_contract::NetworkPolicy::None
-        }
-    };
-    let packages = environment.prepared_image.as_ref().map_or_else(
-        || awaken_provisioning_contract::PackageRequirements {
-            managers: environment
-                .packages
-                .manager_packages()
-                .into_iter()
-                .filter(|(_, packages)| !packages.is_empty())
-                .map(|(manager, packages)| (manager.to_owned(), packages.to_vec()))
-                .collect(),
-            resolution_id: Some(format!(
-                "{}:{}",
-                environment.environment_id, environment.revision.0
-            )),
-        },
-        |_| awaken_provisioning_contract::PackageRequirements::default(),
-    );
-    let mut sandbox =
-        awaken_provisioning_contract::SandboxOverride::from_config_value(&environment.sandbox)
-            .and_then(|mut sandbox| {
-                // EnvironmentSnapshot.network is the sole reachability authority. Old
-                // retained blobs may still contain the pre-normalization sandbox.network
-                // field; ignoring it is fail-stable and prevents a late widening override.
-                sandbox.network = None;
-                (!sandbox.is_empty()).then_some(sandbox)
-            });
-    if let Some(image) = &environment.prepared_image {
-        sandbox.get_or_insert_with(Default::default).environment =
-            Some(awaken_provisioning_contract::EnvironmentKind::Image {
-                reference: image.clone(),
-            });
-    }
-    crate::session_slot::FrozenEnvironmentRuntimeProjection {
-        fingerprint: environment.config_fingerprint.clone(),
-        network,
-        packages,
-        sandbox,
-        provisioning: environment.sandbox_provisioning,
-        credential_realization: environment.credential_realization.clone(),
-    }
-}
-
 fn validate_baseline_projection(
     baseline: &crate::session_slot::FrozenBaselineRuntimeProjection,
     built_in_mounts: &[awaken_provisioning_contract::MountRequirement],
@@ -838,8 +781,6 @@ fn validate_baseline_projection(
 
 #[cfg(test)]
 mod network_policy_tests {
-    use super::*;
-
     /// Cause/effect graph: a Worker authors the canonical Session input directly;
     /// an exact credential reference is retained, no plaintext secret is added,
     /// and the network restriction is not translated by Runtime Host.
@@ -905,7 +846,7 @@ mod network_policy_tests {
             credential_realization:
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
         };
-        let projected = decode_environment_projection(&environment);
+        let projected = crate::provisioning::project_environment(&environment);
         assert_eq!(
             projected.packages.managers,
             [
@@ -923,7 +864,7 @@ mod network_policy_tests {
 
         let mut prepared = environment;
         prepared.prepared_image = Some("registry/awaken@sha256:prepared".into());
-        let projected = decode_environment_projection(&prepared);
+        let projected = crate::provisioning::project_environment(&prepared);
         assert!(projected.packages.is_empty(), "R2");
         assert!(matches!(
             projected.sandbox.and_then(|value| value.environment),

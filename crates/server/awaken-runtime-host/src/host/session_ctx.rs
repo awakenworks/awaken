@@ -49,10 +49,9 @@ pub(crate) struct SessionCtx {
     /// Session lifetime for the ACP-facing projection of the configured
     /// WebSearch RawTool. Native sessions leave this empty.
     pub(crate) _web_search_mcp: Option<crate::AcpToolExport>,
-    /// Where this session's runs execute tool calls (ADR-0044/0046), cloned from
-    /// `SharedHost::hand_placement` at session creation: the session-wide remote hand
-    /// and the per-run placement provider, behind one type owning their precedence.
-    pub(crate) hand_placement: crate::hand_placement::HandPlacement,
+    /// The one executor owned by this Session's Environment. `None` is valid only
+    /// for a brain-only/A2A session that has no Sandbox-target tool execution.
+    pub(crate) tool_executor: Option<Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>,
     /// Subject-tagged captured-content sink for this session (ADR-0050), from
     /// the host. `None` = content is recorded to spans only.
     pub(crate) capture_sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
@@ -140,10 +139,8 @@ impl SessionCtx {
         for plugin in &self.session_plugins {
             ctx = ctx.with_session_plugin(plugin.clone());
         }
-        // ADR-0044: route this run's tool calls to the host's remote hand, if one
-        // is wired; otherwise the kernel's in-process LocalToolExecutor runs them.
-        if let Some(hand) = self.hand_placement.session_hand() {
-            ctx = ctx.with_tool_executor(hand.clone());
+        if let Some(executor) = &self.tool_executor {
+            ctx = ctx.with_tool_executor(executor.clone());
         }
         for observer in &self.terminal_observers {
             ctx = ctx.with_terminal_observer(observer.clone());
@@ -151,14 +148,8 @@ impl SessionCtx {
         ctx
     }
 
-    /// A run context whose tool executor is chosen per run by the host's
-    /// [`ToolExecutorProvider`] (ADR-0046). When a provider is installed and
-    /// places this run (returns `Some`), its executor overrides the session-wide
-    /// `remote_hand`; otherwise this is exactly [`context`](Self::context).
-    pub(crate) async fn context_for(
-        &self,
-        activation: &RunActivation,
-    ) -> Result<RuntimeRunContext, awaken_runtime_contract::tool::ToolExecutorSelectionError> {
+    /// Build the attempt-scoped context while preserving the Session-owned Hand.
+    pub(crate) async fn context_for(&self, activation: &RunActivation) -> RuntimeRunContext {
         let mut ctx = self.context();
         if let Some(subject) = activation.data_subject_id.clone() {
             let consent = self
@@ -171,9 +162,6 @@ impl SessionCtx {
                 None => ctx.with_data_subject(subject),
             };
         }
-        if let Some(executor) = self.hand_placement.placed(activation).await? {
-            ctx = ctx.with_tool_executor(executor);
-        }
-        Ok(ctx)
+        ctx
     }
 }
