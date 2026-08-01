@@ -38,6 +38,9 @@ PUBLISHED_CONDITIONAL_MIGRATION_SHA256: dict[str, str] = {
     "V0016__drop_legacy_delegation_group.sql": (
         "05badef821e61ad295baa783f2c25e5e4c09e5399abcf8a12b9b4086bc806f18"
     ),
+    "crates/server/awaken-sandbox-policy-store/src/lib.rs": (
+        "81304da44eff5828b41292906822e62ee9fc6b832275f1a8b2b6780d5793830e"
+    ),
     "crates/stores/awaken-store-postgres/src/migrations/"
     "V0001__commit_sequence.sql": (
         "51791c4a9e609283367e1cfe9faa25482bc3290c9a700eaf42697c080d3268b1"

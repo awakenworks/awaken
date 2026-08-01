@@ -22,12 +22,17 @@ fn sandbox_policy_bundle() -> Result<MigrationBundle, MigrationError> {
             Migration::new(
                 1,
                 "immutable sandbox execution policy versions",
-                "CREATE TABLE {prefix}_version (policy_id TEXT NOT NULL, version BIGINT NOT NULL, policy_json TEXT NOT NULL, PRIMARY KEY(policy_id, version))",
+                "CREATE TABLE IF NOT EXISTS {prefix}_version (policy_id TEXT NOT NULL, version BIGINT NOT NULL, policy_json TEXT NOT NULL, PRIMARY KEY(policy_id, version))",
             )?,
             Migration::new(
                 2,
                 "current sandbox execution policy version",
-                "CREATE TABLE {prefix}_current (policy_id TEXT PRIMARY KEY, version BIGINT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS {prefix}_current (policy_id TEXT PRIMARY KEY, version BIGINT NOT NULL)",
+            )?,
+            Migration::new(
+                3,
+                "exact environment sandbox execution policy binding",
+                "CREATE TABLE IF NOT EXISTS {prefix}_environment (environment_id TEXT PRIMARY KEY, policy_id TEXT NOT NULL, version BIGINT NOT NULL)",
             )?,
         ],
     )
