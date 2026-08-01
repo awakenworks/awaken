@@ -128,6 +128,47 @@ pub fn config_bundle() -> Result<MigrationBundle, MigrationError> {
             INSERT OR IGNORE INTO {prefix}_agent_revision (scope_id, id, generation, data) \
               VALUES (NEW.scope_id, NEW.id, NEW.generation, NEW.data); END",
     )?);
+    migrations.push(Migration::per_dialect(
+        10,
+        "agent configs and publications: identity is scoped, not globally first-writer-owned",
+        "ALTER TABLE {prefix}_agent DROP CONSTRAINT {prefix}_agent_pkey; \
+         ALTER TABLE {prefix}_agent ADD PRIMARY KEY (scope_id, id); \
+         ALTER TABLE {prefix}_publication DROP CONSTRAINT {prefix}_publication_pkey; \
+         ALTER TABLE {prefix}_publication ADD PRIMARY KEY (scope_id, fingerprint)",
+        "DROP TRIGGER {prefix}_agent_revision_insert; \
+         DROP TRIGGER {prefix}_agent_revision_update; \
+         ALTER TABLE {prefix}_agent RENAME TO {prefix}_agent_unscoped; \
+         CREATE TABLE {prefix}_agent (\
+            id TEXT NOT NULL, data TEXT NOT NULL, \
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, \
+            scope_id TEXT NOT NULL DEFAULT 'default', \
+            generation BIGINT NOT NULL DEFAULT 1, \
+            PRIMARY KEY (scope_id, id)); \
+         INSERT INTO {prefix}_agent (id, data, created_at, scope_id, generation) \
+            SELECT id, data, created_at, scope_id, generation \
+            FROM {prefix}_agent_unscoped ORDER BY rowid; \
+         DROP TABLE {prefix}_agent_unscoped; \
+         CREATE TRIGGER {prefix}_agent_revision_insert AFTER INSERT ON {prefix}_agent BEGIN \
+            INSERT INTO {prefix}_agent_revision (scope_id, id, generation, data) \
+              VALUES (NEW.scope_id, NEW.id, NEW.generation, NEW.data); END; \
+         CREATE TRIGGER {prefix}_agent_revision_update AFTER UPDATE ON {prefix}_agent \
+            WHEN OLD.generation <> NEW.generation BEGIN \
+            INSERT INTO {prefix}_agent_revision (scope_id, id, generation, data) \
+              VALUES (NEW.scope_id, NEW.id, NEW.generation, NEW.data); END; \
+         ALTER TABLE {prefix}_publication RENAME TO {prefix}_publication_unscoped; \
+         CREATE TABLE {prefix}_publication (\
+            fingerprint TEXT NOT NULL, agent_id TEXT NOT NULL, state TEXT NOT NULL, \
+            record TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, \
+            scope_id TEXT NOT NULL DEFAULT 'default', \
+            PRIMARY KEY (scope_id, fingerprint)); \
+         INSERT INTO {prefix}_publication \
+            (fingerprint, agent_id, state, record, created_at, scope_id) \
+            SELECT fingerprint, agent_id, state, record, created_at, scope_id \
+            FROM {prefix}_publication_unscoped ORDER BY rowid; \
+         DROP TABLE {prefix}_publication_unscoped; \
+         CREATE INDEX {prefix}_publication_created_at_idx \
+            ON {prefix}_publication (created_at)",
+    )?);
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
@@ -140,8 +181,8 @@ mod tests {
         // Cause/effect decision table: an exact historical conditional body with
         // its published checksum remains loadable; a changed/new conditional body
         // is rejected by migration fitness; later migrations use the ledger as
-        // their only idempotency guard. All nine historical versions must remain.
+        // their only idempotency guard. All ten historical versions must remain.
         let bundle = config_bundle().expect("deterministic config bundle");
-        assert_eq!(bundle.migrations().len(), 9);
+        assert_eq!(bundle.migrations().len(), 10);
     }
 }

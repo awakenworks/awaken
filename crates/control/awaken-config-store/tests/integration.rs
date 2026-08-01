@@ -322,10 +322,10 @@ fn published_is_idempotent_for_the_same_snapshot() {
 // --- CEG 03 / B8 (ScopedConfig decorator) ------------------------------------
 
 #[tokio::test]
-async fn scoped_config_isolates_writes_and_lists_across_scopes() {
+async fn scoped_config_isolates_portable_same_id_rows_across_scopes() {
     // B8(a)+(b)+(d): the decorator binds one scope and exposes the scope-free port.
-    // A write under scope A is invisible to scope B's get *and* list, and B cannot
-    // clobber A's row of the same id.
+    // Before B writes, A's row is invisible to B. B may then own the same portable
+    // id independently without clobbering A's data.
     let store = Arc::new(SqliteConfigStore::open_in_memory().expect("store"));
     let a = ScopedConfig::new(store.clone(), ScopeId::from("ws_a"));
     let b = ScopedConfig::new(store.clone(), ScopeId::from("ws_b"));
@@ -345,10 +345,26 @@ async fn scoped_config_isolates_writes_and_lists_across_scopes() {
     // (d) get isolation.
     assert!(b.get_config("shared").await.expect("get b").is_none());
 
-    // (b) B cannot clobber A's row of the same id (conflict guard → no-op).
-    b.put_config(&scoped_agent("shared")).await.expect("put b");
-    assert!(a.get_config("shared").await.expect("get a").is_some());
-    assert!(b.get_config("shared").await.expect("get b").is_none());
+    // (b) The composite scope/id identity creates B's independent row.
+    b.put_config(&agent_with("shared", "B-data"))
+        .await
+        .expect("put b");
+    assert_eq!(
+        a.get_config("shared")
+            .await
+            .expect("get a")
+            .expect("row a")
+            .instructions,
+        "be helpful"
+    );
+    assert_eq!(
+        b.get_config("shared")
+            .await
+            .expect("get b")
+            .expect("row b")
+            .instructions,
+        "B-data"
+    );
 }
 
 #[tokio::test]
@@ -442,9 +458,9 @@ async fn scoped_migration_captures_immutable_agent_revisions() {
 }
 
 #[tokio::test]
-async fn a_cross_scope_write_leaves_the_owners_data_intact() {
-    // The isolation fence must protect DATA, not merely visibility: a foreign scope's
-    // write to the owner's id is a no-op even when it carries different data.
+async fn same_agent_id_has_independent_data_and_revision_history_per_scope() {
+    // The isolation fence protects DATA while allowing a portable id in each
+    // scope. Updating B must not modify A or share A's generation history.
     let store = SqliteConfigStore::open_in_memory().expect("store");
     let a = ScopeId::from("ws_a");
     let b = ScopeId::from("ws_b");
@@ -452,7 +468,7 @@ async fn a_cross_scope_write_leaves_the_owners_data_intact() {
         .put_config_scoped(&a, &agent_with("x", "A-data"))
         .await
         .expect("put a");
-    // ws_b tries to hijack id "x" with different data — the conflict guard blocks it.
+    // ws_b authors its own id "x" with different data.
     store
         .put_config_scoped(&b, &agent_with("x", "B-data"))
         .await
@@ -462,13 +478,28 @@ async fn a_cross_scope_write_leaves_the_owners_data_intact() {
         .await
         .expect("get a")
         .expect("row a");
-    assert_eq!(owner.instructions, "A-data"); // untouched by the foreign write
-    assert!(
+    assert_eq!(owner.instructions, "A-data");
+    let other = store
+        .get_config_scoped(&b, "x")
+        .await
+        .expect("get b")
+        .expect("row b");
+    assert_eq!(other.instructions, "B-data");
+    assert_eq!(
         store
-            .get_config_scoped(&b, "x")
+            .list_config_revisions_scoped(&a, "x")
             .await
-            .expect("get b")
-            .is_none()
+            .expect("a revisions")
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .list_config_revisions_scoped(&b, "x")
+            .await
+            .expect("b revisions")
+            .len(),
+        1
     );
 }
 
@@ -554,11 +585,10 @@ async fn a_publication_written_under_scope_a_is_invisible_to_scope_b() {
 }
 
 #[tokio::test]
-async fn a_publication_fingerprint_belongs_to_its_first_writer_across_scopes() {
-    // Fingerprints are global content addresses (the publication PK), so two scopes
-    // compiling the same config collide. ON CONFLICT(fingerprint) DO NOTHING means the
-    // first writer owns the row: B's identical write is a silent no-op and B still
-    // cannot read it — a fail-safe (no cross-tenant leak), never a takeover.
+async fn the_same_publication_fingerprint_can_be_owned_independently_by_each_scope() {
+    // A fingerprint is a content address, not a tenancy coordinate. Two scopes may
+    // publish the same immutable bytes; the composite key keeps both ownership rows
+    // isolated while preserving idempotency within each scope.
     let store = Arc::new(SqliteConfigStore::open_in_memory().expect("store"));
     let a = ScopedConfig::new(store.clone(), ScopeId::from("ws_a"));
     let b = ScopedConfig::new(store.clone(), ScopeId::from("ws_b"));
@@ -566,7 +596,7 @@ async fn a_publication_fingerprint_belongs_to_its_first_writer_across_scopes() {
     let pub_b = publication_for(&agent_with("shared", "same-bytes"));
     assert_eq!(pub_a.fingerprint, pub_b.fingerprint); // content-addressed → identical
     a.put_publication(&pub_a).await.expect("put a");
-    b.put_publication(&pub_b).await.expect("put b (no-op)");
+    b.put_publication(&pub_b).await.expect("put b");
     assert!(
         a.get_publication(&pub_a.fingerprint)
             .await
@@ -577,7 +607,7 @@ async fn a_publication_fingerprint_belongs_to_its_first_writer_across_scopes() {
         b.get_publication(&pub_b.fingerprint)
             .await
             .expect("get b")
-            .is_none()
+            .is_some()
     );
 }
 

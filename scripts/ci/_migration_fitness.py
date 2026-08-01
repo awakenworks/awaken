@@ -32,7 +32,7 @@ PUBLISHED_CONDITIONAL_MIGRATION_SHA256: dict[str, str] = {
         "76ead211069b2c6e63df28828230ade1878aa3610223b623960af1290c31bf59"
     ),
     "crates/control/awaken-config-store/src/schema.rs": (
-        "59b9094d57e42e6cc652af115eef7b5ccfb50f6f3ba3f3982cca31c0a64092a5"
+        "74bb948d2064c31ebb4ae4a76d0a3d6854931960875f1e1aebc5f4c13e646785"
     ),
     "crates/server/awaken-run-ingress/src/migrations/"
     "V0016__drop_legacy_delegation_group.sql": (

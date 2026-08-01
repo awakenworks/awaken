@@ -315,8 +315,10 @@ async fn authority_loss_terminates_the_incarnation_for_supervisor_restart() {
     // error so the process supervisor creates a fresh registered incarnation.
     // A3 no external shutdown signal -> A2 must still terminate by itself.
     let upstream = FakeWorkerUpstream::start_rejecting_periodic_heartbeat();
-    let mut coordinator_defaults = awaken_runtime_host::DeploymentConfig::ephemeral();
-    coordinator_defaults.disable_local_pool = true;
+    // The fixture validates Worker authority, not host sandbox discovery. Bind
+    // the hermetic Local tier explicitly so a machine without bwrap reaches A2
+    // while the production Namespace default remains fail-closed.
+    let coordinator_defaults = local_coordinator_deployment();
     let result = tokio::time::timeout(
         Duration::from_secs(15),
         WorkerNodeBuilder::new(

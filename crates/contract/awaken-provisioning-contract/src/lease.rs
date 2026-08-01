@@ -91,6 +91,24 @@ pub struct LivenessSignals {
     pub transport_lost: bool,
 }
 
+/// Cap credential expiry at both its own TTL and the owning Sandbox lease.
+/// An expired lease therefore produces an already-expired credential instead
+/// of extending authority beyond the lease boundary.
+#[must_use]
+pub fn capped_expiry(default_ttl_ms: u64, now_ms: u64, grant: &LeaseGrant) -> u64 {
+    let credential_expiry = now_ms.saturating_add(default_ttl_ms);
+    grant.expires_ms.map_or(credential_expiry, |lease_expiry| {
+        credential_expiry.min(lease_expiry)
+    })
+}
+
+/// Re-check the lease at the outbound side-effect boundary. Revocation and an
+/// elapsed deadline both fail closed; this check never renews the lease.
+#[must_use]
+pub fn egress_permitted(grant: &LeaseGrant, now_ms: u64, revoked: bool) -> bool {
+    !revoked && !matches!(grant.liveness(now_ms, 0), LeaseLiveness::Reapable)
+}
+
 /// Decide whether to reap a leased sandbox, collapsing the signals with the fixed
 /// priority **Revoked > Expired(deadline) > TransportLost** (awaken-next parity): a
 /// revoke always wins; else a passed deadline; else a lost transport; else keep it
@@ -218,6 +236,28 @@ mod verification {
     use super::*;
 
     #[kani::proof]
+    fn credential_expiry_never_exceeds_lease_or_own_ttl() {
+        let now = kani::any::<u64>();
+        let ttl = kani::any::<u64>();
+        let lease_expiry = kani::any::<u64>();
+        let grant = LeaseGrant::until(lease_expiry);
+        let expiry = capped_expiry(ttl, now, &grant);
+        assert!(expiry <= lease_expiry);
+        assert!(expiry <= now.saturating_add(ttl));
+    }
+
+    #[kani::proof]
+    fn revoked_or_expired_lease_always_denies_egress() {
+        let now = kani::any::<u64>();
+        let expiry = kani::any::<u64>();
+        let revoked = kani::any::<bool>();
+        let grant = LeaseGrant::until(expiry);
+        if revoked || now >= expiry {
+            assert!(!egress_permitted(&grant, now, revoked));
+        }
+    }
+
+    #[kani::proof]
     fn reap_reason_obeys_fixed_fail_closed_priority() {
         let now = kani::any::<u64>();
         let expiry = kani::any::<u64>();
@@ -268,6 +308,29 @@ mod tests {
         assert_eq!(g.liveness(950, 100), LeaseLiveness::Expiring);
         assert_eq!(g.liveness(1_000, 100), LeaseLiveness::Reapable);
         assert_eq!(g.liveness(1_200, 100), LeaseLiveness::Reapable);
+    }
+
+    #[test]
+    fn credential_expiry_is_bounded_by_ttl_and_lease() {
+        let grant = LeaseGrant::until(1_000);
+        assert_eq!(capped_expiry(500, 800, &grant), 1_000);
+        assert_eq!(capped_expiry(100, 800, &grant), 900);
+        assert_eq!(capped_expiry(500, 800, &LeaseGrant::indefinite()), 1_300);
+        assert_eq!(
+            capped_expiry(u64::MAX, u64::MAX, &LeaseGrant::until(1_000)),
+            1_000
+        );
+        assert_eq!(capped_expiry(500, 2_000, &grant), 1_000);
+    }
+
+    #[test]
+    fn revoked_or_expired_lease_denies_egress() {
+        let grant = LeaseGrant::until(1_000);
+        assert!(egress_permitted(&grant, 500, false));
+        assert!(!egress_permitted(&grant, 500, true));
+        assert!(!egress_permitted(&grant, 1_500, false));
+        assert!(egress_permitted(&LeaseGrant::indefinite(), u64::MAX, false));
+        assert!(!egress_permitted(&LeaseGrant::indefinite(), u64::MAX, true));
     }
 
     #[test]
