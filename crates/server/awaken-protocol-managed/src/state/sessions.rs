@@ -1860,6 +1860,11 @@ impl ManagedState {
     /// terminal transition (not just the mutated status field). Idempotent: a
     /// re-archive returns the same terminal record without a second event.
     pub async fn archive_session(&self, id: &str) -> Result<Session, StateError> {
+        // Archive is part of terminal cleanup and may be retried by a restarted
+        // application after its in-memory Session index has been lost. Recover
+        // the durable tombstone candidate before consulting that cache so the
+        // operation remains idempotent across process boundaries.
+        self.ensure_session(id).await?;
         let (mut newly_terminated, child_threads) = {
             let sessions = self.sessions.lock().unwrap();
             let record = sessions.get(id).ok_or(StateError::NotFound)?;
