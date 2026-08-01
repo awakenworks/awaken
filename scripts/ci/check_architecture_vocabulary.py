@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Keep active architecture documents on one service-boundary vocabulary.
 
-Historical ADR text is append-only and intentionally excluded. ADR-0071 and the
+Historical ADR text is append-only and intentionally excluded. ADR-0072 and the
 current design documents own the replacement vocabulary; navigation and wiki
 documents may link to those owners but may not revive a retired implementation
 path.
@@ -16,7 +16,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCS = REPO_ROOT / "docs"
 CURRENT_ADR = DOCS / "adr" / (
-    "0071-distributed-service-boundaries-and-executable-agent-registration.md"
+    "0072-environment-definition-and-execution-boundary.md"
 )
 
 FORBIDDEN = {
@@ -52,12 +52,10 @@ CANONICAL_REQUIREMENTS = {
         "### Modified",
         "### New boundary code",
     ),
-    Path(
-        "docs/adr/0071-distributed-service-boundaries-and-executable-agent-registration.md"
-    ): (
-        "ExecutableAgentRegistrar::register",
-        "deployment_run_id",
-        "No whole-catalog installation track",
+    Path("docs/adr/0072-environment-definition-and-execution-boundary.md"): (
+        "ExecutableEnvironmentRegistrar::register",
+        "EnvironmentDefinition",
+        "ExecutableEnvironmentCatalog",
     ),
 }
 
