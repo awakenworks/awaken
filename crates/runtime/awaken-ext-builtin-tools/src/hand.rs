@@ -265,11 +265,20 @@ impl Tool for BashTool {
         "bash"
     }
     async fn call(&self, args: BashArgs) -> Result<String, ToolError> {
-        let mut command = platform_shell_command(&args.command);
-        let shell = command.get_program().to_string_lossy().into_owned();
-        let output = command
-            .output()
-            .map_err(|err| ToolError::Execution(format!("spawn {shell}: {err}")))?;
+        // `std::process::Command::output` blocks until the child exits. Running it
+        // on a Tokio worker starves unrelated authority heartbeats and lease
+        // renewal when several Agents compile concurrently. Keep the intentionally
+        // synchronous process implementation, but isolate that wait on Tokio's
+        // blocking pool so control-plane liveness remains schedulable.
+        let output = tokio::task::spawn_blocking(move || {
+            let mut command = platform_shell_command(&args.command);
+            let shell = command.get_program().to_string_lossy().into_owned();
+            command
+                .output()
+                .map_err(|err| ToolError::Execution(format!("spawn {shell}: {err}")))
+        })
+        .await
+        .map_err(|err| ToolError::Execution(format!("bash worker failed: {err}")))??;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         if output.status.success() {
@@ -283,6 +292,39 @@ impl Tool for BashTool {
                 "command exited {code}\nstdout:\n{stdout}\nstderr:\n{stderr}"
             )))
         }
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod bash_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn bash_wait_does_not_starve_runtime_control_tasks() {
+        // A long local command must yield the sole async runtime thread. Worker
+        // heartbeat and dispatch renewal use the same scheduling path in the
+        // served runtime, so blocking here previously expired both authorities.
+        let control_task_ran = Arc::new(AtomicBool::new(false));
+        let observed = control_task_ran.clone();
+        let control = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            observed.store(true, Ordering::SeqCst);
+        });
+
+        BashTool
+            .call(BashArgs {
+                command: "sleep 0.15".into(),
+            })
+            .await
+            .expect("sleep command");
+
+        assert!(control_task_ran.load(Ordering::SeqCst));
+        control.await.expect("control task");
     }
 }
 
