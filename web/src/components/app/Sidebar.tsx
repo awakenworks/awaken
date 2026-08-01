@@ -1,6 +1,7 @@
 import { useLocation, useNavigate } from "react-router";
-import { NAV, navPath, type NavGroup, type NavItem } from "../../lib/navigation/paths";
-import { useApp } from "../../lib/app-state";
+import { navPath, visibleNavigation, type NavGroup, type NavItem } from "../../lib/navigation/paths";
+import { useApp, workspaceLabel } from "../../lib/app-state";
+import { useConfigCapabilities } from "../../lib/useConfigCapabilities";
 
 const GROUP_CAPTIONS: Record<NavGroup, [string, string]> = {
   workspace: ["Workspace", "工作区"],
@@ -28,16 +29,19 @@ function SidebarItem({ item }: { item: NavItem }) {
 
 export default function Sidebar() {
   const app = useApp();
+  const capabilities = useConfigCapabilities();
+  const byokEnabled = capabilities.data?.models.byok_enabled === true;
+  const navigation = visibleNavigation(byokEnabled);
   const groups: NavGroup[] = ["workspace", "build", "run", "supply", "govern"];
   return (
     <aside className="sidebar">
-      <div className="nav-caption">
-        {app.t("Workspace", "工作区")} · {app.workspaceId}
+      <div className="nav-caption" title={app.workspaceId}>
+        {app.t("Workspace", "工作区")} · {workspaceLabel(app.workspaceId)}
       </div>
       {groups.map((group) => (
         <div key={group} className="nav-group">
           <div className="nav-caption">{app.t(...GROUP_CAPTIONS[group])}</div>
-          {NAV.filter((item) => item.group === group).map((item) => (
+          {navigation.filter((item) => item.group === group).map((item) => (
             <SidebarItem key={item.key} item={item} />
           ))}
         </div>

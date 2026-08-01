@@ -11,6 +11,15 @@ export type Locale = "en" | "zh";
 /** The default scope: addresses the flat `/v1/…` surface (DEFAULT_SCOPE). */
 export const DEFAULT_WS = "default";
 
+/** Human presentation for an opaque Workspace coordinate. Hosted personal
+ * scopes must not leak account-length identifiers into product chrome. */
+export function workspaceLabel(id: string): string {
+  if (!id || id === DEFAULT_WS) return "Default";
+  if (id.startsWith("awaken:personal:")) return "Personal Workspace";
+  if (id.length <= 28) return id;
+  return `${id.slice(0, 12)}…${id.slice(-8)}`;
+}
+
 interface AppState {
   /** The active workspace (tenancy scope). `DEFAULT_WS` = the flat default scope. */
   workspaceId: string;

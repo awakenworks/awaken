@@ -33,6 +33,17 @@ export const NAV: NavItem[] = [
   { key: "settings", label: "Settings", labelZh: "设置", group: "govern", path: "/w/:ws/settings" },
 ];
 
+/** Capability-derived navigation projection. The backend remains the security
+ * boundary; this removes deployment-inapplicable tasks without creating a
+ * second Cloud/local mode flag in the browser. */
+export function visibleNavigation(byokEnabled: boolean): NavItem[] {
+  return NAV.filter((item) => byokEnabled || item.key !== "credentials").map((item) =>
+    !byokEnabled && item.key === "models"
+      ? { ...item, label: "Models", labelZh: "模型" }
+      : item,
+  );
+}
+
 export function navPath(item: NavItem, workspaceId: string): string {
   return item.path.replace(":ws", workspaceId || "default");
 }

@@ -4,7 +4,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { Navigate, useNavigate } from "react-router";
 import { api, ws } from "../lib/api/client";
 import type {
   CredentialSource,
@@ -12,7 +12,8 @@ import type {
   ProviderCatalog,
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, Modal, Pill, SecretField } from "../components/ui";
+import { useConfigCapabilities } from "../lib/useConfigCapabilities";
+import { Button, Card, Modal, Pill, SecretField, Skeleton } from "../components/ui";
 
 const CLAUDE_CODE_SETUP_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 
@@ -92,15 +93,19 @@ export default function CredentialsSurface() {
   const workspace = app.workspaceId;
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const capabilities = useConfigCapabilities();
+  const byokEnabled = capabilities.data?.models.byok_enabled === true;
   const [addingSetupToken, setAddingSetupToken] = useState(false);
   const [setupToken, setSetupToken] = useState("");
   const sources = useQuery({
     queryKey: ["credentials", workspace],
     queryFn: () => api.get<CredentialSource[]>(ws(`/v1/config/credentials?workspace_id=${workspace}`)),
+    enabled: byokEnabled,
   });
   const catalog = useQuery({
     queryKey: ["catalog", workspace],
     queryFn: () => api.get<ProviderCatalog>(ws("/v1/config/catalog")),
+    enabled: byokEnabled,
   });
   const addSetupToken = useMutation({
     mutationFn: () =>
@@ -117,6 +122,8 @@ export default function CredentialsSurface() {
       void qc.invalidateQueries({ queryKey: ["credentials", workspace] });
     },
   });
+  if (capabilities.isLoading) return <Skeleton height={80} />;
+  if (!byokEnabled) return <Navigate replace to={`/w/${workspace}/models`} />;
   return (
     <>
       <div className="banner info">

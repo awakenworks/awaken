@@ -77,6 +77,26 @@ Project 解析为一个已授权的 awaken Workspace 请求。Project 和 WorkUn
   首次使用流程不引导用户开启。
 - Admin assistant 使用浮层，不成为另一种作用域或资源所有者。
 
+### 3.1 部署能力决定供给呈现
+
+本地和 Cloud 使用同一模型目录与发布契约，但不向用户呈现相同的基础设施任务：
+
+| 部署能力 | 模型目录 | 推理凭证 / Provider 连接 | Endpoint / Dialect | 模型测试 |
+|---|---|---|---|---|
+| 本地 / BYOK | 显示已发现模型 | 显示并允许配置 | 作为高级连接事实显示 | 建立临时 Session，自动发送一次真实请求；失败可重试 |
+| Cloud 托管 | 按原始 Provider 分组显示全部已发布模型 | 不显示；由 Cloud 托管 | 不显示；属于运维路由事实 | 不提供连接配置测试；实际 Agent Run 是用户可执行验证，健康探测属于 Cloud Operations |
+
+`ConfigCapabilitiesView.models` 是唯一呈现开关。前端不得根据域名、环境变量或
+目录内容猜测部署模式，也不得另存一份 `is_cloud` 状态。Cloud 模型列表是
+Cloud 已确认 Provider 路由的只读投影；隐藏 Endpoint 和凭证不会改变发布或
+执行事实。
+
+模型测试只在 `byok_enabled=true` 时出现。它不是目录健康检查：创建临时
+Session 后必须自动提交一条固定的无工具测试消息，并显示创建中、执行中、失败和
+重试结果。Cloud Hosted 的模型健康由 Fleet / Provider Operations 观测，普通用户
+通过正常 Agent Run 验证使用结果，不能从管理 UI 绕过 Hosted admission、配额或
+计费边界直连 Provider。
+
 ## 4. 路由和寻址
 
 | 用途 | 路径 | Workspace 来源 |
@@ -145,6 +165,10 @@ Repository 是可变资源，只 pin 它们的配置版本，不 pin 内部内�
 - append-only 事件 reducer 只投影已提交事实。
 - secret 创建只显示一次；列表、详情、日志和 telemetry 永不回显明文。
 - capability/authorization 结果用于 UX，服务端拒绝仍是最终事实。
+- `byok_enabled=false` 时隐藏推理凭证、Provider 连接和网络路由细节；直接访问旧
+  凭证 URL 回到 Models，不形成第二套 Hosted 凭证页面。
+- Workspace 标题只显示人类可读标签或有界缩略值；完整 opaque id 仅保留在
+  `title`/诊断上下文中。侧栏在所有断点禁止横向滚动。
 - 未提供的后端能力以明确 capability gate 展示，不发明占位领域对象。
 - 可选的托管套件入口只读取 Foundation `SuiteNavigation`；产品 Shell 不推导
   Cloud 域名、不读取 sibling 产品拓扑，也不复制 Cloud 的 Products/Billing 页面。

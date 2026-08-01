@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderDriverDescriptor } from "../lib/api/types";
-import { cloudModelUiState } from "./model-cloud-capability";
+import { cloudModelUiState, modelCatalogPresentation } from "./model-cloud-capability";
 import {
   providerConfigurationDefaults,
   providerDraftDefaults,
@@ -15,6 +15,10 @@ import {
 // T8 cloud models off (regardless of Cloud login) -> E8 local/BYOK-only UI.
 // T9 cloud models on + unauthenticated/authenticated -> E9 sign-in-required/ready.
 // T10 hosted managed supply -> E10 read-only managed UI; no refresh or BYOK form.
+// Catalog disclosure/action decision table:
+// T11 managed supply -> E11 hide Endpoint/dialect/source and session test because
+// those are Cloud operations concerns. T12 every other supply mode -> E12 retain
+// the local configuration detail and its real session round-trip test.
 
 const openai: ProviderDriverDescriptor = {
   provider_kind: "openai",
@@ -107,5 +111,18 @@ describe("cloud model capability state", () => {
     hosted.models.byok_enabled = false;
     hosted.models.profile_authoring_enabled = false;
     expect(cloudModelUiState(hosted)).toBe("managed");
+  });
+
+  it("keeps hosted infrastructure and invalid session tests out of the user catalog", () => {
+    expect(modelCatalogPresentation("managed")).toEqual({
+      showSupplyInfrastructure: false,
+      allowSessionTest: false,
+    });
+    for (const state of ["loading", "local", "sign_in_required", "ready"] as const) {
+      expect(modelCatalogPresentation(state)).toEqual({
+        showSupplyInfrastructure: true,
+        allowSessionTest: true,
+      });
+    }
   });
 });

@@ -1,5 +1,5 @@
 import { MenuPopover } from "@awaken/ui";
-import { useApp } from "../../lib/app-state";
+import { useApp, workspaceLabel } from "../../lib/app-state";
 import { suiteHubUrl, useSuiteNavigation } from "../../lib/suite-navigation";
 
 export function openPalette() {
@@ -58,9 +58,9 @@ export default function TopChrome() {
         </div>
       )}
       <span className="crumb-sep" />
-      <div className="workspace-context">
+      <div className="workspace-context" title={app.workspaceId}>
         <span className="mut">{app.t("Workspace", "工作区")}</span>
-        <strong>{app.workspaceId}</strong>
+        <strong>{workspaceLabel(app.workspaceId)}</strong>
       </div>
 
       <span style={{ flex: 1 }} />
