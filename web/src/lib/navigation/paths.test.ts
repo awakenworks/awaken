@@ -4,7 +4,8 @@ import { visibleNavigation } from "./paths";
 
 // Hosted navigation cause/effect decision table:
 // T1 C1 BYOK enabled -> E1 expose Providers & models plus Inference credentials.
-// T2 !C1 -> E2 expose the model catalog as Models and remove credentials entirely.
+// T2 !C1 -> E2 expose the model catalog as Models under Build, remove credentials
+// and leave no tenant-facing AI Supply group.
 // Workspace label partition:
 // T3 default -> E3 friendly Default; T4 hosted personal coordinate -> E4 Personal
 // Workspace; T5 short authored name -> E5 preserve; T6 long opaque coordinate ->
@@ -19,10 +20,12 @@ describe("deployment-aware navigation", () => {
   });
 
   it("projects only the Cloud model catalog when BYOK is disabled", () => {
-    const supply = visibleNavigation(false).filter((item) => item.group === "supply");
-    expect(supply.map(({ key, label }) => ({ key, label }))).toEqual([
-      { key: "models", label: "Models" },
-    ]);
+    const navigation = visibleNavigation(false);
+    expect(navigation.filter((item) => item.group === "supply")).toEqual([]);
+    expect(navigation.find((item) => item.key === "models")).toMatchObject({
+      label: "Models",
+      group: "build",
+    });
   });
 });
 

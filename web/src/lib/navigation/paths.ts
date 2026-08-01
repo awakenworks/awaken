@@ -39,7 +39,7 @@ export const NAV: NavItem[] = [
 export function visibleNavigation(byokEnabled: boolean): NavItem[] {
   return NAV.filter((item) => byokEnabled || item.key !== "credentials").map((item) =>
     !byokEnabled && item.key === "models"
-      ? { ...item, label: "Models", labelZh: "模型" }
+      ? { ...item, label: "Models", labelZh: "模型", group: "build" }
       : item,
   );
 }

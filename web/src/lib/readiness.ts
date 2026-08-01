@@ -11,6 +11,7 @@ import type {
 } from "./api/types";
 import { useApp } from "./app-state";
 import { useModels } from "./useModels";
+import { useConfigCapabilities } from "./useConfigCapabilities";
 
 export type ReadinessStatus = "ready" | "action" | "attention";
 
@@ -30,6 +31,7 @@ export interface ReadinessFacts {
   publishedAgents: number;
   environments: number;
   nativeRuntime: boolean;
+  managedModels: boolean;
 }
 
 export function deriveReadiness(facts: ReadinessFacts): ReadinessItem[] {
@@ -39,11 +41,15 @@ export function deriveReadiness(facts: ReadinessFacts): ReadinessItem[] {
   return [
     {
       id: "supply",
-      label: "AI supply",
+      label: facts.managedModels ? "Models" : "AI supply",
       detail: supplyReady
-        ? `${facts.models} runnable models · ${facts.providerConnections} provider connections · ${facts.acp} ACP`
-        : "Connect a Provider or sign in to a detected ACP runtime",
-      status: supplyReady ? "ready" : "action",
+        ? facts.managedModels
+          ? `${facts.models} Cloud-managed models available`
+          : `${facts.models} runnable models · ${facts.providerConnections} provider connections · ${facts.acp} ACP`
+        : facts.managedModels
+          ? "Cloud model catalog is temporarily unavailable"
+          : "Connect a Provider or sign in to a detected ACP runtime",
+      status: supplyReady ? "ready" : facts.managedModels ? "attention" : "action",
       href: `${base}/models`,
     },
     {
@@ -79,17 +85,21 @@ export function useWorkspaceReadiness() {
   const app = useApp();
   const workspace = app.workspaceId;
   const models = useModels();
+  const configCapabilities = useConfigCapabilities();
+  const byokEnabled = configCapabilities.data?.models.byok_enabled === true;
   const connections = useQuery({
     queryKey: ["provider-connections", workspace],
     queryFn: () =>
       api.get<ProviderConnectionSummary[]>(
         ws(`/v1/config/provider-connections?workspace_id=${workspace}`),
       ),
+    enabled: byokEnabled,
   });
   const credentials = useQuery({
     queryKey: ["credentials", workspace],
     queryFn: () =>
       api.get<CredentialSource[]>(ws(`/v1/config/credentials?workspace_id=${workspace}`)),
+    enabled: byokEnabled,
   });
   const capabilities = useQuery({
     queryKey: ["capabilities", workspace],
@@ -129,6 +139,7 @@ export function useWorkspaceReadiness() {
     publishedAgents: publishedAgents.length,
     environments: activeEnvironments.length,
     nativeRuntime: nativeReady,
+    managedModels: configCapabilities.data?.models.byok_enabled === false,
   });
 
   return {

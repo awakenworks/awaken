@@ -38,7 +38,7 @@ export default function Sidebar() {
       <div className="nav-caption" title={app.workspaceId}>
         {app.t("Workspace", "工作区")} · {workspaceLabel(app.workspaceId)}
       </div>
-      {groups.map((group) => (
+      {groups.filter((group) => navigation.some((item) => item.group === group)).map((group) => (
         <div key={group} className="nav-group">
           <div className="nav-caption">{app.t(...GROUP_CAPTIONS[group])}</div>
           {navigation.filter((item) => item.group === group).map((item) => (

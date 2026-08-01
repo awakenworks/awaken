@@ -86,7 +86,8 @@ Project 解析为一个已授权的 awaken Workspace 请求。Project 和 WorkUn
 | 本地 / BYOK | 显示已发现模型 | 显示并允许配置 | 作为高级连接事实显示 | 建立临时 Session，自动发送一次真实请求；失败可重试 |
 | Cloud 托管 | 按原始 Provider 分组显示全部已发布模型 | 不显示；由 Cloud 托管 | 不显示；属于运维路由事实 | 不提供连接配置测试；实际 Agent Run 是用户可执行验证，健康探测属于 Cloud Operations |
 
-`ConfigCapabilitiesView.models` 是唯一呈现开关。前端不得根据域名、环境变量或
+Cloud 托管时 Models 归入 Build；不呈现空的 AI Supply 分组，也不把目录缺失解释为
+租户需要配置 Provider。`ConfigCapabilitiesView.models` 是唯一呈现开关。前端不得根据域名、环境变量或
 目录内容猜测部署模式，也不得另存一份 `is_cloud` 状态。Cloud 模型列表是
 Cloud 已确认 Provider 路由的只读投影；隐藏 Endpoint 和凭证不会改变发布或
 执行事实。
