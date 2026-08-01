@@ -44,6 +44,11 @@ impl RunAttemptExecutor for Runtime {
         let reader = context.reader.clone().ok_or_else(|| {
             Error::Execution("RunAttemptExecutor::resume requires committed history".to_string())
         })?;
+        // Resume is the single ingress for an activated retry. A rebuilt Runtime
+        // starts without its predecessor's in-memory snapshot registry, so retain
+        // the exact immutable snapshot carried by this activation before resolving
+        // the committed resume ticket.
+        self.register_snapshot(activation.snapshot.clone());
         Runtime::resume(self, command, reader.as_ref(), context).await
     }
 }
