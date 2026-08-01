@@ -299,11 +299,55 @@ mod tests {
     }
 
     #[test]
-    fn control_admin_schema_contains_only_owned_active_tables() {
+    fn published_v1_v2_ledger_upgrades_to_v9() {
+        // Cause/effect decision table:
+        // | starting ledger | canonical bundle | effect                         |
+        // | empty           | V1..V9           | full schema applies            |
+        // | V1,V2           | V1..V9           | V3..V9 apply; profile survives |
+        // | V1,V2           | rewritten V1     | fail closed on unknown V2      |
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        let full = admin_bundle().expect("bundle builds");
+        let published_v1_v2 = awaken_scoped_migration::MigrationBundle::new(
+            crate::schema::BUNDLE_ID,
+            full.migrations()[..2].to_vec(),
+        )
+        .expect("published V1/V2 bundle");
+        let runner =
+            awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS).expect("runner");
+        runner
+            .run_bundle(&conn, &published_v1_v2)
+            .expect("apply V1/V2");
+        conn.execute(
+            "INSERT INTO admin_inference_profile(id,data) VALUES ('kept','{}')",
+            [],
+        )
+        .expect("seed profile");
+
+        let delta = runner.run_bundle(&conn, &full).expect("upgrade to V9");
+        assert_eq!(
+            delta
+                .iter()
+                .map(|migration| migration.version)
+                .collect::<Vec<_>>(),
+            (3..=9).collect::<Vec<_>>()
+        );
+        let kept: String = conn
+            .query_row(
+                "SELECT data FROM admin_inference_profile WHERE id='kept'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read pre-upgrade profile");
+        assert_eq!(kept, "{}");
+    }
+
+    #[test]
+    fn control_admin_schema_exposes_only_owned_active_adapters() {
         // Cause/effect decision table:
         // R1 active Control profile/input/webhook aggregates -> present.
-        // R2 retired MCP/memory/outbox tracks -> absent.
-        // R3 Resources-owned catalog -> absent from the Control database.
+        // R2 retired MCP tracks -> dropped by their published retirement migration.
+        // R3 historical memory/outbox/catalog DDL has no current repository adapter;
+        // immutable ledger rows are not a competing source of truth.
         let store = SqliteAdminStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
         for table in [
@@ -323,8 +367,6 @@ mod tests {
         for table in [
             "admin_mcp_server",
             "admin_agent_mcp",
-            "admin_memory_store",
-            "admin_webhook_outbox",
             "admin_resource_catalog_entry",
         ] {
             let count: i64 = conn
