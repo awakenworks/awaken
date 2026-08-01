@@ -24,12 +24,16 @@ use environment_owned::EnvironmentOwnedProcess;
 mod cgroup;
 mod egress;
 mod files;
+mod live_inputs;
 mod packages;
 mod podman_plan;
+mod process_env;
+use process_env::environment_keepalive_command;
 mod recovery;
 mod secret;
 pub use cgroup::CgroupCaps;
 pub use egress::{EgressError, EgressRealization, ForwardProxy, NetworkMode, egress_plan};
+pub use live_inputs::{LIVE_INPUTS_ROOT, live_input_relative_path};
 pub use packages::package_containerfile;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 pub use secret::SecretBytes;
@@ -917,17 +921,6 @@ pub fn command_of(spec: &pc::SandboxSpec) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Portable PID-1 command for a Session-owned container environment. Attempt
-/// commands run through exec; PID 1 only keeps the mount and network namespaces
-/// alive until the owning Session disposes the sandbox.
-fn environment_keepalive_command() -> Vec<String> {
-    vec![
-        "/bin/sh".into(),
-        "-c".into(),
-        "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done".into(),
-    ]
-}
-
 fn inline_env(spec: &pc::SandboxSpec) -> Vec<(String, String)> {
     spec.env
         .iter()
@@ -1080,6 +1073,30 @@ pub trait ContainerRuntime: Send + Sync {
     fn supports_secret_writeback(&self) -> bool {
         true
     }
+    /// Whether the runtime exposes [`LIVE_INPUTS_ROOT`] read-only to the Agent and
+    /// can atomically update it through a runtime-owned channel.
+    fn supports_live_input_projection(&self) -> bool {
+        false
+    }
+    async fn project_live_input(
+        &self,
+        _container_id: &str,
+        _path: &str,
+        _bytes: &[u8],
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::Backend(
+            "container runtime does not support live input projection".into(),
+        ))
+    }
+    async fn remove_live_input(
+        &self,
+        _container_id: &str,
+        _path: &str,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::Backend(
+            "container runtime does not support live input projection".into(),
+        ))
+    }
     /// Read a file while the container is still alive. Remote runtimes use this to
     /// harvest a writable credential before termination; bind runtimes return `None`
     /// and the provider reads their secured host staging file.
@@ -1227,7 +1244,7 @@ pub struct ContainerProvider<R: ContainerRuntime> {
     forward_proxy: Option<ForwardProxy>,
     /// In-memory blob seed for `File`/`Resource`/`Secret` mounts (keyed by content id),
     /// consulted before the store — the test/seed path, mirroring `LocalProvider`.
-    blobs: std::collections::HashMap<String, Vec<u8>>,
+    blobs: Arc<std::collections::HashMap<String, Vec<u8>>>,
     /// The injected content-addressed store consulted after the seed. The worker tier
     /// links no durable store (A-G17); the composition root injects an adapter over the
     /// resources-tier content store, so a `File`/`Resource` id resolves to real bytes.
@@ -1247,7 +1264,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             package_provisioner: None,
             default_image: default_image.into(),
             forward_proxy: None,
-            blobs: std::collections::HashMap::new(),
+            blobs: Arc::new(std::collections::HashMap::new()),
             file_store: None,
             secret_broker: std::sync::RwLock::new(None),
             memory_mounter: std::sync::RwLock::new(None),
@@ -1283,7 +1300,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     /// (test/seed helper, mirroring `LocalProvider::with_blob`).
     #[must_use]
     pub fn with_blob(mut self, id: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
-        self.blobs.insert(id.into(), bytes.into());
+        Arc::make_mut(&mut self.blobs).insert(id.into(), bytes.into());
         self
     }
 
@@ -1430,6 +1447,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             container_id,
             outputs_path: spec.outputs_path.clone(),
             base_env: spec.env.clone(),
+            blobs: self.blobs.clone(),
+            file_store: self.file_store.clone(),
+            live_input_projection: self.runtime.supports_live_input_projection(),
             realized,
             recovered: false,
             lifecycle: Arc::new(ContainerLifecycle {
@@ -1464,6 +1484,14 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .cloned()
                 .and_then(|value| serde_json::from_value(value).ok())
                 .unwrap_or_default(),
+            blobs: self.blobs.clone(),
+            file_store: self.file_store.clone(),
+            live_input_projection: handle
+                .extra
+                .as_ref()
+                .and_then(|value| value.get("live_input_projection"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
             realized: Vec::new(),
             recovered: true,
             lifecycle: Arc::new(ContainerLifecycle::completed(
@@ -1596,6 +1624,13 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     outputs_path: String,
     /// Secret-free base requirements retained across attempt processes.
     base_env: Vec<pc::EnvVar>,
+    /// Resolution inputs retained so a capable runtime can project a later File
+    /// generation through the same canonical BlobSource used at creation.
+    blobs: Arc<std::collections::HashMap<String, Vec<u8>>>,
+    file_store: Option<Arc<dyn pc::BlobSource>>,
+    /// Frozen capability of the concrete resident Pod. Older adopted Pods do not
+    /// gain a projector merely because the newly started runtime supports one.
+    live_input_projection: bool,
     realized: Vec<pc::RealizedMount>,
     recovered: bool,
     /// Host staging dir for materialized inline-mount content, held for the container's
@@ -1605,43 +1640,6 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
 }
 
 impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
-    async fn materialize_command(
-        &self,
-        mut command: pc::Command,
-    ) -> Result<pc::MaterializedCommand, pc::SandboxError> {
-        // Container processes share the same stable interior paths. Bind the two
-        // runtime-owned variables at this common process boundary so native exec,
-        // the long-lived Hand, ACP agents, and adopted environments cannot diverge.
-        command.env.retain(|var| {
-            !matches!(
-                var.name.as_str(),
-                "AWAKEN_PROJECT_DIR" | "AWAKEN_OUTPUTS_DIR"
-            )
-        });
-        command.env.extend([
-            pc::EnvVar {
-                name: "AWAKEN_PROJECT_DIR".into(),
-                value: pc::EnvValue::Inline {
-                    value: "/workspace".into(),
-                },
-                visibility: pc::EnvVisibility::Process,
-            },
-            pc::EnvVar {
-                name: "AWAKEN_OUTPUTS_DIR".into(),
-                value: pc::EnvValue::Inline {
-                    value: self.outputs_path.clone(),
-                },
-                visibility: pc::EnvVisibility::Process,
-            },
-        ]);
-        pc::materialize_process_command(
-            &self.base_env,
-            command,
-            self.lifecycle.secret_broker.as_ref(),
-        )
-        .await
-    }
-
     /// Start an opaque stdio agent as an exec process in this Session environment.
     /// Repeated calls create independent attempt processes while preserving the same
     /// workspace, mounts, network policy, and durable sandbox handle.
@@ -1681,6 +1679,20 @@ pub trait ContainerEnvironment: pc::Sandbox {
         false
     }
 
+    fn supports_live_mount_replacement(
+        &self,
+        _previous: &[pc::MountRequirement],
+        _next: &[pc::MountRequirement],
+    ) -> bool {
+        false
+    }
+
+    async fn remove_live_input_path(&self, _path: &str) -> Result<(), pc::SandboxError> {
+        Err(pc::SandboxError::new(
+            "late mount removal is unsupported on this container tier",
+        ))
+    }
+
     async fn spawn_agent_process(
         &self,
         command: pc::Command,
@@ -1706,6 +1718,18 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
 
     fn is_recovered(&self) -> bool {
         self.recovered
+    }
+
+    fn supports_live_mount_replacement(
+        &self,
+        previous: &[pc::MountRequirement],
+        next: &[pc::MountRequirement],
+    ) -> bool {
+        self.supports_live_mount_replacement(previous, next)
+    }
+
+    async fn remove_live_input_path(&self, path: &str) -> Result<(), pc::SandboxError> {
+        self.remove_live_input_path(path).await
     }
 
     async fn spawn_agent_process(
@@ -1840,6 +1864,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
             "container_id": self.container_id,
             "outputs_path": self.outputs_path,
             "base_env": self.base_env,
+            "live_input_projection": self.live_input_projection,
         }));
         h
     }
@@ -1857,13 +1882,9 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
 
     async fn attach(
         &self,
-        _req: pc::MountRequirement,
+        req: pc::MountRequirement,
     ) -> Result<pc::RealizedMount, pc::SandboxError> {
-        // Docker/K8s cannot hot-mount into a running container; fail closed (mount
-        // at create, or use a resourced sidecar over a shared volume).
-        Err(err(RuntimeError::Backend(
-            "late attach unsupported on the container tier; mount at create".into(),
-        )))
+        self.attach_live_input(req).await
     }
 
     async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {

@@ -384,6 +384,80 @@ async fn a_pod_agent_speaks_the_wire_over_the_exec_channel() {
 }
 
 #[tokio::test]
+async fn a_live_managed_file_is_replaceable_by_the_runtime_and_read_only_to_the_agent() {
+    // Cause/effect decision table — KLI1: C1 a live K8s Session receives a
+    // read-only File below the managed input root; C2 the runtime projector owns
+    // the writable side of the shared volume; C3 the Agent owns neither projector
+    // nor Kubernetes credentials. C1+C2+C3 => E1 attach becomes immediately
+    // visible, E2 Agent writes fail while bytes stay unchanged, and E3 runtime
+    // removal makes the path absent without replacing the Pod.
+    if std::env::var("AWAKEN_K8S_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping: set AWAKEN_K8S_E2E=1 with a reachable cluster to run");
+        return;
+    }
+    if !kubectl(&["get", "nodes"]).status.success() {
+        eprintln!("skipping: no reachable Kubernetes cluster");
+        return;
+    }
+
+    let scope = format!("k8s-live-input-{}", std::process::id());
+    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    let provider = ContainerProvider::new(Arc::new(runtime), "awaken-bb:1");
+    let sandbox = provider
+        .create_container(&spec(&scope))
+        .await
+        .expect("create the agent Pod");
+    let pod = pod_of(&sandbox);
+    let path = "/mnt/session/uploads/awaken-design/current/index.html";
+    let marker = "runtime-projected-generation-2";
+    let requirement = pc::MountRequirement {
+        mount_id: "current-index".into(),
+        source: pc::MountSource::Inline {
+            contents: marker.into(),
+        },
+        mount_path: path.into(),
+        access: pc::MountAccess::ReadOnly,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    };
+
+    pc::Sandbox::attach(&sandbox, requirement)
+        .await
+        .expect("project a live managed File");
+    let read = kubectl(&["exec", &pod, "-c", "agent", "--", "cat", path]);
+    assert!(read.status.success());
+    assert_eq!(String::from_utf8_lossy(&read.stdout), marker);
+
+    let write = kubectl(&[
+        "exec",
+        &pod,
+        "-c",
+        "agent",
+        "--",
+        "sh",
+        "-c",
+        "printf changed > /mnt/session/uploads/awaken-design/current/index.html",
+    ]);
+    assert!(
+        !write.status.success(),
+        "Agent must not mutate managed inputs"
+    );
+    let unchanged = kubectl(&["exec", &pod, "-c", "agent", "--", "cat", path]);
+    assert_eq!(String::from_utf8_lossy(&unchanged.stdout), marker);
+
+    sandbox
+        .remove_live_input_path(path)
+        .await
+        .expect("remove the managed File through the projector");
+    let absent = kubectl(&["exec", &pod, "-c", "agent", "--", "test", "!", "-e", path]);
+    assert!(absent.status.success());
+
+    pc::Sandbox::dispose(&sandbox).await.unwrap();
+}
+
+#[tokio::test]
 async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
     if std::env::var("AWAKEN_K8S_E2E").as_deref() != Ok("1") {
         eprintln!("skipping: set AWAKEN_K8S_E2E=1 with a reachable cluster to run");

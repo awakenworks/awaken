@@ -5,7 +5,9 @@
 //! [`K8sRuntime`]: a **Session-owned Pod** (PID 1 retains its namespaces while
 //! attempts run through attached exec, `restartPolicy: Never`), **native GC** (an
 //! `ownerReference` reaps orphans),
-//! memory stores realized as **memoryd sidecars + emptyDir**, the untrusted agent
+//! memory stores realized as **memoryd sidecars + emptyDir**, managed input Files
+//! exposed through a **read-only shared volume + isolated projector sidecar**, the
+//! untrusted agent
 //! **hardened** (no SA token, dropped caps) + labeled for a NetworkPolicy, and the
 //! stdio channel reached either by a direct **network dial** to the Service or, when
 //! a rendezvous is set, by **reverse dial** (the egress-fenced Pod dials the host
@@ -34,6 +36,7 @@ use crate::{
     BindPlan, ContainerPlan, ContainerRuntime, ContainerState, RuntimeAgentProcess, RuntimeError,
 };
 
+mod live_inputs;
 mod names;
 mod realization;
 use names::{cfg_owner_label, configmap_name, credential_secret_name, k8s_runtime_id, pod_name};
@@ -597,10 +600,17 @@ fn build_pod(
             });
         }
 
-        // Inline content (codex `config.toml`, ADR-0038 resource bytes) has no host path a
-        // Pod can bind — each is realized as a ConfigMap volume (the ConfigMaps are created
-        // alongside the Pod in `create`) and projected read-only as a single file at its
-        // exact `mount_path` via `subPath`, so the interior layout matches the bwrap tier.
+        live_inputs::append_projection(
+            plan,
+            &mut volumes,
+            &mut agent_mounts,
+            &mut sidecars,
+            &mut init_containers,
+        );
+
+        // Inline content has no host path a Pod can bind, so every item is backed by
+        // a ConfigMap created alongside the Pod. Managed inputs seed the shared tree;
+        // other paths keep the exact read-only subPath projection used by bwrap parity.
         for (i, bind) in content_binds(plan).iter().enumerate() {
             let vol = format!("cfg-{i}");
             volumes.push(Volume {
@@ -611,13 +621,15 @@ fn build_pod(
                 }),
                 ..Default::default()
             });
-            agent_mounts.push(VolumeMount {
-                name: vol,
-                mount_path: bind.mount_path.clone(),
-                sub_path: Some(CONFIGMAP_KEY.to_string()),
-                read_only: Some(bind.read_only),
-                ..Default::default()
-            });
+            if !(bind.read_only && crate::live_input_relative_path(&bind.mount_path).is_some()) {
+                agent_mounts.push(VolumeMount {
+                    name: vol,
+                    mount_path: bind.mount_path.clone(),
+                    sub_path: Some(CONFIGMAP_KEY.to_string()),
+                    read_only: Some(bind.read_only),
+                    ..Default::default()
+                });
+            }
         }
 
         // A Kubernetes Secret volume is immutable/read-only. Seed each native OAuth
@@ -791,6 +803,23 @@ impl ContainerRuntime for K8sRuntime {
 
     fn supports_secret_writeback(&self) -> bool {
         true
+    }
+
+    fn supports_live_input_projection(&self) -> bool {
+        true
+    }
+
+    async fn project_live_input(
+        &self,
+        container_id: &str,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<(), RuntimeError> {
+        live_inputs::project(self, container_id, path, bytes).await
+    }
+
+    async fn remove_live_input(&self, container_id: &str, path: &str) -> Result<(), RuntimeError> {
+        live_inputs::remove(self, container_id, path).await
     }
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
@@ -1467,8 +1496,8 @@ mod tests {
         let pod = build_pod("run-1", &plan, &None, "memoryd:9", None, false, &[]);
         let spec = pod.spec.unwrap();
 
-        // agent + one memoryd sidecar per memory store.
-        assert_eq!(spec.containers.len(), 3);
+        // agent + one memoryd sidecar per memory store + the isolated input projector.
+        assert_eq!(spec.containers.len(), 4);
         assert_eq!(spec.containers[0].name, "agent");
         assert_eq!(
             spec.containers
@@ -1477,14 +1506,14 @@ mod tests {
                 .count(),
             2
         );
-        // one pod-scoped emptyDir per store, plus the three writable-rootfs dirs
-        // (workspace, outputs, and /tmp).
+        // one pod-scoped emptyDir per store, the three writable-rootfs dirs
+        // (workspace, outputs, and /tmp), and the live read-only input tree.
         let volumes = spec.volumes.as_ref().unwrap();
-        assert_eq!(volumes.len(), 2 + 3);
+        assert_eq!(volumes.len(), 2 + 3 + 1);
         assert!(volumes.iter().all(|v| v.empty_dir.is_some()));
-        // the agent mounts both memory volumes + the writable dirs + carries limits.
+        // the agent mounts both memory volumes + writable dirs + live inputs.
         let agent = &spec.containers[0];
-        assert_eq!(agent.volume_mounts.as_ref().unwrap().len(), 2 + 3);
+        assert_eq!(agent.volume_mounts.as_ref().unwrap().len(), 2 + 3 + 1);
         assert!(agent.resources.is_some());
         // The sidecar names store/mount/mode through explicit argv; no environment
         // configuration path exists (the privilege lives only on this container).
@@ -1690,7 +1719,7 @@ mod tests {
     }
 
     #[test]
-    fn build_pod_without_memory_mounts_is_a_single_container() {
+    fn build_pod_without_memory_mounts_still_isolates_the_input_projector() {
         let pod = build_pod(
             "r",
             &plan_with_memory(Vec::new()),
@@ -1701,11 +1730,12 @@ mod tests {
             &[],
         );
         let spec = pod.spec.unwrap();
-        // No memoryd sidecar, but the agent still gets the three writable-rootfs
-        // emptyDirs (workspace, outputs, and /tmp).
-        assert_eq!(spec.containers.len(), 1);
-        assert_eq!(spec.volumes.as_ref().unwrap().len(), 3);
-        assert_eq!(spec.containers[0].volume_mounts.as_ref().unwrap().len(), 3);
+        // No memoryd sidecar; only the Agent and its runtime-owned input projector.
+        // The Agent gets three writable-rootfs emptyDirs plus one read-only input tree.
+        assert_eq!(spec.containers.len(), 2);
+        assert_eq!(spec.containers[1].name, live_inputs::PROJECTOR);
+        assert_eq!(spec.volumes.as_ref().unwrap().len(), 4);
+        assert_eq!(spec.containers[0].volume_mounts.as_ref().unwrap().len(), 4);
     }
 
     fn memoryd_sidecar(spec: &PodSpec) -> &Container {

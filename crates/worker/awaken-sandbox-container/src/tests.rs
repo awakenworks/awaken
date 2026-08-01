@@ -440,6 +440,8 @@ struct FakeState {
     spawned: Vec<(String, Vec<String>)>,
     runtime_path_observations: Vec<(Option<String>, Option<String>)>,
     process_secret_observations: Vec<(bool, bool)>,
+    live_input_projection: bool,
+    live_inputs: HashMap<String, Vec<u8>>,
 }
 
 #[derive(Default)]
@@ -500,12 +502,40 @@ impl FakeRuntime {
         self.st.lock().unwrap().live_credential = Some(bytes.to_vec());
         self
     }
+
+    fn with_live_input_projection(self) -> Self {
+        self.st.lock().unwrap().live_input_projection = true;
+        self
+    }
 }
 
 #[async_trait]
 impl ContainerRuntime for FakeRuntime {
     fn enforces_network_none(&self) -> bool {
         true
+    }
+
+    fn supports_live_input_projection(&self) -> bool {
+        self.st.lock().unwrap().live_input_projection
+    }
+
+    async fn project_live_input(
+        &self,
+        _container_id: &str,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<(), RuntimeError> {
+        self.st
+            .lock()
+            .unwrap()
+            .live_inputs
+            .insert(path.into(), bytes.to_vec());
+        Ok(())
+    }
+
+    async fn remove_live_input(&self, _container_id: &str, path: &str) -> Result<(), RuntimeError> {
+        self.st.lock().unwrap().live_inputs.remove(path);
+        Ok(())
     }
 
     async fn read_live_file(
@@ -939,6 +969,78 @@ async fn handle_round_trips_and_adopt_reconnects() {
     assert_eq!(proc.id(), "main");
     // late attach fails closed on this tier
     assert!(adopted.attach(spec("x").mounts.remove(0)).await.is_err());
+}
+
+#[tokio::test]
+async fn a_capable_runtime_replaces_only_read_only_files_below_the_live_input_root() {
+    // Cause/effect live-input table — LI1:
+    // C1: the resident runtime owns an isolated projector; C2: a later generation
+    // is a read-only File below /mnt/session/uploads; C3: canonical BlobSource
+    // bytes resolve. C1+C2+C3 => E1 attach atomically replaces the projected bytes
+    // and E2 removal deletes them; C1 survives handle adoption => E3 recovery uses
+    // the same projector. !C1 or !C2 => E4 fail closed without projection.
+    let runtime = Arc::new(FakeRuntime::default().with_live_input_projection());
+    let sandbox = provider(runtime.clone())
+        .create_container(&spec("live-inputs"))
+        .await
+        .unwrap();
+    let input = pc::MountRequirement {
+        mount_id: "current-report".into(),
+        source: pc::MountSource::File {
+            file_id: "file-1".into(),
+            content_hash: None,
+        },
+        mount_path: "/mnt/session/uploads/awaken-design/current/report.html".into(),
+        access: pc::MountAccess::ReadOnly,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    };
+
+    assert!(sandbox.supports_live_mount_replacement(&[], std::slice::from_ref(&input)));
+    let realized = pc::Sandbox::attach(&sandbox, input.clone()).await.unwrap();
+    assert_eq!(realized.mount_path, input.mount_path);
+    assert_eq!(realized.access, pc::MountAccess::ReadOnly);
+    assert_eq!(
+        runtime
+            .st
+            .lock()
+            .unwrap()
+            .live_inputs
+            .get(&input.mount_path),
+        Some(&b"in-bytes".to_vec())
+    );
+
+    sandbox
+        .remove_live_input_path(&input.mount_path)
+        .await
+        .unwrap();
+    assert!(
+        !runtime
+            .st
+            .lock()
+            .unwrap()
+            .live_inputs
+            .contains_key(&input.mount_path)
+    );
+
+    let adopted = provider(runtime.clone())
+        .adopt_container(&pc::Sandbox::handle(&sandbox))
+        .await
+        .unwrap();
+    assert!(adopted.supports_live_mount_replacement(&[], std::slice::from_ref(&input)));
+    pc::Sandbox::attach(&adopted, input.clone())
+        .await
+        .expect("recovery retains the resident Pod's projector capability");
+
+    let mut outside = input.clone();
+    outside.mount_path = "/workspace/report.html".into();
+    assert!(!sandbox.supports_live_mount_replacement(&[], std::slice::from_ref(&outside)));
+    assert!(pc::Sandbox::attach(&sandbox, outside).await.is_err());
+
+    let mut escaped = input;
+    escaped.mount_path = "/mnt/session/uploads/../secret".into();
+    assert!(!adopted.supports_live_mount_replacement(&[], std::slice::from_ref(&escaped)));
+    assert!(pc::Sandbox::attach(&adopted, escaped).await.is_err());
 }
 
 #[tokio::test]
