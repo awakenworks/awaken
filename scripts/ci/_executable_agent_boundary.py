@@ -1,6 +1,9 @@
 """Dependency allowlists for the ADR-0071 registration boundary."""
 
 EXECUTABLE_AGENT_ALLOWED_DEPS: dict[str, set[str]] = {
+    # One generic durable high-water cursor and incremental-batch validator;
+    # domain command codecs and state transitions remain in their owners.
+    "awaken-durable-projection": {"async-trait", "tokio"},
     # One transport-parsed private Bearer comparison shared by independent
     # Control-to-Coordinator adapters. It owns no domain or wire dependency.
     "awaken-service-auth-contract": set(),
@@ -13,6 +16,7 @@ EXECUTABLE_AGENT_ALLOWED_DEPS: dict[str, set[str]] = {
         "thiserror",
     },
     "awaken-executable-environment-catalog": {
+        "awaken-durable-projection",
         "awaken-executable-environment-contract",
         "awaken-environment-contract",
         "awaken-provisioning-contract",
@@ -43,6 +47,7 @@ EXECUTABLE_AGENT_ALLOWED_DEPS: dict[str, set[str]] = {
     # registrar. Network/store adapters extend this owner; Config Service never
     # implements a second catalog.
     "awaken-executable-agent-catalog": {
+        "awaken-durable-projection",
         "awaken-executable-agent-contract",
         "awaken-service-auth-contract",
         "awaken-runtime-contract",

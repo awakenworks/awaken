@@ -293,7 +293,7 @@ or remote agent execution is added only when a future ADR introduces it.
 
 ---
 
-## 7. Current Topology And Remaining Optimization
+## 7. Operational Convergence And Deployment Topology
 
 The four bounded contexts and their persistence authorities are complete in the
 current composition. The distributed binary exposes Control, Coordinator, and
@@ -301,21 +301,80 @@ Worker roles; Resources is a canonical sibling component currently hosted by the
 Coordinator process. This is process co-location, not shared ownership: its
 stores, migrations, application services, and ports remain Resources-owned.
 
-The active-active Coordinator path has one executable-projection refresh
-middleware. Before any Session or Deployment write that may admit Runtime work,
-it rebuilds both executable-Agent and executable-Environment views from their
-durable command logs. A failure in either view returns service unavailable before
-Session admission. AllInOne skips this middleware because its registrations and
-reads share one local catalog.
+### 7.1 Static registration recovery
 
-Remaining work is ordered by architectural impact:
+`ControlComponent` starts one `StaticRegistrationSupervisor` over the existing
+Agent `PublicationBindingReconciler` and Environment `EnvironmentApplication`.
+It carries no registration payload and owns no repository. Each pass rereads the
+two Control authorities and invokes their existing registrars concurrently.
 
-| Priority | Current behavior | Optimization without changing ownership |
-|---|---|---|
-| P1 availability | Control commits an Agent publication or Environment revision, then performs an idempotent Coordinator registration. Explicit retry and startup reconciliation repair an interrupted boundary, but startup currently fails closed if Coordinator is unavailable. | Extend the existing Control publication-reconciliation supervisor into one composite exact-registration reconciler for Agent and Environment, with bounded backoff and readiness/lag metrics. Do not add a second registry, event model, or compensating rollback. |
-| P2 scale | Each relevant Coordinator write refreshes the complete durable executable command logs. This is correct across replicas but its cost grows with immutable history. | Retain the same command logs and catalog state machines while adding a durable high-water mark or database notification as a refresh hint. A gap or notification loss must fall back to full replay. |
-| P2 topology | Resources is co-deployed with Coordinator and is not yet a standalone CLI role. | Split it only when independent scaling or credentials justify another process. The split adds authenticated claim-fenced transport adapters around the existing `ResourcesApplication`; it must not create another File/Memory/Skill implementation or let Resources read Coordinator databases. |
+```text
+Control component starts or receives a wake signal
+  -> recover every durable Agent publication
+  -> reconcile every durable Environment revision/withdrawal
+  -> both succeed: ready, reset failures, record success time
+  -> either fails: not ready, record pending domains, bounded exponential retry
+```
 
-No schema or domain change is required for these optimizations. They improve
-availability, projection-refresh cost, or deployment flexibility while preserving
-the current aggregate lifecycles and consistency boundaries.
+The business listener remains live during recovery, but `/readyz` returns 503
+until both domains have completed one successful pass. The process exports
+registration ready, pending-domain, consecutive-failure, and lag gauges. Control
+and AllInOne receive the health source from the same component; Coordinator has
+no Control registration source and therefore no such readiness dependency.
+
+### 7.2 Active-active executable projection refresh
+
+Each PostgreSQL executable command log has a versioned, monotonic
+`command_sequence`. A Coordinator replica keeps only the last applied sequence
+in memory; the command log remains durable authority. Before a Session or
+Deployment write can admit Runtime work, one middleware advances both projections:
+
+```text
+read MAX(command_sequence)
+  -> equal to local cursor: continue without loading commands
+  -> greater: load commands WHERE sequence > cursor, ordered by sequence
+       -> ordered batch reaches high-water: apply to a cloned projection, swap, advance
+       -> missing/out-of-order tail: replay the complete log, swap, advance
+  -> less than local cursor: replay the complete log, swap, advance
+  -> any replay/apply failure: return 503 before admission
+```
+
+Database identity gaps are valid; failing to reach the observed high-water is
+not. `awaken-durable-projection` owns this cursor and validation decision once.
+Agent and Environment adapters retain separate command codecs and canonical
+catalog state machines. AllInOne skips the refresh middleware because local
+registration and admission share those same catalog instances.
+
+### 7.3 Conditional Resources process split
+
+There is deliberately no standalone `resources` CLI role today. Co-deployment
+avoids another availability and credential boundary while independent scaling
+and credential isolation are not required. A future split requires all of the
+following before adding the role:
+
+1. authenticated, claim-fenced per-kind Worker transports around the existing
+   `ResourcesApplication` ports;
+2. an explicit reference/grant protocol so Agent bindings and Coordinator
+   extraction/activation facts reach the Resources-owned reverse-reference
+   index without Resources opening Coordinator storage;
+3. a Resources-only migration manifest and credentials, with no Control,
+   Session, dispatch, or commit database access;
+4. the same `ResourceComponent`, router, lifecycle repository, and reclaimer—no
+   alternate File, Memory, Skill, or purge implementation.
+
+Until those deployment requirements exist, configuration rejects `resources` as
+a process role and Coordinator continues to host the canonical component.
+
+### 7.4 Composition modules
+
+The CLI shell remains integration-only. `runtime_process_router` composes
+Coordinator and optional AllInOne Control/Resources components; standalone
+Control uses `control_component`; both receive their business routers from the
+same domain builders. Scenario-only ACP composition lives in
+`acp_scenarios`. These module splits change neither authority nor call order.
+
+Further work is demand-driven: database notification may replace the high-water
+poll only if admission-query load becomes material, and a Resources process may
+be introduced only after the topology conditions above are observed. Large
+Managed application modules can continue to be separated by lifecycle concern
+without moving aggregate ownership.

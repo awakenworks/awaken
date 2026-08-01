@@ -69,7 +69,7 @@ pub(super) async fn build_runtime_process_assembly(
     } else {
         None
     };
-    let router = assemble_runtime_process_router(
+    let assembled = assemble_runtime_process_router(
         stores,
         identity.iam,
         identity.remote_iam,
@@ -98,8 +98,9 @@ pub(super) async fn build_runtime_process_assembly(
     )
     .await;
     Ok(ProcessAssembly {
-        router,
+        router: assembled.router,
         local_setup: identity.local_setup,
+        registration_supervisor: assembled.registration_supervisor,
     })
 }
 

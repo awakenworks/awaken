@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 awaken-executable-agent-contract.workspace = true
+awaken-durable-projection.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-service-auth-contract.workspace = true

@@ -22,6 +22,7 @@ pub mod control_stores;
 mod credential_reference;
 mod data_subject;
 mod managed_agents;
+mod registration_supervisor;
 pub mod worker_stores;
 
 #[cfg(test)]
@@ -45,13 +46,15 @@ pub use crate::authz::{
     embedded_iam_for_tenant, embedded_iam_for_workspace, hosted_runtime_authorization_profile,
     management_authorization_profile, management_resource_authorization_profile,
 };
-pub use crate::component::{
-    ControlBuildError, ControlComponent, ControlDependencies, build_control_component,
-};
+pub use crate::component::{ControlComponent, ControlDependencies, build_control_component};
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};
 pub use crate::credential_reference::CredentialRevisionValidator;
 pub use crate::data_subject::{consent_router, erasure_router};
 pub use crate::managed_agents::ConfigPlaneManagedAgentRepository;
+pub use crate::registration_supervisor::{
+    RegistrationHealth, RegistrationHealthSnapshot, RegistrationSupervisorConfig,
+    StaticRegistrationSupervisor,
+};
 pub use awaken_config_service::{
     LocalRuntimeCapability, RuntimeCapability, RuntimeCapabilitySource, static_runtime_capabilities,
 };

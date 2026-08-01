@@ -161,7 +161,7 @@ async fn build_control_assembly_with_model_composition(
         executable_agent_registration::ExecutableAgentWiring::control(deployment)?;
     let executable_environment_wiring =
         executable_environment_registration::ExecutableEnvironmentWiring::control(deployment)?;
-    let router = assemble_control_process_router(
+    let assembled = assemble_control_process_router(
         stores,
         identity.iam,
         identity.remote_iam,
@@ -194,7 +194,8 @@ async fn build_control_assembly_with_model_composition(
     )
     .await;
     Ok(ProcessAssembly {
-        router,
+        router: assembled.router,
         local_setup: identity.local_setup,
+        registration_supervisor: assembled.registration_supervisor,
     })
 }

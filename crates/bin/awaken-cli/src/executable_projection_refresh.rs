@@ -44,7 +44,8 @@ fn requires_projection_refresh(method: &Method, path: &str) -> bool {
             || path.contains("/v1/deployments/"))
 }
 
-/// Rebuild both projections before a request can admit or resume Runtime work.
+/// Advance both projections to their durable high-water marks before a request
+/// can admit or resume Runtime work.
 /// A failure in either projection fails the request closed with no partial
 /// Session admission; read-only operations stay off this database read path.
 async fn refresh_before_runtime_use(

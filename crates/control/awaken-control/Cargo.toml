@@ -16,6 +16,7 @@ license.workspace = true
 # Control depends on this shared crate, NOT on the awaken-runtime-host execution host —
 # the authoring/authz plane stays a sibling of the data plane (control ⊥ execution).
 awaken-config-service = { workspace = true }
+awaken-environment-application = { workspace = true }
 awaken-admin-assistant = { workspace = true }
 awaken-executable-agent-contract = { workspace = true }
 awaken-tenancy = { workspace = true }
@@ -53,11 +54,15 @@ base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+tracing = "0.1"
 axum = { version = "0.8", features = ["multipart"] }
 
 [dev-dependencies]
+awaken-environment-contract.workspace = true
+awaken-executable-environment-contract.workspace = true
 awaken-resource-store.workspace = true
 awaken-executable-agent-catalog.workspace = true
+awaken-env-store.workspace = true
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }

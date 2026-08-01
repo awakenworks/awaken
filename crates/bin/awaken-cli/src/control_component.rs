@@ -20,6 +20,7 @@ pub(super) async fn control_component_for_process(
     runtimes: Arc<dyn awaken_config_service::RuntimeCapabilitySource>,
     resource_inventory: Option<Arc<dyn awaken_admin_assistant::ResourceInventory>>,
     environment_author: Arc<dyn awaken_admin_assistant::EnvironmentAuthor>,
+    environment_application: Arc<awaken_environment_application::EnvironmentApplication>,
     environment_router: Router,
     coordinator_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
     content_capture_ceiling: awaken_runtime_contract::ContentCapture,
@@ -75,6 +76,7 @@ pub(super) async fn control_component_for_process(
         runtimes,
         resource_inventory,
         environment_author,
+        environment_application,
         environment_router,
         data_subjects: control.data_subjects.clone(),
         erasure_jobs: control.erasure_jobs.clone(),
@@ -86,7 +88,6 @@ pub(super) async fn control_component_for_process(
         remote_iam,
     })
     .await
-    .unwrap_or_else(|error| panic!("build Control component: {error}"))
 }
 
 /// Standalone Control process assembly. It opens no Managed Execution path and
@@ -99,7 +100,7 @@ pub(super) async fn assemble_control_process_router(
     local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
     model_composition: PublicationModelComposition,
     assembly: ProcessAssemblyOptions,
-) -> Router {
+) -> ProcessRouterAssembly {
     debug_assert_eq!(assembly.role, config::Role::Control);
     let (_, executable_agent_registrar, _, _, coordinator_content_eraser) =
         executable_agent_registration::process_parts(assembly.executable_agent_wiring);
@@ -163,11 +164,7 @@ pub(super) async fn assemble_control_process_router(
             executable_environment_registrar,
         ))
     };
-    environment_authoring
-        .application()
-        .reconcile_registrations()
-        .await
-        .unwrap_or_else(|error| panic!("reconcile Environment registrations: {error}"));
+    let environment_application = environment_authoring.application();
     let component = control_component_for_process(
         &stores,
         &execution_workspace,
@@ -186,6 +183,7 @@ pub(super) async fn assemble_control_process_router(
                 environment_authoring.application(),
             ),
         ),
+        environment_application,
         awaken_protocol_managed::environment_authoring_router(environment_authoring),
         coordinator_content_eraser.unwrap_or_else(test_coordinator_content_eraser),
         content_capture_ceiling,
@@ -223,16 +221,19 @@ pub(super) async fn assemble_control_process_router(
         component.admin_tools,
         assembly.mcp_bearer_token,
     );
-    process_surface::finish(
-        router,
-        mcp_export,
-        Some(component.publication_reconciler),
-        execution_workspace,
-        Arc::new(
-            awaken_protocol_managed::ManagedRateLimiter::for_organization(
-                assembly.org_id.unwrap_or_else(local_org_id),
+    ProcessRouterAssembly::new(
+        process_surface::finish(
+            router,
+            mcp_export,
+            Some(component.publication_reconciler),
+            execution_workspace,
+            Arc::new(
+                awaken_protocol_managed::ManagedRateLimiter::for_organization(
+                    assembly.org_id.unwrap_or_else(local_org_id),
+                ),
             ),
         ),
+        Some(component.registration_supervisor),
     )
 }
 
@@ -261,7 +262,8 @@ async fn standalone_control_uses_the_authored_capture_ceiling() {
             ..Default::default()
         },
     )
-    .await;
+    .await
+    .router;
     let response = app
         .oneshot(
             Request::get("/v1/user_profiles/unknown/capture-decision?requested=full")

@@ -1518,6 +1518,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # tool catalog), extracted from awaken-runtime-host so control ⊥ execution:
         # control names this, NOT the data-plane host.
         "awaken-config-service",
+        # Control supervises recovery of both static executable catalogs while
+        # each application retains its own aggregate and registration port.
+        "awaken-environment-application",
+        "awaken-environment-contract",
+        "awaken-executable-environment-contract",
         "awaken-admin-assistant",
         "awaken-executable-agent-contract",
         "awaken-tenancy",
@@ -1542,6 +1547,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-runtime-contract",
         "awaken-session-contract",
         "awaken-executable-agent-catalog",
+        # dev-only: registration-supervisor recovery uses the canonical
+        # in-memory Environment authority adapter.
+        "awaken-env-store",
         "rusqlite",
         "async-trait",
         "serde",
@@ -1553,6 +1561,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "uuid",
         "thiserror",
         "tokio",
+        "tracing",
         "axum",
         # dev-only: the authz restart tests open a tempdir-backed iam.sqlite.
         "tempfile",

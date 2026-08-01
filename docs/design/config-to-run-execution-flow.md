@@ -94,8 +94,8 @@ one bundle id per aggregate-safe scope.
 | Coordinator | `awaken.managed_session` / `managed` | `managed_session`, `managed_lifecycle_outbox`, `managed_memory_extraction`, `managed_session_idempotency`, `managed_session_tombstone`, `managed_dream`, `managed_dream_agent_override`, `managed_deployment`, `managed_deployment_run`, `managed_deployment_claim`, `managed_dream_policy` |
 | Coordinator | `awaken.work_queue` / `work_queue` | `work_queue_item` |
 | Coordinator | `awaken.worker_registry` / `worker_registry` | `worker_registry_worker` |
-| Coordinator | `awaken.executable_agent_catalog` / `executable_agent` | `executable_agent_command` |
-| Coordinator | `awaken.executable_environment_catalog` / `executable_environment` | `executable_environment_command` |
+| Coordinator | `awaken.executable_agent_catalog` / `executable_agent` | `executable_agent_command` with monotonic `command_sequence` |
+| Coordinator | `awaken.executable_environment_catalog` / `executable_environment` | `executable_environment_command` with monotonic `command_sequence` |
 | Coordinator | `awaken.run_dispatch` / `runtime` | `runtime_dispatch`, `runtime_pending`, `runtime_outbox`, `runtime_dispatch_completion`, `runtime_stream_checkpoint`, `runtime_dispatch_operation` |
 | Coordinator | `awaken.runtime_commit`, `awaken.runtime_commit_pg` / `runtime` | `runtime_commit`, `runtime_message`, `runtime_state_command`, `runtime_event`, `runtime_run_record`, `runtime_waiting`, `runtime_thread_version`, `runtime_commit_receipt`; PostgreSQL also owns `runtime_commit_seq` |
 | Coordinator | `awaken.coordinator_data_capture` / `coordinator_data_capture` | `coordinator_data_capture_captured`, `coordinator_data_capture_fence` |
@@ -186,9 +186,18 @@ Environment transitions are:
 The Control store commit is the static source of truth. A boundary failure after
 that commit is reported as unavailable, never compensated by deleting or rolling
 back the definition. This is the same recovery rule used by Agent publication.
-In an active-active Coordinator deployment, one request middleware refreshes both
-durable executable command logs before Session/Deployment writes that may admit
-Runtime work; either refresh failure rejects admission before a Session changes.
+One Control-owned supervisor rereads both authorities concurrently after startup
+or a wake signal. It becomes ready only after both registrations succeed; a
+failure leaves the process live but unready and schedules bounded exponential
+retry. Ready, pending-domain, consecutive-failure, and lag gauges expose the
+state without creating another work repository.
+
+In an active-active Coordinator deployment, one request middleware compares both
+durable command-log high-water marks before Session/Deployment writes that may
+admit Runtime work. An unchanged cursor loads no commands; an advanced cursor
+loads only its ordered tail. A missing tail or cursor regression triggers full
+replay into a replacement projection. Any failure rejects admission before a
+Session changes.
 
 ## Flow One: Configuration To Application
 
@@ -206,12 +215,12 @@ flowchart TD
     I["Return validation or conflict error; no executable change"]
     J["Existing: persist StoredPublication"]
 
-    K["Added: ExecutableAgentRegistrar.register"]
+    K["Existing: ExecutableAgentRegistrar.register"]
     KA{"Composition mode"}
-    KB["Added: LocalExecutableAgentRegistrar"]
-    KC["Added: HttpExecutableAgentRegistrar"]
-    KD["Added: authenticated registration router"]
-    KE["Added: durable Postgres registrar + ExecutableAgentCatalog"]
+    KB["Existing: LocalExecutableAgentRegistrar"]
+    KC["Existing: HttpExecutableAgentRegistrar"]
+    KD["Existing: authenticated registration router"]
+    KE["Existing: durable Postgres registrar + ExecutableAgentCatalog"]
     KF{"Registration acknowledged?"}
     KG["Return publication success with id and fingerprint"]
     KH["Return retryable unavailability; publication remains durable"]
@@ -550,7 +559,10 @@ cite the rule they cover.
 | E18 | Environment archive/delete is retried | preserve terminal Control history, withdraw Coordinator current idempotently, and deny new Sessions |
 | E19 | File upload/artifact command is retried with the same scoped key | return one logical File while immutable bytes may be content-deduplicated |
 | E20 | logical Resource deletion or purge scheduling is retried | persist one deterministic purge intent; physical reclaim remains reference-fenced and idempotent |
-| E21 | another Coordinator replica accepted an Agent or Environment registration | refresh both durable executable projections before Session/Deployment admission; fail closed if either replay fails |
+| E21 | another Coordinator replica accepted an Agent or Environment registration | compare durable high-water marks and incrementally advance both projections before Session/Deployment admission |
+| E22 | incremental projection tail is missing/out of order, or durable high-water is behind the local cursor | atomically full-replay the owning command log; fail admission closed if replay fails |
+| E23 | Control starts while either registration boundary is unavailable | remain live but unready, report pending/failure/lag metrics, and retry both authoritative recoveries with bounded backoff until ready |
+| E24 | configuration requests a standalone Resources role without an independent scaling or credential-isolation topology | reject the role and keep the canonical Resources component co-deployed; create no extra migration or application path |
 
 The concrete multi-process topology, cluster lifecycle, and fault-injection
 entry points are owned by the
