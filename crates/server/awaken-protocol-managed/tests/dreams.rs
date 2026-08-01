@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
+use awaken_ext_memory::DreamRepository;
 use awaken_protocol_managed::types::{DreamModelConfig, DreamUsage};
 use awaken_protocol_managed::{
     BUILT_IN_DREAM_AGENT_ID, DREAMING_BETA, DreamCancellation, DreamFailure, DreamPolicyConfig,
-    DreamPreparation, DreamRepository, DreamRequest, DreamSessionSource, DreamState, DreamWorker,
-    dreams_router, enforce_managed_beta,
+    DreamPreparation, DreamRequest, DreamSessionSource, DreamState, DreamWorker, dreams_router,
+    enforce_managed_beta,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::body::Body;

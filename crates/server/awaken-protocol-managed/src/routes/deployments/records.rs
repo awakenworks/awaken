@@ -67,7 +67,7 @@ impl DeploymentRecord {
     }
 
     /// The parsed cron for an active, non-archived deployment.
-    pub(super) fn active_cron(&self) -> Option<(crate::cron::Cron, Tz)> {
+    pub(super) fn active_cron(&self) -> Option<(awaken_deployment_contract::Cron, Tz)> {
         if self.status != "active" || self.archived_at.is_some() {
             return None;
         }

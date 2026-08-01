@@ -311,7 +311,7 @@ fn policy_record(policy: &StoredDreamPolicy) -> Result<DreamPolicyRecord, DreamA
 }
 
 fn timestamp(value: u64) -> String {
-    crate::cron::to_rfc3339(value)
+    awaken_session_contract::epoch_millis_to_rfc3339(value)
 }
 
 fn now_ms() -> u64 {
@@ -580,9 +580,14 @@ impl DreamState {
                 object_type: "dream_policy",
                 memory_store_id: policy.memory_store_id,
                 config: policy.config,
-                next_due_at: Some(crate::cron::to_rfc3339(policy.next_due_ms)),
-                last_completed_cutoff_at: (policy.last_completed_cutoff_ms > 0)
-                    .then(|| crate::cron::to_rfc3339(policy.last_completed_cutoff_ms)),
+                next_due_at: Some(awaken_session_contract::epoch_millis_to_rfc3339(
+                    policy.next_due_ms,
+                )),
+                last_completed_cutoff_at: (policy.last_completed_cutoff_ms > 0).then(|| {
+                    awaken_session_contract::epoch_millis_to_rfc3339(
+                        policy.last_completed_cutoff_ms,
+                    )
+                }),
             },
             None => DreamPolicy {
                 object_type: "dream_policy",

@@ -38,7 +38,7 @@ each class must satisfy — and does not redefine those crates.
 | role catalog coverage | design docs | stable authority introduced without owner |
 | ownership index | design/wiki docs | source doc added without retrieval owner |
 | adapter conformance | protocol adapters | public DTO mapping drift |
-| config/admin write denial | protocol runtime adapters | runtime protocol accidentally mutates config/admin state |
+| config/admin write denial | public protocol adapters | runtime execution accidentally mutates config/admin state |
 | snapshot contract surface | runtime contract/spec and server adapters | `AgentId` treated as complete executable config or runtime imports config CRUD/admin workflow |
 | publication/install boundary | config domain and runtime contract/spec | publication coordinator or registry compiler enters runtime core, or runtime compiles config instead of installing complete data |
 

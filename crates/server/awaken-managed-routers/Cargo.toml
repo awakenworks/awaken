@@ -11,7 +11,7 @@ awaken-resource-contract.workspace = true
 awaken-memory-store.workspace = true
 awaken-skill-store.workspace = true
 awaken-ext-skills.workspace = true
-awaken-protocol-transport.workspace = true
+awaken-session-contract.workspace = true
 awaken-tenancy.workspace = true
 axum = { version = "0.8", features = ["multipart"] }
 serde = { workspace = true, features = ["derive"] }

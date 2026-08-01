@@ -30,7 +30,7 @@ use serde_json::{Value, json};
 use crate::resource_scope::RequiredWorkspaceScope;
 
 fn timestamp(nanos: u128) -> String {
-    awaken_protocol_transport::epoch_millis_to_rfc3339(
+    awaken_session_contract::epoch_millis_to_rfc3339(
         (nanos / 1_000_000).min(u64::MAX as u128) as u64
     )
 }

@@ -273,7 +273,7 @@ impl BuiltInDreamAgent {
         let input = ApplicationSessionInput {
             mounts: mount_values,
             prompts,
-            network_restriction: Some(awaken_protocol_managed::SessionNetworkPolicy::None),
+            network_restriction: Some(awaken_session_contract::SessionNetworkPolicy::None),
             ..Default::default()
         };
         self.managed

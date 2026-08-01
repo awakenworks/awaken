@@ -36,7 +36,7 @@ fn now_nanos() -> u64 {
 }
 
 fn timestamp(nanos: u64) -> String {
-    awaken_protocol_transport::epoch_millis_to_rfc3339(nanos / 1_000_000)
+    awaken_session_contract::epoch_millis_to_rfc3339(nanos / 1_000_000)
 }
 
 fn project_definition(definition: &SkillDefinition) -> Value {

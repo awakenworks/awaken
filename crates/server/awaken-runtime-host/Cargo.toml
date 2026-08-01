@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 # The neutral session substrate (SharedHost) and the two port adapters
-# (ManagedHost / ProtocolHost) live here; the assembly bin mounts them.
+# (ManagedHost / RunApplicationHost) live here; the assembly bin mounts them.
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-contract.workspace = true
@@ -54,7 +54,6 @@ awaken-run-executor-acp = { workspace = true }
 awaken-config-resolver = { workspace = true }
 awaken-credential-vault = { workspace = true }
 awaken-credential-materializer = { workspace = true }
-awaken-protocol-transport = { workspace = true }
 async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

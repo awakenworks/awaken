@@ -877,20 +877,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "proptest",
         "tempfile",
     },
-    # Shared protocol transport seam: the neutral vocabulary every streaming /
-    # request-response adapter drives (`ProtocolRuntime` + its step/pending/resume
-    # value objects) plus the wire-agnostic `blocks_text` helper, below the wire-DTO
-    # layer. It names only the agent-domain contract (for `Message`/`ContentBlock`)
-    # and no wire type, so AG-UI, AI SDK, and A2A share one copy instead of three.
-    "awaken-protocol-transport": {
-        "awaken-agent-contract",
-        "async-trait",
-        "serde_json",
-        "thiserror",
-        # `ChannelStreamSink` forwards live stream events onto an mpsc channel a
-        # streaming adapter drains (the tool-input streaming path); `sync` only.
-        "tokio",
-    },
     # ACP bridge + supervisor (ADR-0041 Slice 3): the anti-corruption boundary
     # between an opaque agent's protocol stream and the neutral runtime. It drives
     # an `AgentChannel` (the transport seam) + `ProcessHandle` and projects events
@@ -962,13 +948,13 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # AI SDK v6 protocol adapter: the anti-corruption boundary between the Vercel
     # AI SDK UI Message Stream wire and the neutral runtime. Like the managed
     # adapter it owns public DTOs + the axum router, depends only on the
-    # agent-domain contract (for `Message`/`project`), and drives an `AiSdkRuntime`
+    # neutral Session contract and drives its `RunApplication`
     # port, so it constructs no runtime.
     "awaken-protocol-ai-sdk": {
         "awaken-agent-contract",
         "awaken-api-contract",
         "awaken-tenancy",
-        "awaken-protocol-transport",
+        "awaken-session-contract",
         "async-trait",
         "serde",
         "serde_json",
@@ -986,7 +972,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-api-contract",
         "awaken-tenancy",
-        "awaken-protocol-transport",
+        "awaken-session-contract",
         "async-trait",
         "serde",
         "serde_json",
@@ -1024,11 +1010,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     },
     # A2A protocol adapter: the anti-corruption boundary between the A2A HTTP+JSON
     # wire and the neutral runtime. It supports request/response plus SSE streams
-    # while driving a `ProtocolRuntime` port and constructing no runtime.
+    # while driving the neutral `RunApplication` port and constructing no runtime.
     "awaken-protocol-a2a": {
         "awaken-agent-contract",
         "awaken-credential",
-        "awaken-protocol-transport",
+        "awaken-session-contract",
         "async-trait",
         "serde",
         "serde_json",
@@ -1239,6 +1225,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-resource-contract",
         # dev-only: host tests use the canonical Resource catalog adapter.
         "awaken-resource-store",
+        "awaken-resource-contract",
+        "awaken-resource-contract",
         "awaken-runtime",
         "tower",
         # dev-only: the files/models routers were extracted to this sibling adapter;
@@ -1298,7 +1286,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-run-executor-acp",
         "awaken-config-resolver",
         "awaken-credential-vault",
-        "awaken-protocol-transport",
+        "awaken-session-contract",
         "awaken-protocol-a2a",
         "async-trait",
         "axum",
@@ -1354,11 +1342,13 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-config-resolver",
         "awaken-config-store",
         "awaken-executable-agent-catalog",
+        "awaken-executable-agent-contract",
         "awaken-connection-plan",
         "awaken-credential-vault",
         "awaken-data-subject",
         # dev-only: capability-inventory tests use the canonical Resource adapter.
         "awaken-resource-store",
+        "awaken-resource-contract",
         "awaken-ext-builtin-tools",
         "awaken-ext-skills",
         "awaken-ext-mcp",
@@ -1381,7 +1371,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-ag-ui",
         "awaken-protocol-ai-sdk",
         "awaken-protocol-managed",
-        "awaken-protocol-transport",
+        "awaken-session-contract",
         "awaken-provider-genai",
         "awaken-run-executor-acp",
         "awaken-run-ingress",
@@ -1425,6 +1415,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-deployment-contract",
         "awaken-session-store",
         "awaken-session-contract", "awaken-resource-contract",
+        "awaken-ext-memory",
         # Outer composition owns Hand topology/relay; runtime-host exposes only APIs/SPIs.
         "awaken-connection-plan", "awaken-tool-relay", "awaken-worker-registry", "awaken-managed-routers",
         # dev-only: A2A loopback wraps mocks in the remote-Agent adapter.
@@ -1444,7 +1435,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dedicated bearer is configured. Same protocol-adapter direction as
         # AI SDK / AG-UI / A2A; it never reaches into the control plane.
         "awaken-protocol-mcp",
-        "awaken-protocol-transport",
+        "awaken-session-contract",
         "awaken-provider-genai", "awaken-ext-skills", "awaken-sandbox-local",
         "awaken-memory-store",
         # The data-plane composition root opens the embedded File/Memory/Skill/
@@ -1538,6 +1529,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-credential-vault",
         "awaken-data-subject",
         "awaken-resource-store",
+        "awaken-resource-contract",
         "awaken-iam-contract",
         "awaken-iam-server",
         "awaken-iam-core",
@@ -1606,6 +1598,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-webhook-managed",
         "awaken-file-store", "awaken-memory-store", "awaken-resource-contract",
         "awaken-session-contract", "awaken-session-store",
+        "awaken-deployment-contract", "awaken-ext-memory",
         "awaken-executable-agent-contract",
         "awaken-executable-agent-catalog",
         "awaken-executable-environment-contract",

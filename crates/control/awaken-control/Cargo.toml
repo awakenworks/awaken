@@ -22,6 +22,8 @@ awaken-executable-agent-contract = { workspace = true }
 awaken-tenancy = { workspace = true }
 awaken-authz-enforce = { workspace = true }
 awaken-protocol-managed = { workspace = true }
+awaken-resource-contract.workspace = true
+awaken-session-contract.workspace = true
 awaken-config-store = { workspace = true }
 awaken-config-resolver = { workspace = true }
 # The data-plane skill catalog port (ADR-0036): the capability inventory lists skill

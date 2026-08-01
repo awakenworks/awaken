@@ -12,8 +12,8 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::stream::event::Event;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
-use awaken_protocol_transport::{
-    DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
+use awaken_session_contract::{
+    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
@@ -24,13 +24,13 @@ use tower::ServiceExt;
 struct StreamingMock;
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for StreamingMock {
+impl RunApplication for StreamingMock {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         Ok(committed())
     }
 
@@ -40,7 +40,7 @@ impl ProtocolRuntime for StreamingMock {
         _agent: Option<String>,
         _messages: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         let run = RunId("r1".into());
         for kind in [
             AgentEvent::Fact(Fact::RunStarted),
@@ -78,8 +78,8 @@ impl ProtocolRuntime for StreamingMock {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!()
     }
 
@@ -97,8 +97,8 @@ impl ProtocolRuntime for StreamingMock {
 }
 
 fn committed() -> StepOutcome {
-    StepOutcome {
-        new_messages: vec![Message {
+    StepOutcome::awaiting(
+        vec![Message {
             id: Id("a1".into()),
             role: Role::Assistant,
             content: vec![ContentBlock::ToolUse {
@@ -107,22 +107,22 @@ fn committed() -> StepOutcome {
                 input: json!({"path": "x"}),
             }],
         }],
-        terminal: Terminal::Awaiting {
-            pending: Some(Pending {
-                tool_use_id: "c1".into(),
-                name: "read".into(),
-                input: json!({"path": "x"}),
-                client_executed: true,
-            }),
-        },
-    }
+        Some(Pending {
+            tool_use_id: "c1".into(),
+            name: "read".into(),
+            input: json!({"path": "x"}),
+            client_executed: true,
+        }),
+        false,
+        false,
+    )
 }
 
 async fn frames() -> Vec<Value> {
     frames_for(Arc::new(StreamingMock)).await
 }
 
-async fn frames_for(runtime: Arc<dyn ProtocolRuntime>) -> Vec<Value> {
+async fn frames_for(runtime: Arc<dyn RunApplication>) -> Vec<Value> {
     let app = awaken_protocol_ag_ui::router::router(runtime);
     let body = json!({
         "threadId": "t1",
@@ -178,13 +178,13 @@ struct PrefixMock {
 }
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for PrefixMock {
+impl RunApplication for PrefixMock {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         Ok(self.outcome.clone())
     }
 
@@ -194,7 +194,7 @@ impl ProtocolRuntime for PrefixMock {
         _agent: Option<String>,
         _messages: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         for kind in self.events.clone() {
             sink.send(Event {
                 run_id: RunId("r1".into()),
@@ -210,8 +210,8 @@ impl ProtocolRuntime for PrefixMock {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!()
     }
 
@@ -239,10 +239,12 @@ async fn run_started_and_reasoning_only_prefix_keeps_committed_text_once() {
                 delta: "hmm".into(),
             }),
         ],
-        outcome: StepOutcome {
-            new_messages: vec![Message::text(Id("a1".into()), Role::Assistant, "answer")],
-            terminal: Terminal::Finished,
-        },
+        outcome: StepOutcome::ended(
+            vec![Message::text(Id("a1".into()), Role::Assistant, "answer")],
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ),
     }))
     .await;
     assert_eq!(
@@ -296,10 +298,12 @@ async fn live_only_tool_is_closed_when_not_present_in_committed_outcome() {
                 args_delta: "{".into(),
             }),
         ],
-        outcome: StepOutcome {
-            new_messages: Vec::new(),
-            terminal: Terminal::Finished,
-        },
+        outcome: StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ),
     }))
     .await;
     assert_eq!(
@@ -328,13 +332,13 @@ struct HangupProbe {
 }
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for HangupProbe {
+impl RunApplication for HangupProbe {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!("the disconnect test only streams")
     }
 
@@ -344,7 +348,7 @@ impl ProtocolRuntime for HangupProbe {
         _agent: Option<String>,
         _messages: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         let run = RunId("r1".into());
         for _ in 0..10_000 {
             let sent = sink
@@ -360,18 +364,20 @@ impl ProtocolRuntime for HangupProbe {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         self.finished.notify_one();
-        Ok(StepOutcome {
-            new_messages: Vec::new(),
-            terminal: Terminal::Finished,
-        })
+        Ok(StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
 
     async fn resume(
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!()
     }
     async fn pending(&self, _thread: &str) -> Option<Pending> {

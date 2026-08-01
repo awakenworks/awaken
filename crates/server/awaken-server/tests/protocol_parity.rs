@@ -17,8 +17,9 @@
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
+use awaken_agent_contract::agent::run::{EndCause, Failure};
 use awaken_agent_contract::event::{Fact, Transcoder, fold_messages};
-use awaken_protocol_transport::{Pending, StepFailure, StepOutcome, Terminal};
+use awaken_session_contract::{Pending, StepOutcome};
 
 use awaken_protocol_a2a::encoder as a2a;
 use awaken_protocol_a2a::types::TaskState;
@@ -139,10 +140,12 @@ fn tool_result(id: &str, call: &str, text: &str) -> Message {
 }
 
 fn finished(msgs: Vec<Message>) -> StepOutcome {
-    StepOutcome {
-        new_messages: msgs,
-        terminal: Terminal::Finished,
-    }
+    StepOutcome::ended(
+        msgs,
+        awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+        false,
+        false,
+    )
 }
 
 // =========================================================================
@@ -164,22 +167,22 @@ fn a_natural_finish_is_a_clean_terminal_on_every_wire() {
 
 #[test]
 fn awaiting_on_a_tool_is_action_required_on_every_wire() {
-    let outcome = StepOutcome {
-        new_messages: vec![assistant_tool(
+    let outcome = StepOutcome::awaiting(
+        vec![assistant_tool(
             "a1",
             "c1",
             "submit_answer",
             serde_json::json!({}),
         )],
-        terminal: Terminal::Awaiting {
-            pending: Some(Pending {
-                tool_use_id: "c1".into(),
-                name: "submit_answer".into(),
-                input: serde_json::json!({}),
-                client_executed: true,
-            }),
-        },
-    };
+        Some(Pending {
+            tool_use_id: "c1".into(),
+            name: "submit_answer".into(),
+            input: serde_json::json!({}),
+            client_executed: true,
+        }),
+        false,
+        false,
+    );
     let (reason, _) = ai_terminal(&ai_events(&outcome));
     assert_eq!(reason.as_deref(), Some("tool-calls"));
     // AG-UI has no dedicated interrupt frame; an await closes with RUN_FINISHED.
@@ -193,13 +196,15 @@ fn awaiting_on_a_tool_is_action_required_on_every_wire() {
 
 #[test]
 fn a_failure_surfaces_as_an_error_wherever_the_wire_can_and_never_as_success() {
-    let outcome = StepOutcome {
-        new_messages: vec![assistant("a1", "partial")],
-        terminal: Terminal::Failed(StepFailure {
+    let outcome = StepOutcome::ended(
+        vec![assistant("a1", "partial")],
+        EndCause::Error(Failure::Inference {
             code: "inference_failed".into(),
             message: "upstream is down".into(),
         }),
-    };
+        false,
+        false,
+    );
     // AI-SDK: an `error` frame plus finish("error") — never finish("stop").
     let ai = ai_events(&outcome);
     let (reason, errored) = ai_terminal(&ai);
@@ -217,14 +222,19 @@ fn a_failure_surfaces_as_an_error_wherever_the_wire_can_and_never_as_success() {
 
 #[test]
 fn budget_exhaustion_is_a_finish_for_streaming_wires_but_failed_for_a2a() {
+    // Cause/effect decision table for the four terminal causes is exercised by
+    // this section: NaturalEnd, Awaiting, Error, and MaxSteps each project once
+    // through every wire from the same authoritative RunState.
     // The one intended cross-wire divergence: exhaustion is a *clean* end on
     // the streaming wires (no "exhausted" finish reason exists), a distinct
     // `RetriesExhausted` on managed, and — because A2A has only completed/failed —
     // a `failed` task. Pins all four so a refactor can't quietly realign them.
-    let outcome = StepOutcome {
-        new_messages: vec![assistant("a1", "ran out")],
-        terminal: Terminal::Exhausted,
-    };
+    let outcome = StepOutcome::ended(
+        vec![assistant("a1", "ran out")],
+        EndCause::MaxSteps,
+        false,
+        false,
+    );
     let ai = ai_events(&outcome);
     let (reason, errored) = ai_terminal(&ai);
     assert_eq!(reason.as_deref(), Some("stop"), "ai-sdk: {ai:?}");

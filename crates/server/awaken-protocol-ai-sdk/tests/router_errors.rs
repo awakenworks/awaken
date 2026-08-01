@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
-use awaken_protocol_transport::{
-    DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
+use awaken_session_contract::{
+    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
@@ -15,25 +15,27 @@ use tower::ServiceExt;
 struct NoAwaitingRuntime;
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for NoAwaitingRuntime {
+impl RunApplication for NoAwaitingRuntime {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
-        Ok(StepOutcome {
-            new_messages: Vec::new(),
-            terminal: Terminal::Finished,
-        })
+    ) -> Result<StepOutcome, RunApplicationError> {
+        Ok(StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
 
     async fn resume(
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!("nothing is awaiting, so resume must never be reached")
     }
 
@@ -78,7 +80,7 @@ async fn frames_at(uri: &str, body: Value) -> Vec<Value> {
 
 #[tokio::test]
 async fn a_tool_decision_with_no_awaiting_run_yields_an_error_frame() {
-    // Resume-only input (an assistant tool decision, no new user turn) with nothing awaiting.
+    // RunResume-only input (an assistant tool decision, no new user turn) with nothing awaiting.
     let frames = frames(json!({
         "threadId": "t1",
         "messages": [{
@@ -129,13 +131,13 @@ async fn the_agent_scoped_run_route_streams_a_turn() {
 struct AwaitingRuntime;
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for AwaitingRuntime {
+impl RunApplication for AwaitingRuntime {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!("this test only drives the resume path")
     }
 
@@ -143,13 +145,15 @@ impl ProtocolRuntime for AwaitingRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         use awaken_agent_contract::agent::message::{Id, Role};
-        Ok(StepOutcome {
-            new_messages: vec![Message::text(Id("a1".into()), Role::Assistant, "done")],
-            terminal: Terminal::Finished,
-        })
+        Ok(StepOutcome::ended(
+            vec![Message::text(Id("a1".into()), Role::Assistant, "done")],
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
 
     async fn pending(&self, _thread: &str) -> Option<Pending> {
@@ -209,21 +213,21 @@ async fn a_matching_tool_decision_resumes_an_awaiting_run_to_a_finish() {
 struct PanickingRuntime;
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for PanickingRuntime {
+impl RunApplication for PanickingRuntime {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         panic!("the turn task died");
     }
     async fn resume(
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!()
     }
     async fn pending(&self, _thread: &str) -> Option<Pending> {

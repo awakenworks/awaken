@@ -5,8 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
 use awaken_protocol_a2a::router;
-use awaken_protocol_transport::{
-    DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
+use awaken_session_contract::{
+    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 use axum::{Router, body::Body, http::Request};
 use http_body_util::BodyExt;
@@ -16,23 +16,32 @@ use tower::ServiceExt;
 struct Runtime;
 
 #[async_trait]
-impl ProtocolRuntime for Runtime {
+impl RunApplication for Runtime {
     async fn run(
         &self,
         _: &str,
         _: Option<String>,
         _: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
-        Ok(StepOutcome {
-            new_messages: Vec::new(),
-            terminal: Terminal::Finished,
-        })
+    ) -> Result<StepOutcome, RunApplicationError> {
+        Ok(StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
-    async fn resume(&self, _: &str, _: &str, _: Resume) -> Result<StepOutcome, DriverError> {
-        Ok(StepOutcome {
-            new_messages: Vec::new(),
-            terminal: Terminal::Finished,
-        })
+    async fn resume(
+        &self,
+        _: &str,
+        _: &str,
+        _: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        Ok(StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
     async fn pending(&self, _: &str) -> Option<Pending> {
         None

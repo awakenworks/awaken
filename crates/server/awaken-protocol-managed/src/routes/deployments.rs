@@ -51,9 +51,9 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
-fn parsed_schedule(schedule: &Schedule) -> Option<(crate::cron::Cron, Tz)> {
+fn parsed_schedule(schedule: &Schedule) -> Option<(awaken_deployment_contract::Cron, Tz)> {
     Some((
-        crate::cron::Cron::parse(schedule.expression()).ok()?,
+        awaken_deployment_contract::Cron::parse(schedule.expression()).ok()?,
         schedule.timezone().parse().ok()?,
     ))
 }
@@ -66,7 +66,7 @@ fn upcoming_occurrences(schedule: &Schedule, after_ms: u64) -> Vec<String> {
     (0..5)
         .filter_map(|_| {
             cursor = cron.next_after_in(cursor, timezone)?;
-            Some(crate::cron::to_rfc3339(cursor))
+            Some(awaken_session_contract::epoch_millis_to_rfc3339(cursor))
         })
         .collect()
 }
@@ -281,7 +281,7 @@ fn validate_schedule(schedule: Option<&Schedule>) -> Result<(), WireError> {
         return Ok(());
     };
     let expr = schedule.expression();
-    crate::cron::Cron::parse(expr).map_err(|e| {
+    awaken_deployment_contract::Cron::parse(expr).map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
@@ -370,7 +370,7 @@ fn resume_schedule(record: &mut DeploymentRecord, now_ms: u64) {
         .schedule
         .as_ref()
         .and_then(|schedule| next_occurrence(schedule, now_ms));
-    record.updated_at = crate::cron::to_rfc3339(now_ms);
+    record.updated_at = awaken_session_contract::epoch_millis_to_rfc3339(now_ms);
 }
 
 fn deployment_page(query: &PageQuery) -> Result<PageQuery, WireError> {
@@ -437,8 +437,8 @@ async fn create_deployment(
         .unwrap_or_else(|| crate::state::DEFAULT_SCOPE.to_string());
     let agent = state.resolve_agent(&workspace_id, &params.agent).await?;
     let record = DeploymentRecord {
-        created_at: crate::cron::to_rfc3339(now_ms()),
-        updated_at: crate::cron::to_rfc3339(now_ms()),
+        created_at: awaken_session_contract::epoch_millis_to_rfc3339(now_ms()),
+        updated_at: awaken_session_contract::epoch_millis_to_rfc3339(now_ms()),
         workspace_id,
         agent,
         environment_id: params.environment_id,
@@ -606,7 +606,7 @@ async fn update_deployment(
     if current.schedule.is_none() && candidate.schedule.is_some() {
         ensure_scheduled_capacity(&state.deployments.lock().unwrap(), state.scheduled_limit)?;
     }
-    candidate.updated_at = crate::cron::to_rfc3339(now_ms());
+    candidate.updated_at = awaken_session_contract::epoch_millis_to_rfc3339(now_ms());
     let projected = candidate.project(&id);
     state
         .persist_deployment_event(&id, &candidate, "deployment.updated")
@@ -634,8 +634,8 @@ async fn archive_deployment(
     if candidate.archived_at.is_some() {
         return Ok(Json(candidate.project(&id)));
     }
-    candidate.archived_at = Some(crate::cron::to_rfc3339(now_ms()));
-    candidate.updated_at = crate::cron::to_rfc3339(now_ms());
+    candidate.archived_at = Some(awaken_session_contract::epoch_millis_to_rfc3339(now_ms()));
+    candidate.updated_at = awaken_session_contract::epoch_millis_to_rfc3339(now_ms());
     state
         .persist_deployment_event(&id, &candidate, "deployment.archived")
         .await
@@ -668,7 +668,7 @@ async fn pause_deployment(
     }
     candidate.status = "paused".into();
     candidate.paused_reason = Some(PausedReason::Manual);
-    candidate.updated_at = crate::cron::to_rfc3339(now_ms());
+    candidate.updated_at = awaken_session_contract::epoch_millis_to_rfc3339(now_ms());
     state
         .persist_deployment_event(&id, &candidate, "deployment.paused")
         .await
@@ -737,7 +737,7 @@ async fn run_deployment(
     let run_id = format!("drun_{n:016}");
     let launch = deployment.launch(&id, &run_id);
     let record = RunRecord {
-        created_at: crate::cron::to_rfc3339(now_ms()),
+        created_at: awaken_session_contract::epoch_millis_to_rfc3339(now_ms()),
         deployment_id: id,
         workspace_id: launch.workspace_id.clone(),
         agent: launch.agent.clone(),

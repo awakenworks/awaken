@@ -2,8 +2,8 @@
 //!
 //! It owns the protocol-neutral [`SharedHost`] (the thread-keyed session
 //! substrate) and the two port adapters mounted over it: [`ManagedHost`] (the
-//! Managed Agents `SessionRuntime`) and [`ProtocolHost`] (the neutral
-//! `ProtocolRuntime` behind the AI SDK / AG-UI / A2A wire adapters). Both hold
+//! Managed Agents `SessionRuntime`) and [`RunApplicationHost`] (the neutral
+//! `RunApplication` behind the AI SDK / AG-UI / A2A wire adapters). Both hold
 //! the same `Arc<SharedHost>`, so a run started through one protocol can be
 //! resumed or observed through another on the *same thread*.
 //!
@@ -46,11 +46,11 @@ mod memory_stores;
 mod memory_transport;
 mod no_model;
 mod outcome_controller;
-mod protocol_host;
 mod provisioning;
 mod redact;
 mod repository_transport;
 mod resource_reclamation;
+mod run_application_host;
 pub use resource_reclamation::HostResourceReclamation;
 mod run_exec;
 mod sandbox_source;
@@ -111,13 +111,13 @@ pub use crate::memory_transport::{
     memory_materialization_reference, worker_memory_router,
 };
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
-pub use crate::protocol_host::{
-    ProtocolHost, SessionDefaultsPreparationError, SessionDefaultsPreparer,
-};
 pub use crate::repository_transport::{
     CatalogRepositoryBindingVerifier, HttpRepositoryBindingVerifier, RepositoryBindingVerifier,
     RepositoryBindingVerifierError, WorkerRepositoryBindingService,
     worker_repository_binding_router,
+};
+pub use crate::run_application_host::{
+    RunApplicationHost, SessionDefaultsPreparationError, SessionDefaultsPreparer,
 };
 pub use crate::skill_bundle_transport::{
     HttpSkillBundleSource, SkillBundleSource, SkillBundleSourceError, StoreSkillBundleSource,

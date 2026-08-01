@@ -289,7 +289,7 @@ async fn an_awaiting_delegation_resumes_through_the_resolver() {
         .resume_ticket(&run_id)
         .expect("a delegation ticket is committed");
 
-    // Resume with the user's input; the resolver finishes and the run completes.
+    // RunResume with the user's input; the resolver finishes and the run completes.
     let resume_ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(commit.clone());

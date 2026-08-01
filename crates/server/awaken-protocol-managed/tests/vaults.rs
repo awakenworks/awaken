@@ -20,8 +20,8 @@ use awaken_model_catalog::repo::InMemoryCatalogRepo;
 use awaken_model_catalog::{
     ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
 };
-use awaken_protocol_managed::{McpProbe, McpProbeStatus};
 use awaken_protocol_managed::{VaultState, vault_router};
+use awaken_session_contract::{McpProbe, McpProbeStatus};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

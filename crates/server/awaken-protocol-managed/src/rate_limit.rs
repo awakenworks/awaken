@@ -191,7 +191,9 @@ fn apply_headers(headers: &mut HeaderMap, decision: RateDecision) {
         .unwrap_or_default()
         .as_millis() as u64
         + decision.reset_after.saturating_mul(1_000);
-    if let Ok(value) = HeaderValue::from_str(&crate::cron::to_rfc3339(reset_ms)) {
+    if let Ok(value) =
+        HeaderValue::from_str(&awaken_session_contract::epoch_millis_to_rfc3339(reset_ms))
+    {
         headers.insert("anthropic-ratelimit-requests-reset", value);
     }
     if let Some(retry_after) = decision.retry_after {

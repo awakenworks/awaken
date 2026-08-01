@@ -365,9 +365,9 @@ async fn open_process_stores(
         ensure_parent(&coordinator_cfg.sessions)?;
         ensure_parent(&coordinator_cfg.captured_content)?;
         let sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>;
-        let deployments: Arc<dyn awaken_protocol_managed::DeploymentRepository>;
-        let memory_extractions: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>;
-        let dream_repository: Arc<dyn awaken_protocol_managed::DreamRepository>;
+        let deployments: Arc<dyn awaken_deployment_contract::DeploymentRepository>;
+        let memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>;
+        let dream_repository: Arc<dyn awaken_ext_memory::DreamRepository>;
         match &coordinator_cfg.sessions {
             StoreBackend::Sqlite(p) => {
                 let repository = Arc::new(
@@ -959,7 +959,7 @@ fn local_org_id() -> String {
 mod runtime_session_store_tests {
     use super::*;
     use awaken_config_service::ModelPublicationResolver;
-    use awaken_protocol_managed::{
+    use awaken_session_contract::{
         ApplicationContributionState, ControlSessionCreationInputs, EnvironmentFingerprint,
         EnvironmentRevision, EnvironmentSnapshot, IdempotencyRecord, PersistedSession,
         SessionBaselineState, SessionCreationIntent, SessionNetworkPolicy, stable_fingerprint,

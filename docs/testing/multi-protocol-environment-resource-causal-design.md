@@ -146,7 +146,7 @@ snapshot                                 -> existing SandboxOverride -> SandboxS
 Environment network U|N × Sandbox default|exact-workdir
 × Resource absent|File × Protocol AI-SDK|AG-UI|A2A
     -> Managed Session freezes one baseline
-    -> ProtocolHost adopts that exact thread
+    -> RunApplicationHost adopts that exact thread through the neutral RunApplication port
     -> existing SandboxSpec/provider realizes it
     -> turn commits and projections retain exact Environment/Resource identity
 ```

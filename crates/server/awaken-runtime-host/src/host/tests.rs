@@ -1455,7 +1455,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
 
     let reply = |outcome: &awaken_session_contract::StepOutcome| {
         outcome
-            .messages
+            .new_messages
             .iter()
             .rev()
             .find(|message| message.role == Role::Assistant)
@@ -1670,7 +1670,7 @@ async fn pinned_memory_policy_can_disable_recall_and_extraction() {
         .await
         .unwrap();
     let reply = outcome
-        .messages
+        .new_messages
         .iter()
         .rev()
         .find(|message| message.role == Role::Assistant)
@@ -1767,7 +1767,7 @@ async fn resume_ended_turn_triggers_memory_extraction() {
     );
     let pending = r1.pending.expect("a pending tool");
 
-    // Resume approves the write; the turn now ends and extraction fires.
+    // RunResume approves the write; the turn now ends and extraction fires.
     let r2 = host
         .resume(
             "t-res",

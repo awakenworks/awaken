@@ -9,11 +9,12 @@ use std::sync::Arc;
 use awaken_authz_enforce::ApplicationAccessStore;
 use awaken_deployment_contract::DeploymentRepository;
 use awaken_executable_agent_contract::ExecutableAgentRegistrationSource;
+use awaken_ext_memory::DreamRepository;
 use awaken_managed_routers::ModelDirectory;
 use awaken_protocol_managed::{
-    DeploymentState, DreamRepository, EnvironmentExecutionState, ManagedRateLimiter, ManagedState,
-    ResourceCatalog,
+    DeploymentState, EnvironmentExecutionState, ManagedRateLimiter, ManagedState,
 };
+use awaken_resource_contract::ResourceCatalog;
 use awaken_session_contract::ManagedSessionRepository;
 use awaken_worker_transport_security::WorkerRequestAuthenticator;
 use axum::Router;

@@ -7,8 +7,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
 use awaken_protocol_a2a::router;
-use awaken_protocol_transport::{
-    DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
+use awaken_session_contract::{
+    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -19,25 +19,27 @@ use tower::ServiceExt;
 struct NoopRuntime;
 
 #[async_trait]
-impl ProtocolRuntime for NoopRuntime {
+impl RunApplication for NoopRuntime {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
-        Ok(StepOutcome {
-            new_messages: Vec::new(),
-            terminal: Terminal::Finished,
-        })
+    ) -> Result<StepOutcome, RunApplicationError> {
+        Ok(StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
 
     async fn resume(
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!("resume is not exercised by these error-path tests")
     }
 
@@ -176,17 +178,17 @@ struct FaultingRuntime {
 }
 
 #[async_trait]
-impl ProtocolRuntime for FaultingRuntime {
+impl RunApplication for FaultingRuntime {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         Err(if self.internal {
-            DriverError::Internal("upstream is down".into())
+            RunApplicationError::internal("upstream is down")
         } else {
-            DriverError::BadRequest("empty message".into())
+            RunApplicationError::bad_request("empty message")
         })
     }
 
@@ -194,8 +196,8 @@ impl ProtocolRuntime for FaultingRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!()
     }
 
@@ -212,7 +214,7 @@ impl ProtocolRuntime for FaultingRuntime {
     }
 }
 
-async fn rpc_on(rt: Arc<dyn ProtocolRuntime>, body: Value) -> Value {
+async fn rpc_on(rt: Arc<dyn RunApplication>, body: Value) -> Value {
     let app = router(rt);
     let resp = app
         .oneshot(

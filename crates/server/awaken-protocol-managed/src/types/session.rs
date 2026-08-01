@@ -15,7 +15,9 @@ use awaken_agent_contract::{AcpSessionConfiguration, agent::content::ContentBloc
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::agent::{AgentMcpServer, AgentSkill, AgentTool};
+use awaken_session_contract::AgentTool;
+
+use super::agent::{AgentMcpServer, AgentSkill};
 use super::resource::{ResourceInput, SessionResource};
 
 /// The Anthropic error envelope: `{ "type": "error", "error": { "type", "message" } }`.

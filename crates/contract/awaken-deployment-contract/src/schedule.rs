@@ -1,5 +1,5 @@
-//! A minimal, dependency-free 5-field POSIX cron evaluator for deployment
-//! schedules (`BetaManagedAgentsSchedule.expression`): `minute hour day-of-month
+//! The Deployment domain's 5-field POSIX cron schedule value object:
+//! `minute hour day-of-month
 //! month day-of-week`. It validates an expression at create/update (a malformed
 //! schedule is rejected, not silently stored), matches a wall-clock instant, and
 //! computes the next occurrence that drives the timed-trigger firing.
@@ -163,15 +163,19 @@ fn parse_field(spec: &str, min: u32, max: u32) -> Result<BTreeSet<u32>, String> 
     Ok(out)
 }
 
-/// Compatibility name for the shared protocol/HTTP timestamp projection.
-pub use awaken_protocol_transport::epoch_millis_to_rfc3339 as to_rfc3339;
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // 2026-01-05 09:00:00 UTC is a Monday. (Sanity anchor for the matchers.)
     const MON_0900: u64 = 1_767_603_600_000;
+
+    // Cause/effect graph and decision table for the schedule domain:
+    // C1 field count/range/step valid, C2 instant matches minute/hour/month,
+    // C3 day fields unrestricted/one restricted/both restricted, C4 timezone
+    // transition. E1 parse succeeds/fails, E2 matches under POSIX DOM-or-DOW,
+    // E3 next occurrence is strictly later and DST-safe. The tests below cover
+    // invalid C1, every C3 branch, bounded E3, and DST gap/repeat behavior.
 
     #[test]
     fn rejects_malformed_expressions() {
@@ -229,8 +233,14 @@ mod tests {
 
     #[test]
     fn rfc3339_round_trips_the_anchor() {
-        assert_eq!(to_rfc3339(MON_0900), "2026-01-05T09:00:00Z");
-        assert_eq!(to_rfc3339(0), "1970-01-01T00:00:00Z");
+        assert_eq!(
+            awaken_session_contract::epoch_millis_to_rfc3339(MON_0900),
+            "2026-01-05T09:00:00Z"
+        );
+        assert_eq!(
+            awaken_session_contract::epoch_millis_to_rfc3339(0),
+            "1970-01-01T00:00:00Z"
+        );
     }
 
     #[test]

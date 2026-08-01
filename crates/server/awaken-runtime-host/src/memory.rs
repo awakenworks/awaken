@@ -682,7 +682,7 @@ impl BoundMemory {
         Ok(())
     }
 
-    /// Resume every non-terminal intent for this exact frozen binding. Invoked
+    /// RunResume every non-terminal intent for this exact frozen binding. Invoked
     /// after enqueue and after Session rehydration, so a process crash cannot lose
     /// the remaining extraction/store/receipt work.
     pub async fn reconcile(&self, thread: &str) -> bool {

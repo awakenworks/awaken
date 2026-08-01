@@ -27,10 +27,11 @@ use awaken_data_subject::{
 };
 use awaken_executable_agent_contract::ExecutableAgentRegistrar;
 use awaken_model_catalog::repo::CatalogRepo;
-use awaken_protocol_managed::{ManagedAgentRepository, McpProbe, VaultState};
+use awaken_protocol_managed::{ManagedAgentRepository, VaultState};
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::RawTool;
+use awaken_session_contract::McpProbe;
 use axum::Router;
 
 use crate::{

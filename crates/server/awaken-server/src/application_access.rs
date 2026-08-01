@@ -120,7 +120,7 @@ async fn create(
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default();
     let expires_ms = now_ms.saturating_add(request.expires_in_seconds.saturating_mul(1000));
-    let expires_at = awaken_protocol_managed::cron::to_rfc3339(expires_ms);
+    let expires_at = awaken_session_contract::epoch_millis_to_rfc3339(expires_ms);
     let id = format!(
         "aat_{}_{}",
         now_ms,

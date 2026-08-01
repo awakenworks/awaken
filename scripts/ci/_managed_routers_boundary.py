@@ -11,7 +11,7 @@ MANAGED_ROUTERS_ALLOWED_DEPS = {
         "awaken-memory-store",
         "awaken-skill-store",
         "awaken-ext-skills",
-        "awaken-protocol-transport",
+        "awaken-session-contract",
         # File ownership is selected by the same neutral WorkspaceScope used by
         # every other platform resource adapter.
         "awaken-tenancy",

@@ -1,20 +1,20 @@
-//! Protocol-neutral adapter over the shared runtime host.
+//! Protocol-neutral Run application adapter over the shared runtime host.
 
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::agent::run::{EndCause, RunState};
-use awaken_protocol_transport::{
-    DriverError, Pending, ProtocolRuntime, Resume, StepFailure, StepOutcome, Terminal,
+use awaken_agent_contract::agent::run::RunState;
+use awaken_session_contract::{
+    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 
 use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
 use crate::{HostResume, SharedHost};
 
-fn to_driver_error(error: HostError) -> DriverError {
+fn to_application_error(error: HostError) -> RunApplicationError {
     match error.kind {
-        HostErrorKind::BadRequest => DriverError::BadRequest(error.message),
-        HostErrorKind::Internal => DriverError::Internal(error.message),
+        HostErrorKind::BadRequest => RunApplicationError::bad_request(error.message),
+        HostErrorKind::Internal => RunApplicationError::internal(error.message),
     }
 }
 
@@ -28,29 +28,28 @@ fn to_pending(pending: Option<PendingTool>) -> Option<Pending> {
 }
 
 fn to_step_outcome(result: RunResult) -> StepOutcome {
-    // The run's terminal `RunState` maps to exactly one `Terminal`. An ended
-    // fault is a successful host result with a failed terminal, not a driver
-    // transport error.
-    let terminal = match &result.state {
-        RunState::Awaiting => Terminal::Awaiting {
-            pending: to_pending(result.pending),
-        },
-        RunState::Ended(EndCause::MaxSteps) => Terminal::Exhausted,
-        RunState::Ended(EndCause::Error(fault)) => Terminal::Failed(StepFailure {
-            code: fault.code().to_string(),
-            message: fault.message(),
-        }),
-        _ => Terminal::Finished,
-    };
-    StepOutcome {
-        new_messages: result.new_messages,
-        terminal,
+    match result.state {
+        RunState::Awaiting => StepOutcome::awaiting(
+            result.new_messages,
+            to_pending(result.pending),
+            result.compacted,
+            result.rescheduled,
+        )
+        .with_delegated_runs(result.delegated_runs),
+        RunState::Ended(cause) => StepOutcome::ended(
+            result.new_messages,
+            cause,
+            result.compacted,
+            result.rescheduled,
+        )
+        .with_delegated_runs(result.delegated_runs),
+        RunState::Running => unreachable!("settled host result cannot remain Running"),
     }
 }
 
-/// The one [`ProtocolRuntime`] adapter wired behind AI SDK, AG-UI, and A2A.
+/// The one [`RunApplication`] adapter wired behind AI SDK, AG-UI, and A2A.
 /// Every protocol shares the same [`SharedHost`] and therefore the same thread.
-pub struct ProtocolHost {
+pub struct RunApplicationHost {
     host: Arc<SharedHost>,
     session_defaults: Option<Arc<dyn SessionDefaultsPreparer>>,
 }
@@ -69,7 +68,7 @@ pub trait SessionDefaultsPreparer: Send + Sync {
     ) -> Result<(), SessionDefaultsPreparationError>;
 }
 
-impl ProtocolHost {
+impl RunApplicationHost {
     #[must_use]
     pub fn new(host: Arc<SharedHost>) -> Self {
         Self {
@@ -84,7 +83,11 @@ impl ProtocolHost {
         self
     }
 
-    async fn prepare_defaults(&self, thread: &str, agent: Option<&str>) -> Result<(), DriverError> {
+    async fn prepare_defaults(
+        &self,
+        thread: &str,
+        agent: Option<&str>,
+    ) -> Result<(), RunApplicationError> {
         let Some(preparer) = &self.session_defaults else {
             return Ok(());
         };
@@ -96,24 +99,24 @@ impl ProtocolHost {
                 agent.or(projected_agent.as_deref()).unwrap_or("assistant"),
             )
             .await
-            .map_err(|error| DriverError::BadRequest(error.to_string()))
+            .map_err(|error| RunApplicationError::bad_request(error.to_string()))
     }
 }
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for ProtocolHost {
+impl RunApplication for RunApplicationHost {
     async fn run(
         &self,
         thread: &str,
         agent: Option<String>,
         messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         self.prepare_defaults(thread, agent.as_deref()).await?;
         let result = self
             .host
             .run(agent.as_deref(), thread, messages)
             .await
-            .map_err(to_driver_error)?;
+            .map_err(to_application_error)?;
         Ok(to_step_outcome(result))
     }
 
@@ -123,13 +126,13 @@ impl ProtocolRuntime for ProtocolHost {
         agent: Option<String>,
         messages: Vec<Message>,
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         self.prepare_defaults(thread, agent.as_deref()).await?;
         let result = self
             .host
             .run_streaming(agent.as_deref(), thread, messages, sink)
             .await
-            .map_err(to_driver_error)?;
+            .map_err(to_application_error)?;
         Ok(to_step_outcome(result))
     }
 
@@ -137,11 +140,11 @@ impl ProtocolRuntime for ProtocolHost {
         &self,
         thread: &str,
         tool_use_id: &str,
-        resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         let resume = match resume {
-            Resume::Confirm { allow, note } => HostResume::ToolPermission { allow, note },
-            Resume::ClientResult { content, is_error } => {
+            RunResume::Confirm { allow, note } => HostResume::ToolPermission { allow, note },
+            RunResume::ClientResult { content, is_error } => {
                 HostResume::ClientResult { content, is_error }
             }
         };
@@ -149,12 +152,15 @@ impl ProtocolRuntime for ProtocolHost {
             .host
             .resume(thread, tool_use_id, resume)
             .await
-            .map_err(to_driver_error)?;
+            .map_err(to_application_error)?;
         Ok(to_step_outcome(result))
     }
 
-    async fn interrupt(&self, thread: &str) -> Result<(), DriverError> {
-        self.host.interrupt(thread).await.map_err(to_driver_error)
+    async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {
+        self.host
+            .interrupt(thread)
+            .await
+            .map_err(to_application_error)
     }
 
     async fn pending(&self, thread: &str) -> Option<Pending> {

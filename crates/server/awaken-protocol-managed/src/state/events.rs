@@ -309,7 +309,7 @@ impl ManagedState {
         // messages through the shared transcript and projected them. Message ids
         // are the canonical dedupe key; status brackets remain request-local.
         let new_messages = outcome
-            .messages
+            .new_messages
             .iter()
             .filter(|message| record.projected_message_ids.insert(message.id.0.clone()))
             .cloned()

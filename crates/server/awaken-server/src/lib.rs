@@ -56,9 +56,9 @@ mod a2a_security;
 mod dream;
 
 use awaken_protocol_managed::{ManagedState, router};
-use awaken_protocol_transport::ProtocolRuntime;
 use awaken_provider_genai::{GenaiExecutor, OpenAiResponsesExecutor};
 use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_session_contract::RunApplication;
 use axum::Router;
 
 // This data-plane composition depends on each authoritative owner directly.
@@ -72,8 +72,8 @@ pub use awaken_managed_routers::{
 };
 pub use awaken_runtime_host::{
     ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost, NoModelConfiguredExecutor,
-    ProtocolHost, SharedHost, ThreadEvent, ThreadEventHub, UNCONFIGURED_MODEL_REF, VaultRefresher,
-    advertised_tools, durable_ops_router,
+    RunApplicationHost, SharedHost, ThreadEvent, ThreadEventHub, UNCONFIGURED_MODEL_REF,
+    VaultRefresher, advertised_tools, durable_ops_router,
 };
 pub use awaken_sandbox_local::content_fingerprint;
 pub use relay_hand::relay_hand_executor_factory;
@@ -313,7 +313,7 @@ pub fn mount(host: Arc<SharedHost>) -> Router {
 /// unaware of principals, API keys, roles, or authorization policy.
 pub fn local_managed_state(
     host: Arc<SharedHost>,
-    catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(host, catalog, None, None)
 }
@@ -323,8 +323,8 @@ pub fn local_managed_state(
 /// a second authoring plane.
 pub fn local_managed_state_with_agent_source(
     host: Arc<SharedHost>,
-    catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
-    agent_source: Arc<dyn awaken_protocol_managed::ExecutableAgentProfileSource>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(host, catalog, None, Some(agent_source))
 }
@@ -335,7 +335,7 @@ pub fn local_managed_state_with_agent_source(
 /// registry that authored them.
 pub fn local_managed_state_with_environments(
     host: Arc<SharedHost>,
-    catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     environments: Arc<awaken_protocol_managed::EnvironmentExecutionState>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(host, catalog, Some(environments), None)
@@ -345,18 +345,18 @@ pub fn local_managed_state_with_environments(
 /// port used by production before the Managed aggregate starts its supervisors.
 pub fn local_managed_state_with_environments_and_agent_source(
     host: Arc<SharedHost>,
-    catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     environments: Arc<awaken_protocol_managed::EnvironmentExecutionState>,
-    agent_source: Arc<dyn awaken_protocol_managed::ExecutableAgentProfileSource>,
+    agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(host, catalog, Some(environments), Some(agent_source))
 }
 
 fn local_managed_state_over(
     host: Arc<SharedHost>,
-    catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     environments: Option<Arc<awaken_protocol_managed::EnvironmentExecutionState>>,
-    agent_source: Option<Arc<dyn awaken_protocol_managed::ExecutableAgentProfileSource>>,
+    agent_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
 ) -> Arc<ManagedState> {
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
@@ -417,7 +417,7 @@ pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState
     mount_with_managed_over(host, managed_state, ephemeral_resource_catalog(), None).0
 }
 
-fn ephemeral_resource_catalog() -> Arc<dyn awaken_protocol_managed::ResourceCatalog> {
+fn ephemeral_resource_catalog() -> Arc<dyn awaken_resource_contract::ResourceCatalog> {
     Arc::new(
         awaken_resource_store::SqliteResourceStore::in_memory()
             .expect("open ephemeral Resource Catalog"),
@@ -430,7 +430,7 @@ fn ephemeral_resource_catalog() -> Arc<dyn awaken_protocol_managed::ResourceCata
 pub fn mount_with_managed_and_resource_catalog(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
-    resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
 ) -> Router {
     mount_with_managed_over(host, managed_state, resource_catalog, None).0
 }
@@ -441,7 +441,7 @@ pub fn mount_with_managed_and_resource_catalog(
 pub fn mount_with_managed_and_application_access(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
-    resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
 ) -> Router {
     mount_with_managed_over(
@@ -457,7 +457,7 @@ pub fn mount_with_managed_and_application_access(
 pub fn mount_with_managed_and_application_access_and_models(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
-    resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
     model_directory: Arc<dyn awaken_managed_routers::ModelDirectory>,
 ) -> Router {
@@ -481,10 +481,10 @@ pub fn mount_with_managed_and_application_access_and_models(
 pub fn mount_with_managed_application_access_models_and_dreams(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
-    resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
     model_directory: Arc<dyn awaken_managed_routers::ModelDirectory>,
-    dream_repository: Arc<dyn awaken_protocol_managed::DreamRepository>,
+    dream_repository: Arc<dyn awaken_ext_memory::DreamRepository>,
     resource_management_router: Router,
     worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
 ) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
@@ -503,7 +503,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
 fn mount_with_managed_over(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
-    resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
 ) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
     let resources = resource_management_router_from_host(&host, resource_catalog.clone());
@@ -522,10 +522,10 @@ fn mount_with_managed_over(
 fn mount_with_managed_over_and_models(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
-    resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
     model_directory: Option<Arc<dyn awaken_managed_routers::ModelDirectory>>,
-    dream_repository: Option<Arc<dyn awaken_protocol_managed::DreamRepository>>,
+    dream_repository: Option<Arc<dyn awaken_ext_memory::DreamRepository>>,
     resource_management_router: Router,
     worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
 ) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
@@ -573,7 +573,7 @@ fn mount_with_managed_over_and_models(
     let dreams = awaken_protocol_managed::dreams_router(dream_state.clone());
     let managed = router(managed_state.clone()).merge(dreams);
     // One neutral port impl behind the three wire adapters (each `router` takes
-    // `Arc<dyn ProtocolRuntime>`), so they share the host with no per-protocol twin.
+    // `Arc<dyn RunApplication>`), so they share the host with no per-protocol twin.
     struct ManagedSessionDefaults(Arc<ManagedState>);
 
     #[async_trait::async_trait]
@@ -593,8 +593,8 @@ fn mount_with_managed_over_and_models(
         }
     }
 
-    let port: Arc<dyn ProtocolRuntime> = Arc::new(
-        ProtocolHost::new(host.clone())
+    let port: Arc<dyn RunApplication> = Arc::new(
+        RunApplicationHost::new(host.clone())
             .with_session_defaults(Arc::new(ManagedSessionDefaults(managed_state.clone()))),
     );
     let mut ai_sdk = awaken_protocol_ai_sdk::router(port.clone());
@@ -663,7 +663,7 @@ fn mount_with_managed_over_and_models(
 
 fn resource_management_router_from_host(
     host: &Arc<SharedHost>,
-    catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
 ) -> Router {
     resources_router(ResourcesRouterInput {
         files: host

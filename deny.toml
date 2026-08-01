@@ -60,7 +60,6 @@ wrappers = [
     "awaken-ext-state-machine",
     "awaken-ext-compact",
     "awaken-ext-memory",
-    "awaken-protocol-transport",
     "awaken-protocol-managed",
     "awaken-protocol-ai-sdk",
     "awaken-protocol-ag-ui",
@@ -245,22 +244,6 @@ reason = "extensions sit on top; the runtime core must stay extension-agnostic (
 # protocol base. Freezing the depender set here makes the ROOT DISEASE — a neutral API/SPI
 # living inside a protocol adapter, then consumed workspace-wide — fail the build: a new
 # reverse edge onto an adapter forces the API/SPI to move inward to a contract/ leaf first.
-
-# The shared transport base other protocol adapters build on (a `ProtocolRuntime` seam),
-# plus the composition roots + service layer that mount them.
-[[bans.deny]]
-name = "awaken-protocol-transport"
-wrappers = [
-    "awaken-protocol-a2a",
-    "awaken-protocol-ag-ui",
-    "awaken-protocol-ai-sdk",
-    "awaken-protocol-managed",
-    "awaken-managed-routers",
-    "awaken-runtime-host",
-    "awaken-server",
-    "awaken-scenario-host",
-]
-reason = "protocol adapters are leaves; only composition roots + sibling adapters mount the transport base (Phase 0.2 neutral-core)"
 
 # Managed Agents adapter. runtime-host is the service layer that assembles the managed
 # host; control mounts its routes + reuses the wire ErrorResponse; cli/server/scenario

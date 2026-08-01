@@ -66,8 +66,8 @@ pub use awaken_managed_routers::{
     default_models, files_router, memory_stores_router_with_catalog, models_router, skills_router,
 };
 pub use awaken_runtime_host::{
-    ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost, ProtocolHost, SharedHost,
-    ThreadEvent, ThreadEventHub, VaultRefresher, advertised_tools, durable_ops_router,
+    ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost, RunApplicationHost,
+    SharedHost, ThreadEvent, ThreadEventHub, VaultRefresher, advertised_tools, durable_ops_router,
 };
 pub use awaken_sandbox_local::content_fingerprint;
 
@@ -205,7 +205,7 @@ fn scenario_skill_store_dir() -> std::path::PathBuf {
 /// Give scenario compositions the same durable resource catalog the production
 /// management composition injects. It owns definition/configuration/lifecycle only;
 /// authentication and policy remain outside this resource-plane adapter.
-fn scenario_resource_catalog() -> Arc<dyn awaken_protocol_managed::ResourceCatalog> {
+fn scenario_resource_catalog() -> Arc<dyn awaken_resource_contract::ResourceCatalog> {
     let root = scenario_storage_dir();
     let Some(root) = root else {
         return Arc::new(

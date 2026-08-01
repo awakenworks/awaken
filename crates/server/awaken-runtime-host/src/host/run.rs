@@ -318,7 +318,7 @@ impl SharedHost {
         Ok(result)
     }
 
-    /// Resume through the same in-flight identity slot as a fresh foreground
+    /// RunResume through the same in-flight identity slot as a fresh foreground
     /// attempt, so `user.interrupt` is backend-independent while a resumed ACP or
     /// A2A task is executing.
     async fn drive_resume(
@@ -506,7 +506,7 @@ impl SharedHost {
         Ok(uid.0)
     }
 
-    /// Resume the run awaiting on `thread`, answering `tool_use_id` with `resume`.
+    /// RunResume the run awaiting on `thread`, answering `tool_use_id` with `resume`.
     /// Fails closed unless `tool_use_id` names the pending tool and its binding
     /// (built-in vs client-executed) matches the resume variant.
     pub async fn resume(

@@ -30,7 +30,7 @@ Native filesystem effects outside the Environment shared with ACP.
 
 | Bounded context | Owns | Depends on |
 |---|---|---|
-| Protocol adapters | external method/path, wire validation and projection | `ProtocolRuntime` |
+| Protocol adapters | external method/path, wire validation and projection | `RunApplication` from `awaken-session-contract` |
 | Coordinator | Session/Run orchestration, durable dispatch, Worker eligibility and ranking | immutable Agent, Environment and Resource snapshots |
 | Worker | claimed attempt, capability evidence and SessionEnvironment realization | provisioning/runtime contracts |
 | SessionEnvironment | one live sandbox and its one `ToolExecutor` | Workdir, Namespace or Container provider |

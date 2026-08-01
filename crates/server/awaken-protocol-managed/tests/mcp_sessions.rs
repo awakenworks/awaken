@@ -10,12 +10,11 @@ use std::sync::{Arc, Mutex};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
-use awaken_protocol_managed::{
-    ManagedState, OutcomeReport, PersistedSession, RunError, RunErrorKind, SessionInit,
-    SessionLifecycleSink, SessionRuntime, StepOutcome, ToolPermissionDecision, VaultState, router,
-    vault_router,
+use awaken_protocol_managed::{ManagedState, VaultState, router, vault_router};
+use awaken_session_contract::{
+    ManagedSessionRepository, OutcomeReport, PersistedSession, RunError, RunErrorKind, SessionInit,
+    SessionLifecycleSink, SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
-use awaken_session_contract::ManagedSessionRepository;
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;
 use axum::body::Body;
@@ -97,7 +96,7 @@ impl SessionRuntime for PreparingFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_protocol_managed::McpAttachmentRealizer for PreparingFake {
+impl awaken_session_contract::McpAttachmentRealizer for PreparingFake {
     async fn stage_mcp_attachment(
         &self,
         request: awaken_session_contract::StageMcpAttachment,
@@ -225,7 +224,7 @@ impl SessionRuntime for HotRuntime {
 }
 
 #[async_trait::async_trait]
-impl awaken_protocol_managed::McpAttachmentRealizer for HotRuntime {
+impl awaken_session_contract::McpAttachmentRealizer for HotRuntime {
     async fn stage_mcp_attachment(
         &self,
         request: awaken_session_contract::StageMcpAttachment,
@@ -1669,8 +1668,7 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     assert_eq!(updated["agent"]["tools"], tools, "I6");
     assert_eq!(
         awaken_protocol_managed::project::managed_tools(&h.repo.get(id).await.unwrap().tools),
-        serde_json::from_value::<Vec<awaken_protocol_managed::types::agent::AgentTool>>(tools)
-            .unwrap(),
+        serde_json::from_value::<Vec<awaken_session_contract::AgentTool>>(tools).unwrap(),
         "I6"
     );
     let state = h.state.lock().unwrap();
@@ -1933,7 +1931,7 @@ async fn application_required_creation_is_generated_from_the_decision_table() {
         assert_eq!(prepared.lock().unwrap().len(), expected_prepares, "{rule}");
         assert_eq!(sink.0.lock().unwrap().len(), expected_facts, "{rule}");
 
-        let contribution = awaken_protocol_managed::ApplicationSessionContribution {
+        let contribution = awaken_session_contract::ApplicationSessionContribution {
             session_id: session.id,
             application_fingerprint: "application-v1".into(),
             input: Default::default(),
@@ -1951,7 +1949,7 @@ async fn application_required_creation_is_generated_from_the_decision_table() {
                 matches!(
                     outcome,
                     Err(
-                        awaken_protocol_managed::ApplicationSessionContributionFailure::NotRequired
+                        awaken_session_contract::ApplicationSessionContributionFailure::NotRequired
                     )
                 ),
                 "{rule}"
@@ -2013,7 +2011,7 @@ async fn preparing_session_can_be_cancelled_without_runtime_realization() {
     ));
     let late = awaken_session_contract::ApplicationSessionContributionApi::contribute_application(
         &state,
-        awaken_protocol_managed::ApplicationSessionContribution {
+        awaken_session_contract::ApplicationSessionContribution {
             session_id: session.id,
             application_fingerprint: "late-plan".into(),
             input: Default::default(),
@@ -2022,7 +2020,7 @@ async fn preparing_session_can_be_cancelled_without_runtime_realization() {
     .await;
     assert!(matches!(
         late,
-        Err(awaken_protocol_managed::ApplicationSessionContributionFailure::NotFound)
+        Err(awaken_session_contract::ApplicationSessionContributionFailure::NotFound)
     ));
     assert!(prepared.lock().unwrap().is_empty());
 }

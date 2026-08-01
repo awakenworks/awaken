@@ -18,11 +18,11 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::RunState;
-use awaken_protocol_managed::resource_plane::{
+use awaken_provider_genai::GenaiExecutor;
+use awaken_resource_contract::{
     ConfigVersion, MemoryStoreConfigVersion, ResourceAccess, ResourceBindingValidator,
     ResourceCatalogError,
 };
-use awaken_provider_genai::GenaiExecutor;
 use awaken_server::SharedHost;
 
 fn live_host() -> Option<(SharedHost, String)> {

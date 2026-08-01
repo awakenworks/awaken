@@ -125,7 +125,7 @@ PROTOCOL_LEAF_CONSUMERS: frozenset[str] = frozenset(
     {
         "awaken-cli", "awaken-server", "awaken-scenario-host",  # composition roots
         "awaken-managed-routers",  # driving HTTP adapters over neutral host APIs/SPIs
-        "awaken-runtime-host",  # implements the neutral ProtocolRuntime transport seam
+        "awaken-runtime-host",  # implements the neutral RunApplication seam
         "awaken-control",  # mounts the managed routes + reuses its wire ErrorResponse
     }
 )
@@ -161,10 +161,10 @@ def _selftest_protocol_leaves() -> None:
     `awaken-protocol-*`; C4 = `awaken-run-executor-*`. Effects: E1 = one per dep; E2 = none."""
     v = protocol_leaf_violations("awaken-config-store", frozenset({"awaken-protocol-managed", "serde"}))
     assert len(v) == 1 and "awaken-protocol-managed" in v[0], v  # T1 C1∧¬C2..4 -> E1
-    assert protocol_leaf_violations("awaken-runtime-host", frozenset({"awaken-protocol-transport"})) == []  # T2 service seam allowed
-    assert protocol_leaf_violations("awaken-managed-routers", frozenset({"awaken-protocol-transport"})) == []  # T2 adapter allowed
+    assert protocol_leaf_violations("awaken-runtime-host", frozenset({"awaken-protocol-a2a"})) == []  # T2 service seam allowed
+    assert protocol_leaf_violations("awaken-managed-routers", frozenset({"awaken-protocol-managed"})) == []  # T2 adapter allowed
     assert protocol_leaf_violations("awaken-server", frozenset({"awaken-protocol-a2a"})) == []  # T2
-    assert protocol_leaf_violations("awaken-protocol-a2a", frozenset({"awaken-protocol-transport"})) == []  # T3 C3
+    assert protocol_leaf_violations("awaken-protocol-a2a", frozenset({"awaken-protocol-ag-ui"})) == []  # T3 C3
     assert protocol_leaf_violations("awaken-run-executor-a2a", frozenset({"awaken-protocol-a2a"})) == []  # T4 C4
     assert protocol_leaf_violations("awaken-config-store", frozenset({"serde", "tokio"})) == []  # T5 ¬C1
     v = protocol_leaf_violations("awaken-data-subject", frozenset({"awaken-protocol-managed", "awaken-protocol-a2a"}))

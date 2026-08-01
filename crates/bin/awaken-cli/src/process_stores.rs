@@ -42,12 +42,12 @@ pub(super) struct CoordinatorStores {
     pub(super) sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
     /// Coordinator-owned Deployment and DeploymentRun view over the same physical
     /// repository as Session.
-    pub(super) deployments: Arc<dyn awaken_protocol_managed::DeploymentRepository>,
+    pub(super) deployments: Arc<dyn awaken_deployment_contract::DeploymentRepository>,
     /// The same physical Session store viewed through the Dream repository interface.
-    pub(super) dream_repository: Arc<dyn awaken_protocol_managed::DreamRepository>,
+    pub(super) dream_repository: Arc<dyn awaken_ext_memory::DreamRepository>,
     /// Same Session application repository viewed through the extraction-work
     /// interface; kept separate from MemoryRepository and IAM.
-    pub(super) memory_extractions: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>,
+    pub(super) memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
     /// Coordinator-owned subject-tagged content write port.
     pub(super) capture_sink: Arc<dyn awaken_runtime_contract::CaptureSink>,
     /// A second view of the exact same captured-content adapter for Control's

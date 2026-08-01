@@ -7,9 +7,9 @@
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_protocol_managed::{
-    EnvironmentState, ManagedState, OutcomeReport, RunError, SessionInit, SessionRuntime,
-    StepOutcome, ToolPermissionDecision, environments_router, router,
+use awaken_protocol_managed::{EnvironmentState, ManagedState, environments_router, router};
+use awaken_session_contract::{
+    OutcomeReport, RunError, SessionInit, SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
 use axum::Router;
 use axum::body::Body;
@@ -20,7 +20,7 @@ use tower::ServiceExt;
 
 /// Records each `prepare_session`'s exact frozen network policy.
 struct CapturingFake {
-    egress: Arc<Mutex<Vec<awaken_protocol_managed::SessionNetworkPolicy>>>,
+    egress: Arc<Mutex<Vec<awaken_session_contract::SessionNetworkPolicy>>>,
 }
 
 #[async_trait::async_trait]
@@ -72,7 +72,7 @@ impl SessionRuntime for CapturingFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_protocol_managed::McpAttachmentRealizer for CapturingFake {
+impl awaken_session_contract::McpAttachmentRealizer for CapturingFake {
     async fn stage_mcp_attachment(
         &self,
         request: awaken_session_contract::StageMcpAttachment,
@@ -150,7 +150,7 @@ async fn session_carries_the_exact_frozen_environment_network() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         egress.lock().unwrap().last(),
-        Some(&awaken_protocol_managed::SessionNetworkPolicy::None)
+        Some(&awaken_session_contract::SessionNetworkPolicy::None)
     );
 
     // An unrestricted environment keeps the exact open policy.
@@ -171,14 +171,14 @@ async fn session_carries_the_exact_frozen_environment_network() {
     .await;
     assert_eq!(
         egress.lock().unwrap().last(),
-        Some(&awaken_protocol_managed::SessionNetworkPolicy::Unrestricted)
+        Some(&awaken_session_contract::SessionNetworkPolicy::Unrestricted)
     );
 
     // An omitted/unknown environment defaults to host network.
     call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
     assert_eq!(
         egress.lock().unwrap().last(),
-        Some(&awaken_protocol_managed::SessionNetworkPolicy::Unrestricted)
+        Some(&awaken_session_contract::SessionNetworkPolicy::Unrestricted)
     );
 }
 
@@ -244,7 +244,7 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
     create_session(&app, &disabled, true).await;
     assert_eq!(
         egress.lock().unwrap().last(),
-        Some(&awaken_protocol_managed::SessionNetworkPolicy::Allowlist {
+        Some(&awaken_session_contract::SessionNetworkPolicy::Allowlist {
             hosts: vec!["api.example.test".into()]
         }),
         "N1 disabled MCP exception has no runtime effect"
@@ -258,7 +258,7 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
     create_session(&app, &enabled, true).await;
     assert_eq!(
         egress.lock().unwrap().last(),
-        Some(&awaken_protocol_managed::SessionNetworkPolicy::Allowlist {
+        Some(&awaken_session_contract::SessionNetworkPolicy::Allowlist {
             hosts: vec!["docs.example.test".into()]
         }),
         "N2 only the exact normalized MCP host reaches Runtime"
@@ -266,7 +266,7 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
     create_session(&app, &enabled, false).await;
     assert_eq!(
         egress.lock().unwrap().last(),
-        Some(&awaken_protocol_managed::SessionNetworkPolicy::None),
+        Some(&awaken_session_contract::SessionNetworkPolicy::None),
         "N3 no declared MCP target means no ambient fallback"
     );
 
@@ -276,7 +276,7 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
     )
     .await;
     create_session(&app, &packages, false).await;
-    let expected = awaken_protocol_managed::SessionNetworkPolicy::Allowlist {
+    let expected = awaken_session_contract::SessionNetworkPolicy::Allowlist {
         hosts: awaken_environment_contract::PUBLIC_PACKAGE_REGISTRY_HOSTS
             .iter()
             .map(ToString::to_string)

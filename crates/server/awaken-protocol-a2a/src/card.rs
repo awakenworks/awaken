@@ -5,13 +5,11 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-use crate::router::{
-    A2A_VERSION_HEADER, JSONRPC_PATH, ProtocolVersion, a2a_fault, negotiate_version,
-    v1_json_response,
-};
+use crate::router::{JSONRPC_PATH, a2a_fault, v1_json_response};
 use crate::state::A2aState;
 use crate::types::{AgentCapabilities, AgentCard, AgentInterface, AgentSkill};
 use crate::v1::agent_card_value as v1_agent_card_value;
+use crate::version::{A2A_VERSION_HEADER, ProtocolVersion, negotiate_version};
 
 pub(crate) async fn card(State(rt): State<A2aState>, headers: HeaderMap) -> Response {
     let host = headers

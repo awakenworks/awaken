@@ -33,9 +33,9 @@ use awaken_agent_contract::stream::sink::Sink;
 use awaken_protocol_managed::types::{
     OutboundKind, PreviewContent, PreviewDelta, PreviewFrame, SendEventsResponse, StreamFrame,
 };
-use awaken_protocol_managed::{
-    DelegatedRun, ManagedState, OutcomeReport, RunError, SessionRuntime, StepOutcome,
-    ToolPermissionDecision, router,
+use awaken_protocol_managed::{ManagedState, router};
+use awaken_session_contract::{
+    DelegatedRun, OutcomeReport, RunError, SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
 use axum::Router;
 use axum::body::Body;

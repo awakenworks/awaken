@@ -9,7 +9,6 @@ awaken-agent-contract.workspace = true
 awaken-executable-agent-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
 awaken-executable-environment-catalog.workspace = true
-awaken-protocol-transport.workspace = true
 # The neutral session-runtime ports + vocab (extracted contract/ leaf). This adapter
 # owns the wire DTOs + the neutral→wire encoder and re-exports each moved port via a
 # shim so consumers stay unchanged until flipped to the contract directly.

@@ -9,7 +9,7 @@ name = "awaken-scenario-host"
 path = "src/main.rs"
 
 [dependencies]
-# The extracted service layer: SharedHost / ManagedHost / ProtocolHost and all
+# The extracted service layer: SharedHost / ManagedHost / RunApplicationHost and all
 # host modules live here; this bin only composes them into router modes.
 awaken-runtime-host = { workspace = true }
 awaken-config-service.workspace = true
@@ -33,7 +33,6 @@ awaken-protocol-ag-ui = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
 # The ordinary A2A Run-attempt adapter used by the remote delegation scenario.
 awaken-run-executor-a2a = { workspace = true }
-awaken-protocol-transport = { workspace = true }
 awaken-config-store = { workspace = true }
 # Remote hand (ADR-0044): the `remote-hand` scenario mode routes a run's tools to
 # a hand task over a framed channel. tool-relay = the RemoteToolExecutor/serve_hand;
@@ -87,6 +86,8 @@ awaken-iam-host = { workspace = true }
 # same rusqlite generation as every other sqlite store in the workspace.
 rusqlite = { version = "0.32", features = ["bundled"] }
 awaken-agent-contract.workspace = true
+awaken-executable-agent-contract.workspace = true
+awaken-resource-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-executable-agent-catalog.workspace = true
 # Webhook plane (ADR-0048 / S10): the WebhookLifecycleSink bridges the managed

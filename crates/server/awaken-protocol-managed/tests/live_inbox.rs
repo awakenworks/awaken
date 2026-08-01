@@ -9,9 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::EndCause;
-use awaken_protocol_managed::{
-    LiveInboxEntry, LiveInboxError, LiveInboxSnapshot, ManagedState, OutcomeReport, RunError,
-    SessionRuntime, StepOutcome, router,
+use awaken_protocol_managed::{ManagedState, router};
+use awaken_session_contract::{
+    LiveInboxEntry, LiveInboxError, LiveInboxSnapshot, OutcomeReport, RunError, SessionRuntime,
+    StepOutcome,
 };
 use axum::Router;
 use axum::body::Body;
@@ -102,7 +103,7 @@ impl SessionRuntime for QueueFake {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: awaken_protocol_managed::ToolPermissionDecision,
+        _decision: awaken_session_contract::ToolPermissionDecision,
     ) -> Result<StepOutcome, RunError> {
         Err(unsupported_runtime_operation())
     }
@@ -248,7 +249,7 @@ fn app(fake: Arc<QueueFake>) -> Router {
             &self,
             t: &str,
             i: &str,
-            d: awaken_protocol_managed::ToolPermissionDecision,
+            d: awaken_session_contract::ToolPermissionDecision,
         ) -> Result<StepOutcome, RunError> {
             self.0.resume(t, i, d).await
         }

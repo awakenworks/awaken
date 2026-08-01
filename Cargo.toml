@@ -68,7 +68,6 @@ awaken-ext-state-machine = { path = "crates/runtime/awaken-ext-state-machine" }
 awaken-ext-compact = { path = "crates/runtime/awaken-ext-compact" }
 awaken-ext-memory = { path = "crates/runtime/awaken-ext-memory" }
 awaken-ext-builtin-tools = { path = "crates/runtime/awaken-ext-builtin-tools" }
-awaken-protocol-transport = { path = "crates/server/awaken-protocol-transport" }
 awaken-protocol-a2a = { path = "crates/server/awaken-protocol-a2a" }
 awaken-protocol-mcp = { path = "crates/server/awaken-protocol-mcp" }
 awaken-protocol-ag-ui = { path = "crates/server/awaken-protocol-ag-ui" }

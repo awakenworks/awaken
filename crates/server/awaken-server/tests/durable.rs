@@ -77,7 +77,7 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
         "the committed history is readable after the restart"
     );
 
-    // 3. Resume it with the client's result; the model replies with the result.
+    // 3. RunResume it with the client's result; the model replies with the result.
     host.resume(
         thread,
         &pending_id,

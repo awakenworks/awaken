@@ -39,29 +39,19 @@ pub mod types;
 
 /// Managed Environment wire projection over the Control-owned
 /// [`env_registry::EnvRegistry`] contract and its durable adapters.
-pub mod cron;
 mod dream;
-pub mod env_registry;
+mod env_registry;
 mod preview;
 mod state;
 /// The self-hosted environment work queue as a port ([`work_queue::WorkQueue`]),
 /// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
-pub mod work_queue;
+mod work_queue;
 
-pub use awaken_agent_contract::ClientToolDescriptor;
-pub use awaken_environment_application::{
-    EnvironmentApplication, EnvironmentApplicationError, default_environment_registration,
-};
-pub use awaken_executable_agent_contract::{
-    ExecutableAgentEnvironment, ExecutableAgentMcpServer, ExecutableAgentProfileSource,
-    ExecutableAgentSessionProfile,
-};
 pub use dream::{
     BUILT_IN_DREAM_AGENT_ID, DreamAgentConfiguration, DreamAgentSelection, DreamApiError,
     DreamCancellation, DreamFailure, DreamPolicy, DreamPolicyConfig, DreamPreparation,
     DreamRequest, DreamSessionSource, DreamState, DreamWorker,
 };
-pub use env_registry::{EnvItem, EnvRegistry, EnvUpdate, InMemoryEnvRegistry};
 pub use rate_limit::{ManagedRateLimiter, ManagedRateLimits, enforce_managed_rate_limit};
 pub use routes::agents_registry::{
     AgentRegistryState, ManagedAgentError, ManagedAgentRepository, agents_router,
@@ -75,45 +65,7 @@ pub use routes::environments::{
     EnvironmentState, environment_authoring_router, environment_work_router, environments_router,
 };
 pub use routes::user_profiles::{UserProfileState, user_profiles_router};
-pub use routes::vaults::{
-    McpProbe, McpProbeStatus, SessionCredentialSource, VaultState, vault_router,
-};
+pub use routes::vaults::{SessionCredentialSource, VaultState, vault_router};
 pub use routes::{DREAMING_BETA, dreams_router};
 pub use routes::{MEMORY_BETA, SKILLS_BETA, WorkspaceScope, enforce_managed_beta, router};
-// Managed wire projections remain convenient protocol exports. Persistence ports
-// and adapters are deliberately excluded: callers import those from their owners.
-pub use awaken_deployment_contract::DeploymentRepository;
-pub use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};
-pub use awaken_ext_memory::{
-    DreamJobRecord, DreamRepository, DreamRepositoryError, MemoryExtractionError,
-    MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionReceipt,
-    MemoryExtractionRepository, MemoryExtractionStatus, MemoryExtractorSnapshot,
-    MemoryMutationReceipt, PutMemoryExtractionOutcome,
-};
-pub use awaken_resource_contract::ResourceCatalog;
-pub use awaken_session_contract::{
-    AcknowledgeSessionRealization, ActivateSessionRealization, ApplicationContributionOutcome,
-    ApplicationContributionReceipt, ApplicationContributionState, ApplicationSessionContribution,
-    ApplicationSessionContributionFailure, ApplicationSessionContributionReceipt,
-    ApplicationSessionControl, ApplicationSessionInput, BeginSessionRealization,
-    CompiledSessionCreation, ControlSessionCreationInputs, EnvironmentFingerprint,
-    EnvironmentSnapshot, FailSessionRealization, FrozenSessionProjection, IdempotencyRecord,
-    McpAttachmentId, McpAttachmentRealizer, McpAttachmentState, McpGeneration, McpGenerationRef,
-    McpRealizationReceipt, McpTarget, PersistedSession, ResolvedInput, ResolvedInputSource,
-    ResolvedRepositoryCredential, ResolvedSessionResources, ResolvedSkillBinding, SessionBaseline,
-    SessionBaselineFingerprint, SessionBaselineInputs, SessionBaselineState,
-    SessionCreationFinalizeError, SessionCreationIntent, SessionEnvironmentBindingSink,
-    SessionNetworkPolicy, SessionProjectionSynchronizer, SessionRealizationAction,
-    SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
-    SessionRealizationDriveError, SessionRealizationLease, SessionRealizationTarget,
-    SessionResourceManifest, SessionRevision, StageMcpAttachment, drive_session_realization,
-    realization_lease_is_live_at, repository_transport_credential_usage, resource_plane,
-    stable_fingerprint,
-};
-pub use state::{
-    AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
-    LiveInboxSnapshot, ManagedState, OutcomeIteration, OutcomeReport, Pending, RunError,
-    RunErrorKind, SessionInit, SessionLifecycleSink, SessionRuntime, SessionUsage, StateError,
-    StepOutcome, ToolPermissionDecision,
-};
-pub use work_queue::{WorkItem, WorkQueue, WorkState};
+pub use state::{ManagedState, StateError};

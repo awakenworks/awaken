@@ -12,6 +12,7 @@ use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState
 /// The tool a run awaits: its id, model-visible name/input, and whether it is
 /// client-executed (projected as `agent.custom_tool_use`) or a built-in awaiting
 /// confirmation (`agent.tool_use{ask}`).
+#[derive(Debug, Clone, PartialEq)]
 pub struct Pending {
     pub tool_use_id: String,
     pub name: String,
@@ -34,8 +35,9 @@ pub struct DelegatedRun {
 /// `state` reuses the run's sole lifecycle authority instead of storing a second
 /// terminal classification. It is private: callers can construct only
 /// `Awaiting` or `Ended` outcomes, so `Running` cannot escape a step boundary.
+#[derive(Debug, Clone)]
 pub struct StepOutcome {
-    pub messages: Vec<Message>,
+    pub new_messages: Vec<Message>,
     state: RunState,
     pending: Option<Pending>,
     /// `true` when this turn folded its context — projected as an
@@ -57,7 +59,7 @@ impl StepOutcome {
         rescheduled: bool,
     ) -> Self {
         Self {
-            messages,
+            new_messages: messages,
             state: RunState::Awaiting,
             pending,
             compacted,
@@ -74,7 +76,7 @@ impl StepOutcome {
         rescheduled: bool,
     ) -> Self {
         Self {
-            messages,
+            new_messages: messages,
             state: RunState::Ended(cause),
             pending: None,
             compacted,
@@ -86,6 +88,17 @@ impl StepOutcome {
     #[must_use]
     pub fn state(&self) -> &RunState {
         &self.state
+    }
+
+    /// Neutral terminal fact derived from the authoritative Run state.
+    #[must_use]
+    pub fn terminal_event(&self) -> awaken_agent_contract::event::Fact {
+        awaken_agent_contract::event::terminal(
+            &self.state,
+            self.pending
+                .as_ref()
+                .map(|pending| (pending.tool_use_id.as_str(), pending.client_executed)),
+        )
     }
 
     #[must_use]
@@ -890,8 +903,8 @@ mod tests {
             .await
             .unwrap();
         // `StepOutcome` has no `PartialEq`; compare it field-by-field.
-        assert_eq!(streamed.messages.len(), direct.messages.len());
-        assert_eq!(streamed.messages, direct.messages);
+        assert_eq!(streamed.new_messages.len(), direct.new_messages.len());
+        assert_eq!(streamed.new_messages, direct.new_messages);
         assert_eq!(streamed.state(), direct.state());
         assert_eq!(
             streamed.pending().map(|p| &p.tool_use_id),

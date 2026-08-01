@@ -3,7 +3,7 @@
 > 目的:用**因果图法**在**端到端海拔**产出覆盖**全部功能**的测试用例,并沿**不同部署场景**参数化。
 > 与配套的单模块设计(`cause-effect-graph-test-design.md`)互补:那份在函数/类型边界取因果;**本份跨模块**——因是"部署配置 + 端到端流程触发",果是"通过真实二进制 + 真实进程/HTTP/WS/磁盘可观察的结果"。
 >
-> **e2e 铁律**:测试必须驱动真实二进制(`awaken` / `awaken-worker` / `awaken-sandbox` / `awaken-scenario-host`)+ 真实进程/HTTP/WS/磁盘/Postgres/容器。mock transport、假 ProtocolRuntime、脚本化 channel、假 CLI 脚本**都不算** e2e。上游模型可用**确定性 fake Anthropic 线**(`fixtures/`,跨重启存活)或真实 provider(`*_real_e2e`),二者都是"真进程 + 真 HTTP"。
+> **e2e 铁律**:测试必须驱动真实二进制(`awaken` / `awaken-worker` / `awaken-sandbox` / `awaken-scenario-host`)+ 真实进程/HTTP/WS/磁盘/Postgres/容器。mock transport、假 `RunApplication`、脚本化 channel、假 CLI 脚本**都不算** e2e。上游模型可用**确定性 fake Anthropic 线**(`fixtures/`,跨重启存活)或真实 provider(`*_real_e2e`),二者都是"真进程 + 真 HTTP"。
 >
 > 规模:**22 条部署轴(D)+ 99 条功能流(F)= 121 个因**;**30 类可观察效果(E)**;由约束归约出 **14 个合法部署场景(S)**;主判定表 = **场景 × 功能流**,产出 **约 180 个 e2e 测试用例**。
 

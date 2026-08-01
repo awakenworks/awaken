@@ -6,21 +6,24 @@
 
 mod support;
 
+use awaken_agent_contract::ClientToolDescriptor;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::run::EndCause;
 use awaken_credential_vault::repo::CredentialRepo;
-use awaken_protocol_managed::{
-    ClientToolDescriptor, ExecutableAgentProfileSource, ExecutableAgentSessionProfile,
-    ManagedState, OutcomeReport, RunError, SessionInit, SessionRuntime, StepOutcome,
-    ToolPermissionDecision, router,
+use awaken_executable_agent_contract::{
+    ExecutableAgentProfileSource, ExecutableAgentSessionProfile,
 };
+use awaken_protocol_managed::{ManagedState, router};
 use awaken_resource_contract::{
     BindingId, ClonePolicy, ConfigVersion, ExtractionPolicy, FileId, InputBinding, InputResourceId,
     MemoryStoreConfigVersion, MemoryStoreDefinition, MemoryStoreId, RecallPolicy,
     RepositoryConfigVersion, RepositoryDefinition, RepositoryId, ResourceAccess, ResourceCatalog,
     ResourceState, RetentionPolicy,
 };
-use awaken_session_contract::ManagedSessionRepository;
+use awaken_session_contract::{
+    ManagedSessionRepository, OutcomeReport, RunError, SessionInit, SessionRuntime, StepOutcome,
+    ToolPermissionDecision,
+};
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;
 use axum::body::Body;
@@ -207,9 +210,9 @@ impl ExecutableAgentProfileSource for AgentWithIntegrations {
     ) -> Option<ExecutableAgentSessionProfile> {
         (agent_id == "integrated").then(|| ExecutableAgentSessionProfile {
             mcp_servers: vec![
-                awaken_protocol_managed::ExecutableAgentMcpServer {
+                awaken_executable_agent_contract::ExecutableAgentMcpServer {
                     name: "docs".into(),
-                    target: awaken_protocol_managed::McpTarget::parse_http(
+                    target: awaken_session_contract::McpTarget::parse_http(
                         "https://mcp.example.test",
                     )
                     .unwrap(),
@@ -217,9 +220,9 @@ impl ExecutableAgentProfileSource for AgentWithIntegrations {
                     credential_revision: Some(7),
                     prompts_as_skills: false,
                 },
-                awaken_protocol_managed::ExecutableAgentMcpServer {
+                awaken_executable_agent_contract::ExecutableAgentMcpServer {
                     name: "public-docs".into(),
-                    target: awaken_protocol_managed::McpTarget::parse_http(
+                    target: awaken_session_contract::McpTarget::parse_http(
                         "https://public.example.test",
                     )
                     .unwrap(),
@@ -376,10 +379,12 @@ impl ExecutableAgentProfileSource for AgentWithEnvironment {
         agent_id: &str,
     ) -> Option<ExecutableAgentSessionProfile> {
         (agent_id == "environment-agent").then(|| ExecutableAgentSessionProfile {
-            environment: Some(awaken_protocol_managed::ExecutableAgentEnvironment {
-                environment_id: self.environment_id.clone(),
-                revision: self.revision,
-            }),
+            environment: Some(
+                awaken_executable_agent_contract::ExecutableAgentEnvironment {
+                    environment_id: self.environment_id.clone(),
+                    revision: self.revision,
+                },
+            ),
             ..empty_agent_view("genai")
         })
     }
@@ -590,8 +595,8 @@ impl SessionRuntime for AcceptingFake {
         self.prepared.lock().unwrap().push(init);
         Ok(())
     }
-    fn capabilities_for(&self, _thread: &str) -> awaken_protocol_managed::AgentCapabilities {
-        awaken_protocol_managed::AgentCapabilities {
+    fn capabilities_for(&self, _thread: &str) -> awaken_session_contract::AgentCapabilities {
+        awaken_session_contract::AgentCapabilities {
             delegates: self
                 .prepared
                 .lock()
@@ -693,7 +698,7 @@ impl SessionRuntime for AcceptingFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_protocol_managed::McpAttachmentRealizer for AcceptingFake {
+impl awaken_session_contract::McpAttachmentRealizer for AcceptingFake {
     async fn stage_mcp_attachment(
         &self,
         request: awaken_session_contract::StageMcpAttachment,

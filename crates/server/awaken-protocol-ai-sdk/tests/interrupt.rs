@@ -6,7 +6,7 @@
 //! does NOT prove the router called the neutral cancel verb — a router that simply
 //! returned on the send error, never calling `interrupt`, would pass that test
 //! while leaking the in-flight turn. This test closes that gap with a recording
-//! `ProtocolRuntime` double that captures every `interrupt` call, mirroring the
+//! `RunApplication` double that captures every `interrupt` call, mirroring the
 //! contract the ag-ui adapter upholds (both converge on `interrupt`).
 
 use std::sync::Arc;
@@ -18,8 +18,8 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::Event;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
-use awaken_protocol_transport::{
-    DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
+use awaken_session_contract::{
+    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -40,13 +40,13 @@ struct InterruptRecorder {
 }
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for InterruptRecorder {
+impl RunApplication for InterruptRecorder {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!("this test only streams")
     }
 
@@ -56,7 +56,7 @@ impl ProtocolRuntime for InterruptRecorder {
         _agent: Option<String>,
         _messages: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         let run = RunId("r1".into());
         for _ in 0..10_000 {
             let sent = sink
@@ -72,22 +72,24 @@ impl ProtocolRuntime for InterruptRecorder {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         self.finished.notify_one();
-        Ok(StepOutcome {
-            new_messages: Vec::new(),
-            terminal: Terminal::Finished,
-        })
+        Ok(StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
 
     async fn resume(
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!()
     }
 
-    async fn interrupt(&self, thread: &str) -> Result<(), DriverError> {
+    async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {
         self.interrupted.lock().await.push(thread.to_string());
         Ok(())
     }

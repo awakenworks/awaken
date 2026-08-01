@@ -7,6 +7,8 @@ MANAGED_PROTOCOL_ALLOWED_DEPS = {
     "awaken-deployment-contract": {
         "awaken-session-contract",
         "async-trait",
+        "chrono",
+        "chrono-tz",
         "thiserror",
     },
     "awaken-protocol-managed": {
@@ -17,7 +19,6 @@ MANAGED_PROTOCOL_ALLOWED_DEPS = {
         "awaken-environment-contract",
         "awaken-environment-realization-contract",
         "awaken-environment-application",
-        "awaken-protocol-transport",
         "awaken-credential-contract",
         "awaken-session-contract",
         "awaken-deployment-contract",
@@ -31,9 +32,8 @@ MANAGED_PROTOCOL_ALLOWED_DEPS = {
         "awaken-session-store",
         "async-stream",
         "form_urlencoded",
-        # Public Deployment cron semantics are product-wire behavior. These are
-        # pure calendar libraries, not a host/provider/runtime dependency; moving
-        # the scheduler into a neutral crate would invert domain ownership.
+        # Wire timestamp parsing/projection; Deployment scheduling itself lives
+        # in awaken-deployment-contract's Cron value object.
         "chrono",
         "chrono-tz",
         "awaken-tenancy",
