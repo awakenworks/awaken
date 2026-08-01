@@ -7,12 +7,13 @@
 //! inward — this is a `contract/` leaf, so the host and other implementors depend on
 //! it instead of reverse-depending on a protocol adapter.
 //!
-//! Protocol adapters consume these contracts directly and do not re-export them;
-//! this crate is the single import path for neutral Session semantics.
+//! Protocol adapters consume these contracts directly; this crate remains the
+//! single definition site for neutral Session and cross-Session process semantics.
 
 mod agent_config;
 mod application_contribution;
 mod baseline;
+mod dream;
 mod lifecycle;
 mod mcp_attachment;
 mod mcp_probe;
@@ -51,6 +52,12 @@ pub use baseline::{
     SessionBaseline, SessionBaselineFingerprint, SessionBaselineInputs, SessionBaselineState,
     SessionCreationFinalizeError, SessionCreationIntent, SessionMcpAuthoringContext,
     SessionNetworkPolicy,
+};
+pub use dream::{
+    Dream, DreamAgentSelectionRecord, DreamCreateParams, DreamError, DreamInput, DreamListParams,
+    DreamModelConfig, DreamModelInput, DreamModelSpeed, DreamOutput, DreamPage, DreamPolicyConfig,
+    DreamPolicyRecord, DreamProcessFailure, DreamProcessRecord, DreamProcessStore,
+    DreamProcessStoreError, DreamStatus, DreamUsage, WorkspaceDreamAgentOverride,
 };
 pub use lifecycle::{ManagedLifecycleFact, SessionLifecycleSink};
 pub use mcp_attachment::{

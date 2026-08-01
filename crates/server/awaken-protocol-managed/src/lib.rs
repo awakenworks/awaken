@@ -47,10 +47,10 @@ mod state;
 /// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
 mod work_queue;
 
-pub use dream::{
+pub use awaken_dream_application::{
     BUILT_IN_DREAM_AGENT_ID, DreamAgentConfiguration, DreamAgentSelection, DreamApiError,
-    DreamCancellation, DreamFailure, DreamPolicy, DreamPolicyConfig, DreamPreparation,
-    DreamRequest, DreamSessionSource, DreamState, DreamWorker,
+    DreamApplication, DreamCancellation, DreamExecutor, DreamFailure, DreamPolicy,
+    DreamPolicyConfig, DreamPreparation, DreamRequest, DreamSessionSource,
 };
 pub use rate_limit::{ManagedRateLimiter, ManagedRateLimits, enforce_managed_rate_limit};
 pub use routes::agents_registry::{

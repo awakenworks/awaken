@@ -13,7 +13,6 @@
 //! management. They share only the aux-agent substrate.
 
 pub mod agent;
-pub mod dream;
 pub mod extraction;
 pub mod localfs;
 pub mod plugin;
@@ -33,10 +32,6 @@ pub use plugin::{
 pub use agent::{
     DEFAULT_MEMORY_INSTRUCTIONS, DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID,
     SELECTOR_AGENT_ID, default_memory_agent, default_selector_agent,
-};
-pub use dream::{
-    DreamJobRecord, DreamPolicyRecord, DreamRepository, DreamRepositoryError,
-    WorkspaceDreamAgentOverride,
 };
 pub use extraction::{
     MemoryExtractionController, MemoryExtractionDriver, MemoryExtractionError,

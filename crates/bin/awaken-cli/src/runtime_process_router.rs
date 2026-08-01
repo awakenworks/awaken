@@ -219,7 +219,7 @@ pub(super) async fn assemble_runtime_process_router(
         resource_component,
         sessions,
         deployments,
-        dream_repository,
+        dream_process_store,
         memory_extractions,
         capture_sink,
         captured_content_eraser: _,
@@ -435,7 +435,7 @@ pub(super) async fn assemble_runtime_process_router(
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
     // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
     // routing. Flat requests fall through unchanged. The same assembly returns the
-    // DreamState it mounted, so scheduling cannot target a parallel instance.
+    // DreamApplication it mounted, so scheduling cannot target a parallel instance.
     let model_directory: Arc<dyn awaken_server::ModelDirectory> = match control_stores.as_ref() {
         Some(control) => Arc::new(
             awaken_server::model_directory::CatalogModelDirectory::with_source(
@@ -472,7 +472,7 @@ pub(super) async fn assemble_runtime_process_router(
             resource_management_router,
             application_access,
             model_directory,
-            dream_repository,
+            dream_process_store,
             worker_authenticator,
             deployment_repository: deployments,
             executable_agents: executable_agent_catalog,

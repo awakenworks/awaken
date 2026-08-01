@@ -40,7 +40,7 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
             sessions: sessions.clone(),
             deployments: sessions.clone(),
             memory_extractions: sessions.clone(),
-            dream_repository: sessions,
+            dream_process_store: sessions,
             capture_sink: captured_content.clone(),
             captured_content_eraser: captured_content,
             environment_work: Arc::new(awaken_work_store::InMemoryWorkQueue::new()),
@@ -117,7 +117,7 @@ pub(super) fn process_stores_for_runtime_storage(
     coordinator.sessions = sessions.clone();
     coordinator.deployments = sessions.clone();
     coordinator.memory_extractions = sessions.clone();
-    coordinator.dream_repository = sessions;
+    coordinator.dream_process_store = sessions;
     stores
 }
 

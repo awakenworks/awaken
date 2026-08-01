@@ -17,8 +17,8 @@ awaken-environment-contract.workspace = true
 awaken-environment-realization-contract.workspace = true
 awaken-environment-application.workspace = true
 awaken-deployment-contract.workspace = true
+awaken-dream-application.workspace = true
 awaken-credential-contract.workspace = true
-awaken-ext-memory.workspace = true
 # Typed resource ids/bindings plus the Resource Catalog port used by the Managed
 # ACL to lower wire resources before Session resolution. No IAM policy lives here.
 awaken-resource-contract.workspace = true

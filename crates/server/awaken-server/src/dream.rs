@@ -3,11 +3,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use awaken_memory_store::{Memory, MemoryRepository};
-use awaken_protocol_managed::types::{DreamUsage, InboundEvent, SendEventsRequest};
-use awaken_protocol_managed::{
-    DreamCancellation, DreamFailure, DreamPreparation, DreamRequest, DreamWorker, ManagedState,
+use awaken_dream_application::{
+    DreamCancellation, DreamExecutor, DreamFailure, DreamPreparation, DreamRequest,
 };
+use awaken_memory_store::{Memory, MemoryRepository};
+use awaken_protocol_managed::ManagedState;
+use awaken_protocol_managed::types::{InboundEvent, SendEventsRequest};
 use awaken_provisioning_contract::{
     MemoryWriteConsistency, MountAccess, MountLifetime, MountRequirement, MountSource,
 };
@@ -323,7 +324,7 @@ impl BuiltInDreamAgent {
 }
 
 #[async_trait::async_trait]
-impl DreamWorker for BuiltInDreamAgent {
+impl DreamExecutor for BuiltInDreamAgent {
     async fn validate_inputs(&self, request: &DreamRequest) -> Result<(), DreamFailure> {
         self.managed
             .validate_dream_agent(&request.workspace_id, &request.agent_selection.agent_id)
@@ -446,9 +447,9 @@ impl DreamWorker for BuiltInDreamAgent {
         request: &DreamRequest,
         preparation: &DreamPreparation,
         cancellation: DreamCancellation,
-    ) -> Result<DreamUsage, DreamFailure> {
+    ) -> Result<(), DreamFailure> {
         if cancellation.is_canceled() {
-            return Ok(DreamUsage::default());
+            return Ok(());
         }
         let trigger = format!(
             "[dream-job:{}] Consolidate the frozen memory and Session evidence now.",
@@ -476,12 +477,7 @@ impl DreamWorker for BuiltInDreamAgent {
                     "the recovered Dream Agent Session failed",
                 ));
             }
-            return Ok(DreamUsage {
-                cache_creation_input_tokens: session.usage.cache_creation_input_tokens,
-                cache_read_input_tokens: session.usage.cache_read_input_tokens,
-                input_tokens: session.usage.input_tokens,
-                output_tokens: session.usage.output_tokens,
-            });
+            return Ok(());
         }
         let content = vec![awaken_agent_contract::agent::content::ContentBlock::text(
             trigger,
@@ -501,14 +497,7 @@ impl DreamWorker for BuiltInDreamAgent {
             )
             .await;
         run.map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
-        let session = self.managed.get_session(&preparation.session_id).ok();
-        let usage = session.map(|session| session.usage).unwrap_or_default();
-        Ok(DreamUsage {
-            cache_creation_input_tokens: usage.cache_creation_input_tokens,
-            cache_read_input_tokens: usage.cache_read_input_tokens,
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-        })
+        Ok(())
     }
 
     async fn cleanup(

@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use awaken_ext_memory::DreamRepository;
 use awaken_protocol_managed::types::{DreamModelConfig, DreamUsage};
 use awaken_protocol_managed::{
-    BUILT_IN_DREAM_AGENT_ID, DREAMING_BETA, DreamCancellation, DreamFailure, DreamPolicyConfig,
-    DreamPreparation, DreamRequest, DreamSessionSource, DreamState, DreamWorker, dreams_router,
-    enforce_managed_beta,
+    BUILT_IN_DREAM_AGENT_ID, DREAMING_BETA, DreamApplication, DreamCancellation, DreamExecutor,
+    DreamFailure, DreamPolicyConfig, DreamPreparation, DreamRequest, DreamSessionSource,
+    dreams_router, enforce_managed_beta,
 };
+use awaken_session_contract::DreamProcessStore;
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -20,6 +20,50 @@ enum Outcome {
     Complete,
     Fail,
     Block,
+}
+
+struct FixedSessionFacts;
+
+#[async_trait::async_trait]
+impl DreamSessionSource for FixedSessionFacts {
+    async fn eligible_sessions(
+        &self,
+        _workspace_id: &str,
+        _updated_after_ms: u64,
+        _limit: usize,
+    ) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn session_usage(&self, _workspace_id: &str, _session_id: &str) -> Option<DreamUsage> {
+        Some(DreamUsage {
+            input_tokens: 12,
+            output_tokens: 3,
+            ..Default::default()
+        })
+    }
+}
+
+struct AlternateSessionFacts;
+
+#[async_trait::async_trait]
+impl DreamSessionSource for AlternateSessionFacts {
+    async fn eligible_sessions(
+        &self,
+        _workspace_id: &str,
+        _updated_after_ms: u64,
+        _limit: usize,
+    ) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn session_usage(&self, _workspace_id: &str, _session_id: &str) -> Option<DreamUsage> {
+        Some(DreamUsage {
+            input_tokens: 99,
+            output_tokens: 8,
+            ..Default::default()
+        })
+    }
 }
 
 #[tokio::test]
@@ -50,7 +94,7 @@ async fn automatic_policy_is_opt_in_thresholded_and_reuses_the_dream_job_path() 
     // Policy decision table:
     // P1 absent/default-disabled -> no automatic Dream;
     // P2 enabled but fewer than min -> advance schedule, no job;
-    // P3 enabled + threshold -> exactly one ordinary DreamJob using max bound;
+    // P3 enabled + threshold -> exactly one ordinary DreamProcess using max bound;
     // P4 successful job advances cutoff -> unchanged Sessions are not reprocessed.
     let (state, _, _) = state(Outcome::Complete);
     let sparse = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -138,7 +182,7 @@ async fn dream_policy_api_projects_defaults_validates_and_survives_restart() {
         started: Arc::new(Notify::new()),
         release: Arc::new(Notify::new()),
     });
-    let state = Arc::new(DreamState::with_repository(worker, repository).unwrap());
+    let state = Arc::new(DreamApplication::with_store(worker, repository).unwrap());
     let app = dreams_router(state);
 
     let (status, default) = request(&app, "GET", "/v1/dream_policies/mem_policy", None).await;
@@ -184,7 +228,7 @@ async fn dream_policy_api_projects_defaults_validates_and_survives_restart() {
     drop(app);
 
     let reopened = Arc::new(
-        DreamState::with_repository(
+        DreamApplication::with_store(
             Arc::new(Worker {
                 outcome: Outcome::Complete,
                 started: Arc::new(Notify::new()),
@@ -194,7 +238,7 @@ async fn dream_policy_api_projects_defaults_validates_and_survives_restart() {
         )
         .unwrap(),
     );
-    let restored = reopened.policy("default", "mem_policy");
+    let restored = reopened.policy("default", "mem_policy").unwrap();
     assert!(restored.config.enabled, "A4");
     assert_eq!(restored.config.interval_seconds, 3600, "A4");
     let _ = std::fs::remove_file(path);
@@ -217,7 +261,7 @@ async fn concurrent_policy_ticks_claim_one_dream_across_replicas() {
     let repository = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
     let make_state = || {
         Arc::new(
-            DreamState::with_repository(
+            DreamApplication::with_store(
                 Arc::new(Worker {
                     outcome: Outcome::Complete,
                     started: Arc::new(Notify::new()),
@@ -229,6 +273,7 @@ async fn concurrent_policy_ticks_claim_one_dream_across_replicas() {
         )
     };
     let first = make_state();
+    let second = make_state();
     first
         .set_policy(
             "default",
@@ -246,11 +291,12 @@ async fn concurrent_policy_ticks_claim_one_dream_across_replicas() {
             },
         )
         .unwrap();
-    let second = make_state();
     first.bind_session_source(Arc::new(Sessions));
     second.bind_session_source(Arc::new(Sessions));
 
-    // Replica decision rule: C1 two schedulers hold the same due policy version
+    // Replica decision rule: C0 both applications are constructed before the
+    // policy write -> both must read the shared store rather than a local mirror;
+    // C1 two schedulers hold the same due policy version
     // and both find eligible evidence -> E1 exact-version policy+job transaction
     // accepts one claimant, E2 the loser is a benign no-op, E3 one durable job.
     let (left, right) = tokio::join!(
@@ -258,7 +304,7 @@ async fn concurrent_policy_ticks_claim_one_dream_across_replicas() {
         second.tick_policies(u64::MAX)
     );
     assert_eq!(left.unwrap().len() + right.unwrap().len(), 1);
-    assert_eq!(repository.dream_jobs().unwrap().len(), 1);
+    assert_eq!(repository.dream_processes().unwrap().len(), 1);
 }
 
 struct Worker {
@@ -268,7 +314,7 @@ struct Worker {
 }
 
 #[async_trait::async_trait]
-impl DreamWorker for Worker {
+impl DreamExecutor for Worker {
     async fn validate_inputs(&self, request: &DreamRequest) -> Result<(), DreamFailure> {
         if request.source_memory_store_id == "missing" {
             Err(DreamFailure::new(
@@ -293,31 +339,24 @@ impl DreamWorker for Worker {
         _request: &DreamRequest,
         _preparation: &DreamPreparation,
         cancellation: DreamCancellation,
-    ) -> Result<DreamUsage, DreamFailure> {
+    ) -> Result<(), DreamFailure> {
         self.started.notify_waiters();
         match self.outcome {
-            Outcome::Complete => Ok(DreamUsage {
-                input_tokens: 12,
-                output_tokens: 3,
-                ..Default::default()
-            }),
+            Outcome::Complete => Ok(()),
             Outcome::Fail => Err(DreamFailure::new("internal_error", "planned failure")),
             Outcome::Block => {
                 self.release.notified().await;
                 if cancellation.is_canceled() {
-                    Ok(DreamUsage::default())
+                    Ok(())
                 } else {
-                    Ok(DreamUsage {
-                        input_tokens: 7,
-                        ..Default::default()
-                    })
+                    Ok(())
                 }
             }
         }
     }
 }
 
-fn state(outcome: Outcome) -> (Arc<DreamState>, Arc<Notify>, Arc<Notify>) {
+fn state(outcome: Outcome) -> (Arc<DreamApplication>, Arc<Notify>, Arc<Notify>) {
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let worker = Arc::new(Worker {
@@ -325,7 +364,9 @@ fn state(outcome: Outcome) -> (Arc<DreamState>, Arc<Notify>, Arc<Notify>) {
         started: started.clone(),
         release: release.clone(),
     });
-    (Arc::new(DreamState::new(worker)), started, release)
+    let state = Arc::new(DreamApplication::new(worker));
+    state.bind_session_source(Arc::new(FixedSessionFacts));
+    (state, started, release)
 }
 
 fn create_body(memory: &str, sessions: &[&str]) -> Value {
@@ -589,10 +630,13 @@ async fn list_supports_official_repeated_status_filters_and_cursor_pages() {
 
 #[tokio::test]
 async fn sqlite_repository_restores_terminal_dreams_after_restart() {
-    // Persistence cause/effect rule: terminal transition committed -> process
-    // restart -> retrieve projects the same lifecycle/output/usage. An incomplete
-    // transition is covered by `resume_incomplete`; this rule protects terminal
-    // jobs from being process-local BackgroundRuns state.
+    // Cause/effect graph and decision rules:
+    // C1 terminal DreamProcess + linked Session usage U1 -> E1 public lifecycle,
+    // output and U1; C2 the same process is reopened while the Session authority
+    // reports U2 -> E2 lifecycle/output stay stable and public usage becomes U2;
+    // C3 inspect the durable DreamProcess payload -> E3 no duplicated `usage`
+    // field. R1=C1, R2=C1+C2, R3=C3 prove process persistence and execution-fact
+    // projection have one owner each.
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -608,15 +652,19 @@ async fn sqlite_repository_restores_terminal_dreams_after_restart() {
     });
     let repository =
         Arc::new(SqliteManagedSessionRepository::open(path.to_str().unwrap()).unwrap());
-    let state = Arc::new(DreamState::with_repository(worker, repository).unwrap());
+    let state = Arc::new(DreamApplication::with_store(worker, repository.clone()).unwrap());
+    state.bind_session_source(Arc::new(FixedSessionFacts));
     let app = dreams_router(state.clone());
     let (_, created) = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"]))).await;
     let id = created["id"].as_str().unwrap().to_string();
     let completed = wait_for_status(&app, &id, "completed").await;
+    let durable = serde_json::to_value(&repository.dream_processes().unwrap()[0])
+        .expect("R3 typed durable process projection");
+    assert!(durable.get("usage").is_none(), "R3");
     drop(app);
     drop(state);
 
-    let reopened = DreamState::with_repository(
+    let reopened = DreamApplication::with_store(
         Arc::new(Worker {
             outcome: Outcome::Complete,
             started: Arc::new(Notify::new()),
@@ -625,11 +673,13 @@ async fn sqlite_repository_restores_terminal_dreams_after_restart() {
         Arc::new(SqliteManagedSessionRepository::open(path.to_str().unwrap()).unwrap()),
     )
     .unwrap();
+    reopened.bind_session_source(Arc::new(AlternateSessionFacts));
     let restored = reopened.retrieve("default", &id).unwrap();
     let restored = serde_json::to_value(restored).unwrap();
     assert_eq!(restored["status"], "completed");
     assert_eq!(restored["outputs"], completed["outputs"]);
-    assert_eq!(restored["usage"], completed["usage"]);
+    assert_eq!(completed["usage"]["input_tokens"], 12, "R1");
+    assert_eq!(restored["usage"]["input_tokens"], 99, "R2");
     let _ = std::fs::remove_file(path);
 }
 
@@ -640,7 +690,7 @@ async fn resume_incomplete_cas_resets_and_executes_a_durable_running_job() {
         never: Arc<Notify>,
     }
     #[async_trait::async_trait]
-    impl DreamWorker for CrashAtPrepare {
+    impl DreamExecutor for CrashAtPrepare {
         async fn validate_inputs(&self, _request: &DreamRequest) -> Result<(), DreamFailure> {
             Ok(())
         }
@@ -654,7 +704,7 @@ async fn resume_incomplete_cas_resets_and_executes_a_durable_running_job() {
             _request: &DreamRequest,
             _preparation: &DreamPreparation,
             _cancellation: DreamCancellation,
-        ) -> Result<DreamUsage, DreamFailure> {
+        ) -> Result<(), DreamFailure> {
             unreachable!()
         }
     }
@@ -665,7 +715,7 @@ async fn resume_incomplete_cas_resets_and_executes_a_durable_running_job() {
     let repository = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
     let entered = Arc::new(Notify::new());
     let first = Arc::new(
-        DreamState::with_repository(
+        DreamApplication::with_store(
             Arc::new(CrashAtPrepare {
                 entered: entered.clone(),
                 never: Arc::new(Notify::new()),
@@ -685,7 +735,7 @@ async fn resume_incomplete_cas_resets_and_executes_a_durable_running_job() {
     entered.notified().await;
 
     let recovered = Arc::new(
-        DreamState::with_repository(
+        DreamApplication::with_store(
             Arc::new(Worker {
                 outcome: Outcome::Complete,
                 started: Arc::new(Notify::new()),
@@ -695,6 +745,7 @@ async fn resume_incomplete_cas_resets_and_executes_a_durable_running_job() {
         )
         .unwrap(),
     );
+    recovered.bind_session_source(Arc::new(FixedSessionFacts));
     recovered.resume_incomplete();
     let recovered_app = dreams_router(recovered);
     let terminal =
@@ -706,7 +757,7 @@ async fn resume_incomplete_cas_resets_and_executes_a_durable_running_job() {
 async fn restart_retries_terminal_cleanup_before_publishing_completion() {
     struct CleanupFails;
     #[async_trait::async_trait]
-    impl DreamWorker for CleanupFails {
+    impl DreamExecutor for CleanupFails {
         async fn validate_inputs(&self, _request: &DreamRequest) -> Result<(), DreamFailure> {
             Ok(())
         }
@@ -722,8 +773,8 @@ async fn restart_retries_terminal_cleanup_before_publishing_completion() {
             _request: &DreamRequest,
             _preparation: &DreamPreparation,
             _cancellation: DreamCancellation,
-        ) -> Result<DreamUsage, DreamFailure> {
-            Ok(DreamUsage::default())
+        ) -> Result<(), DreamFailure> {
+            Ok(())
         }
         async fn cleanup(
             &self,
@@ -740,7 +791,7 @@ async fn restart_retries_terminal_cleanup_before_publishing_completion() {
     // artifacts and only then publishes Completed (the Agent is not re-executed).
     let repository = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
     let first =
-        Arc::new(DreamState::with_repository(Arc::new(CleanupFails), repository.clone()).unwrap());
+        Arc::new(DreamApplication::with_store(Arc::new(CleanupFails), repository.clone()).unwrap());
     let first_app = dreams_router(first);
     let (_, created) = request(
         &first_app,
@@ -751,10 +802,10 @@ async fn restart_retries_terminal_cleanup_before_publishing_completion() {
     .await;
     for _ in 0..100 {
         if repository
-            .dream_jobs()
+            .dream_processes()
             .unwrap()
             .iter()
-            .any(|job| job.data.contains("\"cleanup_pending\":true"))
+            .any(|job| job.cleanup_pending)
         {
             break;
         }
@@ -770,7 +821,7 @@ async fn restart_retries_terminal_cleanup_before_publishing_completion() {
     assert_eq!(pending["status"], "running");
 
     let recovered = Arc::new(
-        DreamState::with_repository(
+        DreamApplication::with_store(
             Arc::new(Worker {
                 outcome: Outcome::Complete,
                 started: Arc::new(Notify::new()),
@@ -794,7 +845,7 @@ async fn restart_retries_terminal_cleanup_before_publishing_completion() {
 async fn workspace_agent_selection_uses_effective_default_and_freezes_override() {
     struct RecordingWorker(Arc<std::sync::Mutex<Vec<String>>>);
     #[async_trait::async_trait]
-    impl DreamWorker for RecordingWorker {
+    impl DreamExecutor for RecordingWorker {
         async fn validate_inputs(&self, request: &DreamRequest) -> Result<(), DreamFailure> {
             self.0
                 .lock()
@@ -825,8 +876,8 @@ async fn workspace_agent_selection_uses_effective_default_and_freezes_override()
             _request: &DreamRequest,
             _preparation: &DreamPreparation,
             _cancellation: DreamCancellation,
-        ) -> Result<DreamUsage, DreamFailure> {
-            Ok(DreamUsage::default())
+        ) -> Result<(), DreamFailure> {
+            Ok(())
         }
     }
 
@@ -835,7 +886,9 @@ async fn workspace_agent_selection_uses_effective_default_and_freezes_override()
     // Each create freezes its selection before dispatch, so policy edits affect
     // only subsequent jobs and no default Agent row is duplicated per Workspace.
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let state = Arc::new(DreamState::new(Arc::new(RecordingWorker(seen.clone()))));
+    let state = Arc::new(DreamApplication::new(Arc::new(RecordingWorker(
+        seen.clone(),
+    ))));
     let app = dreams_router(state.clone());
     let (_, default_agent) = request(&app, "GET", "/v1/dream_agent_configuration", None).await;
     assert_eq!(default_agent["agent_id"], BUILT_IN_DREAM_AGENT_ID);
@@ -891,7 +944,7 @@ async fn workspace_agent_selection_uses_effective_default_and_freezes_override()
 async fn input_deleted_after_create_fails_before_terminal_publication() {
     struct LifecycleWorker(std::sync::atomic::AtomicUsize);
     #[async_trait::async_trait]
-    impl DreamWorker for LifecycleWorker {
+    impl DreamExecutor for LifecycleWorker {
         async fn validate_inputs(&self, _request: &DreamRequest) -> Result<(), DreamFailure> {
             if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
                 Ok(())
@@ -914,15 +967,15 @@ async fn input_deleted_after_create_fails_before_terminal_publication() {
             _request: &DreamRequest,
             _preparation: &DreamPreparation,
             _cancellation: DreamCancellation,
-        ) -> Result<DreamUsage, DreamFailure> {
-            Ok(DreamUsage::default())
+        ) -> Result<(), DreamFailure> {
+            Ok(())
         }
     }
 
     // Input lifecycle decision rule: C1 inputs exist at create but a selected
     // Session becomes unavailable before completion -> E1 typed failed Dream,
     // E2 no completed state is ever published, E3 prepared output remains listed.
-    let state = Arc::new(DreamState::new(Arc::new(LifecycleWorker(
+    let state = Arc::new(DreamApplication::new(Arc::new(LifecycleWorker(
         std::sync::atomic::AtomicUsize::new(0),
     ))));
     let app = dreams_router(state);

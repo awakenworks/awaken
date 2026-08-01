@@ -22,7 +22,7 @@ MANAGED_PROTOCOL_ALLOWED_DEPS = {
         "awaken-credential-contract",
         "awaken-session-contract",
         "awaken-deployment-contract",
-        "awaken-ext-memory",
+        "awaken-dream-application",
         "awaken-resource-contract",
         # Dev-only Session/Resource conformance uses the authoritative Resources
         # catalog adapter rather than reconstructing it in Admin.

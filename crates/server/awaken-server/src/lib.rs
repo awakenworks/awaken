@@ -484,17 +484,17 @@ pub fn mount_with_managed_application_access_models_and_dreams(
     resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
     model_directory: Arc<dyn awaken_managed_routers::ModelDirectory>,
-    dream_repository: Arc<dyn awaken_ext_memory::DreamRepository>,
+    dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
     resource_management_router: Router,
     worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
-) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
+) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
     mount_with_managed_over_and_models(
         host,
         managed_state,
         resource_catalog,
         Some(application_access),
         Some(model_directory),
-        Some(dream_repository),
+        Some(dream_process_store),
         resource_management_router,
         worker_authenticator,
     )
@@ -505,7 +505,7 @@ fn mount_with_managed_over(
     managed_state: Arc<ManagedState>,
     resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
-) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
+) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
     let resources = resource_management_router_from_host(&host, resource_catalog.clone());
     mount_with_managed_over_and_models(
         host,
@@ -525,10 +525,10 @@ fn mount_with_managed_over_and_models(
     resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
     model_directory: Option<Arc<dyn awaken_managed_routers::ModelDirectory>>,
-    dream_repository: Option<Arc<dyn awaken_ext_memory::DreamRepository>>,
+    dream_process_store: Option<Arc<dyn awaken_session_contract::DreamProcessStore>>,
     resource_management_router: Router,
     worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
-) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
+) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
     install_platform_memory_data_plane(&host);
     // Spawn the process-level dispatch pool once when durable ingress is enabled
     // (O2): it is the sole claimer of the shared queue and drives every session's
@@ -547,14 +547,14 @@ fn mount_with_managed_over_and_models(
         host.memory_repository(),
         resource_catalog.clone(),
     ));
-    let dream_state = match dream_repository {
+    let dream_application = match dream_process_store {
         Some(repository) => Arc::new(
-            awaken_protocol_managed::DreamState::with_repository(dream_worker, repository)
+            awaken_dream_application::DreamApplication::with_store(dream_worker, repository)
                 .expect("load durable Dream jobs"),
         ),
         None => match host.storage_dir() {
             Some(root) => Arc::new(
-                awaken_protocol_managed::DreamState::with_repository(
+                awaken_dream_application::DreamApplication::with_store(
                     dream_worker,
                     Arc::new(
                         awaken_session_store::SqliteManagedSessionRepository::open(
@@ -565,12 +565,14 @@ fn mount_with_managed_over_and_models(
                 )
                 .expect("load durable Dream jobs"),
             ),
-            None => Arc::new(awaken_protocol_managed::DreamState::new(dream_worker)),
+            None => Arc::new(awaken_dream_application::DreamApplication::new(
+                dream_worker,
+            )),
         },
     };
-    dream_state.bind_session_source(managed_state.clone());
-    dream_state.resume_incomplete();
-    let dreams = awaken_protocol_managed::dreams_router(dream_state.clone());
+    dream_application.bind_session_source(managed_state.clone());
+    dream_application.resume_incomplete();
+    let dreams = awaken_protocol_managed::dreams_router(dream_application.clone());
     let managed = router(managed_state.clone()).merge(dreams);
     // One neutral port impl behind the three wire adapters (each `router` takes
     // `Arc<dyn RunApplication>`), so they share the host with no per-protocol twin.
@@ -658,7 +660,7 @@ fn mount_with_managed_over_and_models(
                 }
             },
         ));
-    (router, dream_state)
+    (router, dream_application)
 }
 
 fn resource_management_router_from_host(

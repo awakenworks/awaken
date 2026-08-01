@@ -656,6 +656,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-dream-application"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-session-contract",
+ "chrono",
+ "serde",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "awaken-durable-projection"
 version = "1.0.0-dev"
 dependencies = [
@@ -1282,6 +1295,7 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-credential-vault",
  "awaken-deployment-contract",
+ "awaken-dream-application",
  "awaken-env-store",
  "awaken-environment-application",
  "awaken-environment-contract",
@@ -1289,7 +1303,6 @@ dependencies = [
  "awaken-executable-agent-contract",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
- "awaken-ext-memory",
  "awaken-managed-bridge",
  "awaken-model-catalog",
  "awaken-provisioning-contract",
@@ -1840,6 +1853,7 @@ dependencies = [
  "awaken-credential-materializer",
  "awaken-credential-vault",
  "awaken-deployment-contract",
+ "awaken-dream-application",
  "awaken-executable-agent-contract",
  "awaken-ext-mcp",
  "awaken-ext-memory",

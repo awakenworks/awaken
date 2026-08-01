@@ -367,7 +367,7 @@ async fn open_process_stores(
         let sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>;
         let deployments: Arc<dyn awaken_deployment_contract::DeploymentRepository>;
         let memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>;
-        let dream_repository: Arc<dyn awaken_ext_memory::DreamRepository>;
+        let dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>;
         match &coordinator_cfg.sessions {
             StoreBackend::Sqlite(p) => {
                 let repository = Arc::new(
@@ -378,7 +378,7 @@ async fn open_process_stores(
                 sessions = repository.clone();
                 deployments = repository.clone();
                 memory_extractions = repository.clone();
-                dream_repository = repository;
+                dream_process_store = repository;
             }
             StoreBackend::Postgres(url) => {
                 let repository = Arc::new(match postgres_schema {
@@ -396,7 +396,7 @@ async fn open_process_stores(
                 sessions = repository.clone();
                 deployments = repository.clone();
                 memory_extractions = repository.clone();
-                dream_repository = repository;
+                dream_process_store = repository;
             }
         }
         let (capture_sink, captured_content_eraser): (
@@ -433,7 +433,7 @@ async fn open_process_stores(
             sessions,
             deployments,
             memory_extractions,
-            dream_repository,
+            dream_process_store,
             capture_sink,
             captured_content_eraser,
             environment_work: environment_work.expect("Coordinator role opens WorkQueue"),

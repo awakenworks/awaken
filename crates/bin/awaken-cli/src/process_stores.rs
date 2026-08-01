@@ -43,8 +43,8 @@ pub(super) struct CoordinatorStores {
     /// Coordinator-owned Deployment and DeploymentRun view over the same physical
     /// repository as Session.
     pub(super) deployments: Arc<dyn awaken_deployment_contract::DeploymentRepository>,
-    /// The same physical Session store viewed through the Dream repository interface.
-    pub(super) dream_repository: Arc<dyn awaken_ext_memory::DreamRepository>,
+    /// The same physical Session store viewed through the Dream process-store port.
+    pub(super) dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
     /// Same Session application repository viewed through the extraction-work
     /// interface; kept separate from MemoryRepository and IAM.
     pub(super) memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,

@@ -9,12 +9,12 @@ use std::sync::Arc;
 use awaken_authz_enforce::ApplicationAccessStore;
 use awaken_deployment_contract::DeploymentRepository;
 use awaken_executable_agent_contract::ExecutableAgentRegistrationSource;
-use awaken_ext_memory::DreamRepository;
 use awaken_managed_routers::ModelDirectory;
 use awaken_protocol_managed::{
     DeploymentState, EnvironmentExecutionState, ManagedRateLimiter, ManagedState,
 };
 use awaken_resource_contract::ResourceCatalog;
+use awaken_session_contract::DreamProcessStore;
 use awaken_session_contract::ManagedSessionRepository;
 use awaken_worker_transport_security::WorkerRequestAuthenticator;
 use axum::Router;
@@ -35,7 +35,7 @@ pub struct CoordinatorDependencies {
     pub resource_management_router: Router,
     pub application_access: Arc<ApplicationAccessStore>,
     pub model_directory: Arc<dyn ModelDirectory>,
-    pub dream_repository: Arc<dyn DreamRepository>,
+    pub dream_process_store: Arc<dyn DreamProcessStore>,
     pub worker_authenticator: Arc<dyn WorkerRequestAuthenticator>,
     pub deployment_repository: Arc<dyn DeploymentRepository>,
     pub executable_agents: Arc<dyn ExecutableAgentRegistrationSource>,
@@ -82,7 +82,7 @@ pub async fn build_coordinator_component(
         resource_management_router,
         application_access,
         model_directory,
-        dream_repository,
+        dream_process_store,
         worker_authenticator,
         deployment_repository,
         executable_agents,
@@ -112,13 +112,13 @@ pub async fn build_coordinator_component(
         awaken_protocol_managed::LocalDeploymentSessionLauncher::new(managed_state.clone()),
     ));
 
-    let (data, dream_state) = crate::mount_with_managed_application_access_models_and_dreams(
+    let (data, dream_application) = crate::mount_with_managed_application_access_models_and_dreams(
         host,
         managed_state,
         resource_catalog,
         application_access.clone(),
         model_directory,
-        dream_repository,
+        dream_process_store,
         resource_management_router,
         worker_authenticator,
     );
@@ -133,7 +133,7 @@ pub async fn build_coordinator_component(
             default_workspace,
         ));
 
-    // One timer drives the exact DeploymentState and DreamState mounted above;
+    // One timer drives the exact DeploymentState and DreamApplication mounted above;
     // no scheduler may reconstruct either aggregate beside this component.
     let scheduled_deployments = deployment_state;
     tokio::spawn(async move {
@@ -147,7 +147,7 @@ pub async fn build_coordinator_component(
             if let Err(error) = scheduled_deployments.tick_and_launch(now_ms).await {
                 eprintln!("scheduled Deployment tick failed: {error}");
             }
-            if let Err(error) = dream_state.tick_policies(now_ms).await {
+            if let Err(error) = dream_application.tick_policies(now_ms).await {
                 eprintln!("scheduled Dream policy tick failed: {error}");
             }
         }

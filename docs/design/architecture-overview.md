@@ -160,6 +160,7 @@ runtime contract.
 | Sandbox policy | Control: create v1 → append versions; Environment stores one exact reference | Control resolves the body into the executable Environment registration; Worker receives only the frozen Session projection |
 | Deployment | Coordinator: create/update → active/paused → terminal archived | scheduler/manual trigger creates a stable DeploymentRun; it never executes an Agent itself |
 | DeploymentRun | Coordinator: started → succeeded with `session_id` or failed with exact error | `LocalDeploymentSessionLauncher` reaches the sole Session creation command, idempotent by `deployment_run_id` |
+| DreamProcess | Coordinator: requested → preparing → auxiliary Session linked → cleaning → terminal; usage remains an ordinary Session fact | `DreamApplication` schedules/reconciles while `DreamExecutor` composes Resource and Session authorities |
 | Session / Run | Coordinator: admit frozen Agent/Environment/Resource facts → enqueue → claimed/running/awaiting → committed terminal settlement | Worker executes under a lease epoch; Coordinator owns commit, replay, and public projection |
 | File | Resources: logical create → active/readable → logical delete → purge intent → safe physical reclaim | `FileApplication` is the sole HTTP/artifact command path; Worker reads immutable bytes through `FileContentSource` |
 | MemoryStore | Resources: create/configure → bind/freeze config version → active CAS use → tombstone → fenced reclaim | `MemoryRepository`, snapshot/write-back ports, extraction intents, and `ResourceReclaimer` |
