@@ -10,6 +10,30 @@ use axum::Router;
 
 use super::*;
 
+const HOSTED_MODEL_CATALOG_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(60);
+
+fn spawn_hosted_model_catalog_reconciliation(
+    catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo>,
+    discovery: Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(HOSTED_MODEL_CATALOG_RECONCILIATION_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if let Err(error) = awaken_admin_config_api::reconcile_brokered_catalog(
+                discovery.as_ref(),
+                catalog.as_ref(),
+            )
+            .await
+            {
+                eprintln!("hosted model catalog reconciliation failed: {error}");
+            }
+        }
+    });
+}
+
 /// Canonical hosted authoring/control assembly. It reuses the same stores,
 /// resolver, IAM PEP and routes as the full local product, but deliberately
 /// omits every Session/Run/protocol/Worker data-plane route.
@@ -33,6 +57,7 @@ pub async fn build_control_assembly(
         deployment,
         key,
         PublicationModelComposition::PublishedProviders,
+        None,
         None,
     )
     .await
@@ -58,6 +83,7 @@ pub async fn build_control_router_with_publication_resolver(
         deployment,
         key,
         resolver,
+        None,
         providers,
         publication_resolver,
     )
@@ -71,6 +97,7 @@ pub async fn build_control_router_with_publication_resolver_and_web_search(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
     resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
+    brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
     web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     web_search_publication_resolver: Arc<dyn awaken_config_service::PluginPublicationResolver>,
 ) -> Result<Router, String> {
@@ -78,6 +105,7 @@ pub async fn build_control_router_with_publication_resolver_and_web_search(
         deployment,
         key,
         PublicationModelComposition::HostedPublication { resolver },
+        brokered_catalog,
         Some((web_search_providers, web_search_publication_resolver)),
     )
     .await
@@ -88,6 +116,7 @@ async fn build_control_assembly_with_model_composition(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
     model_composition: PublicationModelComposition,
+    brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
     web_search: Option<(
         awaken_ext_builtin_tools::WebSearchProviderRegistry,
         Arc<dyn awaken_config_service::PluginPublicationResolver>,
@@ -112,6 +141,15 @@ async fn build_control_assembly_with_model_composition(
         PostgresSchemaMode::Verify,
     )
     .await?;
+    if let Some(discovery) = brokered_catalog.as_ref() {
+        awaken_admin_config_api::reconcile_brokered_catalog(
+            discovery.as_ref(),
+            stores.catalog.as_ref(),
+        )
+        .await
+        .map_err(|error| format!("initial hosted model catalog reconciliation failed: {error}"))?;
+        spawn_hosted_model_catalog_reconciliation(stores.catalog.clone(), discovery.clone());
+    }
     let executable_agent_wiring =
         executable_agent_registration::ExecutableAgentWiring::control(deployment)?;
     let router = assemble_process_router(
@@ -126,7 +164,13 @@ async fn build_control_assembly_with_model_composition(
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
             role: config::Role::Control,
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
-            cloud_models_enabled: deployment.cloud_models.is_enabled(),
+            model_supply: awaken_admin_config_api::ModelSupplyCapabilityView {
+                local_catalog_enabled: false,
+                byok_enabled: false,
+                cloud_models_enabled: true,
+                profile_authoring_enabled: false,
+            },
+            brokered_catalog,
             local_acp_observations: Vec::new(),
             hand_executors: BTreeMap::new(),
             web_search_providers: web_search.as_ref().map(|value| value.0.clone()),

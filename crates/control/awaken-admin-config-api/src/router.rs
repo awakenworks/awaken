@@ -97,6 +97,18 @@ pub struct ModelSupplyCapabilityView {
     pub local_catalog_enabled: bool,
     pub byok_enabled: bool,
     pub cloud_models_enabled: bool,
+    pub profile_authoring_enabled: bool,
+}
+
+impl Default for ModelSupplyCapabilityView {
+    fn default() -> Self {
+        Self {
+            local_catalog_enabled: true,
+            byok_enabled: true,
+            cloud_models_enabled: false,
+            profile_authoring_enabled: true,
+        }
+    }
 }
 
 /// Stable frontend/SDK feature discovery; callers never infer deployment
@@ -116,11 +128,7 @@ impl Default for ConfigCapabilitiesView {
                 cloud_login_enabled: false,
                 authenticated: false,
             },
-            models: ModelSupplyCapabilityView {
-                local_catalog_enabled: true,
-                byok_enabled: true,
-                cloud_models_enabled: false,
-            },
+            models: ModelSupplyCapabilityView::default(),
         }
     }
 }
@@ -165,6 +173,20 @@ pub trait CredentialProbe: Send + Sync {
 #[async_trait::async_trait]
 pub trait BrokeredCatalogDiscovery: Send + Sync {
     async fn projection(&self) -> Result<awaken_model_catalog::BrokeredCatalogProjection, String>;
+}
+
+/// Reconcile one complete managed-model observation through the existing
+/// Catalog authority. HTTP refresh and hosted automatic convergence share this
+/// application operation; neither transport owns a second synchronization path.
+pub async fn reconcile_brokered_catalog(
+    discovery: &dyn BrokeredCatalogDiscovery,
+    catalog: &dyn CatalogRepo,
+) -> Result<CatalogSyncResult, String> {
+    let projection = discovery.projection().await?;
+    catalog
+        .reconcile_brokered_projection(projection)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Author the model catalog and enter credentials. The resolver consumes the same
@@ -261,6 +283,9 @@ async fn refresh_brokered_models(
     headers: HeaderMap,
 ) -> Result<Json<CatalogSyncResult>, Problem> {
     let rid = req_id(&headers);
+    if !capabilities.models.local_catalog_enabled {
+        return Err(model_supply_managed(&rid));
+    }
     if !capabilities.models.cloud_models_enabled {
         return Err(Problem(ApiError::new(
             409,
@@ -288,21 +313,28 @@ async fn refresh_brokered_models(
             &rid,
         ))
     })?;
-    let projection = discovery.projection().await.map_err(|detail| {
-        Problem(ApiError::new(
-            503,
-            "brokered_catalog_unavailable",
-            "Managed model catalog unavailable",
-            detail,
-            &rid,
-        ))
-    })?;
-    let result = state
-        .catalog
-        .reconcile_brokered_projection(projection)
+    let result = reconcile_brokered_catalog(discovery.as_ref(), state.catalog.as_ref())
         .await
-        .map_err(|error| repo_problem(&error, &rid))?;
+        .map_err(|detail| {
+            Problem(ApiError::new(
+                503,
+                "brokered_catalog_unavailable",
+                "Managed model catalog unavailable",
+                detail,
+                &rid,
+            ))
+        })?;
     Ok(Json(result))
+}
+
+fn model_supply_managed(rid: &str) -> Problem {
+    Problem(ApiError::new(
+        403,
+        "model_supply_managed",
+        "Model supply is managed by the deployment",
+        "this deployment exposes read-only managed models and does not accept tenant model-supply configuration",
+        rid,
+    ))
 }
 
 /// An [`ApiError`] rendered as an RFC-9457 `application/problem+json` response.
@@ -471,11 +503,15 @@ const fn default_connection_timeout() -> u64 {
 
 async fn test_and_save_provider_connection(
     State(state): State<AdminState>,
+    State(capabilities): State<ConfigCapabilitiesView>,
     scope: Option<Extension<ResourceWorkspace>>,
     headers: HeaderMap,
     Json(body): Json<SaveProviderConnectionRequest>,
 ) -> Result<(StatusCode, Json<ProviderConnectionView>), Problem> {
     let rid = req_id(&headers);
+    if !capabilities.models.byok_enabled {
+        return Err(model_supply_managed(&rid));
+    }
     let workspace_id = scope.map_or(body.workspace_id.clone(), |Extension(scope)| scope.0);
     let supplied_auth = usize::from(body.secret.is_some())
         + usize::from(body.oauth_helper.is_some())
@@ -551,10 +587,14 @@ fn unix_time_ms() -> u64 {
 
 async fn put_model_attributes(
     State(state): State<AdminState>,
+    State(capabilities): State<ConfigCapabilitiesView>,
     Path(model_id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<PutModelAttributesRequest>,
 ) -> Result<Json<ModelAttributes>, Problem> {
+    if !capabilities.models.local_catalog_enabled {
+        return Err(model_supply_managed(&req_id(&headers)));
+    }
     // Model attributes publish independently of offerings — they carry no
     // provider/endpoint reference (`ProviderCatalog::validate` leaves them
     // unconstrained), so the only failure surface is a whole-catalog invariant (422).
@@ -977,12 +1017,16 @@ async fn workspace_lookup(
 
 async fn put_profile(
     State(state): State<AdminState>,
+    State(capabilities): State<ConfigCapabilitiesView>,
     scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(mut profile): Json<InferenceProfile>,
 ) -> Result<Json<InferenceProfile>, Problem> {
     let rid = req_id(&headers);
+    if !capabilities.models.profile_authoring_enabled {
+        return Err(model_supply_managed(&rid));
+    }
     let scoped_workspace = scope.map(|Extension(scope)| scope.0);
     if let Some(workspace) = &scoped_workspace {
         profile.workspace_id.clone_from(workspace);
@@ -1353,11 +1397,15 @@ impl From<CredentialSource> for CredentialSourceView {
 
 async fn post_credential(
     State(state): State<AdminState>,
+    State(capabilities): State<ConfigCapabilitiesView>,
     scope: Option<Extension<ResourceWorkspace>>,
     headers: HeaderMap,
     Json(body): Json<EnterCredentialRequest>,
 ) -> Result<(StatusCode, Json<CredentialSourceView>), Problem> {
     let rid = req_id(&headers);
+    if !capabilities.models.byok_enabled && body.provider_id.is_some() {
+        return Err(model_supply_managed(&rid));
+    }
     let legacy_secret = body.secret.filter(|secret| !secret.is_empty());
     let secret = match (legacy_secret, body.material) {
         (Some(_), Some(_)) => {
