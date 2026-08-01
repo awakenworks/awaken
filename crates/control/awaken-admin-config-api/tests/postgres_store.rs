@@ -314,6 +314,11 @@ async fn postgres_owned_legacy_memory_rows_migrate_but_unowned_rows_are_quaranti
     let store = tokio::task::spawn_blocking(move || PostgresAdminStore::connect(&url).unwrap())
         .await
         .unwrap();
+    // Cause/effect decision table: C1=legacy row has Workspace ownership;
+    // C2=the explicit production importer runs. R1 C1+C2 -> catalog row;
+    // R2 !C1+C2 -> quarantine by omission. Repository connect only prepares
+    // schema and deliberately does not import application data.
+    store.migrate_legacy_memory_stores().unwrap();
     assert_eq!(
         store
             .memory_store("ws", "legacy-owned")
