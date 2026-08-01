@@ -7,6 +7,7 @@
 
 use parking_lot::Mutex;
 
+use std::collections::BTreeSet;
 #[cfg(feature = "sqlite")]
 use std::time::Duration;
 
@@ -363,7 +364,7 @@ impl ResourceReferenceIndex for SqliteResourceStore {
         reference_id: &str,
         records: Vec<ResourceReferenceRecord>,
     ) -> Result<(), ResourcePurgeError> {
-        validate_replacement(kind, reference_id, &records)?;
+        let records = prepare_replacement(kind, reference_id, records)?;
         let mut connection = self.connection();
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -552,25 +553,35 @@ pub(crate) fn validate_reference(
     Ok(())
 }
 
-pub(crate) fn validate_replacement(
+pub(crate) fn prepare_replacement(
     kind: ResourceReferenceKind,
     reference_id: &str,
-    records: &[ResourceReferenceRecord],
-) -> Result<(), ResourcePurgeError> {
+    records: Vec<ResourceReferenceRecord>,
+) -> Result<Vec<ResourceReferenceRecord>, ResourcePurgeError> {
     if reference_id.trim().is_empty() {
         return Err(ResourcePurgeError::Invalid(
             "replacement reference_id must not be empty".into(),
         ));
     }
+    let mut identities = BTreeSet::new();
+    let mut unique = Vec::with_capacity(records.len());
     for record in records {
-        validate_reference(record)?;
+        validate_reference(&record)?;
         if record.reference.kind != kind || record.reference.reference_id != reference_id {
             return Err(ResourcePurgeError::Invalid(
                 "replacement rows must belong to the requested holder".into(),
             ));
         }
+        let identity = (
+            record.target.workspace_id.clone(),
+            record.target.kind,
+            record.target.resource_id.clone(),
+        );
+        if identities.insert(identity) {
+            unique.push(record);
+        }
     }
-    Ok(())
+    Ok(unique)
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -795,14 +806,22 @@ mod tests {
                 reference_id: "session-1".into(),
             },
         };
+        /* Replacement set decision. C1 one holder repeats an identical target
+         * coordinate (for example, the same content through two mount paths).
+         * E1 persist one safety edge without rejecting the valid replacement.
+         * Rule D1 C1=>E1; adapter-specific SQL must not create another policy. */
         store
             .replace_references(
                 ResourceReferenceKind::SessionBinding,
                 "session-1",
-                vec![replacement.clone()],
+                vec![replacement.clone(), replacement.clone()],
             )
             .await
             .unwrap();
+        assert_eq!(
+            store.references(&replacement.target).await.unwrap().len(),
+            1
+        );
         store
             .replace_references(
                 ResourceReferenceKind::SessionBinding,
