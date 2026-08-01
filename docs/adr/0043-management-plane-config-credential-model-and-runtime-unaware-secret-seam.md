@@ -203,6 +203,43 @@ or catalog orchestration. Provider-driver descriptors own authoring fields, and
 the service owns provider-specific endpoint construction, so clients submit
 non-secret configuration values instead of duplicating driver URL rules.
 
+### Hosted model supply is a capability posture, not a second catalog
+
+The existing `ConfigCapabilitiesView` / `ModelSupplyCapabilityView` is the one
+deployment posture contract for model supply. A self-hosted process advertises
+local Catalog authoring and BYOK; a local process signed in to Awaken Cloud may
+advertise those capabilities together with brokered models. A hosted product
+composition advertises only brokered Cloud models:
+
+```text
+local_catalog_enabled      = false
+byok_enabled               = false
+cloud_models_enabled       = true
+profile_authoring_enabled  = false
+```
+
+These values are both a client capability projection and a server-side command
+gate. A hosted UI hiding a Provider form is insufficient: the Provider
+connection command, manual model-attribute writes, Provider-scoped credential
+entry, manual brokered refresh, and inference-Profile authoring fail before
+secret decoding or persistence. Generic non-model credentials remain available;
+the posture does not turn the Credential/Vault context into a model-only store.
+
+The Cloud model list enters through the existing `BrokeredCatalogDiscovery`
+port and reconciles the existing Catalog as a rebuildable projection. Runtime
+publication still uses the injected `ModelPublicationResolver`, so the
+projection cannot become a second route authority. Hosted composition owns no
+Provider connection command, no alternate resolver, and no hidden fallback.
+It exposes Provider-native model ids and explicit candidate ordering only.
+
+Management authorization separates model-supply reads and mutations from
+ordinary Workspace configuration. The product-owned profile defines
+`model_supply.read`, `model_supply.connect`, and `model_supply.write`. The
+ordinary self-hosted `workspace_admin` retains model-supply administration;
+the dedicated hosted Workspace role receives ordinary Workspace actions plus
+`model_supply.read` only. Deployment binds roles but cannot redefine these
+actions or their Workspace scope.
+
 For a direct Provider connection, the unnamed `ProtocolEndpointId` is the
 canonical `<provider_id>.<dialect>` projection. The request selects a dialect but
 does not mint an endpoint id. Reconnecting the same unnamed Provider/dialect

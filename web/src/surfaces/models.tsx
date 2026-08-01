@@ -1,7 +1,7 @@
 // Workspace Models: Provider → ProtocolEndpoint → Offering, profiles and dry-run resolve.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import Transcript from "../components/session/Transcript";
 import { Button, Card, Modal, Pill, Skeleton, UsageBadges } from "../components/ui";
 import { api, ws } from "../lib/api/client";
@@ -100,6 +100,7 @@ export default function ModelsSurface() {
     queryKey: ["provider-descriptors", workspace],
     queryFn: () => api.get<ProviderDriverDescriptor[]>(ws("/v1/config/provider-descriptors")),
     staleTime: Infinity,
+    enabled: capabilities.data?.models.byok_enabled === true,
   });
   const connections = useQuery({
     queryKey: ["provider-connections", workspace],
@@ -107,10 +108,12 @@ export default function ModelsSurface() {
       api.get<ProviderConnectionSummary[]>(
         ws(`/v1/config/provider-connections?workspace_id=${workspace}`),
       ),
+    enabled: capabilities.data?.models.byok_enabled === true,
   });
   const credentials = useQuery({
     queryKey: ["credentials", workspace],
     queryFn: () => api.get<CredentialSource[]>(ws(`/v1/config/credentials?workspace_id=${workspace}`)),
+    enabled: capabilities.data?.models.byok_enabled === true,
   });
   const [testModel, setTestModel] = useState<string | null>(null);
   const refreshCloudModels = useMutation({
@@ -124,6 +127,13 @@ export default function ModelsSurface() {
 
   const c = catalog.data;
   const cloudState = cloudModelUiState(capabilities.data);
+  const byokEnabled = capabilities.data?.models.byok_enabled === true;
+  const offeringsByProvider = new Map<string, ProviderCatalog["offerings"]>();
+  for (const offering of c?.offerings ?? []) {
+    const group = offeringsByProvider.get(offering.provider_id) ?? [];
+    group.push(offering);
+    offeringsByProvider.set(offering.provider_id, group);
+  }
   return (
     <>
       <Card style={{ padding: 0 }}>
@@ -163,8 +173,18 @@ export default function ModelsSurface() {
             </tr>
           </thead>
           <tbody>
-            {(c?.offerings ?? []).map((o, i) => (
-              <tr key={`${o.model_id}-${i}`}>
+            {[...offeringsByProvider.entries()]
+              .sort(([left], [right]) => left.localeCompare(right))
+              .map(([providerId, offerings]) => (
+              <Fragment key={providerId}>
+                <tr>
+                  <td colSpan={8} style={{ fontWeight: 650, background: "var(--surface-subtle)" }}>
+                    {c?.providers?.[providerId]?.display_name ?? providerId}
+                    <span className="mut" style={{ marginLeft: 8 }}>{providerId}</span>
+                  </td>
+                </tr>
+                {offerings.map((o, i) => (
+              <tr key={`${o.model_id}-${o.protocol_endpoint_id}-${i}`}>
                 <td className="mono">{o.model_id}</td>
                 <td>{o.provider_id}</td>
                 <td className="mono mut">{o.protocol_endpoint_id}</td>
@@ -221,13 +241,19 @@ export default function ModelsSurface() {
                   </Button>
                 </td>
               </tr>
+                ))}
+              </Fragment>
             ))}
             {(c?.offerings ?? []).length === 0 && (
               <tr>
                 <td colSpan={8} className="mut">
                   {app.t(
-                    "No models yet — connect a provider below.",
-                    "暂无模型——请在下方连接供应商。",
+                    byokEnabled
+                      ? "No models yet — connect a provider below."
+                      : "No managed models are currently available. Contact your workspace administrator.",
+                    byokEnabled
+                      ? "暂无模型——请在下方连接供应商。"
+                      : "当前没有可用的托管模型，请联系 Workspace 管理员。",
                   )}
                 </td>
               </tr>
@@ -236,11 +262,13 @@ export default function ModelsSurface() {
         </table>
       </Card>
 
-      <ProviderConnectionPanel
-        credentials={credentials.data ?? []}
-        descriptors={descriptors.data ?? []}
-        connections={connections.data ?? []}
-      />
+      {byokEnabled && (
+        <ProviderConnectionPanel
+          credentials={credentials.data ?? []}
+          descriptors={descriptors.data ?? []}
+          connections={connections.data ?? []}
+        />
+      )}
 
       {testModel && (
         <Modal
