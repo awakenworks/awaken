@@ -133,6 +133,7 @@ async fn build_control_assembly_with_model_composition(
     )?;
     let stores = open_process_stores(
         deployment.control.clone(),
+        deployment.coordinator.clone(),
         // Control receives Resource references through authoring/read ports and
         // opens no File, Memory, Skill-content, or lifecycle authority.
         None,
@@ -140,7 +141,7 @@ async fn build_control_assembly_with_model_composition(
         Some(key),
         config::Role::Control,
         PostgresSchemaMode::Verify,
-        true,
+        false,
     )
     .await?;
     let catalog = stores

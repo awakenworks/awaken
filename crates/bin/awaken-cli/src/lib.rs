@@ -168,7 +168,7 @@ fn in_memory_process_stores() -> ProcessStores {
             memory_extractions: sessions.clone(),
             dream_repository: sessions,
         }),
-        environments: Arc::new(EnvironmentState::new()),
+        environments: Some(Arc::new(EnvironmentState::new())),
     }
 }
 
@@ -244,6 +244,7 @@ fn process_stores_for_runtime_storage(storage_dir: Option<&std::path::Path>) -> 
 /// owned by `role`; split Control and Coordinator never share authority stores.
 async fn open_process_stores(
     cfg: awaken_control::ControlStoreConfig,
+    coordinator_cfg: config::CoordinatorStoreConfig,
     resource_component: Option<awaken_resource_contract::ResourceComponent>,
     workspace_root: std::path::PathBuf,
     key: Option<&[u8; 32]>,
@@ -382,12 +383,12 @@ async fn open_process_stores(
     }
 
     let coordinator = if role_owns_managed_execution(role) {
-        ensure_parent(&cfg.sessions)?;
+        ensure_parent(&coordinator_cfg.sessions)?;
         let sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>;
         let deployments: Arc<dyn awaken_protocol_managed::DeploymentRepository>;
         let memory_extractions: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>;
         let dream_repository: Arc<dyn awaken_protocol_managed::DreamRepository>;
-        match &cfg.sessions {
+        match &coordinator_cfg.sessions {
             StoreBackend::Sqlite(p) => {
                 let repository = Arc::new(
                     awaken_session_store::SqliteManagedSessionRepository::open(&path(p)).map_err(
@@ -453,13 +454,10 @@ async fn open_process_stores(
         None
     };
 
-    // Environment definitions and execution work have an explicit backend instead
-    // of borrowing Session's address. Split Control and Coordinator therefore open
-    // one shared registry without giving Control a Session/Deployment repository.
-    let environments: Arc<EnvironmentState> = if open_environment_stores {
-        ensure_parent(&cfg.environments)?;
-        match &cfg.environments {
-            StoreBackend::Sqlite(environment_path) => Arc::new(
+    let environments: Option<Arc<EnvironmentState>> = if open_environment_stores {
+        ensure_parent(&coordinator_cfg.environments)?;
+        match &coordinator_cfg.environments {
+            StoreBackend::Sqlite(environment_path) => Some(Arc::new(
                 EnvironmentState::with_stores(
                     Arc::new(
                         awaken_env_store::SqliteEnvRegistry::open(&path(environment_path))
@@ -478,7 +476,7 @@ async fn open_process_stores(
                     ))
                     .map_err(|error| format!("open sandbox policies SQLite: {error}"))?,
                 )),
-            ),
+            )),
             StoreBackend::Postgres(url) => {
                 let environments = match postgres_schema {
                     PostgresSchemaMode::Migrate => {
@@ -509,14 +507,14 @@ async fn open_process_stores(
                 }
             }
             .map_err(|error| format!("connect sandbox policies Postgres: {error}"))?;
-                Arc::new(
+                Some(Arc::new(
                     EnvironmentState::with_stores(Arc::new(environments), Arc::new(work))
                         .with_sandbox_policies(Arc::new(sandbox_policies)),
-                )
+                ))
             }
         }
     } else {
-        Arc::new(EnvironmentState::new())
+        None
     };
 
     Ok(ProcessStores {
@@ -551,6 +549,10 @@ async fn open_local_process_stores(
     .await?;
     open_process_stores(
         awaken_control::ControlStoreConfig::local(dir),
+        config::CoordinatorStoreConfig {
+            environments: awaken_control::StoreBackend::Sqlite(dir.join("environments.db")),
+            sessions: awaken_control::StoreBackend::Sqlite(dir.join("sessions.db")),
+        },
         Some(resource_component),
         dir.to_path_buf(),
         Some(key),
@@ -631,6 +633,7 @@ async fn build_runtime_process_assembly(
         open_resource_component(deployment.resources.clone(), postgres_schema).await?;
     let stores = open_process_stores(
         deployment.control.clone(),
+        deployment.coordinator.clone(),
         Some(resource_component),
         deployment.data_dir.clone(),
         key,
@@ -641,8 +644,17 @@ async fn build_runtime_process_assembly(
     .await?;
     let hand_executors =
         awaken_server::placement::connect_declared_hands(&deployment.hand_connections).await?;
-    let executable_agent_wiring =
-        executable_agent_registration::for_runtime_role(role, deployment, postgres_schema).await?;
+    let executable_agent_wiring = executable_agent_registration::for_runtime_role(
+        role,
+        deployment,
+        postgres_schema,
+        stores
+            .environments
+            .as_ref()
+            .expect("Managed Execution owns Environment")
+            .application(),
+    )
+    .await?;
     let worker_authenticator = worker_transport_security::authenticator(deployment)?;
     let control_service = if role == config::Role::Coordinator {
         let (url, token) = deployment.control_service.coordinator_credentials()?;
@@ -705,6 +717,7 @@ pub async fn migrate_deployment_schema(
     {
         open_process_stores(
             deployment.control.clone(),
+            deployment.coordinator.clone(),
             resource_component,
             deployment.data_dir.clone(),
             key,
@@ -767,6 +780,7 @@ async fn build_all_in_one_router_with_composition(
         .unwrap_or_else(|error| panic!("open resource stores: {error}"));
     let stores = open_process_stores(
         deployment.control.clone(),
+        deployment.coordinator.clone(),
         Some(resource_component),
         deployment.data_dir.clone(),
         Some(&key),
@@ -1066,6 +1080,7 @@ async fn assemble_runtime_process_router(
         executable_agent_registrar,
         executable_agent_private_router,
         executable_agent_projection_refresher,
+        _remote_environment_author,
     ) = executable_agent_registration::process_parts(assembly.executable_agent_wiring);
     let deployment = assembly.deployment;
     let hand_executors = assembly.hand_executors;
@@ -1176,6 +1191,15 @@ async fn assemble_runtime_process_router(
                     resource_component.skill_store(),
                     &platform_workspace,
                 ))),
+                Arc::new(
+                    awaken_server::environment_boundary::LocalEnvironmentAuthor::new(
+                        stores
+                            .environments
+                            .as_ref()
+                            .expect("AllInOne owns Environment")
+                            .application(),
+                    ),
+                ),
                 iam.clone(),
                 local_browser_auth,
                 remote_iam.clone(),
@@ -1200,6 +1224,7 @@ async fn assemble_runtime_process_router(
         dream_repository,
         memory_extractions,
     } = coordinator.expect("Managed Execution role requires Coordinator stores");
+    let env_state = env_state.expect("Managed Execution owns Environment");
     let resource_catalog = resource_component.resource_catalog();
     let (
         control,

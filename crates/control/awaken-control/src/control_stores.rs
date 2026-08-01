@@ -1,11 +1,4 @@
-//! Compatibility database-address bundle consumed by the process composition root.
-//!
-//! The legacy type name predates the service split; it does not grant every field
-//! to Control. Control owns Catalog, Credential, Config, and Admin. Coordinator
-//! owns Session/Deployment. The Resources component owns Resource contents and
-//! its catalog through its own backend configuration. Environment remains the
-//! one explicit transition shared by Control authoring and Coordinator execution.
-//! The composition root selects only the fields owned by the current role.
+//! Database-address bundle for the Control bounded context.
 //!
 //! Each component receives one typed deployment store value:
 //!   - a `postgres://` / `postgresql://` URL  → the Postgres backend,
@@ -52,16 +45,12 @@ pub struct ControlStoreConfig {
     pub config: StoreBackend,
     /// The admin aggregate: inference profiles, Agent inputs, and webhooks.
     pub admin: StoreBackend,
-    /// Environment definitions plus execution work and sandbox-policy state.
-    /// This is the one documented Control/Coordinator transition.
-    pub environments: StoreBackend,
-    pub sessions: StoreBackend,
 }
 
 impl ControlStoreConfig {
     #[must_use]
     pub fn local(dir: &Path) -> Self {
-        Self::from_values(dir, None, None, None, None, None, None)
+        Self::from_values(dir, None, None, None, None)
     }
 
     #[must_use]
@@ -71,8 +60,6 @@ impl ControlStoreConfig {
         credential: Option<String>,
         config: Option<String>,
         admin: Option<String>,
-        environments: Option<String>,
-        sessions: Option<String>,
     ) -> Self {
         let bundle = |name: &str| dir.join(name);
         Self {
@@ -80,8 +67,6 @@ impl ControlStoreConfig {
             credential: StoreBackend::resolve(credential, bundle("credential.db")),
             config: StoreBackend::resolve(config, bundle("config.db")),
             admin: StoreBackend::resolve(admin, bundle("admin.db")),
-            environments: StoreBackend::resolve(environments, bundle("environments.db")),
-            sessions: StoreBackend::resolve(sessions, bundle("sessions.db")),
         }
     }
 }
@@ -103,8 +88,6 @@ mod tests {
             get("AWAKEN_CREDENTIAL_DB"),
             get("AWAKEN_CONFIG_DB"),
             get("AWAKEN_ADMIN_DB"),
-            get("AWAKEN_ENVIRONMENT_DB"),
-            get("AWAKEN_SESSIONS_DB"),
         )
     }
 
@@ -124,14 +107,6 @@ mod tests {
             StoreBackend::Sqlite("/var/awaken/config.db".into())
         );
         assert_eq!(c.admin, StoreBackend::Sqlite("/var/awaken/admin.db".into()));
-        assert_eq!(
-            c.environments,
-            StoreBackend::Sqlite("/var/awaken/environments.db".into())
-        );
-        assert_eq!(
-            c.sessions,
-            StoreBackend::Sqlite("/var/awaken/sessions.db".into())
-        );
     }
 
     #[test]
@@ -165,26 +140,18 @@ mod tests {
     }
 
     #[test]
-    fn each_component_resolves_independently() {
-        // Causes: explicit Catalog, Credential, Environment and Session bindings
-        // select different backends. Effects: each named domain keeps its exact
-        // backend and an unconfigured Admin store retains its local default; no
-        // Session address is reused as the Environment address.
+    fn each_control_component_resolves_independently() {
+        // Causes: explicit Catalog and Credential bindings select different
+        // backends. Effects: each Control store keeps its exact backend and an
+        // unconfigured Admin store retains its local default.
         let c = cfg(&[
             ("AWAKEN_CATALOG_DB", "postgres://h/cat"),
             ("AWAKEN_CREDENTIAL_DB", "postgres://secure/cred"),
-            ("AWAKEN_ENVIRONMENT_DB", "postgres://h/environments"),
-            ("AWAKEN_SESSIONS_DB", "/data/sessions.db"),
         ]);
         assert_eq!(c.catalog, StoreBackend::Postgres("postgres://h/cat".into()));
         assert_eq!(
             c.credential,
             StoreBackend::Postgres("postgres://secure/cred".into())
-        );
-        assert_eq!(c.sessions, StoreBackend::Sqlite("/data/sessions.db".into()));
-        assert_eq!(
-            c.environments,
-            StoreBackend::Postgres("postgres://h/environments".into())
         );
         assert_eq!(c.admin, StoreBackend::Sqlite("/var/awaken/admin.db".into()));
     }

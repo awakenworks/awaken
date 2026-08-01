@@ -514,6 +514,35 @@ async fn snapshot_normalizes_the_networking_policy() {
 }
 
 #[tokio::test]
+async fn environment_application_replay_converges_one_environment_and_healthcheck() {
+    // Causes/effects decision table: R1 first stable command creates Environment
+    // + healthcheck; R2 exact replay returns the same Environment and `ensure`
+    // leaves one healthcheck; R3 conflicting payload is rejected by the registry
+    // before another Environment or work item can appear.
+    let state = Arc::new(EnvironmentState::new());
+    let command = awaken_session_contract::env_registry::CreateEnvironmentCommand {
+        command_id: "control:call-1".into(),
+        name: "stable".into(),
+        description: String::new(),
+        metadata: Default::default(),
+        scope: None,
+        config: awaken_session_contract::env_registry::EnvironmentConfig::SelfHosted,
+    };
+    let first = state.application().create(command.clone()).await.unwrap();
+    let replay = state.application().create(command).await.unwrap();
+    assert_eq!(first.id, replay.id, "R1/R2");
+    let app = environments_router(state);
+    let (_, work) = call(
+        &app,
+        "GET",
+        &format!("/v1/environments/{}/work", first.id),
+        None,
+    )
+    .await;
+    assert_eq!(work["data"].as_array().unwrap().len(), 1, "R2");
+}
+
+#[tokio::test]
 async fn environment_crud_and_work_lifecycle() {
     let app = app();
 

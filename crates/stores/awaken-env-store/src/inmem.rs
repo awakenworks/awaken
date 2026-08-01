@@ -10,12 +10,16 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+#[cfg(test)]
+use awaken_session_contract::env_registry::EnvironmentConfig;
 use awaken_session_contract::env_registry::{
-    EnvItem, EnvRegistry, EnvUpdate, EnvironmentConfig, EnvironmentRevision, OBJECT_AT,
+    CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvItem,
+    EnvRegistry, EnvUpdate, EnvironmentRevision, OBJECT_AT,
 };
 
 pub struct InMemoryEnvRegistry {
     envs: Mutex<BTreeMap<String, EnvItem>>,
+    commands: Mutex<BTreeMap<String, (String, String)>>,
     seq: AtomicU64,
 }
 
@@ -30,6 +34,7 @@ impl InMemoryEnvRegistry {
     pub fn new() -> Self {
         Self {
             envs: Mutex::new(BTreeMap::new()),
+            commands: Mutex::new(BTreeMap::new()),
             seq: AtomicU64::new(0),
         }
     }
@@ -37,28 +42,40 @@ impl InMemoryEnvRegistry {
 
 #[async_trait]
 impl EnvRegistry for InMemoryEnvRegistry {
-    async fn create_scoped(
+    async fn create_once(
         &self,
-        name: String,
-        description: String,
-        metadata: BTreeMap<String, String>,
-        scope: Option<String>,
-        config: EnvironmentConfig,
-    ) -> EnvItem {
+        command: CreateEnvironmentCommand,
+    ) -> Result<CreateEnvironmentOutcome, CreateEnvironmentError> {
+        let fingerprint = command.fingerprint();
+        let mut commands = self.commands.lock().unwrap();
+        if let Some((existing_fingerprint, environment_id)) = commands.get(&command.command_id) {
+            if existing_fingerprint != &fingerprint {
+                return Err(CreateEnvironmentError::IdempotencyConflict);
+            }
+            let item = self
+                .envs
+                .lock()
+                .unwrap()
+                .get(environment_id)
+                .cloned()
+                .ok_or_else(|| CreateEnvironmentError::Store("command target is missing".into()))?;
+            return Ok(CreateEnvironmentOutcome::Replayed(item));
+        }
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
         let id = format!("env_{n:016}");
         let item = EnvItem {
             id: id.clone(),
             revision: EnvironmentRevision(1),
-            name,
-            description,
-            metadata,
-            scope,
-            config,
+            name: command.name,
+            description: command.description,
+            metadata: command.metadata,
+            scope: command.scope,
+            config: command.config,
             archived_at: None,
         };
         self.envs.lock().unwrap().insert(id, item.clone());
-        item
+        commands.insert(command.command_id, (fingerprint, item.id.clone()));
+        Ok(CreateEnvironmentOutcome::Created(item))
     }
 
     async fn list_active(&self) -> Vec<EnvItem> {

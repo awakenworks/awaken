@@ -36,12 +36,12 @@ impl ResolvedDeployment {
             BTreeMap::new()
         };
         let coordinator_databases = if owns_coordinator {
-            BTreeMap::from([("sessions", render_store_backend(&self.control.sessions))])
+            BTreeMap::from([("sessions", render_store_backend(&self.coordinator.sessions))])
         } else {
             BTreeMap::new()
         };
         let environment_database = (owns_control || owns_coordinator)
-            .then(|| render_store_backend(&self.control.environments));
+            .then(|| render_store_backend(&self.coordinator.environments));
         let database_migrations = match self.mode {
             super::OperatingMode::Local => "automatic at startup",
             super::OperatingMode::Server => {

@@ -356,6 +356,10 @@ pub trait WorkQueue: Send + Sync {
     async fn enqueue_session(&self, env_id: &str, session_id: &str) -> String;
     /// Seed a `healthcheck` work item (its inner id is the work id); returns it.
     async fn enqueue_healthcheck(&self, env_id: &str) -> String;
+    /// Return the one healthcheck for an Environment, creating it when absent.
+    /// This convergence operation is safe to replay after an Environment create
+    /// committed but the caller lost the response.
+    async fn ensure_healthcheck(&self, env_id: &str) -> String;
     /// All work items in `env_id`, ascending by id (enqueue order).
     async fn list(&self, env_id: &str) -> Vec<WorkItem>;
     /// The work item under `wid` when it belongs to `env_id`.

@@ -77,10 +77,17 @@ pub struct ResolvedDeployment {
     /// Empty means discovery was not run (for example in Server mode).
     pub local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
     pub control: awaken_control::ControlStoreConfig,
+    pub coordinator: CoordinatorStoreConfig,
     pub resources: ResourcePlaneStoreBackend,
     pub seal_key: SealKeySource,
     pub deprecations: Vec<String>,
     pub origins: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CoordinatorStoreConfig {
+    pub environments: awaken_control::StoreBackend,
+    pub sessions: awaken_control::StoreBackend,
 }
 
 #[derive(Clone)]
@@ -581,9 +588,17 @@ impl ResolvedDeployment {
             store_url(&file.credential_db),
             store_url(&file.config_db),
             store_url(&file.admin_db),
-            store_url(&file.environment_db),
-            store_url(&file.sessions_db),
         );
+        let coordinator = CoordinatorStoreConfig {
+            environments: awaken_control::StoreBackend::resolve(
+                store_url(&file.environment_db),
+                data_dir.join("environments.db"),
+            ),
+            sessions: awaken_control::StoreBackend::resolve(
+                store_url(&file.sessions_db),
+                data_dir.join("sessions.db"),
+            ),
+        };
         let resources = match store_url(&file.resource_database_url) {
             Some(url) if is_postgres_url(&url) => ResourcePlaneStoreBackend::Postgres(url),
             Some(_) => return Err("resource_database_url must be postgres://".to_owned()),
@@ -718,6 +733,7 @@ impl ResolvedDeployment {
             observability,
             local_acp_observations: Vec::new(),
             control,
+            coordinator,
             resources,
             seal_key,
             deprecations: Vec::new(),
@@ -1630,12 +1646,12 @@ mod tests {
             Default::default(),
         );
         assert!(
-            matches!(control.control.environments, awaken_control::StoreBackend::Postgres(ref url) if url == "postgres://shared/environments"),
+            matches!(control.coordinator.environments, awaken_control::StoreBackend::Postgres(ref url) if url == "postgres://shared/environments"),
             "R1"
         );
         assert!(
             matches!(
-                control.control.sessions,
+                control.coordinator.sessions,
                 awaken_control::StoreBackend::Sqlite(_)
             ),
             "R1"
@@ -1804,8 +1820,8 @@ mod tests {
             &config.control.credential,
             &config.control.config,
             &config.control.admin,
-            &config.control.environments,
-            &config.control.sessions,
+            &config.coordinator.environments,
+            &config.coordinator.sessions,
         ] {
             assert!(matches!(backend, awaken_control::StoreBackend::Postgres(_)));
         }

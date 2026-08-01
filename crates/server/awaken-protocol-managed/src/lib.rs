@@ -67,7 +67,7 @@ pub use routes::deployments::{
     DeploymentLaunch, DeploymentLaunchOutcome, DeploymentRunError, DeploymentSessionLauncher,
     DeploymentState, LocalDeploymentSessionLauncher, deployments_router,
 };
-pub use routes::environments::{EnvironmentState, environments_router};
+pub use routes::environments::{EnvironmentApplication, EnvironmentState, environments_router};
 pub use routes::user_profiles::{UserProfileState, user_profiles_router};
 pub use routes::vaults::{
     McpProbe, McpProbeStatus, SessionCredentialSource, VaultState, vault_router,

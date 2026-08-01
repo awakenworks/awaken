@@ -259,11 +259,16 @@ pub trait DraftStore: Send + Sync {
 #[async_trait]
 pub trait EnvironmentAuthor: Send + Sync {
     /// Create an environment from the closed, secret-free authoring command.
-    async fn create(&self, name: &str, config: EnvironmentDraft) -> Result<String, String>;
+    async fn create(
+        &self,
+        command_id: &str,
+        name: &str,
+        config: EnvironmentDraft,
+    ) -> Result<String, String>;
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EnvironmentDraft {
     Cloud {
         networking: AdminEnvironmentNetworking,
@@ -700,7 +705,7 @@ impl RawTool for DraftEnvironment {
                 ));
             }
         };
-        audit(
+        let audit_event = audit(
             &self.store,
             &self.audit,
             CREATE_ENV_TOOL,
@@ -711,7 +716,11 @@ impl RawTool for DraftEnvironment {
             ),
         )
         .await?;
-        let id = match self.author.create(&args.name, config).await {
+        let id = match self
+            .author
+            .create(&audit_event.call_id, &args.name, config)
+            .await
+        {
             Ok(id) => id,
             Err(e) => return Ok(ToolOutput::error(call.call_id, e)),
         };

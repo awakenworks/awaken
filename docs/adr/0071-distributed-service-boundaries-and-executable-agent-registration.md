@@ -139,13 +139,13 @@ Coordinator model discovery is derived from
 for Session resolution. It does not reopen Control's mutable model or credential
 catalogs merely to populate `/v1/models`.
 
-Environment is the remaining deliberate transition: the public Environment API
-and work execution run in Coordinator, while Control's Admin Assistant still
-authors definitions through the existing `EnvironmentAuthor` port backed by the
-same registry. Separating definition commands from execution/work ports requires
-its own contract migration; this change does not create an in-memory shadow
-registry or claim that migration is complete. The transition uses the explicit
-`environment_db` binding; Control never receives `sessions_db` merely to locate it.
+Environment is Coordinator-owned. Public Managed HTTP, the authenticated private
+Control command, and the AllInOne local adapter all invoke the same
+`EnvironmentApplication::create`; the Registry atomically owns command-id /
+fingerprint replay and the application converges one healthcheck through the Work
+Queue. Control receives only `EnvironmentAuthor`, never `EnvironmentState` or an
+Environment database address. `environment_db` remains an external deployment
+field but resolves into the Coordinator store group.
 
 ## Implementation Status
 

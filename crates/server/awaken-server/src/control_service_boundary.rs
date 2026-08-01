@@ -110,11 +110,12 @@ pub fn router(
 }
 
 fn authorized(headers: &HeaderMap, expected: &str) -> bool {
-    headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|actual| actual.as_bytes() == expected.as_bytes())
+    awaken_executable_agent_contract::service_bearer_token_matches(
+        headers
+            .get(header::AUTHORIZATION)
+            .map(|value| value.as_bytes()),
+        expected,
+    )
 }
 
 async fn require_authorization(

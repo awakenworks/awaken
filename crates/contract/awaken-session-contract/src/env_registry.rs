@@ -6,9 +6,59 @@
 //! `awaken-env-store`, beside the durable sqlite/postgres sibling.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{McpTarget, SessionNetworkPolicy};
 use async_trait::async_trait;
+
+/// Stable Coordinator command for creating one Environment. The command id is
+/// supplied by the ingress boundary; the fingerprint is derived from every
+/// business input so a replay can be distinguished from conflicting reuse.
+#[derive(Clone, Debug)]
+pub struct CreateEnvironmentCommand {
+    pub command_id: String,
+    pub name: String,
+    pub description: String,
+    pub metadata: BTreeMap<String, String>,
+    pub scope: Option<String>,
+    pub config: EnvironmentConfig,
+}
+
+impl CreateEnvironmentCommand {
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        crate::stable_fingerprint(&(
+            &self.name,
+            &self.description,
+            &self.metadata,
+            &self.scope,
+            &self.config,
+        ))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum CreateEnvironmentOutcome {
+    Created(EnvItem),
+    Replayed(EnvItem),
+}
+
+impl CreateEnvironmentOutcome {
+    #[must_use]
+    pub fn item(&self) -> &EnvItem {
+        match self {
+            Self::Created(item) | Self::Replayed(item) => item,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum CreateEnvironmentError {
+    #[error("Environment command id was reused with different input")]
+    IdempotencyConflict,
+    #[error("Environment store failed: {0}")]
+    Store(String),
+}
 
 /// The frozen presence timestamp stamped on a record (parity with the work queue).
 /// The Managed wire adapter reuses it in its `BetaEnvironment` projection.
@@ -387,7 +437,14 @@ impl EnvironmentPackages {
 /// (sqlite / postgres) backs it at parity.
 #[async_trait]
 pub trait EnvRegistry: Send + Sync {
-    /// Create an environment; mints and returns the record with its new id.
+    /// Atomically persist or replay one create command. A command id can name
+    /// exactly one fingerprint for the lifetime of the authority store.
+    async fn create_once(
+        &self,
+        command: CreateEnvironmentCommand,
+    ) -> Result<CreateEnvironmentOutcome, CreateEnvironmentError>;
+    /// Test/embedding convenience for callers that intentionally request a new
+    /// identity on every invocation. Production ingress must use `create_once`.
     async fn create(
         &self,
         name: String,
@@ -398,7 +455,7 @@ pub trait EnvRegistry: Send + Sync {
         self.create_scoped(name, description, metadata, None, config)
             .await
     }
-
+    /// Test/embedding convenience counterpart of [`Self::create`].
     async fn create_scoped(
         &self,
         name: String,
@@ -406,7 +463,25 @@ pub trait EnvRegistry: Send + Sync {
         metadata: BTreeMap<String, String>,
         scope: Option<String>,
         config: EnvironmentConfig,
-    ) -> EnvItem;
+    ) -> EnvItem {
+        static NEXT_COMMAND: AtomicU64 = AtomicU64::new(0);
+        self.create_once(CreateEnvironmentCommand {
+            command_id: format!(
+                "unkeyed:{}:{}",
+                std::process::id(),
+                NEXT_COMMAND.fetch_add(1, Ordering::Relaxed)
+            ),
+            name,
+            description,
+            metadata,
+            scope,
+            config,
+        })
+        .await
+        .expect("unkeyed Environment create")
+        .item()
+        .clone()
+    }
     /// All non-archived environments, ascending by id.
     async fn list_active(&self) -> Vec<EnvItem>;
     /// The environment under `id` (archived or not).

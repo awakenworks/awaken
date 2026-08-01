@@ -88,7 +88,7 @@ one bundle id per aggregate-safe scope.
 | Control | `awaken.config` / `config` | `config_agent`, `config_publication`, `config_management_audit`, `config_management_effect`, `config_agent_revision` |
 | Control | `awaken.control_data_subject` / `control_data_subject` | `control_data_subject_subject`, `control_data_subject_erasure_job` |
 | Coordinator | `awaken.managed_session` / `managed` | `managed_session`, `managed_lifecycle_outbox`, `managed_memory_extraction`, `managed_session_idempotency`, `managed_session_tombstone`, `managed_dream`, `managed_dream_agent_override`, `managed_deployment`, `managed_deployment_run`, `managed_deployment_claim`, `managed_dream_policy` |
-| Coordinator | `awaken.env_registry` / `env_registry` | `env_registry_env` |
+| Coordinator | `awaken.env_registry` / `env_registry` | `env_registry_env`, `env_registry_create_command` |
 | Coordinator | `awaken.work_queue` / `work_queue` | `work_queue_item` |
 | Coordinator | `awaken.sandbox_execution_policy` / `sandbox_execution_policy` | `sandbox_execution_policy_version`, `sandbox_execution_policy_current`, `sandbox_execution_policy_environment` |
 | Coordinator | `awaken.worker_registry` / `worker_registry` | `worker_registry_worker` |
@@ -103,12 +103,11 @@ one bundle id per aggregate-safe scope.
 | Resources | `awaken.skill_store` / `skill_store` | `skill_store_aggregate` |
 | Worker | none | none; Worker has only ephemeral execution/cache state and receives no authority database setting |
 
-The Environment registry remains the explicitly documented ADR-0071 transition:
-Coordinator owns and migrates its schema, while the split Control Admin Assistant
-still reaches the same registry through `EnvironmentAuthor`. That exception must
-be replaced by a Coordinator application adapter before the runtime database
-connection can be removed from split Control; it is not a precedent for another
-shared table or shared ledger.
+Environment Registry, Work Queue, and sandbox-policy persistence are Coordinator
+stores. Control maps its Admin Assistant command onto the authenticated
+Coordinator `EnvironmentAuthor` adapter; AllInOne maps that same port locally.
+Both reach the single idempotent `EnvironmentApplication`, and Control never opens
+`environment_db`.
 
 The two data-subject rows describe versioned durable adapters, not currently
 active production stores. `awaken.control_data_subject` and

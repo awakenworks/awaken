@@ -19,6 +19,7 @@ pub(super) async fn control_component_for_process(
     local_acp_observations: &[awaken_acp_application::AcpHostObservation],
     runtimes: Arc<dyn awaken_config_service::RuntimeCapabilitySource>,
     resource_inventory: Option<Arc<dyn awaken_admin_assistant::ResourceInventory>>,
+    environment_author: Arc<dyn awaken_admin_assistant::EnvironmentAuthor>,
     iam: Option<Arc<ManagementAuthz>>,
     local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
@@ -70,9 +71,7 @@ pub(super) async fn control_component_for_process(
         ),
         runtimes,
         resource_inventory,
-        environment_author: Arc::new(awaken_control::EnvironmentStateAuthor::new(
-            stores.environments.clone(),
-        )),
+        environment_author,
         iam,
         local_browser_auth,
         remote_iam,
@@ -93,7 +92,7 @@ pub(super) async fn assemble_control_process_router(
     assembly: ProcessAssemblyOptions,
 ) -> Router {
     debug_assert_eq!(assembly.role, config::Role::Control);
-    let (_, executable_agent_registrar, _, _) =
+    let (_, executable_agent_registrar, _, _, environment_author) =
         executable_agent_registration::process_parts(assembly.executable_agent_wiring);
     let execution_workspace = stores.workspace_root.as_deref().map_or_else(
         SharedHost::provision_local_workspace,
@@ -142,6 +141,7 @@ pub(super) async fn assemble_control_process_router(
         &assembly.local_acp_observations,
         runtimes,
         None,
+        environment_author.unwrap_or_else(test_environment_author),
         iam,
         local_browser_auth,
         remote_iam,
@@ -186,4 +186,18 @@ pub(super) async fn assemble_control_process_router(
             ),
         ),
     )
+}
+
+#[cfg(test)]
+fn test_environment_author() -> Arc<dyn awaken_admin_assistant::EnvironmentAuthor> {
+    Arc::new(
+        awaken_server::environment_boundary::LocalEnvironmentAuthor::new(
+            awaken_protocol_managed::EnvironmentState::new().application(),
+        ),
+    )
+}
+
+#[cfg(not(test))]
+fn test_environment_author() -> Arc<dyn awaken_admin_assistant::EnvironmentAuthor> {
+    panic!("split Control requires Coordinator Environment adapter")
 }

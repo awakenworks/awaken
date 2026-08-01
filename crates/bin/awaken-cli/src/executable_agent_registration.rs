@@ -28,10 +28,13 @@ pub(crate) async fn for_runtime_role(
     role: Role,
     deployment: &ResolvedDeployment,
     schema: PostgresSchemaMode,
+    environments: Arc<awaken_protocol_managed::EnvironmentApplication>,
 ) -> Result<ExecutableAgentWiring, String> {
     match role {
         Role::AllInOne => Ok(ExecutableAgentWiring::local()),
-        Role::Coordinator => ExecutableAgentWiring::coordinator(deployment, schema).await,
+        Role::Coordinator => {
+            ExecutableAgentWiring::coordinator(deployment, schema, environments).await
+        }
         _ => unreachable!("runtime assembly accepts only AllInOne or Coordinator"),
     }
 }
@@ -51,6 +54,7 @@ pub(crate) struct ExecutableAgentWiring {
     pub(crate) registrar: Arc<dyn ExecutableAgentRegistrar>,
     pub(crate) projection_refresher: Option<Arc<PostgresExecutableAgentRegistrar>>,
     pub(crate) private_router: Router,
+    pub(crate) environment_author: Option<Arc<dyn awaken_admin_assistant::EnvironmentAuthor>>,
 }
 
 impl ExecutableAgentWiring {
@@ -61,6 +65,7 @@ impl ExecutableAgentWiring {
             catalog,
             projection_refresher: None,
             private_router: Router::new(),
+            environment_author: None,
         }
     }
 
@@ -70,11 +75,21 @@ impl ExecutableAgentWiring {
             .control_credentials()?;
         let registrar = HttpExecutableAgentRegistrar::new(coordinator_url, token)
             .map_err(|error| error.to_string())?;
+        let environment_author = Arc::new(
+            awaken_server::environment_boundary::HttpEnvironmentAuthor::new(
+                coordinator_url,
+                deployment
+                    .executable_agent_registration
+                    .control_credentials()?
+                    .1,
+            )?,
+        );
         Ok(Self {
             catalog: Arc::new(ExecutableAgentCatalog::new()),
             registrar: Arc::new(registrar),
             projection_refresher: None,
             private_router: Router::new(),
+            environment_author: Some(environment_author),
         })
     }
 
@@ -84,17 +99,24 @@ impl ExecutableAgentWiring {
         let registrar = Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone()));
         let private_router = executable_agent_registration_router(registrar.clone(), token)
             .expect("test registration router");
+        let environment_author = Arc::new(
+            awaken_server::environment_boundary::LocalEnvironmentAuthor::new(
+                awaken_protocol_managed::EnvironmentState::new().application(),
+            ),
+        );
         Self {
             catalog,
             registrar,
             projection_refresher: None,
             private_router,
+            environment_author: Some(environment_author),
         }
     }
 
     pub(crate) async fn coordinator(
         deployment: &ResolvedDeployment,
         schema: PostgresSchemaMode,
+        environments: Arc<awaken_protocol_managed::EnvironmentApplication>,
     ) -> Result<Self, String> {
         let token = deployment
             .executable_agent_registration
@@ -114,13 +136,18 @@ impl ExecutableAgentWiring {
         }
         .map_err(|error| error.to_string())?;
         let registrar = Arc::new(registrar);
-        let private_router = executable_agent_registration_router(registrar.clone(), token)
+        let private_router = executable_agent_registration_router(registrar.clone(), token.clone())
             .map_err(|error| format!("construct executable Agent registration router: {error}"))?;
+        let private_router = private_router.merge(
+            awaken_server::environment_boundary::router(environments, token)
+                .map_err(|error| format!("construct Environment command router: {error}"))?,
+        );
         Ok(Self {
             catalog,
             registrar: registrar.clone(),
             projection_refresher: Some(registrar),
             private_router,
+            environment_author: None,
         })
     }
 }
@@ -130,6 +157,7 @@ type ProcessParts = (
     Arc<dyn ExecutableAgentRegistrar>,
     Router,
     Option<Arc<PostgresExecutableAgentRegistrar>>,
+    Option<Arc<dyn awaken_admin_assistant::EnvironmentAuthor>>,
 );
 
 /// Consume the role wiring into the four process-assembly values. The boundary
@@ -141,6 +169,7 @@ pub(crate) fn process_parts(wiring: Option<ExecutableAgentWiring>) -> ProcessPar
         wiring.registrar,
         wiring.private_router,
         wiring.projection_refresher,
+        wiring.environment_author,
     )
 }
 

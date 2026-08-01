@@ -92,8 +92,6 @@ mod tests {
             credential: StoreBackend::Sqlite(dir.join("credential.db")),
             config: StoreBackend::Sqlite(dir.join("config.db")),
             admin: StoreBackend::Sqlite(dir.join("admin.db")),
-            environments: StoreBackend::Sqlite(dir.join("environments.db")),
-            sessions: StoreBackend::Sqlite(dir.join("sessions.db")),
         }
     }
 

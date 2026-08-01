@@ -2,7 +2,7 @@
 //!
 //! These types make acquisition authority explicit: a split process receives
 //! either Control or Coordinator stores, while AllInOne receives both canonical
-//! groups. Environment remains the documented transitional shared registry.
+//! groups.
 
 use std::sync::Arc;
 
@@ -13,7 +13,8 @@ pub(super) struct ProcessStores {
     pub(super) workspace_root: Option<std::path::PathBuf>,
     pub(super) control: Option<ControlStores>,
     pub(super) coordinator: Option<CoordinatorStores>,
-    pub(super) environments: Arc<awaken_protocol_managed::EnvironmentState>,
+    /// Coordinator-owned Environment application. `None` in split Control and Worker.
+    pub(super) environments: Option<Arc<awaken_protocol_managed::EnvironmentState>>,
 }
 
 pub(super) struct ControlStores {

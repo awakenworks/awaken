@@ -28,6 +28,7 @@ pub mod control_service_boundary;
 mod coordinator_component;
 mod coordinator_persistence;
 pub mod dynamic_placement;
+pub mod environment_boundary;
 pub mod inference_materializer;
 pub mod mcp_export;
 pub mod model_directory;
