@@ -704,6 +704,12 @@ dependencies = [
  "awaken-environment-contract",
  "awaken-environment-realization-contract",
  "awaken-executable-environment-catalog",
+ "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
+ "rusqlite",
+ "serde_json",
+ "sqlx",
+ "tempfile",
  "tokio",
 ]
 

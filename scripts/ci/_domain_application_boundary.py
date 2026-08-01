@@ -22,9 +22,15 @@ DOMAIN_APPLICATION_ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-environment-image-build": {
         "awaken-environment-contract",
         "awaken-environment-realization-contract",
+        "awaken-scoped-migration",
+        "awaken-scoped-migration-sqlite",
         "async-trait",
-        "tokio",
         "awaken-executable-environment-catalog",
+        "rusqlite",
+        "serde_json",
+        "sqlx",
+        "tempfile",
+        "tokio",
     },
     # Control-owned Environment application command path. Protocol and Admin
     # adapters translate into this service rather than coordinating stores.

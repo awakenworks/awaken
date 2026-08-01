@@ -78,6 +78,16 @@ impl Default for EnvironmentImageBuildState {
 
 impl EnvironmentImageBuildState {
     #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Pending { .. } => "pending",
+            Self::Building { .. } => "building",
+            Self::Ready { .. } => "ready",
+            Self::Failed { .. } => "failed",
+        }
+    }
+
+    #[must_use]
     pub fn claim(&self, owner: &str, now_ms: u64, lease_ms: u64) -> Option<Self> {
         let attempt = match self {
             Self::Pending { attempt } => *attempt,
