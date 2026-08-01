@@ -402,6 +402,7 @@ mod mutation_tests {
                         sandbox: serde_json::json!({}),
                         sandbox_provisioning: Default::default(),
                         packages: Default::default(),
+                        prepared_image: None,
                         network: crate::SessionNetworkPolicy::Unrestricted,
                         credential_realization: CredentialRealizationProfile {
                             inference_holder: PlaintextHolder::new(

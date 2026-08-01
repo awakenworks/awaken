@@ -402,6 +402,21 @@ impl EnvironmentPackages {
             && self.pip.is_empty()
     }
 
+    /// Canonical package-manager ordering and values. Consumers project this
+    /// definition vocabulary into their own execution contracts without
+    /// repeating the closed manager catalog.
+    #[must_use]
+    pub fn manager_packages(&self) -> [(&'static str, &[String]); 6] {
+        [
+            ("apt", &self.apt),
+            ("cargo", &self.cargo),
+            ("gem", &self.gem),
+            ("go", &self.go),
+            ("npm", &self.npm),
+            ("pip", &self.pip),
+        ]
+    }
+
     fn apply(&mut self, mutation: EnvironmentPackagesMutation) {
         if mutation.reset {
             *self = Self::default();

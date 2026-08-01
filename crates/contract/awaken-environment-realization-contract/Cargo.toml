@@ -11,6 +11,7 @@ authority = "coordinator"
 [dependencies]
 async-trait.workspace = true
 awaken-environment-contract.workspace = true
+awaken-executable-environment-contract.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

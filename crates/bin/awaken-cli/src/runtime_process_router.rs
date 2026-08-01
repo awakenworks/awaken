@@ -62,6 +62,7 @@ pub(super) async fn assemble_runtime_process_router(
     let executable_environment_projection_refresher =
         executable_environment_wiring.projection_refresher;
     let executable_environment_private_router = executable_environment_wiring.private_router;
+    let executable_environment_image_builds = executable_environment_wiring.image_builds;
     let coordinator_content_eraser =
         awaken_server::data_subject_boundary::coordinator_content_eraser(
             coordinator_stores.captured_content_eraser.clone(),
@@ -225,10 +226,15 @@ pub(super) async fn assemble_runtime_process_router(
         captured_content_eraser: _,
         environment_work,
     } = coordinator.expect("Managed Execution role requires Coordinator stores");
-    let environment_execution = Arc::new(awaken_protocol_managed::EnvironmentExecutionState::new(
+    let environment_execution = awaken_protocol_managed::EnvironmentExecutionState::new(
         environment_work,
         executable_environment_catalog,
-    ));
+    );
+    let environment_execution = match executable_environment_image_builds {
+        Some(builds) => environment_execution.with_image_readiness(builds),
+        None => environment_execution,
+    };
+    let environment_execution = Arc::new(environment_execution);
     let resource_catalog = resource_component.resource_catalog();
     let (
         control,

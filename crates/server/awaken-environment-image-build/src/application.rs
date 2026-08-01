@@ -2,14 +2,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_environment_contract::{
-    ExecutableEnvironmentRegistrar, ExecutableEnvironmentRegistration,
-    ExecutableEnvironmentRegistrationError, ExecutableEnvironmentRegistrationOutcome,
-    ExecutableEnvironmentWithdrawal, ExecutableEnvironmentWithdrawalOutcome,
-};
 use awaken_environment_realization_contract::{
     EnvironmentImageBuildDemand, EnvironmentImageBuildError, EnvironmentImageBuildState,
     EnvironmentImageBuildStore, EnvironmentImageBuilder, EnvironmentImageReadiness,
+};
+use awaken_executable_environment_contract::{
+    ExecutableEnvironmentRegistrar, ExecutableEnvironmentRegistration,
+    ExecutableEnvironmentRegistrationError, ExecutableEnvironmentRegistrationOutcome,
+    ExecutableEnvironmentWithdrawal, ExecutableEnvironmentWithdrawalOutcome,
 };
 
 #[derive(Clone, Debug)]
@@ -39,7 +39,23 @@ pub struct EnvironmentImageBuildCoordinator {
 }
 
 impl EnvironmentImageBuildCoordinator {
-    #[must_use]
+    async fn demand(
+        &self,
+        registration: &ExecutableEnvironmentRegistration,
+        base_image: &str,
+    ) -> Result<Option<EnvironmentImageBuildDemand>, EnvironmentImageBuildError> {
+        if registration.definition.config.is_self_hosted()
+            || registration.definition.config.packages().is_empty()
+        {
+            return Ok(None);
+        }
+        let base_image = self.builder.base_image_identity(base_image).await?;
+        Ok(EnvironmentImageBuildDemand::from_registration(
+            registration,
+            &base_image,
+        ))
+    }
+
     pub fn new(
         store: Arc<dyn EnvironmentImageBuildStore>,
         builder: Arc<dyn EnvironmentImageBuilder>,
@@ -64,9 +80,7 @@ impl EnvironmentImageBuildCoordinator {
         &self,
         registration: &ExecutableEnvironmentRegistration,
     ) -> Result<(), EnvironmentImageBuildError> {
-        if let Some(demand) =
-            EnvironmentImageBuildDemand::from_registration(registration, &self.base_image)
-        {
+        if let Some(demand) = self.demand(registration, &self.base_image).await? {
             self.store.ensure(demand, crate::now_unix_ms()).await?;
         }
         Ok(())
@@ -142,9 +156,11 @@ impl EnvironmentImageReadiness for EnvironmentImageBuildCoordinator {
     async fn ready_image(
         &self,
         registration: &ExecutableEnvironmentRegistration,
+        base_image: Option<&str>,
     ) -> Result<Option<String>, EnvironmentImageBuildError> {
-        let Some(demand) =
-            EnvironmentImageBuildDemand::from_registration(registration, &self.base_image)
+        let Some(demand) = self
+            .demand(registration, base_image.unwrap_or(&self.base_image))
+            .await?
         else {
             return Ok(None);
         };
@@ -165,8 +181,8 @@ impl EnvironmentImageReadiness for EnvironmentImageBuildCoordinator {
             }
             if tokio::time::Instant::now() >= deadline {
                 return Err(EnvironmentImageBuildError::Timeout(format!(
-                    "Workspace `{}` Environment `{}` revision {}",
-                    demand.workspace_id, demand.environment_id, demand.source_revision.0
+                    "Environment `{}` revision {}",
+                    demand.environment_id, demand.source_revision.0
                 )));
             }
             tokio::time::sleep(self.policy.poll_interval).await;
@@ -225,11 +241,11 @@ mod tests {
 
     use awaken_environment_contract::{
         EnvItem, EnvironmentConfig, EnvironmentPackages, EnvironmentRevision,
-        ExecutableEnvironmentRegistrationSource,
     };
     use awaken_executable_environment_catalog::{
         ExecutableEnvironmentCatalog, LocalExecutableEnvironmentRegistrar,
     };
+    use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationSource;
 
     use super::*;
     use crate::InMemoryEnvironmentImageBuildStore;
@@ -240,6 +256,13 @@ mod tests {
 
     #[async_trait]
     impl EnvironmentImageBuilder for FakeBuilder {
+        async fn base_image_identity(
+            &self,
+            reference: &str,
+        ) -> Result<String, EnvironmentImageBuildError> {
+            Ok(format!("{reference}@sha256:resolved"))
+        }
+
         async fn build(
             &self,
             demand: &EnvironmentImageBuildDemand,
@@ -257,9 +280,8 @@ mod tests {
         environment_id: &str,
         config: EnvironmentConfig,
     ) -> ExecutableEnvironmentRegistration {
-        ExecutableEnvironmentRegistration::from_definition(
-            "workspace-a",
-            &EnvItem {
+        ExecutableEnvironmentRegistration::new(
+            EnvItem {
                 id: environment_id.into(),
                 revision: EnvironmentRevision(1),
                 name: "browser".into(),
@@ -267,18 +289,23 @@ mod tests {
                 metadata: Default::default(),
                 scope: None,
                 config,
+                sandbox_policy: None,
                 archived_at: None,
             },
+            None,
         )
     }
 
     #[tokio::test]
     async fn registration_worker_and_readiness_follow_one_demand_path() {
-        // Cause/effect decision table: R1 SelfHosted registration persists no
+        // Cause/effect decision table: R0 a mutable operator base is resolved
+        // before durable demand identity; R1 SelfHosted registration persists no
         // build demand; R2 package-free Cloud persists no demand; R3 packaged
         // Cloud persists one Pending demand before acknowledgement; R4 one worker
         // claim invokes the injected builder and records its immutable image; R5
-        // Session readiness reuses that Ready result without a second build.
+        // Session readiness reuses that Ready result without a second build;
+        // R6 an exact Session policy with a different base image creates and
+        // reuses a distinct demand rather than aliasing the default build.
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
         let store = Arc::new(InMemoryEnvironmentImageBuildStore::new());
         let builder = Arc::new(FakeBuilder {
@@ -329,9 +356,11 @@ mod tests {
             },
         );
         registrar.register(packaged.clone()).await.unwrap();
-        let demand =
-            EnvironmentImageBuildDemand::from_registration(&packaged, "registry/awaken:base")
-                .unwrap();
+        let demand = EnvironmentImageBuildDemand::from_registration(
+            &packaged,
+            "registry/awaken:base@sha256:resolved",
+        )
+        .unwrap();
         assert!(
             matches!(
                 store.get(&demand.build_key).await.unwrap().unwrap().state,
@@ -341,14 +370,33 @@ mod tests {
         );
         assert!(coordinator.run_once("builder-a").await.unwrap(), "R4");
         assert_eq!(
-            coordinator.ready_image(&packaged).await.unwrap(),
-            Some("registry/awaken:base@sha256:ready".into()),
+            coordinator.ready_image(&packaged, None).await.unwrap(),
+            Some("registry/awaken:base@sha256:resolved@sha256:ready".into()),
             "R5"
         );
         assert_eq!(*builder.builds.lock().unwrap(), 1, "R5");
+        let policy_demand = EnvironmentImageBuildDemand::from_registration(
+            &packaged,
+            "registry/policy-base@sha256:exact@sha256:resolved",
+        )
+        .unwrap();
+        store
+            .ensure(policy_demand, crate::now_unix_ms())
+            .await
+            .unwrap();
+        assert!(coordinator.run_once("builder-a").await.unwrap(), "R6");
+        assert_eq!(
+            coordinator
+                .ready_image(&packaged, Some("registry/policy-base@sha256:exact"))
+                .await
+                .unwrap(),
+            Some("registry/policy-base@sha256:exact@sha256:resolved@sha256:ready".into()),
+            "R6"
+        );
+        assert_eq!(*builder.builds.lock().unwrap(), 2, "R6");
         assert!(
             catalog
-                .current_registration("workspace-a", "env-browser")
+                .current_registration("env-browser")
                 .await
                 .unwrap()
                 .is_some()

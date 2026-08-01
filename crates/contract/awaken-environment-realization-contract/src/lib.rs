@@ -5,15 +5,13 @@
 //! builder/readiness ports without naming SQL, Kubernetes, or a container engine.
 
 use async_trait::async_trait;
-use awaken_environment_contract::{
-    EnvironmentConfig, EnvironmentRevision, ExecutableEnvironmentRegistration,
-};
+use awaken_environment_contract::{EnvironmentConfig, EnvironmentRevision};
+use awaken_executable_environment_contract::ExecutableEnvironmentRegistration;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentImageBuildDemand {
     pub build_key: String,
-    pub workspace_id: String,
     pub environment_id: String,
     pub source_revision: EnvironmentRevision,
     pub definition_fingerprint: String,
@@ -27,7 +25,9 @@ impl EnvironmentImageBuildDemand {
         registration: &ExecutableEnvironmentRegistration,
         base_image: &str,
     ) -> Option<Self> {
-        if registration.config.is_self_hosted() || registration.config.packages().is_empty() {
+        if registration.definition.config.is_self_hosted()
+            || registration.definition.config.packages().is_empty()
+        {
             return None;
         }
         let build_key = format!(
@@ -36,12 +36,11 @@ impl EnvironmentImageBuildDemand {
         );
         Some(Self {
             build_key,
-            workspace_id: registration.workspace_id.clone(),
-            environment_id: registration.environment_id.clone(),
-            source_revision: registration.source_revision,
+            environment_id: registration.definition.id.clone(),
+            source_revision: registration.definition.revision,
             definition_fingerprint: registration.fingerprint.clone(),
             base_image: base_image.to_owned(),
-            config: registration.config.clone(),
+            config: registration.definition.config.clone(),
         })
     }
 }
@@ -243,6 +242,15 @@ pub trait EnvironmentImageBuildStore: Send + Sync {
 
 #[async_trait]
 pub trait EnvironmentImageBuilder: Send + Sync {
+    /// Resolve a mutable operator reference to the immutable identity that must
+    /// participate in durable demand identity and the derived image recipe.
+    async fn base_image_identity(
+        &self,
+        reference: &str,
+    ) -> Result<String, EnvironmentImageBuildError> {
+        Ok(reference.to_owned())
+    }
+
     async fn build(
         &self,
         demand: &EnvironmentImageBuildDemand,
@@ -256,6 +264,7 @@ pub trait EnvironmentImageReadiness: Send + Sync {
     async fn ready_image(
         &self,
         registration: &ExecutableEnvironmentRegistration,
+        base_image: Option<&str>,
     ) -> Result<Option<String>, EnvironmentImageBuildError>;
 }
 

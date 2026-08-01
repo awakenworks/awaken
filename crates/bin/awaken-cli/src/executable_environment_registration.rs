@@ -19,6 +19,8 @@ pub(crate) struct ExecutableEnvironmentWiring {
     pub(crate) registrar: Arc<dyn ExecutableEnvironmentRegistrar>,
     pub(crate) projection_refresher: Option<Arc<PostgresExecutableEnvironmentRegistrar>>,
     pub(crate) private_router: Router,
+    pub(crate) image_builds:
+        Option<Arc<awaken_environment_image_build::EnvironmentImageBuildCoordinator>>,
 }
 
 impl ExecutableEnvironmentWiring {
@@ -35,6 +37,7 @@ impl ExecutableEnvironmentWiring {
             registrar,
             projection_refresher: None,
             private_router: Router::new(),
+            image_builds: None,
         })
     }
 
@@ -44,6 +47,7 @@ impl ExecutableEnvironmentWiring {
             registrar: control_registrar(deployment)?,
             projection_refresher: None,
             private_router: Router::new(),
+            image_builds: None,
         })
     }
 
@@ -76,8 +80,18 @@ impl ExecutableEnvironmentWiring {
             }
             .map_err(|error| error.to_string())?,
         );
+        let image_builds = open_image_builds(deployment, schema).await?;
+        let build_aware: Arc<dyn ExecutableEnvironmentRegistrar> = match &image_builds {
+            Some(builds) => Arc::new(
+                awaken_environment_image_build::BuildAwareExecutableEnvironmentRegistrar::new(
+                    durable.clone(),
+                    builds.clone(),
+                ),
+            ),
+            None => durable.clone(),
+        };
         let registrar: Arc<dyn ExecutableEnvironmentRegistrar> = Arc::new(
-            awaken_protocol_managed::CoordinatorEnvironmentRegistrar::new(durable.clone(), work),
+            awaken_protocol_managed::CoordinatorEnvironmentRegistrar::new(build_aware, work),
         );
         let private_router =
             executable_environment_registration_router(registrar.clone(), token)
@@ -87,6 +101,7 @@ impl ExecutableEnvironmentWiring {
             registrar,
             projection_refresher: Some(durable),
             private_router,
+            image_builds,
         })
     }
 }
@@ -98,7 +113,19 @@ pub(crate) async fn for_runtime_role(
     work: Arc<dyn WorkQueue>,
 ) -> Result<ExecutableEnvironmentWiring, String> {
     match role {
-        Role::AllInOne => ExecutableEnvironmentWiring::local(work),
+        Role::AllInOne => {
+            let mut wiring = ExecutableEnvironmentWiring::local(work)?;
+            wiring.image_builds = open_image_builds(deployment, schema).await?;
+            if let Some(builds) = &wiring.image_builds {
+                wiring.registrar = Arc::new(
+                    awaken_environment_image_build::BuildAwareExecutableEnvironmentRegistrar::new(
+                        wiring.registrar,
+                        builds.clone(),
+                    ),
+                );
+            }
+            Ok(wiring)
+        }
         Role::Coordinator => {
             ExecutableEnvironmentWiring::coordinator(deployment, schema, work).await
         }
@@ -106,6 +133,58 @@ pub(crate) async fn for_runtime_role(
             unreachable!("runtime assembly accepts only AllInOne or Coordinator")
         }
     }
+}
+
+async fn open_image_builds(
+    deployment: &ResolvedDeployment,
+    schema: PostgresSchemaMode,
+) -> Result<Option<Arc<awaken_environment_image_build::EnvironmentImageBuildCoordinator>>, String> {
+    let Some(provisioner) =
+        awaken_runtime_host::package_image_provisioner(&deployment.runtime).await?
+    else {
+        return Ok(None);
+    };
+    let builder =
+        awaken_environment_package_image_builder::package_environment_image_builder(provisioner);
+    let base_image = deployment
+        .runtime
+        .container_image
+        .clone()
+        .ok_or_else(|| "Environment image builder requires container_image".to_owned())?;
+    let store = match &deployment.coordinator.sessions {
+        awaken_control::StoreBackend::Sqlite(_) => {
+            awaken_environment_image_build::open_sqlite_environment_image_build_store(
+                deployment.data_dir.join("environment_images.db"),
+            )
+            .map_err(|error| error.to_string())?
+        }
+        awaken_control::StoreBackend::Postgres(database_url) => match schema {
+            PostgresSchemaMode::Migrate => {
+                awaken_environment_image_build::connect_postgres_environment_image_build_store(
+                    database_url,
+                )
+                .await
+            }
+            PostgresSchemaMode::Verify => {
+                awaken_environment_image_build::connect_existing_postgres_environment_image_build_store(
+                    database_url,
+                )
+                .await
+            }
+        }
+        .map_err(|error| error.to_string())?,
+    };
+    let coordinator = Arc::new(
+        awaken_environment_image_build::EnvironmentImageBuildCoordinator::new(
+            store,
+            builder,
+            base_image,
+            awaken_environment_image_build::EnvironmentImageBuildPolicy::default(),
+        )
+        .map_err(|error| error.to_string())?,
+    );
+    coordinator.spawn_worker(deployment.runtime.dispatch_owner.clone());
+    Ok(Some(coordinator))
 }
 
 pub(crate) fn control_registrar(
@@ -130,5 +209,9 @@ pub(crate) async fn migrate(deployment: &ResolvedDeployment) -> Result<(), Strin
     )
     .await
     .map(drop)
-    .map_err(|error| format!("migrate executable Environment catalog: {error}"))
+    .map_err(|error| format!("migrate executable Environment catalog: {error}"))?;
+    awaken_environment_image_build::connect_postgres_environment_image_build_store(database_url)
+        .await
+        .map(drop)
+        .map_err(|error| format!("migrate Environment image-build jobs: {error}"))
 }

@@ -14,6 +14,7 @@ DOMAIN_APPLICATION_ALLOWED_DEPS: dict[str, set[str]] = {
     # immutable Environment facts and names no persistence or builder adapter.
     "awaken-environment-realization-contract": {
         "awaken-environment-contract",
+        "awaken-executable-environment-contract",
         "async-trait",
         "serde",
         "thiserror",
@@ -22,6 +23,7 @@ DOMAIN_APPLICATION_ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-environment-image-build": {
         "awaken-environment-contract",
         "awaken-environment-realization-contract",
+        "awaken-executable-environment-contract",
         "awaken-scoped-migration",
         "awaken-scoped-migration-sqlite",
         "async-trait",
@@ -30,6 +32,16 @@ DOMAIN_APPLICATION_ALLOWED_DEPS: dict[str, set[str]] = {
         "serde_json",
         "sqlx",
         "tempfile",
+        "tokio",
+    },
+    # Thin Coordinator adapter from exact image demand to the existing package
+    # provisioner. It owns no durable state or transport implementation.
+    "awaken-environment-package-image-builder": {
+        "awaken-environment-contract",
+        "awaken-environment-realization-contract",
+        "awaken-provisioning-contract",
+        "awaken-sandbox-container",
+        "async-trait",
         "tokio",
     },
     # Control-owned Environment application command path. Protocol and Admin

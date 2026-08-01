@@ -48,6 +48,9 @@ impl SessionRuntime for PreparingFake {
         match self.fail_with {
             Some(RunErrorKind::BadRequest) => Err(RunError::bad_request("prepare refused")),
             Some(RunErrorKind::Internal) => Err(RunError::internal("prepare blew up")),
+            Some(RunErrorKind::Unavailable) => {
+                Err(RunError::unavailable("environment image is not ready"))
+            }
             None => Ok(()),
         }
     }
@@ -869,6 +872,10 @@ async fn known_plus_unknown_vault_id_still_fails_the_create() {
 
 #[tokio::test]
 async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
+    // Cause/effect decision table: R1 permanent internal preparation failure
+    // maps to 500/api_error; R2 caller-invalid preparation maps to
+    // 400/invalid_request_error; R3 transient Environment image readiness maps
+    // to 503/api_error. Every failure keeps the durable intent non-live.
     for (kind, status, error_type) in [
         (
             RunErrorKind::Internal,
@@ -879,6 +886,11 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
             RunErrorKind::BadRequest,
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
+        ),
+        (
+            RunErrorKind::Unavailable,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "api_error",
         ),
     ] {
         let h = harness(Some(kind));

@@ -544,6 +544,44 @@ async fn environment_application_replay_converges_one_environment_and_healthchec
 }
 
 #[tokio::test]
+async fn executable_registration_seeds_work_only_for_self_hosted_environments() {
+    // Cause/effect decision table: R1 SelfHosted registration owns an external
+    // worker queue and seeds exactly one healthcheck; R2 Cloud registration is
+    // executed by Awaken and therefore creates no external worker work item.
+    let app = app();
+    let self_hosted = make_env(&app).await;
+    let (_, self_hosted_work) = call(
+        &app,
+        "GET",
+        &format!("/v1/environments/{self_hosted}/work"),
+        None,
+    )
+    .await;
+    assert_eq!(self_hosted_work["data"].as_array().unwrap().len(), 1, "R1");
+
+    let (status, cloud) = call(
+        &app,
+        "POST",
+        "/v1/environments",
+        Some(json!({
+            "name": "cloud",
+            "config": {"type": "cloud", "packages": {"type": "packages"}}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let cloud_id = cloud["id"].as_str().unwrap();
+    let (_, cloud_work) = call(
+        &app,
+        "GET",
+        &format!("/v1/environments/{cloud_id}/work"),
+        None,
+    )
+    .await;
+    assert!(cloud_work["data"].as_array().unwrap().is_empty(), "R2");
+}
+
+#[tokio::test]
 async fn environment_crud_and_work_lifecycle() {
     let app = app();
 

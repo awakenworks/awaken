@@ -28,6 +28,7 @@ fn session_environment(
         sandbox,
         sandbox_provisioning: Default::default(),
         packages: Default::default(),
+        prepared_image: None,
         network,
         credential_realization: native_credential_profile(),
     }
@@ -795,6 +796,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
                     sandbox: serde_json::json!({}),
                     sandbox_provisioning: Default::default(),
                     packages: Default::default(),
+                    prepared_image: None,
                     network: if with_environment_inputs {
                         awaken_session_contract::SessionNetworkPolicy::None
                     } else {

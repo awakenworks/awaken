@@ -175,18 +175,17 @@ fn decode_checked(
 mod tests {
     use awaken_environment_contract::{
         EnvItem, EnvironmentConfig, EnvironmentPackages, EnvironmentRevision,
-        ExecutableEnvironmentRegistration,
     };
     use awaken_environment_realization_contract::{
         EnvironmentImageBuildDemand, EnvironmentImageBuildState,
     };
+    use awaken_executable_environment_contract::ExecutableEnvironmentRegistration;
 
     use super::*;
 
     fn demand() -> EnvironmentImageBuildDemand {
-        let registration = ExecutableEnvironmentRegistration::from_definition(
-            "workspace-a",
-            &EnvItem {
+        let registration = ExecutableEnvironmentRegistration::new(
+            EnvItem {
                 id: "env-browser".into(),
                 revision: EnvironmentRevision(1),
                 name: "browser".into(),
@@ -200,8 +199,10 @@ mod tests {
                         ..Default::default()
                     },
                 },
+                sandbox_policy: None,
                 archived_at: None,
             },
+            None,
         );
         EnvironmentImageBuildDemand::from_registration(&registration, "registry/base:1").unwrap()
     }

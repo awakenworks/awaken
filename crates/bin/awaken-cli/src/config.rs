@@ -1095,8 +1095,8 @@ mod tests {
         assert_eq!(defaults.podman_bin, "podman", "S1");
         assert_eq!(defaults.package_image_registry, None, "S1");
         assert_eq!(defaults.package_registry_auth_file, None, "S1");
+        assert!(!defaults.package_registry_insecure, "S1");
         assert_eq!(defaults.package_image_builder, None, "S1");
-        assert!(defaults.package_artifact_dir.is_some(), "S1");
         assert!(!defaults.inherit_agent_stderr, "S1");
         assert!(defaults.reaper_enabled, "S1");
 
@@ -1111,12 +1111,8 @@ mod tests {
                 podman_bin: Some("/opt/podman/bin/podman".into()),
                 package_image_registry: Some("registry.internal/agents/".into()),
                 package_registry_auth_file: Some(PathBuf::from("/run/secrets/registry.json")),
-                package_image_builder: Some("docker".into()),
-                package_artifact_dir: Some(PathBuf::from("/shared/package-images")),
-                package_build_lease_secs: Some(30),
-                package_build_wait_secs: Some(60),
-                package_failure_retry_secs: Some(5),
-                package_state_ttl_secs: Some(600),
+                package_registry_insecure: Some(true),
+                package_image_builder: Some("k8s".into()),
                 package_local_cache_ttl_secs: Some(300),
                 sandbox_inherit_agent_stderr: Some(true),
                 sandbox_reaper_enabled: Some(true),
@@ -1146,7 +1142,7 @@ mod tests {
         );
         assert_eq!(
             selected.package_image_builder,
-            Some(PackageImageBuilder::Docker),
+            Some(PackageImageBuilder::Kubernetes),
             "S2"
         );
         assert_eq!(
@@ -1154,13 +1150,7 @@ mod tests {
             Some(Path::new("/run/secrets/registry.json")),
             "S2"
         );
-        assert_eq!(
-            selected.package_artifact_dir.as_deref(),
-            Some(Path::new("/shared/package-images")),
-            "S2"
-        );
-        assert_eq!(selected.package_build_lease_secs, 30, "S2");
-        assert_eq!(selected.package_build_wait_secs, 60, "S2");
+        assert!(selected.package_registry_insecure, "S2");
         assert_eq!(selected.package_local_cache_ttl_secs, 300, "S2");
         assert!(selected.inherit_agent_stderr, "S2");
         assert_eq!(selected.reaper_interval_secs, 17, "S2");
@@ -1178,8 +1168,7 @@ mod tests {
         // | V1 | empty | either | any | reject |
         // | V2 | valid | true | either zero | reject |
         // | V3 | valid | false | zero/zero | accept |
-        // | V4 | builder/auth without registry | either | any | reject |
-        // | V5 | package wait below lease | either | any | reject |
+        // | V4 | builder/auth/insecure without registry | either | any | reject |
         let resolve_error = |file: FileConfig| {
             ResolvedDeployment::resolve_file(
                 ConfigOverrides::default(),
@@ -1239,12 +1228,11 @@ mod tests {
         );
         assert!(
             resolve_error(FileConfig {
-                package_build_lease_secs: Some(60),
-                package_build_wait_secs: Some(30),
+                package_registry_insecure: Some(true),
                 ..FileConfig::default()
             })
-            .contains("package build lease"),
-            "V5"
+            .contains("package_image_registry"),
+            "V4"
         );
         let dormant = resolve(
             FileConfig {

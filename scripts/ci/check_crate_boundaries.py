@@ -1580,6 +1580,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-control",
         "awaken-environment-contract",
         "awaken-environment-application",
+        # Coordinator-owned image realization is assembled only at this role-aware
+        # composition root; protocol and sandbox providers receive injected ports.
+        "awaken-environment-image-build",
+        "awaken-environment-package-image-builder",
         "awaken-server",
         "awaken-authz-enforce",
         # The Worker role delegates lifecycle to the production execution worker.

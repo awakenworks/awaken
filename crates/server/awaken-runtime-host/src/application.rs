@@ -759,29 +759,23 @@ fn decode_environment_projection(
             awaken_provisioning_contract::NetworkPolicy::None
         }
     };
-    let package_config = &environment.packages;
-    let packages = awaken_provisioning_contract::PackageRequirements {
-        managers: [
-            ("apt", &package_config.apt),
-            ("cargo", &package_config.cargo),
-            ("gem", &package_config.gem),
-            ("go", &package_config.go),
-            ("npm", &package_config.npm),
-            ("pip", &package_config.pip),
-        ]
-        .into_iter()
-        .filter(|(_, packages)| !packages.is_empty())
-        .map(|(manager, packages)| (manager.to_string(), packages.clone()))
-        .collect(),
-        // Unpinned requirements resolve once per concrete Environment revision.
-        // Two independently created Environments with identical config must not
-        // share an indefinitely frozen "latest" image.
-        resolution_id: Some(format!(
-            "{}:{}",
-            environment.environment_id, environment.revision.0
-        )),
-    };
-    let sandbox =
+    let packages = environment.prepared_image.as_ref().map_or_else(
+        || awaken_provisioning_contract::PackageRequirements {
+            managers: environment
+                .packages
+                .manager_packages()
+                .into_iter()
+                .filter(|(_, packages)| !packages.is_empty())
+                .map(|(manager, packages)| (manager.to_owned(), packages.to_vec()))
+                .collect(),
+            resolution_id: Some(format!(
+                "{}:{}",
+                environment.environment_id, environment.revision.0
+            )),
+        },
+        |_| awaken_provisioning_contract::PackageRequirements::default(),
+    );
+    let mut sandbox =
         awaken_provisioning_contract::SandboxOverride::from_config_value(&environment.sandbox)
             .and_then(|mut sandbox| {
                 // EnvironmentSnapshot.network is the sole reachability authority. Old
@@ -790,6 +784,12 @@ fn decode_environment_projection(
                 sandbox.network = None;
                 (!sandbox.is_empty()).then_some(sandbox)
             });
+    if let Some(image) = &environment.prepared_image {
+        sandbox.get_or_insert_with(Default::default).environment =
+            Some(awaken_provisioning_contract::EnvironmentKind::Image {
+                reference: image.clone(),
+            });
+    }
     crate::session_slot::FrozenEnvironmentRuntimeProjection {
         fingerprint: environment.config_fingerprint.clone(),
         network,
@@ -882,9 +882,11 @@ mod network_policy_tests {
         );
     }
 
-    /// Package projection cause graph: the exact frozen Environment package
-    /// vectors become one neutral manager map; empty managers disappear, values
-    /// and ordering remain exact, and no protocol DTO reaches provisioning.
+    /// Package projection cause/effect decision table: R1 an unprepared exact
+    /// Environment projects package managers losslessly and no image override;
+    /// R2 a prepared immutable image suppresses startup package installation and
+    /// becomes the sole sandbox image override. Empty managers disappear and no
+    /// protocol DTO reaches provisioning.
     #[test]
     fn environment_packages_project_losslessly_to_the_provisioning_contract() {
         let environment = awaken_session_contract::EnvironmentSnapshot {
@@ -898,6 +900,7 @@ mod network_policy_tests {
                 pip: vec!["httpx==0.28".into()],
                 ..Default::default()
             },
+            prepared_image: None,
             network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
             credential_realization:
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
@@ -917,5 +920,15 @@ mod network_policy_tests {
             projected.packages.resolution_id.as_deref(),
             Some("env_packages:3")
         );
+
+        let mut prepared = environment;
+        prepared.prepared_image = Some("registry/awaken@sha256:prepared".into());
+        let projected = decode_environment_projection(&prepared);
+        assert!(projected.packages.is_empty(), "R2");
+        assert!(matches!(
+            projected.sandbox.and_then(|value| value.environment),
+            Some(awaken_provisioning_contract::EnvironmentKind::Image { reference })
+                if reference == "registry/awaken@sha256:prepared"
+        ));
     }
 }

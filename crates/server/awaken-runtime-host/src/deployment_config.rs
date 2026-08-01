@@ -173,6 +173,8 @@ pub enum SandboxTier {
 pub enum PackageImageBuilder {
     Docker,
     Podman,
+    /// Rootless BuildKit Job running in the target Kubernetes namespace.
+    Kubernetes,
 }
 
 impl SandboxTier {
@@ -214,15 +216,11 @@ pub struct SandboxSettings {
     /// Worker-side image builder. Its secret material is never projected into a
     /// Session or Agent process.
     pub package_registry_auth_file: Option<PathBuf>,
+    /// Permit plain-HTTP/TLS-insecure access from the Kubernetes BuildKit Job.
+    /// Intended for explicitly trusted development registries such as k3d.
+    pub package_registry_insecure: bool,
     /// Optional builder independent from the Session execution backend.
     pub package_image_builder: Option<PackageImageBuilder>,
-    /// Durable build journal and atomic lease directory. It may be a shared
-    /// filesystem when several Workers coordinate the same OCI registry.
-    pub package_artifact_dir: Option<PathBuf>,
-    pub package_build_lease_secs: u64,
-    pub package_build_wait_secs: u64,
-    pub package_failure_retry_secs: u64,
-    pub package_state_ttl_secs: u64,
     /// Age after which unused, Awaken-labeled derived images may be pruned from
     /// the builder's local engine cache. Registry retention remains an operator
     /// policy because the registry is shared infrastructure.
@@ -249,12 +247,8 @@ impl Default for SandboxSettings {
             podman_bin: "podman".to_owned(),
             package_image_registry: None,
             package_registry_auth_file: None,
+            package_registry_insecure: false,
             package_image_builder: None,
-            package_artifact_dir: None,
-            package_build_lease_secs: 15 * 60,
-            package_build_wait_secs: 20 * 60,
-            package_failure_retry_secs: 15,
-            package_state_ttl_secs: 30 * 24 * 60 * 60,
             package_local_cache_ttl_secs: 7 * 24 * 60 * 60,
             inherit_agent_stderr: false,
             reaper_enabled: true,

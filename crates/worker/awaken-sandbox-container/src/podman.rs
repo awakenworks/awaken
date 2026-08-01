@@ -800,17 +800,20 @@ impl ContainerRuntime for PodmanRuntime {
 
 #[async_trait]
 impl PackageImageProvisioner for PodmanRuntime {
-    async fn package_image_coordination_key(
-        &self,
-        base_image: &str,
-        packages: &pc::PackageRequirements,
-        network: &pc::NetworkPolicy,
-    ) -> Result<String, RuntimeError> {
-        if packages.is_empty() {
-            return serde_json::to_string(&(base_image, packages, network)).map_err(backend);
-        }
-        let (_, _, image) = self.resolve_package_build(base_image, packages).await?;
-        serde_json::to_string(&(image, network)).map_err(backend)
+    async fn package_base_image_identity(&self, reference: &str) -> Result<String, RuntimeError> {
+        self.run(&[
+            "image".into(),
+            "inspect".into(),
+            "--format".into(),
+            "{{.Id}}".into(),
+            reference.into(),
+        ])
+        .await
+        .and_then(|identity| {
+            (!identity.is_empty())
+                .then_some(identity)
+                .ok_or_else(|| backend("podman returned an empty base-image identity"))
+        })
     }
 
     async fn prepare_package_image(

@@ -979,6 +979,7 @@ mod runtime_session_store_tests {
                     sandbox: serde_json::json!({}),
                     sandbox_provisioning: Default::default(),
                     packages: Default::default(),
+                    prepared_image: None,
                     network: SessionNetworkPolicy::Unrestricted,
                     credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
                         inference_holder: awaken_runtime_contract::PlaintextHolder::new(

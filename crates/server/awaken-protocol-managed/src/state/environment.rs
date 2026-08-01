@@ -115,6 +115,7 @@ impl ManagedState {
                     .await
             }
         }
+        .map_err(|error| StateError::Run(RunError::unavailable(error.to_string())))?
         .ok_or_else(|| {
             StateError::Run(RunError::bad_request(format!(
                 "environment `{environment_id}` is unavailable"

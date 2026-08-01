@@ -136,6 +136,7 @@ awaken-executable-agent-catalog = { path = "crates/server/awaken-executable-agen
 awaken-executable-environment-catalog = { path = "crates/server/awaken-executable-environment-catalog" }
 awaken-durable-projection = { path = "crates/server/awaken-durable-projection" }
 awaken-environment-image-build = { path = "crates/server/awaken-environment-image-build" }
+awaken-environment-package-image-builder = { path = "crates/server/awaken-environment-package-image-builder" }
 awaken-agent-channel = { path = "crates/worker/awaken-agent-channel" }
 awaken-acp-contract = { path = "crates/worker/awaken-acp-contract" }
 awaken-connection-plan = { path = "crates/worker/awaken-connection-plan" }

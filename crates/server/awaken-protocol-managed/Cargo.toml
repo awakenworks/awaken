@@ -15,6 +15,7 @@ awaken-protocol-transport.workspace = true
 # shim so consumers stay unchanged until flipped to the contract directly.
 awaken-session-contract.workspace = true
 awaken-environment-contract.workspace = true
+awaken-environment-realization-contract.workspace = true
 awaken-environment-application.workspace = true
 awaken-deployment-contract.workspace = true
 awaken-credential-contract.workspace = true

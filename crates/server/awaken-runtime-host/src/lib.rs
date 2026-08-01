@@ -24,6 +24,7 @@ mod commit_ingest;
 mod compact;
 mod config;
 mod container_environment;
+pub use container_environment::package_image_provisioner;
 mod delegate;
 mod deployment_config;
 mod dispatch_backend;
@@ -46,6 +47,7 @@ mod memory_stores;
 mod memory_transport;
 mod no_model;
 mod outcome_controller;
+mod protocol_host;
 mod provisioning;
 mod redact;
 mod repository_transport;
@@ -72,11 +74,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, RunState};
-use awaken_protocol_transport::{
-    DriverError, Pending as PortPending, ProtocolRuntime, Resume as PortResume,
-    StepFailure as PortStepFailure, StepOutcome as PortStepOutcome, Terminal,
-};
+use awaken_agent_contract::agent::run::RunState;
 use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, MessageOrigin, Offer};
 use awaken_session_contract::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
@@ -114,6 +112,9 @@ pub use crate::memory_transport::{
     memory_materialization_reference, worker_memory_router,
 };
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
+pub use crate::protocol_host::{
+    ProtocolHost, SessionDefaultsPreparationError, SessionDefaultsPreparer,
+};
 pub use crate::repository_transport::{
     CatalogRepositoryBindingVerifier, HttpRepositoryBindingVerifier, RepositoryBindingVerifier,
     RepositoryBindingVerifierError, WorkerRepositoryBindingService,
@@ -1575,14 +1576,14 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                                 "MCP credential refresh requires a local credential authority",
                             )
                         })?;
-                        Some(crate::mcp::McpRefreshMaterial::new(
+                        Some(Box::new(crate::mcp::McpRefreshMaterial::new(
                             awaken_credential_vault::CredentialSourceId(
                                 access.credential.id.clone(),
                             ),
                             refresh.clone(),
                             credentials,
                             secrets,
-                        ))
+                        )))
                     }
                     None => None,
                 };
@@ -1856,180 +1857,5 @@ impl ManagedHost {
             skills: self.host.skills.ids_in(workspace),
             delegates: self.host.delegate_ids_in(workspace),
         }
-    }
-}
-
-// ── Protocol adapter over the shared host ───────────────────────────────────
-//
-// AG-UI, AI SDK, and A2A all drive one neutral `ProtocolRuntime` seam
-// (`awaken-protocol-transport`), so a single host impl backs all three: a turn
-// started through one protocol is resumable and observable through another on the
-// same thread. Each wire adapter keeps only its own encoder + router.
-
-fn to_driver_error(err: HostError) -> DriverError {
-    match err.kind {
-        HostErrorKind::BadRequest => DriverError::BadRequest(err.message),
-        HostErrorKind::Internal => DriverError::Internal(err.message),
-    }
-}
-
-fn to_port_pending(pending: Option<PendingTool>) -> Option<PortPending> {
-    pending.map(|p| PortPending {
-        tool_use_id: p.tool_use_id,
-        name: p.name,
-        input: p.input,
-        client_executed: p.client_executed,
-    })
-}
-
-fn to_port_step_outcome(result: RunResult) -> PortStepOutcome {
-    // The run's terminal `RunState` maps to exactly one `Terminal`. A `RunState::Ended(Error)`
-    // becomes `Terminal::Failed` — the neutral twin of `to_step_outcome`'s `PortStepFailure`
-    // — so the wire adapter can surface a failed run (it is a successful `RunResult`,
-    // not a `HostError`, so it never reaches the adapter as a `DriverError`).
-    let terminal = match &result.state {
-        RunState::Awaiting => Terminal::Awaiting {
-            pending: to_port_pending(result.pending),
-        },
-        RunState::Ended(EndCause::MaxSteps) => Terminal::Exhausted,
-        RunState::Ended(EndCause::Error(fault)) => Terminal::Failed(PortStepFailure {
-            code: fault.code().to_string(),
-            message: fault.message(),
-        }),
-        _ => Terminal::Finished,
-    };
-    PortStepOutcome {
-        new_messages: result.new_messages,
-        terminal,
-    }
-}
-
-/// The neutral `ProtocolRuntime` port implemented once over the shared host and
-/// wired behind every wire adapter (AI SDK / AG-UI / A2A) — a twin of
-/// [`ManagedHost`]. All hold the same `Arc<SharedHost>`, so a turn started by one
-/// protocol is resumable and observable through the others on the same thread.
-pub struct ProtocolHost {
-    host: Arc<SharedHost>,
-    session_defaults: Option<Arc<dyn SessionDefaultsPreparer>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("Session defaults could not be prepared: {0}")]
-pub struct SessionDefaultsPreparationError(pub String);
-
-#[async_trait::async_trait]
-pub trait SessionDefaultsPreparer: Send + Sync {
-    async fn prepare(
-        &self,
-        workspace_id: &str,
-        thread_id: &str,
-        agent_id: &str,
-    ) -> Result<(), SessionDefaultsPreparationError>;
-}
-
-impl ProtocolHost {
-    pub fn new(host: Arc<SharedHost>) -> Self {
-        Self {
-            host,
-            session_defaults: None,
-        }
-    }
-
-    #[must_use]
-    pub fn with_session_defaults(mut self, preparer: Arc<dyn SessionDefaultsPreparer>) -> Self {
-        self.session_defaults = Some(preparer);
-        self
-    }
-
-    async fn prepare_defaults(&self, thread: &str, agent: Option<&str>) -> Result<(), DriverError> {
-        let Some(preparer) = &self.session_defaults else {
-            return Ok(());
-        };
-        let projected_agent = self.host.thread_agent_projection(thread);
-        preparer
-            .prepare(
-                &self.host.thread_workspace(thread),
-                thread,
-                agent.or(projected_agent.as_deref()).unwrap_or("assistant"),
-            )
-            .await
-            .map_err(|error| DriverError::BadRequest(error.to_string()))
-    }
-}
-
-#[async_trait::async_trait]
-impl ProtocolRuntime for ProtocolHost {
-    async fn run(
-        &self,
-        thread: &str,
-        agent: Option<String>,
-        messages: Vec<Message>,
-    ) -> Result<PortStepOutcome, DriverError> {
-        self.prepare_defaults(thread, agent.as_deref()).await?;
-        let result = self
-            .host
-            .run(agent.as_deref(), thread, messages)
-            .await
-            .map_err(to_driver_error)?;
-        Ok(to_port_step_outcome(result))
-    }
-
-    async fn run_streaming(
-        &self,
-        thread: &str,
-        agent: Option<String>,
-        messages: Vec<Message>,
-        sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<PortStepOutcome, DriverError> {
-        self.prepare_defaults(thread, agent.as_deref()).await?;
-        let result = self
-            .host
-            .run_streaming(agent.as_deref(), thread, messages, sink)
-            .await
-            .map_err(to_driver_error)?;
-        Ok(to_port_step_outcome(result))
-    }
-
-    async fn resume(
-        &self,
-        thread: &str,
-        tool_use_id: &str,
-        resume: PortResume,
-    ) -> Result<PortStepOutcome, DriverError> {
-        let resume = match resume {
-            PortResume::Confirm { allow, note } => HostResume::ToolPermission { allow, note },
-            PortResume::ClientResult { content, is_error } => {
-                HostResume::ClientResult { content, is_error }
-            }
-        };
-        let result = self
-            .host
-            .resume(thread, tool_use_id, resume)
-            .await
-            .map_err(to_driver_error)?;
-        Ok(to_port_step_outcome(result))
-    }
-
-    async fn interrupt(&self, thread: &str) -> Result<(), DriverError> {
-        // The same protocol-neutral cancel the managed `user.interrupt` uses: cancel
-        // the in-flight run's token so an abandoned turn (dropped stream) stops.
-        self.host.interrupt(thread).await.map_err(to_driver_error)
-    }
-
-    async fn pending(&self, thread: &str) -> Option<PortPending> {
-        to_port_pending(self.host.pending_tool(thread).await)
-    }
-
-    async fn history(&self, thread: &str) -> Vec<Message> {
-        self.host.committed_messages(thread).await
-    }
-
-    fn model(&self) -> String {
-        self.host.model()
-    }
-
-    async fn usage(&self, thread: &str) -> (u64, u64) {
-        let usage = self.host.thread_usage(thread).await.total();
-        (usage.prompt_tokens, usage.completion_tokens)
     }
 }

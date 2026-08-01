@@ -95,6 +95,15 @@ The public self-hosted `/v1/environments/{id}/work...` routes remain on
 Coordinator. Process composition splits those runtime routes from Control's
 definition CRUD; AllInOne merges the same two routers locally.
 
+The Coordinator process starts the build loop as an internal application
+worker; it is not an authored resource, public API object, or Awaken Design
+concern. SQLite/PostgreSQL build rows are the one durable Pending/Building/
+Ready/Failed authority. On Kubernetes, the injected package provisioner creates
+a bounded rootless BuildKit Job and pushes the result to the configured shared
+OCI Registry. The Kubernetes Job owns no durable lifecycle state, and neither
+Runtime Host nor the Session Pod installs Environment packages after a prepared
+digest has been frozen.
+
 ### D5: Delivery is durable and fail-closed
 
 The Control definition revision and registration intent commit atomically. A
