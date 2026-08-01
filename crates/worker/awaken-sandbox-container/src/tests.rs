@@ -438,6 +438,7 @@ struct FakeState {
     live_credential: Option<Vec<u8>>,
     credential_source: Option<std::path::PathBuf>,
     spawned: Vec<(String, Vec<String>)>,
+    runtime_path_observations: Vec<(Option<String>, Option<String>)>,
     process_secret_observations: Vec<(bool, bool)>,
 }
 
@@ -576,6 +577,17 @@ impl ContainerRuntime for FakeRuntime {
             // Retain only the security observation, never the material itself.
             state.process_secret_observations.push(value);
         }
+        let runtime_path = |name: &str| {
+            command
+                .env
+                .iter()
+                .find(|value| value.name == name && !value.value.is_secret())
+                .map(|value| value.value.expose().to_string())
+        };
+        state.runtime_path_observations.push((
+            runtime_path("AWAKEN_PROJECT_DIR"),
+            runtime_path("AWAKEN_OUTPUTS_DIR"),
+        ));
         state.spawned.push((container_id.to_string(), command.argv));
         Ok(Box::new(FakeExecProcess { id }))
     }
@@ -852,10 +864,13 @@ async fn full_lifecycle_create_channel_process_artifacts_lease_dispose() {
 
 #[tokio::test]
 async fn a_second_node_adopts_a_running_container_over_the_shared_runtime() {
-    // Cross-node recovery on the container tier: two provider objects (two workers)
-    // over the SAME runtime backend — the container lives in a shared cluster/daemon
-    // reachable from both. Node A realizes it; Node A vanishes; Node B adopts it from
-    // the persisted handle and takes over its process, artifacts, and lease.
+    // Cause/effect recovery table — AR1:
+    // C1: node A persists a container handle and disappears; C2: node B shares the
+    // runtime and adopts that live handle; C3: the output boundary belongs to the
+    // sandbox specification, not either worker process.
+    // C1+C2+C3 => E1 node B reaches the same container, E2 its next process receives
+    // the exact runtime-owned project/output paths, and E3 artifacts and lease
+    // renewal remain available without creating a second environment.
     let rt =
         Arc::new(FakeRuntime::default().with_artifact("a1", "/mnt/session/outputs/o.txt", b"work"));
     let node_a = provider(rt.clone());
@@ -884,6 +899,19 @@ async fn a_second_node_adopts_a_running_container_over_the_shared_runtime() {
         .await
         .unwrap();
     assert_eq!(proc.id(), "exec-0");
+    assert_eq!(
+        rt.st
+            .lock()
+            .unwrap()
+            .runtime_path_observations
+            .last()
+            .cloned(),
+        Some((
+            Some("/workspace".into()),
+            Some("/mnt/session/outputs".into())
+        )),
+        "an adopted process receives the same runtime-owned paths"
+    );
     assert_eq!(sandbox_b.read_artifact("a1").await.unwrap(), b"work");
     sandbox_b.renew_lease().await.unwrap();
     assert_eq!(rt.st.lock().unwrap().lease_touches, 1);
@@ -1088,15 +1116,36 @@ async fn open_agent_creates_the_container_and_returns_its_channel_and_process() 
 
 #[tokio::test]
 async fn one_container_environment_executes_native_and_agent_processes_without_recreation() {
+    // Cause/effect decision table — RP1:
+    // C1: native exec or C2: opaque Agent/Hand exec enters a ContainerSandbox;
+    // C3: the caller omits runtime paths or C4: attempts stale replacements.
+    // Rules (C1|C2)+(C3|C4) => E1 both processes receive /workspace and the
+    // sandbox's exact output boundary, E2 caller values cannot override runtime
+    // ownership, and E3 the environment is still created only once.
     let runtime = Arc::new(FakeRuntime::default());
     let sandbox = provider(runtime.clone())
         .create_container(&spec("shared-session"))
         .await
         .unwrap();
 
-    let native = pc::Sandbox::spawn(&sandbox, pc::Command::new(["sh", "-c", "touch marker"]))
-        .await
-        .unwrap();
+    let mut native_command = pc::Command::new(["sh", "-c", "touch marker"]);
+    native_command.env.extend([
+        pc::EnvVar {
+            name: "AWAKEN_PROJECT_DIR".into(),
+            value: pc::EnvValue::Inline {
+                value: "/stale-workspace".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        },
+        pc::EnvVar {
+            name: "AWAKEN_OUTPUTS_DIR".into(),
+            value: pc::EnvValue::Inline {
+                value: "/stale-outputs".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        },
+    ]);
+    let native = pc::Sandbox::spawn(&sandbox, native_command).await.unwrap();
     let agent = sandbox
         .spawn_agent(pc::Command {
             stdio: pc::Stdio::Piped,
@@ -1121,6 +1170,20 @@ async fn one_container_environment_executes_native_and_agent_processes_without_r
         ["sh", "-c", "touch marker"].map(str::to_string)
     );
     assert_eq!(state.spawned[1].1, ["codex", "--acp"].map(str::to_string));
+    assert_eq!(
+        state.runtime_path_observations,
+        vec![
+            (
+                Some("/workspace".into()),
+                Some("/mnt/session/outputs".into())
+            ),
+            (
+                Some("/workspace".into()),
+                Some("/mnt/session/outputs".into())
+            ),
+        ],
+        "native and agent processes share the runtime-owned paths"
+    );
     assert_eq!(state.alive.get("cid-shared-session"), Some(&true));
 }
 

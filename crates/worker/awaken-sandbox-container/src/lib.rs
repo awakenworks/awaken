@@ -1605,6 +1605,43 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
 }
 
 impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
+    async fn materialize_command(
+        &self,
+        mut command: pc::Command,
+    ) -> Result<pc::MaterializedCommand, pc::SandboxError> {
+        // Container processes share the same stable interior paths. Bind the two
+        // runtime-owned variables at this common process boundary so native exec,
+        // the long-lived Hand, ACP agents, and adopted environments cannot diverge.
+        command.env.retain(|var| {
+            !matches!(
+                var.name.as_str(),
+                "AWAKEN_PROJECT_DIR" | "AWAKEN_OUTPUTS_DIR"
+            )
+        });
+        command.env.extend([
+            pc::EnvVar {
+                name: "AWAKEN_PROJECT_DIR".into(),
+                value: pc::EnvValue::Inline {
+                    value: "/workspace".into(),
+                },
+                visibility: pc::EnvVisibility::Process,
+            },
+            pc::EnvVar {
+                name: "AWAKEN_OUTPUTS_DIR".into(),
+                value: pc::EnvValue::Inline {
+                    value: self.outputs_path.clone(),
+                },
+                visibility: pc::EnvVisibility::Process,
+            },
+        ]);
+        pc::materialize_process_command(
+            &self.base_env,
+            command,
+            self.lifecycle.secret_broker.as_ref(),
+        )
+        .await
+    }
+
     /// Start an opaque stdio agent as an exec process in this Session environment.
     /// Repeated calls create independent attempt processes while preserving the same
     /// workspace, mounts, network policy, and durable sandbox handle.
@@ -1612,12 +1649,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
         &self,
         command: pc::Command,
     ) -> Result<RuntimeAgentProcess, pc::SandboxError> {
-        let command = pc::materialize_process_command(
-            &self.base_env,
-            command,
-            self.lifecycle.secret_broker.as_ref(),
-        )
-        .await?;
+        let command = self.materialize_command(command).await?;
         self.runtime
             .spawn_agent(&self.container_id, command)
             .await
@@ -1816,12 +1848,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         &self,
         command: pc::Command,
     ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        let command = pc::materialize_process_command(
-            &self.base_env,
-            command,
-            self.lifecycle.secret_broker.as_ref(),
-        )
-        .await?;
+        let command = self.materialize_command(command).await?;
         self.runtime
             .spawn(&self.container_id, command)
             .await
