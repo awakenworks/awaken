@@ -201,6 +201,11 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
     `${mcpCredential.id}@${mcpCredential.version}`,
   );
   await page.getByLabel("Prompts as skills").check();
+  await page.getByRole("button", { name: "+ MCP server", exact: true }).click();
+  await page.getByLabel("Transport").last().selectOption("sandbox_stdio");
+  await page.getByLabel("Server name").last().fill("browser");
+  await page.getByLabel("Sandbox command").fill("playwright-mcp");
+  await page.getByLabel("Arguments (one per line)").fill("--headless\n--isolated");
   await openAdvanced(page, "Orchestration");
   await page.getByLabel("multiagent JSON").fill("{");
   await expect(page.getByRole("button", { name: "Save draft", exact: true })).toBeDisabled();
@@ -212,7 +217,9 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
     response.request().method() === "PUT"
       && response.url().endsWith(`/v1/config/agents/${id}`));
   await page.getByRole("button", { name: "Save draft", exact: true }).click();
-  expect((await initialMcpSave).ok()).toBe(true);
+  const initialMcpResponse = await initialMcpSave;
+  const initialMcpBody = await initialMcpResponse.text();
+  expect(initialMcpResponse.ok(), initialMcpBody).toBe(true);
   await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
 
   const response = await request.get(`/v1/config/agents/${id}`);
@@ -225,6 +232,12 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
       url: "https://mcp.example.test/issues",
       credential: { id: mcpCredential.id, revision: mcpCredential.version },
       prompts_as_skills: true,
+    },
+    {
+      type: "sandbox_stdio",
+      name: "browser",
+      command: "playwright-mcp",
+      args: ["--headless", "--isolated"],
     },
   ]);
   expect(stored.tool_overrides).toEqual([
@@ -261,8 +274,10 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
 
   await page.goto("/w/default/mcp");
   await expect(page.getByText("https://mcp.example.test/issues")).toBeVisible();
-  await expect(page.getByText(id, { exact: true })).toBeVisible();
-  await page.getByText(id, { exact: true }).click();
+  await expect(page.getByText("sandbox stdio · playwright-mcp")).toBeVisible();
+  const issuesRow = page.getByRole("row", { name: /issues https:\/\/mcp\.example\.test\/issues/ });
+  await expect(issuesRow.getByText(id, { exact: true })).toBeVisible();
+  await issuesRow.getByText(id, { exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/agents/${id}\\?stage=build&section=integrations$`));
   await expect(page.getByRole("heading", { name: "Direct MCP servers" })).toBeVisible();
 });

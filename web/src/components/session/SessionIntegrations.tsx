@@ -39,7 +39,13 @@ export default function SessionIntegrations({ session }: { session?: Session }) 
             <div className="row" key={`${String(server.name)}-${index}`} style={{ justifyContent: "space-between" }}>
               <span style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                 <strong>{typeof server.name === "string" ? server.name : app.t("MCP server", "MCP 服务器")}</strong>
-                <code className="mut">{typeof server.url === "string" ? server.url : "—"}</code>
+                <code className="mut">
+                  {typeof server.url === "string"
+                    ? server.url
+                    : server.type === "sandbox_stdio" && typeof server.command === "string"
+                      ? `sandbox stdio · ${server.command}`
+                      : "—"}
+                </code>
               </span>
               <span className="row">
                 {server.prompts_as_skills === true && (

@@ -26,9 +26,9 @@ pub use worker::run_echo_worker;
 
 mod scenario_shell;
 use composition::{
-    fixed_host_backend_publication, fixed_host_backend_publication_with_acp_mcp, mount,
-    mount_with_environments, mount_with_environments_and_agent_source,
-    mount_with_host_backend_publication,
+    fixed_host_backend_publication, fixed_host_backend_publication_with_acp_mcp,
+    fixed_host_backend_publication_with_mcp, mount, mount_with_environments,
+    mount_with_environments_and_agent_source, mount_with_host_backend_publication,
 };
 use deployment::{resource_host, resource_host_with_deployment, scenario_storage_dir};
 use scenario_shell::{scenario_argv, scenario_host_acp_cli, scenario_shell_argv};
@@ -847,11 +847,40 @@ pub async fn build_acp_container_router() -> Router {
         delivered_skill,
     )];
     let playwright_mcp = std::env::var("AWAKEN_SCENARIO_PLAYWRIGHT_MCP").as_deref() == Ok("1");
-    let (publication, launch) = if playwright_mcp {
+    let native_playwright_mcp =
+        std::env::var("AWAKEN_SCENARIO_NATIVE_PLAYWRIGHT_MCP").as_deref() == Ok("1");
+    let (publication, launch, model): (_, _, Arc<dyn LlmExecutor>) = if native_playwright_mcp {
+        let publication = fixed_host_backend_publication_with_mcp(
+            "namespace-agent",
+            "native",
+            skills.clone(),
+            vec![
+                awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+                    name: "playwright".into(),
+                    transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::sandbox_stdio(
+                        "playwright-mcp",
+                        vec![
+                            "--headless".into(),
+                            "--no-sandbox".into(),
+                            "--isolated".into(),
+                            "--executable-path".into(),
+                            "/usr/bin/chromium".into(),
+                        ],
+                    ),
+                    credential: None,
+                    prompts_as_skills: false,
+                },
+            ],
+        );
+        let launch = awaken_runtime_host::LaunchSource::Fixed(
+            awaken_run_executor_acp::AcpLaunch::custom(vec!["/bin/false".into()], vec![]),
+        );
+        (publication, launch, Arc::new(NativePlaywrightMcpModel))
+    } else if playwright_mcp {
         let publication = fixed_host_backend_publication_with_acp_mcp(
             "namespace-agent",
             "acp:playwright-fixture",
-            skills,
+            skills.clone(),
             vec![awaken_runtime_contract::resolved::AcpMcpServer {
                 name: "playwright".into(),
                 transport: awaken_runtime_contract::resolved::AcpMcpTransport::Stdio {
@@ -872,7 +901,7 @@ pub async fn build_acp_container_router() -> Router {
                 Arc::new(FixedAcpModel),
             ),
         );
-        (publication, launch)
+        (publication, launch, Arc::new(EchoModel))
     } else {
         let publication = fixed_host_backend_publication("namespace-agent", "acp:custom", skills);
         let argv = scenario_argv(
@@ -881,9 +910,9 @@ pub async fn build_acp_container_router() -> Router {
         let launch = awaken_runtime_host::LaunchSource::Fixed(
             awaken_run_executor_acp::AcpLaunch::custom(argv, vec![]),
         );
-        (publication, launch)
+        (publication, launch, Arc::new(EchoModel))
     };
-    let host = resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment)
+    let host = resource_host_with_deployment(model, "awaken", deployment)
         .with_agent_publications(publication.clone());
     let host = host
         .with_acp_launch_source(awaken_server::relay_hand_executor_factory(), launch)
@@ -1686,6 +1715,43 @@ pub fn build_remote_delegation_router() -> Router {
 /// `greet` skill via the `Skill` tool; given the activation instructions it replies
 /// with them — so an e2e can assert discover → activate → use end to end. Stateless.
 pub struct SkillDrivingModel;
+
+/// Deterministic Native model used to prove that a Session Environment-installed
+/// Playwright MCP process is attached to the in-process Runtime rather than
+/// spawned on the host.
+pub struct NativePlaywrightMcpModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for NativePlaywrightMcpModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let last = request.messages.last().expect("a message");
+        let last_text = extract_text(&last.content);
+        let output = match last.role {
+            Role::User => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "playwright-native".into(),
+                tool_id: "mcp__playwright__browser_navigate".into(),
+                arguments: serde_json::json!({
+                    "url": "data:text/html,<title>AWAKEN-NATIVE-PLAYWRIGHT-MCP-OK</title><h1>AWAKEN-NATIVE-PLAYWRIGHT-MCP-OK</h1>"
+                }),
+            }]),
+            Role::Tool if last_text.contains("AWAKEN-NATIVE-PLAYWRIGHT-MCP-OK") => {
+                AssistantOutput::text("AWAKEN-NATIVE-PLAYWRIGHT-MCP-OK")
+            }
+            Role::Tool => {
+                AssistantOutput::text(format!("NATIVE-PLAYWRIGHT-MCP-FAILED: {last_text}"))
+            }
+            _ => AssistantOutput::text("NATIVE-PLAYWRIGHT-MCP-FAILED"),
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
 
 #[async_trait::async_trait]
 impl LlmExecutor for SkillDrivingModel {

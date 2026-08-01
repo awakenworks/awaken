@@ -276,7 +276,7 @@ pub(crate) fn resolve_mcp_draft_precedence(
         if draft.name.trim().is_empty() {
             return Err(McpAttachmentError::EmptyName);
         }
-        if draft.target.url.trim().is_empty() {
+        if draft.target.display_target().trim().is_empty() {
             return Err(McpAttachmentError::EmptyTarget);
         }
         match selected.get(&draft.name) {
@@ -294,9 +294,9 @@ pub(crate) fn resolve_mcp_draft_precedence(
     }
     let mut targets = BTreeSet::new();
     for draft in selected.values() {
-        if !targets.insert(draft.target.fingerprint.clone()) {
+        if !targets.insert(draft.target.fingerprint().to_string()) {
             return Err(McpAttachmentError::DuplicateTarget(
-                draft.target.url.clone(),
+                draft.target.display_target(),
             ));
         }
     }
@@ -743,15 +743,15 @@ fn validate_drafts(
         if draft.name.trim().is_empty() {
             return Err(McpAttachmentError::EmptyName);
         }
-        if draft.target.url.trim().is_empty() {
+        if draft.target.display_target().trim().is_empty() {
             return Err(McpAttachmentError::EmptyTarget);
         }
         if !names.insert(draft.name.clone()) {
             return Err(McpAttachmentError::DuplicateName(draft.name.clone()));
         }
-        if !targets.insert(draft.target.fingerprint.clone()) {
+        if !targets.insert(draft.target.fingerprint().to_string()) {
             return Err(McpAttachmentError::DuplicateTarget(
-                draft.target.url.clone(),
+                draft.target.display_target(),
             ));
         }
         if let Some(access) = &draft.credential {
@@ -856,13 +856,13 @@ mod tests {
         let canonical = McpTarget::parse_http("https://mcp.example.test/sse").unwrap();
         let cosmetic = McpTarget::parse_http("HTTPS://MCP.EXAMPLE.TEST:443/sse/").unwrap();
         assert_eq!(
-            McpTarget::identity(&canonical.url).unwrap(),
-            McpTarget::identity(&cosmetic.url).unwrap(),
+            McpTarget::identity(canonical.http_url().unwrap()).unwrap(),
+            McpTarget::identity(cosmetic.http_url().unwrap()).unwrap(),
             "U1"
         );
-        assert_eq!(canonical.fingerprint, cosmetic.fingerprint, "U1");
+        assert_eq!(canonical.fingerprint(), cosmetic.fingerprint(), "U1");
         let different = McpTarget::parse_http("https://mcp.example.test:8443/sse").unwrap();
-        assert_ne!(canonical.fingerprint, different.fingerprint, "U2");
+        assert_ne!(canonical.fingerprint(), different.fingerprint(), "U2");
         assert!(McpTarget::parse_http("file:///tmp/mcp").is_err(), "U3");
         for invalid in [
             "https://user:secret@mcp.example.test/sse",
@@ -995,7 +995,7 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(p1.len(), 1, "P1");
-        assert_eq!(p1[0].target.url, "https://session", "P1");
+        assert_eq!(p1[0].target.http_url(), Some("https://session"), "P1");
 
         let p2 = resolve_mcp_draft_precedence(vec![
             origin_draft("calc", "https://agent", McpAttachmentOrigin::Agent),
@@ -1006,7 +1006,7 @@ mod tests {
             ),
         ])
         .unwrap();
-        assert_eq!(p2[0].target.url, "https://application", "P2");
+        assert_eq!(p2[0].target.http_url(), Some("https://application"), "P2");
 
         assert!(
             matches!(

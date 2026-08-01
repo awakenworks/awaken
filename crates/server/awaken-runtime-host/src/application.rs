@@ -591,6 +591,7 @@ impl crate::SharedHost {
             }
             self.session_slots.update(thread, |slot| {
                 slot.has_mcp_projection = has_mcp_projection;
+                slot.agent_id = Some(baseline.agent_id.clone());
                 slot.toolsets = Some(projection.toolsets.clone());
             });
             return Ok(());
@@ -622,6 +623,7 @@ impl crate::SharedHost {
         self.session_slots.update(thread, |slot| {
             slot.baseline = Some(baseline);
             slot.has_mcp_projection = has_mcp_projection;
+            slot.agent_id = Some(projection.baseline.agent_id.clone());
             slot.toolsets = Some(projection.toolsets);
         });
         self.install_environment_projection(thread, &projection.baseline.environment)?;
@@ -734,6 +736,7 @@ fn decode_baseline_projection(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(crate::session_slot::FrozenBaselineRuntimeProjection {
         fingerprint: baseline.fingerprint.clone(),
+        agent_id: baseline.agent_id.clone(),
         mounts,
         env,
         prompts: baseline.prompts.clone(),

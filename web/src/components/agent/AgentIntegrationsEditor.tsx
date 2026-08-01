@@ -57,6 +57,8 @@ export default function AgentIntegrationsEditor({
 
   const setServer = (index: number, patch: JsonObject) =>
     onChange({ mcp_servers: servers.map((server, i) => i === index ? { ...objectOf(server), ...patch } : server) });
+  const replaceServer = (index: number, replacement: JsonObject) =>
+    onChange({ mcp_servers: servers.map((server, i) => i === index ? replacement : server) });
   const setSkill = (index: number, id: string) =>
     onChange({ skills: skills.map((skill, i) => i === index ? { ...objectOf(skill), id } : skill) });
 
@@ -83,21 +85,68 @@ export default function AgentIntegrationsEditor({
         </div>
         {servers.map((server, index) => {
           const value = objectOf(server);
+          const sandboxStdio = value.type === "sandbox_stdio";
           return (
             <div className="agent-integration-row" key={index}>
+              <label className="field">
+                <span>{app.t("Transport", "传输方式")}</span>
+                <select
+                  className="input mono"
+                  value={sandboxStdio ? "sandbox_stdio" : "url"}
+                  onChange={(event) => replaceServer(index, event.target.value === "sandbox_stdio"
+                    ? {
+                        type: "sandbox_stdio",
+                        name: typeof value.name === "string" ? value.name : "",
+                        command: "",
+                        args: [],
+                        prompts_as_skills: value.prompts_as_skills === true,
+                      }
+                    : {
+                        type: "url",
+                        name: typeof value.name === "string" ? value.name : "",
+                        url: "",
+                        prompts_as_skills: value.prompts_as_skills === true,
+                      })}
+                >
+                  <option value="url">HTTP</option>
+                  <option value="sandbox_stdio">{app.t("Sandbox stdio", "Sandbox stdio")}</option>
+                </select>
+              </label>
               <TextField
                 label={app.t("Server name", "服务器名称")}
                 mono
                 value={typeof value.name === "string" ? value.name : ""}
-                onChange={(event) => setServer(index, { type: "url", name: event.target.value })}
+                onChange={(event) => setServer(index, { name: event.target.value })}
               />
-              <TextField
-                label="URL"
-                mono
-                placeholder="https://mcp.example.com"
-                value={typeof value.url === "string" ? value.url : ""}
-                onChange={(event) => setServer(index, { type: "url", url: event.target.value })}
-              />
+              {sandboxStdio ? (
+                <>
+                  <TextField
+                    label={app.t("Sandbox command", "Sandbox 命令")}
+                    mono
+                    placeholder="playwright-mcp"
+                    value={typeof value.command === "string" ? value.command : ""}
+                    onChange={(event) => setServer(index, { command: event.target.value })}
+                  />
+                  <TextAreaField
+                    label={app.t("Arguments (one per line)", "参数（每行一个）")}
+                    mono
+                    rows={3}
+                    value={Array.isArray(value.args) ? value.args.filter((arg): arg is string => typeof arg === "string").join("\n") : ""}
+                    onChange={(event) => setServer(index, {
+                      args: event.target.value.split("\n").filter((arg) => arg.length > 0),
+                    })}
+                  />
+                </>
+              ) : (
+                <TextField
+                  label="URL"
+                  mono
+                  placeholder="https://mcp.example.com"
+                  value={typeof value.url === "string" ? value.url : ""}
+                  onChange={(event) => setServer(index, { type: "url", url: event.target.value })}
+                />
+              )}
+              {!sandboxStdio && (
               <label className="field">
                 <span>{app.t("Credential source", "凭据来源")}</span>
                 <select
@@ -124,6 +173,7 @@ export default function AgentIntegrationsEditor({
                   ))}
                 </select>
               </label>
+              )}
               <label className="field" style={{ alignSelf: "center" }}>
                 <span>{app.t("Prompts as skills", "将 Prompt 作为 Skill")}</span>
                 <input

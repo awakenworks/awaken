@@ -1282,6 +1282,7 @@ impl SharedHost {
     /// persistence run at the caller's release boundary before this method; Memory
     /// copy reconciliation is owned by `Sandbox::dispose` through its mount guard.
     pub(crate) async fn end_session(&self, thread: &str) -> Result<(), HostError> {
+        self.stop_session_mcp_processes(thread).await;
         let (ctx, env) = self.session_slots.update(thread, |slot| {
             (slot.runtime.take(), slot.environment.take())
         });

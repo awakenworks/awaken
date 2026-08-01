@@ -47,11 +47,9 @@ impl ApplicationMcpInput {
             }
         };
         Ok(ManagedMcpCandidate {
-            server: McpServer {
-                name: self.name,
-                url: self.url,
-                prompts_as_skills: self.prompts_as_skills,
-            },
+            name: self.name,
+            target: ManagedMcpCandidateTarget::WireUrl(self.url),
+            prompts_as_skills: self.prompts_as_skills,
             published_credential,
             origin: awaken_session_contract::McpAttachmentOrigin::Application,
         })
@@ -60,9 +58,17 @@ impl ApplicationMcpInput {
 
 #[derive(Clone, Debug)]
 pub(super) struct ManagedMcpCandidate {
-    pub(super) server: McpServer,
+    pub(super) name: String,
+    pub(super) target: ManagedMcpCandidateTarget,
+    pub(super) prompts_as_skills: bool,
     pub(super) published_credential: Option<(String, u64)>,
     pub(super) origin: awaken_session_contract::McpAttachmentOrigin,
+}
+
+#[derive(Clone, Debug)]
+pub(super) enum ManagedMcpCandidateTarget {
+    WireUrl(String),
+    Normalized(awaken_session_contract::McpTarget),
 }
 
 /// Preserve every create-time authoring candidate and its actual source. The
@@ -79,7 +85,9 @@ pub(super) fn initial_mcp_candidates(
     );
     let mut candidates = Vec::with_capacity(session.len() + agent_len);
     candidates.extend(session.iter().cloned().map(|server| ManagedMcpCandidate {
-        server,
+        name: server.name,
+        target: ManagedMcpCandidateTarget::WireUrl(server.url),
+        prompts_as_skills: server.prompts_as_skills,
         published_credential: None,
         origin: awaken_session_contract::McpAttachmentOrigin::Session,
     }));
@@ -89,7 +97,9 @@ pub(super) fn initial_mcp_candidates(
                 .iter()
                 .cloned()
                 .map(|server| ManagedMcpCandidate {
-                    server,
+                    name: server.name,
+                    target: ManagedMcpCandidateTarget::WireUrl(server.url),
+                    prompts_as_skills: server.prompts_as_skills,
                     published_credential: None,
                     origin: awaken_session_contract::McpAttachmentOrigin::Agent,
                 }),
@@ -97,11 +107,9 @@ pub(super) fn initial_mcp_candidates(
     } else if let Some(agent) = agent {
         candidates.extend(agent.mcp_servers.iter().map(|server| {
             ManagedMcpCandidate {
-                server: McpServer {
-                    name: server.name.clone(),
-                    url: server.url.clone(),
-                    prompts_as_skills: server.prompts_as_skills,
-                },
+                name: server.name.clone(),
+                target: ManagedMcpCandidateTarget::Normalized(server.target.clone()),
+                prompts_as_skills: server.prompts_as_skills,
                 published_credential: server
                     .credential_source_id
                     .clone()
@@ -638,7 +646,7 @@ mod tests {
     ) -> awaken_executable_agent_contract::ExecutableAgentMcpServer {
         awaken_executable_agent_contract::ExecutableAgentMcpServer {
             name: name.into(),
-            url: url.into(),
+            target: awaken_session_contract::McpTarget::parse_http(url).unwrap(),
             prompts_as_skills: false,
             credential_source_id: credential.map(|(id, _)| id.to_string()),
             credential_revision: credential.map(|(_, revision)| revision),
@@ -706,7 +714,7 @@ mod tests {
         assert_eq!(
             candidates
                 .iter()
-                .filter(|candidate| candidate.server.name == "same-name")
+                .filter(|candidate| candidate.name == "same-name")
                 .count(),
             2,
             "C4"
@@ -714,7 +722,14 @@ mod tests {
         assert_eq!(
             candidates
                 .iter()
-                .filter(|candidate| candidate.server.url == "https://same.example")
+                .filter(|candidate| {
+                    match &candidate.target {
+                        ManagedMcpCandidateTarget::WireUrl(url) => url == "https://same.example",
+                        ManagedMcpCandidateTarget::Normalized(target) => {
+                            target.http_url() == Some("https://same.example")
+                        }
+                    }
+                })
                 .count(),
             2,
             "C5"
@@ -735,16 +750,14 @@ mod tests {
             Some(&replacement),
         );
         assert_eq!(replaced.len(), 2, "C6");
-        assert_eq!(replaced[1].server.name, "replacement", "C6");
+        assert_eq!(replaced[1].name, "replacement", "C6");
         assert_eq!(
             replaced[1].origin,
             awaken_session_contract::McpAttachmentOrigin::Agent,
             "C6"
         );
         assert!(
-            replaced
-                .iter()
-                .all(|candidate| candidate.server.name != "secured"),
+            replaced.iter().all(|candidate| candidate.name != "secured"),
             "C6"
         );
         let cleared = initial_mcp_candidates(
@@ -753,7 +766,7 @@ mod tests {
             Some(&[]),
         );
         assert_eq!(cleared.len(), 1, "C7");
-        assert_eq!(cleared[0].server.name, "inline", "C7");
+        assert_eq!(cleared[0].name, "inline", "C7");
     }
 
     #[test]

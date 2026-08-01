@@ -354,6 +354,9 @@ function testContainerImage(image) {
   return image === IMAGE
     || image === PACKAGE_BASE_IMAGE
     || image.startsWith('awaken-packages:')
+    // Docker's `ps --format {{.Image}}` drops the digest for containers created
+    // from a registry digest even though inspect retains the immutable reference.
+    || image.endsWith('/awaken-packages')
     || image.includes('/awaken-packages@sha256:');
 }
 
@@ -529,6 +532,27 @@ async function main() {
           ],
         });
         console.log('  ok: Environment-installed Chromium served a browser through local stdio Playwright MCP');
+
+        const nativeStopped = new Promise((resolve) => brain.once('exit', resolve));
+        brain.kill('SIGINT');
+        await nativeStopped;
+        brain = spawnBrain({ AWAKEN_SCENARIO_NATIVE_PLAYWRIGHT_MCP: '1' });
+        await waitForPort(PORT);
+        client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
+        await exerciseContainerEnvironment(client, `${ENGINE}-native-playwright-mcp`, {
+          environment: { kind: 'image', reference: PACKAGE_BASE_IMAGE },
+        }, true, {
+          packages: {
+            apt: ['chromium'],
+            npm: ['@playwright/mcp@0.0.78'],
+          },
+          expectedMarker: 'AWAKEN-NATIVE-PLAYWRIGHT-MCP-OK',
+          proofCommands: [
+            'test -x /usr/bin/chromium',
+            'test -x /usr/local/bin/playwright-mcp',
+          ],
+        });
+        console.log('  ok: Native Runtime drove the sandbox Playwright MCP over its attached stdio channel');
       }
       console.log(
         registryOnly

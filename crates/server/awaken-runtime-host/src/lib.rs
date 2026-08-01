@@ -66,6 +66,8 @@ mod tool_output_spill;
 mod web_search;
 mod worker_http;
 
+use crate::session_environment::AgentSandbox as _;
+
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -1289,9 +1291,10 @@ impl SessionRuntime for ManagedHost {
         }
         self.host
             .register_thread_delegates(thread, init.delegate_ids.clone());
-        self.host
-            .session_slots
-            .update(thread, |slot| slot.toolsets = init.toolsets.clone());
+        self.host.session_slots.update(thread, |slot| {
+            slot.agent_id = Some(init.agent_id.clone());
+            slot.toolsets = init.toolsets.clone();
+        });
         // Stage only the already-resolved manifest. Runtime never reads the Agent
         // binding repository or composes defaults again.
         self.stage_resource_manifest(thread, &init.workspace_id, &init.resources, None, true)
@@ -1400,7 +1403,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
             || request.realization_id.trim().is_empty()
             || request.stage_idempotency_key.trim().is_empty()
             || request.name.trim().is_empty()
-            || request.target.url.trim().is_empty()
+            || request.target.display_target().trim().is_empty()
         {
             return Err(RunError::bad_request(
                 "MCP realization request is incomplete",
@@ -1454,6 +1457,16 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
             .is_some_and(|backend_ref| {
                 awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref).is_acp()
             });
+
+        let sandbox_stdio = request.target.sandbox_stdio_target().cloned();
+        if sandbox_stdio.is_some()
+            && (request.credential.is_some() || request.selected_plaintext_holder.is_some())
+        {
+            return Err(RunError::classified(
+                "mcp_stdio_credential_unsupported",
+                "sandbox stdio MCP credentials require an explicit secret-environment binding; HTTP bearer credentials cannot be projected into a process",
+            ));
+        }
 
         let (bearer, refresh, actual_realization_kind) = match (
             request.credential.as_ref(),
@@ -1589,10 +1602,22 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
         let renewal_binding_fingerprint = request.renewal_binding_fingerprint();
         let server = crate::mcp::McpTransportMaterial {
             name: request.name,
-            url: request.target.url,
             prompts_as_skills: request.prompts_as_skills,
-            bearer,
-            refresh,
+            transport: match sandbox_stdio.as_ref() {
+                Some(target) => crate::mcp::McpTransportMaterialKind::SandboxStdio {
+                    command: target.command.clone(),
+                    args: target.args.clone(),
+                },
+                None => crate::mcp::McpTransportMaterialKind::Http {
+                    url: request
+                        .target
+                        .http_url()
+                        .expect("non-stdio MCP target must be HTTP")
+                        .to_string(),
+                    bearer,
+                    refresh,
+                },
+            },
         };
         if is_acp && server.prompts_as_skills {
             return Err(RunError::classified(
@@ -1600,19 +1625,122 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                 "MCP prompts-as-skills requires the Native runtime; ACP does not expose a portable prompt-to-Skill projection",
             ));
         }
-        let native_wiring = if is_acp {
-            None
+        let (native_wiring, mcp_process) = if is_acp {
+            (None, None)
+        } else if let Some(target) = sandbox_stdio.as_ref() {
+            let session_id = &request.generation.session_id;
+            let environment = match self.host.session_environment(session_id).await {
+                Some(environment) => environment,
+                None => {
+                    let agent_id = self
+                        .host
+                        .session_slots
+                        .read(session_id, |slot| {
+                            slot.agent_id.clone().or_else(|| {
+                                slot.baseline
+                                    .as_ref()
+                                    .map(|baseline| baseline.agent_id.clone())
+                            })
+                        })
+                        .flatten()
+                        .ok_or_else(|| {
+                            RunError::classified(
+                                "mcp_sandbox_unavailable",
+                                "sandbox stdio MCP requires a frozen Session Agent before Environment realization",
+                            )
+                        })?;
+                    self.host
+                        .ctx_for(session_id, Some(&agent_id))
+                        .await
+                        .map_err(|error| {
+                            RunError::classified(
+                                "mcp_sandbox_unavailable",
+                                format!(
+                                    "sandbox stdio MCP could not realize its Session Environment: {error}"
+                                ),
+                            )
+                        })?;
+                    let realized = self.host.session_environment(session_id).await;
+                    realized.ok_or_else(|| {
+                        RunError::classified(
+                            "mcp_sandbox_unavailable",
+                            "sandbox stdio MCP Session Environment remained deferred after realization",
+                        )
+                    })?
+                }
+            };
+            let mut argv = Vec::with_capacity(target.args.len() + 1);
+            argv.push(target.command.clone());
+            argv.extend(target.args.clone());
+            // Match the ACP/Hand isolation contract: opaque sandbox processes
+            // never inherit the image or operator home. Give this MCP target a
+            // writable Session-scoped home inside the workspace so read-only
+            // container root filesystems still support CLI/browser caches.
+            let mcp_home_logical = format!(".mcp-home/{}", request.target.fingerprint());
+            let mcp_home = format!(
+                "{}/{}",
+                environment.workspace_cwd().trim_end_matches('/'),
+                mcp_home_logical
+            );
+            let home_sentinel = if crate::session_environment::AgentSandbox::supports_host_identity(
+                environment.as_ref(),
+            ) {
+                format!("{mcp_home_logical}/.awaken-mcp-home")
+            } else {
+                format!("{mcp_home}/.awaken-mcp-home")
+            };
+            environment
+                .materialize_inline(&home_sentinel, b"")
+                .await
+                .map_err(|error| {
+                    RunError::classified(
+                        "mcp_sandbox_home_failed",
+                        format!("sandbox stdio MCP home could not be materialized: {error}"),
+                    )
+                })?;
+            let (process, channel) = environment
+                .spawn_agent(awaken_provisioning_contract::Command {
+                    argv,
+                    cwd: environment.workspace_cwd(),
+                    env: vec![awaken_provisioning_contract::EnvVar {
+                        name: "HOME".into(),
+                        value: awaken_provisioning_contract::EnvValue::Inline { value: mcp_home },
+                        visibility: awaken_provisioning_contract::EnvVisibility::Process,
+                    }],
+                    stdio: awaken_provisioning_contract::Stdio::Piped,
+                })
+                .await
+                .map_err(|error| {
+                    RunError::classified(
+                        "mcp_sandbox_spawn_failed",
+                        format!("sandbox stdio MCP process could not start: {error}"),
+                    )
+                })?;
+            let process: Arc<dyn awaken_provisioning_contract::ProcessHandle> = Arc::from(process);
+            match crate::mcp::connect_sandbox_stdio(&server, channel).await {
+                Ok(wiring) => (Some(wiring), Some(process)),
+                Err(error) => {
+                    let _ = process
+                        .signal(awaken_provisioning_contract::Signal::Term)
+                        .await;
+                    let _ = process.wait().await;
+                    return Err(to_run_error(error));
+                }
+            }
         } else {
-            Some(
-                crate::mcp::connect_materialized(std::slice::from_ref(&server))
-                    .await
-                    .map_err(to_run_error)?,
+            (
+                Some(
+                    crate::mcp::connect_materialized(std::slice::from_ref(&server))
+                        .await
+                        .map_err(to_run_error)?,
+                ),
+                None,
             )
         };
         // Staging is the sole route-creation boundary.  Runtime construction is
         // a projection reader and must never repair or recreate credential-
         // bearing effects behind the durable realization protocol's back.
-        let staged_relay = if is_acp && server.bearer.is_some() {
+        let staged_relay = if is_acp && server.bearer().is_some() {
             let relay = self
                 .host
                 .mcp_relay
@@ -1641,6 +1769,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
             actual_realization_kind,
             receipt_fingerprint: request_fingerprint,
         };
+        let cleanup_process = mcp_process.clone();
         if let Err(error) =
             self.host
                 .insert_mcp_projection(crate::session_slot::McpGenerationProjection {
@@ -1651,6 +1780,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                     receipt: receipt.clone(),
                     server: Some(server),
                     native_wiring,
+                    mcp_process,
                     state: crate::session_slot::McpProjectionState::Staged,
                 })
         {
@@ -1658,6 +1788,12 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
             // after the exact projection failed to stage would still be a leak.
             if let Some(relay) = staged_relay {
                 relay.remove_route(&request.generation);
+            }
+            if let Some(process) = cleanup_process {
+                let _ = process
+                    .signal(awaken_provisioning_contract::Signal::Term)
+                    .await;
+                let _ = process.wait().await;
             }
             return Err(to_run_error(error));
         }

@@ -10,7 +10,7 @@ import { useListState } from "../lib/useListState";
 interface McpInventoryRow {
   key: string;
   name: string;
-  url: string;
+  target: string;
   promptsAsSkills: boolean;
   credential?: string;
   agents: string[];
@@ -45,9 +45,13 @@ export default function McpOverviewSurface() {
     for (const raw of agent.mcp_servers ?? []) {
       const server = objectOf(raw);
       const name = typeof server.name === "string" ? server.name : "";
-      const url = typeof server.url === "string" ? server.url : "";
-      if (!name || !url) continue;
-      const key = `${name}\u0000${url}`;
+      const target = typeof server.url === "string"
+        ? server.url
+        : server.type === "sandbox_stdio" && typeof server.command === "string"
+          ? `sandbox stdio · ${server.command}`
+          : "";
+      if (!name || !target) continue;
+      const key = `${name}\u0000${target}`;
       const existing = inventory.get(key);
       if (existing) {
         if (!existing.agents.includes(agent.id)) existing.agents.push(agent.id);
@@ -55,7 +59,7 @@ export default function McpOverviewSurface() {
         inventory.set(key, {
           key,
           name,
-          url,
+          target,
           promptsAsSkills: server.prompts_as_skills === true,
           credential: credentialLabel(server.credential),
           agents: [agent.id],
@@ -72,7 +76,7 @@ export default function McpOverviewSurface() {
       cell: (row) => (
         <span style={{ display: "flex", flexDirection: "column", gap: 3 }}>
           <strong>{row.name}</strong>
-          <code className="mut">{row.url}</code>
+          <code className="mut">{row.target}</code>
         </span>
       ),
     },
@@ -140,7 +144,7 @@ export default function McpOverviewSurface() {
         loading={agents.isLoading}
         filter={(row, query) => [
           row.name,
-          row.url,
+          row.target,
           row.credential,
           ...row.agents,
         ].some((value) => value?.toLowerCase().includes(query.toLowerCase()))}

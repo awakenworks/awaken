@@ -15,7 +15,7 @@ use awaken_agent_contract::{AcpSessionConfiguration, agent::content::ContentBloc
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::agent::{AgentSkill, AgentTool, UrlMcpServer};
+use super::agent::{AgentSkill, AgentTool, McpServerView, UrlMcpServer};
 use super::resource::{ResourceInput, SessionResource};
 
 /// The Anthropic error envelope: `{ "type": "error", "error": { "type", "message" } }`.
@@ -386,7 +386,7 @@ pub struct SessionAgent {
     pub description: Option<String>,
     pub system: Option<String>,
     pub tools: Vec<AgentTool>,
-    pub mcp_servers: Vec<UrlMcpServer>,
+    pub mcp_servers: Vec<McpServerView>,
     pub skills: Vec<AgentSkill>,
     /// The multiagent coordinator roster, omitted when the agent delegates to no one.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -407,7 +407,7 @@ pub struct SessionThreadAgent {
     pub description: Option<String>,
     pub system: Option<String>,
     pub tools: Vec<AgentTool>,
-    pub mcp_servers: Vec<UrlMcpServer>,
+    pub mcp_servers: Vec<McpServerView>,
     pub skills: Vec<AgentSkill>,
 }
 
