@@ -18,14 +18,8 @@
 // - `routes`  — routing: the axum routers and handlers for every surface
 //               (sessions + the management-plane resources), each resource
 //               bundling the in-memory store it drives.
-// - `ext`     — our extensions: vocabulary and surfaces not on the SDK wire.
-//
 // `state` holds the `SessionRuntime` port and the session record store the routes
 // drive and the projection writes into; `session_repo` is its persistence port.
-
-/// Our extensions: non-SDK vocabulary and surfaces (awaken model/runtime selection,
-/// the live-inbox edit protocol) kept apart from the compatible core.
-pub mod ext;
 /// Conversion/projection: committed `Message`s and engine events → public wire events.
 pub mod project;
 mod rate_limit;
@@ -48,9 +42,9 @@ mod state;
 mod work_queue;
 
 pub use awaken_dream_application::{
-    BUILT_IN_DREAM_AGENT_ID, DreamAgentConfiguration, DreamAgentSelection, DreamApiError,
-    DreamApplication, DreamCancellation, DreamExecutor, DreamFailure, DreamPolicy,
-    DreamPolicyConfig, DreamPreparation, DreamRequest, DreamSessionSource,
+    BUILT_IN_DREAM_AGENT_ID, DreamApiError, DreamApplication, DreamCancellation, DreamExecutor,
+    DreamFailure, DreamPolicy, DreamPolicyConfig, DreamPreparation, DreamRequest,
+    DreamSessionSource,
 };
 pub use rate_limit::{ManagedRateLimiter, ManagedRateLimits, enforce_managed_rate_limit};
 pub use routes::agents_registry::{

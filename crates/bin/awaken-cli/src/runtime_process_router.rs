@@ -196,7 +196,17 @@ pub(super) async fn assemble_runtime_process_router(
                     environment_authoring
                         .clone()
                         .expect("AllInOne owns Environment authoring"),
-                ),
+                )
+                .merge(awaken_protocol_awaken::environment_extensions_router(
+                    environment_authoring
+                        .as_ref()
+                        .expect("AllInOne owns Environment authoring")
+                        .application(),
+                    environment_authoring
+                        .as_ref()
+                        .expect("AllInOne owns Environment authoring")
+                        .sandbox_policy_store(),
+                )),
                 coordinator_content_eraser,
                 content_capture_ceiling,
                 iam.clone(),
@@ -460,7 +470,7 @@ pub(super) async fn assemble_runtime_process_router(
         awaken_server::resources_router(awaken_server::ResourcesRouterInput {
             files: resource_application.files(),
             memories: resource_ports.memory_repository(),
-            catalog: resource_ports.resource_catalog(),
+            memory_stores: resource_application.memory_stores(),
             skills: Some(resource_ports.skill_store()),
             purge: resource_application.purge_scheduler(),
         });

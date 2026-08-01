@@ -255,6 +255,54 @@ pub enum LiveInboxError {
     StaleOrder,
 }
 
+/// Protocol-neutral application failure for the editable in-flight inbox.
+/// Wire adapters decide how these three domain outcomes map to their envelopes.
+#[derive(Debug, thiserror::Error)]
+pub enum LiveInboxApplicationError {
+    #[error("session not found")]
+    NotFound,
+    #[error(transparent)]
+    Edit(#[from] LiveInboxError),
+    #[error("live inbox unavailable: {0}")]
+    Unavailable(String),
+}
+
+/// Driving port for Awaken's live-inbox protocol. The Managed compatibility
+/// adapter may implement this port as part of its Session application state,
+/// but no protocol adapter depends on another protocol adapter.
+#[async_trait]
+pub trait LiveInboxApplication: Send + Sync {
+    async fn snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<LiveInboxSnapshot, LiveInboxApplicationError>;
+
+    async fn queue(
+        &self,
+        session_id: &str,
+        content: Vec<ContentBlock>,
+    ) -> Result<u64, LiveInboxApplicationError>;
+
+    async fn remove(
+        &self,
+        session_id: &str,
+        message_id: u64,
+    ) -> Result<(), LiveInboxApplicationError>;
+
+    async fn replace(
+        &self,
+        session_id: &str,
+        message_id: u64,
+        content: Vec<ContentBlock>,
+    ) -> Result<(), LiveInboxApplicationError>;
+
+    async fn reorder(
+        &self,
+        session_id: &str,
+        order: Vec<u64>,
+    ) -> Result<(), LiveInboxApplicationError>;
+}
+
 /// Public exact-generation realization port owned by the Session application
 /// boundary. Local Host relay/connection code and downstream platform gateways
 /// implement this same contract; neither becomes Session desired-state authority.

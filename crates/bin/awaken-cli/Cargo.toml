@@ -71,6 +71,7 @@ opentelemetry = { version = "0.32", features = ["metrics"] }
 # The Managed wire aggregates the composition builds directly: session repos, the
 # vault + environment state shared across both planes.
 awaken-protocol-managed = { workspace = true }
+awaken-protocol-awaken = { workspace = true }
 # The management stores this composition opens (in-memory / SQLite / Postgres).
 awaken-model-catalog = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-credential-vault = { workspace = true, features = ["sqlite", "sealed-aead", "postgres"] }

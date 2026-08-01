@@ -174,9 +174,10 @@ method; archive is the API terminal operation. Schedule previews retain exact
 cron instants, while execution starts at or after the bounded jitter.
 
 Automatic Dream policy is not part of Anthropic's Deployment or Dreams API. It
-is an Awaken extension at `/v1/dream_policies/{memory_store_id}`, is default-off,
-requires both Managed and Dreaming beta capabilities, persists its own interval
-cursor, and submits only through the canonical Dream create path.
+is a default-off Coordinator application policy with no Managed HTTP route. It
+persists its own interval cursor and submits only through the canonical Dream
+create path. Any future authoring surface belongs to an explicitly separate
+Control/Awaken protocol.
 
 ## Failure and consistency invariants
 

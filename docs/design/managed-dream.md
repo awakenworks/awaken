@@ -25,8 +25,10 @@ Session retains the ordinary Session/Run lifecycle; `DreamProcess` owns only
 cross-resource preparation, cancellation, cleanup, archive, and its Session
 reference. Token usage is always projected from that ordinary Session.
 
-Every Workspace has an effective Dream Agent (built-in unless explicitly
-overridden). Automatic Dream policy is opt-in and defaults off. When enabled for
+Dream uses the ordinary, stable Agent id `awaken_builtin_dream_agent`. Publishing
+that id through the normal Workspace Agent authoring flow customizes the full
+executable snapshot; absence uses the built-in fallback. Automatic Dream policy
+is opt-in and defaults off. When enabled for
 one `(Workspace, MemoryStore)`, the production Managed scheduler evaluates it on
 the same timer that drives cron Deployments and submits the same durable DreamProcess
 as `POST /v1/dreams`; there is no second Dream executor or Agent state.
@@ -47,7 +49,8 @@ path.
 | ordinary Agent execution | `awaken-runtime-host::SessionRuntime` | executes the Dream Agent through the normal Run path |
 | Memory file truth | `awaken-resource-contract::MemoryRepository` | reads and commits path-addressed Memory content |
 | Files data plane | `awaken-server::SharedHost` | stores transient JSONL artifacts using the canonical File record and purge lifecycle |
-| Resource catalog | `ResourceCatalog` | validates source ownership and gates the output store while Dream owns it |
+| Resource catalog | `ResourceCatalog` | validates source ownership |
+| Resources application | `MemoryStoreApplicationService` | is the sole output-store identity, lifecycle, retention, and purge command path |
 | mount realization | provisioning and sandbox providers | realizes InlineBytes and MemoryStore inputs for the ordinary Session |
 
 ### Modified existing owners
@@ -59,7 +62,7 @@ path.
 | local, namespace, and container providers | reject copy realization for `WriteThroughRequired` | no silent copy/harvest downgrade before Agent launch |
 | Managed beta middleware and rate-limit classifier | Dreams family and both beta capabilities | wire compatibility and existing Managed request governance |
 | Managed Session application | exact built-in-origin exception and public realization seam | the built-in auxiliary Agent still uses one canonical Session path |
-| Session contract and Managed Session store | add the `DreamProcessStore` port plus scoped process/override/policy tables and SQLite/Postgres CAS adapters | Dream durability belongs to Coordinator rather than the Memory extension or protocol adapter |
+| Session contract and Managed Session store | add the `DreamProcessStore` port plus scoped process/policy tables and SQLite/Postgres CAS adapters | Dream durability belongs to Coordinator rather than the Memory extension or protocol adapter |
 | server assembly | FUSE-preferred Memory mounter and one Dream composition root | ordinary mounts may fall back; Dream output may not |
 | Managed periodic driver | evaluate opt-in Dream policies beside cron Deployments | one timer and one trigger path; policies never execute an Agent directly |
 
@@ -74,7 +77,6 @@ path.
 | `SessionTranscriptJsonlExporter` | server composition | deterministic committed-Message JSONL encoding |
 | `MemoryStoreContentSnapshot` | server composition | names one exact set of source heads used for both input and output |
 | `ExclusiveMemoryStoreWriterLease` | server composition | keeps the result catalog-gated until the auxiliary writer terminates |
-| `DreamAgentSelection` | Coordinator application | freezes the effective built-in or Workspace override at create time |
 
 No `DreamAgentState`, `MemoryCompactAgent`, alternate transcript schema store, or
 parallel output import/harvest implementation exists.
@@ -97,7 +99,8 @@ DreamApplication ------ DreamProcessStore port
     |
     v  DreamExecutor
 BuiltInDreamAgent
-    |---- ResourceCatalog: source validation + output availability fence
+    |---- ResourceCatalog: source validation
+    |---- MemoryStoreApplicationService: output identity/lifecycle fence
     |---- MemoryRepository.snapshot_heads: frozen source and independent clone
     |---- ManagedState: committed transcript + ordinary auxiliary Session
     |---- SharedHost Files: transient JSONL evidence
@@ -117,7 +120,7 @@ struct DreamRequest {
     session_ids: Vec<String>,
     model: DreamModelConfig,
     request_guidance: Option<String>,
-    agent_selection: DreamAgentSelection,
+    agent_id: String,
 }
 
 struct DreamPreparation {
@@ -180,31 +183,21 @@ List is newest-first, defaults to 20, caps `limit` at 100, excludes archived
 jobs by default, and supports `page`, repeated `statuses`, `include_archived`,
 `created_at[gt]`, and `created_at[lt]`.
 
-## Workspace Dream Agent selection
+## Ordinary Dream Agent configuration
 
-There is one effective Dream Agent per Workspace, not one copied Agent record:
-
-```text
-Workspace override absent  -> awaken_builtin_dream_agent
-Workspace override present -> validate and use that exact active Agent
-```
-
-Selection is frozen into the job before dispatch. Changing the Workspace policy
-therefore affects only later Dreams. Request `model` overrides the selected
-Agent's model for this Session, while request `instructions` is appended as
-bounded guidance and cannot widen mounts, tools, network, or credentials.
-
-The explicit Awaken extension exposes the effective selection without creating
-a duplicate default Agent row:
+Dream has no special configuration contract. Its stable `agent_id` is frozen in
+the durable job exactly like any other Agent reference:
 
 ```text
-GET  /v1/dream_agent_configuration
-POST /v1/dream_agent_configuration  {"agent_id":"agent_id"}
-POST /v1/dream_agent_configuration  {"agent_id":null}  # clear override
+published awaken_builtin_dream_agent -> use that complete executable snapshot
+publication absent                    -> use the built-in fallback snapshot
 ```
 
-An override is validated against the active Workspace Agent catalog before the
-durable row or cache changes.
+Users customize it through the ordinary Agent draft/publish UI and API. There is
+no `/v1/dream_agent_configuration`, Workspace override table, Dream-specific
+prompt store, or second catalog. Request `model` remains the Anthropic Dream
+request field, while request `instructions` is bounded per-job guidance and
+cannot widen mounts, tools, network, or credentials.
 
 ## Automatic Dream policy
 
@@ -236,17 +229,11 @@ contracts but one production driver. Deployment creates ordinary Sessions from a
 cron occurrence; Dream policy creates a DreamProcess, which then creates its bounded
 auxiliary Session. Reusing the timer does not conflate these aggregates.
 
-Policy configuration is an explicit Awaken extension, not an Anthropic Dreams
-method:
-
-```text
-GET  /v1/dream_policies/{memory_store_id}  -> configured or disabled effective default
-POST /v1/dream_policies/{memory_store_id}  -> validate, persist, and return policy
-```
-
-Both routes require the Managed and Dreaming beta capabilities. Reading an
-absent policy does not create a row. The response includes the MemoryStore id,
-flattened configuration, `next_due_at`, and `last_completed_cutoff_at`.
+Dream scheduling policy is an internal Coordinator application contract, not a
+Managed protocol method. No `/v1/dream_policies/*` route is mounted. If policy
+authoring is exposed later, it must be a separately named Control/Awaken API that
+submits this same Coordinator command; it may not be added to
+`awaken-protocol-managed`.
 
 ## Frozen inputs and JSONL
 
@@ -321,7 +308,7 @@ worker
   -> derive deterministic snapshot/result/Session ids from Dream id
   -> reclaim an uncommitted partial clone, or reuse an existing prepared result
   -> atomically snapshot source; clone snapshot and result
-  -> catalog result as Suspended (exclusive Dream writer fence)
+  -> Resources application creates result as Suspended (exclusive writer fence)
   -> export JSONL Files
   -> create/realize ordinary auxiliary Session with strict mounts
   -> persist output and Session references
@@ -391,7 +378,7 @@ oracle.
 | REC-1 | terminal SQLite process and ordinary Session facts after restart | same status/output plus Session-derived usage; `sqlite_repository_restores_terminal_dreams_after_restart` |
 | REC-2 | process loss during Running | CAS reset and canonical redispatch; `resume_incomplete_cas_resets_and_executes_a_durable_running_job` |
 | REC-3 | terminal decision plus cleanup failure | public Running until cleanup-only restart succeeds; `restart_retries_terminal_cleanup_before_publishing_completion` |
-| SEL-1 | default/override Workspace policy | effective selection frozen without copied default rows; `workspace_agent_selection_uses_effective_default_and_freezes_override` |
+| SEL-1 | manual/scheduled Dream creation | stable ordinary Agent id frozen directly on every process, with no Dream-specific selection state; `dream_uses_one_stable_ordinary_agent_id_without_selection_state` |
 | SCH-1 | disabled / below threshold / due / completed cutoff | no process, threshold gating, one ordinary DreamProcess, no unchanged reprocessing; `automatic_policy_is_opt_in_thresholded_and_reuses_the_dream_job_path` |
 | SCH-2 | absent / invalid / configured / restart | default projection, atomic 400, durable cursor/config restore; `dream_policy_api_projects_defaults_validates_and_survives_restart` |
 | SCH-3 | two replicas claim one due policy version | one atomic policy/job winner and one benign loser; `concurrent_policy_ticks_claim_one_dream_across_replicas` |

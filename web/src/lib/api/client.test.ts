@@ -60,7 +60,7 @@ describe("API beta cause/effect graph", () => {
   const cases: Array<[string, string | undefined]> = [
     ["/v1/memory_stores", API_BETAS.memory],
     ["/v1/memory_stores/store-1/memories?view=full", API_BETAS.memory],
-    ["/v1/workspaces/team%20a/memory_stores/store-1/config", API_BETAS.memory],
+    ["/v1/workspaces/team%20a/memory_stores/store-1/memory_versions", API_BETAS.memory],
     ["/v1/skills", API_BETAS.skills],
     ["/v1/workspaces/team-a/skills/skill-1/versions/latest", API_BETAS.skills],
     ["/v1/sessions", API_BETAS.managed],

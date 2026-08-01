@@ -279,41 +279,19 @@ async function main() {
       404,
       'unknown Memory version redaction is 404',
     );
+    // Cause/effect boundary rule: every former behavior-config shape has the
+    // same terminal effect (404) because the compatible protocol owns none of
+    // those routes; request validation cannot accidentally resurrect them.
     await rejectsStatus(
       () => c.get(`/v1/memory_stores/${store.id}/config_versions/not-an-integer`),
-      400,
-      'non-integer config version is rejected',
-    );
-    await rejectsStatus(
-      () => c.get(`/v1/memory_stores/${store.id}/config_versions/999`),
       404,
-      'unknown config version is 404',
+      'non-compatible config-version route is absent',
     );
     await rejectsStatus(
       () => c.post(`/v1/memory_stores/${store.id}/config`, { body: {} }),
-      400,
-      'config publication requires a CAS version',
+      404,
+      'non-compatible config publication route is absent',
     );
-    await rejectsStatus(
-      () => c.post(`/v1/memory_stores/${store.id}/config`, {
-        body: { expected_config_version: 1 },
-      }),
-      400,
-      'config publication requires a policy change',
-    );
-    for (const [field, value] of [
-      ['recall_policy', { enabled: 'yes' }],
-      ['extraction_policy', { enabled: 'yes' }],
-      ['retention_policy', { retention_days: 'forever' }],
-    ]) {
-      await rejectsStatus(
-        () => c.post(`/v1/memory_stores/${store.id}/config`, {
-          body: { expected_config_version: 1, [field]: value },
-        }),
-        400,
-        `${field} must preserve its typed schema`,
-      );
-    }
 
     const missingStore = 'memstore_does_not_exist';
     const missingStoreOperations = [

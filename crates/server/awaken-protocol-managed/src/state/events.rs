@@ -478,7 +478,7 @@ impl ManagedState {
         }
     }
 
-    /// `GET /v1/sessions/:id/live-inbox` — the in-flight turn's editable queue.
+    /// Awaken `GET /v1/awaken/sessions/:id/live-inbox` application operation.
     pub async fn live_inbox_snapshot(
         &self,
         session_id: &str,
@@ -487,7 +487,7 @@ impl ManagedState {
         Ok(self.runtime.live_inbox_snapshot(session_id).await)
     }
 
-    /// `POST /v1/sessions/:id/live-inbox` — queue a message for the in-flight turn.
+    /// Awaken `POST /v1/awaken/sessions/:id/live-inbox` application operation.
     pub async fn live_inbox_queue(
         &self,
         session_id: &str,
@@ -497,13 +497,13 @@ impl ManagedState {
         Ok(self.runtime.live_inbox_queue(session_id, content).await?)
     }
 
-    /// `DELETE /v1/sessions/:id/live-inbox/:msg` — withdraw a queued message.
+    /// Awaken `DELETE /v1/awaken/sessions/:id/live-inbox/:msg` operation.
     pub async fn live_inbox_remove(&self, session_id: &str, id: u64) -> Result<(), StateError> {
         self.require_session(session_id).await?;
         Ok(self.runtime.live_inbox_remove(session_id, id).await?)
     }
 
-    /// `PUT /v1/sessions/:id/live-inbox/:msg` — replace a queued message's content.
+    /// Awaken `PUT /v1/awaken/sessions/:id/live-inbox/:msg` operation.
     pub async fn live_inbox_replace(
         &self,
         session_id: &str,
@@ -517,7 +517,7 @@ impl ManagedState {
             .await?)
     }
 
-    /// `PUT /v1/sessions/:id/live-inbox/order` — reorder the queue (full permutation).
+    /// Awaken `PUT /v1/awaken/sessions/:id/live-inbox/order` operation.
     pub async fn live_inbox_reorder(
         &self,
         session_id: &str,
@@ -906,5 +906,68 @@ impl ManagedState {
             next_page: page.next_page,
             has_more: page.has_more,
         })
+    }
+}
+
+fn live_inbox_application_error(
+    error: StateError,
+) -> awaken_session_contract::LiveInboxApplicationError {
+    match error {
+        StateError::NotFound => awaken_session_contract::LiveInboxApplicationError::NotFound,
+        StateError::LiveInbox(error) => error.into(),
+        other => awaken_session_contract::LiveInboxApplicationError::Unavailable(other.to_string()),
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::LiveInboxApplication for ManagedState {
+    async fn snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<LiveInboxSnapshot, awaken_session_contract::LiveInboxApplicationError> {
+        ManagedState::live_inbox_snapshot(self, session_id)
+            .await
+            .map_err(live_inbox_application_error)
+    }
+
+    async fn queue(
+        &self,
+        session_id: &str,
+        content: Vec<ContentBlock>,
+    ) -> Result<u64, awaken_session_contract::LiveInboxApplicationError> {
+        ManagedState::live_inbox_queue(self, session_id, content)
+            .await
+            .map_err(live_inbox_application_error)
+    }
+
+    async fn remove(
+        &self,
+        session_id: &str,
+        message_id: u64,
+    ) -> Result<(), awaken_session_contract::LiveInboxApplicationError> {
+        ManagedState::live_inbox_remove(self, session_id, message_id)
+            .await
+            .map_err(live_inbox_application_error)
+    }
+
+    async fn replace(
+        &self,
+        session_id: &str,
+        message_id: u64,
+        content: Vec<ContentBlock>,
+    ) -> Result<(), awaken_session_contract::LiveInboxApplicationError> {
+        ManagedState::live_inbox_replace(self, session_id, message_id, content)
+            .await
+            .map_err(live_inbox_application_error)
+    }
+
+    async fn reorder(
+        &self,
+        session_id: &str,
+        order: Vec<u64>,
+    ) -> Result<(), awaken_session_contract::LiveInboxApplicationError> {
+        ManagedState::live_inbox_reorder(self, session_id, order)
+            .await
+            .map_err(live_inbox_application_error)
     }
 }

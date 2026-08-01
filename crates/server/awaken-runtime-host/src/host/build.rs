@@ -158,14 +158,6 @@ impl SharedHost {
                 },
             )
         };
-        let memory_catalog = Arc::new(AgentCatalog::new().with_agent(default_memory_agent(
-            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                awaken_runtime_contract::resolved::ModelBinding::new(
-                    "default", &model_ref, "default",
-                ),
-            ),
-            DEFAULT_MEMORY_INSTRUCTIONS,
-        )));
         let extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository> =
             match store_dir.as_ref() {
                 Some(dir) => {
@@ -186,14 +178,9 @@ impl SharedHost {
         let memory = Arc::new(crate::memory::MemoryRuntime::new(
             llm.clone(),
             Arc::new(LocalProvider::new(sub_base("mem"))),
-            memory_catalog,
             Arc::new(BackgroundRuns::new()),
             extraction_repository,
         ));
-        let memory_selector = Some(Arc::new(crate::memory::AgentSelector::new(
-            llm.clone(),
-            &model_ref,
-        )) as Arc<dyn awaken_ext_memory::RecallSelector>);
         let mut skills = crate::skill_catalog::SkillCatalog::new();
         if let Some(plane) = &resources {
             skills.set_store(plane.skill_store());
@@ -299,7 +286,6 @@ impl SharedHost {
             worker_credential_resolver: None,
             deployment,
             memory,
-            memory_selector,
             compaction: None,
             agent_publications: None,
             agent_resource_references: None,

@@ -32,7 +32,8 @@ ROUTE_OWNER_FILES = (
     "crates/server/awaken-protocol-a2a/src/router.rs",
     "crates/server/awaken-protocol-ag-ui/src/router.rs",
     "crates/server/awaken-protocol-ai-sdk/src/router.rs",
-    "crates/server/awaken-protocol-managed/src/ext/live_inbox.rs",
+    "crates/server/awaken-protocol-awaken/src/live_inbox.rs",
+    "crates/server/awaken-protocol-awaken/src/sandbox_policies.rs",
     "crates/server/awaken-protocol-managed/src/rate_limit.rs",
     "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",
     "crates/server/awaken-protocol-managed/src/routes/deployments.rs",
@@ -53,6 +54,7 @@ PUBLIC_ROUTE_ROOTS = (
     "crates/server/awaken-protocol-a2a/src",
     "crates/server/awaken-protocol-ag-ui/src",
     "crates/server/awaken-protocol-ai-sdk/src",
+    "crates/server/awaken-protocol-awaken/src",
     "crates/server/awaken-protocol-managed/src",
     "crates/server/awaken-protocol-mcp/src",
     "crates/server/awaken-server/src",
@@ -64,23 +66,56 @@ PARAMETER = re.compile(r"\{[^}]+\}")
 
 
 def _production(text: str) -> str:
-    """Inline unit tests are not route owners."""
-    return text.split("#[cfg(test)]", 1)[0]
+    """A terminal inline unit-test module is not a route owner.
+
+    Test-only imports/constants may appear before production routers, so cutting
+    at the first `#[cfg(test)]` silently omitted real owners. Rust source in this
+    repository keeps the inline `mod tests` last; cut only at that module marker.
+    """
+    return re.split(r"#\[cfg\(test\)\]\s*mod\s+\w+\s*\{", text, maxsplit=1)[0]
 
 
 def _normalized_path(path: str) -> str:
     return PARAMETER.sub(lambda match: "{*}" if match.group(0).startswith("{*") else "{}", path)
 
 
+def _call_end(text: str, opening: int) -> int:
+    """Return the byte after the balanced call beginning at `opening` (`(`).
+
+    Route handler bodies live later in the file and contain method-like words;
+    limiting ownership parsing to the balanced `.route(...)` call prevents those
+    handlers from being attributed to the final route declaration.
+    """
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for index in range(opening, len(text)):
+        char = text[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {'"', "'"}:
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return len(text)
+
+
 def _owned_routes(path: Path) -> list[tuple[str, str]]:
     text = _production(path.read_text(encoding="utf-8"))
-    starts = list(ROUTE_START.finditer(text))
     owned: list[tuple[str, str]] = []
-    for index, match in enumerate(starts):
-        end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
-        # One route expression may chain multiple MethodRouter verbs. Limit the
-        # window to its next route declaration; handler bodies are defined elsewhere.
-        expression = text[match.end() : end]
+    for match in ROUTE_START.finditer(text):
+        opening = text.find("(", match.start(), match.end())
+        expression = text[match.end() : _call_end(text, opening)]
         methods = set(METHOD.findall(expression))
         for method in methods:
             owned.append((method.upper(), _normalized_path(match.group("path"))))
@@ -154,7 +189,8 @@ def selftest() -> None:
     assert _normalized_path("/v1/agents/{agent_id}") == "/v1/agents/{}", "E1"
     assert _normalized_path("/v1/agents/{id}") == "/v1/agents/{}", "E1"
     assert ("GET", "/x") != ("POST", "/x"), "E2"
-    assert _production("prod\n#[cfg(test)]\ntest") == "prod\n", "E3"
+    assert _production("prod\n#[cfg(test)]\nuse x;\nroute").endswith("route"), "E3 import"
+    assert _production("prod\n#[cfg(test)]\nmod tests { route }") == "prod\n", "E3 module"
     assert duplicate_route_owner_violations(
         [("GET", "/x", "a.rs"), ("GET", "/x", "a.rs")]
     ) == [], "E4 same owner"

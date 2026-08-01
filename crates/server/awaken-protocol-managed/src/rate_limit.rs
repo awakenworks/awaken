@@ -233,8 +233,6 @@ fn is_managed_family(segments: &[&str]) -> bool {
                     | "skills"
                     | "user_profiles"
                     | "dreams"
-                    | "dream_policies"
-                    | "dream_agent_configuration"
             )
         )
 }
@@ -251,8 +249,6 @@ fn is_create_endpoint(segments: &[&str]) -> bool {
             | ["v1", "skills"]
             | ["v1", "user_profiles"]
             | ["v1", "dreams"]
-            | ["v1", "dream_policies", _]
-            | ["v1", "dream_agent_configuration"]
             | ["v1", "sessions", _, "resources"]
             | ["v1", "vaults", _, "credentials"]
             | ["v1", "memory_stores", _, "memories"]

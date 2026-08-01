@@ -92,7 +92,7 @@ one bundle id per aggregate-safe scope.
 | Control | `awaken.control_data_subject` / `control_data_subject` | `control_data_subject_subject`, `control_data_subject_erasure_job` |
 | Control | `awaken.env_registry` / `env_registry` | `env_registry_env`, `env_registry_create_command`, `env_registry_revision` |
 | Control | `awaken.sandbox_execution_policy` / `sandbox_execution_policy` | `sandbox_execution_policy_version`, `sandbox_execution_policy_current` |
-| Coordinator | `awaken.managed_session` / `managed` | `managed_session`, `managed_lifecycle_outbox`, `managed_memory_extraction`, `managed_session_idempotency`, `managed_session_tombstone`, `managed_dream`, `managed_dream_agent_override`, `managed_deployment`, `managed_deployment_run`, `managed_deployment_claim`, `managed_dream_policy` |
+| Coordinator | `awaken.managed_session` / `managed` | `managed_session`, `managed_lifecycle_outbox`, `managed_memory_extraction`, `managed_session_idempotency`, `managed_session_tombstone`, `managed_dream`, `managed_deployment`, `managed_deployment_run`, `managed_deployment_claim`, `managed_dream_policy` |
 | Coordinator | `awaken.environment_image_build` / `environment_image_build` | `environment_image_build_job` |
 | Coordinator | `awaken.work_queue` / `work_queue` | `work_queue_item` |
 | Coordinator | `awaken.worker_registry` / `worker_registry` | `worker_registry_worker` |

@@ -54,10 +54,10 @@ pub use baseline::{
     SessionNetworkPolicy,
 };
 pub use dream::{
-    Dream, DreamAgentSelectionRecord, DreamCreateParams, DreamError, DreamInput, DreamListParams,
-    DreamModelConfig, DreamModelInput, DreamModelSpeed, DreamOutput, DreamPage, DreamPolicyConfig,
-    DreamPolicyRecord, DreamProcessFailure, DreamProcessRecord, DreamProcessStore,
-    DreamProcessStoreError, DreamStatus, DreamUsage, WorkspaceDreamAgentOverride,
+    Dream, DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig,
+    DreamModelInput, DreamModelSpeed, DreamOutput, DreamPage, DreamPolicyConfig, DreamPolicyRecord,
+    DreamProcessFailure, DreamProcessRecord, DreamProcessStore, DreamProcessStoreError,
+    DreamStatus, DreamUsage,
 };
 pub use lifecycle::{ManagedLifecycleFact, SessionLifecycleSink};
 pub use mcp_attachment::{
@@ -81,10 +81,11 @@ pub use run_application::{
     blocks_text, epoch_millis_to_rfc3339, paginate_history,
 };
 pub use session::{
-    AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
-    LiveInboxSnapshot, McpAttachmentRealizer, OutcomeIteration, OutcomeReport, Pending, RunError,
-    RunErrorKind, SessionEnvironmentBindingSink, SessionInit, SessionRuntime, SessionUsage,
-    StepOutcome, ToolPermissionDecision,
+    AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxApplication,
+    LiveInboxApplicationError, LiveInboxEntry, LiveInboxError, LiveInboxSnapshot,
+    McpAttachmentRealizer, OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind,
+    SessionEnvironmentBindingSink, SessionInit, SessionRuntime, SessionUsage, StepOutcome,
+    ToolPermissionDecision,
 };
 pub use session_realization::{
     AcknowledgeSessionRealization, ActivateSessionRealization, ApplicationSessionControl,

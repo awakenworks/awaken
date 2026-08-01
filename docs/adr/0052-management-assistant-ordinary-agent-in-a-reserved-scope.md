@@ -86,9 +86,13 @@ authorization-free ("authority lives behind the gate"). Privilege is expressed b
 **where the config lives** and **what its scope can see** (D2, D3), not by a flag on
 the definition.
 
-Corollary: this agent's hardcoded bypass is retired in favour of the ordinary path.
-Migrating the *other* built-ins (compactor, judge, memory) onto `AgentConfig` is
-**orthogonal and out of scope** — pursued separately if at all.
+Corollary: this agent's hardcoded bypass is retired in favour of the ordinary
+path. The same invariant now applies to Dream, Compact, and Memory auxiliary
+Agents: each has a stable ordinary Agent id, resolves a Workspace publication
+first, freezes the complete executable snapshot, and uses only a built-in
+fallback when no publication exists. Per-parent Memory/Compact plugin settings
+may select a different auxiliary Agent id and override prompt text without
+creating a private catalog or a special authoring contract.
 
 ### D2: Its configuration home is a reserved `ScopeId`; execution uses a real Workspace
 

@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_ext_builtin_tools::{AuxiliaryAgentInput, invoke_auxiliary_agent};
-use awaken_ext_compact::{COMPACT_AGENT_ID, CompactArtifact, CompactBackend, CompactRequest};
+use awaken_ext_compact::{CompactArtifact, CompactBackend, CompactRequest};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::tool::RawTool;
 use awaken_sandbox_local::LocalProvider;
@@ -26,9 +26,6 @@ use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
 use crate::judge::AuxAgentTool;
 use crate::store::HostCommit;
-
-// The config pieces the host wires (registering the default compactor agent).
-pub use awaken_ext_compact::{DEFAULT_COMPACT_INSTRUCTIONS, default_compact_agent};
 
 /// A host's enabled compaction policy. Session construction binds its execution
 /// backend to that Session's commit/history boundary.
@@ -42,13 +39,10 @@ pub(crate) struct Compaction {
 /// memory's `AgentSelector`.
 pub(crate) fn compact_runner(
     llm: Arc<dyn LlmExecutor>,
-    model_ref: &str,
+    snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
     commit: Arc<HostCommit>,
 ) -> Arc<dyn RawTool> {
-    let catalog = Arc::new(AgentCatalog::new().with_agent(default_compact_agent(
-        model_ref,
-        DEFAULT_COMPACT_INSTRUCTIONS,
-    )));
+    let catalog = Arc::new(AgentCatalog::new().with_agent(snapshot));
     let base = std::env::temp_dir()
         .join("awaken-server")
         .join(format!("{}-compact", std::process::id()));
@@ -89,7 +83,7 @@ impl HostCompactBackend {
             agent_tool.as_ref(),
             &request.key,
             AuxiliaryAgentInput {
-                agent_id: COMPACT_AGENT_ID.to_string(),
+                agent_id: request.agent_id,
                 seed: request.seed,
             },
             None,
@@ -164,6 +158,7 @@ mod tests {
     use async_trait::async_trait;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    use awaken_ext_compact::{DEFAULT_COMPACT_INSTRUCTIONS, default_compact_agent};
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult,
     };
@@ -222,7 +217,7 @@ mod tests {
         let model = Arc::new(SummaryModel(AtomicU64::new(0)));
         let runner = compact_runner(
             model.clone(),
-            "stub",
+            default_compact_agent("stub", DEFAULT_COMPACT_INSTRUCTIONS),
             Arc::new(HostCommit::Local(Arc::new(
                 awaken_runtime::memory::MemoryCommitCoordinator::new(),
             ))),
@@ -235,7 +230,7 @@ mod tests {
                 runner.as_ref(),
                 "compact-test",
                 AuxiliaryAgentInput {
-                    agent_id: COMPACT_AGENT_ID.to_string(),
+                    agent_id: awaken_ext_compact::COMPACT_AGENT_ID.to_string(),
                     seed,
                 },
                 None,
@@ -258,7 +253,7 @@ mod tests {
         });
         let runner = compact_runner(
             model.clone(),
-            "stub",
+            default_compact_agent("stub", DEFAULT_COMPACT_INSTRUCTIONS),
             Arc::new(HostCommit::Local(Arc::new(
                 awaken_runtime::memory::MemoryCommitCoordinator::new(),
             ))),
@@ -266,6 +261,7 @@ mod tests {
         let background = Arc::new(BackgroundRuns::new());
         let backend = compact_backend(runner, background.clone());
         let request = CompactRequest {
+            agent_id: awaken_ext_compact::COMPACT_AGENT_ID.to_string(),
             scope: "thread-a".into(),
             key: "stable-prefetch".into(),
             covered_messages: 1,

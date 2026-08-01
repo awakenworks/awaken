@@ -63,7 +63,7 @@ use axum::Router;
 pub use awaken_config_service::{ConfigService, capabilities_router, config_router};
 pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_managed_routers::{
-    default_models, files_router, memory_stores_router_with_catalog, models_router, skills_router,
+    default_models, files_router, memory_stores_router, models_router, skills_router,
 };
 pub use awaken_runtime_host::{
     ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost, RunApplicationHost,

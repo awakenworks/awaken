@@ -18,7 +18,6 @@ use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::json;
 
@@ -149,6 +148,13 @@ impl EnvironmentAuthoringState {
     #[must_use]
     pub fn application(&self) -> Arc<EnvironmentApplication> {
         self.application.clone()
+    }
+
+    #[must_use]
+    pub fn sandbox_policy_store(
+        &self,
+    ) -> Option<Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>> {
+        self.sandbox_policies.clone()
     }
 }
 
@@ -625,7 +631,8 @@ fn session_network_policy(
     SessionNetworkPolicy::Allowlist { hosts }.normalized()
 }
 
-/// AllInOne/test composition of the two canonical Environment route groups.
+/// Anthropic-compatible Environment route composition. Awaken-specific sandbox
+/// policy authoring lives in the sibling `ext` namespace.
 pub fn environments_router(state: Arc<EnvironmentState>) -> Router {
     environment_authoring_router(state.authoring())
         .merge(environment_work_router(state.execution()))
@@ -640,18 +647,6 @@ pub fn environment_authoring_router(state: Arc<EnvironmentAuthoringState>) -> Ro
             get(retrieve_env).post(update_env).delete(delete_env),
         )
         .route("/v1/environments/{id}/archive", post(archive_env))
-        .route(
-            "/v1/awaken/sandbox-execution-policies",
-            post(create_sandbox_policy),
-        )
-        .route(
-            "/v1/awaken/sandbox-execution-policies/{id}/versions",
-            post(publish_sandbox_policy),
-        )
-        .route(
-            "/v1/awaken/environments/{id}/sandbox-execution-policy",
-            get(get_environment_sandbox_policy).post(bind_environment_sandbox_policy),
-        )
         .with_state(state)
 }
 
@@ -672,179 +667,6 @@ pub fn environment_work_router(state: Arc<EnvironmentExecutionState>) -> Router 
         )
         .route("/v1/environments/{id}/work/{wid}/stop", post(stop_work))
         .with_state(state)
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SandboxPolicyCreate {
-    id: String,
-    config: awaken_provisioning_contract::SandboxOverride,
-    #[serde(default)]
-    provisioning: awaken_session_contract::SandboxProvisioning,
-    #[serde(default)]
-    disabled: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SandboxPolicyPublish {
-    expected_current: u64,
-    config: awaken_provisioning_contract::SandboxOverride,
-    #[serde(default)]
-    provisioning: awaken_session_contract::SandboxProvisioning,
-    #[serde(default)]
-    disabled: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SandboxPolicyBindingInput {
-    policy_id: String,
-    version: u64,
-}
-
-#[derive(Serialize)]
-struct SandboxPolicyBindingOutput {
-    environment_id: String,
-    policy_id: String,
-    version: u64,
-    provisioning: awaken_session_contract::SandboxProvisioning,
-}
-
-async fn project_policy_binding(
-    state: &EnvironmentAuthoringState,
-    environment_id: String,
-    reference: awaken_provisioning_contract::SandboxExecutionPolicyRef,
-) -> Result<SandboxPolicyBindingOutput, StatusCode> {
-    let policy = policy_store(state)?
-        .get_exact(&reference)
-        .await
-        .map_err(map_policy_error)?;
-    Ok(SandboxPolicyBindingOutput {
-        environment_id,
-        policy_id: reference.id.0,
-        version: reference.version.0,
-        provisioning: policy.provisioning,
-    })
-}
-
-fn policy_store(
-    state: &EnvironmentAuthoringState,
-) -> Result<&dyn awaken_provisioning_contract::SandboxExecutionPolicyStore, StatusCode> {
-    state
-        .sandbox_policies
-        .as_deref()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)
-}
-
-async fn create_sandbox_policy(
-    State(state): State<Arc<EnvironmentAuthoringState>>,
-    Json(input): Json<SandboxPolicyCreate>,
-) -> Result<
-    (
-        StatusCode,
-        Json<awaken_provisioning_contract::SandboxExecutionPolicy>,
-    ),
-    StatusCode,
-> {
-    let policy = awaken_provisioning_contract::SandboxExecutionPolicy {
-        id: awaken_provisioning_contract::SandboxExecutionPolicyId(input.id),
-        version: awaken_provisioning_contract::SandboxExecutionPolicyVersion::INITIAL,
-        config: input.config,
-        provisioning: input.provisioning,
-        disabled: input.disabled,
-    };
-    policy_store(&state)?
-        .create(policy.clone())
-        .await
-        .map_err(map_policy_error)?;
-    Ok((StatusCode::CREATED, Json(policy)))
-}
-
-async fn publish_sandbox_policy(
-    State(state): State<Arc<EnvironmentAuthoringState>>,
-    Path(id): Path<String>,
-    Json(input): Json<SandboxPolicyPublish>,
-) -> Result<Json<awaken_provisioning_contract::SandboxExecutionPolicy>, StatusCode> {
-    let next = input
-        .expected_current
-        .checked_add(1)
-        .ok_or(StatusCode::CONFLICT)?;
-    let policy = awaken_provisioning_contract::SandboxExecutionPolicy {
-        id: awaken_provisioning_contract::SandboxExecutionPolicyId(id),
-        version: awaken_provisioning_contract::SandboxExecutionPolicyVersion(next),
-        config: input.config,
-        provisioning: input.provisioning,
-        disabled: input.disabled,
-    };
-    policy_store(&state)?
-        .publish(
-            awaken_provisioning_contract::SandboxExecutionPolicyVersion(input.expected_current),
-            policy.clone(),
-        )
-        .await
-        .map_err(map_policy_error)?;
-    Ok(Json(policy))
-}
-
-async fn bind_environment_sandbox_policy(
-    State(state): State<Arc<EnvironmentAuthoringState>>,
-    Path(environment_id): Path<String>,
-    Json(input): Json<SandboxPolicyBindingInput>,
-) -> Result<Json<SandboxPolicyBindingOutput>, StatusCode> {
-    let reference = awaken_provisioning_contract::SandboxExecutionPolicyRef {
-        id: awaken_provisioning_contract::SandboxExecutionPolicyId(input.policy_id),
-        version: awaken_provisioning_contract::SandboxExecutionPolicyVersion(input.version),
-    };
-    state
-        .application
-        .bind_sandbox_policy(&environment_id, reference.clone())
-        .await
-        .map_err(|error| match error {
-            EnvironmentApplicationError::NotFound => StatusCode::NOT_FOUND,
-            EnvironmentApplicationError::BuiltinImmutable => StatusCode::CONFLICT,
-            EnvironmentApplicationError::Policy(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            EnvironmentApplicationError::Create(_)
-            | EnvironmentApplicationError::Registration(_) => StatusCode::SERVICE_UNAVAILABLE,
-        })?;
-    Ok(Json(
-        project_policy_binding(&state, environment_id, reference).await?,
-    ))
-}
-
-async fn get_environment_sandbox_policy(
-    State(state): State<Arc<EnvironmentAuthoringState>>,
-    Path(environment_id): Path<String>,
-) -> Result<Json<SandboxPolicyBindingOutput>, StatusCode> {
-    let reference = state
-        .application
-        .get(&environment_id)
-        .await
-        .and_then(|item| item.sandbox_policy)
-        .map(
-            |reference| awaken_provisioning_contract::SandboxExecutionPolicyRef {
-                id: awaken_provisioning_contract::SandboxExecutionPolicyId(reference.policy_id),
-                version: awaken_provisioning_contract::SandboxExecutionPolicyVersion(
-                    reference.version,
-                ),
-            },
-        )
-        .ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(
-        project_policy_binding(&state, environment_id, reference).await?,
-    ))
-}
-
-fn map_policy_error(
-    error: awaken_provisioning_contract::SandboxExecutionPolicyError,
-) -> StatusCode {
-    use awaken_provisioning_contract::SandboxExecutionPolicyError::*;
-    match error {
-        NotFound => StatusCode::NOT_FOUND,
-        VersionConflict => StatusCode::CONFLICT,
-        Disabled | Invalid(_) => StatusCode::UNPROCESSABLE_ENTITY,
-        StoreFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    }
 }
 
 fn map_environment_application_error(error: EnvironmentApplicationError) -> WireError {
@@ -1788,9 +1610,6 @@ mod tests {
         let lazy = state.snapshot(&environment_id, None).await.unwrap();
         assert_eq!(lazy.sandbox_provisioning, SandboxProvisioning::OnToolUse);
         assert_ne!(lazy.config_fingerprint, eager.config_fingerprint);
-        let projected = project_policy_binding(&state.authoring, environment_id, reference)
-            .await
-            .unwrap();
-        assert_eq!(projected.provisioning, SandboxProvisioning::OnToolUse);
+        assert_eq!(reference.version, policy.version);
     }
 }

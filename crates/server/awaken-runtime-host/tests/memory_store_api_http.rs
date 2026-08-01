@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use awaken_managed_routers::memory_stores_router_with_catalog;
+use awaken_managed_routers::memory_stores_router;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult};
 use awaken_runtime_host::SharedHost;
 use awaken_tenancy::WorkspaceScope;
@@ -39,7 +39,11 @@ fn router() -> Router {
     let purge = Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(
         host.resource_lifecycle().expect("resource lifecycle"),
     ));
-    memory_stores_router_with_catalog(host.memory_repository(), resource_catalog(), purge)
+    let stores = Arc::new(awaken_resource_application::MemoryStoreApplication::new(
+        resource_catalog(),
+        purge,
+    ));
+    memory_stores_router(host.memory_repository(), stores)
 }
 
 fn resource_catalog() -> Arc<awaken_resource_store::SqliteResourceStore> {
@@ -270,7 +274,10 @@ async fn workspace_and_lifecycle_are_intrinsic_resource_guards() {
     let purge = Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(
         host.resource_lifecycle().expect("resource lifecycle"),
     ));
-    let router = memory_stores_router_with_catalog(host.memory_repository(), catalog, purge);
+    let stores = Arc::new(awaken_resource_application::MemoryStoreApplication::new(
+        catalog, purge,
+    ));
+    let router = memory_stores_router(host.memory_repository(), stores);
     let (status, created) = call_scoped(
         &router,
         "workspace-a",
@@ -339,6 +346,7 @@ async fn memory_crud_with_precondition_and_version_log() {
     assert_eq!(mem["path"], "/a.md");
     assert_eq!(mem["content"], "hello");
     assert_eq!(mem["content_size_bytes"], 5);
+    let created_version_id = mem["memory_version_id"].as_str().unwrap().to_string();
 
     // Causes: list view is omitted/basic/full.
     // Constraints: list defaults to basic; retrieve defaults to full.
@@ -401,6 +409,8 @@ async fn memory_crud_with_precondition_and_version_log() {
     .await;
     assert_eq!(status, StatusCode::OK, "{updated}");
     assert_eq!(updated["content"], "world");
+    let updated_version_id = updated["memory_version_id"].as_str().unwrap();
+    assert_ne!(updated_version_id, created_version_id);
 
     // The version log now carries a `created` then a `modified` row.
     let (status, versions) = call(
@@ -423,6 +433,16 @@ async fn memory_crud_with_precondition_and_version_log() {
         "version history: {versions}"
     );
     let first_vid = versions["data"][0]["id"].as_str().unwrap().to_string();
+    // Version-id cause/effect rules: V1 create atomically appends one real
+    // version -> the Memory head projects that exact id; V2 CAS update appends
+    // another -> the updated head projects the new log id. A synthetic API id
+    // would fail both equalities.
+    assert_eq!(first_vid, created_version_id, "V1");
+    assert_eq!(
+        versions["data"][1]["id"].as_str().unwrap(),
+        updated_version_id,
+        "V2"
+    );
 
     // Retrieve a single version.
     let (status, ver) = call(
@@ -540,4 +560,33 @@ async fn memory_error_arms_are_fail_closed() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn memory_store_router_exposes_only_the_anthropic_resource_contract() {
+    // Cause/effect decision table: R1 official Store and subresource paths have
+    // an owner; R2 the former Store-policy endpoint and R3 its historical
+    // config-version endpoint have no owner (404). Recall/extraction settings
+    // belong to ordinary Agent plugin configuration, not a second Store API.
+    let router = router();
+    let store = create_store(&router, "compatible-only").await;
+    assert_ne!(
+        call(&router, "GET", "/v1/memory_stores", None).await.0,
+        StatusCode::NOT_FOUND,
+        "R1"
+    );
+    for suffix in ["/config", "/config_versions/1"] {
+        assert_eq!(
+            call(
+                &router,
+                "GET",
+                &format!("/v1/memory_stores/{store}{suffix}"),
+                None,
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND,
+            "removed extension {suffix}"
+        );
+    }
 }

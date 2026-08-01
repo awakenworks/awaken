@@ -61,6 +61,7 @@ wrappers = [
     "awaken-ext-compact",
     "awaken-ext-memory",
     "awaken-protocol-managed",
+    "awaken-protocol-awaken",
     "awaken-protocol-ai-sdk",
     "awaken-protocol-ag-ui",
     "awaken-protocol-a2a",
@@ -258,6 +259,18 @@ wrappers = [
     "awaken-scenario-host",
 ]
 reason = "protocol adapters are leaves; a new reverse edge onto the managed adapter means a neutral port must move to a contract/ leaf first (Phase 0.2 neutral-core)"
+
+# Awaken-owned extensions. Only product composition roots mount this leaf; the
+# live-inbox and Environment policy behaviors enter through neutral application
+# ports and never through another protocol adapter.
+[[bans.deny]]
+name = "awaken-protocol-awaken"
+wrappers = [
+    "awaken-cli",
+    "awaken-server",
+    "awaken-scenario-host",
+]
+reason = "Awaken extension protocol is a leaf; composition roots inject neutral application ports"
 
 # A2A adapter. run-executor-a2a implements the neutral RemoteAgent interface over it;
 # server/scenario are composition roots. The host itself no longer depends on it.

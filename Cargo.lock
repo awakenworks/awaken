@@ -399,6 +399,7 @@ dependencies = [
  "awaken-model-catalog",
  "awaken-observability",
  "awaken-protocol-acp",
+ "awaken-protocol-awaken",
  "awaken-protocol-managed",
  "awaken-provider-genai",
  "awaken-provisioning-contract",
@@ -1285,6 +1286,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-protocol-awaken"
+version = "1.0.0-dev"
+dependencies = [
+ "awaken-agent-contract",
+ "awaken-environment-application",
+ "awaken-provisioning-contract",
+ "awaken-session-contract",
+ "axum",
+ "serde",
+]
+
+[[package]]
 name = "awaken-protocol-managed"
 version = "1.0.0-dev"
 dependencies = [
@@ -1777,6 +1790,7 @@ dependencies = [
  "awaken-protocol-a2a",
  "awaken-protocol-ag-ui",
  "awaken-protocol-ai-sdk",
+ "awaken-protocol-awaken",
  "awaken-protocol-managed",
  "awaken-provider-genai",
  "awaken-resource-contract",
@@ -1872,6 +1886,7 @@ dependencies = [
  "awaken-protocol-acp",
  "awaken-protocol-ag-ui",
  "awaken-protocol-ai-sdk",
+ "awaken-protocol-awaken",
  "awaken-protocol-managed",
  "awaken-protocol-mcp",
  "awaken-provider-genai",

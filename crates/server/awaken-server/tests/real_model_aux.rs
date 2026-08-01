@@ -65,8 +65,6 @@ fn bind_memory(host: &SharedHost, thread: &str, store: &str) {
         &MemoryStoreConfigVersion {
             memory_store_id: store.into(),
             version: ConfigVersion::INITIAL,
-            recall_policy: Default::default(),
-            extraction_policy: Default::default(),
             retention_policy: Default::default(),
         },
         ResourceAccess::ReadWrite,

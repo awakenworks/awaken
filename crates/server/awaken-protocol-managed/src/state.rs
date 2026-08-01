@@ -74,7 +74,7 @@ pub(crate) use resource::{
 };
 use session_record::SessionRecord;
 pub(crate) use types::{
-    AgentCapabilities, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError, LiveInboxSnapshot,
+    AgentCapabilities, CustomTool, DelegatedRun, LiveInboxError, LiveInboxSnapshot,
     OutcomeIteration, OutcomeReport, RunError, RunErrorKind, SessionInit, SessionRuntime,
     SessionUsage, StepOutcome, ToolPermissionDecision,
 };

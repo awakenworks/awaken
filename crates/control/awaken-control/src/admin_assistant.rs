@@ -803,8 +803,6 @@ mod tests {
                     MemoryStoreConfigVersion {
                         memory_store_id: id.into(),
                         version: ConfigVersion::INITIAL,
-                        recall_policy: Default::default(),
-                        extraction_policy: Default::default(),
                         retention_policy: Default::default(),
                     },
                 )

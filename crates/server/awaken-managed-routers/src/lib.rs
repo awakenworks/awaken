@@ -6,9 +6,9 @@
 //! `awaken-runtime-host` so the host stays the substrate and this wire surface stays
 //! a thin adapter — the composition layer (`awaken-server`) mounts them onto the app.
 //!
-//! Memory and Skill routers now consume their repository and purge SPIs directly;
-//! they no longer reach through `SharedHost`. Their physical module move can remain
-//! mechanical because the dependency boundary is already enforced by constructors.
+//! Memory content and Skill routers consume their aggregate ports directly. Memory
+//! identity/lifecycle commands go through the Resources application service, so an
+//! HTTP adapter cannot recreate lifecycle coordination.
 
 mod files;
 mod memory_stores;
@@ -18,7 +18,7 @@ mod resources;
 mod skills;
 
 pub use files::files_router;
-pub use memory_stores::memory_stores_router_with_catalog;
+pub use memory_stores::memory_stores_router;
 pub use models::{
     ModelDirectory, ModelDirectoryFuture, ModelEntry, default_models, models_router,
     models_router_with_directory,

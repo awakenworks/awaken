@@ -1,8 +1,7 @@
-//! Durable Dream job and Workspace-override adapters.
+//! Durable Dream job and automatic-policy adapters.
 
 use awaken_session_contract::{
     DreamPolicyRecord, DreamProcessRecord, DreamProcessStore, DreamProcessStoreError,
-    WorkspaceDreamAgentOverride,
 };
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde::{Serialize, de::DeserializeOwned};
@@ -99,50 +98,6 @@ impl DreamProcessStore for SqliteManagedSessionRepository {
         }
         tx.commit().map_err(storage)?;
         Ok(true)
-    }
-
-    fn dream_agent_overrides(
-        &self,
-    ) -> Result<Vec<WorkspaceDreamAgentOverride>, DreamProcessStoreError> {
-        let conn = self.conn.lock().map_err(storage)?;
-        let mut statement = conn
-            .prepare(
-                "SELECT workspace_id, agent_id FROM managed_dream_agent_override
-                 ORDER BY workspace_id",
-            )
-            .map_err(storage)?;
-        statement
-            .query_map([], |row| {
-                Ok(WorkspaceDreamAgentOverride {
-                    workspace_id: row.get(0)?,
-                    agent_id: row.get(1)?,
-                })
-            })
-            .map_err(storage)?
-            .map(|row| row.map_err(storage))
-            .collect()
-    }
-
-    fn set_dream_agent_override(
-        &self,
-        workspace_id: &str,
-        agent_id: Option<&str>,
-    ) -> Result<(), DreamProcessStoreError> {
-        let conn = self.conn.lock().map_err(storage)?;
-        match agent_id {
-            Some(agent_id) => conn.execute(
-                "INSERT INTO managed_dream_agent_override (workspace_id, agent_id)
-                 VALUES (?1, ?2)
-                 ON CONFLICT(workspace_id) DO UPDATE SET agent_id=excluded.agent_id",
-                params![workspace_id, agent_id],
-            ),
-            None => conn.execute(
-                "DELETE FROM managed_dream_agent_override WHERE workspace_id=?1",
-                params![workspace_id],
-            ),
-        }
-        .map_err(storage)?;
-        Ok(())
     }
 
     fn dream_policies(&self) -> Result<Vec<DreamPolicyRecord>, DreamProcessStoreError> {
@@ -350,41 +305,6 @@ impl DreamProcessStore for PostgresManagedSessionRepository {
         })
     }
 
-    fn dream_agent_overrides(
-        &self,
-    ) -> Result<Vec<WorkspaceDreamAgentOverride>, DreamProcessStoreError> {
-        let pool = self.pool.clone();
-        postgres_block(move || {
-            Box::pin(async move {
-                sqlx::query("SELECT workspace_id, agent_id FROM managed_dream_agent_override ORDER BY workspace_id")
-                .fetch_all(&pool).await.map_err(storage)?.into_iter()
-                .map(|row| Ok(WorkspaceDreamAgentOverride { workspace_id: row.try_get(0).map_err(storage)?, agent_id: row.try_get(1).map_err(storage)? }))
-                .collect()
-            })
-        })
-    }
-
-    fn set_dream_agent_override(
-        &self,
-        workspace_id: &str,
-        agent_id: Option<&str>,
-    ) -> Result<(), DreamProcessStoreError> {
-        let pool = self.pool.clone();
-        let workspace_id = workspace_id.to_string();
-        let agent_id = agent_id.map(str::to_string);
-        postgres_block(move || {
-            Box::pin(async move {
-                match agent_id {
-                Some(agent_id) => sqlx::query("INSERT INTO managed_dream_agent_override (workspace_id, agent_id) VALUES ($1, $2) ON CONFLICT(workspace_id) DO UPDATE SET agent_id=excluded.agent_id")
-                    .bind(workspace_id).bind(agent_id).execute(&pool).await,
-                None => sqlx::query("DELETE FROM managed_dream_agent_override WHERE workspace_id=$1")
-                    .bind(workspace_id).execute(&pool).await,
-            }.map_err(storage)?;
-                Ok(())
-            })
-        })
-    }
-
     fn dream_policies(&self) -> Result<Vec<DreamPolicyRecord>, DreamProcessStoreError> {
         let pool = self.pool.clone();
         postgres_block(move || {
@@ -509,9 +429,7 @@ mod tests {
                 speed: None,
             },
             request_guidance: None,
-            agent_selection: awaken_session_contract::DreamAgentSelectionRecord {
-                agent_id: "agent".into(),
-            },
+            agent_id: "agent".into(),
             result_memory_store_id: None,
             session_id: None,
             transcript_file_ids: Vec::new(),

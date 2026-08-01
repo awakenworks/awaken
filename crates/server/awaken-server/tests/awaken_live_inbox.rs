@@ -1,4 +1,5 @@
-//! The live-inbox resource over HTTP: list/queue/replace/reorder/withdraw on
+//! Cross-adapter composition proof for the Awaken live-inbox resource: list,
+//! queue, replace, reorder, and withdraw over the Managed Session application.
 //! the session's in-flight queue, and the error mapping (404 unknown message,
 //! 409 stale order, 410 inactive queue, 404 unknown session).
 
@@ -9,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::EndCause;
+use awaken_protocol_awaken::live_inbox_router;
 use awaken_protocol_managed::{ManagedState, router};
 use awaken_session_contract::{
     LiveInboxEntry, LiveInboxError, LiveInboxSnapshot, OutcomeReport, RunError, SessionRuntime,
@@ -302,16 +304,19 @@ fn app(fake: Arc<QueueFake>) -> Router {
             self.0.live_inbox_reorder(t, o).await
         }
     }
-    router(Arc::new(ManagedState::new(Shared(fake))))
+    let state = Arc::new(ManagedState::new(Shared(fake)));
+    router(state.clone()).merge(live_inbox_router(state))
 }
 
 #[tokio::test]
 async fn unknown_session_is_404_before_any_queue_logic() {
+    // Decision rule R1: C1 the neutral application reports an unknown Session
+    // -> E1 the Awaken adapter returns 404 and never consults queue state.
     let app = app(Arc::new(QueueFake::default()));
     let (status, body) = call(
         &app,
         "GET",
-        "/v1/sessions/sess_missing/live-inbox",
+        "/v1/awaken/sessions/sess_missing/live-inbox",
         serde_json::Value::Null,
     )
     .await;
@@ -321,6 +326,8 @@ async fn unknown_session_is_404_before_any_queue_logic() {
 
 #[tokio::test]
 async fn inactive_queue_lists_empty_and_refuses_mutations_with_410() {
+    // Decision rules R2/R3: C1 known Session + inactive queue + read -> E1 an
+    // empty inactive snapshot; the same state + mutation -> E2 410 with no edit.
     let fake = Arc::new(QueueFake::default());
     let app = app(fake);
     let session = create(&app).await;
@@ -328,7 +335,7 @@ async fn inactive_queue_lists_empty_and_refuses_mutations_with_410() {
     let (status, body) = call(
         &app,
         "GET",
-        &format!("/v1/sessions/{session}/live-inbox"),
+        &format!("/v1/awaken/sessions/{session}/live-inbox"),
         serde_json::Value::Null,
     )
     .await;
@@ -339,7 +346,7 @@ async fn inactive_queue_lists_empty_and_refuses_mutations_with_410() {
     let (status, _) = call(
         &app,
         "POST",
-        &format!("/v1/sessions/{session}/live-inbox"),
+        &format!("/v1/awaken/sessions/{session}/live-inbox"),
         text_content("late"),
     )
     .await;
@@ -348,7 +355,7 @@ async fn inactive_queue_lists_empty_and_refuses_mutations_with_410() {
     let (status, _) = call(
         &app,
         "DELETE",
-        &format!("/v1/sessions/{session}/live-inbox/1"),
+        &format!("/v1/awaken/sessions/{session}/live-inbox/1"),
         serde_json::Value::Null,
     )
     .await;
@@ -357,11 +364,15 @@ async fn inactive_queue_lists_empty_and_refuses_mutations_with_410() {
 
 #[tokio::test]
 async fn queue_edit_reorder_withdraw_round_trip() {
+    // Cause/effect graph: active queue -> append stable ids -> replace preserves
+    // identity/position -> full reorder commits -> stale reorder is 409 -> first
+    // remove is terminal success and repeated remove is 404. These rules cover
+    // all five methods through one neutral LiveInboxApplication owner.
     let fake = Arc::new(QueueFake::default());
     fake.active.store(true, Ordering::SeqCst);
     let app = app(fake);
     let session = create(&app).await;
-    let base = format!("/v1/sessions/{session}/live-inbox");
+    let base = format!("/v1/awaken/sessions/{session}/live-inbox");
 
     // Queue two messages.
     let (status, first) = call(&app, "POST", &base, text_content("one")).await;

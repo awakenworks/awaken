@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Typed durable Coordinator-owned Dream process. Execution usage deliberately
 /// remains absent because the linked ordinary Session owns that fact.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DreamProcessRecord {
     #[serde(alias = "id")]
     pub process_id: String,
@@ -14,7 +14,7 @@ pub struct DreamProcessRecord {
     pub session_ids: Vec<String>,
     pub model: DreamModelConfig,
     pub request_guidance: Option<String>,
-    pub agent_selection: DreamAgentSelectionRecord,
+    pub agent_id: String,
     pub result_memory_store_id: Option<String>,
     pub session_id: Option<String>,
     #[serde(default)]
@@ -29,9 +29,69 @@ pub struct DreamProcessRecord {
     pub policy_key: Option<(String, String)>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DreamAgentSelectionRecord {
-    pub agent_id: String,
+#[derive(Deserialize)]
+struct StoredDreamProcessRecord {
+    #[serde(alias = "id")]
+    process_id: String,
+    workspace_id: String,
+    status: DreamStatus,
+    source_memory_store_id: String,
+    session_ids: Vec<String>,
+    model: DreamModelConfig,
+    request_guidance: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    agent_selection: Option<LegacyDreamAgentSelection>,
+    result_memory_store_id: Option<String>,
+    session_id: Option<String>,
+    #[serde(default)]
+    transcript_file_ids: Vec<String>,
+    #[serde(default)]
+    cleanup_pending: bool,
+    created_at: u64,
+    ended_at: Option<u64>,
+    archived_at: Option<u64>,
+    error: Option<DreamProcessFailure>,
+    #[serde(default)]
+    policy_key: Option<(String, String)>,
+}
+
+#[derive(Deserialize)]
+struct LegacyDreamAgentSelection {
+    agent_id: String,
+}
+
+impl<'de> Deserialize<'de> for DreamProcessRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let stored = StoredDreamProcessRecord::deserialize(deserializer)?;
+        let agent_id = stored
+            .agent_id
+            .or_else(|| stored.agent_selection.map(|legacy| legacy.agent_id))
+            .ok_or_else(|| serde::de::Error::missing_field("agent_id"))?;
+        Ok(Self {
+            process_id: stored.process_id,
+            workspace_id: stored.workspace_id,
+            status: stored.status,
+            source_memory_store_id: stored.source_memory_store_id,
+            session_ids: stored.session_ids,
+            model: stored.model,
+            request_guidance: stored.request_guidance,
+            agent_id,
+            result_memory_store_id: stored.result_memory_store_id,
+            session_id: stored.session_id,
+            transcript_file_ids: stored.transcript_file_ids,
+            cleanup_pending: stored.cleanup_pending,
+            created_at: stored.created_at,
+            ended_at: stored.ended_at,
+            archived_at: stored.archived_at,
+            error: stored.error,
+            policy_key: stored.policy_key,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,12 +110,6 @@ pub struct DreamPolicyRecord {
     pub last_completed_cutoff_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceDreamAgentOverride {
-    pub workspace_id: String,
-    pub agent_id: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DreamProcessStoreError {
     #[error("Dream process store failure: {0}")]
@@ -71,14 +125,6 @@ pub trait DreamProcessStore: Send + Sync {
         expected: Option<&DreamProcessRecord>,
         record: DreamProcessRecord,
     ) -> Result<bool, DreamProcessStoreError>;
-    fn dream_agent_overrides(
-        &self,
-    ) -> Result<Vec<WorkspaceDreamAgentOverride>, DreamProcessStoreError>;
-    fn set_dream_agent_override(
-        &self,
-        workspace_id: &str,
-        agent_id: Option<&str>,
-    ) -> Result<(), DreamProcessStoreError>;
     fn dream_policies(&self) -> Result<Vec<DreamPolicyRecord>, DreamProcessStoreError>;
     fn compare_and_swap_dream_policy(
         &self,
@@ -244,4 +290,61 @@ pub struct DreamListParams {
 pub struct DreamPage {
     pub data: Vec<Dream>,
     pub next_page: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record() -> DreamProcessRecord {
+        DreamProcessRecord {
+            process_id: "dream-1".into(),
+            workspace_id: "workspace".into(),
+            status: DreamStatus::Pending,
+            source_memory_store_id: "memory".into(),
+            session_ids: vec!["session".into()],
+            model: DreamModelConfig {
+                id: "claude-sonnet-5".into(),
+                speed: None,
+            },
+            request_guidance: None,
+            agent_id: "awaken_builtin_dream_agent".into(),
+            result_memory_store_id: None,
+            session_id: None,
+            transcript_file_ids: Vec::new(),
+            cleanup_pending: false,
+            created_at: 1,
+            ended_at: None,
+            archived_at: None,
+            error: None,
+            policy_key: None,
+        }
+    }
+
+    #[test]
+    fn dream_agent_id_has_one_current_shape_and_reads_legacy_records() {
+        // Cause/effect decision table: C1 current record -> E1 direct agent_id
+        // only; C2 legacy agent_selection wrapper -> E2 decode to the same
+        // canonical record; C3 neither form -> E3 reject corrupt persistence.
+        let expected = record();
+        let current = serde_json::to_value(&expected).expect("R1");
+        assert_eq!(current["agent_id"], expected.agent_id, "R1");
+        assert!(current.get("agent_selection").is_none(), "R1");
+
+        let mut legacy = current.clone();
+        legacy.as_object_mut().unwrap().remove("agent_id");
+        legacy["agent_selection"] = serde_json::json!({"agent_id": "awaken_builtin_dream_agent"});
+        assert_eq!(
+            serde_json::from_value::<DreamProcessRecord>(legacy).expect("R2"),
+            expected,
+            "R2"
+        );
+
+        let mut invalid = current;
+        invalid.as_object_mut().unwrap().remove("agent_id");
+        assert!(
+            serde_json::from_value::<DreamProcessRecord>(invalid).is_err(),
+            "R3"
+        );
+    }
 }

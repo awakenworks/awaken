@@ -15,10 +15,10 @@ use awaken_executable_agent_contract::{
 };
 use awaken_protocol_managed::{ManagedState, router};
 use awaken_resource_contract::{
-    BindingId, ClonePolicy, ConfigVersion, ExtractionPolicy, FileId, InputBinding, InputResourceId,
-    MemoryStoreConfigVersion, MemoryStoreDefinition, MemoryStoreId, RecallPolicy,
-    RepositoryConfigVersion, RepositoryDefinition, RepositoryId, ResourceAccess, ResourceCatalog,
-    ResourceState, RetentionPolicy,
+    BindingId, ClonePolicy, ConfigVersion, FileId, InputBinding, InputResourceId,
+    MemoryStoreConfigVersion, MemoryStoreDefinition, MemoryStoreId, RepositoryConfigVersion,
+    RepositoryDefinition, RepositoryId, ResourceAccess, ResourceCatalog, ResourceState,
+    RetentionPolicy,
 };
 use awaken_session_contract::{
     ManagedSessionRepository, OutcomeReport, RunError, SessionInit, SessionRuntime, StepOutcome,
@@ -81,8 +81,6 @@ fn resource_catalog() -> std::sync::Arc<awaken_resource_store::SqliteResourceSto
                 MemoryStoreConfigVersion {
                     memory_store_id: id.into(),
                     version: ConfigVersion::INITIAL,
-                    recall_policy: RecallPolicy::default(),
-                    extraction_policy: ExtractionPolicy::default(),
                     retention_policy: RetentionPolicy::default(),
                 },
             )
@@ -1253,12 +1251,9 @@ async fn resource_config_publication_only_affects_later_sessions() {
             MemoryStoreConfigVersion {
                 memory_store_id: "mem_1".into(),
                 version: ConfigVersion(2),
-                recall_policy: RecallPolicy {
-                    enabled: true,
-                    max_results: 2,
+                retention_policy: RetentionPolicy {
+                    retention_days: Some(2),
                 },
-                extraction_policy: ExtractionPolicy::default(),
-                retention_policy: RetentionPolicy::default(),
             },
         )
         .unwrap();

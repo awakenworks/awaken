@@ -70,6 +70,17 @@ pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_managed_routers::{
     ResourcesRouterInput, default_models, models_router, resources_router,
 };
+
+/// Build the canonical MemoryStore identity/lifecycle application port for
+/// composition roots that already own the Resources persistence ports.
+pub fn memory_store_application(
+    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
+) -> Arc<dyn awaken_resource_contract::MemoryStoreApplicationService> {
+    Arc::new(awaken_resource_application::MemoryStoreApplication::new(
+        catalog, purge,
+    ))
+}
 pub use awaken_runtime_host::{
     ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost, NoModelConfiguredExecutor,
     RunApplicationHost, SharedHost, ThreadEvent, ThreadEventHub, UNCONFIGURED_MODEL_REF,
@@ -541,11 +552,19 @@ fn mount_with_managed_over_and_models(
     if host.runs_local_dispatch_pool() {
         host.ensure_dispatch_pool();
     }
+    let dream_memory_stores = Arc::new(awaken_resource_application::MemoryStoreApplication::new(
+        resource_catalog.clone(),
+        resource_purge_scheduler(
+            host.resource_lifecycle()
+                .expect("Dream requires resource lifecycle persistence"),
+        ),
+    ));
     let dream_worker = Arc::new(dream::BuiltInDreamAgent::new(
         managed_state.clone(),
         host.clone(),
         host.memory_repository(),
         resource_catalog.clone(),
+        dream_memory_stores,
     ));
     let dream_application = match dream_process_store {
         Some(repository) => Arc::new(
@@ -573,7 +592,9 @@ fn mount_with_managed_over_and_models(
     dream_application.bind_session_source(managed_state.clone());
     dream_application.resume_incomplete();
     let dreams = awaken_protocol_managed::dreams_router(dream_application.clone());
-    let managed = router(managed_state.clone()).merge(dreams);
+    let managed = router(managed_state.clone()).merge(dreams).merge(
+        awaken_protocol_awaken::live_inbox_router(managed_state.clone()),
+    );
     // One neutral port impl behind the three wire adapters (each `router` takes
     // `Arc<dyn RunApplication>`), so they share the host with no per-protocol twin.
     struct ManagedSessionDefaults(Arc<ManagedState>);
@@ -667,17 +688,19 @@ fn resource_management_router_from_host(
     host: &Arc<SharedHost>,
     catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
 ) -> Router {
+    let purge = resource_purge_scheduler(
+        host.resource_lifecycle()
+            .expect("resource management requires lifecycle persistence"),
+    );
+    let memory_stores = memory_store_application(catalog, purge.clone());
     resources_router(ResourcesRouterInput {
         files: host
             .file_application()
             .expect("resource management requires the File application"),
         memories: host.memory_repository(),
-        catalog,
+        memory_stores,
         skills: host.skill_store(),
-        purge: resource_purge_scheduler(
-            host.resource_lifecycle()
-                .expect("resource management requires lifecycle persistence"),
-        ),
+        purge,
     })
 }
 

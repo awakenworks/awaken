@@ -13,8 +13,8 @@ use awaken_provisioning_contract::{
     MemoryWriteConsistency, MountAccess, MountLifetime, MountRequirement, MountSource,
 };
 use awaken_resource_contract::{
-    ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, MemoryStoreId, ResourceCatalog,
-    ResourceState, ResourceTimestamps,
+    CreateMemoryStoreCommand, MemoryStoreApplicationService, MemoryStoreId, ResourceCatalog,
+    ResourceState,
 };
 use awaken_session_contract::{
     ApplicationSessionContribution, ApplicationSessionContributionApi, ApplicationSessionInput,
@@ -72,12 +72,14 @@ struct ExclusiveMemoryStoreWriterLease {
 }
 
 impl ExclusiveMemoryStoreWriterLease {
-    fn release(&self, catalog: &dyn ResourceCatalog) {
-        let _ = catalog.set_memory_state(
-            &self.workspace_id,
-            &self.result_memory_store_id,
-            ResourceState::Active,
-        );
+    async fn release(&self, stores: &dyn MemoryStoreApplicationService) {
+        let _ = stores
+            .set_state(
+                &self.workspace_id,
+                &self.result_memory_store_id,
+                ResourceState::Active,
+            )
+            .await;
     }
 }
 
@@ -86,6 +88,7 @@ pub(crate) struct BuiltInDreamAgent {
     host: Arc<SharedHost>,
     memory: Arc<dyn MemoryRepository>,
     catalog: Arc<dyn ResourceCatalog>,
+    stores: Arc<dyn MemoryStoreApplicationService>,
 }
 
 impl BuiltInDreamAgent {
@@ -94,40 +97,14 @@ impl BuiltInDreamAgent {
         host: Arc<SharedHost>,
         memory: Arc<dyn MemoryRepository>,
         catalog: Arc<dyn ResourceCatalog>,
+        stores: Arc<dyn MemoryStoreApplicationService>,
     ) -> Self {
         Self {
             managed,
             host,
             memory,
             catalog,
-        }
-    }
-
-    fn memory_definition(
-        request: &DreamRequest,
-        id: &str,
-        name: &str,
-        state: ResourceState,
-    ) -> MemoryStoreDefinition {
-        MemoryStoreDefinition {
-            id: MemoryStoreId::from(id.to_string()),
-            workspace_id: request.workspace_id.clone(),
-            name: name.into(),
-            description: format!("Dream output for {}", request.job_id),
-            metadata: BTreeMap::from([("awaken.dream_job_id".into(), request.job_id.clone())]),
-            state,
-            current_config_version: ConfigVersion::INITIAL,
-            timestamps: ResourceTimestamps::default(),
-        }
-    }
-
-    fn memory_config(id: &str) -> MemoryStoreConfigVersion {
-        MemoryStoreConfigVersion {
-            memory_store_id: MemoryStoreId::from(id.to_string()),
-            version: ConfigVersion::INITIAL,
-            recall_policy: Default::default(),
-            extraction_policy: Default::default(),
-            retention_policy: Default::default(),
+            stores,
         }
     }
 
@@ -182,7 +159,7 @@ impl BuiltInDreamAgent {
         let session_id = format!("sesn_dream_{}", request.job_id);
         let create = serde_json::from_value(serde_json::json!({
             "agent": {
-                "id": request.agent_selection.agent_id.clone(),
+                "id": request.agent_id.clone(),
                 "type": "agent_with_overrides",
                 "model": request.model,
                 "tools": [{
@@ -299,13 +276,13 @@ impl BuiltInDreamAgent {
                 workspace_id: request.workspace_id.clone(),
                 result_memory_store_id: result_id.clone(),
             }
-            .release(self.catalog.as_ref());
+            .release(self.stores.as_ref())
+            .await;
         } else {
-            let _ = self.catalog.set_memory_state(
-                &request.workspace_id,
-                &result_id,
-                ResourceState::Deleted,
-            );
+            let _ = self
+                .stores
+                .set_state(&request.workspace_id, &result_id, ResourceState::Deleted)
+                .await;
             let _ = self.memory.purge_store(&result_id).await;
         }
         let _ = self
@@ -327,7 +304,7 @@ impl BuiltInDreamAgent {
 impl DreamExecutor for BuiltInDreamAgent {
     async fn validate_inputs(&self, request: &DreamRequest) -> Result<(), DreamFailure> {
         self.managed
-            .validate_dream_agent(&request.workspace_id, &request.agent_selection.agent_id)
+            .validate_dream_agent(&request.workspace_id, &request.agent_id)
             .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         self.catalog
             .resolve_memory_store(&request.workspace_id, &request.source_memory_store_id)
@@ -353,8 +330,9 @@ impl DreamExecutor for BuiltInDreamAgent {
         let result_id = format!("mem_result_{}", request.job_id);
         let expected_session_id = format!("sesn_dream_{}", request.job_id);
         let existing_result = self
-            .catalog
-            .memory_store(&request.workspace_id, &result_id)
+            .stores
+            .get(&request.workspace_id, &result_id)
+            .await
             .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         if existing_result.is_some() {
             let session_exists = self
@@ -410,16 +388,17 @@ impl DreamExecutor for BuiltInDreamAgent {
                 .await
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         }
-        self.catalog
-            .create_memory_store(
-                Self::memory_definition(
-                    request,
-                    &result_id,
-                    "Dream result",
-                    ResourceState::Suspended,
-                ),
-                Self::memory_config(&result_id),
-            )
+        self.stores
+            .create(CreateMemoryStoreCommand {
+                workspace_id: request.workspace_id.clone(),
+                id: Some(MemoryStoreId::from(result_id.clone())),
+                name: "Dream result".into(),
+                description: format!("Dream output for {}", request.job_id),
+                metadata: BTreeMap::from([("awaken.dream_job_id".into(), request.job_id.clone())]),
+                initial_state: ResourceState::Suspended,
+                retention_policy: Default::default(),
+            })
+            .await
             .map_err(|error| {
                 DreamFailure::new("memory_store_org_limit_exceeded", error.to_string())
             })?;
@@ -545,12 +524,6 @@ impl DreamExecutor for BuiltInDreamAgent {
                 .await;
         }
         self.cleanup(request, preparation).await
-    }
-
-    async fn validate_agent(&self, workspace_id: &str, agent_id: &str) -> Result<(), DreamFailure> {
-        self.managed
-            .validate_dream_agent(workspace_id, agent_id)
-            .map_err(|error| DreamFailure::new("invalid_dream_agent", error.to_string()))
     }
 }
 

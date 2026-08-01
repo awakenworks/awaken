@@ -161,11 +161,11 @@ async fn automatic_policy_is_opt_in_thresholded_and_reuses_the_dream_job_path() 
 }
 
 #[tokio::test]
-async fn dream_policy_api_projects_defaults_validates_and_survives_restart() {
-    // Policy API cause/effect decision table:
-    // A1 no durable row -> GET projects the disabled effective default and no cursor;
-    // A2 invalid interval/session/model bounds -> 400 and no row;
-    // A3 valid POST -> configured projection with a due cursor;
+async fn dream_policy_application_projects_defaults_validates_and_survives_restart() {
+    // Coordinator policy cause/effect decision table:
+    // A1 no durable row -> disabled effective default and no cursor;
+    // A2 invalid interval/session/model bounds -> reject and no row;
+    // A3 valid command -> configured projection with a due cursor;
     // A4 process restart -> the same Workspace/MemoryStore policy is restored.
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -183,49 +183,50 @@ async fn dream_policy_api_projects_defaults_validates_and_survives_restart() {
         release: Arc::new(Notify::new()),
     });
     let state = Arc::new(DreamApplication::with_store(worker, repository).unwrap());
-    let app = dreams_router(state);
-
-    let (status, default) = request(&app, "GET", "/v1/dream_policies/mem_policy", None).await;
-    assert_eq!(status, StatusCode::OK, "A1");
-    assert_eq!(default["type"], "dream_policy", "A1");
-    assert_eq!(default["enabled"], false, "A1");
-    assert!(default["next_due_at"].is_null(), "A1");
-
-    let (status, _) = request(
-        &app,
-        "POST",
-        "/v1/dream_policies/mem_policy",
-        Some(json!({
-            "enabled": true,
-            "interval_seconds": 59,
-            "min_new_sessions": 2,
-            "max_sessions": 10,
-            "model": {"id":"claude-sonnet-5"},
-            "instructions": null
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "A2");
-
-    let configured_body = json!({
-        "enabled": true,
-        "interval_seconds": 3600,
-        "min_new_sessions": 2,
-        "max_sessions": 10,
-        "model": {"id":"claude-sonnet-5"},
-        "instructions": "Keep durable decisions."
-    });
-    let (status, configured) = request(
-        &app,
-        "POST",
-        "/v1/dream_policies/mem_policy",
-        Some(configured_body),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "A3");
-    assert_eq!(configured["enabled"], true, "A3");
-    assert!(configured["next_due_at"].is_string(), "A3");
-    drop(app);
+    let default = state.policy("default", "mem_policy").unwrap();
+    assert!(!default.config.enabled, "A1");
+    assert!(default.next_due_at.is_none(), "A1");
+    assert!(
+        state
+            .set_policy(
+                "default",
+                "mem_policy",
+                DreamPolicyConfig {
+                    enabled: true,
+                    interval_seconds: 59,
+                    min_new_sessions: 2,
+                    max_sessions: 10,
+                    model: DreamModelConfig {
+                        id: "claude-sonnet-5".into(),
+                        speed: None
+                    },
+                    instructions: None,
+                }
+            )
+            .is_err(),
+        "A2"
+    );
+    state
+        .set_policy(
+            "default",
+            "mem_policy",
+            DreamPolicyConfig {
+                enabled: true,
+                interval_seconds: 3600,
+                min_new_sessions: 2,
+                max_sessions: 10,
+                model: DreamModelConfig {
+                    id: "claude-sonnet-5".into(),
+                    speed: None,
+                },
+                instructions: Some("Keep durable decisions.".into()),
+            },
+        )
+        .unwrap();
+    let configured = state.policy("default", "mem_policy").unwrap();
+    assert!(configured.config.enabled, "A3");
+    assert!(configured.next_due_at.is_some(), "A3");
+    drop(state);
 
     let reopened = Arc::new(
         DreamApplication::with_store(
@@ -531,11 +532,7 @@ async fn dream_routes_require_managed_and_dreaming_betas() {
     // Dreams research-preview beta; query `beta=true` never substitutes for headers.
     let (state, _, _) = state(Outcome::Complete);
     let app = dreams_router(state).layer(axum::middleware::from_fn(enforce_managed_beta));
-    for path in [
-        "/v1/dreams?beta=true",
-        "/v1/dream_policies/mem_1",
-        "/v1/dream_agent_configuration",
-    ] {
+    for path in ["/v1/dreams?beta=true"] {
         for header in [
             None,
             Some(awaken_managed_bridge::MANAGED_BETA),
@@ -553,11 +550,7 @@ async fn dream_routes_require_managed_and_dreaming_betas() {
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         }
     }
-    for path in [
-        "/v1/dreams?beta=true",
-        "/v1/dream_policies/mem_1",
-        "/v1/dream_agent_configuration",
-    ] {
+    for path in ["/v1/dreams?beta=true"] {
         let response = app
             .clone()
             .oneshot(
@@ -574,6 +567,28 @@ async fn dream_routes_require_managed_and_dreaming_betas() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+}
+
+#[tokio::test]
+async fn compatible_dream_router_has_no_awaken_only_configuration_routes() {
+    // Cause/effect decision table: R1 official Dream route -> owned by the
+    // compatible router; R2 former Dream policy API and R3 former dedicated
+    // Dream-Agent API -> 404. Auxiliary Agent authoring uses ordinary Agent
+    // configuration, so neither removed path may regain an owner.
+    let (state, _, _) = state(Outcome::Complete);
+    let app = dreams_router(state);
+    assert_ne!(
+        request(&app, "GET", "/v1/dreams", None).await.0,
+        StatusCode::NOT_FOUND,
+        "R1"
+    );
+    for path in ["/v1/dream_policies/mem_1", "/v1/dream_agent_configuration"] {
+        assert_eq!(
+            request(&app, "GET", path, None).await.0,
+            StatusCode::NOT_FOUND,
+            "removed extension {path}"
+        );
     }
 }
 
@@ -842,27 +857,13 @@ async fn restart_retries_terminal_cleanup_before_publishing_completion() {
 }
 
 #[tokio::test]
-async fn workspace_agent_selection_uses_effective_default_and_freezes_override() {
+async fn dream_uses_one_stable_ordinary_agent_id_without_selection_state() {
     struct RecordingWorker(Arc<std::sync::Mutex<Vec<String>>>);
     #[async_trait::async_trait]
     impl DreamExecutor for RecordingWorker {
         async fn validate_inputs(&self, request: &DreamRequest) -> Result<(), DreamFailure> {
-            self.0
-                .lock()
-                .unwrap()
-                .push(request.agent_selection.agent_id.clone());
+            self.0.lock().unwrap().push(request.agent_id.clone());
             Ok(())
-        }
-        async fn validate_agent(
-            &self,
-            _workspace_id: &str,
-            agent_id: &str,
-        ) -> Result<(), DreamFailure> {
-            if agent_id == "agent_missing" {
-                Err(DreamFailure::new("invalid_dream_agent", "missing Agent"))
-            } else {
-                Ok(())
-            }
         }
         async fn prepare(&self, request: &DreamRequest) -> Result<DreamPreparation, DreamFailure> {
             Ok(DreamPreparation {
@@ -881,33 +882,15 @@ async fn workspace_agent_selection_uses_effective_default_and_freezes_override()
         }
     }
 
-    // Selection decision table: no Workspace row -> built-in effective default;
-    // exact override row -> that published Agent id; clearing -> built-in again.
-    // Each create freezes its selection before dispatch, so policy edits affect
-    // only subsequent jobs and no default Agent row is duplicated per Workspace.
+    // Agent-identity decision table: every manual/scheduled Dream freezes the
+    // same ordinary Agent id; publishing that id through the normal Agent path
+    // changes its executable snapshot without creating Dream-specific selection
+    // state or a second API.
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let state = Arc::new(DreamApplication::new(Arc::new(RecordingWorker(
         seen.clone(),
     ))));
-    let app = dreams_router(state.clone());
-    let (_, default_agent) = request(&app, "GET", "/v1/dream_agent_configuration", None).await;
-    assert_eq!(default_agent["agent_id"], BUILT_IN_DREAM_AGENT_ID);
-    assert_eq!(default_agent["source"], "built_in");
-    let (status, _) = request(
-        &app,
-        "POST",
-        "/v1/dream_agent_configuration",
-        Some(json!({"agent_id":"agent_missing"})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        request(&app, "GET", "/v1/dream_agent_configuration", None)
-            .await
-            .1["agent_id"],
-        BUILT_IN_DREAM_AGENT_ID,
-        "a rejected override must not mutate the effective selection"
-    );
+    let app = dreams_router(state);
     let _ = request(
         &app,
         "POST",
@@ -915,15 +898,6 @@ async fn workspace_agent_selection_uses_effective_default_and_freezes_override()
         Some(create_body("mem", &["s1"])),
     )
     .await;
-    let (status, configured) = request(
-        &app,
-        "POST",
-        "/v1/dream_agent_configuration",
-        Some(json!({"agent_id":"agent_custom_dream"})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(configured["source"], "workspace_override");
     let _ = request(
         &app,
         "POST",
@@ -935,7 +909,7 @@ async fn workspace_agent_selection_uses_effective_default_and_freezes_override()
         *seen.lock().unwrap(),
         vec![
             BUILT_IN_DREAM_AGENT_ID.to_string(),
-            "agent_custom_dream".to_string()
+            BUILT_IN_DREAM_AGENT_ID.to_string()
         ]
     );
 }

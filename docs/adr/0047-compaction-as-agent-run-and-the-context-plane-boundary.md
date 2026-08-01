@@ -176,9 +176,12 @@ Outcome Judge execution no longer uses the former ext-goal `DelegateRunner`:
 [ADR-0064](0064-runtime-owned-outcome-orchestration.md) places its controller and
 Agent-backed Grader in the Outcome Runtime Extension and routes the pinned Judge
 snapshot through the ordinary backend-neutral Run boundary. Compaction and
-Memory selection remain ordinary auxiliary Agent Runs; their duplicate Host
-runner is migration debt, not a separate lifecycle contract. Remote A2A
-delegates remain separate because they have network semantics.
+Memory selection now resolve the same Workspace publication source, freeze full
+`ExecutableAgentSnapshot`s, and share the auxiliary catalog/runner. The remaining
+work is to materialize provider credentials for that shared runner through the
+same backend-neutral attempt boundary as a top-level Run; it is execution debt,
+not a second Agent configuration or lifecycle contract. Remote A2A delegates
+remain separate because they have network semantics.
 
 ## Development-Ready Design (G14) — D3
 

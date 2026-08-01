@@ -29,23 +29,6 @@ const SUPPORTED_MODELS: &[&str] = &[
 
 pub const BUILT_IN_DREAM_AGENT_ID: &str = "awaken_builtin_dream_agent";
 
-fn default_dream_agent_id() -> String {
-    BUILT_IN_DREAM_AGENT_ID.into()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DreamAgentSelection {
-    pub agent_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DreamAgentConfiguration {
-    #[serde(rename = "type")]
-    pub object_type: &'static str,
-    pub agent_id: String,
-    pub source: &'static str,
-}
-
 #[derive(Debug, Clone)]
 pub struct DreamRequest {
     pub job_id: String,
@@ -54,7 +37,10 @@ pub struct DreamRequest {
     pub session_ids: Vec<String>,
     pub model: DreamModelConfig,
     pub request_guidance: Option<String>,
-    pub agent_selection: DreamAgentSelection,
+    /// Ordinary published Agent id used by the auxiliary Session. The stable
+    /// built-in id is configured through the normal Agent authoring surface;
+    /// Dream owns no second Agent-selection policy.
+    pub agent_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,14 +145,6 @@ pub trait DreamExecutor: Send + Sync {
     ) -> Result<(), DreamFailure> {
         self.cleanup(request, preparation).await
     }
-
-    async fn validate_agent(
-        &self,
-        _workspace_id: &str,
-        _agent_id: &str,
-    ) -> Result<(), DreamFailure> {
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -178,7 +156,7 @@ struct DreamProcess {
     session_ids: Vec<String>,
     model: DreamModelConfig,
     request_guidance: Option<String>,
-    agent_selection: DreamAgentSelection,
+    agent_id: String,
     result_memory_store_id: Option<String>,
     session_id: Option<String>,
     transcript_file_ids: Vec<String>,
@@ -199,7 +177,7 @@ impl DreamProcess {
             session_ids: self.session_ids.clone(),
             model: self.model.clone(),
             request_guidance: self.request_guidance.clone(),
-            agent_selection: self.agent_selection.clone(),
+            agent_id: self.agent_id.clone(),
         }
     }
 
@@ -265,9 +243,7 @@ fn process_record(process: &DreamProcess) -> DreamProcessRecord {
         session_ids: process.session_ids.clone(),
         model: process.model.clone(),
         request_guidance: process.request_guidance.clone(),
-        agent_selection: awaken_session_contract::DreamAgentSelectionRecord {
-            agent_id: process.agent_selection.agent_id.clone(),
-        },
+        agent_id: process.agent_id.clone(),
         result_memory_store_id: process.result_memory_store_id.clone(),
         session_id: process.session_id.clone(),
         transcript_file_ids: process.transcript_file_ids.clone(),
@@ -292,9 +268,7 @@ fn process_from_record(record: DreamProcessRecord) -> DreamProcess {
         session_ids: record.session_ids,
         model: record.model,
         request_guidance: record.request_guidance,
-        agent_selection: DreamAgentSelection {
-            agent_id: record.agent_selection.agent_id,
-        },
+        agent_id: record.agent_id,
         result_memory_store_id: record.result_memory_store_id,
         session_id: record.session_id,
         transcript_file_ids: record.transcript_file_ids,
@@ -339,7 +313,6 @@ pub enum DreamApiError {
 struct InMemoryDreamRecords {
     processes: BTreeMap<String, DreamProcessRecord>,
     policies: BTreeMap<(String, String), DreamPolicyRecord>,
-    overrides: BTreeMap<String, String>,
 }
 
 #[derive(Default)]
@@ -364,46 +337,6 @@ impl DreamProcessStore for InMemoryDreamProcessStore {
         }
         state.processes.insert(record.process_id.clone(), record);
         Ok(true)
-    }
-
-    fn dream_agent_overrides(
-        &self,
-    ) -> Result<
-        Vec<awaken_session_contract::WorkspaceDreamAgentOverride>,
-        awaken_session_contract::DreamProcessStoreError,
-    > {
-        Ok(self
-            .0
-            .lock()
-            .unwrap()
-            .overrides
-            .iter()
-            .map(
-                |(workspace_id, agent_id)| awaken_session_contract::WorkspaceDreamAgentOverride {
-                    workspace_id: workspace_id.clone(),
-                    agent_id: agent_id.clone(),
-                },
-            )
-            .collect())
-    }
-
-    fn set_dream_agent_override(
-        &self,
-        workspace_id: &str,
-        agent_id: Option<&str>,
-    ) -> Result<(), awaken_session_contract::DreamProcessStoreError> {
-        let mut state = self.0.lock().unwrap();
-        match agent_id {
-            Some(agent_id) => {
-                state
-                    .overrides
-                    .insert(workspace_id.to_string(), agent_id.to_string());
-            }
-            None => {
-                state.overrides.remove(workspace_id);
-            }
-        }
-        Ok(())
     }
 
     fn dream_policies(
@@ -527,64 +460,6 @@ impl DreamApplication {
         }))
     }
 
-    fn workspace_agent_override(
-        &self,
-        workspace_id: &str,
-    ) -> Result<Option<String>, DreamApiError> {
-        Ok(self
-            .store
-            .dream_agent_overrides()
-            .map_err(|error| DreamApiError::Unavailable(error.to_string()))?
-            .into_iter()
-            .find(|record| record.workspace_id == workspace_id)
-            .map(|record| record.agent_id))
-    }
-
-    /// Configure or clear the exact published Agent used for future
-    /// Dreams in one Workspace. Absence selects the built-in effective
-    /// default; no default Agent row is copied per Workspace. A job freezes the
-    /// resolved id at create time, so later policy edits cannot alter retries.
-    pub async fn set_workspace_agent_override(
-        &self,
-        workspace_id: &str,
-        agent_id: Option<&str>,
-    ) -> Result<(), DreamApiError> {
-        if workspace_id.trim().is_empty()
-            || agent_id.is_some_and(|agent_id| agent_id.trim().is_empty())
-        {
-            return Err(DreamApiError::BadRequest(
-                "Workspace and Agent ids must be non-empty".into(),
-            ));
-        }
-        if let Some(agent_id) = agent_id {
-            self.executor
-                .validate_agent(workspace_id, agent_id)
-                .await
-                .map_err(|error| DreamApiError::BadRequest(error.message))?;
-        }
-        self.store
-            .set_dream_agent_override(workspace_id, agent_id)
-            .map_err(|error| DreamApiError::Unavailable(error.to_string()))
-    }
-
-    pub fn workspace_agent_configuration(
-        &self,
-        workspace_id: &str,
-    ) -> Result<DreamAgentConfiguration, DreamApiError> {
-        Ok(match self.workspace_agent_override(workspace_id)? {
-            Some(agent_id) => DreamAgentConfiguration {
-                object_type: "dream_agent_configuration",
-                agent_id,
-                source: "workspace_override",
-            },
-            None => DreamAgentConfiguration {
-                object_type: "dream_agent_configuration",
-                agent_id: default_dream_agent_id(),
-                source: "built_in",
-            },
-        })
-    }
-
     pub fn bind_session_source(&self, source: Arc<dyn DreamSessionSource>) {
         *self.session_source.lock().unwrap() = Some(source);
     }
@@ -605,8 +480,8 @@ impl DreamApplication {
     }
 
     /// Configure the opt-in automatic Dream policy for one Workspace-owned
-    /// MemoryStore. The effective Dream Agent remains the same built-in/override
-    /// selection used by manual Dreams; the policy creates no copied Agent.
+    /// MemoryStore. Manual and scheduled Dreams use the same stable ordinary
+    /// Agent id; the policy creates no copied Agent or selection state.
     pub fn set_policy(
         &self,
         workspace_id: &str,
@@ -855,11 +730,6 @@ impl DreamApplication {
         let (source_memory_store_id, session_ids) = validate_create(&params)?;
         let model = params.model.into_config();
         let request_guidance = params.instructions;
-        let agent_selection = DreamAgentSelection {
-            agent_id: self
-                .workspace_agent_override(workspace_id)?
-                .unwrap_or_else(default_dream_agent_id),
-        };
         let mut job = DreamProcess {
             id: String::new(),
             workspace_id: workspace_id.to_string(),
@@ -868,7 +738,7 @@ impl DreamApplication {
             session_ids,
             model,
             request_guidance,
-            agent_selection,
+            agent_id: BUILT_IN_DREAM_AGENT_ID.to_string(),
             result_memory_store_id: None,
             session_id: None,
             transcript_file_ids: Vec::new(),

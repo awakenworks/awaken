@@ -2,15 +2,17 @@
 
 use std::sync::Arc;
 
-use awaken_resource_contract::{FileApplicationService, ResourceCatalog, ResourcePurgeScheduler};
+use awaken_resource_contract::{
+    FileApplicationService, MemoryStoreApplicationService, ResourcePurgeScheduler,
+};
 use axum::Router;
 
-use crate::{files_router, memory_stores_router_with_catalog, skills_router};
+use crate::{files_router, memory_stores_router, skills_router};
 
 pub struct ResourcesRouterInput {
     pub files: Arc<dyn FileApplicationService>,
     pub memories: Arc<dyn awaken_memory_store::MemoryRepository>,
-    pub catalog: Arc<dyn ResourceCatalog>,
+    pub memory_stores: Arc<dyn MemoryStoreApplicationService>,
     pub skills: Option<Arc<dyn awaken_skill_store::SkillStore>>,
     pub purge: Arc<dyn ResourcePurgeScheduler>,
 }
@@ -19,11 +21,7 @@ pub struct ResourcesRouterInput {
 /// independent aggregates and routes; this function owns only HTTP composition.
 pub fn resources_router(input: ResourcesRouterInput) -> Router {
     files_router(input.files)
-        .merge(memory_stores_router_with_catalog(
-            input.memories,
-            input.catalog,
-            input.purge.clone(),
-        ))
+        .merge(memory_stores_router(input.memories, input.memory_stores))
         .merge(skills_router(input.skills, input.purge))
 }
 
@@ -58,7 +56,7 @@ mod tests {
         let router = resources_router(ResourcesRouterInput {
             files: application.files(),
             memories: ports.memory_repository(),
-            catalog: ports.resource_catalog(),
+            memory_stores: application.memory_stores(),
             skills: Some(ports.skill_store()),
             purge: application.purge_scheduler(),
         });

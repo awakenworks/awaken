@@ -49,6 +49,13 @@ async fn the_resource_planes_merge_over_one_host_without_route_conflicts() {
     let purge = Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(
         host.resource_lifecycle().expect("resource lifecycle"),
     ));
+    let memory_stores = Arc::new(awaken_resource_application::MemoryStoreApplication::new(
+        Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .expect("open ephemeral Resource Catalog"),
+        ),
+        purge.clone(),
+    ));
 
     // Merge the same way the assembly binary does: every plane's router over the one
     // shared host, plus the static model directory.
@@ -58,10 +65,7 @@ async fn the_resource_planes_merge_over_one_host_without_route_conflicts() {
                 .file_application()
                 .expect("test host installs File application"),
             memories: host.memory_repository(),
-            catalog: Arc::new(
-                awaken_resource_store::SqliteResourceStore::in_memory()
-                    .expect("open ephemeral Resource Catalog"),
-            ),
+            memory_stores,
             skills: host.skill_store(),
             purge,
         }))

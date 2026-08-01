@@ -31,6 +31,7 @@ awaken-observability = { workspace = true }
 # ingress stamps. The standalone wraps the session router with it.
 awaken-authz-enforce = { workspace = true }
 awaken-protocol-managed = { workspace = true }
+awaken-protocol-awaken = { workspace = true }
 awaken-dream-application = { workspace = true }
 awaken-protocol-ai-sdk = { workspace = true }
 awaken-protocol-ag-ui = { workspace = true }

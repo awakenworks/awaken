@@ -8,6 +8,7 @@ import _arch_fitness
 import _coordinator_authority_fitness
 import _crate_dependency_fitness
 import _migration_fitness
+import _managed_protocol_boundary
 from _domain_application_boundary import DOMAIN_APPLICATION_ALLOWED_DEPS
 from _executable_agent_boundary import EXECUTABLE_AGENT_ALLOWED_DEPS
 import _provider_env_fitness
@@ -1026,6 +1027,14 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "http-body-util",
         "ureq",
     },
+    # Explicit proprietary protocol surface layered beside Anthropic Managed.
+    # Both adapters drive neutral application ports and never depend on one
+    # another.
+    "awaken-protocol-awaken": {
+        "awaken-agent-contract", "awaken-environment-application",
+        "awaken-provisioning-contract",
+        "awaken-session-contract", "axum", "serde",
+    },
     # Goal / outcome extension: goal vocabulary, a deterministic grader, and a
     # run-end continuation guard that drives the grade→revise loop inside the
     # runtime. Depends only on the runtime contract (like `awaken-ext-permission`).
@@ -1371,6 +1380,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-protocol-ag-ui",
         "awaken-protocol-ai-sdk",
         "awaken-protocol-managed",
+        "awaken-protocol-awaken",
         "awaken-session-contract",
         "awaken-provider-genai",
         "awaken-run-executor-acp",
@@ -1430,6 +1440,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-run-executor-acp", "awaken-acp-application", "awaken-protocol-acp",
         "awaken-provisioning-contract",
         "awaken-protocol-managed", "awaken-dream-application",
+        "awaken-protocol-awaken",
         "awaken-protocol-ai-sdk", "awaken-protocol-ag-ui", "awaken-protocol-a2a",
         # Explicit MCP egress adapter, mounted by the data plane only when a
         # dedicated bearer is configured. Same protocol-adapter direction as
@@ -1618,6 +1629,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # gauge on the global OTel meter after init (#4), so it names opentelemetry.
         "opentelemetry",
         "awaken-protocol-managed",
+        "awaken-protocol-awaken",
         "awaken-model-catalog",
         "awaken-credential-vault",
         "awaken-admin-config-api",
@@ -1950,6 +1962,7 @@ def main() -> int:
     _migration_fitness.selftest()
     _service_data_ownership_fitness.selftest()
     _execution_ownership_fitness.selftest()
+    _managed_protocol_boundary.selftest()
     errors = (
         check_dependencies()
         + check_neutral_code_boundaries()
@@ -1964,6 +1977,7 @@ def main() -> int:
         + _migration_fitness.check_all(REPO_ROOT)
         + _service_data_ownership_fitness.check_all(REPO_ROOT)
         + _execution_ownership_fitness.check_all(REPO_ROOT)
+        + _managed_protocol_boundary.check_managed_route_inventory(REPO_ROOT)
     )
     if errors:
         for error in errors:

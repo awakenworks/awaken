@@ -24,12 +24,13 @@ mod catalog;
 mod component;
 mod input;
 mod lifecycle;
+mod memory_application;
 
 pub use catalog::{
-    ClonePolicy, ConfigVersion, ExtractionPolicy, MemoryStoreConfigVersion, MemoryStoreDefinition,
-    RecallPolicy, RepositoryConfigVersion, RepositoryDefinition, ResourceBindingValidator,
-    ResourceCatalog, ResourceCatalogError, ResourceCatalogRules, ResourceConfigSource,
-    ResourceState, ResourceTimestamps, RetentionPolicy,
+    ClonePolicy, ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition,
+    RepositoryConfigVersion, RepositoryDefinition, ResourceBindingValidator, ResourceCatalog,
+    ResourceCatalogError, ResourceCatalogRules, ResourceConfigSource, ResourceState,
+    ResourceTimestamps, RetentionPolicy,
 };
 pub use component::{ResourceComponent, ResourceDependencies, build_resource_component};
 pub use input::{
@@ -43,6 +44,10 @@ pub use lifecycle::{
     ResourcePurgeRepository, ResourcePurgeScheduler, ResourcePurgeStatus, ResourceReclamationFence,
     ResourceReference, ResourceReferenceIndex, ResourceReferenceKind, ResourceReferenceRecord,
     ResourceTarget,
+};
+pub use memory_application::{
+    CreateMemoryStoreCommand, MemoryStoreApplicationError, MemoryStoreApplicationService,
+    UpdateMemoryStoreCommand,
 };
 
 // ---------------------------------------------------------------------------

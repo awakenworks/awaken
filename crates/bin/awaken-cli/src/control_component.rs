@@ -184,7 +184,12 @@ pub(super) async fn assemble_control_process_router(
             ),
         ),
         environment_application,
-        awaken_protocol_managed::environment_authoring_router(environment_authoring),
+        awaken_protocol_managed::environment_authoring_router(environment_authoring.clone()).merge(
+            awaken_protocol_awaken::environment_extensions_router(
+                environment_authoring.application(),
+                environment_authoring.sandbox_policy_store(),
+            ),
+        ),
         coordinator_content_eraser.unwrap_or_else(test_coordinator_content_eraser),
         content_capture_ceiling,
         iam,

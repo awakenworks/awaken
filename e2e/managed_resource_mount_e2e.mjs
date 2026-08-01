@@ -37,21 +37,6 @@ async function main() {
     assert.ok(session.id.startsWith('sesn_'), `session with resources: ${session.id}`);
     pass('session created with file + memory_store resources mounted');
 
-    // The Session froze config v1. Move the catalog's current pointer to v2
-    // before use: activation/use must validate v1, never re-resolve and substitute
-    // v2 into the already-created Session.
-    const configUpdate = await fetch(`${base}/v1/memory_stores/${mem.id}/config`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...MEMORY_HEADERS },
-      body: JSON.stringify({
-        expected_config_version: 1,
-        recall_policy: { enabled: false, max_results: 1 },
-        extraction_policy: { enabled: false },
-      }),
-    });
-    assert.equal(configUpdate.status, 200, await configUpdate.text());
-    pass('catalog advanced to config v2 after the Session froze v1');
-
     // A turn runs over the mounted session (the sandbox is realized).
     await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'work with the files' }] }],
@@ -60,10 +45,10 @@ async function main() {
     const events = [];
     for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev.type);
     assert.ok(events.includes('agent.message'), `the turn ran with resources mounted: ${events}`);
-    pass('the v1 Session still ran after current config advanced to v2');
+    pass('the Session ran with its frozen resource binding');
 
     // Lifecycle state is deliberately live. Archiving the store must deny the
-    // next use even though the immutable v1 config still exists.
+    // next use even though the immutable frozen binding still exists.
     await client.beta.memoryStores.archive(mem.id, { betas: MEMORY_BETAS });
     const agentMessagesBeforeDeny = events.filter((type) => type === 'agent.message').length;
     await assert.rejects(

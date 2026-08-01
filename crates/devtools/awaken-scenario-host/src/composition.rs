@@ -67,7 +67,13 @@ pub(super) fn mount_with_environments_and_agent_source(
         ),
     };
     awaken_server::mount_with_managed_and_resource_catalog(host, managed, catalog)
-        .merge(awaken_protocol_managed::environments_router(environments))
+        .merge(awaken_protocol_managed::environments_router(
+            environments.clone(),
+        ))
+        .merge(awaken_protocol_awaken::environment_extensions_router(
+            environments.authoring().application(),
+            environments.authoring().sandbox_policy_store(),
+        ))
 }
 
 pub(super) struct FixedAgentPublication {
@@ -277,12 +283,14 @@ pub fn build_unscoped_resource_router() -> Router {
             host.resource_lifecycle()
                 .expect("scenario resource lifecycle"),
         );
+    let memory_stores =
+        awaken_server::memory_store_application(scenario_resource_catalog(), purge.clone());
     awaken_managed_routers::resources_router(awaken_managed_routers::ResourcesRouterInput {
         files: host
             .file_application()
             .expect("scenario resource composition installs File application"),
         memories: host.memory_repository(),
-        catalog: scenario_resource_catalog(),
+        memory_stores,
         skills: host.skill_store(),
         purge,
     })

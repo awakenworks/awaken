@@ -133,12 +133,12 @@ crate name.
 | Environment contract | Control-owned static definitions, exact revisions, and policy references | `EnvItem`, `EnvironmentRevision`, `EnvRegistry`, `EnvironmentSandboxPolicyRef` |
 | Coordinator execution catalog | rebuildable executable-Agent availability for new Sessions | `ExecutableAgentCatalog`, current/exact-revision/fingerprint reads, local/HTTP/PostgreSQL registrar adapters, authenticated private router, and durable command replay |
 | Coordinator Environment projection | rebuildable executable-Environment availability and dynamic work coordination | `ExecutableEnvironmentCatalog`, `EnvironmentExecutionState`, `WorkQueue`; no authoring repository |
-| Resources application contract | resource commands and per-kind materialization/lifecycle ports | `ResourcesApplication`, `FileApplicationService`, `ResourceCatalog`, `ResourceLifecycleRepository`, Memory/Skill/File ports |
+| Resources application contract | resource commands and per-kind materialization/lifecycle ports | `ResourcesApplication`, `FileApplicationService`, `MemoryStoreApplicationService`, `ResourceCatalog`, `ResourceLifecycleRepository`, Memory/Skill/File ports |
 | Runtime-facing contract | immutable values and ports used to prepare and execute one Run | `ExecutableAgentSnapshot`, `RunActivation`, `RuntimeRunContext`, `RunExecutor`, `RuntimeCapabilitySource`, `PluginManifest` |
 | Runtime implementation | live execution behavior over agent-domain vocabulary | agent loop, resolver implementation, provider routing, plugin execution, retry/backoff modules |
 | Run-ingress contract | durable delivery and dispatch vocabulary | submit/input records, dispatch records, claims, leases, wake hints, live-command delivery stores |
 | Run-ingress implementation | buffering, host supervision, recovery, and live delivery | `DurableRunIngress`, input buffer, dispatch coordinator, recovery replay |
-| Protocol projection | public protocol and product-facing replay shapes outside the runtime slice | replay rows, protocol status names, DTOs when a protocol slice is added |
+| Protocol projection | public protocol and product-facing replay shapes outside the runtime slice | `awaken-protocol-managed` owns only the exact Anthropic surface; `/v1/awaken/*` lives in the separate `awaken-protocol-awaken` crate |
 | Concrete stores | backend implementations of multiple ports | SQL/in-memory adapters that implement both agent-truth and ingress stores |
 
 If a type describes durable agent truth, it belongs to the agent-domain contract.
@@ -163,7 +163,7 @@ runtime contract.
 | DreamProcess | Coordinator: requested → preparing → auxiliary Session linked → cleaning → terminal; usage remains an ordinary Session fact | `DreamApplication` schedules/reconciles while `DreamExecutor` composes Resource and Session authorities |
 | Session / Run | Coordinator: admit frozen Agent/Environment/Resource facts → enqueue → claimed/running/awaiting → committed terminal settlement | Worker executes under a lease epoch; Coordinator owns commit, replay, and public projection |
 | File | Resources: logical create → active/readable → logical delete → purge intent → safe physical reclaim | `FileApplication` is the sole HTTP/artifact command path; Worker reads immutable bytes through `FileContentSource` |
-| MemoryStore | Resources: create/configure → bind/freeze config version → active CAS use → tombstone → fenced reclaim | `MemoryRepository`, snapshot/write-back ports, extraction intents, and `ResourceReclaimer` |
+| MemoryStore | Resources: create/retention → bind/freeze config version → active CAS use → tombstone → fenced reclaim | `MemoryStoreApplicationService` owns identity/lifecycle; `MemoryRepository` owns content; Agent `memory` plugin config owns recall/extraction behavior |
 | Skill | Resources: canonical ingest → immutable version publication → Session exact pin → tombstone → reclaim after pins drain | `SkillStore` and `SkillBundleSource`; built-in Skills remain Runtime extensions |
 | Repository definition | Resources: create/config versions → Session exact config/credential pin → ephemeral clone/use → tombstone/local cleanup | `ResourceCatalog`, credential materializer, and `RepositoryRealizer`; remote Git is never deleted |
 

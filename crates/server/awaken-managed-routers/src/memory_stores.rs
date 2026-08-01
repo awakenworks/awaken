@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use awaken_memory_store::{MemErr, MemoryVersion, MemoryVersionOperation};
 use awaken_resource_contract::{
-    ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalogError,
-    ResourceKind, ResourceState, ResourceTarget,
+    CreateMemoryStoreCommand, MemoryStoreApplicationError, MemoryStoreApplicationService,
+    MemoryStoreDefinition, ResourceCatalogError, ResourceState, UpdateMemoryStoreCommand,
 };
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -33,13 +33,6 @@ fn timestamp(nanos: u128) -> String {
     awaken_session_contract::epoch_millis_to_rfc3339(
         (nanos / 1_000_000).min(u64::MAX as u128) as u64
     )
-}
-
-fn now_nanos() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
-        .unwrap_or_default()
 }
 
 fn project_version(version: &MemoryVersion, store_id: &str) -> Value {
@@ -72,7 +65,11 @@ fn project_version(version: &MemoryVersion, store_id: &str) -> Value {
 
 /// Project a durable [`awaken_memory_store::Memory`] (the path-addressed head, the
 /// source of truth) onto the SDK memory object.
-fn project_memory(mem: &awaken_memory_store::Memory, store_id: &str) -> Value {
+fn project_memory(
+    mem: &awaken_memory_store::Memory,
+    store_id: &str,
+    memory_version_id: &str,
+) -> Value {
     let content = mem.content.clone().unwrap_or_default();
     json!({
         "id": mem.id,
@@ -80,13 +77,35 @@ fn project_memory(mem: &awaken_memory_store::Memory, store_id: &str) -> Value {
         "created_at": timestamp(mem.created_unix_nanos),
         "updated_at": timestamp(mem.updated_unix_nanos),
         "memory_store_id": store_id,
-        // The monotonic per-path version → a version id that changes on every write.
-        "memory_version_id": format!("memver_{}_{}", mem.id, mem.version),
+        "memory_version_id": memory_version_id,
         "path": mem.path,
         "content": content,
         "content_sha256": mem.content_sha256,
         "content_size_bytes": mem.content_size,
     })
+}
+
+fn current_version_id<'a>(versions: &'a [MemoryVersion], memory_id: &str) -> Option<&'a str> {
+    versions
+        .iter()
+        .rev()
+        .find(|version| version.memory_id == memory_id)
+        .map(|version| version.id.as_str())
+}
+
+async fn project_current_memory(
+    state: &MemoryStoreApi,
+    memory: &awaken_memory_store::Memory,
+    store_id: &str,
+) -> Result<Value, MemErr> {
+    let versions = state.memories.list_versions(store_id).await?;
+    let version_id = current_version_id(&versions, &memory.id).ok_or_else(|| {
+        MemErr::Storage(format!(
+            "memory `{}` has no atomic current version",
+            memory.id
+        ))
+    })?;
+    Ok(project_memory(memory, store_id, version_id))
 }
 
 /// Project a durable [`MemoryStoreDefinition`] (the identity aggregate, source of truth for a
@@ -108,50 +127,24 @@ fn project_def(def: &MemoryStoreDefinition) -> Value {
     })
 }
 
-fn project_config(config: &MemoryStoreConfigVersion) -> Value {
-    json!({
-        "memory_store_id": config.memory_store_id,
-        "version": config.version.0,
-        "recall_policy": config.recall_policy,
-        "extraction_policy": config.extraction_policy,
-        "retention_policy": config.retention_policy,
-    })
-}
-
 struct MemoryStoreApi {
     memories: Arc<dyn awaken_memory_store::MemoryRepository>,
-    /// Unified resource definition/configuration/lifecycle repository consumed by
-    /// both this API and Session resolution. It contains no authorization policy.
-    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
-    purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
+    stores: Arc<dyn MemoryStoreApplicationService>,
 }
 
 /// Mount the Memory API over the same Resource Catalog used by Session
 /// resolution. Composition roots that manage resources must use this variant so
 /// create/archive/delete and activation share one lifecycle truth.
-pub fn memory_stores_router_with_catalog(
+pub fn memory_stores_router(
     memories: Arc<dyn awaken_memory_store::MemoryRepository>,
-    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
-    purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
+    stores: Arc<dyn MemoryStoreApplicationService>,
 ) -> Router {
-    let state = Arc::new(MemoryStoreApi {
-        memories,
-        catalog,
-        purge,
-    });
+    let state = Arc::new(MemoryStoreApi { memories, stores });
     Router::new()
         .route("/v1/memory_stores", post(create_store).get(list_stores))
         .route(
             "/v1/memory_stores/{id}",
             get(get_store).post(update_store).delete(delete_store),
-        )
-        .route(
-            "/v1/memory_stores/{id}/config",
-            get(get_store_config).post(publish_store_config),
-        )
-        .route(
-            "/v1/memory_stores/{id}/config_versions/{version}",
-            get(get_store_config_version),
         )
         .route("/v1/memory_stores/{id}/archive", post(archive_store))
         .route(
@@ -197,35 +190,23 @@ fn catalog_error(error: ResourceCatalogError) -> axum::response::Response {
     err(status, error.to_string())
 }
 
-fn catalog_entry<T>(
-    result: Result<Option<T>, ResourceCatalogError>,
-    what: &str,
-) -> Result<T, ResourceCatalogError> {
-    match result {
-        Ok(Some(value)) => Ok(value),
-        Ok(None) => Err(ResourceCatalogError::NotFound(what.to_string())),
-        Err(error) => Err(error),
+fn application_error(error: MemoryStoreApplicationError) -> axum::response::Response {
+    match error {
+        MemoryStoreApplicationError::Catalog(error) => catalog_error(error),
+        MemoryStoreApplicationError::Purge(error) => {
+            err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        }
     }
 }
 
-fn active_store_exists(
+async fn active_store_exists(
     state: &MemoryStoreApi,
     workspace: &str,
     id: &str,
-) -> Result<bool, ResourceCatalogError> {
-    state.catalog.memory_store(workspace, id).map(|definition| {
+) -> Result<bool, MemoryStoreApplicationError> {
+    state.stores.get(workspace, id).await.map(|definition| {
         definition.is_some_and(|definition| definition.state == ResourceState::Active)
     })
-}
-
-fn mint_memory_store_id() -> String {
-    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    format!("memstore_{nanos:032x}_{sequence:016x}")
 }
 
 // ---- Store routes ----------------------------------------------------------
@@ -243,51 +224,39 @@ async fn create_store(
     } else {
         serde_json::from_slice(&body).unwrap_or(Value::Null)
     };
-    let id = mint_memory_store_id();
-    let at = now_nanos();
-    let def = MemoryStoreDefinition {
-        id: id.clone().into(),
-        workspace_id: workspace,
-        name: parsed
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        description: parsed
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        metadata: parsed
-            .get("metadata")
-            .and_then(Value::as_object)
-            .map(|o| {
-                o.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default(),
-        state: ResourceState::Active,
-        current_config_version: ConfigVersion::INITIAL,
-        timestamps: awaken_resource_contract::ResourceTimestamps::created(at),
-    };
-    let projected = project_def(&def);
-    if let Err(error) = state.catalog.create_memory_store(
-        def,
-        MemoryStoreConfigVersion {
-            memory_store_id: id.into(),
-            version: ConfigVersion::INITIAL,
-            recall_policy: Default::default(),
-            extraction_policy: Default::default(),
+    let definition = match state
+        .stores
+        .create(CreateMemoryStoreCommand {
+            workspace_id: workspace,
+            id: None,
+            name: parsed
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            description: parsed
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            metadata: parsed
+                .get("metadata")
+                .and_then(Value::as_object)
+                .map(|o| {
+                    o.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            initial_state: ResourceState::Active,
             retention_policy: Default::default(),
-        },
-    ) {
-        return err(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("memory_store catalog write failed: {error}"),
-        );
-    }
-    (StatusCode::OK, Json(projected)).into_response()
+        })
+        .await
+    {
+        Ok(definition) => definition,
+        Err(error) => return application_error(error),
+    };
+    (StatusCode::OK, Json(project_def(&definition))).into_response()
 }
 
 /// `GET /v1/memory_stores/:id` — the governed store definition. Mutable content
@@ -297,9 +266,10 @@ async fn get_store(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let def = match catalog_entry(state.catalog.memory_store(&workspace, &id), "memory_store") {
-        Ok(definition) => definition,
-        Err(error) => return catalog_error(error),
+    let def = match state.stores.get(&workspace, &id).await {
+        Ok(Some(definition)) => definition,
+        Ok(None) => return not_found("memory_store"),
+        Err(error) => return application_error(error),
     };
     (StatusCode::OK, Json(project_def(&def))).into_response()
 }
@@ -308,9 +278,9 @@ async fn list_stores(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
 ) -> axum::response::Response {
-    let definitions = match state.catalog.list_memory_stores(&workspace) {
+    let definitions = match state.stores.list(&workspace).await {
         Ok(definitions) => definitions,
-        Err(error) => return catalog_error(error),
+        Err(error) => return application_error(error),
     };
     let data: Vec<Value> = definitions.iter().map(project_def).collect();
     (
@@ -326,161 +296,34 @@ async fn update_store(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
-    let mut def = match catalog_entry(state.catalog.memory_store(&workspace, &id), "memory_store") {
-        Ok(definition) => definition,
-        Err(error) => return catalog_error(error),
-    };
-    // `description`: empty string clears it (SDK convention).
-    if let Some(desc) = body.get("description") {
-        def.description = desc.as_str().unwrap_or_default().to_string();
-    }
-    // `metadata`: patch — string upserts, null deletes, omitted preserves.
-    if let Some(patch) = body.get("metadata").and_then(Value::as_object) {
-        for (k, v) in patch {
-            match v {
-                Value::Null => {
-                    def.metadata.remove(k);
-                }
-                Value::String(s) => {
-                    def.metadata.insert(k.clone(), s.clone());
-                }
-                _ => {}
-            }
-        }
-    }
-    def.timestamps.touch(now_nanos());
-    let projected = project_def(&def);
-    if let Err(error) = state.catalog.update_memory_store(def) {
-        return err(StatusCode::CONFLICT, error.to_string());
-    }
-    (StatusCode::OK, Json(projected)).into_response()
-}
-
-/// Return the currently selected immutable MemoryStore configuration. Mutable
-/// Memory entries are deliberately absent: only recall/extraction/retention
-/// behavior is versioned here.
-async fn get_store_config(
-    State(state): State<Arc<MemoryStoreApi>>,
-    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
-    Path(id): Path<String>,
-) -> axum::response::Response {
-    let definition =
-        match catalog_entry(state.catalog.memory_store(&workspace, &id), "memory_store") {
-            Ok(definition) => definition,
-            Err(error) => return catalog_error(error),
-        };
-    let config =
-        match state
-            .catalog
-            .memory_config(&workspace, &id, definition.current_config_version)
-        {
-            Ok(Some(config)) => config,
-            Ok(None) => {
-                return err(
-                    StatusCode::CONFLICT,
-                    "current MemoryStore config is missing",
-                );
-            }
-            Err(error) => return catalog_error(error),
-        };
-    (StatusCode::OK, Json(project_config(&config))).into_response()
-}
-
-/// Read an immutable historical configuration by ordinal. This is configuration
-/// audit/retry data, not a snapshot of mutable Memory content.
-async fn get_store_config_version(
-    State(state): State<Arc<MemoryStoreApi>>,
-    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
-    Path((id, version)): Path<(String, String)>,
-) -> axum::response::Response {
-    let Ok(version) = version.parse::<u64>() else {
-        return err(StatusCode::BAD_REQUEST, "config version must be an integer");
-    };
-    let config = match state
-        .catalog
-        .memory_config(&workspace, &id, ConfigVersion(version))
-    {
-        Ok(Some(config)) => config,
-        Ok(None) => return not_found("memory_store config"),
-        Err(error) => return catalog_error(error),
-    };
-    (StatusCode::OK, Json(project_config(&config))).into_response()
-}
-
-/// Publish the next immutable MemoryStore configuration with an explicit CAS
-/// fence. Policy values are resource behavior, not authorization policy.
-async fn publish_store_config(
-    State(state): State<Arc<MemoryStoreApi>>,
-    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
-    Path(id): Path<String>,
-    Json(body): Json<Value>,
-) -> axum::response::Response {
-    let definition =
-        match catalog_entry(state.catalog.memory_store(&workspace, &id), "memory_store") {
-            Ok(definition) => definition,
-            Err(error) => return catalog_error(error),
-        };
-    let Some(expected) = body
-        .get("expected_config_version")
-        .and_then(Value::as_u64)
-        .map(ConfigVersion)
-    else {
-        return err(
-            StatusCode::BAD_REQUEST,
-            "expected_config_version must be an integer",
-        );
-    };
-    let mut config =
-        match state
-            .catalog
-            .memory_config(&workspace, &id, definition.current_config_version)
-        {
-            Ok(Some(config)) => config,
-            Ok(None) => {
-                return err(
-                    StatusCode::CONFLICT,
-                    "current MemoryStore config is missing",
-                );
-            }
-            Err(error) => return catalog_error(error),
-        };
-    if !["recall_policy", "extraction_policy", "retention_policy"]
-        .iter()
-        .any(|key| body.get(key).is_some())
-    {
-        return err(
-            StatusCode::BAD_REQUEST,
-            "config update has no policy fields",
-        );
-    }
-    if let Some(value) = body.get("recall_policy") {
-        config.recall_policy = match serde_json::from_value(value.clone()) {
-            Ok(policy) => policy,
-            Err(error) => return err(StatusCode::BAD_REQUEST, error.to_string()),
-        };
-    }
-    if let Some(value) = body.get("extraction_policy") {
-        config.extraction_policy = match serde_json::from_value(value.clone()) {
-            Ok(policy) => policy,
-            Err(error) => return err(StatusCode::BAD_REQUEST, error.to_string()),
-        };
-    }
-    if let Some(value) = body.get("retention_policy") {
-        config.retention_policy = match serde_json::from_value(value.clone()) {
-            Ok(policy) => policy,
-            Err(error) => return err(StatusCode::BAD_REQUEST, error.to_string()),
-        };
-    }
-    let Some(next) = expected.checked_next() else {
-        return err(StatusCode::BAD_REQUEST, "config version is exhausted");
-    };
-    config.version = next;
+    let metadata_patch = body
+        .get("metadata")
+        .and_then(Value::as_object)
+        .map(|patch| {
+            patch
+                .iter()
+                .filter_map(|(key, value)| match value {
+                    Value::Null => Some((key.clone(), None)),
+                    Value::String(value) => Some((key.clone(), Some(value.clone()))),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     match state
-        .catalog
-        .publish_memory_config(&workspace, expected, config.clone())
+        .stores
+        .update(UpdateMemoryStoreCommand {
+            workspace_id: workspace,
+            id: id.into(),
+            description: body
+                .get("description")
+                .map(|value| value.as_str().unwrap_or_default().to_string()),
+            metadata_patch,
+        })
+        .await
     {
-        Ok(()) => (StatusCode::OK, Json(project_config(&config))).into_response(),
-        Err(error) => catalog_error(error),
+        Ok(definition) => (StatusCode::OK, Json(project_def(&definition))).into_response(),
+        Err(error) => application_error(error),
     }
 }
 
@@ -489,50 +332,12 @@ async fn delete_store(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let definition =
-        match catalog_entry(state.catalog.memory_store(&workspace, &id), "memory_store") {
-            Ok(definition) => definition,
-            Err(error) => return catalog_error(error),
-        };
-    let config =
-        match state
-            .catalog
-            .memory_config(&workspace, &id, definition.current_config_version)
-        {
-            Ok(Some(config)) => config,
-            Ok(None) => {
-                return err(
-                    StatusCode::CONFLICT,
-                    "current MemoryStore config is missing",
-                );
-            }
-            Err(error) => return catalog_error(error),
-        };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default();
-    let retention_ms = config
-        .retention_policy
-        .retention_days
-        .map_or(0, |days| u64::from(days).saturating_mul(86_400_000));
-    if let Err(error) = state
-        .purge
-        .schedule_purge(
-            ResourceTarget::new(&workspace, ResourceKind::MemoryStore, &id),
-            Some(definition.current_config_version.0),
-            now,
-            now.saturating_add(retention_ms),
-        )
-        .await
-    {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
-    }
-    if let Err(error) = state
-        .catalog
-        .set_memory_state(&workspace, &id, ResourceState::Deleted)
-    {
-        return err(StatusCode::CONFLICT, error.to_string());
+    if let Err(error) = state.stores.delete(&workspace, &id, now).await {
+        return application_error(error);
     }
     (
         StatusCode::OK,
@@ -546,23 +351,14 @@ async fn archive_store(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    let _definition =
-        match catalog_entry(state.catalog.memory_store(&workspace, &id), "memory_store") {
-            Ok(definition) => definition,
-            Err(error) => return catalog_error(error),
-        };
-    if let Err(error) = state
-        .catalog
-        .set_memory_state(&workspace, &id, ResourceState::Archived)
+    match state
+        .stores
+        .set_state(&workspace, &id, ResourceState::Archived)
+        .await
     {
-        return err(StatusCode::CONFLICT, error.to_string());
+        Ok(definition) => (StatusCode::OK, Json(project_def(&definition))).into_response(),
+        Err(error) => application_error(error),
     }
-    let def = match catalog_entry(state.catalog.memory_store(&workspace, &id), "memory_store") {
-        Ok(definition) => definition,
-        Err(error) => return catalog_error(error),
-    };
-    let projected = project_def(&def);
-    (StatusCode::OK, Json(projected)).into_response()
 }
 
 // ---- Memory routes ---------------------------------------------------------
@@ -607,14 +403,17 @@ async fn create_memory(
         .get("content")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    match active_store_exists(&state, &workspace, &id) {
+    match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
         Ok(false) => return not_found("memory_store"),
-        Err(error) => return catalog_error(error),
+        Err(error) => return application_error(error),
     }
     // The durable path-addressed store is the source of truth for the head.
     match state.memories.create(&id, path, content).await {
-        Ok(mem) => (StatusCode::OK, Json(project_memory(&mem, &id))).into_response(),
+        Ok(mem) => match project_current_memory(&state, &mem, &id).await {
+            Ok(projected) => (StatusCode::OK, Json(projected)).into_response(),
+            Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        },
         Err(MemErr::PathConflict(_)) => memory_conflict(),
         Err(MemErr::InvalidPath(_)) => err(StatusCode::BAD_REQUEST, "invalid memory path"),
         Err(MemErr::TooLarge) => err(StatusCode::BAD_REQUEST, "memory content too large"),
@@ -629,10 +428,10 @@ async fn list_memories(
     Path(id): Path<String>,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
-    match active_store_exists(&state, &workspace, &id) {
+    match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
         Ok(false) => return not_found("memory_store"),
-        Err(error) => return catalog_error(error),
+        Err(error) => return application_error(error),
     }
     let prefix = q.get("path_prefix").map(String::as_str).unwrap_or("/");
     if !prefix.starts_with('/') || !prefix.ends_with('/') {
@@ -667,6 +466,10 @@ async fn list_memories(
         Ok(entries) => entries,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
+    let versions = match state.memories.list_versions(&id).await {
+        Ok(versions) => versions,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
     let mut data = Vec::with_capacity(entries.len());
     let mut rolled_up = std::collections::BTreeSet::new();
     for entry in entries {
@@ -696,13 +499,19 @@ async fn list_memories(
                 .flatten()
                 .and_then(|m| m.content)
         };
+        let Some(memory_version_id) = current_version_id(&versions, &entry.id) else {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("memory `{}` has no atomic current version", entry.id),
+            );
+        };
         data.push(json!({
             "id": entry.id,
             "type": "memory",
             "created_at": timestamp(entry.updated_unix_nanos),
             "updated_at": timestamp(entry.updated_unix_nanos),
             "memory_store_id": id,
-            "memory_version_id": format!("memver_{}_{}", entry.id, entry.version),
+            "memory_version_id": memory_version_id,
             "path": entry.path,
             "content": content,
             "content_sha256": entry.content_sha256,
@@ -740,16 +549,19 @@ async fn get_memory(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, mid)): Path<(String, String)>,
 ) -> axum::response::Response {
-    match active_store_exists(&state, &workspace, &id) {
+    match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
         Ok(false) => return not_found("memory_store"),
-        Err(error) => return catalog_error(error),
+        Err(error) => return application_error(error),
     }
     let Some(path) = path_of(&state, &id, &mid).await else {
         return not_found("memory");
     };
     match state.memories.get_by_path(&id, &path).await {
-        Ok(Some(mem)) => (StatusCode::OK, Json(project_memory(&mem, &id))).into_response(),
+        Ok(Some(mem)) => match project_current_memory(&state, &mem, &id).await {
+            Ok(projected) => (StatusCode::OK, Json(projected)).into_response(),
+            Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        },
         _ => not_found("memory"),
     }
 }
@@ -765,10 +577,10 @@ async fn update_memory(
     Path((id, mid)): Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
-    match active_store_exists(&state, &workspace, &id) {
+    match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
         Ok(false) => return not_found("memory_store"),
-        Err(error) => return catalog_error(error),
+        Err(error) => return application_error(error),
     }
     let Some(path) = path_of(&state, &id, &mid).await else {
         return not_found("memory");
@@ -795,7 +607,10 @@ async fn update_memory(
         .update_head(&id, &mid, &new_content, &base_sha, target_path)
         .await
     {
-        Ok(updated) => (StatusCode::OK, Json(project_memory(&updated, &id))).into_response(),
+        Ok(updated) => match project_current_memory(&state, &updated, &id).await {
+            Ok(projected) => (StatusCode::OK, Json(projected)).into_response(),
+            Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        },
         Err(MemErr::Conflict { .. }) => memory_conflict(),
         Err(MemErr::TooLarge) => err(StatusCode::BAD_REQUEST, "memory content too large"),
         Err(error @ MemErr::AtCapacity) => err(StatusCode::BAD_REQUEST, error.to_string()),
@@ -810,10 +625,10 @@ async fn delete_memory(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, mid)): Path<(String, String)>,
 ) -> axum::response::Response {
-    match active_store_exists(&state, &workspace, &id) {
+    match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
         Ok(false) => return not_found("memory_store"),
-        Err(error) => return catalog_error(error),
+        Err(error) => return application_error(error),
     }
     let Some(path) = path_of(&state, &id, &mid).await else {
         return not_found("memory");
@@ -843,10 +658,10 @@ async fn list_versions(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    match active_store_exists(&state, &workspace, &id) {
+    match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
         Ok(false) => return not_found("memory_store"),
-        Err(error) => return catalog_error(error),
+        Err(error) => return application_error(error),
     }
     let log = match state.memories.list_versions(&id).await {
         Ok(log) => log,
@@ -868,10 +683,10 @@ async fn get_version(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, vid)): Path<(String, String)>,
 ) -> axum::response::Response {
-    match active_store_exists(&state, &workspace, &id) {
+    match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
         Ok(false) => return not_found("memory_store"),
-        Err(error) => return catalog_error(error),
+        Err(error) => return application_error(error),
     }
     let log = match state.memories.list_versions(&id).await {
         Ok(log) => log,
@@ -891,10 +706,10 @@ async fn redact_version(
     Path((id, vid)): Path<(String, String)>,
     _query: Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
-    match active_store_exists(&state, &workspace, &id) {
+    match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
         Ok(false) => return not_found("memory_store"),
-        Err(error) => return catalog_error(error),
+        Err(error) => return application_error(error),
     }
     match state.memories.redact_version(&id, &vid).await {
         Ok(Some(version)) => {

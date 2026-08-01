@@ -126,6 +126,33 @@ pub awaken_session_contract::ApplicationSessionContributionFailure::Invalid(allo
 pub awaken_session_contract::ApplicationSessionContributionFailure::NotFound
 pub awaken_session_contract::ApplicationSessionContributionFailure::NotRequired
 pub awaken_session_contract::ApplicationSessionContributionFailure::Unavailable(alloc::string::String)
+pub enum awaken_session_contract::DreamInput
+pub awaken_session_contract::DreamInput::MemoryStore
+pub awaken_session_contract::DreamInput::MemoryStore::memory_store_id: alloc::string::String
+pub awaken_session_contract::DreamInput::Sessions
+pub awaken_session_contract::DreamInput::Sessions::session_ids: alloc::vec::Vec<alloc::string::String>
+pub enum awaken_session_contract::DreamModelInput
+pub awaken_session_contract::DreamModelInput::Config(awaken_session_contract::DreamModelConfig)
+pub awaken_session_contract::DreamModelInput::Id(alloc::string::String)
+impl awaken_session_contract::DreamModelInput
+pub fn awaken_session_contract::DreamModelInput::into_config(self) -> awaken_session_contract::DreamModelConfig
+pub enum awaken_session_contract::DreamModelSpeed
+pub awaken_session_contract::DreamModelSpeed::Fast
+pub awaken_session_contract::DreamModelSpeed::Standard
+pub enum awaken_session_contract::DreamProcessStoreError
+pub awaken_session_contract::DreamProcessStoreError::Storage(alloc::string::String)
+pub enum awaken_session_contract::DreamStatus
+pub awaken_session_contract::DreamStatus::Canceled
+pub awaken_session_contract::DreamStatus::Completed
+pub awaken_session_contract::DreamStatus::Failed
+pub awaken_session_contract::DreamStatus::Pending
+pub awaken_session_contract::DreamStatus::Running
+impl awaken_session_contract::DreamStatus
+pub fn awaken_session_contract::DreamStatus::is_terminal(&self) -> bool
+pub enum awaken_session_contract::LiveInboxApplicationError
+pub awaken_session_contract::LiveInboxApplicationError::Edit(awaken_session_contract::LiveInboxError)
+pub awaken_session_contract::LiveInboxApplicationError::NotFound
+pub awaken_session_contract::LiveInboxApplicationError::Unavailable(alloc::string::String)
 pub enum awaken_session_contract::LiveInboxError
 pub awaken_session_contract::LiveInboxError::Inactive
 pub awaken_session_contract::LiveInboxError::StaleOrder
@@ -346,6 +373,86 @@ pub awaken_session_contract::DelegatedRun::agent_id: alloc::string::String
 pub awaken_session_contract::DelegatedRun::parent_call_id: alloc::string::String
 pub awaken_session_contract::DelegatedRun::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_session_contract::DelegatedRun::status: awaken_agent_contract::agent::delegation::DelegationStatus
+pub struct awaken_session_contract::Dream
+pub awaken_session_contract::Dream::archived_at: core::option::Option<alloc::string::String>
+pub awaken_session_contract::Dream::created_at: alloc::string::String
+pub awaken_session_contract::Dream::ended_at: core::option::Option<alloc::string::String>
+pub awaken_session_contract::Dream::error: core::option::Option<awaken_session_contract::DreamError>
+pub awaken_session_contract::Dream::id: alloc::string::String
+pub awaken_session_contract::Dream::inputs: alloc::vec::Vec<awaken_session_contract::DreamInput>
+pub awaken_session_contract::Dream::instructions: core::option::Option<alloc::string::String>
+pub awaken_session_contract::Dream::kind: &'static str
+pub awaken_session_contract::Dream::model: awaken_session_contract::DreamModelConfig
+pub awaken_session_contract::Dream::outputs: alloc::vec::Vec<awaken_session_contract::DreamOutput>
+pub awaken_session_contract::Dream::session_id: core::option::Option<alloc::string::String>
+pub awaken_session_contract::Dream::status: awaken_session_contract::DreamStatus
+pub awaken_session_contract::Dream::usage: awaken_session_contract::DreamUsage
+pub struct awaken_session_contract::DreamCreateParams
+pub awaken_session_contract::DreamCreateParams::inputs: alloc::vec::Vec<awaken_session_contract::DreamInput>
+pub awaken_session_contract::DreamCreateParams::instructions: core::option::Option<alloc::string::String>
+pub awaken_session_contract::DreamCreateParams::model: awaken_session_contract::DreamModelInput
+pub struct awaken_session_contract::DreamError
+pub awaken_session_contract::DreamError::kind: alloc::string::String
+pub awaken_session_contract::DreamError::message: alloc::string::String
+pub struct awaken_session_contract::DreamListParams
+pub awaken_session_contract::DreamListParams::created_after: core::option::Option<alloc::string::String>
+pub awaken_session_contract::DreamListParams::created_before: core::option::Option<alloc::string::String>
+pub awaken_session_contract::DreamListParams::include_archived: bool
+pub awaken_session_contract::DreamListParams::limit: core::option::Option<usize>
+pub awaken_session_contract::DreamListParams::page: core::option::Option<alloc::string::String>
+pub awaken_session_contract::DreamListParams::statuses: alloc::vec::Vec<awaken_session_contract::DreamStatus>
+pub struct awaken_session_contract::DreamModelConfig
+pub awaken_session_contract::DreamModelConfig::id: alloc::string::String
+pub awaken_session_contract::DreamModelConfig::speed: core::option::Option<awaken_session_contract::DreamModelSpeed>
+pub struct awaken_session_contract::DreamOutput
+pub awaken_session_contract::DreamOutput::kind: &'static str
+pub awaken_session_contract::DreamOutput::memory_store_id: alloc::string::String
+pub struct awaken_session_contract::DreamPage
+pub awaken_session_contract::DreamPage::data: alloc::vec::Vec<awaken_session_contract::Dream>
+pub awaken_session_contract::DreamPage::next_page: core::option::Option<alloc::string::String>
+pub struct awaken_session_contract::DreamPolicyConfig
+pub awaken_session_contract::DreamPolicyConfig::enabled: bool
+pub awaken_session_contract::DreamPolicyConfig::instructions: core::option::Option<alloc::string::String>
+pub awaken_session_contract::DreamPolicyConfig::interval_seconds: u64
+pub awaken_session_contract::DreamPolicyConfig::max_sessions: usize
+pub awaken_session_contract::DreamPolicyConfig::min_new_sessions: usize
+pub awaken_session_contract::DreamPolicyConfig::model: awaken_session_contract::DreamModelConfig
+impl core::default::Default for awaken_session_contract::DreamPolicyConfig
+pub fn awaken_session_contract::DreamPolicyConfig::default() -> Self
+pub struct awaken_session_contract::DreamPolicyRecord
+pub awaken_session_contract::DreamPolicyRecord::config: awaken_session_contract::DreamPolicyConfig
+pub awaken_session_contract::DreamPolicyRecord::last_completed_cutoff_ms: u64
+pub awaken_session_contract::DreamPolicyRecord::memory_store_id: alloc::string::String
+pub awaken_session_contract::DreamPolicyRecord::next_due_ms: u64
+pub awaken_session_contract::DreamPolicyRecord::workspace_id: alloc::string::String
+pub struct awaken_session_contract::DreamProcessFailure
+pub awaken_session_contract::DreamProcessFailure::kind: alloc::string::String
+pub awaken_session_contract::DreamProcessFailure::message: alloc::string::String
+pub struct awaken_session_contract::DreamProcessRecord
+pub awaken_session_contract::DreamProcessRecord::agent_id: alloc::string::String
+pub awaken_session_contract::DreamProcessRecord::archived_at: core::option::Option<u64>
+pub awaken_session_contract::DreamProcessRecord::cleanup_pending: bool
+pub awaken_session_contract::DreamProcessRecord::created_at: u64
+pub awaken_session_contract::DreamProcessRecord::ended_at: core::option::Option<u64>
+pub awaken_session_contract::DreamProcessRecord::error: core::option::Option<awaken_session_contract::DreamProcessFailure>
+pub awaken_session_contract::DreamProcessRecord::model: awaken_session_contract::DreamModelConfig
+pub awaken_session_contract::DreamProcessRecord::policy_key: core::option::Option<(alloc::string::String, alloc::string::String)>
+pub awaken_session_contract::DreamProcessRecord::process_id: alloc::string::String
+pub awaken_session_contract::DreamProcessRecord::request_guidance: core::option::Option<alloc::string::String>
+pub awaken_session_contract::DreamProcessRecord::result_memory_store_id: core::option::Option<alloc::string::String>
+pub awaken_session_contract::DreamProcessRecord::session_id: core::option::Option<alloc::string::String>
+pub awaken_session_contract::DreamProcessRecord::session_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_session_contract::DreamProcessRecord::source_memory_store_id: alloc::string::String
+pub awaken_session_contract::DreamProcessRecord::status: awaken_session_contract::DreamStatus
+pub awaken_session_contract::DreamProcessRecord::transcript_file_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_session_contract::DreamProcessRecord::workspace_id: alloc::string::String
+impl<'de> serde_core::de::Deserialize<'de> for awaken_session_contract::DreamProcessRecord
+pub fn awaken_session_contract::DreamProcessRecord::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub struct awaken_session_contract::DreamUsage
+pub awaken_session_contract::DreamUsage::cache_creation_input_tokens: u64
+pub awaken_session_contract::DreamUsage::cache_read_input_tokens: u64
+pub awaken_session_contract::DreamUsage::input_tokens: u64
+pub awaken_session_contract::DreamUsage::output_tokens: u64
 pub struct awaken_session_contract::EnvironmentFingerprint(pub alloc::string::String)
 pub struct awaken_session_contract::EnvironmentSnapshot
 pub awaken_session_contract::EnvironmentSnapshot::config_fingerprint: awaken_session_contract::EnvironmentFingerprint
@@ -693,6 +800,18 @@ pub trait awaken_session_contract::ApplicationSessionContributionApi: core::mark
 pub fn awaken_session_contract::ApplicationSessionContributionApi::contribute_application<'life0, 'async_trait>(&'life0 self, awaken_session_contract::ApplicationSessionContribution) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::ApplicationSessionContributionReceipt, awaken_session_contract::ApplicationSessionContributionFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_session_contract::ApplicationSessionControl: awaken_session_contract::ApplicationSessionContributionApi + awaken_session_contract::SessionRealizationControl
 impl<T> awaken_session_contract::ApplicationSessionControl for T where T: awaken_session_contract::ApplicationSessionContributionApi + awaken_session_contract::SessionRealizationControl
+pub trait awaken_session_contract::DreamProcessStore: core::marker::Send + core::marker::Sync
+pub fn awaken_session_contract::DreamProcessStore::claim_dream_policy(&self, &awaken_session_contract::DreamPolicyRecord, awaken_session_contract::DreamPolicyRecord, awaken_session_contract::DreamProcessRecord) -> core::result::Result<bool, awaken_session_contract::DreamProcessStoreError>
+pub fn awaken_session_contract::DreamProcessStore::compare_and_swap_dream_policy(&self, core::option::Option<&awaken_session_contract::DreamPolicyRecord>, awaken_session_contract::DreamPolicyRecord) -> core::result::Result<bool, awaken_session_contract::DreamProcessStoreError>
+pub fn awaken_session_contract::DreamProcessStore::compare_and_swap_dream_process(&self, core::option::Option<&awaken_session_contract::DreamProcessRecord>, awaken_session_contract::DreamProcessRecord) -> core::result::Result<bool, awaken_session_contract::DreamProcessStoreError>
+pub fn awaken_session_contract::DreamProcessStore::dream_policies(&self) -> core::result::Result<alloc::vec::Vec<awaken_session_contract::DreamPolicyRecord>, awaken_session_contract::DreamProcessStoreError>
+pub fn awaken_session_contract::DreamProcessStore::dream_processes(&self) -> core::result::Result<alloc::vec::Vec<awaken_session_contract::DreamProcessRecord>, awaken_session_contract::DreamProcessStoreError>
+pub trait awaken_session_contract::LiveInboxApplication: core::marker::Send + core::marker::Sync
+pub fn awaken_session_contract::LiveInboxApplication::queue<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<u64, awaken_session_contract::LiveInboxApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::LiveInboxApplication::remove<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::LiveInboxApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::LiveInboxApplication::reorder<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::LiveInboxApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::LiveInboxApplication::replace<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::LiveInboxApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::LiveInboxApplication::snapshot<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::LiveInboxSnapshot, awaken_session_contract::LiveInboxApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_session_contract::ManagedSessionRepository: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::ManagedSessionRepository::append_lifecycle<'life0, 'async_trait>(&'life0 self, awaken_session_contract::ManagedLifecycleFact) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_session_contract::ManagedSessionRepository::commit_mutation<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_session_contract::SessionMutation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionMutationResult, awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

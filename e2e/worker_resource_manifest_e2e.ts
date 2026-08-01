@@ -187,12 +187,13 @@ async function createMemory(): Promise<{ memory_store_id: string; config: any }>
     name: `remote-worker-memory-${process.pid}`,
     description: 'shared mutable Memory input',
   });
-  const config = await resourceRequest('POST', `memory_stores/${created.id}/config`, {
-    expected_config_version: 1,
-    recall_policy: { enabled: true, max_results: 4 },
-    extraction_policy: { enabled: false },
+  // The worker envelope carries the Coordinator-resolved, secret-free resource
+  // snapshot. This is not a public behavior-authoring API.
+  const config = {
+    memory_store_id: created.id,
+    version: 1,
     retention_policy: {},
-  });
+  };
   await resourceRequest('POST', `memory_stores/${created.id}/memories`, {
     path: '/fact.md',
     content: MEMORY_BYTES.toString(),
