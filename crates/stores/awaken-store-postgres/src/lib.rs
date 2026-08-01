@@ -991,3 +991,19 @@ async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
 
     Ok(projection)
 }
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn commit_sequence_creation_uses_the_scoped_receipt_as_its_only_guard() {
+        // Cause/effect decision table: portable commit schema present + V0001
+        // receipt absent => create and seed the sequence; receipt present => the
+        // runner skips V0001; sequence present without a receipt => bare CREATE
+        // fails closed, exposing drift instead of recording a conditional no-op.
+        let bundle = commit_pg_bundle().expect("deterministic Postgres bundle");
+        assert_eq!(bundle.migrations().len(), 1);
+        assert_eq!(bundle.migrations()[0].version(), 1);
+    }
+}

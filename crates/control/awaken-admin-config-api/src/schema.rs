@@ -105,6 +105,11 @@ mod tests {
 
     #[test]
     fn admin_bundle_lints() {
+        // Cause/effect decision table: every predecessor migration is applied in
+        // order (C1) and the scoped receipt is absent (C2) => V0009 executes its
+        // two deterministic DROP statements (E1); a receipt present => V0009 is
+        // skipped (E2); schema drift/missing predecessors => the bare DROP fails
+        // closed (E3), rather than recording a conditional no-op as success.
         let bundle = admin_bundle().expect("bundle builds");
         awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
     }

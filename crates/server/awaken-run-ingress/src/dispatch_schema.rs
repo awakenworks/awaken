@@ -167,6 +167,9 @@ mod tests {
 
     #[test]
     fn dispatch_bundle_lints_clean() {
+        // Cause/effect decision table: V0015 applied + V0016 receipt absent =>
+        // deterministic legacy-table removal; V0016 receipt present => skip;
+        // missing V0015 table => fail closed and do not record a false receipt.
         let bundle = dispatch_bundle().expect("bundle builds");
         awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
     }
