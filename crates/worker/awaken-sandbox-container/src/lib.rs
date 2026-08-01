@@ -993,6 +993,7 @@ pub enum RuntimeError {
 /// Whether a container is still alive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContainerState {
+    Provisioning,
     Running,
     Gone,
 }
@@ -1448,7 +1449,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         handle: &pc::SandboxHandle,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         let (container_id, outputs_path) = recovery::container_locator(handle)?;
-        self.runtime.inspect(&container_id).await.map_err(err)?;
+        if self.runtime.inspect(&container_id).await.map_err(err)? == ContainerState::Gone {
+            return Err(err(RuntimeError::NotFound(container_id)));
+        }
         Ok(ContainerSandbox {
             runtime: self.runtime.clone(),
             id: handle.sandbox_id.clone(),
@@ -1871,6 +1874,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
             .await
             .map_err(err)?
         {
+            ContainerState::Provisioning => Ok(pc::SandboxStatus::Provisioning),
             ContainerState::Running => Ok(pc::SandboxStatus::Ready),
             ContainerState::Gone => Ok(pc::SandboxStatus::Terminated),
         }

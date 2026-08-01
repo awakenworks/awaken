@@ -45,9 +45,20 @@ dependencies such as Postgres or NATS, but they must not reimplement import,
 cluster creation, executable discovery, port selection, or cleanup.
 
 The product backend uses the Kubernetes sandbox tier and Coordinator's durable
-Environment build jobs. Create and attach the fixture Registry before applying
-that overlay, then push the production sandbox base to the exact configured
-coordinate:
+Environment build jobs. Build and import the production sandbox base into every
+k3d node as `awaken-sandbox:local`; its non-`latest` tag defaults to
+`IfNotPresent`, so Session Pods consume the exact node-local image without a
+Registry pull:
+
+```bash
+deploy/images/sandbox/build.sh awaken-sandbox:local
+. e2e/k3d/harness.sh
+k3d_import_images awaken-product awaken-sandbox:local
+```
+
+Package-bearing Environments still require a Registry for the immutable derived
+images built by the Kubernetes BuildKit Jobs. Create and attach that Registry
+when constructing a package-enabled cluster:
 
 ```bash
 k3d registry create awaken-registry.localhost --port 5111
@@ -55,9 +66,6 @@ k3d registry create awaken-registry.localhost --port 5111
 # to `k3d cluster create --registry-use`.
 . e2e/k3d/harness.sh
 k3d_create_cluster awaken-product 1 2 k3d-awaken-registry.localhost:5111
-deploy/images/sandbox/build.sh \
-  k3d-awaken-registry.localhost:5111/awaken-sandbox:latest
-docker push k3d-awaken-registry.localhost:5111/awaken-sandbox:latest
 ```
 
 The all-in-one Pod never runs or mounts a Docker daemon. It submits bounded,

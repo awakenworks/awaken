@@ -914,6 +914,20 @@ async fn handle_round_trips_and_adopt_reconnects() {
 }
 
 #[tokio::test]
+async fn adopt_rejects_a_handle_whose_runtime_is_gone() {
+    /* Recovery decision rule A1: a well-formed durable handle plus a live
+     * runtime target is adoptable; A2: the same handle after physical teardown
+     * is an orphan and must fail adoption so the existing reconciler can
+     * re-place it. Merely completing locator decoding is not successful adopt. */
+    let rt = Arc::new(FakeRuntime::default());
+    let p = provider(rt);
+    let sandbox = p.create(&spec("run-gone")).await.unwrap();
+    let handle = sandbox.handle();
+    sandbox.dispose().await.unwrap();
+    assert!(p.adopt(&handle).await.is_err(), "A2");
+}
+
+#[tokio::test]
 async fn adopt_without_container_id_fails_closed() {
     let p = provider(Arc::new(FakeRuntime::default()));
     let bare = pc::SandboxHandle::new("container", "run-3");

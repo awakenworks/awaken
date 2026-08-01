@@ -24,7 +24,7 @@ use k8s_openapi::api::core::v1::{
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference, Status};
-use kube::api::{AttachParams, DeleteParams, ListParams, PostParams};
+use kube::api::{AttachParams, DeleteParams, ListParams};
 use kube::{Api, Client};
 use std::collections::BTreeMap;
 use tokio::io::AsyncReadExt;
@@ -35,7 +35,11 @@ use crate::{
 };
 
 mod names;
+mod realization;
 use names::{cfg_owner_label, configmap_name, credential_secret_name, k8s_runtime_id, pod_name};
+use realization::{
+    PodReadiness, await_pod_deleted, create_or_verify, pod_readiness, stamp_realization,
+};
 
 pub use crate::k8s_package_image::K8sPackageImageProvisioner;
 
@@ -43,6 +47,14 @@ static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn backend(e: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Backend(e.to_string())
+}
+
+pub(crate) fn api_conflict(error: &kube::Error) -> bool {
+    matches!(error, kube::Error::Api(response) if response.code == 409)
+}
+
+pub(crate) fn api_not_found(error: &kube::Error) -> bool {
+    matches!(error, kube::Error::Api(response) if response.code == 404)
 }
 
 struct K8sExecState {
@@ -803,20 +815,19 @@ impl ContainerRuntime for K8sRuntime {
         // until they exist. Ordered + named identically to `build_pod`'s projection.
         let cms = self.configmaps();
         for (i, bind) in content_binds(plan).iter().enumerate() {
-            let cm = build_configmap(
+            let mut cm = build_configmap(
                 &runtime_id,
                 i,
                 bind.content.as_deref(),
                 bind.content_bytes.as_deref(),
                 &self.owner,
             );
-            cms.create(&PostParams::default(), &cm)
-                .await
-                .map_err(backend)?;
+            stamp_realization(&mut cm)?;
+            create_or_verify(&cms, &cm).await?;
         }
         let secrets = self.secrets();
         for (i, bind) in credential_binds(plan).iter().enumerate() {
-            let secret = build_credential_secret(
+            let mut secret = build_credential_secret(
                 &runtime_id,
                 i,
                 credential_key(bind),
@@ -826,21 +837,19 @@ impl ContainerRuntime for K8sRuntime {
                     .expose(),
                 &self.owner,
             );
-            secrets
-                .create(&PostParams::default(), &secret)
-                .await
-                .map_err(backend)?;
+            stamp_realization(&mut secret)?;
+            create_or_verify(&secrets, &secret).await?;
         }
-        let pod = self.pod(&runtime_id, plan);
-        let created = self
-            .pods()
-            .create(&PostParams::default(), &pod)
-            .await
-            .map_err(backend)?;
-        created
+        let mut pod = self.pod(&runtime_id, plan);
+        stamp_realization(&mut pod)?;
+        let pods = self.pods();
+        let created = create_or_verify(&pods, &pod).await?;
+        let name = created
             .metadata
             .name
-            .ok_or_else(|| backend("created pod has no name"))
+            .ok_or_else(|| backend("created pod has no name"))?;
+        realization::await_pod_ready(&pods, &name).await?;
+        Ok(name)
     }
 
     async fn spawn(
@@ -988,16 +997,15 @@ impl ContainerRuntime for K8sRuntime {
     async fn inspect(&self, container_id: &str) -> Result<ContainerState, RuntimeError> {
         let pod = match self.pods().get(container_id).await {
             Ok(pod) => pod,
-            Err(kube::Error::Api(response)) if response.code == 404 => {
+            Err(error) if api_not_found(&error) => {
                 return Ok(ContainerState::Gone);
             }
             Err(error) => return Err(backend(error)),
         };
-        let phase = pod.status.and_then(|s| s.phase).unwrap_or_default();
-        Ok(if phase == "Running" || phase == "Pending" {
-            ContainerState::Running
-        } else {
-            ContainerState::Gone
+        Ok(match pod_readiness(&pod) {
+            PodReadiness::Ready => ContainerState::Running,
+            PodReadiness::Waiting(_) => ContainerState::Provisioning,
+            PodReadiness::Failed(_) => ContainerState::Gone,
         })
     }
 
@@ -1023,7 +1031,7 @@ impl ContainerRuntime for K8sRuntime {
 
     async fn poll(&self, container_id: &str) -> Result<Option<pc::ExitStatus>, RuntimeError> {
         match self.inspect(container_id).await? {
-            ContainerState::Running => Ok(None),
+            ContainerState::Provisioning | ContainerState::Running => Ok(None),
             ContainerState::Gone => Ok(Some(pc::ExitStatus {
                 code: None,
                 signaled: true,
@@ -1071,11 +1079,12 @@ impl ContainerRuntime for K8sRuntime {
         // this best-effort sweep (label = the Pod name) covers the ownerless dev/e2e case
         // so inline-content maps don't leak. It precedes the Pod delete and never fails it.
         self.cleanup_projected_content(container_id).await;
-        self.pods()
-            .delete(container_id, &DeleteParams::default())
-            .await
-            .map(|_| ())
-            .map_err(backend)
+        let pods = self.pods();
+        match pods.delete(container_id, &DeleteParams::default()).await {
+            Ok(_) => await_pod_deleted(&pods, container_id).await,
+            Err(error) if api_not_found(&error) => Ok(()),
+            Err(error) => Err(backend(error)),
+        }
     }
 }
 
