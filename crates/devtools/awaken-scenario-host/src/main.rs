@@ -304,7 +304,10 @@ mod dispatch_tests {
             ("acp", sh::build_acp_router()),
             ("acp-jsonrpc", sh::build_acp_jsonrpc_router().await),
             ("acp-permission", sh::build_acp_permission_router()),
-            ("acp-sandboxed", sh::build_acp_sandboxed_router().await),
+            (
+                "acp-sandboxed",
+                sh::build_acp_sandboxed_router_with_deployment(local_test_deployment).await,
+            ),
             ("acp-gateway", sh::build_acp_gateway_router()),
             ("memory", sh::build_memory_router()),
             ("memory-resource", sh::build_memory_resource_router()),

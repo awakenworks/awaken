@@ -1,9 +1,9 @@
 //! Exact catalog-offering lookup for publication model selections.
 
 use awaken_config_resolver::{ModelTarget, select_offering};
+use awaken_config_service::PublicationResolutionError;
 use awaken_model_catalog::{Offering, ProviderCatalog};
 use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_runtime_host::PublicationResolutionError;
 
 pub(super) fn offering_for<'a>(
     catalog: &'a ProviderCatalog,

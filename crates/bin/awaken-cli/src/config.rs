@@ -38,7 +38,6 @@ pub use worker_bootstrap::WorkerBootstrap;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_WAKE_CHANNEL: &str = "awaken_dispatch_wake";
-
 /// Fully resolved bootstrap truth shared by the command, server assembly, and
 /// runtime host. Database URLs and key material are intentionally absent from
 /// its rendered reports.
@@ -729,6 +728,7 @@ pub(crate) fn worker_test_deployment(data_dir: PathBuf) -> ResolvedDeployment {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn resolve(file: FileConfig, overrides: ConfigOverrides) -> ResolvedDeployment {
         ResolvedDeployment::resolve_file(

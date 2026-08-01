@@ -22,6 +22,14 @@ def package_name(manifest: dict) -> str:
     return str(manifest["package"]["name"])
 
 
+def normal_dependency_names(manifest: dict) -> set[str]:
+    """Return normal and build dependencies; test wiring is a composition root."""
+    dependencies: set[str] = set()
+    for section in ("dependencies", "build-dependencies"):
+        dependencies.update(manifest.get(section, {}).keys())
+    return dependencies
+
+
 def iter_crate_manifests() -> list[Path]:
     if not CRATES.exists():
         return []

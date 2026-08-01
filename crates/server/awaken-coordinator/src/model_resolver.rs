@@ -391,7 +391,7 @@ impl CatalogModelPublicationResolver {
             {
                 Some(
                     self.credentials
-                        .get_pool(credential_pool_id)
+                        .get_pool(&credential_pool_id)
                         .await
                         .map_err(|error| {
                             PublicationResolutionError::CredentialInventoryUnavailable(

@@ -38,6 +38,8 @@ async fn deployment_run_creates_session_and_executes_initial_events() {
     // C1 published Agent + valid Deployment -> Agent latest version is frozen;
     // C2 manual run -> ordinary Session with Deployment id;
     // C3 initial user Event -> ordinary Event executor commits the model response.
+    // The deterministic router owns an explicit local sandbox so this behavior
+    // is independent of optional host namespace capabilities such as bwrap.
     let app = build_all_in_one_router_with_model(Arc::new(EchoModel), "echo").await;
     let (status, agent) = call(
         &app,
