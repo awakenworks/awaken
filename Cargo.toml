@@ -45,6 +45,7 @@ awaken-tenancy = { path = "crates/contract/awaken-tenancy" }
 awaken-session-contract = { path = "crates/contract/awaken-session-contract" }
 awaken-deployment-contract = { path = "crates/contract/awaken-deployment-contract" }
 awaken-environment-contract = { path = "crates/contract/awaken-environment-contract" }
+awaken-environment-realization-contract = { path = "crates/contract/awaken-environment-realization-contract" }
 awaken-executable-agent-contract = { path = "crates/server/awaken-executable-agent-contract" }
 awaken-executable-environment-contract = { path = "crates/contract/awaken-executable-environment-contract" }
 awaken-service-auth-contract = { path = "crates/contract/awaken-service-auth-contract" }
@@ -134,6 +135,7 @@ awaken-worker-registry = { path = "crates/server/awaken-worker-registry" }
 awaken-executable-agent-catalog = { path = "crates/server/awaken-executable-agent-catalog" }
 awaken-executable-environment-catalog = { path = "crates/server/awaken-executable-environment-catalog" }
 awaken-durable-projection = { path = "crates/server/awaken-durable-projection" }
+awaken-environment-image-build = { path = "crates/server/awaken-environment-image-build" }
 awaken-agent-channel = { path = "crates/worker/awaken-agent-channel" }
 awaken-acp-contract = { path = "crates/worker/awaken-acp-contract" }
 awaken-connection-plan = { path = "crates/worker/awaken-connection-plan" }

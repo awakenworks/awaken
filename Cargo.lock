@@ -697,6 +697,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-environment-image-build"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-environment-contract",
+ "awaken-environment-realization-contract",
+ "awaken-executable-environment-catalog",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-environment-realization-contract"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-environment-contract",
+ "serde",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "awaken-eval"
 version = "1.0.0-dev"
 dependencies = [

@@ -1,0 +1,21 @@
+[package]
+name = "awaken-environment-image-build"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+package-class = "server"
+authority = "coordinator"
+
+[dependencies]
+async-trait.workspace = true
+awaken-environment-contract.workspace = true
+awaken-environment-realization-contract.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+
+[dev-dependencies]
+awaken-executable-environment-catalog.workspace = true
+
+[lints]
+workspace = true

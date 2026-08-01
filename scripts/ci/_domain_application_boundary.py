@@ -10,6 +10,22 @@ DOMAIN_APPLICATION_ALLOWED_DEPS: dict[str, set[str]] = {
         "thiserror",
         "tokio",
     },
+    # Coordinator-neutral image realization aggregate and ports. It consumes
+    # immutable Environment facts and names no persistence or builder adapter.
+    "awaken-environment-realization-contract": {
+        "awaken-environment-contract",
+        "async-trait",
+        "serde",
+        "thiserror",
+    },
+    # Coordinator application/state machine for durable image-build demand.
+    "awaken-environment-image-build": {
+        "awaken-environment-contract",
+        "awaken-environment-realization-contract",
+        "async-trait",
+        "tokio",
+        "awaken-executable-environment-catalog",
+    },
     # Control-owned Environment application command path. Protocol and Admin
     # adapters translate into this service rather than coordinating stores.
     "awaken-environment-application": {
