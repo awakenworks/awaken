@@ -40,11 +40,13 @@ correlation. Adding them would be cargo-culting a model we do not use.
 `MessageOutbox` stages a cross-thread delivery (`stage`) and relays it (`relay`).
 The relay needs no `delivered` column: in one store transaction it appends the
 payload to the target thread's pending input (idempotent by `message_id`) and
-deletes the outbox row. A crash between the two leaves the outbox row, so the
-next relay re-appends (a no-op) and deletes — at-least-once delivery with an
-exactly-once effect. In a single-process host the outbox and pending tables are
-in one store, so the relay is a local transaction; the same shape extends to a
-distributed sender-outbox/target-append without two-phase commit.
+deletes the outbox row. Reusing a `message_id` with the exact same payload is a
+no-op; reusing it with another payload is an explicit conflict and leaves the
+outbox intact. A crash between append and acknowledgement therefore retries the
+same logical payload without allowing an identity collision to hide data loss.
+In a single-process host the outbox and pending tables are in one store, so the
+relay is a local transaction; the same shape extends to a distributed
+sender-outbox/target-append without two-phase commit.
 
 The daemon relays each tick before draining; `DurableRunIngress` exposes
 `stage_cross_thread` and `relay_outbox`, and `DispatchService` a `send`. Wiring a

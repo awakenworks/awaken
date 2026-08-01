@@ -14,16 +14,17 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_runtime_contract::resume::ResumeResult;
-use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
+use sqlx::{Executor, Postgres, Row};
 
 use crate::dispatch::{
     AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
     DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
     DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome,
     SubmitOptions, can_admit_attempt_credentials, compile_attempt_credential_bindings,
-    installed_worker_credential_capabilities, verify_credential_realization_receipt,
+    installed_worker_credential_capabilities, normalize_pending_millis,
+    verify_credential_realization_receipt,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::{
@@ -240,7 +241,7 @@ impl DispatchQueue for PostgresDispatchStore {
         ))
         .bind(&run_id.0)
         .bind(identity.lease_owner())
-        .bind(now_ms as i64)
+        .bind(crate::clock::db_millis(now_ms))
         .fetch_one(&self.pool)
         .await
         .map_err(reject)
@@ -405,23 +406,10 @@ impl DispatchQueue for PostgresDispatchStore {
         now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
-        let p = NS;
+        let input = normalize_pending_millis(input);
         let run_id = input.run_id.clone();
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_pending \
-             (message_id, run_id, thread_id, correlation_id, result, available_at) \
-             VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (message_id) DO NOTHING"
-        ))
-        .bind(&input.message_id)
-        .bind(&input.run_id.0)
-        .bind(&input.thread_id.0)
-        .bind(&input.correlation_id)
-        .bind(Json(&input.result))
-        .bind(input.available_at_ms.map(|time| time as i64))
-        .execute(&mut *tx)
-        .await
-        .map_err(reject)?;
+        append_pending_transaction(&mut tx, &input).await?;
         let claimed = claim_exact_transaction(
             &mut tx,
             &run_id,
@@ -443,23 +431,10 @@ impl DispatchQueue for PostgresDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        let p = NS;
+        let input = normalize_pending_millis(input);
         let run_id = input.run_id.clone();
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_pending \
-             (message_id, run_id, thread_id, correlation_id, result, available_at) \
-             VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (message_id) DO NOTHING"
-        ))
-        .bind(&input.message_id)
-        .bind(&input.run_id.0)
-        .bind(&input.thread_id.0)
-        .bind(&input.correlation_id)
-        .bind(Json(&input.result))
-        .bind(input.available_at_ms.map(|time| time as i64))
-        .execute(&mut *tx)
-        .await
-        .map_err(reject)?;
+        append_pending_transaction(&mut tx, &input).await?;
         let claimed = claim_exact_transaction(
             &mut tx,
             &run_id,
@@ -553,14 +528,14 @@ impl DispatchQueue for PostgresDispatchStore {
              FOR UPDATE SKIP LOCKED LIMIT 1"
         );
         let picked = match sqlx::query_scalar::<_, String>(&recovery)
-            .bind(now_ms as i64)
+            .bind(crate::clock::db_millis(now_ms))
             .fetch_optional(&mut *tx)
             .await
             .map_err(reject)?
         {
             Some(row) => Some(row),
             None => match sqlx::query_scalar::<_, String>(&wake)
-                .bind(now_ms as i64)
+                .bind(crate::clock::db_millis(now_ms))
                 .fetch_optional(&mut *tx)
                 .await
                 .map_err(reject)?
@@ -607,7 +582,7 @@ impl DispatchQueue for PostgresDispatchStore {
              ORDER BY CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
                       d.priority DESC, d.created_at"
         ))
-        .bind(now_ms as i64)
+        .bind(crate::clock::db_millis(now_ms))
         .fetch_all(&self.pool)
         .await
         .map_err(reject)?;
@@ -677,7 +652,7 @@ impl DispatchQueue for PostgresDispatchStore {
              ORDER BY CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
                       d.priority DESC, d.created_at"
         ))
-        .bind(now_ms as i64)
+        .bind(crate::clock::db_millis(now_ms))
         .fetch_all(&self.pool)
         .await
         .map_err(reject)?;
@@ -788,7 +763,9 @@ impl DispatchQueue for PostgresDispatchStore {
             "UPDATE {p}_dispatch SET lease_until = $1 \
              WHERE run_id = $2 AND status = 'running' AND lease_owner = $3"
         ))
-        .bind((now_ms + lease_ms) as i64)
+        .bind(crate::clock::db_millis(crate::clock::deadline_millis(
+            now_ms, lease_ms,
+        )))
         .bind(&run_id.0)
         .bind(owner)
         .execute(&self.pool)
@@ -899,7 +876,7 @@ impl DispatchQueue for PostgresDispatchStore {
                AND (i.available_at IS NULL OR i.available_at <= $1)\
              )))"
         ))
-        .bind(now_ms as i64)
+        .bind(crate::clock::db_millis(now_ms))
         .fetch_one(&self.pool)
         .await
         .map_err(reject)?;
@@ -921,9 +898,14 @@ impl DispatchQueue for PostgresDispatchStore {
              WHERE status = 'running' AND lease_owner = $2 \
              AND lease_until IS NOT NULL AND lease_until < $3"
         ))
-        .bind((now_ms + lease_ms) as i64)
+        .bind(crate::clock::db_millis(crate::clock::deadline_millis(
+            now_ms, lease_ms,
+        )))
         .bind(owner)
-        .bind((now_ms + lease_ms / 2) as i64)
+        .bind(crate::clock::db_millis(crate::clock::deadline_millis(
+            now_ms,
+            lease_ms / 2,
+        )))
         .execute(&self.pool)
         .await
         .map_err(reject)?;
@@ -1083,7 +1065,7 @@ impl DispatchQueue for PostgresDispatchStore {
              RETURNING dispatch.run_id, candidates.lease_owner, \
                        candidates.lease_epoch, candidates.attempt_count"
         ))
-        .bind(now_ms as i64)
+        .bind(crate::clock::db_millis(now_ms))
         .bind(max_attempts as i64)
         .fetch_all(&mut *tx)
         .await
@@ -1281,12 +1263,12 @@ impl DispatchQueue for PostgresDispatchStore {
             "DELETE FROM {p}_pending WHERE run_id IN \
              (SELECT run_id FROM {p}_dispatch WHERE {cond})"
         ))
-        .bind(cutoff_ms as i64)
+        .bind(crate::clock::db_millis(cutoff_ms))
         .execute(&mut *tx)
         .await
         .map_err(reject)?;
         let result = sqlx::query(&format!("DELETE FROM {p}_dispatch WHERE {cond}"))
-            .bind(cutoff_ms as i64)
+            .bind(crate::clock::db_millis(cutoff_ms))
             .execute(&mut *tx)
             .await
             .map_err(reject)?;
@@ -1360,22 +1342,11 @@ impl DispatchOperationalFeed for PostgresDispatchStore {
 #[async_trait]
 impl Inbox for PostgresDispatchStore {
     async fn append(&self, input: PendingInput) -> Result<bool, DispatchError> {
-        let p = NS;
-        let result = sqlx::query(&format!(
-            "INSERT INTO {p}_pending \
-             (message_id, run_id, thread_id, correlation_id, result, available_at) \
-             VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (message_id) DO NOTHING"
-        ))
-        .bind(&input.message_id)
-        .bind(&input.run_id.0)
-        .bind(&input.thread_id.0)
-        .bind(&input.correlation_id)
-        .bind(Json(&input.result))
-        .bind(input.available_at_ms.map(|t| t as i64))
-        .execute(&self.pool)
-        .await
-        .map_err(reject)?;
-        Ok(result.rows_affected() > 0)
+        let input = normalize_pending_millis(input);
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let inserted = append_pending_transaction(&mut tx, &input).await?;
+        tx.commit().await.map_err(reject)?;
+        Ok(inserted)
     }
 
     async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
@@ -1403,7 +1374,10 @@ impl Inbox for PostgresDispatchStore {
                     run_id: RunId(run_id),
                     thread_id: thread_id.clone(),
                     correlation_id,
-                    available_at_ms: available_at.map(|t| t as u64),
+                    available_at_ms: available_at
+                        .map(crate::clock::millis_from_db)
+                        .transpose()
+                        .map_err(|err| DispatchError::Rejected(err.to_string()))?,
                     result,
                 },
                 revision: revision as u64,
@@ -1467,6 +1441,7 @@ impl Inbox for PostgresDispatchStore {
 #[async_trait]
 impl Outbox for PostgresDispatchStore {
     async fn stage(&self, input: PendingInput) -> Result<bool, DispatchError> {
+        let input = normalize_pending_millis(input);
         let p = NS;
         let result = sqlx::query(&format!(
             "INSERT INTO {p}_outbox (message_id, payload) VALUES ($1, $2) \
@@ -1477,7 +1452,30 @@ impl Outbox for PostgresDispatchStore {
         .execute(&self.pool)
         .await
         .map_err(reject)?;
-        Ok(result.rows_affected() > 0)
+        if result.rows_affected() > 0 {
+            return Ok(true);
+        }
+        let existing = sqlx::query(&format!(
+            "SELECT payload FROM {p}_outbox WHERE message_id = $1"
+        ))
+        .bind(&input.message_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(reject)?
+        .map(|row| {
+            row.try_get::<Json<PendingInput>, _>("payload")
+                .map(|value| value.0)
+        })
+        .transpose()
+        .map_err(reject)?;
+        match existing {
+            Some(existing) if existing == input => Ok(false),
+            Some(_) => Err(idempotency_conflict(&input.message_id, "outbox")),
+            None => Err(DispatchError::Rejected(format!(
+                "outbox `{}` vanished during idempotency validation",
+                input.message_id
+            ))),
+        }
     }
 
     async fn relay(&self) -> Result<usize, DispatchError> {
@@ -1491,24 +1489,12 @@ impl Outbox for PostgresDispatchStore {
         for row in staged {
             let message_id: String = row.try_get("message_id").map_err(reject)?;
             let Json(input): Json<PendingInput> = row.try_get("payload").map_err(reject)?;
+            let input = normalize_pending_millis(input);
 
             // One transaction per message: idempotent target append, then drop
             // the outbox row. A crash before the delete re-appends (a no-op).
             let mut tx = self.pool.begin().await.map_err(reject)?;
-            sqlx::query(&format!(
-                "INSERT INTO {p}_pending \
-                 (message_id, run_id, thread_id, correlation_id, result, available_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (message_id) DO NOTHING"
-            ))
-            .bind(&input.message_id)
-            .bind(&input.run_id.0)
-            .bind(&input.thread_id.0)
-            .bind(&input.correlation_id)
-            .bind(Json(&input.result))
-            .bind(input.available_at_ms.map(|t| t as i64))
-            .execute(&mut *tx)
-            .await
-            .map_err(reject)?;
+            append_pending_transaction(&mut tx, &input).await?;
             sqlx::query(&format!("DELETE FROM {p}_outbox WHERE message_id = $1"))
                 .bind(&message_id)
                 .execute(&mut *tx)
@@ -1599,7 +1585,7 @@ async fn claim_exact_transaction(
     );
     let Some(row) = sqlx::query(&sql)
         .bind(&requested_run.0)
-        .bind(now_ms as i64)
+        .bind(crate::clock::db_millis(now_ms))
         .fetch_optional(&mut **tx)
         .await
         .map_err(reject)?
@@ -1641,14 +1627,14 @@ async fn claim_exact_transaction(
             },
         )?
     };
-    let expires = now_ms + lease_ms;
+    let expires = crate::clock::deadline_millis(now_ms, lease_ms);
     sqlx::query(&format!(
         "UPDATE {p}_dispatch SET status = 'running', lease_owner = $1, lease_until = $2, \
          attempt_count = attempt_count + $3, lease_epoch = $5, worker_assignment = $6, \
          credential_bindings = $7, credential_receipts = $8 WHERE run_id = $4"
     ))
     .bind(owner)
-    .bind(expires as i64)
+    .bind(crate::clock::db_millis(expires))
     .bind(i64::from(status == "running"))
     .bind(&requested_run.0)
     .bind(claim_epoch as i64)
@@ -1704,7 +1690,7 @@ async fn claim_exact_transaction(
          AND (available_at IS NULL OR available_at <= $2) ORDER BY created_at"
     ))
     .bind(&requested_run.0)
-    .bind(now_ms as i64)
+    .bind(crate::clock::db_millis(now_ms))
     .fetch_all(&mut **tx)
     .await
     .map_err(reject)?;
@@ -1719,7 +1705,9 @@ async fn claim_exact_transaction(
             available_at_ms: row
                 .try_get::<Option<i64>, _>("available_at")
                 .map_err(reject)?
-                .map(|time| time as u64),
+                .map(crate::clock::millis_from_db)
+                .transpose()
+                .map_err(|err| DispatchError::Rejected(err.to_string()))?,
             result,
         });
     }
@@ -1738,6 +1726,86 @@ async fn claim_exact_transaction(
         sandbox,
         assignment: worker.map(WorkerAssignment::from),
     }))
+}
+
+/// The one PostgreSQL pending insert path, reused by direct delivery, Inbox
+/// append, and outbox relay so retry/conflict semantics stay transactional.
+async fn append_pending_transaction(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    input: &PendingInput,
+) -> Result<bool, DispatchError> {
+    let prefix = NS;
+    let inserted = sqlx::query(&format!(
+        "INSERT INTO {prefix}_pending \
+         (message_id, run_id, thread_id, correlation_id, result, available_at) \
+         VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (message_id) DO NOTHING"
+    ))
+    .bind(&input.message_id)
+    .bind(&input.run_id.0)
+    .bind(&input.thread_id.0)
+    .bind(&input.correlation_id)
+    .bind(Json(&input.result))
+    .bind(input.available_at_ms.map(crate::clock::db_millis))
+    .execute(&mut **tx)
+    .await
+    .map_err(reject)?;
+    if inserted.rows_affected() > 0 {
+        return Ok(true);
+    }
+    match load_pending_input(&mut **tx, prefix, &input.message_id).await? {
+        Some(existing) if existing == *input => Ok(false),
+        Some(_) => Err(idempotency_conflict(&input.message_id, "pending-input")),
+        None => Err(DispatchError::Rejected(format!(
+            "pending-input `{}` vanished during idempotency validation",
+            input.message_id
+        ))),
+    }
+}
+
+async fn load_pending_input<'e, E>(
+    executor: E,
+    prefix: &str,
+    message_id: &str,
+) -> Result<Option<PendingInput>, DispatchError>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    let row = sqlx::query(&format!(
+        "SELECT run_id, thread_id, correlation_id, result, available_at \
+         FROM {prefix}_pending WHERE message_id = $1"
+    ))
+    .bind(message_id)
+    .fetch_optional(executor)
+    .await
+    .map_err(reject)?;
+    row.map(|row| {
+        let available_at = row
+            .try_get::<Option<i64>, _>("available_at")
+            .map_err(reject)?
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| {
+                DispatchError::Rejected(format!(
+                    "pending-input `{message_id}` has a negative delivery time"
+                ))
+            })?;
+        let Json(result): Json<ResumeResult> = row.try_get("result").map_err(reject)?;
+        Ok(PendingInput {
+            message_id: message_id.to_string(),
+            run_id: RunId(row.try_get("run_id").map_err(reject)?),
+            thread_id: ThreadId(row.try_get("thread_id").map_err(reject)?),
+            correlation_id: row.try_get("correlation_id").map_err(reject)?,
+            available_at_ms: available_at,
+            result,
+        })
+    })
+    .transpose()
+}
+
+fn idempotency_conflict(message_id: &str, aggregate: &str) -> DispatchError {
+    DispatchError::Rejected(format!(
+        "idempotency key `{message_id}` was reused with another {aggregate} payload"
+    ))
 }
 
 fn reject(err: sqlx::Error) -> DispatchError {

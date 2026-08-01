@@ -39,6 +39,17 @@ pub struct ToolOperationContext {
     pub operation_id: String,
 }
 
+impl ToolOperationContext {
+    /// Construct the durable coordinates for one runtime-owned tool operation
+    /// without exposing the agent-contract Run id type to extension crates.
+    pub fn for_run(run_id: impl Into<String>, operation_id: impl Into<String>) -> Self {
+        Self {
+            run_id: Some(RunId(run_id.into())),
+            operation_id: operation_id.into(),
+        }
+    }
+}
+
 /// Return the runtime-owned context of the tool invocation currently entering an
 /// executor. Direct unit invocations have no runtime scope.
 #[must_use]

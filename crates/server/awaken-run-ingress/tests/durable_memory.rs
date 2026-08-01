@@ -14,10 +14,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_ext_builtin_tools::MessageSender;
+use awaken_ext_builtin_tools::{MessageSendRequest, MessageSender};
 use awaken_run_ingress::{
     DispatchOutcome, DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, ManualClock,
-    MemoryDispatchStore, OutboxMessageSender, PendingInput, RunDispatch, RunIngressCapabilities,
+    MemoryDispatchStore, Outbox, OutboxMessageSender, PendingInput, RunDispatch,
+    RunIngressCapabilities,
 };
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress, RunService};
@@ -32,6 +33,16 @@ use harness::{
     FP, SNAP, THREAD, TICKET, activation, input_echo_runtime, schedule_runtime, text_runtime,
     tool_runtime,
 };
+
+fn send_request(target: &str, content: &str, operation_id: &str) -> MessageSendRequest {
+    MessageSendRequest {
+        target_thread: target.to_string(),
+        content: content.to_string(),
+        idempotency_key: None,
+        source_run_id: "source-run".to_string(),
+        operation_id: operation_id.to_string(),
+    }
+}
 
 #[derive(Default)]
 struct RecordingAttemptExecutor {
@@ -958,6 +969,11 @@ async fn cross_thread_outbox_store_spec() {
 }
 
 #[tokio::test]
+async fn message_idempotency_conflicts_store_spec() {
+    harness::assert_message_idempotency_conflicts(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
 async fn staged_delivery_relays_and_resumes_an_awaiting_run() {
     // M3b end to end: an awaiting run is resumed by a cross-thread delivery that is
     // staged in the outbox and relayed to its pending input.
@@ -1004,6 +1020,11 @@ async fn staged_delivery_relays_and_resumes_an_awaiting_run() {
 #[tokio::test]
 async fn scheduled_delivery_due_store_spec() {
     harness::assert_scheduled_due(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn millis_boundaries_store_spec() {
+    harness::assert_millis_boundaries(&MemoryDispatchStore::new()).await;
 }
 
 #[tokio::test]
@@ -1203,7 +1224,6 @@ async fn cancellation_does_not_materialize_the_model_or_credentials() {
 #[tokio::test]
 async fn send_message_cannot_approve_a_threads_pending_tool() {
     use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
-    use awaken_ext_builtin_tools::MessageSender;
     use awaken_run_ingress::OutboxMessageSender;
 
     let (runtime, ran) = tool_runtime();
@@ -1223,13 +1243,17 @@ async fn send_message_cannot_approve_a_threads_pending_tool() {
     // The send_message host adapter, addressed by thread, stages a delivery.
     let sender = OutboxMessageSender::new(store.clone(), commit.clone() as Arc<dyn ThreadReader>);
     sender
-        .send("thread-1", "hello from another agent")
+        .send(send_request(
+            "thread-1",
+            "hello from another agent",
+            "permission-send",
+        ))
         .await
         .expect("send to an awaiting thread");
     // Sending to a thread with no awaiting run is staged unbound (ADR-0021), not
     // an error: it is held for that thread's next run.
     sender
-        .send("thread-2", "for later")
+        .send(send_request("thread-2", "for later", "idle-send"))
         .await
         .expect("idle-thread send is queued");
 
@@ -1408,7 +1432,7 @@ async fn send_message_to_an_idle_thread_feeds_the_next_run() {
     // Agent A messages a thread with no run in flight: it is staged unbound.
     let sender = OutboxMessageSender::new(store.clone(), commit.clone());
     sender
-        .send(THREAD, "hello from A")
+        .send(send_request(THREAD, "hello from A", "idle-next-run"))
         .await
         .expect("send to idle thread");
 
@@ -1445,6 +1469,90 @@ async fn send_message_to_an_idle_thread_feeds_the_next_run() {
             .unwrap()
             .is_empty(),
         "the unbound input is consumed"
+    );
+}
+
+#[tokio::test]
+async fn send_message_identity_is_stable_across_sender_instances_and_optional_keys() {
+    // CE-SM4..SM7 decision rules:
+    // - same operation across a replacement sender -> one durable message;
+    // - distinct operations -> distinct messages;
+    // - an optional caller key dedupes distinct operations in the same source Run;
+    // - reusing that key with changed payload -> explicit conflict;
+    // - the same caller key in another source Run -> a distinct message.
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let first = OutboxMessageSender::new(store.clone(), commit.clone());
+    let replacement = OutboxMessageSender::new(store.clone(), commit);
+
+    first
+        .send(send_request(THREAD, "retry", "stable-op"))
+        .await
+        .unwrap();
+    replacement
+        .send(send_request(THREAD, "retry", "stable-op"))
+        .await
+        .unwrap();
+    replacement
+        .send(send_request(THREAD, "second", "different-op"))
+        .await
+        .unwrap();
+
+    let keyed = |content: &str, operation: &str| MessageSendRequest {
+        target_thread: THREAD.to_string(),
+        content: content.to_string(),
+        idempotency_key: Some("caller-key".to_string()),
+        source_run_id: "source-run".to_string(),
+        operation_id: operation.to_string(),
+    };
+    first.send(keyed("keyed", "key-op-1")).await.unwrap();
+    replacement.send(keyed("keyed", "key-op-2")).await.unwrap();
+    let conflict = replacement
+        .send(keyed("changed", "key-op-3"))
+        .await
+        .expect_err("changed payload under one optional key must conflict");
+    assert!(conflict.to_string().contains("idempotency key"));
+
+    replacement
+        .send(MessageSendRequest {
+            target_thread: THREAD.to_string(),
+            content: "cross-run".to_string(),
+            idempotency_key: Some("caller-key".to_string()),
+            source_run_id: "another-source-run".to_string(),
+            operation_id: "key-op-4".to_string(),
+        })
+        .await
+        .expect("the same caller key in another source Run is a distinct identity");
+
+    assert_eq!(store.relay().await.unwrap(), 4);
+    let messages = store.list(&ThreadId(THREAD.to_string())).await.unwrap();
+    assert_eq!(messages.len(), 4);
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| {
+                matches!(&message.input.result, ResumeResult::Input(text) if text == "retry")
+            })
+            .count(),
+        1
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| {
+                matches!(&message.input.result, ResumeResult::Input(text) if text == "keyed")
+            })
+            .count(),
+        1
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| {
+                matches!(&message.input.result, ResumeResult::Input(text) if text == "cross-run")
+            })
+            .count(),
+        1
     );
 }
 

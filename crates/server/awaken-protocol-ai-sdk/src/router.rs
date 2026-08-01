@@ -30,7 +30,7 @@ use awaken_protocol_transport::{
 };
 use awaken_tenancy::ResolvedResourceId;
 
-use crate::encoder::{AiSdkEncoder, encode_close, encode_history, encode_step};
+use crate::encoder::{AiSdkEncoder, encode_history, encode_step};
 use crate::request::{DecisionKind, process_request, result_text};
 use crate::types::{AiSdkChatRequest, UIStreamEvent, attach_usage};
 
@@ -188,16 +188,11 @@ fn stream_turn(
                 }
             }
         }
-        // Close any open live text block, then append the committed tail (streamed)
-        // or the full committed projection (nothing streamed).
-        let streamed = transcoder.has_streamed();
-        let mut close = transcoder.finalize();
-        close.extend(match turn.await {
-            Ok(Ok(outcome)) if streamed => encode_close(&outcome),
-            Ok(Ok(outcome)) => encode_step(&outcome),
-            Ok(Err(err)) => error_events(err),
-            Err(_) => error_events(DriverError::Internal("turn task cancelled".into())),
-        });
+        let mut close = match turn.await {
+            Ok(Ok(outcome)) => transcoder.complete(&outcome),
+            Ok(Err(err)) => transcoder.fail(driver_error_message(err)),
+            Err(_) => transcoder.fail("turn task cancelled"),
+        };
         // The AI SDK `finish` part carries the run's token accounting.
         attach_usage(&mut close, rt_usage.usage(&thread_usage).await);
         for event in close {
@@ -339,13 +334,17 @@ fn sse_response(events: Vec<UIStreamEvent>) -> Response {
 
 /// The AI SDK error tail (`error` + `finish("error")`).
 fn error_events(err: DriverError) -> Vec<UIStreamEvent> {
-    let message = match err {
-        DriverError::BadRequest(m) | DriverError::Internal(m) => m,
-    };
+    let message = driver_error_message(err);
     vec![
         UIStreamEvent::error(message),
         UIStreamEvent::finish("error"),
     ]
+}
+
+fn driver_error_message(err: DriverError) -> String {
+    match err {
+        DriverError::BadRequest(message) | DriverError::Internal(message) => message,
+    }
 }
 
 /// A single buffered SSE error stream (AI SDK errors use `errorText`).

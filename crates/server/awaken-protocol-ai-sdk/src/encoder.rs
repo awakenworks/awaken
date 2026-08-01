@@ -3,7 +3,7 @@
 //! owns the AI SDK *transcoder* — the `Fact -> UIStreamEvent` mapping — and
 //! the history read-model fold.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
@@ -26,14 +26,14 @@ use crate::types::{UIStreamEvent, history_message, text_parts};
 pub struct AiSdkEncoder {
     /// `start`/`start-step` already emitted (idempotent on a repeated `RunStarted`).
     started: bool,
-    /// At least one live increment flowed — the router uses this to pick the
-    /// committed tail (`encode_close`) over the full projection (`encode_step`).
-    streamed: bool,
+    /// Assistant text actually projected live. A dropped reasoning delta must
+    /// not suppress the authoritative committed assistant message.
+    streamed_text: bool,
     /// The id of the open live text block, if a text run is currently streaming.
     open_text: Option<String>,
     text_seq: usize,
     /// Call ids that already emitted `tool-input-start` live.
-    tools: HashSet<String>,
+    tools: BTreeSet<String>,
 }
 
 impl AiSdkEncoder {
@@ -41,22 +41,66 @@ impl AiSdkEncoder {
         Self::default()
     }
 
-    /// True once any live increment has been emitted, so the router knows to append
-    /// the committed *tail* rather than the full committed projection.
-    pub fn has_streamed(&self) -> bool {
-        self.streamed
-    }
-
-    /// Close any open live text run at stream end (before the committed tail).
-    pub fn finalize(&mut self) -> Vec<UIStreamEvent> {
-        self.close_text()
-    }
-
     fn close_text(&mut self) -> Vec<UIStreamEvent> {
         match self.open_text.take() {
             Some(id) => vec![UIStreamEvent::TextEnd { id }],
             None => Vec::new(),
         }
+    }
+
+    /// Complete one stream through the same stateful encoder that projected its
+    /// live prefix. Committed tool availability/output remains authoritative;
+    /// assistant text is omitted only when text was actually projected live.
+    pub fn complete(&mut self, outcome: &StepOutcome) -> Vec<UIStreamEvent> {
+        let pending = outcome
+            .pending()
+            .map(|pending| (pending.tool_use_id.as_str(), pending.client_executed));
+        let events = fold_messages(&outcome.new_messages, pending);
+        let committed_tools = events
+            .iter()
+            .filter_map(|event| match event {
+                Fact::ToolCall { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let live_only = self
+            .tools
+            .difference(&committed_tools)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut output = self.fact(&Fact::RunStarted);
+        output.extend(self.close_text());
+        for event in &events {
+            if self.streamed_text && matches!(event, Fact::AssistantMessage { .. }) {
+                continue;
+            }
+            output.extend(self.fact(event));
+        }
+        self.tools.clear();
+        output.extend(self.fact(&if live_only.is_empty() {
+            outcome.terminal_event()
+        } else {
+            Fact::RunFailed {
+                code: "stream_reconciliation_failed".to_string(),
+                message: format!(
+                    "live tool inputs missing from committed outcome: {}",
+                    live_only.join(", ")
+                ),
+            }
+        }));
+        output
+    }
+
+    pub fn fail(&mut self, message: impl Into<String>) -> Vec<UIStreamEvent> {
+        let mut output = self.fact(&Fact::RunStarted);
+        output.extend(self.close_text());
+        self.tools.clear();
+        output.extend(self.fact(&Fact::RunFailed {
+            code: "stream_failed".to_string(),
+            message: message.into(),
+        }));
+        output
     }
 }
 
@@ -138,9 +182,9 @@ impl Transcoder for AiSdkEncoder {
     }
 
     fn delta(&mut self, delta: &Delta) -> Vec<UIStreamEvent> {
-        self.streamed = true;
         match delta {
             Delta::TextDelta { delta } => {
+                self.streamed_text = true;
                 let mut out = Vec::new();
                 let id = match &self.open_text {
                     Some(id) => id.clone(),
@@ -189,36 +233,7 @@ impl Transcoder for AiSdkEncoder {
 /// Project one committed step into an ordered UI Message Stream. Each response is a
 /// self-contained stream: `start` … `finish`.
 pub fn encode_step(outcome: &StepOutcome) -> Vec<UIStreamEvent> {
-    let pending = outcome
-        .pending()
-        .map(|p| (p.tool_use_id.as_str(), p.client_executed));
-    let mut events = vec![Fact::RunStarted];
-    events.extend(fold_messages(&outcome.new_messages, pending));
-    // The terminal event owns the failed / awaiting / finished distinction — a fault
-    // becomes `RunFailed`, which transcodes to `error` + `finish("error")`.
-    events.push(outcome.terminal_event());
-    AiSdkEncoder::new().transcode_facts(&events)
-}
-
-/// Project the *authoritative tail* of a committed step, for a turn whose
-/// in-flight prefix — `start`/`start-step`, streamed `text-*`, and
-/// `tool-input-start`/`tool-input-delta` — was already emitted live (see
-/// the encoder's live `delta()`). Drops `RunStarted` (already `start`ed) and
-/// assistant text (already streamed as deltas); keeps the parsed authoritative
-/// `tool-input-available`, any tool output, and the `finish` frames. The live
-/// prefix plus this tail form one well-formed UI Message Stream.
-pub fn encode_close(outcome: &StepOutcome) -> Vec<UIStreamEvent> {
-    let pending = outcome
-        .pending()
-        .map(|p| (p.tool_use_id.as_str(), p.client_executed));
-    let mut events = fold_messages(&outcome.new_messages, pending);
-    // Same terminal event as `encode_step` (a fault closes with `error` +
-    // `finish("error")`); the live prefix already carried `start`/`start-step`.
-    events.push(outcome.terminal_event());
-    // The live channel already carried `start`/`start-step` and every text delta;
-    // emitting them again would double the stream. Keep only tool + finish frames.
-    events.retain(|e| !matches!(e, Fact::AssistantMessage { .. }));
-    AiSdkEncoder::new().transcode_facts(&events)
+    AiSdkEncoder::new().complete(outcome)
 }
 
 /// Parse a tool result's text as JSON, falling back to a string.
@@ -328,7 +343,6 @@ mod tests {
         out.extend(enc.delta(&tcd("c1", "read", "")));
         out.extend(enc.delta(&tcd("c1", "read", "{\"path\":")));
         out.extend(enc.delta(&tcd("c1", "read", "\"x\"}")));
-        out.extend(enc.finalize());
         assert_eq!(
             out,
             vec![
@@ -359,7 +373,7 @@ mod tests {
                 },
             ]
         );
-        assert!(enc.has_streamed());
+        assert!(enc.streamed_text);
     }
 
     #[test]
@@ -367,7 +381,6 @@ mod tests {
         let mut enc = AiSdkEncoder::new();
         let mut out = enc.fact(&Fact::RunStarted);
         out.extend(enc.delta(&tcd("c1", "read", "{}")));
-        out.extend(enc.finalize());
         assert!(out.iter().all(|e| !matches!(
             e,
             UIStreamEvent::Finish { .. }
@@ -461,7 +474,9 @@ mod tests {
             "finish(error): {step:?}",
         );
         // A streamed step's tail: error + finish("error") (prefix already emitted).
-        let close = encode_close(&outcome);
+        let mut encoder = AiSdkEncoder::new();
+        encoder.fact(&Fact::RunStarted);
+        let close = encoder.complete(&outcome);
         assert!(
             close
                 .iter()
@@ -497,7 +512,7 @@ mod tests {
 
     // REGRESSION (the live-merge, ADR-0058 Axis 9): a streamed step's committed
     // tail must NOT re-emit assistant text — the live `delta()` already streamed it
-    // as `text-*`. `encode_close` drops the `AssistantMessage`, so the tail carries
+    // as `text-*`. Stateful completion drops the `AssistantMessage`, so the tail carries
     // only tool/finish frames. If that drop regressed, the client would see the
     // assistant text twice.
     #[test]
@@ -510,15 +525,25 @@ mod tests {
             )],
             terminal: Terminal::Finished,
         };
-        let tail = encode_close(&outcome);
+        let mut encoder = AiSdkEncoder::new();
+        encoder.fact(&Fact::RunStarted);
+        encoder.delta(&Delta::TextDelta {
+            delta: "hello there".into(),
+        });
+        let tail = encoder.complete(&outcome);
         assert!(
             tail.iter().all(|e| !matches!(
                 e,
-                UIStreamEvent::TextStart { .. }
-                    | UIStreamEvent::TextDelta { .. }
-                    | UIStreamEvent::TextEnd { .. }
+                UIStreamEvent::TextStart { .. } | UIStreamEvent::TextDelta { .. }
             )),
             "the committed tail must not re-emit streamed text: {tail:?}"
+        );
+        assert_eq!(
+            tail.iter()
+                .filter(|event| matches!(event, UIStreamEvent::TextEnd { .. }))
+                .count(),
+            1,
+            "completion closes the live text run exactly once: {tail:?}"
         );
         // A non-streamed full projection DOES carry the text (nothing streamed it).
         let full = encode_step(&outcome);
@@ -600,7 +625,17 @@ mod tests {
                 }),
             },
         };
-        let events = encode_close(&outcome);
+        let mut encoder = AiSdkEncoder::new();
+        encoder.fact(&Fact::RunStarted);
+        encoder.delta(&Delta::TextDelta {
+            delta: "let me read".into(),
+        });
+        encoder.delta(&Delta::ToolCallDelta {
+            id: "c1".into(),
+            name: "read".into(),
+            args_delta: "{\"path\":\"x\"}".into(),
+        });
+        let events = encoder.complete(&outcome);
         // No start/step/text — those were streamed live.
         assert!(events.iter().all(|e| !matches!(
             e,
@@ -617,6 +652,58 @@ mod tests {
                 if tool_call_id == "c1" && input == &json!({"path": "x"})
         )));
         assert!(events.contains(&UIStreamEvent::finish("tool-calls")));
+    }
+
+    #[test]
+    fn reasoning_only_prefix_keeps_committed_text_without_restarting_stream() {
+        // CE-AI3/AI4: a non-projected reasoning delta is not visible text.
+        // Completion emits the committed answer and does not repeat start frames.
+        let outcome = StepOutcome {
+            new_messages: vec![Message::text(Id("a1".into()), Role::Assistant, "answer")],
+            terminal: Terminal::Finished,
+        };
+        let mut encoder = AiSdkEncoder::new();
+        assert_eq!(encoder.fact(&Fact::RunStarted).len(), 2);
+        assert!(
+            encoder
+                .delta(&Delta::ReasoningDelta {
+                    delta: "hmm".into()
+                })
+                .is_empty()
+        );
+        let events = encoder.complete(&outcome);
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, UIStreamEvent::Start | UIStreamEvent::StartStep))
+        );
+        assert!(events.iter().any(
+            |event| matches!(event, UIStreamEvent::TextDelta { delta, .. } if delta == "answer")
+        ));
+    }
+
+    #[test]
+    fn live_tool_missing_from_committed_outcome_fails_closed() {
+        // CE-AI9: tool-input-start without a committed ToolCall cannot receive an
+        // authoritative input-available frame, so completion terminates as error.
+        let mut encoder = AiSdkEncoder::new();
+        encoder.delta(&Delta::ToolCallDelta {
+            id: "c1".into(),
+            name: "read".into(),
+            args_delta: "{".into(),
+        });
+        let events = encoder.complete(&StepOutcome {
+            new_messages: Vec::new(),
+            terminal: Terminal::Finished,
+        });
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, UIStreamEvent::Error { .. }))
+        );
+        assert!(events.iter().any(
+            |event| matches!(event, UIStreamEvent::Finish { finish_reason: Some(reason), .. } if reason == "error")
+        ));
     }
 
     #[test]
