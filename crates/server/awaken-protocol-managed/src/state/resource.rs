@@ -36,7 +36,7 @@ pub(crate) enum ParsedInputTarget {
     MemoryStore(awaken_resource_contract::MemoryStoreId),
     Repository {
         remote_url: String,
-        credential_binding: Option<String>,
+        authorization_token: Option<crate::types::resource::RepositoryAuthorizationToken>,
         initial_branch: Option<String>,
         initial_commit: Option<String>,
     },
@@ -51,6 +51,106 @@ pub(crate) struct ParsedSessionInput {
 }
 
 pub(crate) const MAX_SESSION_FILE_RESOURCES: usize = 500;
+
+impl ManagedState {
+    /// Lower all create-time Managed resources through the sole Resource Catalog
+    /// and Vault ingress into the shared Session attachment language.
+    pub(crate) async fn lower_session_input_attachments(
+        &self,
+        session_id: &str,
+        owner_scope: &str,
+        resources: &[ParsedSessionInput],
+        agent_defaults: &[awaken_resource_contract::InputBinding],
+    ) -> Result<Vec<awaken_session_contract::SessionInputAttachment>, StateError> {
+        let mut attachments = Vec::with_capacity(resources.len());
+        for (index, resource) in resources.iter().enumerate() {
+            let repository_id = if let ParsedInputTarget::Repository {
+                remote_url,
+                authorization_token,
+                initial_branch,
+                initial_commit,
+            } = &resource.target
+            {
+                let catalog = self.resource_catalog.as_ref().ok_or_else(|| {
+                    StateError::Run(RunError::bad_request(
+                        "repository resources require a configured Resource Catalog",
+                    ))
+                })?;
+                let repository_id = format!("managed:{session_id}:repository:{index}");
+                let credential_binding = match authorization_token.clone() {
+                    Some(token) => {
+                        let ingress = self.repository_credential_ingress.as_ref().ok_or_else(|| {
+                            StateError::Run(RunError::bad_request(
+                                "repository authorization requires a configured credential Vault",
+                            ))
+                        })?;
+                        Some(
+                            ingress
+                                .enter_repository_token(
+                                    awaken_credential_vault::CredentialSourceId(format!(
+                                        "managed:{session_id}:repository:{index}:credential"
+                                    )),
+                                    owner_scope,
+                                    token.into_redacted(),
+                                )
+                                .await
+                                .map_err(|error| {
+                                    StateError::Run(RunError::bad_request(format!(
+                                        "repository authorization could not be sealed: {error}"
+                                    )))
+                                })?
+                                .0,
+                        )
+                    }
+                    None => None,
+                };
+                catalog
+                    .create_repository(
+                        awaken_resource_contract::RepositoryDefinition {
+                            id: repository_id.clone().into(),
+                            workspace_id: owner_scope.to_string(),
+                            name: format!("Session repository {index}"),
+                            description: "Managed compatibility Session input".into(),
+                            metadata: Default::default(),
+                            state: awaken_resource_contract::ResourceState::Active,
+                            current_config_version:
+                                awaken_resource_contract::ConfigVersion::INITIAL,
+                            timestamps: Default::default(),
+                        },
+                        awaken_resource_contract::RepositoryConfigVersion {
+                            repository_id: repository_id.clone().into(),
+                            version: awaken_resource_contract::ConfigVersion::INITIAL,
+                            remote_url: remote_url.clone(),
+                            credential_binding,
+                            initial_branch: initial_branch.clone(),
+                            initial_commit: initial_commit.clone(),
+                            clone_policy: awaken_resource_contract::ClonePolicy::default(),
+                        },
+                    )
+                    .map_err(|error| {
+                        StateError::Run(RunError::bad_request(format!(
+                            "repository resource could not be configured: {error}"
+                        )))
+                    })?;
+                Some(awaken_resource_contract::RepositoryId::from(repository_id))
+            } else {
+                None
+            };
+            let binding = input_binding(
+                format!("session:{session_id}:input:{index}"),
+                resource,
+                repository_id,
+            );
+            let normalized = binding.mount_path.trim_start_matches('/');
+            let replaces = agent_defaults
+                .iter()
+                .find(|default| default.mount_path.trim_start_matches('/') == normalized)
+                .map(|default| default.binding_id.clone());
+            attachments.push(awaken_session_contract::SessionInputAttachment { binding, replaces });
+        }
+        Ok(attachments)
+    }
+}
 
 impl ResourceInput {
     pub(crate) fn to_parsed_input(&self) -> ParsedSessionInput {
@@ -81,7 +181,7 @@ impl ResourceInput {
             },
             ResourceInput::GithubRepository {
                 url,
-                credential_binding,
+                authorization_token,
                 mount_path,
                 checkout,
             } => ParsedSessionInput {
@@ -90,7 +190,7 @@ impl ResourceInput {
                     .unwrap_or_else(|| format!("/workspace/{}", repo_name(url))),
                 target: ParsedInputTarget::Repository {
                     remote_url: url.clone(),
-                    credential_binding: credential_binding.clone(),
+                    authorization_token: authorization_token.clone(),
                     initial_branch: match checkout {
                         Some(RepositoryCheckout::Branch { name }) => Some(name.clone()),
                         Some(RepositoryCheckout::Commit { .. }) | None => None,

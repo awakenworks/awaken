@@ -593,7 +593,7 @@ impl ManagedState {
 
     pub(super) async fn create_session_with_identity(
         &self,
-        req: SessionCreateParams,
+        mut req: SessionCreateParams,
         workspace_id: Option<String>,
         explicit_id: Option<String>,
     ) -> Result<Session, StateError> {
@@ -765,8 +765,7 @@ impl ManagedState {
                 "a Session supports at most {MAX_SESSION_MEMORY_STORES} memory stores"
             ))));
         }
-        let resources = req
-            .resources
+        let resources = std::mem::take(&mut req.resources)
             .iter()
             .map(crate::types::resource::ResourceInput::to_parsed_input)
             .collect::<Vec<_>>();
@@ -788,65 +787,9 @@ impl ManagedState {
             .as_ref()
             .map(|view| view.resources.as_slice())
             .unwrap_or_default();
-        let mut attachments = Vec::with_capacity(resources.len());
-        for (index, resource) in resources.iter().enumerate() {
-            let repository_id = if let ParsedInputTarget::Repository {
-                remote_url,
-                credential_binding,
-                initial_branch,
-                initial_commit,
-            } = &resource.target
-            {
-                let catalog = self.resource_catalog.as_ref().ok_or_else(|| {
-                    StateError::Run(RunError::bad_request(
-                        "repository resources require a configured Resource Catalog",
-                    ))
-                })?;
-                let repository_id = format!("managed:{id}:repository:{index}");
-                catalog
-                    .create_repository(
-                        awaken_resource_contract::RepositoryDefinition {
-                            id: repository_id.clone().into(),
-                            workspace_id: owner_scope.clone(),
-                            name: format!("Session repository {index}"),
-                            description: "Managed compatibility Session input".into(),
-                            metadata: Default::default(),
-                            state: awaken_resource_contract::ResourceState::Active,
-                            current_config_version:
-                                awaken_resource_contract::ConfigVersion::INITIAL,
-                            timestamps: Default::default(),
-                        },
-                        awaken_resource_contract::RepositoryConfigVersion {
-                            repository_id: repository_id.clone().into(),
-                            version: awaken_resource_contract::ConfigVersion::INITIAL,
-                            remote_url: remote_url.clone(),
-                            credential_binding: credential_binding.clone(),
-                            initial_branch: initial_branch.clone(),
-                            initial_commit: initial_commit.clone(),
-                            clone_policy: awaken_resource_contract::ClonePolicy::default(),
-                        },
-                    )
-                    .map_err(|error| {
-                        StateError::Run(RunError::bad_request(format!(
-                            "repository resource could not be configured: {error}"
-                        )))
-                    })?;
-                Some(awaken_resource_contract::RepositoryId::from(repository_id))
-            } else {
-                None
-            };
-            let binding = input_binding(
-                format!("session:{id}:input:{index}"),
-                resource,
-                repository_id,
-            );
-            let normalized = binding.mount_path.trim_start_matches('/');
-            let replaces = agent_defaults
-                .iter()
-                .find(|default| default.mount_path.trim_start_matches('/') == normalized)
-                .map(|default| default.binding_id.clone());
-            attachments.push(awaken_session_contract::SessionInputAttachment { binding, replaces });
-        }
+        let attachments = self
+            .lower_session_input_attachments(&id, &owner_scope, &resources, agent_defaults)
+            .await?;
         // Resolve the session's environment (defaulting to the local one) and its
         // networking policy once, for both the SessionInit (staged before the first
         // turn) and the echoed Session object.

@@ -207,6 +207,25 @@ pub trait SessionCredentialSource: Send + Sync {
     ) -> Result<awaken_credential_contract::CredentialAccess, String>;
 }
 
+/// Write-only repository credential ingress. Implementations must seal material
+/// before returning the opaque binding consumed by Session compilation.
+#[async_trait::async_trait]
+pub trait RepositoryCredentialIngress: Send + Sync {
+    async fn enter_repository_token(
+        &self,
+        source_id: CredentialSourceId,
+        workspace_id: &str,
+        token: RedactedString,
+    ) -> Result<CredentialSourceId, String>;
+
+    async fn rotate_repository_token(
+        &self,
+        source_id: &CredentialSourceId,
+        workspace_id: &str,
+        token: RedactedString,
+    ) -> Result<(), String>;
+}
+
 impl VaultState {
     /// Build the vault surface over the credential domain's secret store + repo.
     pub fn new(secrets: Arc<dyn SecretStore>, credentials: Arc<dyn CredentialRepo>) -> Self {
@@ -567,6 +586,64 @@ impl SessionCredentialSource for VaultState {
         VaultState::credential_access_for_source(self, source_id, workspace_id, usage, policy)
             .await
             .map_err(|error| error.to_string())
+    }
+}
+
+#[async_trait::async_trait]
+impl RepositoryCredentialIngress for VaultState {
+    async fn enter_repository_token(
+        &self,
+        source_id: CredentialSourceId,
+        workspace_id: &str,
+        token: RedactedString,
+    ) -> Result<CredentialSourceId, String> {
+        let entry = awaken_credential_vault::repo::enter_credential_idempotent(
+            source_id,
+            DomainCredentialCreateParams {
+                workspace_id: workspace_id.to_string(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("github_repository".into()),
+                env_key: None,
+                secret: Some(token),
+                oauth_command: None,
+            },
+            None,
+            self.secrets.as_ref(),
+            self.credentials.as_ref(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        Ok(entry.source.id)
+    }
+
+    async fn rotate_repository_token(
+        &self,
+        source_id: &CredentialSourceId,
+        workspace_id: &str,
+        token: RedactedString,
+    ) -> Result<(), String> {
+        let current = self
+            .credentials
+            .get(source_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if current.workspace_id != workspace_id
+            || current.provider_id.as_deref() != Some("github_repository")
+        {
+            return Err("repository credential binding is unavailable in this Workspace".into());
+        }
+        rotate_credential_materials(
+            source_id,
+            CredentialMaterialPatch {
+                primary: Some(token),
+                auxiliary: BTreeMap::new(),
+            },
+            self.secrets.as_ref(),
+            self.credentials.as_ref(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        Ok(())
     }
 }
 
