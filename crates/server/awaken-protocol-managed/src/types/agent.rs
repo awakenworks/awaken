@@ -16,33 +16,18 @@ pub use awaken_session_contract::{
 
 use crate::types::{ModelConfig, ModelConfigParams};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UrlMcpServer {
-    pub name: String,
-    pub url: String,
-    #[serde(rename = "type")]
-    pub kind: UrlMcpServerKind,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub prompts_as_skills: bool,
-}
-
 fn is_false(value: &bool) -> bool {
     !*value
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum UrlMcpServerKind {
-    #[serde(rename = "url")]
-    Url,
-}
-
-/// Effective MCP binding projected in Agent and Session responses. `url` is the
+/// One Agent-owned MCP binding on both request and response wires. `url` is the
 /// Managed Agents-compatible variant; `sandbox_stdio` is an Awaken extension
-/// for an executable realized inside the Session Environment.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum McpServerView {
+/// whose executable is realized inside the Session Environment. Keeping one
+/// tagged union prevents create, update, override, and response projections from
+/// developing separate transport vocabularies.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentMcpServer {
     Url {
         name: String,
         url: String,
@@ -57,6 +42,15 @@ pub enum McpServerView {
         #[serde(default, skip_serializing_if = "is_false")]
         prompts_as_skills: bool,
     },
+}
+
+impl AgentMcpServer {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Url { name, .. } | Self::SandboxStdio { name, .. } => name,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,7 +191,7 @@ pub struct AgentCreateParams {
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
     #[serde(default)]
-    pub mcp_servers: Vec<UrlMcpServer>,
+    pub mcp_servers: Vec<AgentMcpServer>,
     #[serde(default)]
     pub skills: Vec<AgentSkill>,
     #[serde(default)]
@@ -226,7 +220,7 @@ pub struct AgentUpdateParams {
     #[serde(default, deserialize_with = "super::presence::double_option")]
     pub metadata: Option<Option<BTreeMap<String, Option<String>>>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
-    pub mcp_servers: Option<Option<Vec<UrlMcpServer>>>,
+    pub mcp_servers: Option<Option<Vec<AgentMcpServer>>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
     pub skills: Option<Option<Vec<AgentSkill>>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
@@ -317,7 +311,7 @@ pub struct Agent {
     pub model: ModelConfig,
     pub system: Option<String>,
     pub metadata: BTreeMap<String, String>,
-    pub mcp_servers: Vec<McpServerView>,
+    pub mcp_servers: Vec<AgentMcpServer>,
     pub skills: Vec<AgentSkill>,
     pub tools: Vec<AgentTool>,
     pub multiagent: Option<MultiagentConfig>,
@@ -362,7 +356,10 @@ mod tests {
                     }
                 }
             },
-            "mcp_servers": [{"type":"url","name":"docs","url":"https://mcp.test"}],
+            "mcp_servers": [
+                {"type":"url","name":"docs","url":"https://mcp.test"},
+                {"type":"sandbox_stdio","name":"browser","command":"playwright-mcp","args":["--headless"]}
+            ],
             "skills": [{"type":"custom","skill_id":"skill_1","version":"2"}],
             "tools": [
                 {"type":"agent_toolset_20260401","configs":[{"name":"bash","enabled":false}]},
@@ -386,11 +383,33 @@ mod tests {
             panic!("custom tool retained its variant")
         };
         assert_eq!(input_schema.keywords["additionalProperties"], false);
+        assert!(matches!(
+            &parsed.mcp_servers[1],
+            AgentMcpServer::SandboxStdio { name, command, args, .. }
+                if name == "browser" && command == "playwright-mcp" && args == &["--headless"]
+        ));
         assert_eq!(parsed.x_awaken.unwrap().max_steps, Some(40));
+
+        let update: AgentUpdateParams = serde_json::from_value(json!({
+            "version": 3,
+            "mcp_servers": [{
+                "type": "sandbox_stdio",
+                "name": "browser",
+                "command": "playwright-mcp",
+                "args": ["--headless"]
+            }]
+        }))
+        .expect("update uses the same tagged MCP union");
+        assert!(matches!(
+            update.mcp_servers,
+            Some(Some(ref servers))
+                if matches!(&servers[0], AgentMcpServer::SandboxStdio { command, .. } if command == "playwright-mcp")
+        ));
 
         for invalid in [
             json!({"name":"x","model":"m","skills":[{"type":"unknown","skill_id":"s"}]}),
             json!({"name":"x","model":"m","mcp_servers":[{"type":"url","name":"s","uri":"https://x"}]}),
+            json!({"name":"x","model":"m","mcp_servers":[{"type":"sandbox_stdio","name":"s","command":"tool","env":{}}]}),
             json!({"name":"x","model":"m","tools":[{"type":"mcp_toolset","mcp_server":"s"}]}),
             json!({"name":"x","model":"m","x_awaken":{"step_limit":40}}),
         ] {
