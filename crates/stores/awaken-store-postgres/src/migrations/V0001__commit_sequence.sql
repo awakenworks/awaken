@@ -1,4 +1,5 @@
 -- commit sequence: lock-free monotonic allocation for the commit PK
+-- migration-allow-edit: the scoped ledger is the sole exactly-once creation guard
 --
 -- The commit PK (`{prefix}_commit.sequence`) must be allocated race-free across a
 -- multi-node fleet AND across parallel drives in one process. The portable schema
@@ -14,7 +15,7 @@
 -- create/seed and a late-joining node never rewinds the counter. Seeding jumps the
 -- sequence past any pre-existing `sequence` so an upgraded, already-populated
 -- database continues without colliding on the PK.
-CREATE SEQUENCE IF NOT EXISTS {prefix}_commit_seq;
+CREATE SEQUENCE {prefix}_commit_seq;
 
 SELECT setval(
     '{prefix}_commit_seq',
