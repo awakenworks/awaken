@@ -77,9 +77,8 @@ stringData:
     credential_db = "postgres://postgres:test@postgres:5432/credentials" # awaken-allow: secret
     config_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
     admin_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
-    # Environment definitions are authored through Control's port and consumed by
-    # Coordinator; this explicit shared backend is not a Session database grant.
-    environment_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
+    # Static Environment definitions and sandbox-policy versions are Control facts.
+    environment_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
   coordinator.toml: |
     data_dir = "/var/lib/awaken/coordinator"
     bind = "0.0.0.0:3000"
@@ -93,7 +92,6 @@ stringData:
     # database capacity is sized for every owner repository across all replicas.
     postgres_max_connections = 32
     resource_database_url = "postgres://postgres:test@postgres:5432/resources" # awaken-allow: secret
-    environment_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
     sessions_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
     executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
     control_internal_url = "http://control:3000"

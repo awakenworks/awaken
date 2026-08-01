@@ -125,7 +125,7 @@ async fn session_carries_the_exact_frozen_environment_network() {
         ManagedState::new_with_mcp(CapturingFake {
             egress: egress.clone(),
         })
-        .with_environments(env_state.clone()),
+        .with_environments(env_state.execution()),
     );
     let app = router(managed).merge(environments_router(env_state));
 
@@ -202,7 +202,7 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
         ManagedState::new_with_mcp(CapturingFake {
             egress: egress.clone(),
         })
-        .with_environments(env_state.clone()),
+        .with_environments(env_state.execution()),
     );
     let app = router(managed).merge(environments_router(env_state));
 
@@ -277,7 +277,7 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
     .await;
     create_session(&app, &packages, false).await;
     let expected = awaken_protocol_managed::SessionNetworkPolicy::Allowlist {
-        hosts: awaken_session_contract::env_registry::PUBLIC_PACKAGE_REGISTRY_HOSTS
+        hosts: awaken_environment_contract::PUBLIC_PACKAGE_REGISTRY_HOSTS
             .iter()
             .map(ToString::to_string)
             .collect(),

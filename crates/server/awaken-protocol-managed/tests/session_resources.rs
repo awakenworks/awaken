@@ -536,20 +536,17 @@ async fn agent_default_environment_requires_the_exact_revision() {
     let environments = std::sync::Arc::new(awaken_protocol_managed::EnvironmentState::new());
     let environment_id = environments
         .application()
-        .create(
-            awaken_session_contract::env_registry::CreateEnvironmentCommand {
-                command_id: "test:agent-default".into(),
-                name: "agent default".into(),
-                description: String::new(),
-                metadata: Default::default(),
-                scope: None,
-                config: awaken_session_contract::env_registry::EnvironmentConfig::Cloud {
-                    networking:
-                        awaken_session_contract::env_registry::EnvironmentNetworking::Unrestricted,
-                    packages: Default::default(),
-                },
+        .create(awaken_environment_contract::CreateEnvironmentCommand {
+            command_id: "test:agent-default".into(),
+            name: "agent default".into(),
+            description: String::new(),
+            metadata: Default::default(),
+            scope: None,
+            config: awaken_environment_contract::EnvironmentConfig::Cloud {
+                networking: awaken_environment_contract::EnvironmentNetworking::Unrestricted,
+                packages: Default::default(),
             },
-        )
+        })
         .await
         .unwrap()
         .id;
@@ -561,7 +558,7 @@ async fn agent_default_environment_requires_the_exact_revision() {
         .0;
     let runtime = AcceptingFake::default();
     let state = ManagedState::new(runtime.clone())
-        .with_environments(environments.clone())
+        .with_environments(environments.execution())
         .with_config_source(std::sync::Arc::new(AgentWithEnvironment {
             environment_id: environment_id.clone(),
             revision,
@@ -576,7 +573,7 @@ async fn agent_default_environment_requires_the_exact_revision() {
     );
 
     let stale = ManagedState::new(AcceptingFake::default())
-        .with_environments(environments)
+        .with_environments(environments.execution())
         .with_config_source(std::sync::Arc::new(AgentWithEnvironment {
             environment_id,
             revision: revision + 1,

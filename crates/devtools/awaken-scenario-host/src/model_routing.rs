@@ -1,0 +1,87 @@
+use std::sync::Arc;
+
+use awaken_provider_genai::{AdapterKind, GenaiExecutor};
+use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_contract::resolved::ModelProvisioning;
+use awaken_runtime_host::InferenceExecutorMaterializer;
+use axum::Router;
+
+use super::{
+    LabelModel, default_anthropic_compatible_model, mount, normalize_anthropic_compatible_base,
+    resource_host,
+};
+
+/// Resolves the scenario model source once, returning its executor and advertised
+/// reference. Tests default to the deterministic in-process executor; explicit
+/// HTTP or Gemini modes use the same provider adapters as production.
+pub fn scenario_model(
+    in_process: Arc<dyn LlmExecutor>,
+    default_ref: &str,
+) -> (Arc<dyn LlmExecutor>, String) {
+    match std::env::var("AWAKEN_MODEL_SOURCE").as_deref() {
+        Ok("http") => {
+            let key = std::env::var("ANTHROPIC_API_KEY")
+                .or_else(|_| std::env::var("KIMI_API_KEY"))
+                .expect("AWAKEN_MODEL_SOURCE=http requires ANTHROPIC_API_KEY");
+            let base = std::env::var("ANTHROPIC_BASE_URL")
+                .or_else(|_| std::env::var("KIMI_BASE_URL"))
+                .expect("AWAKEN_MODEL_SOURCE=http requires ANTHROPIC_BASE_URL");
+            let base = normalize_anthropic_compatible_base(base);
+            let model = std::env::var("ANTHROPIC_MODEL")
+                .or_else(|_| std::env::var("KIMI_MODEL"))
+                .unwrap_or_else(|_| default_anthropic_compatible_model(&base).to_string());
+            (
+                Arc::new(GenaiExecutor::anthropic_compatible(base, key)),
+                model,
+            )
+        }
+        Ok("gemini") => {
+            let key = std::env::var("GEMINI_API_KEY")
+                .or_else(|_| std::env::var("GOOGLE_API_KEY"))
+                .expect("AWAKEN_MODEL_SOURCE=gemini requires GEMINI_API_KEY/GOOGLE_API_KEY");
+            let model =
+                std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".to_string());
+            (
+                Arc::new(GenaiExecutor::from_resolved(AdapterKind::Gemini, None, key)),
+                model,
+            )
+        }
+        _ => (in_process, default_ref.to_string()),
+    }
+}
+
+/// Maps a pinned model reference to the deterministic executor carrying that
+/// label, while preserving the authoritative resolved route.
+struct RouteProvider;
+
+impl InferenceExecutorMaterializer for RouteProvider {
+    fn materialize_pinned(
+        &self,
+        candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+        _context: &awaken_runtime_contract::RuntimeRunContext,
+    ) -> Option<Arc<dyn LlmExecutor>> {
+        if !matches!(candidate.provisioning, ModelProvisioning::HostExecutor) {
+            return None;
+        }
+        let model_ref = candidate.binding.model_ref.as_str();
+        let labeled: Arc<dyn LlmExecutor> = match model_ref {
+            "fast" => Arc::new(LabelModel("fast")),
+            "slow" => Arc::new(LabelModel("slow")),
+            "default" => Arc::new(LabelModel("default")),
+            _ => return None,
+        };
+        // Over the real wire the label rides in the model name the session bound.
+        // Keep the resolved route ref and only replace the deterministic executor.
+        Some(scenario_model(labeled, model_ref).0)
+    }
+}
+
+/// A router whose per-session/per-turn selection routes to distinct labeled
+/// executors (R1/R2/R5/R6). `AWAKEN_MODEL_MODE=model-route`.
+pub fn build_model_route_router() -> Router {
+    let (default_model, _) = scenario_model(Arc::new(LabelModel("default")), "default");
+    mount(Arc::new(
+        resource_host(default_model, "default")
+            .with_inference_materializer(Arc::new(RouteProvider)),
+    ))
+}

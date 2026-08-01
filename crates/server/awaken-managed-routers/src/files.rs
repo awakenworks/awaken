@@ -1,11 +1,10 @@
-//! Anthropic-compatible Files API over the resource plane's one FileCatalog and
+//! Anthropic-compatible Files API over the Resources context's one FileCatalog and
 //! one content-addressed FileStore. A public `file_...` identity never exposes the
 //! private BLAKE3 blob id, and every GET is a pure catalog/blob read.
 
 use std::sync::Arc;
 
-use awaken_resource_contract::{FileRecord, ResourcePurgeError};
-use awaken_runtime_host::SharedHost;
+use awaken_resource_contract::{FileApplicationService, FileRecord, ResourcePurgeError};
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
@@ -18,12 +17,12 @@ use crate::resource_scope::RequiredWorkspaceScope;
 const DEFAULT_PAGE_SIZE: usize = 20;
 const MAX_PAGE_SIZE: usize = 1_000;
 
-pub fn files_router(host: Arc<SharedHost>) -> Router {
+pub fn files_router(files: Arc<dyn FileApplicationService>) -> Router {
     Router::new()
         .route("/v1/files", post(upload_file).get(list_files))
         .route("/v1/files/{id}", get(get_file).delete(delete_file))
         .route("/v1/files/{id}/content", get(download_file))
-        .with_state(host)
+        .with_state(files)
 }
 
 fn metadata(record: &FileRecord) -> Value {
@@ -61,7 +60,7 @@ fn error(status: StatusCode, message: impl Into<String>) -> axum::response::Resp
 }
 
 async fn list_files(
-    State(host): State<Arc<SharedHost>>,
+    State(files): State<Arc<dyn FileApplicationService>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
@@ -86,8 +85,8 @@ async fn list_files(
             format!("limit must be between 1 and {MAX_PAGE_SIZE}"),
         );
     }
-    let records = match host
-        .list_file_records(&workspace, query.get("scope_id").map(String::as_str))
+    let records = match files
+        .list(&workspace, query.get("scope_id").map(String::as_str))
         .await
     {
         Ok(records) => records,
@@ -164,7 +163,7 @@ fn valid_filename(filename: &str) -> bool {
 }
 
 async fn upload_file(
-    State(host): State<Arc<SharedHost>>,
+    State(files): State<Arc<dyn FileApplicationService>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
@@ -192,7 +191,7 @@ async fn upload_file(
     if !valid_filename(&filename) {
         return error(StatusCode::BAD_REQUEST, "filename is invalid");
     }
-    match host
+    match files
         .create_uploaded_file(&workspace, filename, mime_type, &bytes)
         .await
     {
@@ -203,11 +202,11 @@ async fn upload_file(
 }
 
 async fn get_file(
-    State(host): State<Arc<SharedHost>>,
+    State(files): State<Arc<dyn FileApplicationService>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match host.file_record(&workspace, &id).await {
+    match files.get(&workspace, &id).await {
         Ok(Some(record)) => (StatusCode::OK, Json(metadata(&record))).into_response(),
         Ok(None) => error(StatusCode::NOT_FOUND, "file not found"),
         Err(error_value) => error(StatusCode::INTERNAL_SERVER_ERROR, error_value.to_string()),
@@ -215,7 +214,7 @@ async fn get_file(
 }
 
 async fn delete_file(
-    State(host): State<Arc<SharedHost>>,
+    State(files): State<Arc<dyn FileApplicationService>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
@@ -223,7 +222,7 @@ async fn delete_file(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
         .unwrap_or_default();
-    match host.delete_file_record(&workspace, &id, now).await {
+    match files.delete(&workspace, &id, now).await {
         Ok(Some(_)) => (
             StatusCode::OK,
             Json(json!({ "id": id, "type": "file_deleted" })),
@@ -235,11 +234,11 @@ async fn delete_file(
 }
 
 async fn download_file(
-    State(host): State<Arc<SharedHost>>,
+    State(files): State<Arc<dyn FileApplicationService>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match host.file_bytes(&workspace, &id).await {
+    match files.bytes(&workspace, &id).await {
         Ok(Some((record, _))) if !record.downloadable => {
             error(StatusCode::BAD_REQUEST, "file is not downloadable")
         }

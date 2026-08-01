@@ -8,6 +8,7 @@ import _arch_fitness
 import _coordinator_authority_fitness
 import _crate_dependency_fitness
 import _migration_fitness
+from _domain_application_boundary import DOMAIN_APPLICATION_ALLOWED_DEPS
 from _executable_agent_boundary import EXECUTABLE_AGENT_ALLOWED_DEPS
 import _provider_env_fitness
 from _privacy_boundary import PRIVACY_ALLOWED_DEPS
@@ -15,6 +16,7 @@ import _resource_plane_fitness
 import _runtime_secret_boundary
 import _service_data_ownership_fitness
 from _sandbox_policy_boundary import SANDBOX_POLICY_ALLOWED_DEPS
+from _sandbox_provider_boundary import SANDBOX_PROVIDER_ALLOWED_DEPS
 from _crate_boundary_workspace import (
     architecture_fitness_specs,
     check_bucket_direction,
@@ -33,9 +35,11 @@ CRATES = REPO_ROOT / "crates"
 # is deliberately NOT in this set for any neutral crate; only provider adapters use it.
 ALLOWED_DEPS: dict[str, set[str]] = {
     **SANDBOX_POLICY_ALLOWED_DEPS,
+    **SANDBOX_PROVIDER_ALLOWED_DEPS,
     **MANAGED_ROUTERS_ALLOWED_DEPS,
     **MANAGED_PROTOCOL_ALLOWED_DEPS,
     **EXECUTABLE_AGENT_ALLOWED_DEPS,
+    **DOMAIN_APPLICATION_ALLOWED_DEPS,
     **PRIVACY_ALLOWED_DEPS,
     # zeroize backs RedactedString's zero-on-drop (ADR-0043); a leaf crypto-hygiene
     # primitive, not a model/provider SDK.
@@ -125,6 +129,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-session-contract": {
         "awaken-agent-contract",
         "awaken-credential-contract",
+        "awaken-environment-contract",
         # Session resolution consumes only the resources-plane identity/config
         # port. Authorization remains an edge/PDP concern.
         "awaken-resource-contract",
@@ -246,6 +251,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-ext-permission",
         "awaken-ext-state-machine",
         "async-trait",
+        "serde",
         "serde_json",
         "thiserror",
         "tokio",
@@ -754,11 +760,11 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: property-based (formal) verification of the store's invariants.
         "proptest",
     },
-    # Durable EnvRegistry backend (the self-hosted environment registry): sqlite +
-    # postgres at parity, implementing the session contract's env-registry port.
+    # Durable EnvRegistry backend: sqlite + postgres at parity, implementing the
+    # Control-owned static Environment contract.
     # Extracted from awaken-runtime-host so the host stays lean (Step 3b).
     "awaken-env-store": {
-        "awaken-session-contract",
+        "awaken-environment-contract",
         "awaken-scoped-migration",
         "awaken-scoped-migration-sqlite",
         "async-trait",
@@ -1208,39 +1214,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-sandbox-memoryd",
         "awaken-memory-store",
     },
-    # Container/K8s provider (ADR-0041 Slice 5): realizes the neutral sandbox ports
-    # over a dependency-inverted ContainerRuntime port + pure plan renderers. The
-    # real bollard/kube clients are adapters behind that port (added under features
-    # in a distributed build); the neutral crate names none of them.
-    "awaken-sandbox-container": {
-        "awaken-provisioning-contract",
-        # Dev-only Session proof drives ToolExecutor through the real hand wire.
-        "awaken-runtime-contract",
-        "awaken-tool-relay",
-        # The container tier is tool-transparent: it hands the ACP bridge an
-        # AgentChannel (network duplex) to the process-as-container agent.
-        "awaken-agent-channel",
-        "async-trait",
-        "serde_json",
-        "thiserror",
-        # BLAKE3 content id: resolve File/Resource bytes through the injected BlobSource
-        # port and verify the declared hash itself (A-G17, parity with sandbox-local).
-        "blake3",
-        # feature `connection`: awaken-connection establishes the remote AgentChannel
-        # (TCP dial + reverse dial); tokio provides the net stack. Both optional.
-        "awaken-connection",
-        "tokio",
-        # Bounded tar decoding for backend-neutral file harvesting over exec stdio.
-        "tar",
-        # feature `docker`: real Docker backend over the Engine API (SDK, not CLI).
-        "bollard",
-        "futures-util",
-        # feature `k8s`: real Kubernetes backend over the apiserver (SDK, not kubectl).
-        "kube",
-        "k8s-openapi",
-        # kube's rustls client needs a CryptoProvider (ring) installed explicitly.
-        "rustls",
-    },
     # Fixture-driven eval harness (#4): replays recorded cases through the real
     # runtime (RunExecutor) and scores them. Depends on the kernel to run cases.
     "awaken-eval": {
@@ -1371,6 +1344,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # authoring plane. Dev-dep cycle-free (awaken-cli dev-depends back for mocks).
         "awaken-cli",
         "awaken-control",
+        "awaken-environment-application",
         "awaken-admin-assistant",
         "awaken-admin-config-api",
         "awaken-agent-contract",
@@ -1434,12 +1408,14 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "tower",
     },
     "awaken-server": {
+        "awaken-environment-contract",
         "awaken-acp-contract",
         "awaken-scenario-host",
         # dev-only: transport conformance exercises dispatch + Worker registry.
         "awaken-run-ingress", "awaken-runtime-host",
         "awaken-config-service", "awaken-credential-materializer",
         "awaken-worker-transport-security",
+        "awaken-service-auth-contract",
         # Coordinator consumes Control's immutable registration projection through
         # the read port; it never imports Control authoring or its database.
         "awaken-executable-agent-contract",
@@ -1473,6 +1449,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # The data-plane composition root opens the embedded File/Memory/Skill/
         # lifecycle family once and injects only its ports into runtime-host.
         "awaken-file-store", "awaken-skill-store", "awaken-resource-store",
+        "awaken-resource-application",
         # Composition-only adapter: runtime-host exposes MemoryRepository + MemoryMounter
         # ports; awaken-server installs the FUSE/copy implementation without
         # coupling the host substrate to the worker implementation crate.
@@ -1592,6 +1569,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # projection in Foundation avoids a second Awaken-only wire shape.
         "awaken-api-contract",
         "awaken-control",
+        "awaken-environment-contract",
+        "awaken-environment-application",
         "awaken-server",
         "awaken-authz-enforce",
         # The Worker role delegates lifecycle to the production execution worker.
@@ -1607,6 +1586,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-sandbox-policy-store",
         "awaken-resource-store",
         "awaken-resource-reclaimer",
+        "awaken-resource-application",
         # Process adapter joining Control-owned subscriptions/secrets to the
         # Coordinator-owned Session lifecycle outbox.
         "awaken-webhook-managed",
@@ -1614,6 +1594,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-session-contract", "awaken-session-store",
         "awaken-executable-agent-contract",
         "awaken-executable-agent-catalog",
+        "awaken-executable-environment-contract",
+        "awaken-executable-environment-catalog",
         "awaken-sandbox-memoryd",
         # The ACP executor: the composition root wires an `acp:*` backend into the Serve
         # host by config (AWAKEN_ACP_ARGV), which the runtime-host plane does not do itself.

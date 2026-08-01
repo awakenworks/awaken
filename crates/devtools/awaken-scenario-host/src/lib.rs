@@ -12,6 +12,7 @@ mod deployment;
 mod distributed_control;
 mod dream;
 mod model_publication;
+mod model_routing;
 mod models;
 mod worker;
 pub use crate::models::*;
@@ -22,6 +23,7 @@ pub use deployment::scenario_deployment;
 pub use distributed_control::build_distributed_control_router;
 pub use distributed_control::build_distributed_provider_router;
 pub use dream::{build_dream_router, build_dream_router_and_host};
+pub use model_routing::{build_model_route_router, scenario_model};
 pub use worker::run_echo_worker;
 
 mod scenario_shell;
@@ -40,7 +42,7 @@ use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Role;
 use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
 use awaken_protocol_managed::ManagedState;
-use awaken_provider_genai::{AdapterKind, GenaiExecutor};
+use awaken_provider_genai::GenaiExecutor;
 use awaken_runtime_contract::StaticPublishedAgentSnapshots;
 use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 use awaken_runtime_contract::llm::{
@@ -62,50 +64,8 @@ pub use awaken_runtime_host::{
 };
 pub use awaken_sandbox_local::content_fingerprint;
 
-/// An [`InferenceExecutorMaterializer`] mapping a model ref to a labeled executor, so a
-/// session bound to `fast`/`slow` resolves a distinct model — the R1/R2/R5 demo
-/// surface.
 use awaken_server::mount_with_managed;
 use awaken_server::placement;
-struct RouteProvider;
-
-impl InferenceExecutorMaterializer for RouteProvider {
-    fn materialize_pinned(
-        &self,
-        candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
-        _context: &awaken_runtime_contract::RuntimeRunContext,
-    ) -> Option<Arc<dyn LlmExecutor>> {
-        if !matches!(
-            candidate.provisioning,
-            awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
-        ) {
-            return None;
-        }
-        let model_ref = candidate.binding.model_ref.as_str();
-        let labeled: Arc<dyn LlmExecutor> = match model_ref {
-            "fast" => Arc::new(LabelModel("fast")),
-            "slow" => Arc::new(LabelModel("slow")),
-            "default" => Arc::new(LabelModel("default")),
-            _ => return None,
-        };
-        // Over the real wire the label rides in the model name the session bound
-        // (GenaiExecutor sends `model_binding.model_ref`), which the fake upstream's
-        // `label` behavior echoes back — so we keep the route's ref and only swap the
-        // executor. `scenario_model`'s ref (the env model name) is intentionally
-        // discarded here; the routing ref is the observable, not the wire model.
-        Some(scenario_model(labeled, model_ref).0)
-    }
-}
-
-/// A router whose per-session/per-turn model selection routes to distinct labeled
-/// executors (R1/R2/R5/R6). `AWAKEN_MODEL_MODE=model-route`.
-pub fn build_model_route_router() -> Router {
-    let (default_model, _) = scenario_model(Arc::new(LabelModel("default")), "default");
-    mount(Arc::new(
-        resource_host(default_model, "default")
-            .with_inference_materializer(Arc::new(RouteProvider)),
-    ))
-}
 
 /// A minimal ACP agent (shell): read the prompt line, emit a message + turn_end —
 /// stands in for `claude --acp` so the ACP-runtime path runs without a real CLI.
@@ -951,54 +911,6 @@ pub fn build_router_with_deployment(
 ) -> Router {
     let host = resource_host_with_deployment(llm, model_ref, deployment);
     mount(Arc::new(host))
-}
-
-/// The model backing a scenario router, and its advertised ref. Normally the
-/// deterministic in-process model the scenario scripts; but when the e2e harness
-/// sets `AWAKEN_MODEL_SOURCE=http` (alongside a fake Anthropic upstream in
-/// `ANTHROPIC_BASE_URL`), it is the real [`GenaiExecutor`] dialing that upstream —
-/// the *same* seam [`build_real_router`] uses. This keeps a scenario's host config
-/// (client tools / delegate roster / skills / state machine / compaction / memory /
-/// config plane / MCP) intact while every model call crosses the real provider
-/// adapter + a real socket + the Anthropic wire, so an e2e drops its model stub
-/// without losing the scenario. With the real source the ref is the wire model name
-/// (`ANTHROPIC_MODEL`); otherwise it is `default_ref`.
-pub fn scenario_model(
-    in_process: Arc<dyn LlmExecutor>,
-    default_ref: &str,
-) -> (Arc<dyn LlmExecutor>, String) {
-    match std::env::var("AWAKEN_MODEL_SOURCE").as_deref() {
-        Ok("http") => {
-            let key = std::env::var("ANTHROPIC_API_KEY")
-                .or_else(|_| std::env::var("KIMI_API_KEY"))
-                .expect("AWAKEN_MODEL_SOURCE=http requires ANTHROPIC_API_KEY");
-            let base = std::env::var("ANTHROPIC_BASE_URL")
-                .or_else(|_| std::env::var("KIMI_BASE_URL"))
-                .expect("AWAKEN_MODEL_SOURCE=http requires ANTHROPIC_BASE_URL");
-            let base = normalize_anthropic_compatible_base(base);
-            let model = std::env::var("ANTHROPIC_MODEL")
-                .or_else(|_| std::env::var("KIMI_MODEL"))
-                .unwrap_or_else(|_| default_anthropic_compatible_model(&base).to_string());
-            (
-                Arc::new(GenaiExecutor::anthropic_compatible(base, key)),
-                model,
-            )
-        }
-        // A dev-only live Gemini fixture. Even here the key is read explicitly and
-        // injected into a fixed adapter; no SDK ambient-default path is exercised.
-        Ok("gemini") => {
-            let key = std::env::var("GEMINI_API_KEY")
-                .or_else(|_| std::env::var("GOOGLE_API_KEY"))
-                .expect("AWAKEN_MODEL_SOURCE=gemini requires GEMINI_API_KEY/GOOGLE_API_KEY");
-            let model =
-                std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".to_string());
-            (
-                Arc::new(GenaiExecutor::from_resolved(AdapterKind::Gemini, None, key)),
-                model,
-            )
-        }
-        _ => (in_process, default_ref.to_string()),
-    }
 }
 
 /// Choose a usable model only when an operator omitted the explicit model. Kimi's
@@ -1885,7 +1797,7 @@ pub async fn build_config_router() -> Router {
         // A fresh in-memory environment registry satisfies the author port for the
         // scenario host (no durable env state in scope).
         Arc::new(
-            awaken_server::environment_boundary::LocalEnvironmentAuthor::new(
+            awaken_environment_application::EnvironmentApplicationAuthor::new(
                 awaken_protocol_managed::EnvironmentState::new().application(),
             ),
         ),

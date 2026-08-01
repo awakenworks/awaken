@@ -112,7 +112,7 @@ identity-bound transport used by Worker control. It returns one
 built-in Native/ACP/A2A `RunAttemptExecutor` router.
 
 An embedding composition root installs the existing typed `DeploymentConfig`
-and its materializers/resource plane on `WorkerNodeBuilder`, then selects
+and its materializers/Resources ports on `WorkerNodeBuilder`, then selects
 `with_standard_manifest(application_capabilities)`. `build()` is the sole
 standard manifest derivation point; the same installed values configure Host
 routing, so advertised inference/resource capabilities, ACP routes, their

@@ -2,7 +2,6 @@
 //! update, delete, and archive.
 
 use super::application::{ManagedMcpCandidate, ManagedMcpCandidateTarget, initial_mcp_candidates};
-use super::sandbox_provisioning::validate_sandbox_provisioning_runtime;
 use super::*;
 
 pub(super) fn typed_mcp_servers(
@@ -861,68 +860,31 @@ impl ManagedState {
             .as_ref()
             .map(|view| view.backend_ref.clone())
             .filter(|backend_ref| !backend_ref.trim().is_empty());
-        let environment_id = req
-            .environment_id
-            .clone()
-            .or_else(|| agent_environment.map(|binding| binding.environment_id.clone()))
-            .unwrap_or_else(|| "env_local".to_string());
         let mcp_targets = mcp_drafts
             .iter()
             .map(|draft| draft.target.clone())
             .collect::<Vec<_>>();
-        let environment = match self.environments.as_ref() {
-            Some(environments) => {
-                let snapshot = match (req.environment_id.as_ref(), agent_environment) {
-                    (None, Some(binding)) => {
-                        environments
-                            .snapshot_exact_for_session(
-                                &binding.environment_id,
-                                binding.revision,
-                                published_backend_ref.as_deref(),
-                                &mcp_targets,
-                            )
-                            .await
-                    }
-                    _ => {
-                        environments
-                            .snapshot_for_session(
-                                &environment_id,
-                                published_backend_ref.as_deref(),
-                                &mcp_targets,
-                            )
-                            .await
-                    }
-                };
-                snapshot.ok_or_else(|| {
-                    StateError::Run(RunError::bad_request(format!(
-                        "environment `{environment_id}` is unavailable"
-                    )))
-                })?
-            }
-            None => crate::routes::environments::default_environment_snapshot(
-                environment_id.clone(),
+        let (environment_id, environment) = self
+            .resolve_session_environment(
+                req.environment_id.as_deref(),
+                agent_environment,
                 published_backend_ref.as_deref(),
-            ),
-        };
-        validate_sandbox_provisioning_runtime(
-            environment.sandbox_provisioning,
-            published_backend_ref.as_deref(),
-        )
-        .map_err(StateError::Run)?;
-        // Sole protocol-neutral composition/resolution point. Runtime receives this
-        // persisted, secret-free result and never re-opens Agent or Resource stores.
-        let compiled_defaults = awaken_session_contract::SessionDefaultsCompiler::compile(
+                &mcp_targets,
+            )
+            .await?;
+        // Sole protocol-neutral Resource composition/resolution point. Environment
+        // selection has already produced one exact snapshot above; the final
+        // SessionCreationIntent is the only value that combines and freezes both
+        // families. Runtime never re-opens Agent or Resource stores.
+        let mut resolved_resources = awaken_session_contract::SessionInputResolver::resolve_inputs(
             &owner_scope,
             self.resource_catalog
                 .as_deref()
                 .map(|catalog| catalog as &dyn awaken_resource_contract::ResourceConfigSource),
-            environment,
             agent_defaults,
             &attachments,
         )
         .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        let environment = compiled_defaults.environment;
-        let mut resolved_resources = compiled_defaults.resources;
         let effective_skills = match &req.agent {
             AgentRef::Object(override_ref) => override_ref.skills.as_ref().map(|skills| {
                 skills
@@ -1174,11 +1136,10 @@ impl ManagedState {
         // Dispatch only after the active activation and Session lifecycle fact are
         // durable. A worker can never claim a work item whose resource intent is
         // still merely Prepared.
-        if !application_required
-            && let Some(envs) = self.environments.as_ref()
-            && envs.is_self_hosted(&environment_id).await
-        {
-            envs.enqueue_session_work(&environment_id, &id).await;
+        if !application_required && self.environments.is_self_hosted(&environment_id).await {
+            self.environments
+                .enqueue_session_work(&environment_id, &id)
+                .await;
         }
         // Project the committed create as a lifecycle fact: a fresh session is idle,
         // so fan out `session.status_idled` (the webhook catalog name — past-tense

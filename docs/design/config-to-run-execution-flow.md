@@ -38,16 +38,18 @@ Distributed:  application port -> network adapter -> same authority
 | Concern | Authoritative owner | Worker access |
 |---|---|---|
 | Agent drafts, revisions, publication history | Control | carried as a registered immutable snapshot; no Control database access |
-| Agent Resource-reference authoring and immutable config versions | Control | exact resolved references in the Session manifest |
+| Agent Resource-reference authoring revisions | Control | exact resolved references in the Session manifest |
+| Environment definitions, immutable revisions, and exact sandbox-policy references | Control | frozen `EnvironmentSnapshot`; no Environment database access |
+| Sandbox execution policy versions | Control | exact body resolved into the executable Environment registration |
 | Resource lifecycle metadata/catalog | Resources | exact resolved values plus per-kind clients |
 | credential metadata, policy, and encrypted material | Control / Vault | exact claim-fenced materialization only |
-| executable Agent catalog | Coordinator | exact snapshot carried by dispatch or resolved through Coordinator |
-| Deployment, DeploymentRun, and Environment execution state | Coordinator | none; launch is a local Session application call |
+| executable Agent and Environment projections | Coordinator | exact registered facts used for new Session admission |
+| Deployment, DeploymentRun, Session, WorkQueue, and dispatch state | Coordinator | secret-free dispatch envelope; launch is a local Session application call |
 | Session baseline and frozen Resource manifest | Coordinator | secret-free dispatch envelope |
 | dispatch, Run commit, and completion | Coordinator | authenticated claim, commit, and settle APIs |
-| File bytes | File data plane | `FileContentSource` |
-| Memory content, history, and CAS versions | Memory data plane | `MemorySnapshotSource` and `MemoryWritebackClient` |
-| Skill bundles | Skill data plane | `SkillBundleSource` |
+| File bytes | Resources / File aggregate | `FileContentSource` |
+| Memory content, history, and CAS versions | Resources / MemoryStore aggregate | `MemorySnapshotSource` and `MemoryWritebackClient` |
+| Skill bundles | Resources / Skill aggregate | `SkillBundleSource` |
 | Git repository contents | external Git provider | `RepositoryRealizer` with an ephemeral credential |
 | mounts, working trees, processes, and plaintext | Worker / Sandbox, ephemeral | local only |
 
@@ -58,7 +60,7 @@ the installed adapters rather than from a marker composition value.
 
 An owner in this table is a component boundary, not necessarily a dedicated
 process. AllInOne co-locates every component. The current distributed
-Coordinator process co-locates the canonical Resources component and its File,
+Coordinator process co-deploys the canonical Resources component and its File,
 Memory, Skill, and Repository-verification handlers, but delegates only through
 the named Resources ports. Credential selection instead crosses the authenticated
 Control application boundary. Separating a provider later changes composition
@@ -87,12 +89,13 @@ one bundle id per aggregate-safe scope.
 | Control | `awaken.admin` / `admin` | `admin_inference_profile`, `admin_agent_resource`, `admin_webhook` |
 | Control | `awaken.config` / `config` | `config_agent`, `config_publication`, `config_management_audit`, `config_management_effect`, `config_agent_revision` |
 | Control | `awaken.control_data_subject` / `control_data_subject` | `control_data_subject_subject`, `control_data_subject_erasure_job` |
+| Control | `awaken.env_registry` / `env_registry` | `env_registry_env`, `env_registry_create_command`, `env_registry_revision` |
+| Control | `awaken.sandbox_execution_policy` / `sandbox_execution_policy` | `sandbox_execution_policy_version`, `sandbox_execution_policy_current` |
 | Coordinator | `awaken.managed_session` / `managed` | `managed_session`, `managed_lifecycle_outbox`, `managed_memory_extraction`, `managed_session_idempotency`, `managed_session_tombstone`, `managed_dream`, `managed_dream_agent_override`, `managed_deployment`, `managed_deployment_run`, `managed_deployment_claim`, `managed_dream_policy` |
-| Coordinator | `awaken.env_registry` / `env_registry` | `env_registry_env`, `env_registry_create_command` |
 | Coordinator | `awaken.work_queue` / `work_queue` | `work_queue_item` |
-| Coordinator | `awaken.sandbox_execution_policy` / `sandbox_execution_policy` | `sandbox_execution_policy_version`, `sandbox_execution_policy_current`, `sandbox_execution_policy_environment` |
 | Coordinator | `awaken.worker_registry` / `worker_registry` | `worker_registry_worker` |
 | Coordinator | `awaken.executable_agent_catalog` / `executable_agent` | `executable_agent_command` |
+| Coordinator | `awaken.executable_environment_catalog` / `executable_environment` | `executable_environment_command` |
 | Coordinator | `awaken.run_dispatch` / `runtime` | `runtime_dispatch`, `runtime_pending`, `runtime_outbox`, `runtime_dispatch_completion`, `runtime_stream_checkpoint`, `runtime_dispatch_operation` |
 | Coordinator | `awaken.runtime_commit`, `awaken.runtime_commit_pg` / `runtime` | `runtime_commit`, `runtime_message`, `runtime_state_command`, `runtime_event`, `runtime_run_record`, `runtime_waiting`, `runtime_thread_version`, `runtime_commit_receipt`; PostgreSQL also owns `runtime_commit_seq` |
 | Coordinator | `awaken.coordinator_data_capture` / `coordinator_data_capture` | `coordinator_data_capture_captured`, `coordinator_data_capture_fence` |
@@ -103,11 +106,14 @@ one bundle id per aggregate-safe scope.
 | Resources | `awaken.skill_store` / `skill_store` | `skill_store_aggregate` |
 | Worker | none | none; Worker has only ephemeral execution/cache state and receives no authority database setting |
 
-Environment Registry, Work Queue, and sandbox-policy persistence are Coordinator
-stores. Control maps its Admin Assistant command onto the authenticated
-Coordinator `EnvironmentAuthor` adapter; AllInOne maps that same port locally.
-Both reach the single idempotent `EnvironmentApplication`, and Control never opens
-`environment_db`.
+Environment Registry and sandbox-policy persistence are Control stores. The
+Environment aggregate owns its exact policy reference; the policy store owns
+only immutable versions. `awaken-environment-application` owns the sole
+`EnvironmentApplication` definition command path and publishes exact revisions
+through `ExecutableEnvironmentRegistrar`.
+Coordinator owns only the executable command log and WorkQueue. AllInOne replaces
+the registration transport with a local adapter while retaining the same two
+authorities.
 
 The two privacy rows are active, independently versioned authorities. Control
 opens `data_subject_db`, owns consent/accountability plus durable erasure
@@ -141,10 +147,10 @@ server process start
 
 | Role | Migration manifest |
 |---|---|
-| `control` | Control + Control Data Subject |
-| `coordinator` | Coordinator + Coordinator Captured Content + co-deployed Resources + executable-Agent projection |
+| `control` | Control, including Environment and sandbox policy, + Control Data Subject |
+| `coordinator` | Coordinator + Coordinator Captured Content + co-deployed Resources + executable-Agent and executable-Environment projections |
 | `worker` | empty; no database connection |
-| `all-in-one` | Control + Control Data Subject + Coordinator + Coordinator Captured Content + Resources; no second executable-Agent projection |
+| `all-in-one` | Control + Control Data Subject + Coordinator + Coordinator Captured Content + Resources; executable projections are local adapters, not second durable schemas |
 
 Conditional schema commands (`IF NOT EXISTS`, `IF EXISTS`, `CREATE OR REPLACE`),
 conflict-ignore data migration, raw startup DDL, and unversioned `.sql` files are
@@ -153,6 +159,36 @@ rejected by the repository fitness check. Since this repository is still
 developers must recreate pre-change local databases. After the first stable
 release, an applied migration is immutable and every change appends a new
 version—never edits or renumbers history.
+
+## Static Fact Publication
+
+Agent and Environment use the same ownership pattern without sharing an
+aggregate or repository:
+
+```text
+Control command
+  -> validate and commit an immutable revision/publication
+  -> register the exact executable fact
+  -> Coordinator command log
+  -> rebuildable current + exact-revision projection
+  -> new Session admission freezes the selected fact
+```
+
+Environment transitions are:
+
+| Trigger | Control effect | Coordinator effect | Failure/recovery |
+|---|---|---|---|
+| create | idempotent command creates revision 1 | register current; ensure one healthcheck work item | if registration is unavailable, revision 1 remains authoritative and reconciliation retries the same command |
+| update or policy bind | atomically append the next Environment revision; the exact policy reference advances with it | register exact revision and move current monotonically | a same revision with different facts conflicts; older exact revisions remain readable |
+| archive or public delete | append one terminal archived revision; never erase history | withdraw current and remove Environment work | retry is idempotent; new Session admission fails while exact history remains auditable |
+| Control restart | read built-in `env_local` plus every persisted revision | replay registrations and terminal withdrawals | no alternate seed/write path is used in production |
+
+The Control store commit is the static source of truth. A boundary failure after
+that commit is reported as unavailable, never compensated by deleting or rolling
+back the definition. This is the same recovery rule used by Agent publication.
+In an active-active Coordinator deployment, one request middleware refreshes both
+durable executable command logs before Session/Deployment writes that may admit
+Runtime work; either refresh failure rejects admission before a Session changes.
 
 ## Flow One: Configuration To Application
 
@@ -189,7 +225,7 @@ flowchart TD
     W["Existing: persist stable DeploymentRun"]
     X["Existing: LocalDeploymentSessionLauncher carries deployment_run_id"]
     AA["Existing: create_session_with_initial_events"]
-    AB["Existing: SessionDefaultsCompiler and SessionInputResolver"]
+    AB["Existing: sole SessionInputResolver; SessionCreationIntent is the final freeze point"]
     AC["Existing: exact Environment, Skill, Resource, and credential pins"]
     AD["Existing: frozen secret-free SessionResourceManifest"]
     AE["Existing: persist Session baseline before effects"]
@@ -389,11 +425,11 @@ depend on Worker memory.
 
 ## Config Graph Model
 
-Control owns the mutable graph of Agent, model, tool, plugin, Skill, Resource,
-Environment, and credential references. Publication resolves the selected graph
-into one `ExecutableAgentSnapshot`. The snapshot carries resolved, secret-free
-execution data; it does not embed configuration repositories or live provider
-objects.
+Control owns the mutable graph of Agent, model, tool, plugin, Environment, and
+credential facts plus Agent references to Resources and Skills. Resources owns
+the referenced definitions and content. Publication and Session admission resolve
+the selected graph into exact executable snapshots and a secret-free resource
+manifest; neither embeds repositories or live provider objects.
 
 `AgentId` alone is not executable identity. Session and Run behavior is pinned by
 the exact snapshot, source revision, and fingerprint selected before execution.
@@ -410,6 +446,8 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - `ScopedConfigRegistry` management-audit state and the Session lifecycle outbox;
 - the existing `ResourceCatalog` implementation, now exposed by Resources;
 - per-kind File, Memory, Skill, and Repository ports;
+- existing Environment stores and WorkQueue state machines, now behind distinct
+  Control definition and Coordinator execution contracts;
 - authenticated Worker registration, claim, recovery, commit, and settle;
 - committed-event projection and HTTP/SSE response behavior.
 
@@ -425,10 +463,11 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - registration availability/storage failures return HTTP 503 after durable
   publication persistence;
 - Deployment, DeploymentRun, scheduler, and Session launch now share one
-  Coordinator-owned application composition. The Environment API and work
-  execution are Coordinator-mounted; Control's Admin Assistant still uses the
-  existing shared `EnvironmentAuthor` registry port until definition commands
-  are separated from execution/work ownership;
+  Coordinator-owned application composition;
+- Environment definition/policy routes and persistence are Control-owned;
+  Coordinator mounts only executable projection reads and WorkQueue routes;
+- Environment revisions retain exact history, archive is terminal logical denial,
+  and the obsolete policy-store Environment binding table is removed;
 - process stores are role-owned groups: split Coordinator acquires no Control
   store or seal key, and split Control acquires no Session or Resources content
   store;
@@ -438,7 +477,11 @@ the exact snapshot, source revision, and fingerprint selected before execution.
   ports; AllInOne supplies local adapters and split Coordinator supplies one
   authenticated HTTP adapter;
 - `ResourceComponent` exposes the authoritative `ResourceCatalog` beside its
-  existing File, Memory, Skill, repository-verification, and lifecycle ports.
+  existing File, Memory, Skill, repository-verification, and lifecycle ports;
+- HTTP File commands and Runtime artifact harvesting call one
+  `FileApplicationService`; the former Host-side command implementation is gone;
+- one `ResourcesApplication` derives File and purge application ports from one
+  `ResourceComponent`, and one Resources router mounts every public family.
 
 ### New boundary code (implemented)
 
@@ -446,6 +489,11 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - `ExecutableAgentCatalog` and `LocalExecutableAgentRegistrar`;
 - `HttpExecutableAgentRegistrar` and the authenticated registration router;
 - `PostgresExecutableAgentRegistrar` and its scoped command-log schema;
+- `awaken-environment-contract` as the Control-owned static aggregate contract;
+- `ExecutableEnvironmentRegistrar`, local/HTTP/PostgreSQL adapters, exact
+  command-log projection, withdrawal, and reconciliation;
+- `awaken-file-application` and `awaken-resource-application` as the canonical
+  Resources application layer over existing repositories;
 - split-role registration composition, token-file loading, catalog migration,
   and Worker database rejection;
 - stable DeploymentRun-to-Session identity/fingerprint replay through the local
@@ -498,6 +546,11 @@ cite the rule they cover.
 | E14 | split Coordinator config includes a Control DB or seal key; split Control includes Session DB | reject before store or key acquisition |
 | E15 | Control service bearer is missing or wrong | reject before audit, credential, or webhook authority is invoked |
 | E16 | Control service is unavailable during lifecycle delivery | keep the existing Coordinator outbox fact pending and retry its stable identity |
+| E17 | Environment definition/policy mutation commits but registration is unavailable | retain the exact Control revision, return unavailable, and reconcile through the same registrar |
+| E18 | Environment archive/delete is retried | preserve terminal Control history, withdraw Coordinator current idempotently, and deny new Sessions |
+| E19 | File upload/artifact command is retried with the same scoped key | return one logical File while immutable bytes may be content-deduplicated |
+| E20 | logical Resource deletion or purge scheduling is retried | persist one deterministic purge intent; physical reclaim remains reference-fenced and idempotent |
+| E21 | another Coordinator replica accepted an Agent or Environment registration | refresh both durable executable projections before Session/Deployment admission; fail closed if either replay fails |
 
 The concrete multi-process topology, cluster lifecycle, and fault-injection
 entry points are owned by the

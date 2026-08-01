@@ -5,11 +5,11 @@ earlier product-first stack with bounded contexts that keep the Apache-licensed
 runtime protocol and public contract independent of server, config, admin, and
 product code.
 
-The context map below is the accepted ADR-0071 target. Executable Agent
-registration, Deployment launch, credential projection, and per-kind File,
-Memory, custom-Skill, and Repository realization now have local and distributed
-adapters over the same authorities. The Worker retains only ephemeral execution
-state and registration-bound clients; it receives no authority database handle.
+The context map below is the implemented ADR-0071 boundary. Static definitions
+and immutable relationships belong to Control; runtime coordination belongs to
+Coordinator; resource data and reclamation belong to Resources; execution belongs
+to Worker. Local and distributed adapters reach the same authorities. Worker
+retains only ephemeral execution state and receives no authority database handle.
 
 ---
 
@@ -17,39 +17,39 @@ state and registration-bound clients; it receives no authority database handle.
 
 ```text
   Control Context
-  Agent/Resource-reference authoring, publication history, IAM,
-  credential metadata, vaults, product mappings, operator UX
+  Agent and Environment authoring, immutable revisions/publications,
+  Resource references, IAM, credential metadata, vaults, directory APIs
         |
-        | immutable publications, exact references, boundary adapters
+        | exact executable Agent/Environment registrations
         v
   Coordinator Context
-  executable Agent registration, Deployment/DeploymentRun, Session,
-  durable dispatch, committed truth, protocol replay, HTTP/SSE routes
+  rebuildable executable projections, Deployment/DeploymentRun,
+  Session/Run, WorkQueue, durable dispatch, committed truth, protocol replay
         |
-        | bidirectional dispatch/claim and commit/settle protocol
+        | dispatch/claim, exact manifests, commit/settle
         v
-  Worker / Sandbox Context  -- claim-fenced exact reads / CAS write-back -->
-  claim-fenced execution, exact credential materialization,                 |
-  ephemeral processes and mounts                                            |
-        |                                                                   v
-        | gated Runtime ports                                     Resources Context
-        v                                                File/Memory/Skill/lifecycle,
-  Runtime Core Context                                    independent per-kind ports
-  AgentRuntime, agent loop, phases, typed state/effects,
-  plugin hooks, cancellation, commit boundary, store contracts
+  Worker Context  -- claim-fenced exact reads / CAS write-back --> Resources Context
+  sandbox/process/mount lifecycle, exact credential             Resource Catalog,
+  materialization, Runtime execution, ephemeral state            File/Memory/Skill,
+        |                                                        references/purge
+        v
+  Runtime Core
+  Agent loop, phases, typed state/effects, plugins, cancellation,
+  and commit contracts; embedded by Worker, not a fifth service authority
 ```
 
 AllInOne co-locates these components but does not create another bounded
 context or implementation. It calls the canonical Control, Coordinator, and
-Resources builders; an optional local Worker uses the same `WorkerNodeBuilder`
-as the split Worker process.
+Resources component builders; an optional local Worker uses the same
+`WorkerNodeBuilder` as the split Worker process.
 
-### 1.1 Physical role and authority map
+### 1.1 Physical deployment and authority map
 
-| Process role | Canonical components | Durable authority acquired | Cross-context ports |
+| Deployment unit or context | Canonical components | Durable authority acquired | Cross-context ports |
 |---|---|---|---|
-| Control | `awaken_control::build_control_component` | Catalog, Credential/secret, Config/publication, Admin, Data Subject consent/accountability | registers immutable executable Agents; calls Coordinator Environment/erasure ports; exposes authenticated audit, credential, webhook, and consent-read ports |
-| Coordinator | `awaken_server::build_coordinator_component`; currently co-locates the canonical Resources component | executable-Agent projection, Deployment/Session, Environment, captured content, dispatch/commit; Resources content/catalog | calls Control application ports; dispatches to and settles Workers |
+| Control | `awaken_control::build_control_component` | Agent/config publication, Environment definitions/revisions and sandbox-policy versions, Catalog, Credential/secret, Admin, IAM, Data Subject consent/accountability | registers exact executable Agent and Environment facts; exposes authenticated audit, credential, webhook, and consent-read ports |
+| Coordinator | `awaken_server::build_coordinator_component`; currently co-deploys the canonical Resources component | executable-Agent and executable-Environment projections, Deployment/DeploymentRun, Session, WorkQueue, captured content, dispatch/commit | reads only rebuildable Control projections; calls narrow Control ports; dispatches to and settles Workers; mounts Resources ports without owning their stores |
+| Resources (currently co-deployed with Coordinator) | `awaken_resource_application::ResourcesApplication` over `build_resource_component` | Resource Catalog/lifecycle, File logical metadata and immutable blobs, Memory content/history, Skill versions | exposes public application ports and claim-fenced per-kind Worker ports; never opens Control or Coordinator stores |
 | Worker | `WorkerNodeBuilder` | none; execution state is ephemeral | claim-fenced Coordinator and per-kind Resources/Credential clients |
 | AllInOne | the same Control, Coordinator, Resources, and optional Worker components | the union of those authorities in one process | local adapters implement the same ports |
 
@@ -60,14 +60,21 @@ receives no Session/Deployment or Resources content store. The legacy
 `ControlStoreConfig` name is only a backend-address compatibility bundle;
 role-aware validation and acquisition define authority.
 
-Environment is fully Coordinator-owned. Control authors through the narrow
-`EnvironmentAuthor` command port and never receives `EnvironmentState` or
-`environment_db`. Data Subject follows the same rule in both directions:
-Coordinator reads consent through `DataSubjectConsentSource`, while Control
-requests subject-content erasure through an authenticated Coordinator port. The
-single Coordinator application fans that command out to its captured-content
-store and optional portable ACP session store; AllInOne calls the same port
-locally.
+Environment definitions are static Control facts. `awaken-environment-contract`
+owns `EnvItem`, immutable `EnvironmentRevision`, and `EnvRegistry`; Control also
+owns exact sandbox-policy versions and stores the selected policy reference in
+the Environment revision. `awaken-environment-application` owns the sole
+`EnvironmentApplication`, which publishes the resolved exact revision through
+`ExecutableEnvironmentRegistrar`. Coordinator persists only a
+rebuildable executable command log and owns `EnvironmentExecutionState` plus the
+WorkQueue. Session admission freezes an `EnvironmentSnapshot`; Worker consumes
+that snapshot and never reopens either authority.
+
+Data Subject follows the same explicit-crossing rule. Coordinator reads consent
+through `DataSubjectConsentSource`, while Control requests subject-content
+erasure through an authenticated Coordinator port. The single Coordinator
+application fans that command out to its captured-content store and optional
+portable ACP session store; AllInOne calls the same ports locally.
 
 The Runtime Core is the domain center. It runs tools in-process but must not know
 public protocols, registry publication workflow, vault schemas, remote execution
@@ -120,7 +127,10 @@ crate name.
 |---|---|---|
 | Agent-domain contract | replayable agent truth and runtime commit vocabulary | `RunRecord`, durable run lifecycle value, `ThreadCommit`, `CommitCoordinator`, `RuntimeResumeStore`, state/fact/event records |
 | Config publication contract | Control-owned records and immutable publication values | `ConfigStore`, `StoredPublication`, `ExecutableAgentSnapshot`, `ExecutableAgentRegistrar` |
+| Environment contract | Control-owned static definitions, exact revisions, and policy references | `EnvItem`, `EnvironmentRevision`, `EnvRegistry`, `EnvironmentSandboxPolicyRef` |
 | Coordinator execution catalog | rebuildable executable-Agent availability for new Sessions | `ExecutableAgentCatalog`, current/exact-revision/fingerprint reads, local/HTTP/PostgreSQL registrar adapters, authenticated private router, and durable command replay |
+| Coordinator Environment projection | rebuildable executable-Environment availability and dynamic work coordination | `ExecutableEnvironmentCatalog`, `EnvironmentExecutionState`, `WorkQueue`; no authoring repository |
+| Resources application contract | resource commands and per-kind materialization/lifecycle ports | `ResourcesApplication`, `FileApplicationService`, `ResourceCatalog`, `ResourceLifecycleRepository`, Memory/Skill/File ports |
 | Runtime-facing contract | immutable values and ports used to prepare and execute one Run | `ExecutableAgentSnapshot`, `RunActivation`, `RuntimeRunContext`, `RunExecutor`, `RuntimeCapabilitySource`, `PluginManifest` |
 | Runtime implementation | live execution behavior over agent-domain vocabulary | agent loop, resolver implementation, provider routing, plugin execution, retry/backoff modules |
 | Run-ingress contract | durable delivery and dispatch vocabulary | submit/input records, dispatch records, claims, leases, wake hints, live-command delivery stores |
@@ -137,6 +147,26 @@ the runtime-facing contract. If it describes delivery,
 claim, lease, or wake mechanics, it belongs to run ingress. If it describes
 public names or protocol replay rows, it is a projection and stays out of the
 runtime contract.
+
+## 2.2 Aggregate And Lifecycle Ownership
+
+| Domain object | Authority and lifecycle | Downstream processing component |
+|---|---|---|
+| Agent definition | Control: draft → revised → compiled → published → archived; every publication remains immutable | executable-Agent registrar/catalog makes exact snapshots available to Coordinator Session admission |
+| Environment | Control: create revision 1 → append update/policy-binding revisions → terminal archive; `env_local` is immutable built-in truth | executable-Environment registrar/catalog supplies current/exact facts; withdrawal denies new Sessions while exact history remains |
+| Sandbox policy | Control: create v1 → append versions; Environment stores one exact reference | Control resolves the body into the executable Environment registration; Worker receives only the frozen Session projection |
+| Deployment | Coordinator: create/update → active/paused → terminal archived | scheduler/manual trigger creates a stable DeploymentRun; it never executes an Agent itself |
+| DeploymentRun | Coordinator: started → succeeded with `session_id` or failed with exact error | `LocalDeploymentSessionLauncher` reaches the sole Session creation command, idempotent by `deployment_run_id` |
+| Session / Run | Coordinator: admit frozen Agent/Environment/Resource facts → enqueue → claimed/running/awaiting → committed terminal settlement | Worker executes under a lease epoch; Coordinator owns commit, replay, and public projection |
+| File | Resources: logical create → active/readable → logical delete → purge intent → safe physical reclaim | `FileApplication` is the sole HTTP/artifact command path; Worker reads immutable bytes through `FileContentSource` |
+| MemoryStore | Resources: create/configure → bind/freeze config version → active CAS use → tombstone → fenced reclaim | `MemoryRepository`, snapshot/write-back ports, extraction intents, and `ResourceReclaimer` |
+| Skill | Resources: canonical ingest → immutable version publication → Session exact pin → tombstone → reclaim after pins drain | `SkillStore` and `SkillBundleSource`; built-in Skills remain Runtime extensions |
+| Repository definition | Resources: create/config versions → Session exact config/credential pin → ephemeral clone/use → tombstone/local cleanup | `ResourceCatalog`, credential materializer, and `RepositoryRealizer`; remote Git is never deleted |
+
+The only cross-domain data used for a Run is immutable or fenced: exact Agent and
+Environment revisions, a frozen secret-free resource manifest, exact credential
+references, and a live dispatch claim. Mutable authoring repositories never cross
+the boundary.
 
 ---
 
@@ -263,15 +293,29 @@ or remote agent execution is added only when a future ADR introduces it.
 
 ---
 
-## 7. Development Flow
+## 7. Current Topology And Remaining Optimization
 
-For every change:
+The four bounded contexts and their persistence authorities are complete in the
+current composition. The distributed binary exposes Control, Coordinator, and
+Worker roles; Resources is a canonical sibling component currently hosted by the
+Coordinator process. This is process co-location, not shared ownership: its
+stores, migrations, application services, and ports remain Resources-owned.
 
-1. Pick the bounded context first.
-2. Name the aggregate/entity/value object being changed.
-3. Reuse an existing port before adding a new one.
-4. Add only the first vertical slice needed to make the behavior executable.
-5. Add the guardrail test or dependency check from [INVARIANTS](../INVARIANTS.md).
-6. Keep projections and public DTOs out of the core domain.
+The active-active Coordinator path has one executable-projection refresh
+middleware. Before any Session or Deployment write that may admit Runtime work,
+it rebuilds both executable-Agent and executable-Environment views from their
+durable command logs. A failure in either view returns service unavailable before
+Session admission. AllInOne skips this middleware because its registrations and
+reads share one local catalog.
 
-Designs that skip this flow are not ready to guide implementation.
+Remaining work is ordered by architectural impact:
+
+| Priority | Current behavior | Optimization without changing ownership |
+|---|---|---|
+| P1 availability | Control commits an Agent publication or Environment revision, then performs an idempotent Coordinator registration. Explicit retry and startup reconciliation repair an interrupted boundary, but startup currently fails closed if Coordinator is unavailable. | Extend the existing Control publication-reconciliation supervisor into one composite exact-registration reconciler for Agent and Environment, with bounded backoff and readiness/lag metrics. Do not add a second registry, event model, or compensating rollback. |
+| P2 scale | Each relevant Coordinator write refreshes the complete durable executable command logs. This is correct across replicas but its cost grows with immutable history. | Retain the same command logs and catalog state machines while adding a durable high-water mark or database notification as a refresh hint. A gap or notification loss must fall back to full replay. |
+| P2 topology | Resources is co-deployed with Coordinator and is not yet a standalone CLI role. | Split it only when independent scaling or credentials justify another process. The split adds authenticated claim-fenced transport adapters around the existing `ResourcesApplication`; it must not create another File/Memory/Skill implementation or let Resources read Coordinator databases. |
+
+No schema or domain change is required for these optimizations. They improve
+availability, projection-refresh cost, or deployment flexibility while preserving
+the current aggregate lifecycles and consistency boundaries.

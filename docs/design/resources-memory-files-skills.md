@@ -10,7 +10,8 @@ owns the load-bearing identity and version decisions.
 
 This design covers three Agent input resources:
 
-- **File** — immutable content addressed by `FileId`;
+- **File** — a Workspace-scoped logical `FileId` referencing one immutable,
+  content-addressed blob;
 - **MemoryStore** — mutable, Workspace-owned long-term state;
 - **Repository** — mutable reference to an external Git repository.
 
@@ -21,7 +22,7 @@ The key terms are:
 
 | Term | Meaning |
 |---|---|
-| Resource identity | stable typed id: `FileId`, `MemoryStoreId`, or `RepositoryId` |
+| Resource identity | stable logical typed id: `FileId`, `MemoryStoreId`, or `RepositoryId` |
 | Binding | identity + mount path + access + optional instructions |
 | Revision | optimistic-concurrency counter on a mutable authoring aggregate |
 | Config version | immutable published Memory/Repository configuration |
@@ -43,12 +44,12 @@ own scopes and work lifecycle before it invokes this boundary.
 
 | Concern | Owning bounded context |
 |---|---|
-| Resource definitions, config versions, current lifecycle state | Resource Catalog / product control plane |
+| Resource definitions, config versions, current lifecycle state | Resources |
 | Agent default input associations | Agent Configuration |
 | Temporary attachments and effective input manifest | Session |
 | Principal, policy, action-to-scope applicability | Authorization/IAM |
-| Immutable File bytes | File data plane |
-| Mutable Memory entries, history, redaction | Memory data plane |
+| Immutable File bytes and logical File metadata | Resources / File aggregate |
+| Mutable Memory entries, history, redaction | Resources / MemoryStore aggregate |
 | External Git truth | remote Git provider; awaken owns only config and Session working tree |
 | Mounts, working trees, live handles | Environment/Sandbox provisioning |
 | Runtime facts, messages, decisions, verdicts | Runtime Core |
@@ -96,7 +97,9 @@ pin. Agent Memory/Repository bindings contain no config version.
 
 ```rust
 struct File {
-    id: FileId, // BLAKE3 content identity
+    id: FileId, // logical Workspace-scoped identity
+    blob_id: BlobId, // BLAKE3 immutable content identity
+    workspace_id: WorkspaceId,
     size: u64,
     filename: Option<String>,
     media_type: Option<String>,
@@ -273,11 +276,13 @@ process-local handle.
 | front-door PEP | Existing/evolving | Server edge | authenticate, construct trusted Workspace target, call PDP, enforce obligations | resource content and domain policy implementation |
 | authorization PDP/PIP | External/shared authorization domain | IAM | decide principal/action/scope/resource facts under active policy | mounts, resource configuration, storage |
 | `SessionResourceCoordinator` | Existing in Managed Session application service | Session application/host | activation state, ordered provision/release, recovery handoff | Agent config loading, IAM policy language |
-| `FileStore` | Existing | File data plane | immutable content-addressed bytes | Workspace authorization; mutable overwrite |
+| `ResourcesApplication` | Implemented canonical application assembly | Resources | derive the one File command service and purge scheduler from one `ResourceComponent`; expose the same ports to HTTP, Runtime artifact harvesting, and cleanup | HTTP, Runtime, Coordinator, IAM, or a second resource aggregate |
+| `FileApplicationService` / `FileApplication` | Implemented sole File command path | Resources | logical File get/list/create/bytes/delete, quota, idempotent artifact harvesting, ownership reference ordering, and purge intent | route DTOs, Runtime execution, direct physical reclamation, or parallel catalog writes |
+| `FileStore` | Existing | Resources / File aggregate | immutable content-addressed bytes | Workspace authorization; mutable overwrite |
 | `FileContentSource` | Implemented boundary port | Worker/File boundary | resolve one exact Workspace-scoped public `FileId` under the current claim and verify the immutable digest before read-only materialization | File ownership, mutable write-back, private blob-id authority, database access |
-| `StoreFileContentSource` | Implemented local adapter | File data plane | reuse `FileCatalog` then `FileStore` as the sole logical-to-content resolution path | Worker identity, dispatch ownership, HTTP, a second catalog |
+| `StoreFileContentSource` | Implemented local adapter | Resources / File aggregate | reuse `FileCatalog` then `FileStore` as the sole logical-to-content resolution path | Worker identity, dispatch ownership, HTTP, a second catalog |
 | `HttpFileContentSource` / Worker File handler | Implemented network adapters | Worker/File boundary | carry Workspace, File, and exact claim; authenticate, prove the File belongs to the frozen dispatch manifest, hold the claim guard through the read, and verify the response digest again on Worker | authoring/list/delete, generic Resource dispatch, Worker database access |
-| `MemoryRepository` | Existing canonical port | Memory data plane | scoped entries, one atomic `snapshot_heads` primitive shared by copy materialization, recovery, and Recall, CAS, atomic history, redaction, retention hooks | Agent/Session binding and IAM policy; callers must not reconstruct a snapshot with list-plus-read |
+| `MemoryRepository` | Existing canonical port | Resources / MemoryStore aggregate | scoped entries, one atomic `snapshot_heads` primitive shared by copy materialization, recovery, and Recall, CAS, atomic history, redaction, retention hooks | Agent/Session binding and IAM policy; callers must not reconstruct a snapshot with list-plus-read |
 | `HttpMemorySnapshotSource` / `HttpMemoryWritebackClient` | Implemented network adapters | Worker/Memory boundary | obtain one atomic snapshot and apply claim-fenced CAS create/update/delete-if-match under the frozen Workspace/store/config/access binding | config selection, silent overwrite, authoring/history/purge, Worker database access |
 | `MemoryRuntime` | Existing, moving to extension ownership | `awaken-ext-memory` | recall Plugin, terminal extraction observer, selector/extractor capability, stable intent/receipt | resource identity, default store, IAM policy, Host lifecycle |
 | `BoundMemory` | Existing | Session Runtime | one resolved store handle + pinned policy + maximum access shared by recall/extraction | workspace lookup, current-config resolution, authorization |
@@ -288,12 +293,13 @@ process-local handle.
 | Repository credential pin compiler | Existing in Managed Session application service | Session application/Vault ACL | compile a Repository config binding once into exact active source revision, canonical usage, `Forbidden` exposure, and selected Resource holder before persistence | material opening, Runtime lookup, generic Service state |
 | `CredentialMaterialResolver` | Existing canonical port | Credential execution boundary | validate and open one exact access/holder/Workspace/target-use binding for an installed adapter; shared by Model, MCP, and Repository | source enumeration, revision/holder/target selection, Agent prompt, persisted plaintext |
 | `SkillBundleSource` | Implemented boundary port | Worker/Skill boundary | retrieve and verify one exact immutable custom capability bundle under a live claim | generic Resource lifecycle, Skill policy selection, database access |
-| `StoreSkillBundleSource` | Implemented local adapter | Skill data plane | load the exact frozen version from the authoritative `SkillStore` and validate its identity and digest | Worker identity, dispatch ownership, HTTP, a second Skill catalog |
+| `StoreSkillBundleSource` | Implemented local adapter | Resources / Skill aggregate | load the exact frozen version from the authoritative `SkillStore` and validate its identity and digest | Worker identity, dispatch ownership, HTTP, a second Skill catalog |
 | `HttpSkillBundleSource` / Worker Skill handler | Implemented network adapters | Worker/Skill boundary | authenticate the current Worker, prove the exact custom binding belongs to the frozen dispatch manifest, hold the claim guard through the read, and verify the returned bundle again on Worker | authoring/list/delete/purge, built-in Skill transport, Worker database access |
 | `SandboxProvider` | Existing | Environment provisioning | realize validated mounts/working trees and dispose them | product resource authoring and policy |
 | `ResourceReclaimer` | Existing, durable and per-resource | Product/session operations | reconcile crashed activations and purge intents; retention, reference checks, fenced claims, per-kind receipts | authorization decisions, remote Git deletion |
 | `ResourceReclamationFence` | Existing resource lifecycle port | Resource consistency | atomically prove zero physical references, fence `(kind, resource_id)`, and reject racing reference writes | principal, role, policy, API key, Org/Project/WorkUnit |
-| `ResourcePlane` | Existing canonical composition value | Composition root | select File, Memory, Skill, and lifecycle implementations together and inject them atomically before local stores open | aggregate behavior, IAM/PDP data, authorization decisions |
+| `ResourceComponent` | Existing canonical port assembly | Resources composition | select one Resource Catalog, File, Memory, Skill, and lifecycle implementation family | application command ordering, IAM/PDP data, authorization decisions |
+| `ResourcesRouterInput` / `resources_router` | Implemented HTTP composition | Resources adapter | mount File, Memory, and Skill route families exactly once over application ports | stores, business state, Worker claims, or another resource service |
 | `SqliteResourceStore` / `PostgresResourceStore` | Existing adapters | Resource consistency persistence | persist purge intents, intrinsic references, and reclamation fences for embedded or multi-node deployment | IAM/PDP data and File/Memory/Skill content |
 
 The catalog names roles rather than forcing them into one crate. Local mode may
@@ -358,9 +364,10 @@ the unchanged environment realizer with the frozen secret-free plan and
 ephemeral credential. The former direct Worker catalog connection and empty
 composition marker were removed.
 
-`ResourcePlane` selects local or remote implementations at the composition root;
-it does not own a Resource aggregate. A separately deployed provider retains its
-per-kind contract and data authority. The design does not add a universal
+`ResourceComponent` selects local implementations at the Resources composition
+root. `ResourcesApplication` adds command ordering once and remains free of HTTP
+and Runtime concerns. A separately deployed provider retains its per-kind
+contract and data authority. The design does not add a universal
 `ResourceService` or `ResourceMaterializer`.
 
 ## Lifecycle Stage Ownership
@@ -370,13 +377,13 @@ resource-specific repositories enforce their own intrinsic invariants.
 
 | Stage | Primary component | Collaborators | Durable result |
 |---|---|---|---|
-| Configure File | Files API / File application service | `FileStore`, ownership repository | immutable `FileId` plus Workspace ownership edge |
-| Configure Memory | Resource Catalog service | Memory config repository, `MemoryRepository` | `MemoryStore` + config v1 + logical namespace |
-| Configure Repo | Resource Catalog service | Repository config repository, Vault | `Repository` + config v1 referencing credential binding |
+| Configure File | `FileApplication` | `FileStore`, `FileCatalog`, lifecycle repository | immutable blob plus logical `FileId` and Workspace/reference edge |
+| Configure Memory | Resources application | Resource Catalog, `MemoryRepository` | `MemoryStore` + config v1 + logical namespace |
+| Configure Repo | Resources application | Resource Catalog, Vault | `Repository` + config v1 referencing credential binding |
 | Bind Agent default | Agent Configuration service | `AgentInputBindingRepository`, PEP/PDP | identity-only `InputBinding`, authoring revision increments |
 | Attach to Session | Managed Session adapter | PEP/PDP | temporary `SessionInputAttachment` |
 | Resolve | `SessionInputResolver` + Repository credential pin compiler | Agent binding repo, Resource Catalog, Vault source metadata, frozen Environment | `ResolvedSessionResources`; Memory/Repo config versions and exact Repository credential execution pin selected once |
-| Activate File | `SessionResourceCoordinator` | `FileStore`, `SandboxProvider` | immutable-source working copy with no write-back + activation `Active` |
+| Activate File | `SessionResourceCoordinator` | `FileContentSource`, `SandboxProvider` | immutable-source working copy with no write-back + activation `Active` |
 | Activate Memory | `SessionResourceCoordinator` | `MemoryRepository`, Memory realizer | `ScopedMemoryStore`/mount + activation `Active` |
 | Activate Repo | `SessionResourceCoordinator` | Repository realizer, exact material resolver, Sandbox | current clone + working tree; exact pin persists, material does not |
 | Use | sandbox/tool adapters | File/Memory/Git domain ports | domain writes and receipts; no second config resolve |
@@ -384,7 +391,7 @@ resource-specific repositories enforce their own intrinsic invariants.
 | Extract after terminal Run | Memory Extraction terminal observer | committed Run/Thread facts, Extractor Agent, Memory repository | stable extraction intent and receipt; at-least-once delivery is idempotent |
 | Release | `SessionResourceCoordinator` | Sandbox manager, Vault, per-kind realizer | activation `Released`; sandbox-local material removed |
 | Reconcile crash | `ResourceReclaimer` | Session activation repository, workers | stale activation released or retried |
-| Archive/Delete | Resource Catalog service | PEP/PDP, resource repository | live deny state/tombstone before physical cleanup |
+| Archive/Delete | Resources application service | PEP/PDP, resource repository | live deny state/tombstone plus deterministic purge intent before physical cleanup |
 | Fence physical identity | `ResourceReclaimer` | `ResourceReclamationFence`, reference writers | durable zero-reference fence; racing bindings fail closed |
 | Purge | `ResourceReclaimer` | per-kind store and reference indexes | idempotent physical deletion followed by auditable purge receipt |
 
@@ -394,10 +401,13 @@ intent. They do not receive API keys, roles, IAM syntax, Project, or WorkUnit.
 ## Common Configure-to-Reclaim Flow
 
 ```text
-Resource API / Files API
+Resources API
           |
           v
-Resource Catalog or FileStore
+ResourcesApplication / FileApplication
+          |
+          v
+Resource Catalog and per-kind stores
           |
           v
 Agent default binding  +  Session temporary attachment
@@ -451,20 +461,24 @@ effective set, so what the Agent is told is what the environment provisions.
 
 ### Configure
 
-The Files API streams bytes into `FileStore`. The store computes BLAKE3 and
-returns `FileId`; equal bytes deduplicate. The ownership repository records the
-Workspace access to that content id. Knowing a hash is never authority.
+The Files API delegates to `FileApplication`, which checks the Workspace quota,
+stores immutable bytes, creates one logical File record, and writes its ownership
+reference through the lifecycle repository. `FileStore` computes the BLAKE3
+`blob_id`; equal bytes may share that blob while distinct uploads retain distinct
+logical `FileId` values. Knowing either id is never authority.
 
 ### Bind and resolve
 
-Agent and Session bindings carry the immutable `FileId`. Resolution checks the
-Workspace ownership edge, current deletion state, mount path, and content existence. No
-File config or version lookup exists.
+Agent and Session bindings carry the logical `FileId`. Resolution checks the
+Workspace ownership edge, current deletion state, mount path, and referenced blob
+existence. No File config or version lookup exists.
 
 ### Activate and use
 
-The coordinator asks `FileStore` for binary bytes and the Sandbox provider
-verifies them against `FileId`. It materializes a disposable Session working copy;
+The Worker asks `FileContentSource` for the logical File under its current claim.
+The Resources adapter resolves `FileCatalog` to `blob_id`, reads `FileStore`, and
+both sides validate the immutable digest. The Sandbox provider materializes a
+disposable Session working copy;
 the copy may be edited, but it has no write-back path to the immutable FileStore
 object. Text conversion is forbidden. Edited bytes become a new File or Artifact
 only through an explicit publish; the original blob is never overwritten.
@@ -488,8 +502,8 @@ A shared blob survives removal of one Workspace's ownership edge.
 
 ### Configure
 
-The Resource Catalog creates a Workspace-owned `MemoryStore`, publishes config
-v1, and ensures the Memory data plane recognizes the logical store id. Config
+The Resources application creates a Workspace-owned `MemoryStore`, publishes
+config v1, and ensures the Resources-owned aggregate recognizes the logical store id. Config
 updates append an immutable version and atomically advance
 `current_config_version`. They do not copy or version the store's content.
 The Workspace-scoped management boundary exposes current/historical config reads
@@ -501,7 +515,7 @@ A Memory head update is likewise one resource-aggregate command. The public API
 passes content, optional target path, and the head SHA precondition to
 `MemoryRepository.update_head`; validation, CAS, rename-replace, and history are
 one transaction. The API never sequences a content write followed by a second
-rename. This invariant belongs to the resource plane and contains no principal,
+rename. This invariant belongs to Resources and contains no principal,
 role, policy, API key, or authorization decision.
 
 ### Bind and resolve
@@ -739,7 +753,8 @@ initial simple policy is append-only retention because config rows are small.
 Skills and MCP servers are capability material, not shortcuts around resource or
 authorization policy:
 
-1. product/config code owns Skill versions, bundles, visibility, and MCP config;
+1. Resources owns custom Skill versions, bundles, and lifecycle; Control owns
+   Agent capability references and MCP configuration;
 2. Session resolution freezes Skill id/version/hash and selects opaque MCP credential refs;
 3. the environment verifies and materializes the complete binary-safe Skill bundle
    under `.skills/<id>` and establishes MCP access;
@@ -893,7 +908,7 @@ internal config version remains an awaken governance detail.
 - raw repository URL support outside the legacy/protocol ingress adapter;
 - raw `auth_token` and string `git_ref` in the neutral Runtime resource shape;
 - commit/tree/content pin types for Repository;
-- File version abstractions above immutable `FileId`;
+- File version abstractions above the immutable logical-File-to-blob mapping;
 - API-local `SkillRegistry`, text-only `SkillStore` overwrite semantics, lossy
   `String::from_utf8_lossy` bundle ingestion, and runtime lookup of `latest`.
 
@@ -946,7 +961,7 @@ reconciler. It never silently marks the resource released.
 | Area | Required proof |
 |---|---|
 | Binding | Agent defaults and Session attachments merge once; explicit replacement only; mount collision fails |
-| File | binary round-trip; content-id validation; edited Session copy cannot mutate original FileId; shared-blob ownership isolation; safe GC |
+| File | binary round-trip; blob digest validation; distinct logical uploads may share bytes; edited Session copy cannot mutate the original blob; shared-blob ownership isolation; safe GC |
 | Memory | config update affects only later Sessions; current content remains shared; read-only extraction denied; CAS conflict loses no update |
 | Repository | config update affects later Sessions; no commit pin; exact source revision/usage/holder pin; anonymous/missing/stale/inactive/cross-Workspace/mismatched cases fail closed; retained pre-pin row migrates once before I/O; material absent from manifest/logs/prompt/disk; remote is never deleted by GC |
 | Skill | binary bundle round-trip; traversal rejected; restart preserves history; v1 Session keeps v1 after v2 publication; hash mismatch fails closed |

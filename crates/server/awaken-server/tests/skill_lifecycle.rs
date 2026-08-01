@@ -229,7 +229,11 @@ async fn offered_skill_is_discovered_activated_and_used() {
 
 #[tokio::test]
 async fn skill_tools_are_not_ambient_without_offering_a_skill() {
-    // No skill offered: neither `list_skills` nor `Skill` is advertised.
+    // Cause/effect decision rule: the canonical Resources component installs an
+    // empty SkillStore (storage C1=true), while the Agent/Session offers no
+    // static, external, or pinned Skill (capability C2=false). The effects are
+    // no `list_skills`/`Skill` descriptor or invocation and a normal model reply;
+    // store availability alone must never act as a capability grant.
     let app = build_router(Arc::new(SkillUserModel), "scripted");
     let id = create_session(&app).await;
 

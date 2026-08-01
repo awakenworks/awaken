@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-30
+- Amended: 2026-08-01 — static Environment ownership and Resources application composition
 - Depends on: ADR-0031, ADR-0032, ADR-0038, ADR-0062, ADR-0063,
   ADR-0065, ADR-0066, ADR-0067
 - Supersedes: ADR-0031 D1/D4 and ADR-0032 D1/D4 only where they require a
@@ -112,13 +113,14 @@ receipt, or continue mutable Resource write-back.
 
 ### D6: Data ownership is enforced at composition time
 
-Control owns authoring, publication, IAM, credential mutation, and Data Subject
-consent/accountability stores.
-Coordinator owns executable Agent registration, Deployment, DeploymentRun,
-Environment execution state, Session, subject-tagged captured content, dispatch,
-and commit stores. Resource
-providers own their content. Worker owns only ephemeral execution state and must
-not receive authority database connections.
+Control owns Agent and Environment authoring, immutable revisions/publications,
+sandbox-policy versions, IAM, credential mutation, and Data Subject
+consent/accountability stores. Coordinator owns rebuildable executable Agent and
+Environment projections, Deployment, DeploymentRun, Session, WorkQueue,
+subject-tagged captured content, dispatch, and commit stores. Resources owns its
+catalog, File/Memory/Skill data, references, purge intents, and reclamation
+fences. Worker owns only ephemeral execution state and must not receive authority
+database connections.
 
 The process store bundle is split into optional Control and Coordinator groups.
 Split Coordinator cannot configure or acquire Catalog, Credential, Config,
@@ -141,13 +143,25 @@ Coordinator model discovery is derived from
 for Session resolution. It does not reopen Control's mutable model or credential
 catalogs merely to populate `/v1/models`.
 
-Environment is Coordinator-owned. Public Managed HTTP, the authenticated private
-Control command, and the AllInOne local adapter all invoke the same
-`EnvironmentApplication::create`; the Registry atomically owns command-id /
-fingerprint replay and the application converges one healthcheck through the Work
-Queue. Control receives only `EnvironmentAuthor`, never `EnvironmentState` or an
-Environment database address. `environment_db` remains an external deployment
-field but resolves into the Coordinator store group.
+Environment is a static Control aggregate. `awaken-environment-contract` owns
+`EnvItem`, exact revisions, the selected sandbox-policy reference, and
+`EnvRegistry`. Public definition and policy routes plus the Admin Assistant call
+the same `EnvironmentApplication`. Each committed revision is registered through
+`ExecutableEnvironmentRegistrar`; split deployment uses authenticated HTTP and
+AllInOne uses a local adapter. Coordinator stores only the rebuildable exact/current
+projection and WorkQueue, and converges the healthcheck after registration.
+Archive/delete preserves terminal Control history, withdraws current executable
+availability, and removes queued work. `environment_db` therefore belongs to the
+Control store group; Coordinator rejects it before store acquisition.
+
+Resources has one application composition. `ResourcesApplication` derives the
+single `FileApplicationService` and purge scheduler from one canonical
+`ResourceComponent`; the public File/Memory/Skill router and Runtime artifact
+harvesting consume those same ports. Coordinator may co-deploy and mount this
+component, but does not acquire its database authority. A separate Resources
+process can be introduced only with authenticated claim/grant ports that preserve
+the existing dispatch fence; sharing the Coordinator dispatch database is not an
+acceptable split.
 
 Data Subject is Control-owned; captured runtime content is Coordinator-owned.
 Control builds the only `RepoDataSubjectResolver`, persists its erasure-process
@@ -183,10 +197,14 @@ that loses ownership of `ResourceCatalog`.
 - `StoredPublication` remains the single publication authority; Coordinator data
   is explicitly rebuildable.
 - No whole-catalog installation track survives beside per-Agent registration.
+- No Session-owned Environment definition contract or sandbox-policy binding
+  table survives beside the Control aggregate.
 - Deployment recovery, publication retries, claimed commits, and mutable Resource
   write-back have stable idempotency or fencing identities.
 - Resource semantics remain type-specific instead of accumulating optional
   behavior in a generic service.
+- HTTP and Runtime File commands share one Resources application path, and
+  AllInOne does not reconstruct any of the four domain components.
 - Split Coordinator no longer needs Control database credentials or the Control
   seal key; loss of the reverse Control boundary fails closed while durable
   Coordinator outbox/audit identities remain retryable.

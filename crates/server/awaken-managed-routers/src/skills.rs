@@ -674,6 +674,15 @@ mod tests {
         }
     }
 
+    fn purge_scheduler() -> Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> {
+        Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(
+            Arc::new(
+                awaken_resource_store::SqliteResourceStore::in_memory()
+                    .expect("resource lifecycle"),
+            ),
+        ))
+    }
+
     async fn get(router: &Router, uri: &str) -> (StatusCode, String) {
         let mut request = Request::builder().uri(uri).body(Body::empty()).unwrap();
         request
@@ -746,7 +755,7 @@ mod tests {
             "---\nname: private\ndescription: a\n---\nsecret-a",
         )
         .await;
-        let router = skills_router(host.skill_store(), host);
+        let router = skills_router(host.skill_store(), purge_scheduler());
         let id = "private";
         assert_eq!(
             get_in(&router, &format!("/v1/skills/{id}"), "ws_a").await.0,
@@ -787,7 +796,7 @@ mod tests {
             "---\nname: Greeter\ndescription: hi\n---\nsay hello",
         )
         .await;
-        let router = skills_router(host.skill_store(), host);
+        let router = skills_router(host.skill_store(), purge_scheduler());
         let cid = "Greeter";
 
         // The advertised catalog id retrieves the skill via the durable fallback…

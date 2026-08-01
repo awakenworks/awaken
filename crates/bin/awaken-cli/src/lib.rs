@@ -16,8 +16,11 @@ mod console_assets;
 mod control;
 mod control_component;
 mod credential_probe;
+mod deployment_process;
 mod exact_host_model;
 mod executable_agent_registration;
+mod executable_environment_registration;
+mod executable_projection_refresh;
 mod identity;
 mod local_process_stores;
 mod observation_reconcile;
@@ -30,7 +33,7 @@ mod worker_transport_security;
 use std::sync::Arc;
 
 use awaken_config_service::ManagementAuditPlane;
-use awaken_protocol_managed::{EnvironmentState, ManagedState};
+use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_host::{ExtMcpProbe, ManagedHost, SharedHost};
 use axum::Router;
@@ -56,6 +59,8 @@ pub use control::{
     build_control_router_with_publication_resolver_and_web_search,
 };
 use control_component::{assemble_control_process_router, control_component_for_process};
+use deployment_process::build_runtime_process_assembly;
+pub use deployment_process::migrate_deployment_schema;
 use identity::identity_wiring;
 use process_assembly_options::{ProcessAssemblyOptions, local_model_supply};
 #[cfg(test)]
@@ -157,7 +162,6 @@ struct ProcessStoreOpenOptions<'a> {
     seal_key: Option<&'a [u8; 32]>,
     role: config::Role,
     postgres_schema: PostgresSchemaMode,
-    open_environment_stores: bool,
 }
 
 async fn open_process_stores(
@@ -173,7 +177,6 @@ async fn open_process_stores(
         seal_key: key,
         role,
         postgres_schema,
-        open_environment_stores,
     } = options;
 
     // Create the parent directory for any SQLite path (a bundle dir or a custom path).
@@ -304,6 +307,32 @@ async fn open_process_stores(
         }
     }
 
+    let environment_work: Option<Arc<dyn awaken_session_contract::work_queue::WorkQueue>> =
+        if role_owns_managed_execution(role) {
+            ensure_parent(&coordinator_cfg.sessions)?;
+            Some(match &coordinator_cfg.sessions {
+                StoreBackend::Sqlite(path_value) => Arc::new(
+                    awaken_work_store::SqliteWorkQueue::open(&path(path_value))
+                        .map_err(|error| format!("open work queue SQLite: {error}"))?,
+                )
+                    as Arc<dyn awaken_session_contract::work_queue::WorkQueue>,
+                StoreBackend::Postgres(url) => Arc::new(
+                    match postgres_schema {
+                        PostgresSchemaMode::Migrate => {
+                            awaken_work_store::PostgresWorkQueue::connect(url).await
+                        }
+                        PostgresSchemaMode::Verify => {
+                            awaken_work_store::PostgresWorkQueue::connect_existing(url).await
+                        }
+                    }
+                    .map_err(|error| format!("connect work queue Postgres: {error}"))?,
+                )
+                    as Arc<dyn awaken_session_contract::work_queue::WorkQueue>,
+            })
+        } else {
+            None
+        };
+
     let coordinator = if role_owns_managed_execution(role) {
         ensure_parent(&coordinator_cfg.sessions)?;
         ensure_parent(&coordinator_cfg.captured_content)?;
@@ -379,6 +408,7 @@ async fn open_process_stores(
             dream_repository,
             capture_sink,
             captured_content_eraser,
+            environment_work: environment_work.expect("Coordinator role opens WorkQueue"),
         })
     } else {
         None
@@ -442,29 +472,22 @@ async fn open_process_stores(
         None
     };
 
-    let environments: Option<Arc<EnvironmentState>> = if open_environment_stores {
-        ensure_parent(&coordinator_cfg.environments)?;
-        match &coordinator_cfg.environments {
-            StoreBackend::Sqlite(environment_path) => Some(Arc::new(
-                EnvironmentState::with_stores(
-                    Arc::new(
-                        awaken_env_store::SqliteEnvRegistry::open(&path(environment_path))
-                            .map_err(|error| format!("open environments SQLite: {error}"))?,
-                    ),
-                    Arc::new(
-                        awaken_work_store::SqliteWorkQueue::open(&path(
-                            &environment_path.with_file_name("work_queue.db"),
-                        ))
-                        .map_err(|error| format!("open work queue SQLite: {error}"))?,
-                    ),
-                )
-                .with_sandbox_policies(Arc::new(
+    let control_environment = if opens_control {
+        ensure_parent(&cfg.environment)?;
+        Some(match &cfg.environment {
+            StoreBackend::Sqlite(environment_path) => (
+                Arc::new(
+                    awaken_env_store::SqliteEnvRegistry::open(&path(environment_path))
+                        .map_err(|error| format!("open environments SQLite: {error}"))?,
+                ) as Arc<dyn awaken_environment_contract::EnvRegistry>,
+                Arc::new(
                     awaken_sandbox_policy_store::SqliteSandboxExecutionPolicyStore::open(&path(
-                        &environment_path.with_file_name("sandbox_policies.db"),
+                        environment_path,
                     ))
                     .map_err(|error| format!("open sandbox policies SQLite: {error}"))?,
-                )),
-            )),
+                )
+                    as Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>,
+            ),
             StoreBackend::Postgres(url) => {
                 let environments = match postgres_schema {
                     PostgresSchemaMode::Migrate => {
@@ -475,32 +498,25 @@ async fn open_process_stores(
                     }
                 }
                 .map_err(|error| format!("connect environments Postgres: {error}"))?;
-                let work = match postgres_schema {
+                let sandbox_policies = match postgres_schema {
                     PostgresSchemaMode::Migrate => {
-                        awaken_work_store::PostgresWorkQueue::connect(url).await
+                        awaken_sandbox_policy_store::PostgresSandboxExecutionPolicyStore::connect(
+                            url,
+                        )
+                        .await
                     }
                     PostgresSchemaMode::Verify => {
-                        awaken_work_store::PostgresWorkQueue::connect_existing(url).await
+                        awaken_sandbox_policy_store::PostgresSandboxExecutionPolicyStore::connect_existing(url).await
                     }
                 }
-                .map_err(|error| format!("connect work queue Postgres: {error}"))?;
-                let sandbox_policies = match postgres_schema {
-                PostgresSchemaMode::Migrate => {
-                    awaken_sandbox_policy_store::PostgresSandboxExecutionPolicyStore::connect(url)
-                        .await
-                }
-                PostgresSchemaMode::Verify => {
-                    awaken_sandbox_policy_store::PostgresSandboxExecutionPolicyStore::connect_existing(url)
-                        .await
-                }
+                .map_err(|error| format!("connect sandbox policies Postgres: {error}"))?;
+                (
+                    Arc::new(environments) as Arc<dyn awaken_environment_contract::EnvRegistry>,
+                    Arc::new(sandbox_policies)
+                        as Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>,
+                )
             }
-            .map_err(|error| format!("connect sandbox policies Postgres: {error}"))?;
-                Some(Arc::new(
-                    EnvironmentState::with_stores(Arc::new(environments), Arc::new(work))
-                        .with_sandbox_policies(Arc::new(sandbox_policies)),
-                ))
-            }
-        }
+        })
     } else {
         None
     };
@@ -508,6 +524,8 @@ async fn open_process_stores(
     Ok(ProcessStores {
         workspace_root: Some(workspace_root),
         control: if opens_control {
+            let (environments, sandbox_policies) =
+                control_environment.expect("Control role opens Environment stores");
             Some(ControlStores {
                 catalog: catalog.expect("Control role opens Catalog"),
                 credentials: credentials.expect("Control role opens CredentialRepo"),
@@ -524,12 +542,13 @@ async fn open_process_stores(
                 erasure_jobs: data_subject
                     .expect("Control role opens Data Subject store")
                     .1,
+                environments,
+                sandbox_policies,
             })
         } else {
             None
         },
         coordinator,
-        environments,
     })
 }
 
@@ -577,141 +596,6 @@ pub async fn build_coordinator_assembly(
     deployment: &config::ResolvedDeployment,
 ) -> Result<ProcessAssembly, String> {
     build_runtime_process_assembly(deployment, None, config::Role::Coordinator).await
-}
-
-async fn build_runtime_process_assembly(
-    deployment: &config::ResolvedDeployment,
-    key: Option<&[u8; 32]>,
-    role: config::Role,
-) -> Result<ProcessAssembly, String> {
-    debug_assert!(matches!(
-        role,
-        config::Role::AllInOne | config::Role::Coordinator
-    ));
-    let identity = identity_wiring(
-        deployment.identity_mode,
-        Some(&deployment.data_dir),
-        &deployment.org_id,
-        &deployment.iam_workspaces,
-        &deployment.cloud_iam,
-    )?;
-    let postgres_schema = match deployment.mode {
-        config::OperatingMode::Local => PostgresSchemaMode::Migrate,
-        config::OperatingMode::Server => PostgresSchemaMode::Verify,
-    };
-    let resource_component =
-        open_resource_component(deployment.resources.clone(), postgres_schema).await?;
-    let stores = open_process_stores(ProcessStoreOpenOptions {
-        control: deployment.control.clone(),
-        coordinator: deployment.coordinator.clone(),
-        resource_component: Some(resource_component),
-        workspace_root: deployment.data_dir.clone(),
-        seal_key: key,
-        role,
-        postgres_schema,
-        open_environment_stores: true,
-    })
-    .await?;
-    let hand_executors =
-        awaken_server::placement::connect_declared_hands(&deployment.hand_connections).await?;
-    let executable_agent_wiring = executable_agent_registration::for_runtime_role(
-        role,
-        deployment,
-        postgres_schema,
-        stores
-            .environments
-            .as_ref()
-            .expect("Managed Execution owns Environment")
-            .application(),
-        stores
-            .coordinator
-            .as_ref()
-            .expect("Managed Execution owns captured content")
-            .captured_content_eraser
-            .clone(),
-    )
-    .await?;
-    let worker_authenticator = worker_transport_security::authenticator(deployment)?;
-    let control_service = if role == config::Role::Coordinator {
-        let (url, token) = deployment.control_service.coordinator_credentials()?;
-        Some(ControlServicePorts::remote(Arc::new(
-            awaken_server::control_service_boundary::HttpControlServiceClient::new(url, token)?,
-        )))
-    } else {
-        None
-    };
-    let router = assemble_runtime_process_router(
-        stores,
-        identity.iam,
-        identity.remote_iam,
-        identity.local_browser_auth,
-        PublicationModelComposition::PublishedProviders,
-        ProcessAssemblyOptions {
-            deployment: Some(deployment.runtime.clone()),
-            content_capture_ceiling: deployment.runtime.content_capture.level,
-            org_id: Some(deployment.org_id.clone()),
-            mcp_bearer_token: deployment.mcp_bearer_token.clone(),
-            role,
-            cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
-            model_supply: local_model_supply(deployment.cloud_models.is_enabled()),
-            brokered_catalog: None,
-            local_acp_observations: deployment.local_acp_observations.clone(),
-            hand_executors,
-            web_search_providers: None,
-            web_search_publication_resolver: None,
-            executable_agent_wiring: Some(executable_agent_wiring),
-            worker_authenticator: Some(worker_authenticator),
-            control_service_token: None,
-            control_service,
-        },
-        None,
-    )
-    .await;
-    Ok(ProcessAssembly {
-        router,
-        local_setup: identity.local_setup,
-    })
-}
-
-/// Explicit deployment migration phase for every management-owned store.
-/// Local SQLite startup retains its existing auto-migration behavior; managed
-/// PostgreSQL deployments invoke this command before starting application Pods.
-pub async fn migrate_deployment_schema(
-    deployment: &config::ResolvedDeployment,
-    key: Option<&[u8; 32]>,
-) -> Result<(), String> {
-    let manifest = migration_manifest(deployment.role);
-    let resource_component = if manifest.contains(&MigrationComponent::Resources) {
-        Some(
-            open_resource_component(deployment.resources.clone(), PostgresSchemaMode::Migrate)
-                .await?,
-        )
-    } else {
-        None
-    };
-    if manifest.contains(&MigrationComponent::Control)
-        || manifest.contains(&MigrationComponent::Coordinator)
-    {
-        open_process_stores(ProcessStoreOpenOptions {
-            control: deployment.control.clone(),
-            coordinator: deployment.coordinator.clone(),
-            resource_component,
-            workspace_root: deployment.data_dir.clone(),
-            seal_key: key,
-            role: deployment.role,
-            postgres_schema: PostgresSchemaMode::Migrate,
-            open_environment_stores: manifest.contains(&MigrationComponent::Coordinator),
-        })
-        .await
-        .map(drop)?;
-    }
-    if manifest.contains(&MigrationComponent::ExecutableAgentCatalog) {
-        executable_agent_registration::migrate(deployment).await?;
-    }
-    if manifest.contains(&MigrationComponent::Coordinator) {
-        awaken_server::migrate_postgres_coordinator_schema(&deployment.runtime).await?;
-    }
-    Ok(())
 }
 
 /// Build the real env-selected management surface with one explicit in-process
@@ -763,7 +647,6 @@ async fn build_all_in_one_router_with_composition(
         seal_key: Some(&key),
         role: config::Role::AllInOne,
         postgres_schema,
-        open_environment_stores: true,
     })
     .await
     .unwrap_or_else(|error| panic!("open deployment stores: {error}"));
@@ -792,6 +675,7 @@ async fn build_all_in_one_router_with_composition(
             web_search_providers: None,
             web_search_publication_resolver: None,
             executable_agent_wiring: None,
+            executable_environment_wiring: None,
             worker_authenticator: None,
             control_service_token: None,
             control_service: None,
@@ -1059,7 +943,6 @@ async fn assemble_runtime_process_router(
         executable_agent_registrar,
         executable_agent_private_router,
         executable_agent_projection_refresher,
-        _remote_environment_author,
         _remote_coordinator_content_eraser,
     ) = executable_agent_registration::process_parts(assembly.executable_agent_wiring);
     let content_capture_ceiling = assembly.content_capture_ceiling;
@@ -1080,6 +963,18 @@ async fn assemble_runtime_process_router(
         .coordinator
         .as_ref()
         .expect("Managed Execution role requires Coordinator stores");
+    let executable_environment_wiring =
+        assembly.executable_environment_wiring.unwrap_or_else(|| {
+            executable_environment_registration::ExecutableEnvironmentWiring::local(
+                coordinator_stores.environment_work.clone(),
+            )
+            .expect("compose local executable Environment catalog")
+        });
+    let executable_environment_catalog = executable_environment_wiring.catalog;
+    let executable_environment_registrar = executable_environment_wiring.registrar;
+    let executable_environment_projection_refresher =
+        executable_environment_wiring.projection_refresher;
+    let executable_environment_private_router = executable_environment_wiring.private_router;
     let coordinator_content_eraser =
         awaken_server::data_subject_boundary::coordinator_content_eraser(
             coordinator_stores.captured_content_eraser.clone(),
@@ -1087,7 +982,9 @@ async fn assemble_runtime_process_router(
                 .as_ref()
                 .and_then(|deployment| deployment.acp_session_blob_root.clone()),
         );
-    let resource_component = &coordinator_stores.resource_component;
+    let resource_component = coordinator_stores.resource_component.clone();
+    let resource_application =
+        awaken_resource_application::ResourcesApplication::new(resource_component.clone());
     // Resolve the installation's Workspace exactly once, then inject the same
     // coordinate into every adapter assembled below. Durable roots persist it;
     // ephemeral roots receive a process-local generated coordinate.
@@ -1151,6 +1048,28 @@ async fn assemble_runtime_process_router(
             workspace: platform_workspace.clone(),
         })
     });
+    let environment_authoring = match role {
+        config::Role::AllInOne => {
+            let control = stores
+                .control
+                .as_ref()
+                .expect("AllInOne owns Control Environment stores");
+            let state = Arc::new(awaken_protocol_managed::EnvironmentAuthoringState::new(
+                control.environments.clone(),
+                control.sandbox_policies.clone(),
+                executable_environment_registrar,
+            ));
+            state
+                .application()
+                .reconcile_registrations()
+                .await
+                .unwrap_or_else(|error| panic!("reconcile Environment registrations: {error}"));
+            Some(state)
+        }
+        config::Role::Coordinator => None,
+        config::Role::Control | config::Role::Worker => unreachable!(),
+    };
+
     // Control owns this complete component. Standalone Control and AllInOne
     // supply different process adapters but call the same domain builder;
     // Coordinator never constructs ConfigService or a Control router.
@@ -1180,13 +1099,17 @@ async fn assemble_runtime_process_router(
                     &platform_workspace,
                 ))),
                 Arc::new(
-                    awaken_server::environment_boundary::LocalEnvironmentAuthor::new(
-                        stores
-                            .environments
+                    awaken_environment_application::EnvironmentApplicationAuthor::new(
+                        environment_authoring
                             .as_ref()
-                            .expect("AllInOne owns Environment")
+                            .expect("AllInOne owns Environment authoring")
                             .application(),
                     ),
+                ),
+                awaken_protocol_managed::environment_authoring_router(
+                    environment_authoring
+                        .clone()
+                        .expect("AllInOne owns Environment authoring"),
                 ),
                 coordinator_content_eraser,
                 content_capture_ceiling,
@@ -1205,7 +1128,6 @@ async fn assemble_runtime_process_router(
         workspace_root: _,
         control: control_stores,
         coordinator,
-        environments: env_state,
     } = stores;
     let CoordinatorStores {
         resource_component,
@@ -1215,8 +1137,12 @@ async fn assemble_runtime_process_router(
         memory_extractions,
         capture_sink,
         captured_content_eraser: _,
+        environment_work,
     } = coordinator.expect("Managed Execution role requires Coordinator stores");
-    let env_state = env_state.expect("Managed Execution owns Environment");
+    let environment_execution = Arc::new(awaken_protocol_managed::EnvironmentExecutionState::new(
+        environment_work,
+        executable_environment_catalog,
+    ));
     let resource_catalog = resource_component.resource_catalog();
     let (
         control,
@@ -1309,16 +1235,17 @@ async fn assemble_runtime_process_router(
         Some(deployment) => SharedHost::new_with_resource_component_and_deployment(
             model_wiring.executor,
             model_wiring.model_ref,
-            resource_component,
+            resource_component.clone(),
             deployment,
         ),
         None => SharedHost::new_with_resource_component(
             model_wiring.executor,
             model_wiring.model_ref,
-            resource_component,
+            resource_component.clone(),
         ),
     };
     host_builder = host_builder
+        .with_file_application(resource_application.files())
         .with_local_workspace(platform_workspace.clone())
         .with_web_search_provider_registry(web_search_providers)
         .with_acp_tool_exporter(Arc::new(awaken_server::mcp_export::SessionToolExporter))
@@ -1409,9 +1336,9 @@ async fn assemble_runtime_process_router(
     }
     let mut managed_state = ManagedState::new_with_mcp(managed_host)
         .with_credential_source(credential_source)
-        .with_environments(env_state.clone())
+        .with_environments(environment_execution.clone())
         .with_resource_catalog(resource_catalog.clone())
-        .with_resource_purge_scheduler(host.clone())
+        .with_resource_purge_scheduler(resource_application.purge_scheduler())
         // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
         // published agent's model sees the authoritative config-plane truth (M2).
         .with_config_source(executable_agent_catalog.clone())
@@ -1437,15 +1364,26 @@ async fn assemble_runtime_process_router(
             ),
         ),
     };
-    let registration_router = executable_agent_registration::layer_refresh(
-        executable_agent_private_router,
+    let registration_router = executable_projection_refresh::layer(
+        executable_agent_private_router.merge(executable_environment_private_router),
         executable_agent_projection_refresher,
+        executable_environment_projection_refresher,
     );
+    let resource_ports = resource_application.ports();
+    let resource_management_router =
+        awaken_server::resources_router(awaken_server::ResourcesRouterInput {
+            files: resource_application.files(),
+            memories: resource_ports.memory_repository(),
+            catalog: resource_ports.resource_catalog(),
+            skills: Some(resource_ports.skill_store()),
+            purge: resource_application.purge_scheduler(),
+        });
     let coordinator =
         awaken_server::build_coordinator_component(awaken_server::CoordinatorDependencies {
             host,
             managed_state,
             resource_catalog,
+            resource_management_router,
             application_access,
             model_directory,
             dream_repository,
@@ -1453,7 +1391,7 @@ async fn assemble_runtime_process_router(
             deployment_repository: deployments,
             executable_agents: executable_agent_catalog,
             rate_limiter: managed_rate_limiter.clone(),
-            environments: env_state,
+            environments: environment_execution,
             sessions,
             default_workspace: platform_workspace.clone(),
             registration_router,

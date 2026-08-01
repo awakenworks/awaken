@@ -25,22 +25,22 @@ server/product/environment behavior to make the runtime boundary enforceable.
 
 ## Bounded Contexts
 
-The corpus is organized into five bounded contexts:
+The deployable architecture has four bounded contexts:
 
-- **Runtime Core** — the domain center: agent execution, run lifecycle, commit
-  boundary, typed state/effects, tool abstractions, and extension hooks.
-- **Runtime Extensions** — in-Run Plugins, cross-Run workflows such as Outcome,
-  and committed-terminal observers such as Memory Extraction; they use neutral
-  Runtime ports and remain independently usable without a product adapter.
-- **Dispatch / Server** — run ingress, durable delivery, protocol replay, and
-  config-publication coordination above the runtime.
-- **Neutral Platform** — reusable connection and control mechanisms, free of
-  product DTOs or hosted policy.
-- **Config / Admin / Product** — config authoring, registry compilation, admin
-  APIs, tenant policy, vaults, and product mappings.
+- **Control** — static Agent and Environment definitions, immutable
+  revisions/publications and relationships, catalog/config, IAM, credentials,
+  and administrative directory APIs.
+- **Coordinator** — executable projections, Deployment/DeploymentRun,
+  Session/Run, WorkQueue, durable dispatch, commit, and public replay.
+- **Resources** — Resource Catalog and lifecycle plus logical File, Memory, Skill,
+  and Repository configuration/content ports.
+- **Worker** — claim-fenced execution, sandbox/process/mount lifecycle, exact
+  materialization, and ephemeral state.
 
-The Runtime Core names neither product nor server internals; every other context
-adapts into it through explicit ports and never the reverse. The full context map
+Runtime Core and Runtime Extensions form the neutral execution kernel embedded
+by Worker; they are not another service authority. Neutral connection and
+protocol packages are shared mechanisms, not data-owning bounded contexts. The
+Runtime Core names neither product nor server internals. The full context map
 — what each context owns and must not own — is owned by
 [design/architecture-overview.md](design/architecture-overview.md#1-context-map),
 and the one-way package dependency direction it implies is enforced by
@@ -184,7 +184,7 @@ are checked separately by the OKF/wiki hooks.
 
 | Theme doc | Use for |
 |---|---|
-| `config-to-run-execution-flow.md` | Control publication, Coordinator registration, Deployment/Session creation, dispatch, materialization, execution, commit, and response |
+| `config-to-run-execution-flow.md` | Control Agent/Environment publication, database ownership, Coordinator Deployment/Session creation, dispatch, materialization, execution, commit, and response |
 | `config-publication-lifecycle.md` | Control publication and Coordinator executable-registration identity, idempotency, recovery, and failures |
 | `protocol-adapter-boundaries.md` | Public protocol adapters, conformance, replay, error mapping, and unsupported management APIs |
 | `permission-policy-axis.md` | Permission decisions, HITL tickets, authorization, and audit staging |
@@ -203,12 +203,8 @@ are checked separately by the OKF/wiki hooks.
 | `managed-deployments.md` | Durable Managed Deployment and DeploymentRun scheduling, exact occurrence claims, Agent version freezing, lifecycle webhooks, and the shared periodic driver |
 | `awaken-server-local-overview.md` | Single-machine assembly of runtime kernel + sandbox/tool-relay + Managed adapter: component map, interaction flow, and distributed seams |
 | `credentials-and-vaults.md` | Boundary guidance for product-owned credential lifecycle and authorization boundaries |
-| `resources-memory-files-skills.md` | File/Memory/Repository input identities, Agent/Session binding, config-version resolution, lifecycle component ownership, activation, recovery, reclamation, and the separate Skill boundary |
+| `resources-memory-files-skills.md` | Resources application composition; File/Memory/Repository/Skill identities, binding, activation, recovery, and reclamation |
 | `observability-eval-dataset-boundary.md` | Trace, dataset, eval, and analytics boundaries |
 | `error-taxonomy.md` | Neutral error ownership and public adapter error mapping |
 | `packaging-enforcement-matrix.md` | Package/import/license/vocabulary enforcement matrix |
 | `requirements-coverage.md` | Whole runtime coverage and out-of-runtime boundary coverage |
-
-The docs favor DDD and simple design: model current domain language, reuse existing
-ports, add the smallest coherent vertical slice, and keep product semantics out of
-the core.

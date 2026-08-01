@@ -215,6 +215,8 @@ pub struct ControlRouterInput {
     /// Process-configured workspace used only when no authenticated scope is
     /// stamped (the explicit no-login deployment mode).
     pub platform_workspace: String,
+    /// Control-owned Environment definition and sandbox-policy routes.
+    pub environment_router: Router,
     /// The embedded IAM guard, when enabled by typed deployment identity mode.
     pub iam: Option<Arc<ManagementAuthz>>,
     /// Canonical local setup/session routes, mounted outside the protected
@@ -247,6 +249,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         plugins,
         runtimes,
         platform_workspace,
+        environment_router,
         iam,
         local_browser_auth,
         remote_iam,
@@ -342,7 +345,8 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         .merge(agents)
         .merge(config_plane)
         .merge(workspace_context)
-        .merge(capabilities);
+        .merge(capabilities)
+        .merge(environment_router);
     if let Some(iam) = iam.as_ref() {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
     }

@@ -105,6 +105,7 @@ axum = { version = "0.8", features = ["multipart"] }
 tower = { version = "0.5", features = ["util"] }
 
 # Depends on the product crate for the now-pub assembly helpers + production executors.
+awaken-environment-application.workspace = true
 awaken-server = { workspace = true }
 # Reuse the production worker lifecycle/registration/heartbeat/dispatch wiring in
 # the worker-failover scenario; only its deterministic executor provider differs.

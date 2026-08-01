@@ -29,7 +29,6 @@ mod coordinator_component;
 mod coordinator_persistence;
 pub mod data_subject_boundary;
 pub mod dynamic_placement;
-pub mod environment_boundary;
 pub mod inference_materializer;
 pub mod mcp_export;
 pub mod model_directory;
@@ -70,7 +69,7 @@ pub use awaken_acp_application::{
 pub use awaken_config_service::{ConfigService, capabilities_router, config_router};
 pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_managed_routers::{
-    default_models, files_router, memory_stores_router_with_catalog, models_router, skills_router,
+    ResourcesRouterInput, default_models, models_router, resources_router,
 };
 pub use awaken_runtime_host::{
     ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost, NoModelConfiguredExecutor,
@@ -153,6 +152,42 @@ pub fn embedded_resource_component(
             lifecycle: resources,
         },
     )
+}
+
+/// Derive the one embedded Resources application used by HTTP and Runtime.
+pub fn embedded_resources_application(
+    root: &std::path::Path,
+) -> awaken_resource_application::ResourcesApplication {
+    awaken_resource_application::ResourcesApplication::new(embedded_resource_component(root))
+}
+
+/// Hermetic in-memory Resources application for scenario composition.
+pub fn ephemeral_resources_application() -> awaken_resource_application::ResourcesApplication {
+    let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+    let resources = Arc::new(
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .expect("open ephemeral Resources store"),
+    );
+    awaken_resource_application::ResourcesApplication::new(
+        awaken_resource_contract::build_resource_component(
+            awaken_resource_contract::ResourceDependencies {
+                resource_catalog: resources.clone(),
+                file_store: files.clone(),
+                file_catalog: files,
+                memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
+                skill_store: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
+                lifecycle: resources,
+            },
+        ),
+    )
+}
+
+pub fn resource_purge_scheduler(
+    lifecycle: Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>,
+) -> Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> {
+    Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(
+        lifecycle,
+    ))
 }
 
 /// Open only the Skill data adapter needed by the transitional Worker
@@ -302,7 +337,7 @@ pub fn local_managed_state_with_agent_source(
 pub fn local_managed_state_with_environments(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
-    environments: Arc<awaken_protocol_managed::EnvironmentState>,
+    environments: Arc<awaken_protocol_managed::EnvironmentExecutionState>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(host, catalog, Some(environments), None)
 }
@@ -312,7 +347,7 @@ pub fn local_managed_state_with_environments(
 pub fn local_managed_state_with_environments_and_agent_source(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
-    environments: Arc<awaken_protocol_managed::EnvironmentState>,
+    environments: Arc<awaken_protocol_managed::EnvironmentExecutionState>,
     agent_source: Arc<dyn awaken_protocol_managed::ExecutableAgentProfileSource>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(host, catalog, Some(environments), Some(agent_source))
@@ -321,7 +356,7 @@ pub fn local_managed_state_with_environments_and_agent_source(
 fn local_managed_state_over(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
-    environments: Option<Arc<awaken_protocol_managed::EnvironmentState>>,
+    environments: Option<Arc<awaken_protocol_managed::EnvironmentExecutionState>>,
     agent_source: Option<Arc<dyn awaken_protocol_managed::ExecutableAgentProfileSource>>,
 ) -> Arc<ManagedState> {
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
@@ -427,6 +462,7 @@ pub fn mount_with_managed_and_application_access_and_models(
     application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
     model_directory: Arc<dyn awaken_managed_routers::ModelDirectory>,
 ) -> Router {
+    let resources = resource_management_router_from_host(&host, resource_catalog.clone());
     mount_with_managed_over_and_models(
         host,
         managed_state,
@@ -434,6 +470,7 @@ pub fn mount_with_managed_and_application_access_and_models(
         Some(application_access),
         Some(model_directory),
         None,
+        resources,
         Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator),
     )
     .0
@@ -449,6 +486,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
     application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
     model_directory: Arc<dyn awaken_managed_routers::ModelDirectory>,
     dream_repository: Arc<dyn awaken_protocol_managed::DreamRepository>,
+    resource_management_router: Router,
     worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
 ) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
     mount_with_managed_over_and_models(
@@ -458,6 +496,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
         Some(application_access),
         Some(model_directory),
         Some(dream_repository),
+        resource_management_router,
         worker_authenticator,
     )
 }
@@ -468,6 +507,7 @@ fn mount_with_managed_over(
     resource_catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
 ) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
+    let resources = resource_management_router_from_host(&host, resource_catalog.clone());
     mount_with_managed_over_and_models(
         host,
         managed_state,
@@ -475,6 +515,7 @@ fn mount_with_managed_over(
         application_access,
         None,
         None,
+        resources,
         Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator),
     )
 }
@@ -486,6 +527,7 @@ fn mount_with_managed_over_and_models(
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
     model_directory: Option<Arc<dyn awaken_managed_routers::ModelDirectory>>,
     dream_repository: Option<Arc<dyn awaken_protocol_managed::DreamRepository>>,
+    resource_management_router: Router,
     worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
 ) -> (Router, Arc<awaken_protocol_managed::DreamState>) {
     install_platform_memory_data_plane(&host);
@@ -582,20 +624,6 @@ fn mount_with_managed_over_and_models(
         resource_catalog.clone(),
         worker_authenticator,
     );
-    // The Files API (`/v1/files`) over the host's blob store — file resources + artifacts.
-    let files = files_router(host.clone());
-    // Tenant ownership for memory stores (ADR-0053 / ADR-0051): fence cross-tenant
-    // access to a store (and its memories/versions) by the scope that created it. A
-    // single-tenant deployment resolves to the default scope and is never fenced.
-    let resource_purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler> =
-        host.clone();
-    let memory_stores = memory_stores_router_with_catalog(
-        host.memory_repository(),
-        resource_catalog.clone(),
-        resource_purge.clone(),
-    );
-    // The skills API (`/v1/skills`) over the host's durable delivered-skill catalog.
-    let skills = skills_router(host.skill_store(), resource_purge);
     // The Models API (`/v1/models`) over the deployment's model directory.
     let models = model_directory.map_or_else(
         || models_router(std::sync::Arc::new(default_models())),
@@ -608,9 +636,7 @@ fn mount_with_managed_over_and_models(
         .merge(a2a)
         .merge(durable_ops)
         .merge(worker_transport)
-        .merge(files)
-        .merge(memory_stores)
-        .merge(skills)
+        .merge(resource_management_router)
         .merge(models)
         // A scope-less request is the local/single-tenant mode. Resolve that mode
         // once at the composition edge so sessions and every resource adapter see
@@ -634,6 +660,24 @@ fn mount_with_managed_over_and_models(
             },
         ));
     (router, dream_state)
+}
+
+fn resource_management_router_from_host(
+    host: &Arc<SharedHost>,
+    catalog: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+) -> Router {
+    resources_router(ResourcesRouterInput {
+        files: host
+            .file_application()
+            .expect("resource management requires the File application"),
+        memories: host.memory_repository(),
+        catalog,
+        skills: host.skill_store(),
+        purge: resource_purge_scheduler(
+            host.resource_lifecycle()
+                .expect("resource management requires lifecycle persistence"),
+        ),
+    })
 }
 
 /// The worker composition seam refuses incomplete or unsupported materialized

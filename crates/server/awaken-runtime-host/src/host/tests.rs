@@ -23,7 +23,7 @@ fn session_environment(
     );
     awaken_session_contract::EnvironmentSnapshot {
         environment_id: "test-environment".into(),
-        revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+        revision: awaken_session_contract::EnvironmentRevision(1),
         config_fingerprint,
         sandbox,
         sandbox_provisioning: Default::default(),
@@ -788,7 +788,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
             awaken_session_contract::SessionBaselineInputs {
                 environment: awaken_session_contract::EnvironmentSnapshot {
                     environment_id: "env".into(),
-                    revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+                    revision: awaken_session_contract::EnvironmentRevision(1),
                     config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                         "env-fingerprint".into(),
                     ),
@@ -1951,6 +1951,8 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
 
     // A blob to mount, and a first turn that builds + caches the thread's sandbox.
     let file_id = host
+        .file_application()
+        .expect("test composition installs File application")
         .create_uploaded_file(
             host.local_workspace(),
             "data.txt".into(),
@@ -2100,6 +2102,8 @@ async fn live_mount_realization_precedes_logical_commit_and_retry_converges() {
         .await
         .expect("live Namespace environment");
     let file_id = host
+        .file_application()
+        .expect("test composition installs File application")
         .create_uploaded_file(
             host.local_workspace(),
             "retry.txt".into(),
@@ -2169,6 +2173,8 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
         .await
         .expect("live Workdir environment");
     let file_id = host
+        .file_application()
+        .expect("test composition installs File application")
         .create_uploaded_file(
             host.local_workspace(),
             "data.txt".into(),
@@ -2988,6 +2994,8 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
     // Seed a file blob and pass the already-resolved File and Repository inputs.
     let binary = vec![0, 0xff, b'R', 0x80, b'\n'];
     let record = host
+        .file_application()
+        .expect("test composition installs File application")
         .create_uploaded_file(
             host.local_workspace(),
             "notes.txt".into(),
@@ -3149,6 +3157,8 @@ async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic()
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let file_id = host
+        .file_application()
+        .expect("test composition installs File application")
         .create_uploaded_file(
             "workspace-a",
             "input.txt".into(),

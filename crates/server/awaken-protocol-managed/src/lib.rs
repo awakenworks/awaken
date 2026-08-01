@@ -37,8 +37,8 @@ mod routes;
 /// from neutral domain state lives in [`project`] and [`state`].
 pub mod types;
 
-/// The self-hosted environment registry as a port ([`env_registry::EnvRegistry`]),
-/// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
+/// Managed Environment wire projection over the Control-owned
+/// [`env_registry::EnvRegistry`] contract and its durable adapters.
 pub mod cron;
 mod dream;
 pub mod env_registry;
@@ -49,6 +49,9 @@ mod state;
 pub mod work_queue;
 
 pub use awaken_agent_contract::ClientToolDescriptor;
+pub use awaken_environment_application::{
+    EnvironmentApplication, EnvironmentApplicationError, default_environment_registration,
+};
 pub use awaken_executable_agent_contract::{
     ExecutableAgentEnvironment, ExecutableAgentMcpServer, ExecutableAgentProfileSource,
     ExecutableAgentSessionProfile,
@@ -67,7 +70,10 @@ pub use routes::deployments::{
     DeploymentLaunch, DeploymentLaunchOutcome, DeploymentRunError, DeploymentSessionLauncher,
     DeploymentState, LocalDeploymentSessionLauncher, deployments_router,
 };
-pub use routes::environments::{EnvironmentApplication, EnvironmentState, environments_router};
+pub use routes::environments::{
+    CoordinatorEnvironmentRegistrar, EnvironmentAuthoringState, EnvironmentExecutionState,
+    EnvironmentState, environment_authoring_router, environment_work_router, environments_router,
+};
 pub use routes::user_profiles::{UserProfileState, user_profiles_router};
 pub use routes::vaults::{
     McpProbe, McpProbeStatus, SessionCredentialSource, VaultState, vault_router,
@@ -77,6 +83,7 @@ pub use routes::{MEMORY_BETA, SKILLS_BETA, WorkspaceScope, enforce_managed_beta,
 // Managed wire projections remain convenient protocol exports. Persistence ports
 // and adapters are deliberately excluded: callers import those from their owners.
 pub use awaken_deployment_contract::DeploymentRepository;
+pub use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};
 pub use awaken_ext_memory::{
     DreamJobRecord, DreamRepository, DreamRepositoryError, MemoryExtractionError,
     MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionReceipt,
@@ -84,7 +91,6 @@ pub use awaken_ext_memory::{
     MemoryMutationReceipt, PutMemoryExtractionOutcome,
 };
 pub use awaken_resource_contract::ResourceCatalog;
-pub use awaken_session_contract::env_registry::{EnvironmentPackages, EnvironmentRevision};
 pub use awaken_session_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, ApplicationContributionOutcome,
     ApplicationContributionReceipt, ApplicationContributionState, ApplicationSessionContribution,

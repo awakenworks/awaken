@@ -141,7 +141,6 @@ async fn build_control_assembly_with_model_composition(
         seal_key: Some(key),
         role: config::Role::Control,
         postgres_schema: PostgresSchemaMode::Verify,
-        open_environment_stores: false,
     })
     .await?;
     let catalog = stores
@@ -160,6 +159,8 @@ async fn build_control_assembly_with_model_composition(
     }
     let executable_agent_wiring =
         executable_agent_registration::ExecutableAgentWiring::control(deployment)?;
+    let executable_environment_wiring =
+        executable_environment_registration::ExecutableEnvironmentWiring::control(deployment)?;
     let router = assemble_control_process_router(
         stores,
         identity.iam,
@@ -185,6 +186,7 @@ async fn build_control_assembly_with_model_composition(
             web_search_providers: web_search.as_ref().map(|value| value.0.clone()),
             web_search_publication_resolver: web_search.map(|value| value.1),
             executable_agent_wiring: Some(executable_agent_wiring),
+            executable_environment_wiring: Some(executable_environment_wiring),
             worker_authenticator: None,
             control_service_token: Some(deployment.control_service.control_token()?),
             control_service: None,

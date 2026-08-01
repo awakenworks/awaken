@@ -32,6 +32,7 @@ awaken-runtime-host = { workspace = true }
 awaken-config-service.workspace = true
 awaken-credential-materializer.workspace = true
 awaken-env-store.workspace = true
+awaken-environment-application.workspace = true
 awaken-ext-builtin-tools.workspace = true
 awaken-run-ingress.workspace = true
 awaken-work-store.workspace = true
@@ -43,9 +44,14 @@ awaken-webhook-managed = { workspace = true }
 awaken-file-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-memory-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-resource-contract = { workspace = true }
+awaken-resource-application = { workspace = true }
 awaken-session-contract = { workspace = true }
+awaken-environment-contract.workspace = true
+awaken-provisioning-contract = { workspace = true }
 awaken-executable-agent-contract = { workspace = true }
 awaken-executable-agent-catalog = { workspace = true }
+awaken-executable-environment-contract = { workspace = true }
+awaken-executable-environment-catalog = { workspace = true }
 awaken-session-store = { workspace = true }
 awaken-sandbox-memoryd = { workspace = true }
 # The ACP executor (AcpLaunch/AcpRunExecutor) for `acp:*` threads — wired by config
@@ -106,7 +112,6 @@ container-k8s = ["awaken-runtime-host/container-k8s"]
 # build_all_in_one_router* over this composition root).
 awaken-scenario-host = { workspace = true }
 awaken-runtime = { workspace = true }
-awaken-provisioning-contract = { workspace = true }
 awaken-worker-contract = { workspace = true }
 # mcp_sessions drives the VaultRefresher refresh grant + the ext-mcp tool-id shape.
 awaken-ext-mcp = { workspace = true }

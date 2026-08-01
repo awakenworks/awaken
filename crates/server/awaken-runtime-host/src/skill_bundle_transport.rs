@@ -96,7 +96,7 @@ impl SkillBundleSource for StoreSkillBundleSource {
     ) -> Result<Option<SkillVersion>, SkillBundleSourceError> {
         if binding.kind != AgentSkillKind::Custom {
             return Err(SkillBundleSourceError::new(
-                "only custom Skills are stored in the Resource plane",
+                "only custom Skills are stored in the Resources context",
             ));
         }
         self.store

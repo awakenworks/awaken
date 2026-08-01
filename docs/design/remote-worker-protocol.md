@@ -329,7 +329,7 @@ WorkerNodeBuilder::new(upstream)
 
 `with_standard_manifest` is the sole standard capability projection. At
 `build()` it derives the immutable manifest from the deployment, installed
-inference materializer, resource plane, credential materializer and
+inference materializer, Resources component, credential materializer and
 remote-attempt evidence, ACP profile,
 optional externally installed Session container provider, and
 explicit application capabilities. An installed provider is authoritative for

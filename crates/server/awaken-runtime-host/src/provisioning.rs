@@ -10,17 +10,14 @@ use crate::host::SharedHost;
 use awaken_file_store::FileStore;
 use awaken_provisioning_contract as pc;
 use awaken_resource_contract::{
-    CreateFileRecordOutcome, FileCatalog, FileCatalogError, FileRecord, PutResourcePurgeOutcome,
-    ResourceKind, ResourcePurgeError, ResourcePurgeIntent, ResourcePurgeScheduler,
-    ResourceReference, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
+    FileCatalog, FileCatalogError, FileRecord, ResourceKind, ResourcePurgeError, ResourceReference,
+    ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
 
 /// The sandbox-absolute outputs dir (must be absolute for `prepare_environment`);
 /// resolved under the root to `<root>/outputs`, which `list_files("outputs")` reads.
 const OUTPUTS_PATH: &str = "/outputs";
-pub const MAX_MANAGED_FILE_SIZE_BYTES: u64 = 500 * 1024 * 1024;
-pub const MAX_WORKSPACE_FILE_BYTES: u64 = 500 * 1024 * 1024 * 1024;
 
 /// Serialize the Session-domain resource manifest into the dispatch context's
 /// opaque envelope. This one ACL keeps durable ingress independent of Session
@@ -78,48 +75,11 @@ pub(crate) fn decode_session_runtime_envelope(
     Ok((projection.environment, projection.toolsets))
 }
 
-fn logical_file_reference(record: &FileRecord) -> ResourceReferenceRecord {
-    ResourceReferenceRecord {
-        target: ResourceTarget::new(&record.workspace_id, ResourceKind::File, &record.blob_id),
-        reference: ResourceReference {
-            kind: if record.scope_id.is_some() {
-                ResourceReferenceKind::Artifact
-            } else {
-                ResourceReferenceKind::WorkspaceOwnership
-            },
-            reference_id: record.id.clone(),
-        },
-    }
-}
-
 fn file_catalog_error(error: FileCatalogError) -> ResourcePurgeError {
     match error {
         FileCatalogError::Invalid(message) => ResourcePurgeError::Invalid(message),
         FileCatalogError::Storage(message) => ResourcePurgeError::Storage(message),
     }
-}
-
-fn now_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
-        .unwrap_or_default()
-}
-
-fn validate_file_capacity(file_size: u64, active_size: u64) -> Result<(), ResourcePurgeError> {
-    if file_size > MAX_MANAGED_FILE_SIZE_BYTES {
-        return Err(ResourcePurgeError::Invalid(format!(
-            "file exceeds the {} byte limit",
-            MAX_MANAGED_FILE_SIZE_BYTES
-        )));
-    }
-    if active_size.saturating_add(file_size) > MAX_WORKSPACE_FILE_BYTES {
-        return Err(ResourcePurgeError::Invalid(format!(
-            "Workspace files exceed the {} byte limit",
-            MAX_WORKSPACE_FILE_BYTES
-        )));
-    }
-    Ok(())
 }
 
 fn mime_type_for_path(path: &str) -> &'static str {
@@ -140,25 +100,6 @@ fn mime_type_for_path(path: &str) -> &'static str {
         Some("svg") => "image/svg+xml",
         Some("zip") => "application/zip",
         _ => "application/octet-stream",
-    }
-}
-
-#[async_trait::async_trait]
-impl ResourcePurgeScheduler for SharedHost {
-    async fn schedule_purge(
-        &self,
-        target: ResourceTarget,
-        config_version: Option<u64>,
-        requested_at_unix_ms: u64,
-        not_before_unix_ms: u64,
-    ) -> Result<PutResourcePurgeOutcome, ResourcePurgeError> {
-        self.request_resource_purge(
-            target,
-            config_version,
-            requested_at_unix_ms,
-            not_before_unix_ms,
-        )
-        .await
     }
 }
 
@@ -341,194 +282,12 @@ impl SharedHost {
         self.file_catalog.clone()
     }
 
-    pub async fn file_record(
+    /// The sole Resources-owned logical-File command application. Database-less
+    /// Workers deliberately return `None`; they may only use `FileContentSource`.
+    pub fn file_application(
         &self,
-        workspace: &str,
-        file_id: &str,
-    ) -> Result<Option<FileRecord>, ResourcePurgeError> {
-        self.file_catalog
-            .get_file(workspace, file_id, false)
-            .await
-            .map_err(file_catalog_error)
-    }
-
-    pub async fn list_file_records(
-        &self,
-        workspace: &str,
-        scope_id: Option<&str>,
-    ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
-        self.file_catalog
-            .list_files(workspace, scope_id)
-            .await
-            .map_err(file_catalog_error)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn create_file_record(
-        &self,
-        workspace: &str,
-        filename: String,
-        mime_type: String,
-        bytes: &[u8],
-        downloadable: bool,
-        scope_id: Option<String>,
-        logical_path: Option<String>,
-        harvest_key: Option<String>,
-    ) -> Result<FileRecord, ResourcePurgeError> {
-        if let Some(key) = harvest_key.as_deref()
-            && let Some(existing) = self
-                .file_catalog
-                .list_files(workspace, scope_id.as_deref())
-                .await
-                .map_err(file_catalog_error)?
-                .into_iter()
-                .find(|record| record.harvest_key.as_deref() == Some(key))
-        {
-            return Ok(existing);
-        }
-        let active = self
-            .file_catalog
-            .active_size_bytes(workspace)
-            .await
-            .map_err(file_catalog_error)?;
-        validate_file_capacity(bytes.len() as u64, active)?;
-        let blob_id = self
-            .file_store
-            .put(bytes)
-            .await
-            .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
-        let candidate = FileRecord {
-            id: format!("file_{}", uuid::Uuid::new_v4().simple()),
-            workspace_id: workspace.to_string(),
-            blob_id,
-            filename,
-            mime_type,
-            size_bytes: bytes.len() as u64,
-            created_at: awaken_protocol_transport::epoch_millis_to_rfc3339(now_unix_ms()),
-            downloadable,
-            scope_id,
-            logical_path,
-            harvest_key,
-            deleted: false,
-        };
-        let candidate_reference = logical_file_reference(&candidate);
-        self.required_resource_lifecycle()?
-            .add_reference(candidate_reference.clone())
-            .await?;
-        let outcome = match self.file_catalog.create_file(candidate.clone()).await {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                let _ = self
-                    .required_resource_lifecycle()?
-                    .remove_reference(&candidate_reference)
-                    .await;
-                return Err(file_catalog_error(error));
-            }
-        };
-        match outcome {
-            CreateFileRecordOutcome::Inserted(record) => Ok(record),
-            CreateFileRecordOutcome::Existing(record) => {
-                self.required_resource_lifecycle()?
-                    .remove_reference(&candidate_reference)
-                    .await?;
-                self.required_resource_lifecycle()?
-                    .add_reference(logical_file_reference(&record))
-                    .await?;
-                Ok(record)
-            }
-        }
-    }
-
-    pub async fn create_uploaded_file(
-        &self,
-        workspace: &str,
-        filename: String,
-        mime_type: String,
-        bytes: &[u8],
-    ) -> Result<FileRecord, ResourcePurgeError> {
-        self.create_file_record(
-            workspace, filename, mime_type, bytes, false, None, None, None,
-        )
-        .await
-    }
-
-    /// Persist one platform-generated, downloadable file through the same
-    /// catalog/blob/reference transaction as uploaded files and harvested
-    /// Session artifacts. `generation_key` makes retries return the original
-    /// logical file instead of creating duplicate artifacts.
-    pub async fn create_generated_file(
-        &self,
-        workspace: &str,
-        filename: String,
-        mime_type: String,
-        bytes: &[u8],
-        generation_key: String,
-    ) -> Result<FileRecord, ResourcePurgeError> {
-        self.create_file_record(
-            workspace,
-            filename,
-            mime_type,
-            bytes,
-            true,
-            None,
-            None,
-            Some(generation_key),
-        )
-        .await
-    }
-
-    pub async fn file_bytes(
-        &self,
-        workspace: &str,
-        file_id: &str,
-    ) -> Result<Option<(FileRecord, Vec<u8>)>, ResourcePurgeError> {
-        let Some(record) = self.file_record(workspace, file_id).await? else {
-            return Ok(None);
-        };
-        let bytes = self
-            .file_store
-            .get(&record.blob_id)
-            .await
-            .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?
-            .ok_or_else(|| {
-                ResourcePurgeError::Storage(format!(
-                    "file `{file_id}` references missing blob `{}`",
-                    record.blob_id
-                ))
-            })?;
-        Ok(Some((record, bytes)))
-    }
-
-    pub async fn delete_file_record(
-        &self,
-        workspace: &str,
-        file_id: &str,
-        requested_at_unix_ms: u64,
-    ) -> Result<Option<FileRecord>, ResourcePurgeError> {
-        let Some(record) = self.file_record(workspace, file_id).await? else {
-            return Ok(None);
-        };
-        let target = ResourceTarget::new(workspace, ResourceKind::File, &record.blob_id);
-        let intent = ResourcePurgeIntent::new(
-            format!("purge:File:{workspace}:{file_id}"),
-            format!("file-delete:{workspace}:{file_id}"),
-            target,
-            None,
-            requested_at_unix_ms,
-            requested_at_unix_ms,
-        )?;
-        self.required_resource_lifecycle()?.put(intent).await?;
-        let deleted = self
-            .file_catalog
-            .mark_file_deleted(workspace, file_id)
-            .await
-            .map_err(file_catalog_error)?;
-        if deleted.is_some() {
-            self.required_resource_lifecycle()?
-                .remove_reference(&logical_file_reference(&record))
-                .await?;
-        }
-        Ok(deleted)
+    ) -> Option<Arc<dyn awaken_resource_contract::FileApplicationService>> {
+        self.file_application.clone()
     }
 
     pub(crate) fn required_resource_lifecycle(
@@ -548,29 +307,6 @@ impl SharedHost {
             .references_for_resource(ResourceKind::File, id)
             .await?
             .is_empty())
-    }
-
-    /// Persist physical cleanup work after the caller has committed logical deny.
-    pub async fn request_resource_purge(
-        &self,
-        target: ResourceTarget,
-        config_version: Option<u64>,
-        requested_at_unix_ms: u64,
-        not_before_unix_ms: u64,
-    ) -> Result<PutResourcePurgeOutcome, ResourcePurgeError> {
-        let key = format!(
-            "{}:{:?}:{}:{:?}",
-            target.workspace_id, target.kind, target.resource_id, config_version
-        );
-        let intent = ResourcePurgeIntent::new(
-            format!("purge:{:?}:{key}", target.kind),
-            key,
-            target,
-            config_version,
-            requested_at_unix_ms,
-            not_before_unix_ms,
-        )?;
-        self.required_resource_lifecycle()?.put(intent).await
     }
 
     pub(crate) async fn replace_session_references(
@@ -780,19 +516,20 @@ impl SharedHost {
                 .to_string();
             let mime_type = mime_type_for_path(&logical_path).to_string();
             let record = self
-                .create_file_record(
+                .file_application
+                .as_ref()
+                .ok_or_else(|| {
+                    ResourcePurgeError::Storage(
+                        "File application is unavailable on this execution process".into(),
+                    )
+                })?
+                .create_artifact(
                     &workspace,
+                    thread,
                     logical_path.clone(),
                     mime_type,
                     &bytes,
-                    true,
-                    Some(thread.to_string()),
-                    Some(logical_path.clone()),
-                    Some(awaken_file_store::harvest_idempotency_key(
-                        thread,
-                        &logical_path,
-                        &content_id,
-                    )),
+                    awaken_file_store::harvest_idempotency_key(thread, &logical_path, &content_id),
                 )
                 .await?;
             out.push(record);
@@ -882,16 +619,6 @@ mod provisioning_registry_tests {
         SharedHost::new(Arc::new(NoLlm), "test")
     }
 
-    #[test]
-    fn managed_file_capacity_decision_boundaries_are_exact() {
-        // Causes C1=file bytes at/over 500 MiB and C2=Workspace active + file at/over
-        // 500 GiB. Effects: R1/R2 exact boundaries pass; R3/R4 one byte over fails.
-        assert!(validate_file_capacity(MAX_MANAGED_FILE_SIZE_BYTES, 0).is_ok());
-        assert!(validate_file_capacity(MAX_MANAGED_FILE_SIZE_BYTES + 1, 0).is_err());
-        assert!(validate_file_capacity(1, MAX_WORKSPACE_FILE_BYTES - 1).is_ok());
-        assert!(validate_file_capacity(1, MAX_WORKSPACE_FILE_BYTES).is_err());
-    }
-
     /// A resource mount realized read-only under `.mnt/<logical>`.
     fn resource_mount(logical: &str) -> pc::MountRequirement {
         pc::MountRequirement {
@@ -970,7 +697,7 @@ mod provisioning_registry_tests {
             "t",
             &awaken_session_contract::EnvironmentSnapshot {
                 environment_id: "environment".into(),
-                revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+                revision: awaken_session_contract::EnvironmentRevision(1),
                 config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                     "environment-1".into(),
                 ),
@@ -1113,12 +840,16 @@ mod provisioning_registry_tests {
                 .is_none()
         );
         let records = host
-            .list_file_records("workspace-a", Some("session-artifacts"))
+            .file_application()
+            .expect("test composition installs File application")
+            .list("workspace-a", Some("session-artifacts"))
             .await
             .unwrap();
         assert_eq!(records.len(), 1, "terminal retry remains idempotent");
         assert_eq!(
-            host.file_bytes("workspace-a", &records[0].id)
+            host.file_application()
+                .expect("test composition installs File application")
+                .bytes("workspace-a", &records[0].id)
                 .await
                 .unwrap()
                 .unwrap()
@@ -1128,6 +859,8 @@ mod provisioning_registry_tests {
     }
 
     struct FailingFileCatalog;
+
+    use awaken_resource_contract::CreateFileRecordOutcome;
 
     #[async_trait::async_trait]
     impl FileCatalog for FailingFileCatalog {
@@ -1176,7 +909,15 @@ mod provisioning_registry_tests {
         // fails and the environment/output remain available; disposal is forbidden.
         let storage = tempfile::tempdir().unwrap();
         let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test");
-        raw_host.file_catalog = Arc::new(FailingFileCatalog);
+        let catalog = Arc::new(FailingFileCatalog);
+        raw_host.file_catalog = catalog.clone();
+        raw_host.file_application = Some(Arc::new(awaken_file_application::FileApplication::new(
+            raw_host.file_store(),
+            catalog,
+            raw_host
+                .resource_lifecycle()
+                .expect("test lifecycle repository"),
+        )));
         let host = Arc::new(raw_host);
         let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
             LocalProvider::new(storage.path())

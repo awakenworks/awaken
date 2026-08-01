@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-/// Resource families governed by the platform resource plane.
+/// Resource families governed by the Resources context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {

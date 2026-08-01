@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use super::{config, executable_agent_registration};
+use super::{config, executable_agent_registration, executable_environment_registration};
 
 #[derive(Default)]
 pub(super) struct ProcessAssemblyOptions {
@@ -23,6 +23,8 @@ pub(super) struct ProcessAssemblyOptions {
         Option<Arc<dyn awaken_config_service::PluginPublicationResolver>>,
     pub(super) executable_agent_wiring:
         Option<executable_agent_registration::ExecutableAgentWiring>,
+    pub(super) executable_environment_wiring:
+        Option<executable_environment_registration::ExecutableEnvironmentWiring>,
     pub(super) worker_authenticator:
         Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
     pub(super) control_service_token: Option<String>,
