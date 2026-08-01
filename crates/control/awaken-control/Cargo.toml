@@ -49,6 +49,8 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 axum = { version = "0.8", features = ["multipart"] }

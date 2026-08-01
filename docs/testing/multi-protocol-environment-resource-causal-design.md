@@ -505,10 +505,10 @@ one typed deployment file
 | T1 | catalog_db | external A | catalog only at A |
 | T2 | credential_db | nested external B | credential only at B |
 | T3 | config_db | external C | Agent publication only at C |
-| T4 | admin_db / environment_db / sessions_db absent | data_dir | default typed deployment root |
+| T4 | admin_db / data_subject_db / environment_db / sessions_db / captured_content_db absent | data_dir | default role-owned database files |
 | T5 | removed per-component environment variables | any inherited value | no topology effect |
 | T6 | `management_database_url_file` only | projected Secret file | all control + Resource stores share one URL |
-| T7 | Control has environment_db but no sessions_db | shared Environment URL | Admin Assistant and Coordinator see one registry; Control opens no Session store |
+| T7 | Control has environment_db, sessions_db, or captured_content_db | any | reject before store acquisition; Control uses Coordinator ports only |
 
 `spawnProduction` accepts the same database map already owned by
 `deploymentEnv`; per-component tests no longer duplicate binary discovery,

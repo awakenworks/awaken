@@ -1,4 +1,4 @@
-//! Data-subject erasure endpoint (ADR-0050 Slice 10), an Awaken extension.
+//! Control-owned Data Subject consent and erasure HTTP application.
 //!
 //! `POST /v1/user_profiles/:id/erasure` executes GDPR Art. 17 right-to-erasure
 //! for the data subject, returning a receipt of how many content records were
@@ -309,7 +309,7 @@ async fn read_consent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime_contract::{ContentCapture, Purpose};
+    use awaken_runtime_contract::{ContentCapture, DataSubjectConsentSource, Purpose};
 
     struct StubResolver {
         removed: usize,
@@ -327,10 +327,14 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl DataSubjectResolver for StubResolver {
+    impl DataSubjectConsentSource for StubResolver {
         async fn consent_ceiling(&self, _s: &DataSubjectId, _p: Purpose) -> ContentCapture {
             ContentCapture::Structured
         }
+    }
+
+    #[async_trait::async_trait]
+    impl DataSubjectResolver for StubResolver {
         async fn erase(
             &self,
             _s: &DataSubjectId,
@@ -441,96 +445,5 @@ mod tests {
         .await;
         assert_eq!(ok.effective, ContentCapture::Structured);
         assert_eq!(ok.reason, "ok");
-    }
-
-    /// Cause/effect graph:
-    /// - C1: Alice and Bob each own captured telemetry and a harvested ACP home.
-    /// - C2: the HTTP erasure target is Alice.
-    /// - E1: the receipt sums Alice's two stores; E2: Alice's blob is gone;
-    ///   E3: Bob's blob and records remain; E4: retry is idempotent.
-    /// Decision-table rule R1 = C1(true) × C2(Alice) -> E1+E2+E3+E4. Store
-    /// failure -> HTTP 500 is covered by the handler's fail-closed unit seam.
-    #[tokio::test]
-    async fn art17_http_fans_out_over_capture_and_harvested_acp_content() {
-        use awaken_data_subject::{
-            InMemoryCapturedContentStore, InMemoryDataSubjectRepo, RepoDataSubjectResolver,
-        };
-        use awaken_run_executor_acp::{
-            ConfigHome, DirSessionHome, FsSessionBlobStore, SessionBlobStore, SessionHomeKey,
-            SessionHomePlan, SessionHomeProvider,
-        };
-        use axum::body::{Body, to_bytes};
-        use axum::http::Request;
-        use tower::ServiceExt;
-
-        let config_root = tempfile::tempdir().unwrap();
-        let blob_root = tempfile::tempdir().unwrap();
-        let blobs = Arc::new(FsSessionBlobStore::new(blob_root.path().to_path_buf()));
-        let homes = DirSessionHome::new(Some(config_root.path().to_path_buf()), blobs.clone());
-        let plan = SessionHomePlan {
-            config_home_env: "CODEX_HOME".into(),
-            session_subpath: "sessions".into(),
-            exclude: vec!["auth.json".into()],
-            keyed_by_cwd: false,
-        };
-        let alice = SessionHomeKey {
-            data_subject_id: Some("dsub_alice".into()),
-            thread_id: "shared-thread".into(),
-            adapter: "codex".into(),
-        };
-        let bob = SessionHomeKey {
-            data_subject_id: Some("dsub_bob".into()),
-            ..alice.clone()
-        };
-        let home = ConfigHome::open(Some(config_root.path()), "shared-thread").unwrap();
-        home.write("sessions/opaque", b"alice-session").unwrap();
-        homes.harvest(&alice, &plan).await;
-        home.write("sessions/opaque", b"bob-session").unwrap();
-        homes.harvest(&bob, &plan).await;
-
-        let captured = Arc::new(InMemoryCapturedContentStore::new());
-        captured.insert(
-            DataSubjectId("dsub_alice".into()),
-            Purpose::TelemetryContent,
-            "alice prompt",
-            now_millis(),
-        );
-        captured.insert(
-            DataSubjectId("dsub_bob".into()),
-            Purpose::TelemetryContent,
-            "bob prompt",
-            now_millis(),
-        );
-        let repo = Arc::new(InMemoryDataSubjectRepo::new());
-        let resolver: Arc<dyn DataSubjectResolver> = Arc::new(
-            RepoDataSubjectResolver::new(repo)
-                .with_eraser(captured)
-                .with_eraser(blobs.clone()),
-        );
-        let app = erasure_router(resolver);
-        let erase_alice = || {
-            Request::builder()
-                .method("POST")
-                .uri("/v1/user_profiles/dsub_alice/erasure")
-                .body(Body::empty())
-                .unwrap()
-        };
-
-        let response = app.clone().oneshot(erase_alice()).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let receipt: ErasureReceipt =
-            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
-                .unwrap();
-        assert_eq!(receipt.records_removed, 2);
-        let alice_dest = tempfile::tempdir().unwrap();
-        let bob_dest = tempfile::tempdir().unwrap();
-        assert!(!blobs.fetch(&alice, alice_dest.path()).await.unwrap());
-        assert!(blobs.fetch(&bob, bob_dest.path()).await.unwrap());
-
-        let retry = app.oneshot(erase_alice()).await.unwrap();
-        let receipt: ErasureReceipt =
-            serde_json::from_slice(&to_bytes(retry.into_body(), usize::MAX).await.unwrap())
-                .unwrap();
-        assert_eq!(receipt.records_removed, 2);
     }
 }

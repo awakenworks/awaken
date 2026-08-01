@@ -29,6 +29,7 @@ const MCP_SOURCE_PATH: &str = "/internal/v1/control/credentials/mcp-source";
 const MCP_ACCESS_PATH: &str = "/internal/v1/control/credentials/mcp-access";
 const CREDENTIAL_ACCESS_PATH: &str = "/internal/v1/control/credentials/access";
 const WEBHOOK_DELIVER_PATH: &str = "/internal/v1/control/webhooks/deliver";
+const CONSENT_CEILING_PATH: &str = "/internal/v1/control/data-subjects/consent-ceiling";
 const IDEMPOTENT_ATTEMPTS: usize = 3;
 const RETRY_DELAY: Duration = Duration::from_millis(25);
 
@@ -37,6 +38,7 @@ struct ControlServiceState {
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
     webhooks: Arc<dyn awaken_webhook_managed::LifecycleFactDelivery>,
+    consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
     bearer_token: Arc<str>,
 }
 
@@ -77,10 +79,17 @@ struct CredentialAccessCommand {
     policy: awaken_runtime_contract::CredentialExecutionPolicy,
 }
 
+#[derive(Serialize, Deserialize)]
+struct ConsentCeilingCommand {
+    subject: awaken_runtime_contract::DataSubjectId,
+    purpose: awaken_runtime_contract::Purpose,
+}
+
 pub fn router(
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
     webhooks: Arc<dyn awaken_webhook_managed::LifecycleFactDelivery>,
+    consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
     bearer_token: impl Into<String>,
 ) -> Result<Router, String> {
     let bearer_token = bearer_token.into();
@@ -91,6 +100,7 @@ pub fn router(
         audit,
         credentials,
         webhooks,
+        consent,
         bearer_token: Arc::from(bearer_token),
     };
     Ok(Router::new()
@@ -102,6 +112,7 @@ pub fn router(
         .route(MCP_ACCESS_PATH, post(mcp_access))
         .route(CREDENTIAL_ACCESS_PATH, post(credential_access))
         .route(WEBHOOK_DELIVER_PATH, post(deliver_webhook))
+        .route(CONSENT_CEILING_PATH, post(consent_ceiling))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_authorization,
@@ -221,6 +232,16 @@ async fn deliver_webhook(
 ) -> axum::response::Response {
     let result = state.webhooks.deliver(&fact).await;
     response(result)
+}
+
+async fn consent_ceiling(
+    State(state): State<ControlServiceState>,
+    Json(command): Json<ConsentCeilingCommand>,
+) -> axum::response::Response {
+    response(Ok(state
+        .consent
+        .consent_ceiling(&command.subject, command.purpose)
+        .await))
 }
 
 #[derive(Clone)]
@@ -422,6 +443,27 @@ impl awaken_webhook_managed::LifecycleFactDelivery for HttpControlServiceClient 
     }
 }
 
+#[async_trait::async_trait]
+impl awaken_runtime_contract::DataSubjectConsentSource for HttpControlServiceClient {
+    async fn consent_ceiling(
+        &self,
+        subject: &awaken_runtime_contract::DataSubjectId,
+        purpose: awaken_runtime_contract::Purpose,
+    ) -> awaken_runtime_contract::ContentCapture {
+        self.post(
+            CONSENT_CEILING_PATH,
+            &ConsentCeilingCommand {
+                subject: subject.clone(),
+                purpose,
+            },
+        )
+        .await
+        // Fail closed: an unavailable Control consent authority must never
+        // widen content capture in Coordinator.
+        .unwrap_or(awaken_runtime_contract::ContentCapture::Structured)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,8 +510,10 @@ mod tests {
         // records, reads, and commits the stable call identity; R2 valid bearer +
         // lifecycle fact -> the injected delivery port observes the exact fact once;
         // R3 valid bearer + unknown vault -> false without exposing secret material;
-        // R4 invalid bearer -> reject before any authoritative mutation. These rules
-        // cover every boundary authority and the authentication gate.
+        // R4 invalid bearer -> reject before any authoritative mutation; R5
+        // authenticated consent read preserves Control's result; R6 rejected or
+        // unavailable consent reads fail closed to Structured. These rules cover
+        // every boundary authority and the authentication gate.
         let audit = ManagementAuditPlane::new(Arc::new(
             awaken_config_store::SqliteConfigStore::open_in_memory()
                 .expect("open audit test store"),
@@ -479,7 +523,14 @@ mod tests {
             Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
         ));
         let delivery = Arc::new(RecordingDelivery::default());
-        let app = router(audit, credentials, delivery.clone(), "correct-token").unwrap();
+        let app = router(
+            audit,
+            credentials,
+            delivery.clone(),
+            Arc::new(awaken_runtime_contract::NullResolver),
+            "correct-token",
+        )
+        .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -536,6 +587,16 @@ mod tests {
             .unwrap();
         assert_eq!(*delivery.0.lock().unwrap(), vec![fact], "R2");
         assert!(!client.has_vault("missing").await.unwrap(), "R3");
+        assert_eq!(
+            awaken_runtime_contract::DataSubjectConsentSource::consent_ceiling(
+                &client,
+                &awaken_runtime_contract::DataSubjectId("dsub-a".into()),
+                awaken_runtime_contract::Purpose::TelemetryContent,
+            )
+            .await,
+            awaken_runtime_contract::ContentCapture::Full,
+            "R5"
+        );
 
         let rejected =
             HttpControlServiceClient::new(format!("http://{address}"), "wrong-token").unwrap();
@@ -544,6 +605,16 @@ mod tests {
         assert!(
             rejected.record(&scope, &rejected_record).await.is_err(),
             "R4"
+        );
+        assert_eq!(
+            awaken_runtime_contract::DataSubjectConsentSource::consent_ceiling(
+                &rejected,
+                &awaken_runtime_contract::DataSubjectId("dsub-a".into()),
+                awaken_runtime_contract::Purpose::TelemetryContent,
+            )
+            .await,
+            awaken_runtime_contract::ContentCapture::Structured,
+            "R6"
         );
         assert!(
             client

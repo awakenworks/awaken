@@ -95,7 +95,7 @@ one bundle id per aggregate-safe scope.
 | Coordinator | `awaken.executable_agent_catalog` / `executable_agent` | `executable_agent_command` |
 | Coordinator | `awaken.run_dispatch` / `runtime` | `runtime_dispatch`, `runtime_pending`, `runtime_outbox`, `runtime_dispatch_completion`, `runtime_stream_checkpoint`, `runtime_dispatch_operation` |
 | Coordinator | `awaken.runtime_commit`, `awaken.runtime_commit_pg` / `runtime` | `runtime_commit`, `runtime_message`, `runtime_state_command`, `runtime_event`, `runtime_run_record`, `runtime_waiting`, `runtime_thread_version`, `runtime_commit_receipt`; PostgreSQL also owns `runtime_commit_seq` |
-| Coordinator | `awaken.coordinator_data_capture` / `coordinator_data_capture` | `coordinator_data_capture_captured` |
+| Coordinator | `awaken.coordinator_data_capture` / `coordinator_data_capture` | `coordinator_data_capture_captured`, `coordinator_data_capture_fence` |
 | Resources | `awaken.resource_catalog` / `resource_catalog` | `resource_catalog_entry` |
 | Resources | `awaken.resource_lifecycle` / `resource_lifecycle` | `resource_lifecycle_purge_intents`, `resource_lifecycle_references`, `resource_lifecycle_reclamation_fences` |
 | Resources | `awaken.file_store` / `file_store` | `file_store_blob`, `file_store_file` |
@@ -109,14 +109,17 @@ Coordinator `EnvironmentAuthor` adapter; AllInOne maps that same port locally.
 Both reach the single idempotent `EnvironmentApplication`, and Control never opens
 `environment_db`.
 
-The two data-subject rows describe versioned durable adapters, not currently
-active production stores. `awaken.control_data_subject` and
-`awaken.coordinator_data_capture` are intentionally absent from every role
-manifest while `awaken-server::data_subject_plane` composes the corresponding
-ports in memory. This is fail-visible: startup does not silently create those
-tables. Before enabling durability, the subject repository must be injected by
-Control and the captured-content store by Coordinator; the transitional shared
-crate must then split along that same boundary.
+The two privacy rows are active, independently versioned authorities. Control
+opens `data_subject_db`, owns consent/accountability plus durable erasure
+checkpoints, and exposes only an authenticated consent read port to Coordinator.
+Coordinator opens `captured_content_db`, installs that exact adapter as the
+Runtime `CaptureSink`, and exposes an authenticated erasure command back to
+Control. The Coordinator erasure application also includes the configured
+portable ACP session-blob adapter. Both adapters persist a subject fence and a
+stable deletion receipt: a late write cannot resurrect erased content, and an
+ambiguous HTTP retry returns the original count. The SQL capture fence and
+content delete commit atomically. AllInOne injects the same ports locally; it has
+no in-memory compatibility plane.
 
 Schema execution is deterministic:
 
@@ -138,10 +141,10 @@ server process start
 
 | Role | Migration manifest |
 |---|---|
-| `control` | Control only |
-| `coordinator` | Coordinator + co-deployed Resources + executable-Agent projection |
+| `control` | Control + Control Data Subject |
+| `coordinator` | Coordinator + Coordinator Captured Content + co-deployed Resources + executable-Agent projection |
 | `worker` | empty; no database connection |
-| `all-in-one` | Control + Coordinator + Resources; no second executable-Agent projection |
+| `all-in-one` | Control + Control Data Subject + Coordinator + Coordinator Captured Content + Resources; no second executable-Agent projection |
 
 Conditional schema commands (`IF NOT EXISTS`, `IF EXISTS`, `CREATE OR REPLACE`),
 conflict-ignore data migration, raw startup DDL, and unversioned `.sql` files are

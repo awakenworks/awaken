@@ -1,16 +1,19 @@
-//! Captured-content store (ADR-0050 D7): the erasable, TTL'd sink that captured
+//! Coordinator captured-content store (ADR-0050 D7): the erasable, TTL'd sink that captured
 //! prompt/completion/tool content is written to, tagged by data subject so GDPR
 //! Art. 17 erasure removes exactly that subject's content and a TTL sweep
 //! enforces storage limitation (Art. 5(e)). Implements
-//! [`ContentEraser`](awaken_runtime_contract::ContentEraser) so a resolver fans
-//! an erasure out to it.
+//! [`ContentEraser`](awaken_runtime_contract::ContentEraser) so Coordinator's
+//! erasure application can invoke it as one internal adapter.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use awaken_runtime_contract::{CaptureSink, ContentEraser, ContentKind, DataSubjectId, Purpose};
+use awaken_runtime_contract::{
+    CaptureError, CaptureSink, ContentEraser, ContentKind, DataSubjectId, Purpose,
+};
 
 /// One captured-content record, tagged by subject + purpose + record time.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,8 +34,14 @@ pub struct CapturedRecord {
 /// erasure/TTL contract is identical.
 #[derive(Default)]
 pub struct InMemoryCapturedContentStore {
-    inner: Mutex<Vec<CapturedRecord>>,
+    state: Mutex<InMemoryState>,
     seq: AtomicU64,
+}
+
+#[derive(Default)]
+struct InMemoryState {
+    records: Vec<CapturedRecord>,
+    erasure_receipts: HashMap<String, usize>,
 }
 
 impl InMemoryCapturedContentStore {
@@ -50,25 +59,40 @@ impl InMemoryCapturedContentStore {
         content: impl Into<String>,
         now: i64,
     ) -> String {
+        self.try_insert(subject, purpose, content.into(), now)
+            .expect("insert captured content")
+    }
+
+    fn try_insert(
+        &self,
+        subject: DataSubjectId,
+        purpose: Purpose,
+        content: String,
+        now: i64,
+    ) -> Result<String, CaptureError> {
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
         let id = format!("cap_{n:016}");
-        self.inner.lock().unwrap().push(CapturedRecord {
+        let mut state = self.state.lock().unwrap();
+        if state.erasure_receipts.contains_key(&subject.0) {
+            return Err(CaptureError::SubjectErased);
+        }
+        state.records.push(CapturedRecord {
             id: id.clone(),
             subject,
             purpose,
             recorded_at: now,
-            content: content.into(),
+            content,
             restricted: false,
         });
-        id
+        Ok(id)
     }
 
     /// Restrict a subject's records (GDPR Art. 18): freeze them so they survive
     /// erasure + TTL and are hidden from reads. Returns the number restricted.
     pub fn restrict(&self, subject: &DataSubjectId) -> usize {
-        let mut v = self.inner.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         let mut n = 0;
-        for r in v.iter_mut() {
+        for r in &mut state.records {
             if &r.subject == subject && !r.restricted {
                 r.restricted = true;
                 n += 1;
@@ -80,9 +104,9 @@ impl InMemoryCapturedContentStore {
     /// Lift the restriction on a subject's records (Art. 18(3): inform the
     /// subject before doing so). Returns the number released.
     pub fn release(&self, subject: &DataSubjectId) -> usize {
-        let mut v = self.inner.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         let mut n = 0;
-        for r in v.iter_mut() {
+        for r in &mut state.records {
             if &r.subject == subject && r.restricted {
                 r.restricted = false;
                 n += 1;
@@ -94,16 +118,18 @@ impl InMemoryCapturedContentStore {
     /// Remove records older than `ttl_millis` as of `now` (Art. 5(e) storage
     /// limitation); returns the number swept. Restricted records are exempt.
     pub fn sweep_expired(&self, ttl_millis: i64, now: i64) -> usize {
-        let mut v = self.inner.lock().unwrap();
-        let before = v.len();
-        v.retain(|r| r.restricted || now - r.recorded_at < ttl_millis);
-        before - v.len()
+        let mut state = self.state.lock().unwrap();
+        let before = state.records.len();
+        state
+            .records
+            .retain(|r| r.restricted || now - r.recorded_at < ttl_millis);
+        before - state.records.len()
     }
 
     /// Current record count.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap().len()
+        self.state.lock().unwrap().records.len()
     }
 
     /// Whether the store is empty.
@@ -128,8 +154,9 @@ impl CaptureSink for InMemoryCapturedContentStore {
         purpose: Purpose,
         _kind: ContentKind,
         content: &str,
-    ) {
-        self.insert(subject.clone(), purpose, content, now_millis());
+    ) -> Result<(), CaptureError> {
+        self.try_insert(subject.clone(), purpose, content.to_owned(), now_millis())?;
+        Ok(())
     }
 }
 
@@ -139,12 +166,19 @@ impl ContentEraser for InMemoryCapturedContentStore {
         &self,
         subject: &DataSubjectId,
     ) -> Result<usize, awaken_runtime_contract::ErasureError> {
-        let mut v = self.inner.lock().unwrap();
-        let before = v.len();
+        let mut state = self.state.lock().unwrap();
+        let before = state.records.len();
         // Restricted (Art. 18) records survive erasure — kept for the legal
         // purpose until released. In-memory removal cannot fail.
-        v.retain(|r| &r.subject != subject || r.restricted);
-        Ok(before - v.len())
+        state
+            .records
+            .retain(|r| &r.subject != subject || r.restricted);
+        let removed = before - state.records.len();
+        let receipt = state.erasure_receipts.entry(subject.0.clone()).or_default();
+        *receipt = receipt.checked_add(removed).ok_or_else(|| {
+            awaken_runtime_contract::ErasureError("erasure receipt overflow".into())
+        })?;
+        Ok(*receipt)
     }
 }
 
@@ -179,7 +213,8 @@ mod tests {
             ContentKind::InputMessages,
             "hello a@b.com",
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(s.len(), 1, "sink wrote one record");
         assert_eq!(
             s.erase_subject(&DataSubjectId("a".into())).await.unwrap(),
@@ -202,6 +237,42 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn erasure_fence_rejects_later_capture_without_blocking_other_subjects() {
+        // Cause/effect decision table: R1 erased subject -> delete existing,
+        // persist/replay the same receipt, and reject every later record;
+        // R2 different subject -> record normally.
+        // One mutex owns fence + rows, so concurrent write/erase linearizes to
+        // either "record then delete" or "fence then reject".
+        let store = InMemoryCapturedContentStore::new();
+        let erased = DataSubjectId("erased".into());
+        store.insert(erased.clone(), Purpose::TelemetryContent, "old", 1);
+        assert_eq!(store.erase_subject(&erased).await.unwrap(), 1, "R1");
+        assert_eq!(store.erase_subject(&erased).await.unwrap(), 1, "R1");
+        assert_eq!(
+            store
+                .record(
+                    &erased,
+                    Purpose::TelemetryContent,
+                    ContentKind::InputMessages,
+                    "late",
+                )
+                .await,
+            Err(CaptureError::SubjectErased),
+            "R1"
+        );
+        store
+            .record(
+                &DataSubjectId("other".into()),
+                Purpose::TelemetryContent,
+                ContentKind::InputMessages,
+                "allowed",
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.len(), 1, "R2");
     }
 
     #[tokio::test]

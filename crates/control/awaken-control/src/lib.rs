@@ -20,6 +20,7 @@ pub mod authz;
 mod component;
 pub mod control_stores;
 mod credential_reference;
+mod data_subject;
 mod managed_agents;
 pub mod worker_stores;
 
@@ -49,6 +50,7 @@ pub use crate::component::{
 };
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};
 pub use crate::credential_reference::CredentialRevisionValidator;
+pub use crate::data_subject::{consent_router, erasure_router};
 pub use crate::managed_agents::ConfigPlaneManagedAgentRepository;
 pub use awaken_config_service::{
     LocalRuntimeCapability, RuntimeCapability, RuntimeCapabilitySource, static_runtime_capabilities,

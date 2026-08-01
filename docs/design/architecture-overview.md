@@ -48,8 +48,8 @@ as the split Worker process.
 
 | Process role | Canonical components | Durable authority acquired | Cross-context ports |
 |---|---|---|---|
-| Control | `awaken_control::build_control_component` | Catalog, Credential/secret, Config/publication, Admin; transitional Environment authoring | registers immutable executable Agents in Coordinator; exposes authenticated audit, secret-free credential selection, and webhook-delivery ports |
-| Coordinator | `awaken_server::build_coordinator_component`; currently co-locates the canonical Resources component | executable-Agent projection, Deployment/Session, dispatch/commit; Resources content/catalog; transitional Environment execution | calls Control application ports; dispatches to and settles Workers |
+| Control | `awaken_control::build_control_component` | Catalog, Credential/secret, Config/publication, Admin, Data Subject consent/accountability | registers immutable executable Agents; calls Coordinator Environment/erasure ports; exposes authenticated audit, credential, webhook, and consent-read ports |
+| Coordinator | `awaken_server::build_coordinator_component`; currently co-locates the canonical Resources component | executable-Agent projection, Deployment/Session, Environment, captured content, dispatch/commit; Resources content/catalog | calls Control application ports; dispatches to and settles Workers |
 | Worker | `WorkerNodeBuilder` | none; execution state is ephemeral | claim-fenced Coordinator and per-kind Resources/Credential clients |
 | AllInOne | the same Control, Coordinator, Resources, and optional Worker components | the union of those authorities in one process | local adapters implement the same ports |
 
@@ -60,10 +60,14 @@ receives no Session/Deployment or Resources content store. The legacy
 `ControlStoreConfig` name is only a backend-address compatibility bundle;
 role-aware validation and acquisition define authority.
 
-The only deliberate physical transition is Environment. Control still authors
-definitions through `EnvironmentAuthor`, while Coordinator owns execution work
-and sandbox policy over the explicit `environment_db`. This shared backend is
-named as a transition and must not be generalized into shared database access.
+Environment is fully Coordinator-owned. Control authors through the narrow
+`EnvironmentAuthor` command port and never receives `EnvironmentState` or
+`environment_db`. Data Subject follows the same rule in both directions:
+Coordinator reads consent through `DataSubjectConsentSource`, while Control
+requests subject-content erasure through an authenticated Coordinator port. The
+single Coordinator application fans that command out to its captured-content
+store and optional portable ACP session store; AllInOne calls the same port
+locally.
 
 The Runtime Core is the domain center. It runs tools in-process but must not know
 public protocols, registry publication workflow, vault schemas, remote execution

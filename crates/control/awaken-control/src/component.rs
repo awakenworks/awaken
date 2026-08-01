@@ -22,6 +22,9 @@ use awaken_config_service::{
 use awaken_config_store::{ModelSelection, ScopedConfigRegistry};
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
+use awaken_data_subject::{
+    DataSubjectRepo, ErasureJobRepo, ErasureTarget, RepoDataSubjectResolver,
+};
 use awaken_executable_agent_contract::ExecutableAgentRegistrar;
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_protocol_managed::{ManagedAgentRepository, McpProbe, VaultState};
@@ -67,6 +70,11 @@ pub struct ControlDependencies {
     pub runtimes: Arc<dyn RuntimeCapabilitySource>,
     pub resource_inventory: Option<Arc<dyn ResourceInventory>>,
     pub environment_author: Arc<dyn EnvironmentAuthor>,
+    pub data_subjects: Arc<dyn DataSubjectRepo>,
+    pub erasure_jobs: Arc<dyn ErasureJobRepo>,
+    pub coordinator_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
+    pub resource_content_eraser: Option<Arc<dyn awaken_runtime_contract::ContentEraser>>,
+    pub content_capture_ceiling: awaken_runtime_contract::ContentCapture,
     pub iam: Option<Arc<ManagementAuthz>>,
     pub local_browser_auth: Option<awaken_iam_host::LocalBrowserAuth>,
     pub remote_iam: Option<Arc<RemoteManagementAuthz>>,
@@ -83,6 +91,9 @@ pub struct ControlComponent {
     pub publication_reconciler: Arc<dyn PublicationBindingReconciler>,
     pub admin_tools: Vec<Arc<dyn RawTool>>,
     pub vault_state: Arc<VaultState>,
+    /// The same Control-owned consent source exposed locally to AllInOne. A
+    /// split Coordinator consumes its authenticated HTTP projection instead.
+    pub data_subject_consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -119,6 +130,11 @@ pub async fn build_control_component(
         runtimes,
         resource_inventory,
         environment_author,
+        data_subjects,
+        erasure_jobs,
+        coordinator_content_eraser,
+        resource_content_eraser,
+        content_capture_ceiling,
         iam,
         local_browser_auth,
         remote_iam,
@@ -198,6 +214,16 @@ pub async fn build_control_component(
     let agent_repository: Arc<dyn ManagedAgentRepository> = Arc::new(
         ConfigPlaneManagedAgentRepository::new(config_plane.clone(), execution_workspace),
     );
+    let resolver = RepoDataSubjectResolver::new(data_subjects.clone(), erasure_jobs)
+        .with_target(ErasureTarget::Coordinator, coordinator_content_eraser);
+    let resolver = match resource_content_eraser {
+        Some(eraser) => resolver.with_target(ErasureTarget::Resources, eraser),
+        None => resolver,
+    };
+    let resolver = Arc::new(resolver);
+    let data_subject_consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource> =
+        resolver.clone();
+    let data_subject_resolver: Arc<dyn awaken_runtime_contract::DataSubjectResolver> = resolver;
     let router = control_router(ControlRouterInput {
         catalog,
         credentials,
@@ -218,7 +244,12 @@ pub async fn build_control_component(
         iam,
         local_browser_auth,
         remote_iam,
-    });
+    })
+    .merge(crate::consent_router(
+        data_subjects,
+        content_capture_ceiling,
+    ))
+    .merge(crate::erasure_router(data_subject_resolver));
 
     Ok(ControlComponent {
         router,
@@ -226,6 +257,7 @@ pub async fn build_control_component(
         publication_reconciler,
         admin_tools,
         vault_state,
+        data_subject_consent,
     })
 }
 

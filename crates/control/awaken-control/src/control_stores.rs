@@ -45,12 +45,14 @@ pub struct ControlStoreConfig {
     pub config: StoreBackend,
     /// The admin aggregate: inference profiles, Agent inputs, and webhooks.
     pub admin: StoreBackend,
+    /// The Control-owned Data Subject aggregate and erasure process checkpoints.
+    pub data_subject: StoreBackend,
 }
 
 impl ControlStoreConfig {
     #[must_use]
     pub fn local(dir: &Path) -> Self {
-        Self::from_values(dir, None, None, None, None)
+        Self::from_values(dir, None, None, None, None, None)
     }
 
     #[must_use]
@@ -60,6 +62,7 @@ impl ControlStoreConfig {
         credential: Option<String>,
         config: Option<String>,
         admin: Option<String>,
+        data_subject: Option<String>,
     ) -> Self {
         let bundle = |name: &str| dir.join(name);
         Self {
@@ -67,6 +70,7 @@ impl ControlStoreConfig {
             credential: StoreBackend::resolve(credential, bundle("credential.db")),
             config: StoreBackend::resolve(config, bundle("config.db")),
             admin: StoreBackend::resolve(admin, bundle("admin.db")),
+            data_subject: StoreBackend::resolve(data_subject, bundle("data_subject.db")),
         }
     }
 }
@@ -88,6 +92,7 @@ mod tests {
             get("AWAKEN_CREDENTIAL_DB"),
             get("AWAKEN_CONFIG_DB"),
             get("AWAKEN_ADMIN_DB"),
+            get("AWAKEN_DATA_SUBJECT_DB"),
         )
     }
 
@@ -107,6 +112,10 @@ mod tests {
             StoreBackend::Sqlite("/var/awaken/config.db".into())
         );
         assert_eq!(c.admin, StoreBackend::Sqlite("/var/awaken/admin.db".into()));
+        assert_eq!(
+            c.data_subject,
+            StoreBackend::Sqlite("/var/awaken/data_subject.db".into())
+        );
     }
 
     #[test]

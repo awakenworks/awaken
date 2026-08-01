@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::schema::{CONTROL_PREFIX, control_data_subject_bundle};
-use crate::{DataSubject, DataSubjectError, DataSubjectId, DataSubjectRepo, ErasureProgress};
+use crate::{
+    DataSubject, DataSubjectError, DataSubjectId, DataSubjectRepo, ErasureJobRepo, ErasureProgress,
+};
 
 /// The component's table namespace (its bundle prefix).
 const NS: &str = CONTROL_PREFIX;
@@ -158,11 +160,11 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
         })
         .await
     }
+}
 
-    async fn load_erasure_progress(
-        &self,
-        id: &DataSubjectId,
-    ) -> Result<Option<ErasureProgress>, DataSubjectError> {
+#[async_trait::async_trait]
+impl ErasureJobRepo for SqliteDataSubjectRepo {
+    async fn load(&self, id: &DataSubjectId) -> Result<Option<ErasureProgress>, DataSubjectError> {
         let id = id.0.clone();
         with_conn(&self.conn, move |conn, p| {
             let data: Option<String> = conn
@@ -179,7 +181,7 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
         .await
     }
 
-    async fn save_erasure_progress(
+    async fn save(
         &self,
         id: &DataSubjectId,
         progress: &ErasureProgress,

@@ -27,6 +27,7 @@ pub mod console;
 pub mod control_service_boundary;
 mod coordinator_component;
 mod coordinator_persistence;
+pub mod data_subject_boundary;
 pub mod dynamic_placement;
 pub mod environment_boundary;
 pub mod inference_materializer;
@@ -69,8 +70,7 @@ pub use awaken_acp_application::{
 pub use awaken_config_service::{ConfigService, capabilities_router, config_router};
 pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_managed_routers::{
-    consent_router, default_models, erasure_router, files_router,
-    memory_stores_router_with_catalog, models_router, skills_router,
+    default_models, files_router, memory_stores_router_with_catalog, models_router, skills_router,
 };
 pub use awaken_runtime_host::{
     ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost, NoModelConfiguredExecutor,
@@ -601,21 +601,6 @@ fn mount_with_managed_over_and_models(
         || models_router(std::sync::Arc::new(default_models())),
         awaken_managed_routers::models_router_with_directory,
     );
-    // ADR-0050: install the Host-owned captured-content sink and expose the
-    // erasure + consent routes over the SAME process-local stores, so content a
-    // run captures is erasable within this server (run→capture→store→erase).
-    // Durable adapters exist but are not yet injected into this component; do
-    // not describe this composition as restart-durable.
-    let (sink, eraser, ds_repo) = data_subject_plane();
-    host.install_capture_sink(sink);
-    let mut resolver =
-        awaken_data_subject::RepoDataSubjectResolver::new(ds_repo.clone()).with_eraser(eraser);
-    if let Some(session_blobs) = host.session_blob_eraser() {
-        resolver = resolver.with_eraser(session_blobs);
-    }
-    let resolver: Arc<dyn awaken_runtime_contract::DataSubjectResolver> = Arc::new(resolver);
-    let erasure = awaken_managed_routers::erasure_router(resolver);
-    let consent = awaken_managed_routers::consent_router(ds_repo, host.content_capture_ceiling());
     let local_workspace = host.local_workspace().to_string();
     let router = managed
         .merge(ai_sdk)
@@ -627,8 +612,6 @@ fn mount_with_managed_over_and_models(
         .merge(memory_stores)
         .merge(skills)
         .merge(models)
-        .merge(erasure)
-        .merge(consent)
         // A scope-less request is the local/single-tenant mode. Resolve that mode
         // once at the composition edge so sessions and every resource adapter see
         // the same platform-provisioned workspace. Authenticated/cloud edges stamp
@@ -651,25 +634,6 @@ fn mount_with_managed_over_and_models(
             },
         ));
     (router, dream_state)
-}
-
-/// The open data-subject plane (ADR-0050): the captured-content store (used as
-/// both the capture sink a run writes to and the eraser the endpoint fans out to)
-/// and the subject/consent repo. One captured-content instance backs both the sink
-/// and the eraser, so a run's content is erasable. Durable (sqlite under
-/// The current component uses one in-memory instance for each responsibility.
-/// Durable adapters are separate migration bundles and are not part of the
-/// production role manifest until they can be injected without crossing the
-/// Control/Coordinator database boundary.
-pub fn data_subject_plane() -> (
-    Arc<dyn awaken_runtime_contract::CaptureSink>,
-    Arc<dyn awaken_runtime_contract::ContentEraser>,
-    Arc<dyn awaken_data_subject::DataSubjectRepo>,
-) {
-    use awaken_data_subject::{InMemoryCapturedContentStore, InMemoryDataSubjectRepo};
-    let cap = Arc::new(InMemoryCapturedContentStore::new());
-    let repo = Arc::new(InMemoryDataSubjectRepo::new());
-    (cap.clone(), cap, repo)
 }
 
 /// The worker composition seam refuses incomplete or unsupported materialized

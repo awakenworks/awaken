@@ -1,4 +1,4 @@
-//! Postgres-backed captured-content store (feature `postgres`, ADR-0050 D7): the
+//! Coordinator Postgres captured-content store (feature `postgres`, ADR-0050 D7): the
 //! network-DB sibling of
 //! [`SqliteCapturedContentStore`](crate::SqliteCapturedContentStore). Rows are
 //! subject-tagged so GDPR erasure is a keyed `DELETE`, a TTL sweep enforces storage
@@ -10,11 +10,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use awaken_runtime_contract::{CaptureSink, ContentEraser, ContentKind, DataSubjectId, Purpose};
+use awaken_runtime_contract::{
+    CaptureError, CaptureSink, ContentEraser, ContentKind, DataSubjectId, Purpose,
+};
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 
-use crate::postgres::PgStoreError;
+use crate::PgStoreError;
 use crate::schema::{COORDINATOR_CAPTURE_PREFIX, coordinator_data_capture_bundle};
 
 const NS: &str = COORDINATOR_CAPTURE_PREFIX;
@@ -68,6 +70,24 @@ impl PgCapturedContentStore {
         })
     }
 
+    /// Connect to a schema owned by the deployment migration command.
+    pub async fn connect_existing(url: &str) -> Result<Self, PgStoreError> {
+        let pool = PgPool::connect(url)
+            .await
+            .map_err(|error| PgStoreError::Connect(error.to_string()))?;
+        let bundle = coordinator_data_capture_bundle()
+            .map_err(|error| PgStoreError::Schema(error.to_string()))?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|error| PgStoreError::Schema(error.to_string()))?
+            .verify_bundle(&bundle)
+            .await
+            .map_err(|error| PgStoreError::Schema(error.to_string()))?;
+        Ok(Self {
+            pool,
+            seq: AtomicU64::new(0),
+        })
+    }
+
     /// Insert a captured item at an explicit time; returns its `cap_…` id.
     pub async fn insert(
         &self,
@@ -76,10 +96,42 @@ impl PgCapturedContentStore {
         content: &str,
         now: i64,
     ) -> String {
+        self.try_insert(subject, purpose, content, now)
+            .await
+            .expect("insert captured content")
+    }
+
+    async fn try_insert(
+        &self,
+        subject: &DataSubjectId,
+        purpose: Purpose,
+        content: &str,
+        now: i64,
+    ) -> Result<String, CaptureError> {
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
         let id = format!("cap_{now}_{n:016}");
         let purpose = serde_json::to_string(&purpose).unwrap_or_default();
-        let _ = sqlx::query(&format!(
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| CaptureError::Store(error.to_string()))?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(&subject.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| CaptureError::Store(error.to_string()))?;
+        let fenced: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS(SELECT 1 FROM {NS}_fence WHERE subject = $1)"
+        ))
+        .bind(&subject.0)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|error| CaptureError::Store(error.to_string()))?;
+        if fenced {
+            return Err(CaptureError::SubjectErased);
+        }
+        sqlx::query(&format!(
             "INSERT INTO {NS}_captured (id, subject, purpose, recorded_at, content, restricted) \
              VALUES ($1, $2, $3, $4, $5, 0)"
         ))
@@ -88,9 +140,13 @@ impl PgCapturedContentStore {
         .bind(&purpose)
         .bind(now)
         .bind(content)
-        .execute(&self.pool)
-        .await;
-        id
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| CaptureError::Store(error.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|error| CaptureError::Store(error.to_string()))?;
+        Ok(id)
     }
 
     /// Restrict a subject's records (GDPR Art. 18); returns the number restricted.
@@ -155,8 +211,10 @@ impl CaptureSink for PgCapturedContentStore {
         purpose: Purpose,
         _kind: ContentKind,
         content: &str,
-    ) {
-        self.insert(subject, purpose, content, now_millis()).await;
+    ) -> Result<(), CaptureError> {
+        self.try_insert(subject, purpose, content, now_millis())
+            .await?;
+        Ok(())
     }
 }
 
@@ -168,13 +226,50 @@ impl ContentEraser for PgCapturedContentStore {
     ) -> Result<usize, awaken_runtime_contract::ErasureError> {
         // Restricted (Art. 18) rows survive erasure until released. A DELETE that
         // errors is surfaced (fail-closed) rather than swallowed to a `0` count.
-        sqlx::query(&format!(
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(&subject.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
+        let previous: i64 = sqlx::query_scalar(&format!(
+            "SELECT records_removed FROM {NS}_fence WHERE subject = $1"
+        ))
+        .bind(&subject.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?
+        .unwrap_or(0);
+        let removed = sqlx::query(&format!(
             "DELETE FROM {NS}_captured WHERE subject = $1 AND restricted = 0"
         ))
         .bind(&subject.0)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map(|r| r.rows_affected() as usize)
-        .map_err(|e| awaken_runtime_contract::ErasureError(e.to_string()))
+        .map_err(|e| awaken_runtime_contract::ErasureError(e.to_string()))?;
+        let receipt = previous.checked_add(removed as i64).ok_or_else(|| {
+            awaken_runtime_contract::ErasureError("erasure receipt overflow".into())
+        })?;
+        sqlx::query(&format!(
+            "INSERT INTO {NS}_fence (subject, erased_at, records_removed) VALUES ($1, $2, $3) \
+             ON CONFLICT(subject) DO UPDATE SET records_removed = excluded.records_removed"
+        ))
+        .bind(&subject.0)
+        .bind(now_millis())
+        .bind(receipt)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
+        usize::try_from(receipt).map_err(|error| {
+            awaken_runtime_contract::ErasureError(format!("invalid erasure receipt: {error}"))
+        })
     }
 }

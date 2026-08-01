@@ -309,6 +309,7 @@ impl SharedHost {
             environment_binding_sink: std::sync::RwLock::new(None),
             capture_sink: std::sync::RwLock::new(None),
             capture_decision,
+            data_subject_consent: Arc::new(awaken_runtime_contract::NullResolver),
             admin_tools: Vec::new(),
         }
     }
@@ -553,6 +554,16 @@ impl SharedHost {
             .capture_sink
             .write()
             .expect("capture sink lock poisoned") = Some(sink);
+    }
+
+    /// Install the Control-owned consent read port used once per attributed Run.
+    #[must_use]
+    pub fn with_data_subject_consent_source(
+        mut self,
+        source: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+    ) -> Self {
+        self.data_subject_consent = source;
+        self
     }
 
     /// Deployment-resolved capture ceiling used by protocol decision projections.

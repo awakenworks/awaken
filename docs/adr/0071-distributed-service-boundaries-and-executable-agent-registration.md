@@ -112,9 +112,11 @@ receipt, or continue mutable Resource write-back.
 
 ### D6: Data ownership is enforced at composition time
 
-Control owns authoring, publication, IAM, and credential mutation stores.
+Control owns authoring, publication, IAM, credential mutation, and Data Subject
+consent/accountability stores.
 Coordinator owns executable Agent registration, Deployment, DeploymentRun,
-Environment execution state, Session, dispatch, and commit stores. Resource
+Environment execution state, Session, subject-tagged captured content, dispatch,
+and commit stores. Resource
 providers own their content. Worker owns only ephemeral execution state and must
 not receive authority database connections.
 
@@ -146,6 +148,18 @@ fingerprint replay and the application converges one healthcheck through the Wor
 Queue. Control receives only `EnvironmentAuthor`, never `EnvironmentState` or an
 Environment database address. `environment_db` remains an external deployment
 field but resolves into the Coordinator store group.
+
+Data Subject is Control-owned; captured runtime content is Coordinator-owned.
+Control builds the only `RepoDataSubjectResolver`, persists its erasure-process
+checkpoints, and owns the public consent/erasure API. Coordinator installs its
+own durable captured-content adapter into Runtime and reads consent once per
+attributed Run through `DataSubjectConsentSource`. The reverse erasure command
+uses the authenticated private Coordinator boundary and invokes the one
+Coordinator erasure application, which fans out to captured telemetry and the
+configured portable ACP session store. Each adapter persists an erasure fence
+and stable receipt, preventing both late-write resurrection and receipt loss on
+an ambiguous retry. AllInOne replaces both HTTP adapters with the same local
+ports; neither role opens the other's database.
 
 ## Implementation Status
 

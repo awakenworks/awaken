@@ -1,0 +1,145 @@
+//! Local and ephemeral adapters for the process composition root.
+
+use super::*;
+
+/// Ephemeral deployment stores: everything in process memory (dev / e2e default).
+pub(super) fn in_memory_process_stores() -> ProcessStores {
+    let sessions = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("open ephemeral managed Session repository"),
+    );
+    let admin = Arc::new(
+        awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+            .expect("open ephemeral admin store"),
+    );
+    let data_subjects = Arc::new(awaken_data_subject::InMemoryDataSubjectRepo::new());
+    let captured_content =
+        Arc::new(awaken_captured_content_store::InMemoryCapturedContentStore::new());
+    ProcessStores {
+        workspace_root: None,
+        control: Some(ControlStores {
+            catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
+            credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+            secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+            profiles: admin.clone(),
+            resources: admin.clone(),
+            webhooks: admin,
+            config: Arc::new(
+                awaken_config_store::SqliteConfigStore::open_in_memory()
+                    .expect("open config store"),
+            ),
+            data_subjects: data_subjects.clone(),
+            erasure_jobs: data_subjects,
+        }),
+        coordinator: Some(CoordinatorStores {
+            resource_component: ephemeral_resource_component(),
+            sessions: sessions.clone(),
+            deployments: sessions.clone(),
+            memory_extractions: sessions.clone(),
+            dream_repository: sessions,
+            capture_sink: captured_content.clone(),
+            captured_content_eraser: captured_content,
+        }),
+        environments: Some(Arc::new(EnvironmentState::new())),
+    }
+}
+
+#[cfg(test)]
+pub(super) fn in_memory_control_stores() -> ProcessStores {
+    let mut stores = in_memory_process_stores();
+    stores.coordinator = None;
+    stores
+}
+
+#[cfg(test)]
+pub(super) fn in_memory_split_coordinator() -> (ProcessStores, ControlServicePorts) {
+    let mut stores = in_memory_process_stores();
+    let control = stores
+        .control
+        .take()
+        .expect("fixture starts with Control stores");
+    let audit = Arc::new(ManagementAuditPlane::new(control.config.clone()));
+    let credentials = Arc::new(
+        awaken_protocol_managed::VaultState::new(
+            control.secrets.clone(),
+            control.credentials.clone(),
+        )
+        .with_probe(Arc::new(ExtMcpProbe)),
+    );
+    let webhooks = awaken_webhook_managed::config_plane_lifecycle_delivery(
+        control.webhooks,
+        control.secrets,
+        None,
+    );
+    let consent = Arc::new(awaken_data_subject::RepoDataSubjectResolver::new(
+        control.data_subjects,
+        control.erasure_jobs,
+    ));
+    (
+        stores,
+        ControlServicePorts {
+            audit,
+            credentials,
+            webhooks,
+            consent,
+        },
+    )
+}
+
+/// Keep the Managed Session aggregate durable whenever the runtime itself is
+/// durable, even when the rest of the process composition intentionally remains
+/// ephemeral. A restarted runtime can only rehydrate a governed Session when its
+/// configuration and owner fence survive beside the committed thread facts.
+#[cfg(test)]
+pub(super) fn process_stores_for_runtime_storage(
+    storage_dir: Option<&std::path::Path>,
+) -> ProcessStores {
+    let mut stores = in_memory_process_stores();
+    let Some(dir) = storage_dir else {
+        return stores;
+    };
+    stores.workspace_root = Some(dir.to_path_buf());
+    std::fs::create_dir_all(dir).expect("create runtime storage directory");
+    let sessions = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open(
+            &dir.join("sessions.db").to_string_lossy(),
+        )
+        .expect("open sessions.db under runtime storage directory"),
+    );
+    let coordinator = stores
+        .coordinator
+        .as_mut()
+        .expect("test composition owns Coordinator");
+    coordinator.sessions = sessions.clone();
+    coordinator.deployments = sessions.clone();
+    coordinator.memory_extractions = sessions.clone();
+    coordinator.dream_repository = sessions;
+    stores
+}
+
+/// Local SQLite is a backend selection, not a second store assembly.
+pub(super) async fn open_local_process_stores(
+    dir: &std::path::Path,
+    key: &[u8; 32],
+) -> Result<ProcessStores, String> {
+    let resource_component = open_resource_component(
+        config::ResourcePlaneStoreBackend::Embedded(dir.to_path_buf()),
+        PostgresSchemaMode::Migrate,
+    )
+    .await?;
+    open_process_stores(ProcessStoreOpenOptions {
+        control: awaken_control::ControlStoreConfig::local(dir),
+        coordinator: config::CoordinatorStoreConfig {
+            environments: awaken_control::StoreBackend::Sqlite(dir.join("environments.db")),
+            sessions: awaken_control::StoreBackend::Sqlite(dir.join("sessions.db")),
+            captured_content: awaken_control::StoreBackend::Sqlite(dir.join("captured_content.db")),
+        },
+        resource_component: Some(resource_component),
+        workspace_root: dir.to_path_buf(),
+        seal_key: Some(key),
+        role: config::Role::AllInOne,
+        postgres_schema: PostgresSchemaMode::Migrate,
+        open_environment_stores: true,
+    })
+    .await
+}

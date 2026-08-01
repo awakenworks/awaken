@@ -131,18 +131,18 @@ async fn build_control_assembly_with_model_composition(
         &deployment.iam_workspaces,
         &deployment.cloud_iam,
     )?;
-    let stores = open_process_stores(
-        deployment.control.clone(),
-        deployment.coordinator.clone(),
+    let stores = open_process_stores(ProcessStoreOpenOptions {
+        control: deployment.control.clone(),
+        coordinator: deployment.coordinator.clone(),
         // Control receives Resource references through authoring/read ports and
         // opens no File, Memory, Skill-content, or lifecycle authority.
-        None,
-        deployment.data_dir.clone(),
-        Some(key),
-        config::Role::Control,
-        PostgresSchemaMode::Verify,
-        false,
-    )
+        resource_component: None,
+        workspace_root: deployment.data_dir.clone(),
+        seal_key: Some(key),
+        role: config::Role::Control,
+        postgres_schema: PostgresSchemaMode::Verify,
+        open_environment_stores: false,
+    })
     .await?;
     let catalog = stores
         .control
@@ -168,6 +168,7 @@ async fn build_control_assembly_with_model_composition(
         model_composition,
         ProcessAssemblyOptions {
             deployment: None,
+            content_capture_ceiling: deployment.runtime.content_capture.level,
             org_id: Some(deployment.org_id.clone()),
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
             role: config::Role::Control,

@@ -8,14 +8,10 @@
 //! vocabulary is reused from `awaken-runtime-contract`; the Anthropic
 //! `UserProfile` wire shape is a *projection* over this aggregate (Slice 6).
 
-mod capture_store;
 #[cfg(feature = "postgres")]
 mod postgres;
-#[cfg(feature = "postgres")]
-mod postgres_capture;
 mod schema;
 mod sqlite;
-mod sqlite_capture;
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -25,17 +21,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub use awaken_runtime_contract::{ContentCapture, DataSubjectId, ErasureReceipt, Purpose};
-pub use capture_store::{CapturedRecord, InMemoryCapturedContentStore};
 #[cfg(feature = "postgres")]
 pub use postgres::{PgDataSubjectRepo, PgStoreError};
-#[cfg(feature = "postgres")]
-pub use postgres_capture::PgCapturedContentStore;
-pub use schema::{
-    CONTROL_BUNDLE_ID, CONTROL_PREFIX, COORDINATOR_CAPTURE_BUNDLE_ID, COORDINATOR_CAPTURE_PREFIX,
-    control_data_subject_bundle, coordinator_data_capture_bundle,
-};
+pub use schema::{CONTROL_BUNDLE_ID, CONTROL_PREFIX, control_data_subject_bundle};
 pub use sqlite::{SqliteDataSubjectRepo, StoreError};
-pub use sqlite_capture::SqliteCapturedContentStore;
 
 fn now_millis() -> i64 {
     SystemTime::now()
@@ -265,10 +254,17 @@ pub enum DataSubjectError {
 /// Durable checkpoint for a multi-store erasure workflow.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErasureProgress {
-    pub completed_erasers: Vec<usize>,
+    pub completed_targets: Vec<ErasureTarget>,
     pub records_removed: usize,
     pub accountability_stamped: bool,
     pub complete: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErasureTarget {
+    Coordinator,
+    Resources,
 }
 
 /// Persistence port for the [`DataSubject`] aggregate (repository-per-aggregate).
@@ -282,19 +278,17 @@ pub trait DataSubjectRepo: Send + Sync {
     async fn list(&self, org: &str) -> Result<Vec<DataSubject>, DataSubjectError>;
     /// Delete a subject record (its consent history); returns Ok even if absent.
     async fn delete(&self, id: &DataSubjectId) -> Result<(), DataSubjectError>;
-    async fn load_erasure_progress(
+}
+
+/// Control process-manager persistence, separate from the subject aggregate.
+#[async_trait]
+pub trait ErasureJobRepo: Send + Sync {
+    async fn load(&self, id: &DataSubjectId) -> Result<Option<ErasureProgress>, DataSubjectError>;
+    async fn save(
         &self,
-        _id: &DataSubjectId,
-    ) -> Result<Option<ErasureProgress>, DataSubjectError> {
-        Ok(None)
-    }
-    async fn save_erasure_progress(
-        &self,
-        _id: &DataSubjectId,
-        _progress: &ErasureProgress,
-    ) -> Result<(), DataSubjectError> {
-        Ok(())
-    }
+        id: &DataSubjectId,
+        progress: &ErasureProgress,
+    ) -> Result<(), DataSubjectError>;
 }
 
 /// In-memory [`DataSubjectRepo`] (tests / ephemeral single-process).
@@ -351,15 +345,15 @@ impl DataSubjectRepo for InMemoryDataSubjectRepo {
         self.order.lock().unwrap().retain(|k| k != &id.0);
         Ok(())
     }
+}
 
-    async fn load_erasure_progress(
-        &self,
-        id: &DataSubjectId,
-    ) -> Result<Option<ErasureProgress>, DataSubjectError> {
+#[async_trait]
+impl ErasureJobRepo for InMemoryDataSubjectRepo {
+    async fn load(&self, id: &DataSubjectId) -> Result<Option<ErasureProgress>, DataSubjectError> {
         Ok(self.erasures.lock().unwrap().get(&id.0).cloned())
     }
 
-    async fn save_erasure_progress(
+    async fn save(
         &self,
         id: &DataSubjectId,
         progress: &ErasureProgress,
@@ -378,50 +372,65 @@ impl DataSubjectRepo for InMemoryDataSubjectRepo {
 /// `Arc`-shared repo so a consent-write path and the resolver see one store.
 pub struct RepoDataSubjectResolver {
     repo: std::sync::Arc<dyn DataSubjectRepo>,
-    erasers: Vec<std::sync::Arc<dyn awaken_runtime_contract::ContentEraser>>,
+    jobs: std::sync::Arc<dyn ErasureJobRepo>,
+    coordinator: Option<std::sync::Arc<dyn awaken_runtime_contract::ContentEraser>>,
+    resources: Option<std::sync::Arc<dyn awaken_runtime_contract::ContentEraser>>,
 }
 
 impl RepoDataSubjectResolver {
     #[must_use]
-    pub fn new(repo: std::sync::Arc<dyn DataSubjectRepo>) -> Self {
+    pub fn new(
+        repo: std::sync::Arc<dyn DataSubjectRepo>,
+        jobs: std::sync::Arc<dyn ErasureJobRepo>,
+    ) -> Self {
         Self {
             repo,
-            erasers: Vec::new(),
+            jobs,
+            coordinator: None,
+            resources: None,
         }
     }
 
-    /// Register a content store to fan an erasure out to (GDPR Art. 17). Each
-    /// registered eraser's removed-count sums into the [`ErasureReceipt`].
+    /// Bind the one application eraser for a stable bounded-context target
+    /// (GDPR Art. 17). Rebinding a target replaces its adapter; it never creates
+    /// an order-dependent parallel checkpoint slot.
     #[must_use]
-    pub fn with_eraser(
+    pub fn with_target(
         mut self,
+        target: ErasureTarget,
         eraser: std::sync::Arc<dyn awaken_runtime_contract::ContentEraser>,
     ) -> Self {
-        self.erasers.push(eraser);
+        match target {
+            ErasureTarget::Coordinator => self.coordinator = Some(eraser),
+            ErasureTarget::Resources => self.resources = Some(eraser),
+        }
         self
     }
 }
 
 #[async_trait]
-impl awaken_runtime_contract::DataSubjectResolver for RepoDataSubjectResolver {
+impl awaken_runtime_contract::DataSubjectConsentSource for RepoDataSubjectResolver {
     async fn consent_ceiling(&self, subject: &DataSubjectId, purpose: Purpose) -> ContentCapture {
         match self.repo.get(subject).await {
             Ok(s) => s.consent_ceiling(purpose),
             Err(_) => ContentCapture::Structured,
         }
     }
+}
 
+#[async_trait]
+impl awaken_runtime_contract::DataSubjectResolver for RepoDataSubjectResolver {
     async fn erase(
         &self,
         subject: &DataSubjectId,
     ) -> Result<ErasureReceipt, awaken_runtime_contract::ErasureError> {
-        // Fan the erasure out across every registered content store, summing the
-        // records removed. A content-store DELETE that fails is surfaced (fail
-        // closed) BEFORE the accountability stamp — an unerased subject must never
-        // be stamped as erased, and the caller must not receive a success receipt.
+        // Invoke each configured bounded-context target once, summing its stable
+        // receipt. A target failure is surfaced (fail closed) BEFORE the
+        // accountability stamp — an unerased subject must never be stamped as
+        // erased, and the caller must not receive a success receipt.
         let mut progress = self
-            .repo
-            .load_erasure_progress(subject)
+            .jobs
+            .load(subject)
             .await
             .map_err(|e| awaken_runtime_contract::ErasureError(e.to_string()))?
             .unwrap_or_default();
@@ -430,14 +439,23 @@ impl awaken_runtime_contract::DataSubjectResolver for RepoDataSubjectResolver {
                 records_removed: progress.records_removed,
             });
         }
-        for (index, eraser) in self.erasers.iter().enumerate() {
-            if progress.completed_erasers.contains(&index) {
+        for (target, eraser) in [
+            (ErasureTarget::Coordinator, self.coordinator.as_ref()),
+            (ErasureTarget::Resources, self.resources.as_ref()),
+        ] {
+            let Some(eraser) = eraser else { continue };
+            if progress.completed_targets.contains(&target) {
                 continue;
             }
-            progress.records_removed += eraser.erase_subject(subject).await?;
-            progress.completed_erasers.push(index);
-            self.repo
-                .save_erasure_progress(subject, &progress)
+            progress.records_removed = progress
+                .records_removed
+                .checked_add(eraser.erase_subject(subject).await?)
+                .ok_or_else(|| {
+                    awaken_runtime_contract::ErasureError("erasure receipt overflow".into())
+                })?;
+            progress.completed_targets.push(target);
+            self.jobs
+                .save(subject, &progress)
                 .await
                 .map_err(|e| awaken_runtime_contract::ErasureError(e.to_string()))?;
         }
@@ -454,14 +472,14 @@ impl awaken_runtime_contract::DataSubjectResolver for RepoDataSubjectResolver {
                 awaken_runtime_contract::ErasureError(format!("accountability write failed: {e}"))
             })?;
             progress.accountability_stamped = true;
-            self.repo
-                .save_erasure_progress(subject, &progress)
+            self.jobs
+                .save(subject, &progress)
                 .await
                 .map_err(|e| awaken_runtime_contract::ErasureError(e.to_string()))?;
         }
         progress.complete = true;
-        self.repo
-            .save_erasure_progress(subject, &progress)
+        self.jobs
+            .save(subject, &progress)
             .await
             .map_err(|e| awaken_runtime_contract::ErasureError(e.to_string()))?;
         Ok(ErasureReceipt {
@@ -473,7 +491,7 @@ impl awaken_runtime_contract::DataSubjectResolver for RepoDataSubjectResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime_contract::DataSubjectResolver;
+    use awaken_runtime_contract::{DataSubjectConsentSource, DataSubjectResolver};
 
     fn granted(purpose: Purpose) -> ConsentGrant {
         ConsentGrant {
@@ -780,7 +798,7 @@ mod tests {
         s.upsert_consent(granted(Purpose::TelemetryContent));
         repo.put(s).await.unwrap();
 
-        let resolver = RepoDataSubjectResolver::new(repo.clone());
+        let resolver = RepoDataSubjectResolver::new(repo.clone(), repo.clone());
         let id = DataSubjectId("dsub_1".into());
         let receipt = resolver.erase(&id).await.unwrap();
         assert_eq!(receipt.records_removed, 0, "no erasers → nothing removed");
@@ -809,8 +827,10 @@ mod tests {
         }
 
         let repo = std::sync::Arc::new(InMemoryDataSubjectRepo::new());
-        let resolver =
-            RepoDataSubjectResolver::new(repo).with_eraser(std::sync::Arc::new(FakeEraser(6)));
+        let resolver = RepoDataSubjectResolver::new(repo.clone(), repo).with_target(
+            ErasureTarget::Coordinator,
+            std::sync::Arc::new(FakeEraser(6)),
+        );
         // Subject was never put(); erasers still remove its orphaned content.
         let receipt = resolver
             .erase(&DataSubjectId("orphan".into()))
@@ -844,20 +864,32 @@ mod tests {
             }
         }
 
+        // Causes: C1 Coordinator succeeds, C2 Resources fails before its
+        // checkpoint, C3 the caller retries. Effects: E1 persist Coordinator's
+        // stable target checkpoint and count, E2 surface the first failure, E3
+        // skip Coordinator on retry, E4 retry Resources and return the sum.
+        // Constraint: target identity is the bounded-context enum, never adapter
+        // insertion order. Decision rule R1 = C1+C2+C3 -> E1+E2+E3+E4.
         let repo = std::sync::Arc::new(InMemoryDataSubjectRepo::new());
         let first_calls = std::sync::Arc::new(AtomicUsize::new(0));
         let second_calls = std::sync::Arc::new(AtomicUsize::new(0));
-        let resolver = RepoDataSubjectResolver::new(repo.clone())
-            .with_eraser(std::sync::Arc::new(CountingEraser {
-                calls: first_calls.clone(),
-                removed: 2,
-                fail_first: false,
-            }))
-            .with_eraser(std::sync::Arc::new(CountingEraser {
-                calls: second_calls.clone(),
-                removed: 3,
-                fail_first: true,
-            }));
+        let resolver = RepoDataSubjectResolver::new(repo.clone(), repo.clone())
+            .with_target(
+                ErasureTarget::Coordinator,
+                std::sync::Arc::new(CountingEraser {
+                    calls: first_calls.clone(),
+                    removed: 2,
+                    fail_first: false,
+                }),
+            )
+            .with_target(
+                ErasureTarget::Resources,
+                std::sync::Arc::new(CountingEraser {
+                    calls: second_calls.clone(),
+                    removed: 3,
+                    fail_first: true,
+                }),
+            );
         let subject = DataSubjectId("resume-me".into());
 
         assert!(resolver.erase(&subject).await.is_err());
@@ -865,13 +897,7 @@ mod tests {
         assert_eq!(receipt.records_removed, 5);
         assert_eq!(first_calls.load(Ordering::SeqCst), 1);
         assert_eq!(second_calls.load(Ordering::SeqCst), 2);
-        assert!(
-            repo.load_erasure_progress(&subject)
-                .await
-                .unwrap()
-                .unwrap()
-                .complete
-        );
+        assert!(repo.load(&subject).await.unwrap().unwrap().complete);
     }
 
     #[tokio::test]
@@ -881,7 +907,7 @@ mod tests {
         s.upsert_consent(granted(Purpose::TelemetryContent));
         repo.put(s).await.unwrap();
 
-        let resolver = RepoDataSubjectResolver::new(repo);
+        let resolver = RepoDataSubjectResolver::new(repo.clone(), repo);
         let id = DataSubjectId("dsub_1".into());
         assert_eq!(
             resolver
@@ -946,8 +972,13 @@ mod tests {
 
         // (1) A failing content eraser surfaces before any accountability stamp — an
         // unerased subject must never be reported as erased.
-        let with_failing_eraser = RepoDataSubjectResolver::new(std::sync::Arc::new(FailingPutRepo))
-            .with_eraser(std::sync::Arc::new(FailingEraser));
+        let jobs = std::sync::Arc::new(InMemoryDataSubjectRepo::new());
+        let with_failing_eraser =
+            RepoDataSubjectResolver::new(std::sync::Arc::new(FailingPutRepo), jobs.clone())
+                .with_target(
+                    ErasureTarget::Coordinator,
+                    std::sync::Arc::new(FailingEraser),
+                );
         let err = with_failing_eraser
             .erase(&DataSubjectId("dsub_1".into()))
             .await
@@ -963,8 +994,9 @@ mod tests {
                 Ok(0)
             }
         }
-        let with_failing_put = RepoDataSubjectResolver::new(std::sync::Arc::new(FailingPutRepo))
-            .with_eraser(std::sync::Arc::new(CleanEraser));
+        let with_failing_put =
+            RepoDataSubjectResolver::new(std::sync::Arc::new(FailingPutRepo), jobs)
+                .with_target(ErasureTarget::Coordinator, std::sync::Arc::new(CleanEraser));
         let err = with_failing_put
             .erase(&DataSubjectId("dsub_1".into()))
             .await
@@ -991,9 +1023,12 @@ mod tests {
         repo.put(DataSubject::new(DataSubjectId("dsub_1".into()), "org_1", 0))
             .await
             .unwrap();
-        let resolver = RepoDataSubjectResolver::new(repo)
-            .with_eraser(std::sync::Arc::new(FakeEraser(2)))
-            .with_eraser(std::sync::Arc::new(FakeEraser(3)));
+        let resolver = RepoDataSubjectResolver::new(repo.clone(), repo)
+            .with_target(
+                ErasureTarget::Coordinator,
+                std::sync::Arc::new(FakeEraser(2)),
+            )
+            .with_target(ErasureTarget::Resources, std::sync::Arc::new(FakeEraser(3)));
 
         let receipt = resolver
             .erase(&DataSubjectId("dsub_1".into()))
@@ -1025,9 +1060,12 @@ mod tests {
         s.upsert_consent(granted(Purpose::TelemetryContent));
         repo.put(s).await.unwrap();
 
-        let resolver = RepoDataSubjectResolver::new(repo.clone())
-            .with_eraser(std::sync::Arc::new(FakeEraser(4)))
-            .with_eraser(std::sync::Arc::new(FakeEraser(3)));
+        let resolver = RepoDataSubjectResolver::new(repo.clone(), repo.clone())
+            .with_target(
+                ErasureTarget::Coordinator,
+                std::sync::Arc::new(FakeEraser(4)),
+            )
+            .with_target(ErasureTarget::Resources, std::sync::Arc::new(FakeEraser(3)));
         let id = DataSubjectId("dsub_1".into());
 
         let receipt = resolver.erase(&id).await.unwrap();

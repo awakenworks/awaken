@@ -50,8 +50,8 @@ pub use credential::{
     verify_credential_realization_receipt,
 };
 pub use data_subject::{
-    CaptureSink, ContentEraser, DataSubjectId, DataSubjectResolver, ErasureError, ErasureReceipt,
-    NullResolver, Purpose,
+    CaptureError, CaptureSink, ContentEraser, DataSubjectConsentSource, DataSubjectId,
+    DataSubjectResolver, ErasureError, ErasureReceipt, NullResolver, Purpose,
 };
 pub use delegation::{
     ChildRunCancellation, ChildRunResult, ChildRunResultInbox, DelegationExecutionError,

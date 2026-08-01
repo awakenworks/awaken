@@ -53,17 +53,24 @@ pub struct ErasureReceipt {
 #[error("erasure failed: {0}")]
 pub struct ErasureError(pub String);
 
-/// Resolves the consent ceiling and executes erasure for a data subject (D10a).
-/// The **one** customization seam: swap the impl to change where subject facts
-/// come from. Consulted at the Run boundary, never on the inference hot
-/// path.
+/// Consent-query port consumed at the Coordinator Run boundary.
+///
+/// Control owns the subject aggregate. A split Coordinator reaches this port
+/// through an authenticated adapter; AllInOne injects the same local source.
+/// Neither form gives Coordinator access to Control persistence.
 #[async_trait]
-pub trait DataSubjectResolver: Send + Sync {
+pub trait DataSubjectConsentSource: Send + Sync {
     /// The capture ceiling this subject's consent permits for `purpose`. A real
     /// resolver returns `Full` only when an active grant exists, else clamps to
     /// `Structured`.
     async fn consent_ceiling(&self, subject: &DataSubjectId, purpose: Purpose) -> ContentCapture;
+}
 
+/// Executes the Control-owned erasure process for a data subject (D10a).
+/// Consent reads reuse the one [`DataSubjectConsentSource`] implementation;
+/// erasure additionally coordinates the content-owning service ports.
+#[async_trait]
+pub trait DataSubjectResolver: DataSubjectConsentSource {
     /// Erase all content attributed to `subject`; returns a receipt on success.
     /// Fail-closed: if any content-store DELETE or the accountability write fails,
     /// this surfaces an [`ErasureError`] — a partial/failed erasure must never be
@@ -84,7 +91,15 @@ pub trait CaptureSink: Send + Sync {
         purpose: Purpose,
         kind: crate::capture::ContentKind,
         content: &str,
-    );
+    ) -> Result<(), CaptureError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CaptureError {
+    #[error("capture is fenced for erased data subject")]
+    SubjectErased,
+    #[error("capture store failed: {0}")]
+    Store(String),
 }
 
 /// A content store that can erase all records attributed to a data subject
@@ -105,12 +120,15 @@ pub trait ContentEraser: Send + Sync {
 pub struct NullResolver;
 
 #[async_trait]
-impl DataSubjectResolver for NullResolver {
+impl DataSubjectConsentSource for NullResolver {
     async fn consent_ceiling(&self, _subject: &DataSubjectId, _purpose: Purpose) -> ContentCapture {
         // No consent tracking ⇒ consent does not restrict; the ceiling/env decide.
         ContentCapture::Full
     }
+}
 
+#[async_trait]
+impl DataSubjectResolver for NullResolver {
     async fn erase(&self, _subject: &DataSubjectId) -> Result<ErasureReceipt, ErasureError> {
         Ok(ErasureReceipt::default())
     }

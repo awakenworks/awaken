@@ -88,6 +88,7 @@ pub struct ResolvedDeployment {
 pub struct CoordinatorStoreConfig {
     pub environments: awaken_control::StoreBackend,
     pub sessions: awaken_control::StoreBackend,
+    pub captured_content: awaken_control::StoreBackend,
 }
 
 #[derive(Clone)]
@@ -210,8 +211,10 @@ impl ResolvedDeployment {
                 ("credential_db", file.credential_db.is_some()),
                 ("config_db", file.config_db.is_some()),
                 ("admin_db", file.admin_db.is_some()),
+                ("data_subject_db", file.data_subject_db.is_some()),
                 ("environment_db", file.environment_db.is_some()),
                 ("sessions_db", file.sessions_db.is_some()),
+                ("captured_content_db", file.captured_content_db.is_some()),
                 ("control_seal_key", file.control_seal_key.is_some()),
                 (
                     "control_seal_key_file",
@@ -223,7 +226,13 @@ impl ResolvedDeployment {
             role,
             &[
                 ("runtime_database_url", file.runtime_database_url.is_some()),
+                (
+                    "resource_database_url",
+                    file.resource_database_url.is_some(),
+                ),
+                ("environment_db", file.environment_db.is_some()),
                 ("sessions_db", file.sessions_db.is_some()),
+                ("captured_content_db", file.captured_content_db.is_some()),
             ],
         )?;
         service_boundary::enforce_coordinator_control_database_isolation(
@@ -237,6 +246,7 @@ impl ResolvedDeployment {
                 ("credential_db", file.credential_db.is_some()),
                 ("config_db", file.config_db.is_some()),
                 ("admin_db", file.admin_db.is_some()),
+                ("data_subject_db", file.data_subject_db.is_some()),
                 ("control_seal_key", file.control_seal_key.is_some()),
                 (
                     "control_seal_key_file",
@@ -560,8 +570,10 @@ impl ResolvedDeployment {
                 &file.credential_db,
                 &file.config_db,
                 &file.admin_db,
+                &file.data_subject_db,
                 &file.environment_db,
                 &file.sessions_db,
+                &file.captured_content_db,
             ]
             .into_iter()
             .any(Option::is_some)
@@ -588,6 +600,7 @@ impl ResolvedDeployment {
             store_url(&file.credential_db),
             store_url(&file.config_db),
             store_url(&file.admin_db),
+            store_url(&file.data_subject_db),
         );
         let coordinator = CoordinatorStoreConfig {
             environments: awaken_control::StoreBackend::resolve(
@@ -597,6 +610,10 @@ impl ResolvedDeployment {
             sessions: awaken_control::StoreBackend::resolve(
                 store_url(&file.sessions_db),
                 data_dir.join("sessions.db"),
+            ),
+            captured_content: awaken_control::StoreBackend::resolve(
+                store_url(&file.captured_content_db),
+                data_dir.join("captured_content.db"),
             ),
         };
         let resources = match store_url(&file.resource_database_url) {
@@ -1630,45 +1647,50 @@ mod tests {
     }
 
     #[test]
-    fn control_environment_binding_does_not_grant_session_storage() {
+    fn control_rejects_every_coordinator_database_binding() {
         // Cause/effect decision table:
-        // R1 Control + environment_db only -> Environment uses the shared backend
-        // while Session retains an unused local default. R2 Control + sessions_db
-        // -> reject before store assembly. This prevents both an Environment shadow
-        // registry and accidental Control ownership of Managed Execution.
-        let control = resolve(
-            FileConfig {
-                role: Some("control".to_owned()),
-                environment_db: Some("postgres://shared/environments".to_owned()),
-                control_service_token_file: Some("/run/control-service-token".into()),
-                ..Default::default()
-            },
-            Default::default(),
-        );
-        assert!(
-            matches!(control.coordinator.environments, awaken_control::StoreBackend::Postgres(ref url) if url == "postgres://shared/environments"),
-            "R1"
-        );
-        assert!(
-            matches!(
-                control.coordinator.sessions,
-                awaken_control::StoreBackend::Sqlite(_)
+        // R1/R2/R3: environment/session/captured-content configuration on
+        // Control is rejected before store acquisition. Control receives only
+        // authenticated Coordinator ports, never another domain's DB address.
+        for (rule, field, file) in [
+            (
+                "R1",
+                "environment_db",
+                FileConfig {
+                    environment_db: Some("postgres://shared/environments".to_owned()),
+                    ..Default::default()
+                },
             ),
-            "R1"
-        );
-
-        let error = ResolvedDeployment::resolve_file(
-            ConfigOverrides::default(),
-            Some(PathBuf::from("/home/dev")),
-            PathBuf::from("/home/dev/.awaken/config.toml"),
-            FileConfig {
-                role: Some("control".to_owned()),
-                sessions_db: Some("postgres://shared/sessions".to_owned()),
-                ..Default::default()
-            },
-        )
-        .unwrap_err();
-        assert!(error.contains("sessions_db"), "R2: {error}");
+            (
+                "R2",
+                "sessions_db",
+                FileConfig {
+                    sessions_db: Some("postgres://shared/sessions".to_owned()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "R3",
+                "captured_content_db",
+                FileConfig {
+                    captured_content_db: Some("postgres://shared/capture".to_owned()),
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let error = ResolvedDeployment::resolve_file(
+                ConfigOverrides::default(),
+                Some(PathBuf::from("/home/dev")),
+                PathBuf::from("/home/dev/.awaken/config.toml"),
+                FileConfig {
+                    role: Some("control".to_owned()),
+                    control_service_token_file: Some("/run/control-service-token".into()),
+                    ..file
+                },
+            )
+            .unwrap_err();
+            assert!(error.contains(field), "{rule}: {error}");
+        }
     }
 
     #[test]
@@ -1738,11 +1760,11 @@ mod tests {
     #[test]
     fn reports_only_role_owned_database_groups() {
         // Cause/effect decision table:
-        // R1 split Control -> report only Control plus transitional Environment;
-        // R2 split Coordinator -> report only Coordinator, Resources, runtime, and
-        // transitional Environment; R3 either JSON report -> the unowned database
-        // group is an empty map. This prevents resolved compatibility defaults from
-        // being presented as database authority granted to the process.
+        // R1 split Control -> report only Control including Data Subject;
+        // R2 split Coordinator -> report only Coordinator including Environment
+        // and captured content, plus Resources/runtime; R3 either JSON report ->
+        // the unowned database group is empty. Resolved compatibility defaults
+        // therefore never appear as authority granted to another process.
         let control = resolve(
             FileConfig {
                 control_service_token_file: Some("/run/control-service-token".into()),
@@ -1758,10 +1780,8 @@ mod tests {
             control_text.contains("Control databases"),
             "R1: {control_text}"
         );
-        assert!(
-            control_text.contains("Transitional shared Environment"),
-            "R1"
-        );
+        assert!(control_text.contains("data_subject"), "R1");
+        assert!(!control_text.contains("environments"), "R1");
         assert!(!control_text.contains("Coordinator databases"), "R1");
         assert!(
             control_text.contains("resource plane       not owned"),
@@ -1794,6 +1814,8 @@ mod tests {
         );
         assert!(!coordinator_text.contains("Control databases"), "R2");
         assert!(!coordinator_text.contains("catalog"), "R2");
+        assert!(coordinator_text.contains("captured_content"), "R2");
+        assert!(coordinator_text.contains("environments"), "R2");
         let coordinator_json: serde_json::Value =
             serde_json::from_str(&coordinator.report(true)).unwrap();
         assert_eq!(
@@ -1820,8 +1842,10 @@ mod tests {
             &config.control.credential,
             &config.control.config,
             &config.control.admin,
+            &config.control.data_subject,
             &config.coordinator.environments,
             &config.coordinator.sessions,
+            &config.coordinator.captured_content,
         ] {
             assert!(matches!(backend, awaken_control::StoreBackend::Postgres(_)));
         }

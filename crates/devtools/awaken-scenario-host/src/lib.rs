@@ -1,8 +1,8 @@
 //! Test-only scenario host: the deterministic mock models and the `build_*_router`
 //! scenario assemblies the e2e harness + integration tests drive. Extracted from
 //! `awaken-server` so the product crate carries zero mocks. It reuses the
-//! product crate's now-`pub` data-plane assembly helpers (`mount` / `mount_with_managed`
-//! / `data_subject_plane`) and production executors via `awaken_server::`.
+//! product crate's now-`pub` data-plane assembly helpers (`mount` /
+//! `mount_with_managed`) and production executors via `awaken_server::`.
 
 mod acp_gateway;
 mod attempt_credential;

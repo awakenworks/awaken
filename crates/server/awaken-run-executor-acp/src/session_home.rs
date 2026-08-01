@@ -69,6 +69,30 @@ impl FsSessionBlobStore {
         self.root.join(scope)
     }
 
+    fn erasure_receipt_path(&self, subject: &str) -> PathBuf {
+        self.root
+            .join(".erasure_fences")
+            .join(Self::digest(subject))
+    }
+
+    fn erasure_receipt(&self, subject: &str) -> io::Result<Option<usize>> {
+        let path = self.erasure_receipt_path(subject);
+        match std::fs::read_to_string(path) {
+            Ok(value) => value
+                .parse::<usize>()
+                .map(Some)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn persist_erasure_receipt(&self, subject: &str, removed: usize) -> io::Result<()> {
+        let path = self.erasure_receipt_path(subject);
+        std::fs::create_dir_all(path.parent().expect("receipt path has a parent"))?;
+        std::fs::write(path, removed.to_string())
+    }
+
     fn key_dir(&self, key: &SessionHomeKey) -> PathBuf {
         self.subject_dir(key.data_subject_id.as_deref())
             .join(Self::digest(&key.thread_id))
@@ -88,12 +112,32 @@ impl SessionBlobStore for FsSessionBlobStore {
     }
 
     async fn store(&self, key: &SessionHomeKey, src: &Path) -> io::Result<()> {
+        if let Some(subject) = key.data_subject_id.as_deref()
+            && self.erasure_receipt(subject)?.is_some()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "data subject has an erasure fence",
+            ));
+        }
         let dst = self.key_dir(key);
         // Replace any prior copy (a whole-tree snapshot, not a per-file merge).
         if dst.exists() {
             std::fs::remove_dir_all(&dst)?;
         }
-        copy_tree(src, &dst)
+        let copied = copy_tree(src, &dst);
+        if let Some(subject) = key.data_subject_id.as_deref()
+            && self.erasure_receipt(subject)?.is_some()
+        {
+            if dst.exists() {
+                std::fs::remove_dir_all(&dst)?;
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "data subject has an erasure fence",
+            ));
+        }
+        copied
     }
 }
 
@@ -101,7 +145,18 @@ impl SessionBlobStore for FsSessionBlobStore {
 impl ContentEraser for FsSessionBlobStore {
     async fn erase_subject(&self, subject: &DataSubjectId) -> Result<usize, ErasureError> {
         let dir = self.subject_dir(Some(subject.as_str()));
+        if let Some(receipt) = self
+            .erasure_receipt(subject.as_str())
+            .map_err(|error| ErasureError(error.to_string()))?
+        {
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir).map_err(|error| ErasureError(error.to_string()))?;
+            }
+            return Ok(receipt);
+        }
         if !dir.exists() {
+            self.persist_erasure_receipt(subject.as_str(), 0)
+                .map_err(|error| ErasureError(error.to_string()))?;
             return Ok(0);
         }
         let records = std::fs::read_dir(&dir)
@@ -116,6 +171,11 @@ impl ContentEraser for FsSessionBlobStore {
             })
             .filter(|entry| entry.path().is_dir())
             .count();
+        // Persist the receipt/fence before deletion. If deletion fails, a retry
+        // resumes the delete and returns the original count; a late harvest is
+        // rejected instead of resurrecting erased subject content.
+        self.persist_erasure_receipt(subject.as_str(), records)
+            .map_err(|error| ErasureError(error.to_string()))?;
         std::fs::remove_dir_all(&dir).map_err(|error| ErasureError(error.to_string()))?;
         Ok(records)
     }
@@ -259,9 +319,10 @@ mod tests {
     /// Cause/effect graph:
     /// - C1: two subjects use the same thread+adapter; C2: only Alice is erased.
     /// - E1: their opaque blobs never collide; E2: Alice's exact subtree is
-    ///   removed and counted; E3: Bob's blob remains fetchable.
-    /// Decision-table rule R1 = C1(true) × C2(Alice) -> E1+E2+E3. Unknown-subject
-    /// no-op is covered by `restore_of_an_unknown_session_is_a_no_op`.
+    ///   removed and counted; E3: retry replays the count and a late harvest is
+    ///   fenced; E4: Bob's blob remains fetchable.
+    /// Decision-table rule R1 = C1(true) × C2(Alice) -> E1+E2+E3+E4.
+    /// Unknown-subject no-op is covered by `restore_of_an_unknown_session_is_a_no_op`.
     #[tokio::test]
     async fn subject_scopes_are_isolated_and_independently_erasable() {
         let root = tempfile::tempdir().unwrap();
@@ -289,6 +350,23 @@ mod tests {
         let alice_dest = tempfile::tempdir().unwrap();
         let bob_dest = tempfile::tempdir().unwrap();
         assert_eq!(removed, 1);
+        assert_eq!(
+            store
+                .erase_subject(&DataSubjectId("dsub_alice".into()))
+                .await
+                .unwrap(),
+            1,
+            "retry replays the stable erasure receipt"
+        );
+        assert_eq!(
+            store
+                .store(&alice, alice_source.path())
+                .await
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied,
+            "late harvest cannot resurrect erased content"
+        );
         assert!(!store.fetch(&alice, alice_dest.path()).await.unwrap());
         assert!(store.fetch(&bob, bob_dest.path()).await.unwrap());
         assert_eq!(

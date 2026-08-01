@@ -10,6 +10,7 @@ import _crate_dependency_fitness
 import _migration_fitness
 from _executable_agent_boundary import EXECUTABLE_AGENT_ALLOWED_DEPS
 import _provider_env_fitness
+from _privacy_boundary import PRIVACY_ALLOWED_DEPS
 import _resource_plane_fitness
 import _runtime_secret_boundary
 import _service_data_ownership_fitness
@@ -35,6 +36,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     **MANAGED_ROUTERS_ALLOWED_DEPS,
     **MANAGED_PROTOCOL_ALLOWED_DEPS,
     **EXECUTABLE_AGENT_ALLOWED_DEPS,
+    **PRIVACY_ALLOWED_DEPS,
     # zeroize backs RedactedString's zero-on-drop (ADR-0043); a leaf crypto-hygiene
     # primitive, not a model/provider SDK.
     "awaken-agent-contract": {"serde", "serde_json", "thiserror", "async-trait", "tokio", "zeroize", "http", "schemars"},
@@ -197,26 +199,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # `catalog` migration scope (ADR-0043); the SQL driver, as config-store.
         "sqlx",
         # dev-only: reopen-from-file persistence tests.
-        "tempfile",
-    },
-    # Data-subject aggregate + consent grants + repo/resolver (ADR-0050): a
-    # control/compliance-plane store peer to the credential vault; reuses the
-    # neutral DataSubjectId/Purpose/DataSubjectResolver from runtime-contract.
-    "awaken-data-subject": {
-        "awaken-agent-contract",
-        "awaken-runtime-contract",
-        "async-trait",
-        "serde",
-        "serde_json",
-        "thiserror",
-        "rusqlite",
-        # `spawn_blocking` for the sqlite adapter's off-thread connection work.
-        "tokio",
-        "awaken-scoped-migration",
-        "awaken-scoped-migration-sqlite",
-        # feature `postgres`: the PgDataSubjectRepo / PgCapturedContentStore backend.
-        "sqlx",
-        # dev-only: reopen-from-file persistence test.
         "tempfile",
     },
     "awaken-credential-vault": {
@@ -1475,8 +1457,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-admin-assistant",
         # ADR-0051/0052: the opaque scope id the reserved-scope seeding is keyed by.
         "awaken-tenancy",
-        # ADR-0050: the data-subject consent/erasure store backing the erasure endpoint.
-        "awaken-data-subject", "awaken-observability", "awaken-authz-enforce",
+        # Dev-only: the private erasure boundary test uses the Coordinator store.
+        "awaken-captured-content-store", "awaken-observability", "awaken-authz-enforce",
         "awaken-run-executor-acp", "awaken-acp-application", "awaken-protocol-acp",
         "awaken-provisioning-contract",
         "awaken-protocol-managed",
@@ -1590,6 +1572,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # Secret-free, fixed-size request-body fingerprints for the durable
         # management audit middleware. The body itself is never persisted.
         "sha2",
+        "base64",
+        "uuid",
         "thiserror",
         "tokio",
         "axum",
@@ -1650,6 +1634,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-admin-config-api",
         "awaken-config-store",
         "awaken-config-resolver",
+        # Composition is the only layer allowed to open both role-owned privacy
+        # adapters; it injects ports and never shares their database handles.
+        "awaken-data-subject",
+        "awaken-captured-content-store",
         # The durable skill catalog, shared by the host and the capability inventory.
         "awaken-skill-store",
         "awaken-admin-assistant",

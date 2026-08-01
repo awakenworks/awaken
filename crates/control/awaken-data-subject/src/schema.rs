@@ -1,14 +1,9 @@
-//! Versioned schemas for the two bounded-context responsibilities exposed by
-//! this crate. Control owns subject consent and erasure orchestration;
-//! Coordinator owns captured runtime content. Each responsibility has an
-//! independent ledger and table prefix even when AllInOne shares one database.
+//! Versioned schema for Control-owned subject consent and erasure orchestration.
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
 pub const CONTROL_BUNDLE_ID: &str = "awaken.control_data_subject";
-pub const COORDINATOR_CAPTURE_BUNDLE_ID: &str = "awaken.coordinator_data_capture";
 pub const CONTROL_PREFIX: &str = "control_data_subject";
-pub const COORDINATOR_CAPTURE_PREFIX: &str = "coordinator_data_capture";
 
 const CONTROL_FILES: &[(&str, &str)] = &[
     (
@@ -20,11 +15,6 @@ const CONTROL_FILES: &[(&str, &str)] = &[
         include_str!("migrations/V0002__control_erasure_job.sql"),
     ),
 ];
-
-const COORDINATOR_CAPTURE_FILES: &[(&str, &str)] = &[(
-    "V0001__coordinator_data_capture.sql",
-    include_str!("migrations/V0001__coordinator_data_capture.sql"),
-)];
 
 fn version_of(name: &str) -> i64 {
     name.trim_start_matches('V')
@@ -64,25 +54,16 @@ pub fn control_data_subject_bundle() -> Result<MigrationBundle, MigrationError> 
     bundle(CONTROL_BUNDLE_ID, CONTROL_FILES)
 }
 
-pub fn coordinator_data_capture_bundle() -> Result<MigrationBundle, MigrationError> {
-    bundle(COORDINATOR_CAPTURE_BUNDLE_ID, COORDINATOR_CAPTURE_FILES)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn bounded_context_bundles_are_independent_and_lint_clean() {
-        // Cause/effect decision table:
-        // R1 Control subject/erasure DDL -> only the Control bundle/prefix.
-        // R2 Coordinator captured-content DDL -> only its bundle/prefix.
-        // R3 both bundles composed by AllInOne -> independent ledgers and no
-        // duplicate table ownership; the common linter accepts both together.
+    fn control_bundle_is_lint_clean() {
+        // Cause/effect: the Control subject/erasure files produce one bundle and
+        // one prefix; deterministic migration lint rejects unsafe DDL.
         let control = control_data_subject_bundle().expect("Control bundle builds");
-        let capture = coordinator_data_capture_bundle().expect("Coordinator bundle builds");
-        assert_eq!(control.bundle_id(), CONTROL_BUNDLE_ID, "R1");
-        assert_eq!(capture.bundle_id(), COORDINATOR_CAPTURE_BUNDLE_ID, "R2");
-        awaken_scoped_migration::lint(&[control, capture]).expect("R3");
+        assert_eq!(control.bundle_id(), CONTROL_BUNDLE_ID);
+        awaken_scoped_migration::lint(&[control]).expect("lint");
     }
 }

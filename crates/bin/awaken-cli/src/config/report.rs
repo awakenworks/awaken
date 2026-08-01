@@ -31,17 +31,29 @@ impl ResolvedDeployment {
                 ("credential", render_store_backend(&self.control.credential)),
                 ("config", render_store_backend(&self.control.config)),
                 ("admin", render_store_backend(&self.control.admin)),
+                (
+                    "data_subject",
+                    render_store_backend(&self.control.data_subject),
+                ),
             ])
         } else {
             BTreeMap::new()
         };
         let coordinator_databases = if owns_coordinator {
-            BTreeMap::from([("sessions", render_store_backend(&self.coordinator.sessions))])
+            BTreeMap::from([
+                ("sessions", render_store_backend(&self.coordinator.sessions)),
+                (
+                    "captured_content",
+                    render_store_backend(&self.coordinator.captured_content),
+                ),
+                (
+                    "environments",
+                    render_store_backend(&self.coordinator.environments),
+                ),
+            ])
         } else {
             BTreeMap::new()
         };
-        let environment_database = (owns_control || owns_coordinator)
-            .then(|| render_store_backend(&self.coordinator.environments));
         let database_migrations = match self.mode {
             super::OperatingMode::Local => "automatic at startup",
             super::OperatingMode::Server => {
@@ -64,7 +76,6 @@ impl ResolvedDeployment {
                 "resource_backend": resource_backend,
                 "control_databases": control_databases,
                 "coordinator_databases": coordinator_databases,
-                "environment_database": environment_database,
                 "database_migrations": database_migrations,
                 "seal_key": self.seal_key.description(),
                 "origins": self.origins,
@@ -106,11 +117,6 @@ impl ResolvedDeployment {
             for (name, backend) in coordinator_databases {
                 report.push_str(&format!("  {name:<20} {backend}\n"));
             }
-        }
-        if let Some(environment_database) = environment_database {
-            report.push_str(&format!(
-                "\nTransitional shared Environment database\n  {environment_database}\n"
-            ));
         }
         report
     }

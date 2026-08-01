@@ -28,6 +28,10 @@ pub(super) struct ControlStores {
     pub(super) webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>,
     /// Rich Agent drafts and immutable publications, scoped per Workspace.
     pub(super) config: Arc<dyn awaken_config_store::ScopedConfigRegistry>,
+    /// Control-owned subject aggregate and consent facts.
+    pub(super) data_subjects: Arc<dyn awaken_data_subject::DataSubjectRepo>,
+    /// Durable Control erasure process checkpoints over the same adapter.
+    pub(super) erasure_jobs: Arc<dyn awaken_data_subject::ErasureJobRepo>,
 }
 
 pub(super) struct CoordinatorStores {
@@ -44,6 +48,11 @@ pub(super) struct CoordinatorStores {
     /// Same Session application repository viewed through the extraction-work
     /// interface; kept separate from MemoryRepository and IAM.
     pub(super) memory_extractions: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>,
+    /// Coordinator-owned subject-tagged content write port.
+    pub(super) capture_sink: Arc<dyn awaken_runtime_contract::CaptureSink>,
+    /// A second view of the exact same captured-content adapter for Control's
+    /// authenticated erasure command.
+    pub(super) captured_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,19 +66,27 @@ pub(super) enum PostgresSchemaMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum MigrationComponent {
     Control,
+    ControlDataSubject,
     Coordinator,
+    CoordinatorCapturedContent,
     Resources,
     ExecutableAgentCatalog,
 }
 
 const ALL_IN_ONE_MIGRATIONS: &[MigrationComponent] = &[
     MigrationComponent::Control,
+    MigrationComponent::ControlDataSubject,
     MigrationComponent::Coordinator,
+    MigrationComponent::CoordinatorCapturedContent,
     MigrationComponent::Resources,
 ];
-const CONTROL_MIGRATIONS: &[MigrationComponent] = &[MigrationComponent::Control];
+const CONTROL_MIGRATIONS: &[MigrationComponent] = &[
+    MigrationComponent::Control,
+    MigrationComponent::ControlDataSubject,
+];
 const COORDINATOR_MIGRATIONS: &[MigrationComponent] = &[
     MigrationComponent::Coordinator,
+    MigrationComponent::CoordinatorCapturedContent,
     MigrationComponent::Resources,
     MigrationComponent::ExecutableAgentCatalog,
 ];
@@ -112,13 +129,17 @@ mod tests {
         // but no second durable executable-agent implementation.
         assert_eq!(
             migration_manifest(config::Role::Control),
-            &[MigrationComponent::Control],
+            &[
+                MigrationComponent::Control,
+                MigrationComponent::ControlDataSubject,
+            ],
             "R1"
         );
         assert_eq!(
             migration_manifest(config::Role::Coordinator),
             &[
                 MigrationComponent::Coordinator,
+                MigrationComponent::CoordinatorCapturedContent,
                 MigrationComponent::Resources,
                 MigrationComponent::ExecutableAgentCatalog,
             ],
@@ -129,7 +150,9 @@ mod tests {
             migration_manifest(config::Role::AllInOne),
             &[
                 MigrationComponent::Control,
+                MigrationComponent::ControlDataSubject,
                 MigrationComponent::Coordinator,
+                MigrationComponent::CoordinatorCapturedContent,
                 MigrationComponent::Resources,
             ],
             "R4"

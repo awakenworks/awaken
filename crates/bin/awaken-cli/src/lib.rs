@@ -19,6 +19,7 @@ mod credential_probe;
 mod exact_host_model;
 mod executable_agent_registration;
 mod identity;
+mod local_process_stores;
 mod observation_reconcile;
 mod process_assembly_options;
 mod process_stores;
@@ -34,6 +35,11 @@ use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_host::{ExtMcpProbe, ManagedHost, SharedHost};
 use axum::Router;
 use exact_host_model::ExactHostModelPublicationResolver;
+#[cfg(test)]
+use local_process_stores::{
+    in_memory_control_stores, in_memory_split_coordinator, process_stores_for_runtime_storage,
+};
+use local_process_stores::{in_memory_process_stores, open_local_process_stores};
 
 pub use crate::brain_admin::{
     DrainController, brain_admin_router, register_active_streams_gauge, with_brain_admin,
@@ -118,6 +124,7 @@ struct ControlServicePorts {
     audit: Arc<dyn awaken_config_service::ManagementAuditRepository>,
     credentials: Arc<dyn awaken_protocol_managed::SessionCredentialSource>,
     webhooks: Arc<dyn awaken_webhook_managed::LifecycleFactDelivery>,
+    consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
 }
 
 impl ControlServicePorts {
@@ -127,7 +134,8 @@ impl ControlServicePorts {
         Self {
             audit: client.clone(),
             credentials: client.clone(),
-            webhooks: client,
+            webhooks: client.clone(),
+            consent: client,
         }
     }
 }
@@ -137,122 +145,36 @@ pub struct ProcessAssembly {
     pub local_setup: Option<awaken_control::LocalSetupHandoff>,
 }
 
-/// Ephemeral deployment stores: everything in process memory (dev / e2e default).
-fn in_memory_process_stores() -> ProcessStores {
-    let sessions = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .expect("open ephemeral managed Session repository"),
-    );
-    let admin = Arc::new(
-        awaken_admin_config_api::SqliteAdminStore::open_in_memory()
-            .expect("open ephemeral admin store"),
-    );
-    ProcessStores {
-        workspace_root: None,
-        control: Some(ControlStores {
-            catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
-            credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
-            secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-            profiles: admin.clone(),
-            resources: admin.clone(),
-            webhooks: admin,
-            config: Arc::new(
-                awaken_config_store::SqliteConfigStore::open_in_memory()
-                    .expect("open config store"),
-            ),
-        }),
-        coordinator: Some(CoordinatorStores {
-            resource_component: ephemeral_resource_component(),
-            sessions: sessions.clone(),
-            deployments: sessions.clone(),
-            memory_extractions: sessions.clone(),
-            dream_repository: sessions,
-        }),
-        environments: Some(Arc::new(EnvironmentState::new())),
-    }
-}
-
-#[cfg(test)]
-fn in_memory_control_stores() -> ProcessStores {
-    let mut stores = in_memory_process_stores();
-    stores.coordinator = None;
-    stores
-}
-
-#[cfg(test)]
-fn in_memory_split_coordinator() -> (ProcessStores, ControlServicePorts) {
-    let mut stores = in_memory_process_stores();
-    let control = stores
-        .control
-        .take()
-        .expect("fixture starts with Control stores");
-    let audit = Arc::new(ManagementAuditPlane::new(control.config.clone()));
-    let credentials = Arc::new(
-        awaken_protocol_managed::VaultState::new(
-            control.secrets.clone(),
-            control.credentials.clone(),
-        )
-        .with_probe(Arc::new(ExtMcpProbe)),
-    );
-    let webhooks = awaken_webhook_managed::config_plane_lifecycle_delivery(
-        control.webhooks,
-        control.secrets,
-        None,
-    );
-    (
-        stores,
-        ControlServicePorts {
-            audit,
-            credentials,
-            webhooks,
-        },
-    )
-}
-
-/// Keep the Managed Session aggregate durable whenever the runtime itself is
-/// durable, even when the rest of the process composition intentionally remains
-/// ephemeral. A restarted runtime can only rehydrate a governed Session when its
-/// configuration and owner fence survive beside the committed thread facts.
-#[cfg(test)]
-fn process_stores_for_runtime_storage(storage_dir: Option<&std::path::Path>) -> ProcessStores {
-    let mut stores = in_memory_process_stores();
-    let Some(dir) = storage_dir else {
-        return stores;
-    };
-    stores.workspace_root = Some(dir.to_path_buf());
-    std::fs::create_dir_all(dir).expect("create runtime storage directory");
-    let sessions = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open(
-            &dir.join("sessions.db").to_string_lossy(),
-        )
-        .expect("open sessions.db under runtime storage directory"),
-    );
-    let coordinator = stores
-        .coordinator
-        .as_mut()
-        .expect("test composition owns Coordinator");
-    coordinator.sessions = sessions.clone();
-    coordinator.deployments = sessions.clone();
-    coordinator.memory_extractions = sessions.clone();
-    coordinator.dream_repository = sessions;
-    stores
-}
-
 /// Open the canonical role-owned stores selected by
 /// [`ControlStoreConfig`](awaken_control::ControlStoreConfig). The compatibility
 /// bundle resolves backend addresses, but this function acquires only the group
 /// owned by `role`; split Control and Coordinator never share authority stores.
-async fn open_process_stores(
-    cfg: awaken_control::ControlStoreConfig,
-    coordinator_cfg: config::CoordinatorStoreConfig,
+struct ProcessStoreOpenOptions<'a> {
+    control: awaken_control::ControlStoreConfig,
+    coordinator: config::CoordinatorStoreConfig,
     resource_component: Option<awaken_resource_contract::ResourceComponent>,
     workspace_root: std::path::PathBuf,
-    key: Option<&[u8; 32]>,
+    seal_key: Option<&'a [u8; 32]>,
     role: config::Role,
     postgres_schema: PostgresSchemaMode,
     open_environment_stores: bool,
+}
+
+async fn open_process_stores(
+    options: ProcessStoreOpenOptions<'_>,
 ) -> Result<ProcessStores, String> {
     use awaken_control::StoreBackend;
+
+    let ProcessStoreOpenOptions {
+        control: cfg,
+        coordinator: coordinator_cfg,
+        resource_component,
+        workspace_root,
+        seal_key: key,
+        role,
+        postgres_schema,
+        open_environment_stores,
+    } = options;
 
     // Create the parent directory for any SQLite path (a bundle dir or a custom path).
     fn ensure_parent(backend: &StoreBackend) -> Result<(), String> {
@@ -384,6 +306,7 @@ async fn open_process_stores(
 
     let coordinator = if role_owns_managed_execution(role) {
         ensure_parent(&coordinator_cfg.sessions)?;
+        ensure_parent(&coordinator_cfg.captured_content)?;
         let sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>;
         let deployments: Arc<dyn awaken_protocol_managed::DeploymentRepository>;
         let memory_extractions: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>;
@@ -419,6 +342,34 @@ async fn open_process_stores(
                 dream_repository = repository;
             }
         }
+        let (capture_sink, captured_content_eraser): (
+            Arc<dyn awaken_runtime_contract::CaptureSink>,
+            Arc<dyn awaken_runtime_contract::ContentEraser>,
+        ) =
+            match &coordinator_cfg.captured_content {
+                StoreBackend::Sqlite(p) => {
+                    let store = Arc::new(
+                        awaken_captured_content_store::SqliteCapturedContentStore::open(&path(p))
+                            .map_err(|error| {
+                            format!("open captured-content SQLite {}: {error}", p.display())
+                        })?,
+                    );
+                    (store.clone(), store)
+                }
+                StoreBackend::Postgres(url) => {
+                    let store = Arc::new(match postgres_schema {
+                    PostgresSchemaMode::Migrate => {
+                        awaken_captured_content_store::PgCapturedContentStore::connect(url).await
+                    }
+                    PostgresSchemaMode::Verify => {
+                        awaken_captured_content_store::PgCapturedContentStore::connect_existing(url)
+                            .await
+                    }
+                }
+                .map_err(|error| format!("connect captured-content Postgres: {error}"))?);
+                    (store.clone(), store)
+                }
+            };
         Some(CoordinatorStores {
             resource_component: resource_component
                 .ok_or_else(|| "Coordinator stores require Resources component".to_owned())?,
@@ -426,6 +377,8 @@ async fn open_process_stores(
             deployments,
             memory_extractions,
             dream_repository,
+            capture_sink,
+            captured_content_eraser,
         })
     } else {
         None
@@ -450,6 +403,41 @@ async fn open_process_stores(
                 .map_err(|error| format!("connect config Postgres: {error}"))?,
             ),
         })
+    } else {
+        None
+    };
+
+    let data_subject = if opens_control {
+        ensure_parent(&cfg.data_subject)?;
+        let repo: Arc<dyn awaken_data_subject::DataSubjectRepo>;
+        let jobs: Arc<dyn awaken_data_subject::ErasureJobRepo>;
+        match &cfg.data_subject {
+            StoreBackend::Sqlite(p) => {
+                let store = Arc::new(
+                    awaken_data_subject::SqliteDataSubjectRepo::open(&path(p)).map_err(
+                        |error| format!("open data-subject SQLite {}: {error}", p.display()),
+                    )?,
+                );
+                repo = store.clone();
+                jobs = store;
+            }
+            StoreBackend::Postgres(url) => {
+                let store = Arc::new(
+                    match postgres_schema {
+                        PostgresSchemaMode::Migrate => {
+                            awaken_data_subject::PgDataSubjectRepo::connect(url).await
+                        }
+                        PostgresSchemaMode::Verify => {
+                            awaken_data_subject::PgDataSubjectRepo::connect_existing(url).await
+                        }
+                    }
+                    .map_err(|error| format!("connect data-subject Postgres: {error}"))?,
+                );
+                repo = store.clone();
+                jobs = store;
+            }
+        }
+        Some((repo, jobs))
     } else {
         None
     };
@@ -528,6 +516,14 @@ async fn open_process_stores(
                 resources: admin_resources.expect("Control role opens Resource authoring store"),
                 webhooks: admin_webhooks.expect("Control role opens Webhook store"),
                 config: config.expect("Control role opens Config store"),
+                data_subjects: data_subject
+                    .as_ref()
+                    .expect("Control role opens Data Subject store")
+                    .0
+                    .clone(),
+                erasure_jobs: data_subject
+                    .expect("Control role opens Data Subject store")
+                    .1,
             })
         } else {
             None
@@ -535,32 +531,6 @@ async fn open_process_stores(
         coordinator,
         environments,
     })
-}
-
-/// Local SQLite is a backend selection, not a second store assembly.
-async fn open_local_process_stores(
-    dir: &std::path::Path,
-    key: &[u8; 32],
-) -> Result<ProcessStores, String> {
-    let resource_component = open_resource_component(
-        config::ResourcePlaneStoreBackend::Embedded(dir.to_path_buf()),
-        PostgresSchemaMode::Migrate,
-    )
-    .await?;
-    open_process_stores(
-        awaken_control::ControlStoreConfig::local(dir),
-        config::CoordinatorStoreConfig {
-            environments: awaken_control::StoreBackend::Sqlite(dir.join("environments.db")),
-            sessions: awaken_control::StoreBackend::Sqlite(dir.join("sessions.db")),
-        },
-        Some(resource_component),
-        dir.to_path_buf(),
-        Some(key),
-        config::Role::AllInOne,
-        PostgresSchemaMode::Migrate,
-        true,
-    )
-    .await
 }
 
 /// Build all-in-one from the standard typed deployment configuration.
@@ -631,16 +601,16 @@ async fn build_runtime_process_assembly(
     };
     let resource_component =
         open_resource_component(deployment.resources.clone(), postgres_schema).await?;
-    let stores = open_process_stores(
-        deployment.control.clone(),
-        deployment.coordinator.clone(),
-        Some(resource_component),
-        deployment.data_dir.clone(),
-        key,
+    let stores = open_process_stores(ProcessStoreOpenOptions {
+        control: deployment.control.clone(),
+        coordinator: deployment.coordinator.clone(),
+        resource_component: Some(resource_component),
+        workspace_root: deployment.data_dir.clone(),
+        seal_key: key,
         role,
         postgres_schema,
-        true,
-    )
+        open_environment_stores: true,
+    })
     .await?;
     let hand_executors =
         awaken_server::placement::connect_declared_hands(&deployment.hand_connections).await?;
@@ -653,6 +623,12 @@ async fn build_runtime_process_assembly(
             .as_ref()
             .expect("Managed Execution owns Environment")
             .application(),
+        stores
+            .coordinator
+            .as_ref()
+            .expect("Managed Execution owns captured content")
+            .captured_content_eraser
+            .clone(),
     )
     .await?;
     let worker_authenticator = worker_transport_security::authenticator(deployment)?;
@@ -672,6 +648,7 @@ async fn build_runtime_process_assembly(
         PublicationModelComposition::PublishedProviders,
         ProcessAssemblyOptions {
             deployment: Some(deployment.runtime.clone()),
+            content_capture_ceiling: deployment.runtime.content_capture.level,
             org_id: Some(deployment.org_id.clone()),
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
             role,
@@ -715,16 +692,16 @@ pub async fn migrate_deployment_schema(
     if manifest.contains(&MigrationComponent::Control)
         || manifest.contains(&MigrationComponent::Coordinator)
     {
-        open_process_stores(
-            deployment.control.clone(),
-            deployment.coordinator.clone(),
+        open_process_stores(ProcessStoreOpenOptions {
+            control: deployment.control.clone(),
+            coordinator: deployment.coordinator.clone(),
             resource_component,
-            deployment.data_dir.clone(),
-            key,
-            deployment.role,
-            PostgresSchemaMode::Migrate,
-            manifest.contains(&MigrationComponent::Coordinator),
-        )
+            workspace_root: deployment.data_dir.clone(),
+            seal_key: key,
+            role: deployment.role,
+            postgres_schema: PostgresSchemaMode::Migrate,
+            open_environment_stores: manifest.contains(&MigrationComponent::Coordinator),
+        })
         .await
         .map(drop)?;
     }
@@ -778,22 +755,23 @@ async fn build_all_in_one_router_with_composition(
     let resource_component = open_resource_component(deployment.resources.clone(), postgres_schema)
         .await
         .unwrap_or_else(|error| panic!("open resource stores: {error}"));
-    let stores = open_process_stores(
-        deployment.control.clone(),
-        deployment.coordinator.clone(),
-        Some(resource_component),
-        deployment.data_dir.clone(),
-        Some(&key),
-        config::Role::AllInOne,
+    let stores = open_process_stores(ProcessStoreOpenOptions {
+        control: deployment.control.clone(),
+        coordinator: deployment.coordinator.clone(),
+        resource_component: Some(resource_component),
+        workspace_root: deployment.data_dir.clone(),
+        seal_key: Some(&key),
+        role: config::Role::AllInOne,
         postgres_schema,
-        true,
-    )
+        open_environment_stores: true,
+    })
     .await
     .unwrap_or_else(|error| panic!("open deployment stores: {error}"));
     let hand_executors =
         awaken_server::placement::connect_declared_hands(&deployment.hand_connections)
             .await
             .unwrap_or_else(|error| panic!("declared Hand topology: {error}"));
+    let content_capture_ceiling = deployment.runtime.content_capture.level;
     assemble_runtime_process_router(
         stores,
         identity.iam,
@@ -802,6 +780,7 @@ async fn build_all_in_one_router_with_composition(
         model_composition,
         ProcessAssemblyOptions {
             deployment: Some(deployment.runtime),
+            content_capture_ceiling,
             org_id: Some(deployment.org_id),
             mcp_bearer_token: deployment.mcp_bearer_token,
             role: config::Role::AllInOne,
@@ -1081,7 +1060,9 @@ async fn assemble_runtime_process_router(
         executable_agent_private_router,
         executable_agent_projection_refresher,
         _remote_environment_author,
+        _remote_coordinator_content_eraser,
     ) = executable_agent_registration::process_parts(assembly.executable_agent_wiring);
+    let content_capture_ceiling = assembly.content_capture_ceiling;
     let deployment = assembly.deployment;
     let hand_executors = assembly.hand_executors;
     let cloud_api_base_url = assembly.cloud_api_base_url;
@@ -1099,6 +1080,13 @@ async fn assemble_runtime_process_router(
         .coordinator
         .as_ref()
         .expect("Managed Execution role requires Coordinator stores");
+    let coordinator_content_eraser =
+        awaken_server::data_subject_boundary::coordinator_content_eraser(
+            coordinator_stores.captured_content_eraser.clone(),
+            deployment
+                .as_ref()
+                .and_then(|deployment| deployment.acp_session_blob_root.clone()),
+        );
     let resource_component = &coordinator_stores.resource_component;
     // Resolve the installation's Workspace exactly once, then inject the same
     // coordinate into every adapter assembled below. Durable roots persist it;
@@ -1200,6 +1188,8 @@ async fn assemble_runtime_process_router(
                             .application(),
                     ),
                 ),
+                coordinator_content_eraser,
+                content_capture_ceiling,
                 iam.clone(),
                 local_browser_auth,
                 remote_iam.clone(),
@@ -1223,6 +1213,8 @@ async fn assemble_runtime_process_router(
         deployments,
         dream_repository,
         memory_extractions,
+        capture_sink,
+        captured_content_eraser: _,
     } = coordinator.expect("Managed Execution role requires Coordinator stores");
     let env_state = env_state.expect("Managed Execution owns Environment");
     let resource_catalog = resource_component.resource_catalog();
@@ -1234,6 +1226,7 @@ async fn assemble_runtime_process_router(
         credential_source,
         deployment_audit_plane,
         local_webhook_stores,
+        data_subject_consent,
     ) = match control_component {
         Some(component) => {
             let control_stores = control_stores
@@ -1256,6 +1249,7 @@ async fn assemble_runtime_process_router(
                     control_stores.webhooks.clone(),
                     control_stores.secrets.clone(),
                 )),
+                component.data_subject_consent,
             )
         }
         None => {
@@ -1271,6 +1265,7 @@ async fn assemble_runtime_process_router(
                 ports.credentials,
                 ManagementAuditPlane::from_repository(ports.audit),
                 None,
+                ports.consent,
             )
         }
     };
@@ -1332,6 +1327,8 @@ async fn assemble_runtime_process_router(
         ))
         .with_agent_publications(executable_agent_catalog.clone())
         .with_agent_resource_references(executable_agent_catalog.clone())
+        .with_capture_sink(capture_sink)
+        .with_data_subject_consent_source(data_subject_consent)
         .with_admin_tools(admin_execs);
     if let Some(credentials) = credential_materializer.clone() {
         host_builder = host_builder.with_credential_materializer(credentials);

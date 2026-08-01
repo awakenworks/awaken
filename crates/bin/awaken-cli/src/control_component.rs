@@ -20,6 +20,8 @@ pub(super) async fn control_component_for_process(
     runtimes: Arc<dyn awaken_config_service::RuntimeCapabilitySource>,
     resource_inventory: Option<Arc<dyn awaken_admin_assistant::ResourceInventory>>,
     environment_author: Arc<dyn awaken_admin_assistant::EnvironmentAuthor>,
+    coordinator_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
+    content_capture_ceiling: awaken_runtime_contract::ContentCapture,
     iam: Option<Arc<ManagementAuthz>>,
     local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
@@ -72,6 +74,11 @@ pub(super) async fn control_component_for_process(
         runtimes,
         resource_inventory,
         environment_author,
+        data_subjects: control.data_subjects.clone(),
+        erasure_jobs: control.erasure_jobs.clone(),
+        coordinator_content_eraser,
+        resource_content_eraser: None,
+        content_capture_ceiling,
         iam,
         local_browser_auth,
         remote_iam,
@@ -92,8 +99,9 @@ pub(super) async fn assemble_control_process_router(
     assembly: ProcessAssemblyOptions,
 ) -> Router {
     debug_assert_eq!(assembly.role, config::Role::Control);
-    let (_, executable_agent_registrar, _, _, environment_author) =
+    let (_, executable_agent_registrar, _, _, environment_author, coordinator_content_eraser) =
         executable_agent_registration::process_parts(assembly.executable_agent_wiring);
+    let content_capture_ceiling = assembly.content_capture_ceiling;
     let execution_workspace = stores.workspace_root.as_deref().map_or_else(
         SharedHost::provision_local_workspace,
         SharedHost::provision_local_workspace_at,
@@ -142,6 +150,8 @@ pub(super) async fn assemble_control_process_router(
         runtimes,
         None,
         environment_author.unwrap_or_else(test_environment_author),
+        coordinator_content_eraser.unwrap_or_else(test_coordinator_content_eraser),
+        content_capture_ceiling,
         iam,
         local_browser_auth,
         remote_iam,
@@ -164,6 +174,7 @@ pub(super) async fn assemble_control_process_router(
                 component.management_audit.clone(),
                 component.vault_state.clone(),
                 webhook_delivery,
+                component.data_subject_consent.clone(),
                 token,
             )
             .unwrap_or_else(|error| panic!("build Control service boundary: {error}")),
@@ -189,12 +200,61 @@ pub(super) async fn assemble_control_process_router(
 }
 
 #[cfg(test)]
+#[tokio::test]
+async fn standalone_control_uses_the_authored_capture_ceiling() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use tower::ServiceExt as _;
+
+    // Causes: C1 standalone Control has no Runtime deployment object, C2 its
+    // authored ceiling is Off, C3 the request asks for Full, C4 the subject is
+    // absent. Effects: E1 the endpoint is available, E2 effective capture is Off.
+    // Constraint: consent may only narrow the authored ceiling.
+    // Decision rule R1 = C1+C2+C3+C4 -> E1+E2. This pins the policy input that
+    // standalone Control must carry independently of Runtime deployment state.
+    let app = assemble_control_process_router(
+        in_memory_control_stores(),
+        None,
+        None,
+        None,
+        PublicationModelComposition::PublishedProviders,
+        ProcessAssemblyOptions {
+            role: config::Role::Control,
+            content_capture_ceiling: awaken_runtime_contract::ContentCapture::Off,
+            ..Default::default()
+        },
+    )
+    .await;
+    let response = app
+        .oneshot(
+            Request::get("/v1/user_profiles/unknown/capture-decision?requested=full")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["effective"], "off", "R1 + R2");
+}
+
+#[cfg(test)]
 fn test_environment_author() -> Arc<dyn awaken_admin_assistant::EnvironmentAuthor> {
     Arc::new(
         awaken_server::environment_boundary::LocalEnvironmentAuthor::new(
             awaken_protocol_managed::EnvironmentState::new().application(),
         ),
     )
+}
+
+#[cfg(test)]
+fn test_coordinator_content_eraser() -> Arc<dyn awaken_runtime_contract::ContentEraser> {
+    Arc::new(awaken_captured_content_store::InMemoryCapturedContentStore::new())
+}
+
+#[cfg(not(test))]
+fn test_coordinator_content_eraser() -> Arc<dyn awaken_runtime_contract::ContentEraser> {
+    panic!("split Control requires Coordinator content-erasure adapter")
 }
 
 #[cfg(not(test))]

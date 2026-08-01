@@ -10,7 +10,9 @@ use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
 use crate::schema::{CONTROL_PREFIX, control_data_subject_bundle};
-use crate::{DataSubject, DataSubjectError, DataSubjectId, DataSubjectRepo, ErasureProgress};
+use crate::{
+    DataSubject, DataSubjectError, DataSubjectId, DataSubjectRepo, ErasureJobRepo, ErasureProgress,
+};
 
 /// The component's table namespace (its bundle prefix).
 const NS: &str = CONTROL_PREFIX;
@@ -22,6 +24,8 @@ pub enum PgStoreError {
     Connect(String),
     #[error("migrate: {0}")]
     Migrate(String),
+    #[error("schema: {0}")]
+    Schema(String),
 }
 
 async fn connect_migrated(url: &str) -> Result<PgPool, PgStoreError> {
@@ -65,6 +69,21 @@ impl PgDataSubjectRepo {
         Ok(Self {
             pool: pool_migrated(pool).await?,
         })
+    }
+
+    /// Connect to a schema owned by the deployment migration command.
+    pub async fn connect_existing(url: &str) -> Result<Self, PgStoreError> {
+        let pool = PgPool::connect(url)
+            .await
+            .map_err(|error| PgStoreError::Connect(error.to_string()))?;
+        let bundle = control_data_subject_bundle()
+            .map_err(|error| PgStoreError::Schema(error.to_string()))?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(|error| PgStoreError::Schema(error.to_string()))?
+            .verify_bundle(&bundle)
+            .await
+            .map_err(|error| PgStoreError::Schema(error.to_string()))?;
+        Ok(Self { pool })
     }
 }
 
@@ -125,11 +144,11 @@ impl DataSubjectRepo for PgDataSubjectRepo {
             .map_err(storage)?;
         Ok(())
     }
+}
 
-    async fn load_erasure_progress(
-        &self,
-        id: &DataSubjectId,
-    ) -> Result<Option<ErasureProgress>, DataSubjectError> {
+#[async_trait::async_trait]
+impl ErasureJobRepo for PgDataSubjectRepo {
+    async fn load(&self, id: &DataSubjectId) -> Result<Option<ErasureProgress>, DataSubjectError> {
         let p = NS;
         let row = sqlx::query(&format!(
             "SELECT data FROM {p}_erasure_job WHERE subject_id = $1"
@@ -145,7 +164,7 @@ impl DataSubjectRepo for PgDataSubjectRepo {
         .transpose()
     }
 
-    async fn save_erasure_progress(
+    async fn save(
         &self,
         id: &DataSubjectId,
         progress: &ErasureProgress,

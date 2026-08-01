@@ -313,6 +313,9 @@ pub struct SharedHost {
     /// Deployment-resolved capture ceiling/redactor. Per-request consent and
     /// subject attribution may only narrow or activate this value.
     pub(crate) capture_decision: awaken_runtime_contract::CaptureDecision,
+    /// Read-only Control consent port. The default null source preserves open
+    /// standalone behavior; managed composition replaces it explicitly.
+    pub(crate) data_subject_consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
     /// Globally-registered management tool executables (ADR-0052 D3/D4). Registered
     /// on every thread's runtime (the executor registry stays global); only the
     /// reserved-scope assistant's compiled config *names* them, so no other run can
