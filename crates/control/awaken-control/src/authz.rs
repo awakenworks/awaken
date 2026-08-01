@@ -144,8 +144,9 @@ use profiles::AUTHORIZATION_PROFILE_EPOCH;
 pub use profiles::{
     HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE, HOSTED_RUNTIME_POLICY_NAMESPACE,
     HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE, MANAGEMENT_AGENT_PUBLISHER_ROLE,
-    MANAGEMENT_POLICY_NAMESPACE, hosted_runtime_authorization_profile,
-    management_authorization_profile, management_resource_authorization_profile,
+    MANAGEMENT_HOSTED_WORKSPACE_ADMIN_ROLE, MANAGEMENT_POLICY_NAMESPACE,
+    hosted_runtime_authorization_profile, management_authorization_profile,
+    management_resource_authorization_profile,
 };
 use profiles::{qualify_action, qualify_resource_action, qualify_resource_role, qualify_role};
 pub use remote::RemoteManagementAuthz;
@@ -184,6 +185,9 @@ const WORKSPACE_READ: &str = "workspace.read";
 const WORKSPACE_WRITE: &str = "workspace.write";
 const APIKEY_READ: &str = "apikey.read";
 const APIKEY_WRITE: &str = "apikey.write";
+const MODEL_SUPPLY_READ: &str = "model_supply.read";
+const MODEL_SUPPLY_CONNECT: &str = "model_supply.connect";
+const MODEL_SUPPLY_WRITE: &str = "model_supply.write";
 const FILE_READ: &str = "file.read";
 const FILE_WRITE: &str = "file.write";
 const SKILL_READ: &str = "skill.read";
@@ -958,22 +962,36 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
     RoutePolicyDescriptor {
         prefix: "/v1/config/provider-connections",
         policy: RouteFamilyPolicy::Scoped {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
+            read: MODEL_SUPPLY_READ,
+            write: MODEL_SUPPLY_CONNECT,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/provider-descriptors",
+        policy: RouteFamilyPolicy::Scoped {
+            read: MODEL_SUPPLY_READ,
+            write: MODEL_SUPPLY_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/executable-models",
+        policy: RouteFamilyPolicy::Scoped {
+            read: MODEL_SUPPLY_READ,
+            write: MODEL_SUPPLY_WRITE,
         },
     },
     RoutePolicyDescriptor {
         prefix: "/v1/config/model-attributes",
         policy: RouteFamilyPolicy::Scoped {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
+            read: MODEL_SUPPLY_READ,
+            write: MODEL_SUPPLY_WRITE,
         },
     },
     RoutePolicyDescriptor {
         prefix: "/v1/config/catalog",
         policy: RouteFamilyPolicy::Scoped {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
+            read: MODEL_SUPPLY_READ,
+            write: MODEL_SUPPLY_WRITE,
         },
     },
     RoutePolicyDescriptor {
@@ -986,22 +1004,22 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
     RoutePolicyDescriptor {
         prefix: "/v1/config/brokered-models",
         policy: RouteFamilyPolicy::Scoped {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
+            read: MODEL_SUPPLY_READ,
+            write: MODEL_SUPPLY_WRITE,
         },
     },
     RoutePolicyDescriptor {
         prefix: "/v1/config/inference-profiles",
         policy: RouteFamilyPolicy::Scoped {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
+            read: MODEL_SUPPLY_READ,
+            write: MODEL_SUPPLY_WRITE,
         },
     },
     RoutePolicyDescriptor {
         prefix: "/v1/config/inference",
         policy: RouteFamilyPolicy::Scoped {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
+            read: MODEL_SUPPLY_READ,
+            write: MODEL_SUPPLY_WRITE,
         },
     },
     RoutePolicyDescriptor {
@@ -1423,26 +1441,34 @@ fn query_workspace_id(query: Option<&str>) -> Option<String> {
 fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
     let is_read = matches!(*method, Method::GET | Method::HEAD);
 
-    // Resolution endpoints are side-effect-free previews even though their wire
-    // method is POST. Keep that semantic exception explicit and narrow.
-    if *method == Method::POST
-        && (path == "/v1/config/inference/resolve"
-            || path.ends_with("/resolve")
-            || path.ends_with("/resolve-candidates"))
-        && in_family(path, "/v1/config")
-    {
-        return Some(RouteAuthz::Scoped {
-            action: WORKSPACE_READ,
-            scope: ScopeClass::Workspace,
-        });
-    }
-
     // The management guard is installed only over the composed management
     // Router. Its concrete route table is therefore the membership declaration;
     // these are the bounded management namespaces, not a second endpoint list.
     let descriptor = ROUTE_POLICIES
         .iter()
         .find(|descriptor| in_family(path, descriptor.prefix))?;
+
+    // Resolution endpoints are side-effect-free previews even though their wire
+    // method is POST. Derive the read action from the owning family instead of
+    // maintaining a second hard-coded authorization vocabulary.
+    if *method == Method::POST
+        && (path == "/v1/config/inference/resolve"
+            || path.ends_with("/resolve")
+            || path.ends_with("/resolve-candidates"))
+        && in_family(path, "/v1/config")
+    {
+        return match descriptor.policy {
+            RouteFamilyPolicy::Scoped { read, .. } => Some(RouteAuthz::Scoped {
+                action: read,
+                scope: ScopeClass::Workspace,
+            }),
+            RouteFamilyPolicy::Resource { read, .. } => Some(RouteAuthz::Resource {
+                action: read,
+                scope: ScopeClass::Workspace,
+            }),
+            RouteFamilyPolicy::TokenAdmin => Some(RouteAuthz::TokenAdmin),
+        };
+    }
     Some(match descriptor.policy {
         RouteFamilyPolicy::Scoped { read, write } => RouteAuthz::Scoped {
             action: if is_read { read } else { write },
@@ -1862,6 +1888,9 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
+#[cfg(test)]
+#[path = "authz/model_supply_tests.rs"]
+mod model_supply_tests;
 #[cfg(test)]
 #[path = "authz_tests.rs"]
 mod tests;

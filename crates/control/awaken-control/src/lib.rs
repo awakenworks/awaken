@@ -39,10 +39,10 @@ pub use crate::authz::{
     ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, DEFAULT_ORG_ID,
     HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE, HOSTED_RUNTIME_POLICY_NAMESPACE,
     HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE, MANAGEMENT_AGENT_PUBLISHER_ROLE,
-    MANAGEMENT_POLICY_NAMESPACE, ManagementAuthz, ManagementIdentityMode, RemoteManagementAuthz,
-    TokenSpec, embedded_iam, embedded_iam_for_tenant, embedded_iam_for_workspace,
-    hosted_runtime_authorization_profile, management_authorization_profile,
-    management_resource_authorization_profile,
+    MANAGEMENT_HOSTED_WORKSPACE_ADMIN_ROLE, MANAGEMENT_POLICY_NAMESPACE, ManagementAuthz,
+    ManagementIdentityMode, RemoteManagementAuthz, TokenSpec, embedded_iam,
+    embedded_iam_for_tenant, embedded_iam_for_workspace, hosted_runtime_authorization_profile,
+    management_authorization_profile, management_resource_authorization_profile,
 };
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};
 pub use crate::credential_reference::CredentialRevisionValidator;
@@ -187,9 +187,10 @@ pub struct ControlRouterInput {
     pub model_discovery: Arc<dyn awaken_admin_config_api::ModelCatalogDiscovery>,
     /// Signed-in managed model projection, absent outside Awaken Cloud mode.
     pub brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
-    /// Operator feature switch, independent from whether Cloud identity is wired
-    /// or an interactive token is currently cached.
-    pub cloud_models_enabled: bool,
+    /// One deployment posture for every model-supply command and projection.
+    /// The admin router uses the same value for server enforcement and client
+    /// capability discovery; composition must not maintain a hidden second mode.
+    pub model_supply: awaken_admin_config_api::ModelSupplyCapabilityView,
     /// The Managed vault state, shared with the data-plane managed state.
     pub vault_state: Arc<VaultState>,
     /// The one authoring projection used by `/v1/agents`. Execution-owned
@@ -229,7 +230,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         probe,
         model_discovery,
         brokered_catalog,
-        cloud_models_enabled,
+        model_supply,
         vault_state,
         agent_repository,
         plane,
@@ -257,11 +258,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
                 .and_then(|authz| authz.cloud_user_token())
                 .is_some(),
         },
-        models: awaken_admin_config_api::ModelSupplyCapabilityView {
-            local_catalog_enabled: true,
-            byok_enabled: true,
-            cloud_models_enabled,
-        },
+        models: model_supply,
     };
     let admin = awaken_admin_config_api::admin_router_with_capabilities(
         AdminState {

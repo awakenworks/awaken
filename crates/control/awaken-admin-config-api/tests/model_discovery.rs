@@ -123,6 +123,23 @@ fn cloud_capabilities(authenticated: bool) -> ConfigCapabilitiesView {
             local_catalog_enabled: true,
             byok_enabled: true,
             cloud_models_enabled: true,
+            profile_authoring_enabled: true,
+        },
+    }
+}
+
+fn hosted_capabilities() -> ConfigCapabilitiesView {
+    ConfigCapabilitiesView {
+        identity: IdentityCapabilityView {
+            mode: "awaken-cloud".into(),
+            cloud_login_enabled: false,
+            authenticated: true,
+        },
+        models: ModelSupplyCapabilityView {
+            local_catalog_enabled: false,
+            byok_enabled: false,
+            cloud_models_enabled: true,
+            profile_authoring_enabled: false,
         },
     }
 }
@@ -135,6 +152,10 @@ impl BrokeredCatalogDiscovery for FixedBrokeredDiscovery {
 }
 
 fn harness() -> Harness {
+    harness_with_capabilities(ConfigCapabilitiesView::default())
+}
+
+fn harness_with_capabilities(capabilities: ConfigCapabilitiesView) -> Harness {
     let catalog = Arc::new(InMemoryCatalogRepo::new());
     let discovery = Arc::new(FixedDiscovery {
         models: Mutex::new(vec![
@@ -152,23 +173,112 @@ fn harness() -> Harness {
         secret_calls: Mutex::new(Vec::new()),
     });
     let credentials = Arc::new(InMemoryCredentialRepo::new());
-    let app = admin_router(AdminState {
-        catalog: catalog.clone(),
-        credentials: credentials.clone(),
-        secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-        profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
-        resources: Arc::new(awaken_admin_config_api::InMemoryAgentInputBindingRepository::new()),
-        probe: None,
-        model_discovery: Some(discovery.clone()),
-        brokered_catalog: None,
-        availability: Arc::new(AvailabilityLedger::new()),
-    });
+    let app = admin_router_with_capabilities(
+        AdminState {
+            catalog: catalog.clone(),
+            credentials: credentials.clone(),
+            secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+            profiles: Arc::new(awaken_admin_config_api::InMemoryProfileStore::new()),
+            resources: Arc::new(
+                awaken_admin_config_api::InMemoryAgentInputBindingRepository::new(),
+            ),
+            probe: None,
+            model_discovery: Some(discovery.clone()),
+            brokered_catalog: None,
+            availability: Arc::new(AvailabilityLedger::new()),
+        },
+        capabilities,
+    );
     Harness {
         app,
         catalog,
         discovery,
         credentials,
     }
+}
+
+#[tokio::test]
+async fn hosted_supply_rejects_every_model_authoring_entry_before_side_effects() {
+    // Cause-effect graph: hosted posture (C1) + a model-supply mutation (C2)
+    // -> one typed denial (E1), no discovery/secret/catalog/profile side effect
+    // (E2), while the read-only capability projection remains available (E3).
+    //
+    // Decision table:
+    // | Rule | hosted | operation | E1 403 | E2 unchanged |
+    // | H1 | yes | Provider connection | yes | yes |
+    // | H2 | yes | Provider credential | yes | yes |
+    // | H3 | yes | manual model attributes | yes | yes |
+    // | H4 | yes | inference Profile | yes | yes |
+    // | H5 | yes | manual brokered refresh | yes | yes |
+    // Local authoring success is covered by the Provider-connection and B1
+    // cases below, so these rules vary only the hosted posture and command.
+    let harness = harness_with_capabilities(hosted_capabilities());
+    let cases = [
+        (
+            "POST",
+            "/v1/config/provider-connections",
+            json!({
+                "idempotency_key":"hosted-provider",
+                "workspace_id":"workspace-a",
+                "provider_id":"anthropic",
+                "display_name":"Anthropic",
+                "dialect":"anthropic_messages",
+                "secret":"must-not-be-read" // awaken-allow: secret -- inert denial fixture
+            }),
+        ),
+        (
+            "POST",
+            "/v1/config/credentials",
+            json!({
+                "workspace_id":"workspace-a",
+                "kind":"vault",
+                "provider_id":"anthropic",
+                "secret":"must-not-be-stored" // awaken-allow: secret -- inert denial fixture
+            }),
+        ),
+        (
+            "PUT",
+            "/v1/config/model-attributes/claude-native",
+            json!({"context_window": 200000}),
+        ),
+        (
+            "PUT",
+            "/v1/config/inference-profiles/default",
+            json!({
+                "workspace_id":"workspace-a",
+                "primary":{"target":{"model_id":"claude-native"},"credential_binding":{"type":"none"}},
+                "fallbacks":[]
+            }),
+        ),
+        ("POST", "/v1/config/brokered-models/refresh", Value::Null),
+    ];
+    for (method, path, body) in cases {
+        let (status, problem) = call(&harness.app, method, path, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {problem}");
+        assert_eq!(problem["code"], "model_supply_managed", "{path}");
+    }
+    assert!(harness.discovery.secret_calls.lock().unwrap().is_empty());
+    assert!(
+        harness
+            .catalog
+            .snapshot()
+            .await
+            .unwrap()
+            .providers
+            .is_empty()
+    );
+    assert!(
+        harness
+            .credentials
+            .list("workspace-a")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let (status, capabilities) =
+        call(&harness.app, "GET", "/v1/config/capabilities", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(capabilities["models"]["byok_enabled"], false);
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {

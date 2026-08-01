@@ -19,6 +19,7 @@ mod exact_host_model;
 mod executable_agent_registration;
 mod identity;
 mod observation_reconcile;
+mod process_assembly_options;
 mod process_surface;
 mod resource_plane;
 mod worker_transport_security;
@@ -51,6 +52,7 @@ pub use control::{
     build_control_router_with_publication_resolver_and_web_search,
 };
 use identity::identity_wiring;
+use process_assembly_options::{ProcessAssemblyOptions, local_model_supply};
 use resource_plane::{ephemeral_resource_plane, open_resource_plane};
 pub use worker_transport_security::load_request_authorizer as load_worker_request_authorizer;
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
@@ -89,24 +91,6 @@ struct PublicationModelWiring {
     model_ref: String,
     publication_resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
     materializer: Option<Arc<dyn awaken_runtime_host::InferenceExecutorMaterializer>>,
-}
-
-#[derive(Default)]
-struct ProcessAssemblyOptions {
-    deployment: Option<awaken_runtime_host::DeploymentConfig>,
-    org_id: Option<String>,
-    mcp_bearer_token: Option<String>,
-    role: config::Role,
-    cloud_api_base_url: Option<String>,
-    cloud_models_enabled: bool,
-    local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
-    hand_executors: BTreeMap<String, Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>,
-    web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
-    web_search_publication_resolver:
-        Option<Arc<dyn awaken_config_service::PluginPublicationResolver>>,
-    executable_agent_wiring: Option<executable_agent_registration::ExecutableAgentWiring>,
-    worker_authenticator:
-        Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
 }
 
 /// Router plus the cleartext local setup handoff printed by the CLI once.
@@ -669,7 +653,8 @@ async fn build_runtime_process_assembly(
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
             role,
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
-            cloud_models_enabled: deployment.cloud_models.is_enabled(),
+            model_supply: local_model_supply(deployment.cloud_models.is_enabled()),
+            brokered_catalog: None,
             local_acp_observations: deployment.local_acp_observations.clone(),
             hand_executors,
             web_search_providers: None,
@@ -775,7 +760,8 @@ async fn build_all_in_one_router_with_composition(
             mcp_bearer_token: deployment.mcp_bearer_token,
             role: config::Role::AllInOne,
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url),
-            cloud_models_enabled: deployment.cloud_models.is_enabled(),
+            model_supply: local_model_supply(deployment.cloud_models.is_enabled()),
+            brokered_catalog: None,
             local_acp_observations: deployment.local_acp_observations,
             hand_executors,
             web_search_providers: None,
@@ -945,7 +931,9 @@ async fn assemble_process_router(
     let deployment = assembly.deployment;
     let hand_executors = assembly.hand_executors;
     let cloud_api_base_url = assembly.cloud_api_base_url;
-    let cloud_models_enabled = assembly.cloud_models_enabled;
+    let model_supply = assembly.model_supply.clone();
+    let cloud_models_enabled = model_supply.cloud_models_enabled;
+    let injected_brokered_catalog = assembly.brokered_catalog.clone();
     let org_id = assembly.org_id.unwrap_or_else(local_org_id);
     let managed_rate_limiter =
         Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization(org_id.clone()));
@@ -1265,10 +1253,12 @@ async fn assemble_process_router(
             model_discovery: Arc::new(awaken_server::model_discovery::GenaiModelDiscovery::new(
                 secrets.clone(),
             )),
-            brokered_catalog: brokered_client
-                .clone()
-                .map(|client| client as Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>),
-            cloud_models_enabled,
+            brokered_catalog: injected_brokered_catalog.or_else(|| {
+                brokered_client.clone().map(|client| {
+                    client as Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>
+                })
+            }),
+            model_supply,
             vault_state: vault_state.clone(),
             agent_repository: agent_repository.clone(),
             plane,

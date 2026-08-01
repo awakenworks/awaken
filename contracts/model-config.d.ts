@@ -154,6 +154,7 @@ export interface Models {
     byok_enabled:          boolean;
     cloud_models_enabled:  boolean;
     local_catalog_enabled: boolean;
+    profile_authoring_enabled: boolean;
     [property: string]: unknown;
 }
 

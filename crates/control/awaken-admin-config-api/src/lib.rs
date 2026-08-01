@@ -50,7 +50,7 @@ pub use router::{
     ProbeStatus, ProviderConnectionStatus, ProviderConnectionSummary, ProviderConnectionView,
     PutModelAttributesRequest, ResolveProfileRequest, ResolveRequest, ResolvedCandidatesView,
     ResolvedInferenceView, SaveProviderConnectionRequest, ValidateCredentialRequest, admin_router,
-    admin_router_with_capabilities, project_executable_models,
+    admin_router_with_capabilities, project_executable_models, reconcile_brokered_catalog,
 };
 
 /// The API surface version this crate serves.

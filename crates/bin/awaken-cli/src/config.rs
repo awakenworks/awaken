@@ -29,8 +29,7 @@ mod worker_bootstrap;
 pub use deployment::{CloudModelMode, ConfigOverrides, OperatingMode, ResourcePlaneStoreBackend};
 use file_schema::FileConfig;
 use file_support::{
-    home_dir, is_postgres_url, override_port, read_management_database_url,
-    read_or_create_local_key, validate_suite_hub_url,
+    home_dir, is_postgres_url, override_port, read_management_database_url, validate_suite_hub_url,
 };
 pub use role::Role;
 pub use seal_key::SealKeySource;

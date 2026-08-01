@@ -27,6 +27,7 @@ fn management_profile_is_one_deterministic_workspace_scoped_contract() {
         [
             "awaken.runtime.management::workspace.*",
             "awaken.runtime.management::apikey.*",
+            "awaken.runtime.management::model_supply.*",
         ]
     );
     assert!(
@@ -381,8 +382,8 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     //
     // Decision table:
     // | Family                         | Method | Expected action |
-    // | provider-connections           | GET    | workspace.read  |
-    // | provider-connections           | POST   | workspace.write |
+    // | provider-connections           | GET    | model_supply.read    |
+    // | provider-connections           | POST   | model_supply.connect |
     // | publications/{fingerprint}     | GET    | workspace.read  |
     // | publications/{fingerprint}     | POST   | workspace.write |
     // | unknown config family          | any    | unmapped/deny   |
@@ -401,22 +402,25 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
             None => None,
         }
     }
-    assert_eq!(action_for(&get, "/v1/config/catalog"), Some(WORKSPACE_READ));
+    assert_eq!(
+        action_for(&get, "/v1/config/catalog"),
+        Some(MODEL_SUPPLY_READ)
+    );
     assert_eq!(
         action_for(&get, "/v1/config/capabilities"),
         Some(WORKSPACE_READ)
     );
     assert_eq!(
         action_for(&post, "/v1/config/brokered-models/refresh"),
-        Some(WORKSPACE_WRITE)
+        Some(MODEL_SUPPLY_WRITE)
     );
     assert_eq!(
         action_for(&get, "/v1/config/provider-connections"),
-        Some(WORKSPACE_READ)
+        Some(MODEL_SUPPLY_READ)
     );
     assert_eq!(
         action_for(&post, "/v1/config/provider-connections"),
-        Some(WORKSPACE_WRITE)
+        Some(MODEL_SUPPLY_CONNECT)
     );
     assert_eq!(
         action_for(&get, "/v1/config/publications/fingerprint"),
@@ -448,11 +452,11 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     );
     assert_eq!(
         action_for(&post, "/v1/config/inference/resolve"),
-        Some(WORKSPACE_READ)
+        Some(MODEL_SUPPLY_READ)
     );
     assert_eq!(
         action_for(&post, "/v1/config/inference-profiles/p/resolve"),
-        Some(WORKSPACE_READ)
+        Some(MODEL_SUPPLY_READ)
     );
     assert_eq!(action_for(&post, "/v1/vaults"), Some(APIKEY_WRITE));
     // Listing (GET) reads; the SDK `beta.vaults.list` / `credentials.list`.
@@ -507,7 +511,7 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     assert_eq!(action_for(&get, "/v1/config/unknown"), None);
     assert_eq!(
         action_for(&post, "/v1/config/catalog"),
-        Some(WORKSPACE_WRITE)
+        Some(MODEL_SUPPLY_WRITE)
     );
     assert_eq!(
         action_for(&post, "/v1/awaken/sandbox-execution-policies"),
@@ -1002,7 +1006,7 @@ async fn mg11a_authenticated_workspace_is_stamped_for_inner_layers() {
 async fn mg11b_require_approval_is_403_approval() {
     let (dir, iam) = fresh_iam();
     let bootstrap = admin_token(dir.path());
-    // Install a RequireApproval grant on `workspace.read` for the bootstrap
+    // Install a RequireApproval grant on `model_supply.read` for the bootstrap
     // principal (RequireApproval > Allow), so an otherwise-Allowed read is
     // approval-gated — which P1 cannot discharge, so it 403s.
     let (principal, _) = iam.authenticate(&bootstrap).unwrap();
@@ -1014,7 +1018,7 @@ async fn mg11b_require_approval_is_403_approval() {
         .add_grant(Grant {
             id: GrantId("ceg-approval".into()),
             subject: GrantSubject::Principal(principal),
-            action_pattern: ActionPattern(qualify_action(WORKSPACE_READ).0),
+            action_pattern: ActionPattern(qualify_action(MODEL_SUPPLY_READ).0),
             scope: ScopeRef::Global,
             effect: Effect::RequireApproval,
         });
@@ -1118,11 +1122,11 @@ fn af_covers_the_deployment_environment_and_agent_families() {
     // -- config: inference-profiles / authoring agents --
     assert_eq!(
         scoped(get.clone(), "/v1/config/inference-profiles/p1"),
-        Some(WORKSPACE_READ)
+        Some(MODEL_SUPPLY_READ)
     );
     assert_eq!(
         scoped(put.clone(), "/v1/config/inference-profiles/p1"),
-        Some(WORKSPACE_WRITE)
+        Some(MODEL_SUPPLY_WRITE)
     );
     assert_eq!(
         scoped(get.clone(), "/v1/config/agents"),

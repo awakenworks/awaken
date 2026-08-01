@@ -12,6 +12,11 @@ pub const MANAGEMENT_POLICY_NAMESPACE: &str = "awaken.runtime.management";
 /// Qualified role intended for an external product that publishes Agent
 /// configuration but must never administer API credentials.
 pub const MANAGEMENT_AGENT_PUBLISHER_ROLE: &str = "awaken.runtime.management:agent_publisher";
+/// Hosted tenant administrator: ordinary Workspace/API-key administration and
+/// read-only platform model supply. Cloud binds this role instead of the local
+/// `workspace_admin`, whose BYOK authority must remain available self-hosted.
+pub const MANAGEMENT_HOSTED_WORKSPACE_ADMIN_ROLE: &str =
+    "awaken.runtime.management:hosted_workspace_admin";
 pub const HOSTED_RUNTIME_POLICY_NAMESPACE: &str = "awaken.runtime";
 pub const HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE: &str = "awaken.runtime:workspace_admin";
 pub const HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE: &str = "awaken.runtime:agent_executor";
@@ -78,6 +83,38 @@ pub fn management_authorization_profile() -> CreateAuthorizationProfile {
                 effect: GrantEffect::Allow,
             });
         }
+        let administers_workspace = matches!(role.id.0.as_str(), "admin" | "workspace_admin");
+        if administers_workspace {
+            grants.push(GrantSnapshot {
+                id: format!(
+                    "{MANAGEMENT_POLICY_NAMESPACE}:grant:role:{}:model-admin",
+                    role.id.0
+                ),
+                subject: GrantSubjectRef::Role {
+                    role_id: qualify_role(&role.id.0).0,
+                },
+                action_pattern: qualify_action("model_supply.*").0,
+                scope: ScopeRef::Global,
+                effect: GrantEffect::Allow,
+            });
+        } else if role
+            .action_patterns
+            .iter()
+            .any(|pattern| pattern.0 == "workspace.read" || pattern.0 == "workspace.*")
+        {
+            grants.push(GrantSnapshot {
+                id: format!(
+                    "{MANAGEMENT_POLICY_NAMESPACE}:grant:role:{}:model-read",
+                    role.id.0
+                ),
+                subject: GrantSubjectRef::Role {
+                    role_id: qualify_role(&role.id.0).0,
+                },
+                action_pattern: qualify_action("model_supply.read").0,
+                scope: ScopeRef::Global,
+                effect: GrantEffect::Allow,
+            });
+        }
     }
     grants.push(GrantSnapshot {
         id: format!("{MANAGEMENT_POLICY_NAMESPACE}:grant:role:agent_publisher"),
@@ -88,18 +125,32 @@ pub fn management_authorization_profile() -> CreateAuthorizationProfile {
         scope: ScopeRef::Global,
         effect: GrantEffect::Allow,
     });
+    for (index, pattern) in ["workspace.*", "apikey.*", "model_supply.read"]
+        .into_iter()
+        .enumerate()
+    {
+        grants.push(GrantSnapshot {
+            id: format!("{MANAGEMENT_POLICY_NAMESPACE}:grant:role:hosted_workspace_admin:{index}"),
+            subject: GrantSubjectRef::Role {
+                role_id: MANAGEMENT_HOSTED_WORKSPACE_ADMIN_ROLE.to_owned(),
+            },
+            action_pattern: qualify_action(pattern).0,
+            scope: ScopeRef::Global,
+            effect: GrantEffect::Allow,
+        });
+    }
 
     CreateAuthorizationProfile {
         namespace: NamespaceId(MANAGEMENT_POLICY_NAMESPACE.to_owned()),
         document: AuthorizationProfileDocument {
             resource_model: ResourceModelRegistration {
-                actions: ["workspace.*", "apikey.*"]
+                actions: ["workspace.*", "apikey.*", "model_supply.*"]
                     .into_iter()
                     .map(qualify_action)
                     .collect(),
                 ..ResourceModelRegistration::default()
             },
-            action_scope_rules: ["workspace.*", "apikey.*"]
+            action_scope_rules: ["workspace.*", "apikey.*", "model_supply.*"]
                 .into_iter()
                 .map(|pattern| ActionScopeRule {
                     action_pattern: qualify_action(pattern).0,

@@ -14,6 +14,7 @@ import {
 // T7 unknown capabilities -> E7 no cloud action while loading.
 // T8 cloud models off (regardless of Cloud login) -> E8 local/BYOK-only UI.
 // T9 cloud models on + unauthenticated/authenticated -> E9 sign-in-required/ready.
+// T10 hosted managed supply -> E10 read-only managed UI; no refresh or BYOK form.
 
 const openai: ProviderDriverDescriptor = {
   provider_kind: "openai",
@@ -85,6 +86,7 @@ describe("cloud model capability state", () => {
       local_catalog_enabled: true,
       byok_enabled: true,
       cloud_models_enabled: cloudModels,
+      profile_authoring_enabled: true,
     },
   });
 
@@ -97,5 +99,13 @@ describe("cloud model capability state", () => {
   it("requires both the Cloud-model switch and an authenticated session", () => {
     expect(cloudModelUiState(capabilities(true, false))).toBe("sign_in_required");
     expect(cloudModelUiState(capabilities(true, true))).toBe("ready");
+  });
+
+  it("projects hosted supply independently from an interactive Cloud login", () => {
+    const hosted = capabilities(true, false);
+    hosted.models.local_catalog_enabled = false;
+    hosted.models.byok_enabled = false;
+    hosted.models.profile_authoring_enabled = false;
+    expect(cloudModelUiState(hosted)).toBe("managed");
   });
 });
