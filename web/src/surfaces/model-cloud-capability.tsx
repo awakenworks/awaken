@@ -4,6 +4,21 @@ import { useApp } from "../lib/app-state";
 
 export type CloudModelUiState = "loading" | "local" | "sign_in_required" | "ready" | "managed";
 
+export interface ModelCatalogPresentation {
+  showSupplyInfrastructure: boolean;
+  allowSessionTest: boolean;
+}
+
+/** Hosted supply is a product catalog, not a provider-configuration surface.
+ * The same capability projection controls both disclosure and actions. */
+export function modelCatalogPresentation(state: CloudModelUiState): ModelCatalogPresentation {
+  const managed = state === "managed";
+  return {
+    showSupplyInfrastructure: !managed,
+    allowSessionTest: !managed,
+  };
+}
+
 export function cloudModelUiState(
   capabilities: ConfigCapabilitiesView | undefined,
 ): CloudModelUiState {
@@ -59,8 +74,8 @@ export function CloudModelNotice({ state }: { state: CloudModelUiState }) {
           )
         : state === "managed"
           ? app.t(
-              "Models, Provider routes, and credentials are managed by Awaken Cloud. Choose a Provider-native model; no Provider key is required.",
-              "模型、供应商路由和凭证由 Awaken Cloud 托管。请选择原厂模型，无需提供供应商密钥。",
+              "Every available original model is listed below. Awaken Cloud manages connectivity and credentials; no setup is required.",
+              "下方列出全部可用的原厂模型。连接与凭证由 Awaken Cloud 管理，无需配置。",
             )
           : null;
   if (!message) return null;
