@@ -4748,9 +4748,11 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
     ];
 
     for (rule, plugin_selected, binding_id, expected_index, expected_error) in cases {
-        let plugin_ids = plugin_selected
-            .then(|| vec![awaken_ext_memory::MEMORY_PLUGIN_ID.to_string()])
-            .unwrap_or_default();
+        let plugin_ids = if plugin_selected {
+            vec![awaken_ext_memory::MEMORY_PLUGIN_ID.to_string()]
+        } else {
+            Vec::new()
+        };
         let plugin_config = if plugin_selected {
             std::collections::BTreeMap::from([(
                 awaken_ext_memory::MEMORY_PLUGIN_ID.to_string(),

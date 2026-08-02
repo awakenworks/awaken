@@ -285,6 +285,69 @@ async fn standalone_control_uses_the_authored_capture_ceiling() {
 }
 
 #[cfg(test)]
+#[tokio::test]
+async fn standalone_control_projects_the_exact_model_supply_posture() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use tower::ServiceExt as _;
+
+    // Cause/effect graph: C1 posture={local, hosted}; C2 both use the same
+    // canonical Control component. Effects: E1 local exposes catalog/BYOK/profile
+    // authoring without Cloud models; E2 hosted exposes Cloud models and denies
+    // those three authoring capabilities. Constraint: ProcessAssemblyOptions has
+    // one ModelSupplyCapabilityView source of truth and no parallel mode flag.
+    // Decision table: R1 C1=local+C2 -> E1; R2 C1=hosted+C2 -> E2.
+    let cases = [
+        (
+            "R1",
+            awaken_admin_config_api::ModelSupplyCapabilityView::default(),
+        ),
+        (
+            "R2",
+            awaken_admin_config_api::ModelSupplyCapabilityView {
+                local_catalog_enabled: false,
+                byok_enabled: false,
+                cloud_models_enabled: true,
+                profile_authoring_enabled: false,
+            },
+        ),
+    ];
+
+    for (rule, expected) in cases {
+        let app = assemble_control_process_router(
+            in_memory_control_stores(),
+            None,
+            None,
+            None,
+            PublicationModelComposition::PublishedProviders,
+            ProcessAssemblyOptions {
+                role: config::Role::Control,
+                model_supply: expected.clone(),
+                ..Default::default()
+            },
+        )
+        .await
+        .router;
+        let response = app
+            .oneshot(
+                Request::get("/v1/config/capabilities")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(
+            body["models"],
+            serde_json::to_value(expected).unwrap(),
+            "{rule}"
+        );
+    }
+}
+
+#[cfg(test)]
 fn test_coordinator_content_eraser() -> Arc<dyn awaken_runtime_contract::ContentEraser> {
     Arc::new(awaken_captured_content_store::InMemoryCapturedContentStore::new())
 }

@@ -1,0 +1,26 @@
+pub mod awaken_environment_application
+pub enum awaken_environment_application::EnvironmentApplicationError
+pub awaken_environment_application::EnvironmentApplicationError::BuiltinImmutable
+pub awaken_environment_application::EnvironmentApplicationError::Create(awaken_environment_contract::CreateEnvironmentError)
+pub awaken_environment_application::EnvironmentApplicationError::NotFound
+pub awaken_environment_application::EnvironmentApplicationError::Policy(alloc::string::String)
+pub awaken_environment_application::EnvironmentApplicationError::Registration(awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError)
+pub struct awaken_environment_application::EnvironmentApplication
+impl awaken_environment_application::EnvironmentApplication
+pub async fn awaken_environment_application::EnvironmentApplication::archive(&self, &str) -> core::result::Result<awaken_environment_contract::EnvItem, awaken_environment_application::EnvironmentApplicationError>
+pub async fn awaken_environment_application::EnvironmentApplication::bind_sandbox_policy(&self, &str, awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyRef) -> core::result::Result<awaken_environment_contract::EnvItem, awaken_environment_application::EnvironmentApplicationError>
+pub async fn awaken_environment_application::EnvironmentApplication::create(&self, awaken_environment_contract::CreateEnvironmentCommand) -> core::result::Result<awaken_environment_contract::EnvItem, awaken_environment_application::EnvironmentApplicationError>
+pub async fn awaken_environment_application::EnvironmentApplication::delete(&self, &str) -> core::result::Result<(), awaken_environment_application::EnvironmentApplicationError>
+pub async fn awaken_environment_application::EnvironmentApplication::get(&self, &str) -> core::option::Option<awaken_environment_contract::EnvItem>
+pub async fn awaken_environment_application::EnvironmentApplication::list_active(&self) -> alloc::vec::Vec<awaken_environment_contract::EnvItem>
+pub fn awaken_environment_application::EnvironmentApplication::new(alloc::sync::Arc<dyn awaken_environment_contract::EnvRegistry>, alloc::sync::Arc<dyn awaken_executable_environment_contract::ExecutableEnvironmentRegistrar>, core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>>) -> Self
+pub async fn awaken_environment_application::EnvironmentApplication::reconcile_registrations(&self) -> core::result::Result<u64, awaken_environment_application::EnvironmentApplicationError>
+pub async fn awaken_environment_application::EnvironmentApplication::update(&self, &str, awaken_environment_contract::EnvUpdate) -> core::result::Result<awaken_environment_contract::EnvItem, awaken_environment_application::EnvironmentApplicationError>
+pub fn awaken_environment_application::EnvironmentApplication::with_sandbox_policies(&self, alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>) -> Self
+pub struct awaken_environment_application::EnvironmentApplicationAuthor
+impl awaken_environment_application::EnvironmentApplicationAuthor
+pub fn awaken_environment_application::EnvironmentApplicationAuthor::new(alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>) -> Self
+impl awaken_admin_assistant::EnvironmentAuthor for awaken_environment_application::EnvironmentApplicationAuthor
+pub fn awaken_environment_application::EnvironmentApplicationAuthor::create<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_admin_assistant::EnvironmentDraft) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_environment_application::builtin_local_environment() -> awaken_environment_contract::EnvItem
+pub fn awaken_environment_application::default_environment_registration() -> awaken_executable_environment_contract::ExecutableEnvironmentRegistration

@@ -162,6 +162,7 @@ pub fn awaken_ext_memory::localfs::sanitize_stem(&str) -> alloc::string::String
 pub mod awaken_ext_memory::plugin
 pub struct awaken_ext_memory::plugin::MemoryConfig
 pub awaken_ext_memory::plugin::MemoryConfig::agent_id: core::option::Option<alloc::string::String>
+pub awaken_ext_memory::plugin::MemoryConfig::binding_id: core::option::Option<alloc::string::String>
 pub awaken_ext_memory::plugin::MemoryConfig::extraction_enabled: bool
 pub awaken_ext_memory::plugin::MemoryConfig::extraction_prompt: core::option::Option<alloc::string::String>
 pub awaken_ext_memory::plugin::MemoryConfig::instructions: core::option::Option<alloc::string::String>
@@ -251,6 +252,7 @@ pub awaken_ext_memory::Entry::modified: std::time::SystemTime
 pub awaken_ext_memory::Entry::path: std::path::PathBuf
 pub struct awaken_ext_memory::MemoryConfig
 pub awaken_ext_memory::MemoryConfig::agent_id: core::option::Option<alloc::string::String>
+pub awaken_ext_memory::MemoryConfig::binding_id: core::option::Option<alloc::string::String>
 pub awaken_ext_memory::MemoryConfig::extraction_enabled: bool
 pub awaken_ext_memory::MemoryConfig::extraction_prompt: core::option::Option<alloc::string::String>
 pub awaken_ext_memory::MemoryConfig::instructions: core::option::Option<alloc::string::String>
