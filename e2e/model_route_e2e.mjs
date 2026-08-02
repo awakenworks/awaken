@@ -11,6 +11,11 @@ import Anthropic from '@anthropic-ai/sdk';
 import { withScenarioServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
+const agentWithModel = (model) => ({
+  id: 'assistant',
+  type: 'agent_with_overrides',
+  model,
+});
 
 async function latestAgentText(client, sessionId) {
   const events = [];
@@ -33,9 +38,15 @@ async function main() {
     await withScenarioServer('model-route', 'label', 38160, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
-      // R1/R2/R6: a session bound to `fast` resolves the fast executor and echoes it.
+      // Cause-effect graph / decision table for the official model axis:
+      // R1 override object model=fast -> echo fast and route the turn to fast;
+      // R2 override object model=slow -> echo/route slow independently;
+      // R3 model omitted -> inherit the host default;
+      // R4 user.message model=slow after a fast turn -> rebind only that turn.
+      // Metadata is intentionally absent: it is descriptive data, never an
+      // execution authority.
       const fast = await client.beta.sessions.create({
-        agent: 'assistant', metadata: { 'awaken.model': 'fast' },
+        agent: agentWithModel('fast'),
         environment_id: 'env_local',
         betas: BETAS,
       });
@@ -47,7 +58,7 @@ async function main() {
 
       // A second session bound to `slow` resolves a distinct executor.
       const slow = await client.beta.sessions.create({
-        agent: 'assistant', metadata: { 'awaken.model': 'slow' },
+        agent: agentWithModel('slow'),
         environment_id: 'env_local',
         betas: BETAS,
       });
@@ -69,7 +80,7 @@ async function main() {
 
       // R5: a per-turn `model` override switches the thread mid-conversation.
       const sw = await client.beta.sessions.create({
-        agent: 'assistant', metadata: { 'awaken.model': 'fast' },
+        agent: agentWithModel('fast'),
         environment_id: 'env_local',
         betas: BETAS,
       });

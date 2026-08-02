@@ -27,7 +27,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv, hasEndTurn } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38217);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -120,7 +120,7 @@ async function driveRepoSession(bare, checkout) {
     await sleep(400);
     evs = await listEvents(session.id);
     await approveGated(session.id, evs, approved);
-    if (evs.some((e) => e.type === 'agent.message')) break;
+    if (hasEndTurn(evs)) break;
   }
   await listArtifacts(session.id);
   assert.equal(

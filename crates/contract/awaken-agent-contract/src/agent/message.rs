@@ -10,10 +10,26 @@ pub struct Id(pub String);
 /// `format!` templates scattered across the engine (each kind is distinct so ids
 /// never collide within a run).
 impl Id {
+    /// Prefix shared by committed assistant turns for `run`.
+    #[must_use]
+    pub fn assistant_prefix(run: &crate::agent::run::Id) -> String {
+        format!("{}-assistant-", run.0)
+    }
+
     /// A committed assistant turn: `{run}-assistant-{step}`.
     #[must_use]
     pub fn assistant(run: &crate::agent::run::Id, step: usize) -> Self {
-        Self(format!("{}-assistant-{step}", run.0))
+        Self(format!("{}{step}", Self::assistant_prefix(run)))
+    }
+
+    /// Recover the exact step of a full assistant turn for `run`. Truncated
+    /// partials deliberately return `None`; they do not consume another step.
+    #[must_use]
+    pub fn assistant_step_of(&self, run: &crate::agent::run::Id) -> Option<usize> {
+        self.0
+            .strip_prefix(&Self::assistant_prefix(run))?
+            .parse()
+            .ok()
     }
 
     /// The partial text of a `MaxTokens`-truncated turn: `{run}-assistant-{step}-truncated-{nth}`.
@@ -110,6 +126,14 @@ mod tests {
     fn id_minting_schemes_are_distinct_and_well_formed() {
         let run = RunId("r".into());
         assert_eq!(Id::assistant(&run, 2).0, "r-assistant-2");
+        assert_eq!(
+            Id::assistant_step_of(&Id::assistant(&run, 2), &run),
+            Some(2)
+        );
+        assert_eq!(
+            Id::assistant_step_of(&Id::assistant_truncated(&run, 2, 1), &run),
+            None
+        );
         assert_eq!(
             Id::assistant_truncated(&run, 2, 1).0,
             "r-assistant-2-truncated-1"

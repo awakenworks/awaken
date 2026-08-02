@@ -2,7 +2,7 @@
 //! `glob`, `grep`, and `bash` run directly in the runtime process and render results as text.
 //! Their ids match the descriptors in [`crate::builtin_tools`], so a run that
 //! makes a descriptor model-visible can register the matching implementation.
-//! The network tools `web_fetch`/`web_search` live in [`crate::web`].
+//! Network fetch and the separately configured search plugin live in [`crate::web`].
 
 use std::sync::Arc;
 
@@ -457,7 +457,8 @@ impl Drop for ProcessGroupGuard {
 }
 
 /// The local hand tools, erased for `Runtime::with_tool` registration. The
-/// network tools `web_fetch` and `web_search` are added by `web_hand_tools`.
+/// network tool `web_fetch` is added by `web_hand_tools`; `web_search` is owned
+/// exclusively by the separately configured plugin path.
 pub fn executable_hand_tools() -> Vec<Arc<dyn RawTool>> {
     vec![
         erase_for(ReadTool, ToolExecutionTarget::Sandbox),

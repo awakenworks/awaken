@@ -40,6 +40,7 @@ import {
   type McpServer,
   replaceMcpServers,
   responseEtag,
+  retrieveSessionWithEtag,
   sendManagedMessage,
 } from './fixtures/managed_mcp_session.ts';
 
@@ -156,17 +157,22 @@ async function main(): Promise<void> {
       assert.deepEqual((await client.beta.sessions.retrieve(sessionId, { betas: BETAS })).agent.mcp_servers, [serverB]);
       pass('H3/H4 conflicts leave B active and perform no downgrade');
 
+      // H5's `current` cause is a fresh authority read: turns after H1 advance
+      // the Session root, so the mutation response ETag is intentionally stale.
+      const currentBeforeRemove = await retrieveSessionWithEtag(client, sessionId, BETAS);
       const removed = await update(client, sessionId, [], {
         'Idempotency-Key': 'remove-b',
-        'If-Match': replacedEtag,
+        'If-Match': currentBeforeRemove.etag,
       });
       const removedEtag = responseEtag(removed.response);
+      assert.notEqual(removedEtag, currentBeforeRemove.etag, 'H5 advances the root revision');
       assert.deepEqual(removed.data.agent.mcp_servers, [], 'H5 projects the drained set');
       pass('H5 remove drains B and projects an empty active set');
 
+      const currentBeforeAdd = await retrieveSessionWithEtag(client, sessionId, BETAS);
       const added = await update(client, sessionId, [serverA], {
         'Idempotency-Key': 'add-a-again',
-        'If-Match': removedEtag,
+        'If-Match': currentBeforeAdd.etag,
       });
       assert.deepEqual(added.data.agent.mcp_servers, [serverA], 'H6 projects A generation N+1');
       await sendManagedMessage(client, sessionId, 'add 8 1', BETAS);
@@ -178,9 +184,10 @@ async function main(): Promise<void> {
       const beforeConvergedEvents = (await events(client, sessionId)).filter(
         (event) => event.type === 'session.updated',
       ).length;
+      const currentBeforeConverged = await retrieveSessionWithEtag(client, sessionId, BETAS);
       const converged = await update(client, sessionId, [serverA], {
         'Idempotency-Key': 'same-a-new-command',
-        'If-Match': addedEtag,
+        'If-Match': currentBeforeConverged.etag,
       });
       const convergedEtag = responseEtag(converged.response);
       assert.notEqual(convergedEtag, addedEtag, 'H7 atomically records the new command receipt');
@@ -193,10 +200,11 @@ async function main(): Promise<void> {
       pass('H7 an already-converged desired set records only its command receipt');
 
       const duplicateTarget = { name: 'calc-alias', type: 'url' as const, url: fixtureA.url };
+      const currentBeforeInvalid = await retrieveSessionWithEtag(client, sessionId, BETAS);
       await assert.rejects(
         update(client, sessionId, [serverA, duplicateTarget], {
           'Idempotency-Key': 'duplicate-canonical-target',
-          'If-Match': convergedEtag,
+          'If-Match': currentBeforeInvalid.etag,
         }),
         (error: any) => error?.status === 400,
         'H8 rejects two logical names for one canonical MCP target',
@@ -218,7 +226,7 @@ async function main(): Promise<void> {
         await assert.rejects(
           update(client, sessionId, desired, {
             'Idempotency-Key': `invalid-${rule.toLowerCase()}`,
-            'If-Match': convergedEtag,
+            'If-Match': currentBeforeInvalid.etag,
           }),
           (error: any) => error?.status === 400,
           `${rule} rejects malformed desired MCP state`,

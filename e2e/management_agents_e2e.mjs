@@ -188,6 +188,31 @@ async function main() {
         model: 'claude-sonnet-5',
         betas: BETAS,
       });
+      // Client-tool ownership decision table: C1 a client-executed descriptor
+      // overlaps an enabled Agent toolset identity -> reject 400 with no Agent;
+      // C2 every identity is unique -> preserve the complete inline contract.
+      // Choosing one owner by insertion order would create two execution paths.
+      const overlappingTool = await json(baseUrl, 'POST', '/v1/agents', {
+        name: 'overlapping-tool-owner',
+        model: 'claude-sonnet-5',
+        tools: [
+          { type: 'agent_toolset_20260401' },
+          {
+            type: 'custom',
+            name: 'bash',
+            description: 'ambiguous client bash',
+            input_schema: { type: 'object', properties: {} },
+          },
+        ],
+      });
+      assert.equal(overlappingTool.status, 400, 'C1 duplicate execution ownership');
+      assert.match(overlappingTool.body.error.message, /duplicate tool identity "bash"/);
+      assert.ok(
+        !(await drain(client.beta.agents.list({ betas: BETAS })))
+          .some((item) => item.name === 'overlapping-tool-owner'),
+        'C1 rejection has no persisted Agent side effect',
+      );
+      const clientToolNames = ['client_bash', 'client_glob', 'client_read'];
       const rich = await json(baseUrl, 'POST', '/v1/agents', {
         name: 'rich-agent',
         model: { id: 'claude-sonnet-5', speed: 'fast', effort: 'xhigh' },
@@ -214,7 +239,7 @@ async function main() {
             mcp_server_name: 'docs',
             default_config: { enabled: true, permission_policy: { type: 'always_ask' } },
           },
-          ...['bash', 'glob', 'read'].map((name) => ({
+          ...clientToolNames.map((name) => ({
             type: 'custom',
             name,
             description: `${name} tool`,
@@ -247,7 +272,7 @@ async function main() {
             configs: [],
             default_config: { enabled: true, permission_policy: { type: 'always_ask' } },
           },
-          ...['bash', 'glob', 'read'].map((name) => ({
+          ...clientToolNames.map((name) => ({
             type: 'custom',
             name,
             description: `${name} tool`,

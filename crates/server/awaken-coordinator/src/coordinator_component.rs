@@ -37,7 +37,10 @@ pub struct CoordinatorDependencies {
     pub model_directory: Arc<dyn ModelDirectory>,
     pub dream_process_store: Arc<dyn DreamProcessStore>,
     pub worker_authenticator: Arc<dyn WorkerRequestAuthenticator>,
-    pub deployment_repository: Arc<dyn DeploymentRepository>,
+    /// The one restored Deployment aggregate. The process composition creates
+    /// it before sibling components so an AllInOne Control Agent archive can
+    /// invoke the exact same state mounted and scheduled by Coordinator.
+    pub deployment_state: Arc<DeploymentState>,
     pub executable_agents: Arc<dyn ExecutableAgentRegistrationSource>,
     pub rate_limiter: Arc<ManagedRateLimiter>,
     pub environments: Arc<EnvironmentExecutionState>,
@@ -62,7 +65,7 @@ pub enum CoordinatorBuildError {
     DeploymentRestore(String),
 }
 
-async fn restore_deployment_state(
+pub async fn restore_deployment_state(
     repository: Arc<dyn DeploymentRepository>,
 ) -> Result<Arc<DeploymentState>, CoordinatorBuildError> {
     DeploymentState::with_repository(repository)
@@ -84,7 +87,7 @@ pub async fn build_coordinator_component(
         model_directory,
         dream_process_store,
         worker_authenticator,
-        deployment_repository,
+        deployment_state,
         executable_agents,
         rate_limiter,
         environments,
@@ -93,7 +96,6 @@ pub async fn build_coordinator_component(
         registration_router,
     } = dependencies;
 
-    let deployment_state = restore_deployment_state(deployment_repository).await?;
     deployment_state.bind_rate_limiter(rate_limiter);
     deployment_state.bind_executable_agents(executable_agents);
 

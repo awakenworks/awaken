@@ -1,0 +1,199 @@
+pub mod awaken_model_catalog
+pub mod awaken_model_catalog::repo
+pub enum awaken_model_catalog::repo::RepoError
+pub awaken_model_catalog::repo::RepoError::EndpointNotFound(alloc::string::String)
+pub awaken_model_catalog::repo::RepoError::Invariant(awaken_model_catalog::CatalogError)
+pub awaken_model_catalog::repo::RepoError::ProviderNotFound(alloc::string::String)
+pub struct awaken_model_catalog::repo::InMemoryCatalogRepo
+impl awaken_model_catalog::repo::InMemoryCatalogRepo
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::new() -> Self
+impl awaken_model_catalog::repo::CatalogRepo for awaken_model_catalog::repo::InMemoryCatalogRepo
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::get_endpoint<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_model_catalog::ProtocolEndpointId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::ProtocolEndpoint, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::get_provider<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_model_catalog::ProviderId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::Provider, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::put_discovered_connection<'life0, 'async_trait>(&'life0 self, awaken_model_catalog::Provider, awaken_model_catalog::ProtocolEndpoint, alloc::vec::Vec<awaken_model_catalog::DiscoveredModel>, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::CatalogSyncResult, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::put_endpoint<'life0, 'async_trait>(&'life0 self, awaken_model_catalog::ProtocolEndpoint) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::put_model_attributes<'life0, 'async_trait>(&'life0 self, alloc::string::String, awaken_model_catalog::ModelAttributes) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::put_offering<'life0, 'async_trait>(&'life0 self, awaken_model_catalog::Offering) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::put_provider<'life0, 'async_trait>(&'life0 self, awaken_model_catalog::Provider) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::reconcile_brokered_projection<'life0, 'async_trait>(&'life0 self, awaken_model_catalog::BrokeredCatalogProjection) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::CatalogSyncResult, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::reconcile_discovered_models<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_model_catalog::ProtocolEndpointId, alloc::vec::Vec<awaken_model_catalog::DiscoveredModel>, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::CatalogSyncResult, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::snapshot<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::ProviderCatalog, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl core::default::Default for awaken_model_catalog::repo::InMemoryCatalogRepo
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::default() -> Self
+pub trait awaken_model_catalog::repo::CatalogRepo: core::marker::Send + core::marker::Sync
+pub fn awaken_model_catalog::repo::CatalogRepo::get_endpoint<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_model_catalog::ProtocolEndpointId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::ProtocolEndpoint, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_model_catalog::repo::CatalogRepo::get_provider<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_model_catalog::ProviderId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::Provider, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_model_catalog::repo::CatalogRepo::put_discovered_connection<'life0, 'async_trait>(&'life0 self, awaken_model_catalog::Provider, awaken_model_catalog::ProtocolEndpoint, alloc::vec::Vec<awaken_model_catalog::DiscoveredModel>, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::CatalogSyncResult, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::CatalogRepo::put_endpoint<'life0, 'async_trait>(&'life0 self, awaken_model_catalog::ProtocolEndpoint) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::CatalogRepo::put_model_attributes<'life0, 'async_trait>(&'life0 self, alloc::string::String, awaken_model_catalog::ModelAttributes) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::CatalogRepo::put_offering<'life0, 'async_trait>(&'life0 self, awaken_model_catalog::Offering) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::CatalogRepo::put_provider<'life0, 'async_trait>(&'life0 self, awaken_model_catalog::Provider) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::CatalogRepo::reconcile_brokered_projection<'life0, 'async_trait>(&'life0 self, awaken_model_catalog::BrokeredCatalogProjection) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::CatalogSyncResult, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::CatalogRepo::reconcile_discovered_models<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_model_catalog::ProtocolEndpointId, alloc::vec::Vec<awaken_model_catalog::DiscoveredModel>, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::CatalogSyncResult, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_model_catalog::repo::CatalogRepo::snapshot<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::ProviderCatalog, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_model_catalog::repo::CatalogRepo for awaken_model_catalog::repo::InMemoryCatalogRepo
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::get_endpoint<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_model_catalog::ProtocolEndpointId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::ProtocolEndpoint, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::get_provider<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_model_catalog::ProviderId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::Provider, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::put_discovered_connection<'life0, 'async_trait>(&'life0 self, awaken_model_catalog::Provider, awaken_model_catalog::ProtocolEndpoint, alloc::vec::Vec<awaken_model_catalog::DiscoveredModel>, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::CatalogSyncResult, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::put_endpoint<'life0, 'async_trait>(&'life0 self, awaken_model_catalog::ProtocolEndpoint) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::put_model_attributes<'life0, 'async_trait>(&'life0 self, alloc::string::String, awaken_model_catalog::ModelAttributes) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::put_offering<'life0, 'async_trait>(&'life0 self, awaken_model_catalog::Offering) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::put_provider<'life0, 'async_trait>(&'life0 self, awaken_model_catalog::Provider) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::reconcile_brokered_projection<'life0, 'async_trait>(&'life0 self, awaken_model_catalog::BrokeredCatalogProjection) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::CatalogSyncResult, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::reconcile_discovered_models<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_model_catalog::ProtocolEndpointId, alloc::vec::Vec<awaken_model_catalog::DiscoveredModel>, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::CatalogSyncResult, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_model_catalog::repo::InMemoryCatalogRepo::snapshot<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::ProviderCatalog, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub mod awaken_model_catalog::schema
+pub const awaken_model_catalog::schema::BUNDLE_ID: &str
+pub fn awaken_model_catalog::schema::catalog_bundle() -> core::result::Result<awaken_scoped_migration::MigrationBundle, awaken_scoped_migration::MigrationError>
+pub enum awaken_model_catalog::ApiDialect
+pub awaken_model_catalog::ApiDialect::AnthropicMessages
+pub awaken_model_catalog::ApiDialect::Gemini
+pub awaken_model_catalog::ApiDialect::OpenAiChat
+pub awaken_model_catalog::ApiDialect::OpenAiResponses
+pub awaken_model_catalog::ApiDialect::VertexGemini
+impl awaken_model_catalog::ApiDialect
+pub fn awaken_model_catalog::ApiDialect::adapter_kind(self) -> &'static str
+pub const fn awaken_model_catalog::ApiDialect::as_str(self) -> &'static str
+pub enum awaken_model_catalog::CatalogError
+pub awaken_model_catalog::CatalogError::DiscoveryEndpointUnknown(alloc::string::String)
+pub awaken_model_catalog::CatalogError::EmptyDiscoveredModelId
+pub awaken_model_catalog::CatalogError::EndpointProviderUnknown(alloc::string::String, alloc::string::String)
+pub awaken_model_catalog::CatalogError::InvalidBrokeredProjection(alloc::string::String)
+pub awaken_model_catalog::CatalogError::InvalidModelAttributes
+pub awaken_model_catalog::CatalogError::InvalidModelAttributes::model: alloc::string::String
+pub awaken_model_catalog::CatalogError::InvalidModelAttributes::reason: alloc::string::String
+pub awaken_model_catalog::CatalogError::OfferingDialectMismatch
+pub awaken_model_catalog::CatalogError::OfferingDialectMismatch::endpoint: awaken_model_catalog::ApiDialect
+pub awaken_model_catalog::CatalogError::OfferingDialectMismatch::model: alloc::string::String
+pub awaken_model_catalog::CatalogError::OfferingDialectMismatch::offering: awaken_model_catalog::ApiDialect
+pub awaken_model_catalog::CatalogError::OfferingEndpointUnknown
+pub awaken_model_catalog::CatalogError::OfferingEndpointUnknown::endpoint: alloc::string::String
+pub awaken_model_catalog::CatalogError::OfferingEndpointUnknown::model: alloc::string::String
+pub awaken_model_catalog::CatalogError::OfferingProviderMismatch
+pub awaken_model_catalog::CatalogError::OfferingProviderMismatch::endpoint: alloc::string::String
+pub awaken_model_catalog::CatalogError::OfferingProviderMismatch::model: alloc::string::String
+pub awaken_model_catalog::CatalogError::OfferingProviderMismatch::offering: alloc::string::String
+pub awaken_model_catalog::CatalogError::Storage(alloc::string::String)
+pub enum awaken_model_catalog::ModelAttributeSource
+pub awaken_model_catalog::ModelAttributeSource::Brokered
+pub awaken_model_catalog::ModelAttributeSource::Curated
+pub awaken_model_catalog::ModelAttributeSource::Manual
+pub awaken_model_catalog::ModelAttributeSource::ProviderApi
+pub enum awaken_model_catalog::OfferingSource
+pub awaken_model_catalog::OfferingSource::Brokered
+pub awaken_model_catalog::OfferingSource::Manual
+pub awaken_model_catalog::OfferingSource::ProviderApi
+pub enum awaken_model_catalog::OfferingStatus
+pub awaken_model_catalog::OfferingStatus::Active
+pub awaken_model_catalog::OfferingStatus::Unavailable
+pub enum awaken_model_catalog::ProviderAuthMethod
+pub awaken_model_catalog::ProviderAuthMethod::ApiKey
+pub awaken_model_catalog::ProviderAuthMethod::OAuth
+pub enum awaken_model_catalog::ProviderFieldKind
+pub awaken_model_catalog::ProviderFieldKind::Secret
+pub awaken_model_catalog::ProviderFieldKind::Text
+pub awaken_model_catalog::ProviderFieldKind::Url
+pub struct awaken_model_catalog::BrokeredCatalogProjection
+pub awaken_model_catalog::BrokeredCatalogProjection::broker_id: alloc::string::String
+pub awaken_model_catalog::BrokeredCatalogProjection::control_base_url: alloc::string::String
+pub awaken_model_catalog::BrokeredCatalogProjection::models: alloc::vec::Vec<awaken_model_catalog::BrokeredModelProjection>
+pub awaken_model_catalog::BrokeredCatalogProjection::observed_at_unix_ms: u64
+pub struct awaken_model_catalog::BrokeredModelProjection
+pub awaken_model_catalog::BrokeredModelProjection::context_window: core::option::Option<u32>
+pub awaken_model_catalog::BrokeredModelProjection::dialect: awaken_model_catalog::ApiDialect
+pub awaken_model_catalog::BrokeredModelProjection::max_output_tokens: core::option::Option<u32>
+pub awaken_model_catalog::BrokeredModelProjection::model_id: alloc::string::String
+pub awaken_model_catalog::BrokeredModelProjection::provider_id: alloc::string::String
+pub awaken_model_catalog::BrokeredModelProjection::publication_revision: u64
+pub struct awaken_model_catalog::CatalogSyncResult
+pub awaken_model_catalog::CatalogSyncResult::activated: usize
+pub awaken_model_catalog::CatalogSyncResult::discovered: usize
+pub awaken_model_catalog::CatalogSyncResult::marked_unavailable: usize
+pub awaken_model_catalog::CatalogSyncResult::observed_at_unix_ms: u64
+pub struct awaken_model_catalog::DefaultProtocolEndpoint
+pub awaken_model_catalog::DefaultProtocolEndpoint::base_url: alloc::string::String
+pub awaken_model_catalog::DefaultProtocolEndpoint::dialect: awaken_model_catalog::ApiDialect
+pub awaken_model_catalog::DefaultProtocolEndpoint::model_discovery_base_url: core::option::Option<alloc::string::String>
+pub struct awaken_model_catalog::DiscoveredModel
+pub awaken_model_catalog::DiscoveredModel::model_id: alloc::string::String
+pub awaken_model_catalog::DiscoveredModel::upstream_model: core::option::Option<alloc::string::String>
+pub struct awaken_model_catalog::ModelAttributeProvenance
+pub awaken_model_catalog::ModelAttributeProvenance::observed_at_unix_ms: u64
+pub awaken_model_catalog::ModelAttributeProvenance::source: awaken_model_catalog::ModelAttributeSource
+pub struct awaken_model_catalog::ModelAttributes
+pub awaken_model_catalog::ModelAttributes::context_window: core::option::Option<u32>
+pub awaken_model_catalog::ModelAttributes::max_output_tokens: core::option::Option<u32>
+pub awaken_model_catalog::ModelAttributes::provenance: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_model_catalog::ModelAttributeProvenance>
+impl awaken_model_catalog::ModelAttributes
+pub fn awaken_model_catalog::ModelAttributes::stamped(self, awaken_model_catalog::ModelAttributeSource, u64) -> Self
+pub struct awaken_model_catalog::Offering
+pub awaken_model_catalog::Offering::dialect: awaken_model_catalog::ApiDialect
+pub awaken_model_catalog::Offering::last_seen_at_unix_ms: core::option::Option<u64>
+pub awaken_model_catalog::Offering::model_id: alloc::string::String
+pub awaken_model_catalog::Offering::protocol_endpoint_id: awaken_model_catalog::ProtocolEndpointId
+pub awaken_model_catalog::Offering::provider_id: awaken_model_catalog::ProviderId
+pub awaken_model_catalog::Offering::source: awaken_model_catalog::OfferingSource
+pub awaken_model_catalog::Offering::status: awaken_model_catalog::OfferingStatus
+pub awaken_model_catalog::Offering::upstream_model: core::option::Option<alloc::string::String>
+pub struct awaken_model_catalog::ProtocolEndpoint
+pub awaken_model_catalog::ProtocolEndpoint::base_url: core::option::Option<alloc::string::String>
+pub awaken_model_catalog::ProtocolEndpoint::dialect: awaken_model_catalog::ApiDialect
+pub awaken_model_catalog::ProtocolEndpoint::display_name: alloc::string::String
+pub awaken_model_catalog::ProtocolEndpoint::id: awaken_model_catalog::ProtocolEndpointId
+pub awaken_model_catalog::ProtocolEndpoint::provider_id: awaken_model_catalog::ProviderId
+pub awaken_model_catalog::ProtocolEndpoint::timeout_secs: u64
+pub awaken_model_catalog::ProtocolEndpoint::version: i64
+pub struct awaken_model_catalog::ProtocolEndpointId(pub alloc::string::String)
+impl awaken_model_catalog::ProtocolEndpointId
+pub fn awaken_model_catalog::ProtocolEndpointId::as_str(&self) -> &str
+pub fn awaken_model_catalog::ProtocolEndpointId::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl awaken_model_catalog::ProtocolEndpointId
+pub fn awaken_model_catalog::ProtocolEndpointId::for_surface(&awaken_model_catalog::ProviderId, awaken_model_catalog::ApiDialect, core::option::Option<&str>) -> Self
+impl core::fmt::Display for awaken_model_catalog::ProtocolEndpointId
+pub fn awaken_model_catalog::ProtocolEndpointId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_model_catalog::Provider
+pub awaken_model_catalog::Provider::display_name: alloc::string::String
+pub awaken_model_catalog::Provider::id: awaken_model_catalog::ProviderId
+pub awaken_model_catalog::Provider::slug: alloc::string::String
+pub awaken_model_catalog::Provider::version: i64
+pub struct awaken_model_catalog::ProviderCatalog
+pub awaken_model_catalog::ProviderCatalog::endpoints: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_model_catalog::ProtocolEndpoint>
+pub awaken_model_catalog::ProviderCatalog::model_attributes: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_model_catalog::ModelAttributes>
+pub awaken_model_catalog::ProviderCatalog::offerings: alloc::vec::Vec<awaken_model_catalog::Offering>
+pub awaken_model_catalog::ProviderCatalog::providers: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_model_catalog::Provider>
+impl awaken_model_catalog::ProviderCatalog
+pub fn awaken_model_catalog::ProviderCatalog::context_window(&self, &str) -> core::option::Option<u32>
+pub fn awaken_model_catalog::ProviderCatalog::max_output_tokens(&self, &str) -> core::option::Option<u32>
+impl awaken_model_catalog::ProviderCatalog
+pub fn awaken_model_catalog::ProviderCatalog::reconcile_brokered_projection(&mut self, awaken_model_catalog::BrokeredCatalogProjection) -> core::result::Result<awaken_model_catalog::CatalogSyncResult, awaken_model_catalog::CatalogError>
+pub fn awaken_model_catalog::ProviderCatalog::reconcile_discovered_models(&mut self, &awaken_model_catalog::ProtocolEndpointId, alloc::vec::Vec<awaken_model_catalog::DiscoveredModel>, u64) -> core::result::Result<awaken_model_catalog::CatalogSyncResult, awaken_model_catalog::CatalogError>
+pub fn awaken_model_catalog::ProviderCatalog::resolve_offering(&self, &str, awaken_model_catalog::ApiDialect) -> core::option::Option<&awaken_model_catalog::Offering>
+pub fn awaken_model_catalog::ProviderCatalog::validate(&self) -> core::result::Result<(), awaken_model_catalog::CatalogError>
+pub struct awaken_model_catalog::ProviderConfigurationField
+pub awaken_model_catalog::ProviderConfigurationField::advanced: bool
+pub awaken_model_catalog::ProviderConfigurationField::key: alloc::string::String
+pub awaken_model_catalog::ProviderConfigurationField::kind: awaken_model_catalog::ProviderFieldKind
+pub awaken_model_catalog::ProviderConfigurationField::label: alloc::string::String
+pub awaken_model_catalog::ProviderConfigurationField::placeholder: core::option::Option<alloc::string::String>
+pub awaken_model_catalog::ProviderConfigurationField::required: bool
+pub struct awaken_model_catalog::ProviderDriverDescriptor
+pub awaken_model_catalog::ProviderDriverDescriptor::auth_methods: alloc::vec::Vec<awaken_model_catalog::ProviderAuthMethod>
+pub awaken_model_catalog::ProviderDriverDescriptor::configuration_fields: alloc::vec::Vec<awaken_model_catalog::ProviderConfigurationField>
+pub awaken_model_catalog::ProviderDriverDescriptor::default_endpoints: alloc::vec::Vec<awaken_model_catalog::DefaultProtocolEndpoint>
+pub awaken_model_catalog::ProviderDriverDescriptor::display_name: alloc::string::String
+pub awaken_model_catalog::ProviderDriverDescriptor::documentation_url: core::option::Option<alloc::string::String>
+pub awaken_model_catalog::ProviderDriverDescriptor::provider_kind: alloc::string::String
+pub awaken_model_catalog::ProviderDriverDescriptor::supported_dialects: alloc::vec::Vec<awaken_model_catalog::ApiDialect>
+pub awaken_model_catalog::ProviderDriverDescriptor::supports_model_discovery: bool
+pub struct awaken_model_catalog::ProviderId(pub alloc::string::String)
+impl awaken_model_catalog::ProviderId
+pub fn awaken_model_catalog::ProviderId::as_str(&self) -> &str
+pub fn awaken_model_catalog::ProviderId::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::fmt::Display for awaken_model_catalog::ProviderId
+pub fn awaken_model_catalog::ProviderId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_model_catalog::ValidCatalog(_)
+impl awaken_model_catalog::ValidCatalog
+pub fn awaken_model_catalog::ValidCatalog::get(&self) -> &awaken_model_catalog::ProviderCatalog
+pub fn awaken_model_catalog::ValidCatalog::into_inner(self) -> awaken_model_catalog::ProviderCatalog
+pub fn awaken_model_catalog::ValidCatalog::parse(awaken_model_catalog::ProviderCatalog) -> core::result::Result<Self, awaken_model_catalog::CatalogError>
+pub fn awaken_model_catalog::provider_driver_descriptors() -> alloc::vec::Vec<awaken_model_catalog::ProviderDriverDescriptor>

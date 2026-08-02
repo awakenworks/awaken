@@ -12,19 +12,30 @@
 #   scripts/ci/check_public_api.sh          # check; fails on drift
 #   scripts/ci/check_public_api.sh --bless   # accept current surface as the snapshot
 #
-# Requires cargo-public-api (which uses a nightly rustdoc). If it is not
-# installed the check skips with a hint, so the repo works before tooling is set
-# up. Wire as required in CI once the toolchain is provisioned.
+# Requires cargo-public-api (which uses a nightly rustdoc). Local checks may
+# explicitly observe a missing-tool skip; the release gate passes
+# ``--require-tools`` and fails closed.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
+bless=0
+require_tools=0
+for argument in "$@"; do
+  case "$argument" in
+    --bless) bless=1 ;;
+    --require-tools) require_tools=1 ;;
+    *) echo "usage: scripts/ci/check_public_api.sh [--bless] [--require-tools]" >&2; exit 2 ;;
+  esac
+done
+
 if ! command -v cargo-public-api >/dev/null 2>&1; then
+  if [ "$require_tools" -eq 1 ]; then
+    echo "cargo-public-api is required by the release gate" >&2
+    exit 1
+  fi
   echo "cargo-public-api not installed; skipping public API check (cargo install cargo-public-api)"
   exit 0
 fi
-
-bless=0
-[ "${1:-}" = "--bless" ] && bless=1
 
 mkdir -p public-api
 
@@ -32,29 +43,10 @@ mkdir -p public-api
 crates=$(cargo metadata --no-deps --format-version 1 \
   | python3 -c "import json,sys; print('\n'.join(sorted(p['name'] for p in json.load(sys.stdin)['packages'])))")
 
-# Crates excluded from the public-API gate. cargo-public-api needs a nightly
-# rustdoc, and awaken-scoped-migration (rust-version 1.96) predates the available
-# nightly toolchain, so the tool cannot build any crate that pulls it. Every
-# scoped-migration dependant is excluded for this reason; their public surface is
-# small and reviewed in code. Re-enable when the nightly toolchain reaches 1.96.
-#
-# The protocol adapters (awaken-protocol-managed / -managed-resources / -ai-sdk / -ag-ui) and
-# awaken-coordinator are product adapters and the single-machine assembly binary;
-# their surface is a product concern that evolves with each public wire, not a
-# stable neutral contract, so they are gated by their own tests and the e2e
-# harness rather than an API snapshot.
-#
-# The management-plane crates (awaken-model-catalog / -credential publish scoped
-# migration bundles, so they pull awaken-scoped-migration non-optionally; the
-# resolver/bridge/admin-api that build on them inherit it). All five are excluded
-# for the same nightly-toolchain reason and reviewed in code (ADR-0043).
-#
-# The composed deployables — awaken-cli (composition root), awaken-worker (execution
-# worker), awaken-scenario-host (test-only), and awaken-control (authoring plane,
-# pulls scoped-migration via admin-config-api/model-catalog/credential-vault) — are
-# product binaries / assembly crates, not stable neutral contracts, exactly like
-# awaken-coordinator. Their surface is gated by their own tests + the e2e harness.
-excluded="awaken-store-postgres awaken-store-schema awaken-store-sqlite awaken-run-ingress awaken-config-store awaken-protocol-managed awaken-protocol-managed-resources awaken-protocol-awaken awaken-protocol-ai-sdk awaken-protocol-ag-ui awaken-protocol-acp awaken-coordinator awaken-model-catalog awaken-credential-vault awaken-config-resolver awaken-managed-bridge awaken-admin-config-api awaken-authz-enforce awaken-webhook-managed awaken-cli awaken-worker awaken-scenario-host awaken-control"
+# Nightly 1.99 can document every current workspace member, including the
+# rust-version 1.96 scoped-migration dependency. Product adapters and composition
+# crates are intentionally included: a changing product surface still needs an
+# explicit reviewed snapshot update rather than an untracked exception.
 
 fail=0
 drifted=()      # crates whose surface changed
@@ -68,7 +60,6 @@ compute_fail=0  # a crate whose surface could not be computed
 # authored API (structs, fns, real trait impls), so any nightly yields the same file.
 omit_flags="--omit blanket-impls,auto-trait-impls,auto-derived-impls"
 for c in $crates; do
-  case " $excluded " in *" $c "*) echo "skipped $c (excluded from public-API gate)"; continue;; esac
   snap="public-api/$c.txt"
   if ! cur=$(cargo +nightly public-api -p "$c" --simplified $omit_flags 2>/dev/null); then
     echo "✗ failed to compute public API for $c"; fail=1; compute_fail=1; continue

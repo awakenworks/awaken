@@ -36,27 +36,19 @@ pub(crate) struct SessionCtx {
     pub(crate) durable_ingress: Option<Arc<DurableRunIngress<AnyDispatchStore>>>,
     pub(crate) config: ExecutableAgentSnapshot,
     pub(crate) commit: Arc<HostCommit>,
+    /// Canonical topology-independent attempt capabilities. Direct execution
+    /// clones this value; durable ingress receives the same clone and replaces
+    /// only its claimed commit/read/cancellation authorities.
+    pub(crate) attempt_context: awaken_runtime_contract::RuntimeRunContext,
     /// Committed-terminal Runtime extensions installed for this Thread.
     pub(crate) terminal_observers:
         Vec<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>,
     /// This thread's interrupted-stream checkpoint store (Phase 3), wired into
     /// every run context so an inference drop flushes durably at its boundary.
     pub(crate) stream_checkpoint: Arc<dyn StreamCheckpointStore>,
-    /// Live plugins contributed by the realized Session environment (currently
-    /// claim-prepared MCP servers). They join every attempt through
-    /// `RuntimeRunContext` without rewriting the immutable Agent publication.
-    pub(crate) session_plugins: Vec<Arc<dyn awaken_runtime_contract::plugin::Plugin>>,
     /// Session lifetime for the ACP-facing projection of the configured
     /// WebSearch RawTool. Native sessions leave this empty.
     pub(crate) _web_search_mcp: Option<crate::AcpToolExport>,
-    /// The one executor owned by this Session's Environment. `None` is valid only
-    /// for a brain-only/A2A session that has no Sandbox-target tool execution.
-    pub(crate) tool_executor: Option<Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>,
-    /// Subject-tagged captured-content sink for this session (ADR-0050), from
-    /// the host. `None` = content is recorded to spans only.
-    pub(crate) capture_sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
-    pub(crate) capture_decision: awaken_runtime_contract::CaptureDecision,
-    pub(crate) data_subject_consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
     pub(crate) thread_id: ThreadId,
     /// The thread's sandbox environment, reused to build an Outcome Worker runtime
     /// for `define_outcome` (same tools, same environment).
@@ -121,47 +113,12 @@ impl SessionCtx {
         // and `finish_step` reads it to report `session.status_rescheduled`.
         let reschedule = Arc::new(std::sync::atomic::AtomicU32::new(0));
         *self.reschedule.lock().expect("reschedule mutex poisoned") = Some(reschedule.clone());
-        let mut ctx = RuntimeRunContext::new()
+        self.attempt_context
+            .clone()
             .with_commit(self.commit.clone())
             .with_reader(self.commit.clone())
             .with_stream_checkpoint(self.stream_checkpoint.clone())
             .with_cancellation(token)
             .with_reschedules(reschedule)
-            // ADR-0050 D5: resolve the content-capture decision for this turn.
-            // Open/single-machine reads the env default; managed overrides with
-            // the ceiling × request × consent meet.
-            .with_capture(self.capture_decision.clone());
-        if let Some(env) = &self.env {
-            ctx = ctx.with_tool_output_spiller(Arc::new(
-                crate::tool_output_spill::SandboxToolOutputSpiller::new(env.clone()),
-            ));
-        }
-        for plugin in &self.session_plugins {
-            ctx = ctx.with_session_plugin(plugin.clone());
-        }
-        if let Some(executor) = &self.tool_executor {
-            ctx = ctx.with_tool_executor(executor.clone());
-        }
-        for observer in &self.terminal_observers {
-            ctx = ctx.with_terminal_observer(observer.clone());
-        }
-        ctx
-    }
-
-    /// Build the attempt-scoped context while preserving the Session-owned Hand.
-    pub(crate) async fn context_for(&self, activation: &RunActivation) -> RuntimeRunContext {
-        let mut ctx = self.context();
-        if let Some(subject) = activation.data_subject_id.clone() {
-            let consent = self
-                .data_subject_consent
-                .consent_ceiling(&subject, awaken_runtime_contract::Purpose::TelemetryContent)
-                .await;
-            ctx.capture.decision.level = ctx.capture.decision.level.meet(consent);
-            ctx = match self.capture_sink.clone() {
-                Some(sink) => ctx.with_capture_sink(subject, sink),
-                None => ctx.with_data_subject(subject),
-            };
-        }
-        ctx
     }
 }

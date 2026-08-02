@@ -199,6 +199,10 @@ async function main() {
         body: JSON.stringify({ id: `${policyId}-unknown`, config: { image: 'implicit:latest' } }),
       });
       assert.ok([400, 422].includes(unknownPolicyField.status));
+      // Exact-policy binding cause/effect rules: P1 missing policy -> 404 with
+      // no Environment mutation; P2 active exact version -> bind 200; P3 later
+      // publication -> the prior binding remains frozen at v1. This assertion
+      // owns P1; the bind/project assertions below own P2/P3.
       const missingBinding = await fetch(`${baseUrl}/v1/awaken/environments/${env.id}/sandbox-execution-policy`, {
         method: 'POST', headers: policyHeaders,
         body: JSON.stringify({ policy_id: 'missing', version: 1 }),

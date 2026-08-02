@@ -48,7 +48,8 @@ pub use awaken_dream_application::{
 };
 pub use rate_limit::{ManagedRateLimiter, ManagedRateLimits, enforce_managed_rate_limit};
 pub use routes::agents_registry::{
-    AgentRegistryState, ManagedAgentError, ManagedAgentRepository, agents_router,
+    AgentArchiveCascade, AgentRegistryState, ManagedAgentError, ManagedAgentRepository,
+    agents_router,
 };
 pub use routes::deployments::{
     DeploymentLaunch, DeploymentLaunchOutcome, DeploymentRunError, DeploymentSessionLauncher,

@@ -1,0 +1,155 @@
+pub mod awaken_admin_config_api
+pub use awaken_admin_config_api::AgentInputBindingRepository
+pub use awaken_admin_config_api::ExecutableModelOption
+pub use awaken_admin_config_api::ExecutableModelReadiness
+pub use awaken_admin_config_api::InMemoryAgentInputBindingRepository
+pub use awaken_admin_config_api::InMemoryProfileStore
+pub use awaken_admin_config_api::InMemoryWebhookStore
+pub use awaken_admin_config_api::InferenceProfileStore
+pub use awaken_admin_config_api::WebhookStore
+pub use awaken_admin_config_api::project_executable_models
+pub mod awaken_admin_config_api::schema
+pub const awaken_admin_config_api::schema::BUNDLE_ID: &str
+pub fn awaken_admin_config_api::schema::admin_bundle() -> core::result::Result<awaken_scoped_migration::MigrationBundle, awaken_scoped_migration::MigrationError>
+pub enum awaken_admin_config_api::ModelCatalogDiscoveryError
+pub awaken_admin_config_api::ModelCatalogDiscoveryError::CredentialUnavailable(alloc::string::String)
+pub awaken_admin_config_api::ModelCatalogDiscoveryError::Provider(alloc::string::String)
+pub enum awaken_admin_config_api::ProbeStatus
+pub awaken_admin_config_api::ProbeStatus::Invalid
+pub awaken_admin_config_api::ProbeStatus::Unknown
+pub awaken_admin_config_api::ProbeStatus::Valid
+pub enum awaken_admin_config_api::ProviderConnectionAuthentication
+pub awaken_admin_config_api::ProviderConnectionAuthentication::ApiKey(awaken_agent_contract::secret::RedactedString)
+pub awaken_admin_config_api::ProviderConnectionAuthentication::Existing(awaken_credential_vault::CredentialSourceId)
+pub awaken_admin_config_api::ProviderConnectionAuthentication::OAuth(awaken_credential_vault::OAuthHelper)
+pub enum awaken_admin_config_api::ProviderConnectionError
+pub awaken_admin_config_api::ProviderConnectionError::Catalog(awaken_model_catalog::repo::RepoError)
+pub awaken_admin_config_api::ProviderConnectionError::Credential(awaken_credential_vault::CredentialError)
+pub awaken_admin_config_api::ProviderConnectionError::Discovery(awaken_admin_config_api::ModelCatalogDiscoveryError)
+pub awaken_admin_config_api::ProviderConnectionError::Invalid(alloc::string::String)
+pub awaken_admin_config_api::ProviderConnectionError::NoModelsDiscovered
+pub awaken_admin_config_api::ProviderConnectionError::UnsupportedAuthentication
+pub awaken_admin_config_api::ProviderConnectionError::UnsupportedAuthentication::method: &'static str
+pub awaken_admin_config_api::ProviderConnectionError::UnsupportedAuthentication::provider: alloc::string::String
+pub awaken_admin_config_api::ProviderConnectionError::UnsupportedDialect
+pub awaken_admin_config_api::ProviderConnectionError::UnsupportedDialect::dialect: awaken_model_catalog::ApiDialect
+pub awaken_admin_config_api::ProviderConnectionError::UnsupportedDialect::provider: alloc::string::String
+pub enum awaken_admin_config_api::ProviderConnectionStatus
+pub awaken_admin_config_api::ProviderConnectionStatus::Connected
+pub awaken_admin_config_api::ProviderConnectionStatus::NeedsAttention
+pub awaken_admin_config_api::ProviderConnectionStatus::NotConfigured
+pub awaken_admin_config_api::ProviderConnectionStatus::Ready
+pub awaken_admin_config_api::ProviderConnectionStatus::Stale
+pub awaken_admin_config_api::ProviderConnectionStatus::Unavailable
+pub struct awaken_admin_config_api::AdminState
+pub awaken_admin_config_api::AdminState::availability: alloc::sync::Arc<awaken_credential_vault::availability::AvailabilityLedger>
+pub awaken_admin_config_api::AdminState::brokered_catalog: core::option::Option<alloc::sync::Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>
+pub awaken_admin_config_api::AdminState::catalog: alloc::sync::Arc<dyn awaken_model_catalog::repo::CatalogRepo>
+pub awaken_admin_config_api::AdminState::credentials: alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>
+pub awaken_admin_config_api::AdminState::model_discovery: core::option::Option<alloc::sync::Arc<dyn awaken_admin_config_api::ModelCatalogDiscovery>>
+pub awaken_admin_config_api::AdminState::probe: core::option::Option<alloc::sync::Arc<dyn awaken_admin_config_api::CredentialProbe>>
+pub awaken_admin_config_api::AdminState::profiles: alloc::sync::Arc<dyn awaken_config_resolver::stores::InferenceProfileStore>
+pub awaken_admin_config_api::AdminState::resources: alloc::sync::Arc<dyn awaken_config_resolver::stores::AgentInputBindingRepository>
+pub awaken_admin_config_api::AdminState::secrets: alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>
+pub struct awaken_admin_config_api::ConfigCapabilitiesView
+pub awaken_admin_config_api::ConfigCapabilitiesView::identity: awaken_admin_config_api::IdentityCapabilityView
+pub awaken_admin_config_api::ConfigCapabilitiesView::models: awaken_admin_config_api::ModelSupplyCapabilityView
+impl core::default::Default for awaken_admin_config_api::ConfigCapabilitiesView
+pub fn awaken_admin_config_api::ConfigCapabilitiesView::default() -> Self
+pub struct awaken_admin_config_api::ConnectProviderCommand
+pub awaken_admin_config_api::ConnectProviderCommand::authentication: awaken_admin_config_api::ProviderConnectionAuthentication
+pub awaken_admin_config_api::ConnectProviderCommand::base_url: core::option::Option<alloc::string::String>
+pub awaken_admin_config_api::ConnectProviderCommand::configuration: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_admin_config_api::ConnectProviderCommand::dialect: awaken_model_catalog::ApiDialect
+pub awaken_admin_config_api::ConnectProviderCommand::display_name: alloc::string::String
+pub awaken_admin_config_api::ConnectProviderCommand::endpoint_name: core::option::Option<alloc::string::String>
+pub awaken_admin_config_api::ConnectProviderCommand::idempotency_key: alloc::string::String
+pub awaken_admin_config_api::ConnectProviderCommand::provider_id: alloc::string::String
+pub awaken_admin_config_api::ConnectProviderCommand::timeout_secs: u64
+pub awaken_admin_config_api::ConnectProviderCommand::workspace_id: alloc::string::String
+pub struct awaken_admin_config_api::CooldownRequest
+pub struct awaken_admin_config_api::CredentialSourceView
+pub awaken_admin_config_api::CredentialSourceView::env_key: core::option::Option<alloc::string::String>
+pub awaken_admin_config_api::CredentialSourceView::id: awaken_credential_vault::CredentialSourceId
+pub awaken_admin_config_api::CredentialSourceView::kind: awaken_credential_vault::CredentialKind
+pub awaken_admin_config_api::CredentialSourceView::oauth_helper: core::option::Option<awaken_credential_vault::OAuthHelper>
+pub awaken_admin_config_api::CredentialSourceView::protocol_endpoint_id: core::option::Option<alloc::string::String>
+pub awaken_admin_config_api::CredentialSourceView::provider_id: core::option::Option<alloc::string::String>
+pub awaken_admin_config_api::CredentialSourceView::status: awaken_credential_vault::CredentialStatus
+pub awaken_admin_config_api::CredentialSourceView::version: i64
+pub awaken_admin_config_api::CredentialSourceView::workspace_id: alloc::string::String
+impl core::convert::From<awaken_credential_vault::CredentialSource> for awaken_admin_config_api::CredentialSourceView
+pub fn awaken_admin_config_api::CredentialSourceView::from(awaken_credential_vault::CredentialSource) -> Self
+pub struct awaken_admin_config_api::CredentialValidation
+pub awaken_admin_config_api::CredentialValidation::adapter_kind: alloc::string::String
+pub awaken_admin_config_api::CredentialValidation::status: awaken_admin_config_api::ProbeStatus
+pub struct awaken_admin_config_api::EnterCredentialRequest
+pub struct awaken_admin_config_api::IdentityCapabilityView
+pub awaken_admin_config_api::IdentityCapabilityView::authenticated: bool
+pub awaken_admin_config_api::IdentityCapabilityView::cloud_login_enabled: bool
+pub awaken_admin_config_api::IdentityCapabilityView::mode: alloc::string::String
+pub struct awaken_admin_config_api::ModelSupplyCapabilityView
+pub awaken_admin_config_api::ModelSupplyCapabilityView::byok_enabled: bool
+pub awaken_admin_config_api::ModelSupplyCapabilityView::cloud_models_enabled: bool
+pub awaken_admin_config_api::ModelSupplyCapabilityView::local_catalog_enabled: bool
+pub awaken_admin_config_api::ModelSupplyCapabilityView::profile_authoring_enabled: bool
+impl core::default::Default for awaken_admin_config_api::ModelSupplyCapabilityView
+pub fn awaken_admin_config_api::ModelSupplyCapabilityView::default() -> Self
+pub struct awaken_admin_config_api::PoolEligibleView
+pub struct awaken_admin_config_api::ProviderConnectionResult
+pub awaken_admin_config_api::ProviderConnectionResult::credential: awaken_credential_vault::CredentialSource
+pub awaken_admin_config_api::ProviderConnectionResult::endpoint: awaken_model_catalog::ProtocolEndpoint
+pub awaken_admin_config_api::ProviderConnectionResult::provider: awaken_model_catalog::Provider
+pub awaken_admin_config_api::ProviderConnectionResult::sync: awaken_model_catalog::CatalogSyncResult
+pub struct awaken_admin_config_api::ProviderConnectionService
+impl awaken_admin_config_api::ProviderConnectionService
+pub async fn awaken_admin_config_api::ProviderConnectionService::connect(&self, awaken_admin_config_api::ConnectProviderCommand) -> core::result::Result<awaken_admin_config_api::ProviderConnectionResult, awaken_admin_config_api::ProviderConnectionError>
+pub fn awaken_admin_config_api::ProviderConnectionService::new(alloc::sync::Arc<dyn awaken_model_catalog::repo::CatalogRepo>, alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>, alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>, alloc::sync::Arc<dyn awaken_admin_config_api::ModelCatalogDiscovery>) -> Self
+pub struct awaken_admin_config_api::ProviderConnectionSummary
+pub awaken_admin_config_api::ProviderConnectionSummary::active_credentials: usize
+pub awaken_admin_config_api::ProviderConnectionSummary::active_models: usize
+pub awaken_admin_config_api::ProviderConnectionSummary::display_name: alloc::string::String
+pub awaken_admin_config_api::ProviderConnectionSummary::endpoint_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_admin_config_api::ProviderConnectionSummary::last_seen_at_unix_ms: core::option::Option<u64>
+pub awaken_admin_config_api::ProviderConnectionSummary::provider_id: alloc::string::String
+pub awaken_admin_config_api::ProviderConnectionSummary::status: awaken_admin_config_api::ProviderConnectionStatus
+pub awaken_admin_config_api::ProviderConnectionSummary::unavailable_models: usize
+pub struct awaken_admin_config_api::ProviderConnectionView
+pub awaken_admin_config_api::ProviderConnectionView::credential: awaken_admin_config_api::CredentialSourceView
+pub awaken_admin_config_api::ProviderConnectionView::endpoint: awaken_model_catalog::ProtocolEndpoint
+pub awaken_admin_config_api::ProviderConnectionView::provider: awaken_model_catalog::Provider
+pub awaken_admin_config_api::ProviderConnectionView::sync: awaken_model_catalog::CatalogSyncResult
+pub struct awaken_admin_config_api::PutModelAttributesRequest
+pub awaken_admin_config_api::PutModelAttributesRequest::context_window: core::option::Option<u32>
+pub awaken_admin_config_api::PutModelAttributesRequest::max_output_tokens: core::option::Option<u32>
+pub struct awaken_admin_config_api::ResolveProfileRequest
+pub struct awaken_admin_config_api::ResolveRequest
+pub struct awaken_admin_config_api::ResolvedCandidatesView
+pub struct awaken_admin_config_api::ResolvedInferenceView
+pub struct awaken_admin_config_api::RotateCredentialRequest
+pub struct awaken_admin_config_api::SaveProviderConnectionRequest
+pub awaken_admin_config_api::SaveProviderConnectionRequest::_legacy_endpoint_id: core::option::Option<alloc::string::String>
+pub awaken_admin_config_api::SaveProviderConnectionRequest::base_url: core::option::Option<alloc::string::String>
+pub awaken_admin_config_api::SaveProviderConnectionRequest::configuration: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_admin_config_api::SaveProviderConnectionRequest::credential_source_id: core::option::Option<awaken_credential_vault::CredentialSourceId>
+pub awaken_admin_config_api::SaveProviderConnectionRequest::dialect: awaken_model_catalog::ApiDialect
+pub awaken_admin_config_api::SaveProviderConnectionRequest::display_name: alloc::string::String
+pub awaken_admin_config_api::SaveProviderConnectionRequest::endpoint_name: core::option::Option<alloc::string::String>
+pub awaken_admin_config_api::SaveProviderConnectionRequest::idempotency_key: alloc::string::String
+pub awaken_admin_config_api::SaveProviderConnectionRequest::oauth_helper: core::option::Option<awaken_credential_vault::OAuthHelper>
+pub awaken_admin_config_api::SaveProviderConnectionRequest::provider_id: alloc::string::String
+pub awaken_admin_config_api::SaveProviderConnectionRequest::secret: core::option::Option<alloc::string::String>
+pub awaken_admin_config_api::SaveProviderConnectionRequest::timeout_secs: u64
+pub awaken_admin_config_api::SaveProviderConnectionRequest::workspace_id: alloc::string::String
+pub struct awaken_admin_config_api::ValidateCredentialRequest
+pub const awaken_admin_config_api::API_VERSION: &str
+pub trait awaken_admin_config_api::BrokeredCatalogDiscovery: core::marker::Send + core::marker::Sync
+pub fn awaken_admin_config_api::BrokeredCatalogDiscovery::projection<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::BrokeredCatalogProjection, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_admin_config_api::CredentialProbe: core::marker::Send + core::marker::Sync
+pub fn awaken_admin_config_api::CredentialProbe::probe<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_agent_contract::secret::RedactedString, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_admin_config_api::ProbeStatus> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub trait awaken_admin_config_api::ModelCatalogDiscovery: core::marker::Send + core::marker::Sync
+pub fn awaken_admin_config_api::ModelCatalogDiscovery::discover<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_model_catalog::ProtocolEndpoint, &'life2 awaken_credential_vault::CredentialSource) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_model_catalog::DiscoveredModel>, awaken_admin_config_api::ModelCatalogDiscoveryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_admin_config_api::ModelCatalogDiscovery::discover_with_secret<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_model_catalog::ProtocolEndpoint, &'life2 awaken_agent_contract::secret::RedactedString) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_model_catalog::DiscoveredModel>, awaken_admin_config_api::ModelCatalogDiscoveryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_admin_config_api::admin_router(awaken_admin_config_api::AdminState) -> axum::routing::Router
+pub fn awaken_admin_config_api::admin_router_with_capabilities(awaken_admin_config_api::AdminState, awaken_admin_config_api::ConfigCapabilitiesView) -> axum::routing::Router
+pub async fn awaken_admin_config_api::reconcile_brokered_catalog(&dyn awaken_admin_config_api::BrokeredCatalogDiscovery, &dyn awaken_model_catalog::repo::CatalogRepo) -> core::result::Result<awaken_model_catalog::CatalogSyncResult, alloc::string::String>

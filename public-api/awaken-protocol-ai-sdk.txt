@@ -1,0 +1,149 @@
+pub mod awaken_protocol_ai_sdk
+pub mod awaken_protocol_ai_sdk::encoder
+pub struct awaken_protocol_ai_sdk::encoder::AiSdkEncoder
+impl awaken_protocol_ai_sdk::encoder::AiSdkEncoder
+pub fn awaken_protocol_ai_sdk::encoder::AiSdkEncoder::complete(&mut self, &awaken_session_contract::session::StepOutcome) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
+pub fn awaken_protocol_ai_sdk::encoder::AiSdkEncoder::fail(&mut self, impl core::convert::Into<alloc::string::String>) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
+pub fn awaken_protocol_ai_sdk::encoder::AiSdkEncoder::new() -> Self
+impl awaken_agent_contract::event::fold::Transcoder for awaken_protocol_ai_sdk::encoder::AiSdkEncoder
+pub type awaken_protocol_ai_sdk::encoder::AiSdkEncoder::Output = awaken_protocol_ai_sdk::types::UIStreamEvent
+pub fn awaken_protocol_ai_sdk::encoder::AiSdkEncoder::delta(&mut self, &awaken_agent_contract::event::agent::Delta) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
+pub fn awaken_protocol_ai_sdk::encoder::AiSdkEncoder::fact(&mut self, &awaken_agent_contract::event::agent::Fact) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
+pub fn awaken_protocol_ai_sdk::encoder::encode_history(&[awaken_agent_contract::agent::message::Message]) -> alloc::vec::Vec<serde_json::value::Value>
+pub fn awaken_protocol_ai_sdk::encoder::encode_step(&awaken_session_contract::session::StepOutcome) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
+pub mod awaken_protocol_ai_sdk::request
+pub enum awaken_protocol_ai_sdk::request::DecisionKind
+pub awaken_protocol_ai_sdk::request::DecisionKind::Approved
+pub awaken_protocol_ai_sdk::request::DecisionKind::Denied
+pub awaken_protocol_ai_sdk::request::DecisionKind::Error(alloc::string::String)
+pub awaken_protocol_ai_sdk::request::DecisionKind::Output(serde_json::value::Value)
+pub struct awaken_protocol_ai_sdk::request::Decision
+pub awaken_protocol_ai_sdk::request::Decision::kind: awaken_protocol_ai_sdk::request::DecisionKind
+pub awaken_protocol_ai_sdk::request::Decision::tool_call_id: alloc::string::String
+pub struct awaken_protocol_ai_sdk::request::ProcessedRequest
+pub awaken_protocol_ai_sdk::request::ProcessedRequest::agent_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_ai_sdk::request::ProcessedRequest::decisions: alloc::vec::Vec<awaken_protocol_ai_sdk::request::Decision>
+pub awaken_protocol_ai_sdk::request::ProcessedRequest::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_protocol_ai_sdk::request::ProcessedRequest::thread_id: alloc::string::String
+impl awaken_protocol_ai_sdk::request::ProcessedRequest
+pub fn awaken_protocol_ai_sdk::request::ProcessedRequest::is_resume_only(&self) -> bool
+pub fn awaken_protocol_ai_sdk::request::process_request(awaken_protocol_ai_sdk::types::AiSdkChatRequest, &std::collections::hash::set::HashSet<alloc::string::String>) -> awaken_protocol_ai_sdk::request::ProcessedRequest
+pub fn awaken_protocol_ai_sdk::request::result_text(&serde_json::value::Value) -> alloc::string::String
+pub mod awaken_protocol_ai_sdk::router
+pub fn awaken_protocol_ai_sdk::router::router(alloc::sync::Arc<dyn awaken_session_contract::run_application::RunApplication>) -> axum::routing::Router
+pub mod awaken_protocol_ai_sdk::types
+pub enum awaken_protocol_ai_sdk::types::UIMessagePart
+pub awaken_protocol_ai_sdk::types::UIMessagePart::File
+pub awaken_protocol_ai_sdk::types::UIMessagePart::File::media_type: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIMessagePart::File::url: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIMessagePart::Other
+pub awaken_protocol_ai_sdk::types::UIMessagePart::Other::kind: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIMessagePart::Text
+pub awaken_protocol_ai_sdk::types::UIMessagePart::Text::text: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIMessagePart::Tool(awaken_protocol_ai_sdk::types::ToolDecisionPart)
+impl<'de> serde_core::de::Deserialize<'de> for awaken_protocol_ai_sdk::types::UIMessagePart
+pub fn awaken_protocol_ai_sdk::types::UIMessagePart::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
+pub enum awaken_protocol_ai_sdk::types::UIStreamEvent
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::Error
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::Error::error_text: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::Finish
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::Finish::finish_reason: core::option::Option<alloc::string::String>
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::Finish::message_metadata: core::option::Option<awaken_protocol_ai_sdk::types::FinishMetadata>
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::FinishStep
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::Start
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::StartStep
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::TextDelta
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::TextDelta::delta: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::TextDelta::id: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::TextEnd
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::TextEnd::id: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::TextStart
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::TextStart::id: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolInputAvailable
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolInputAvailable::input: serde_json::value::Value
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolInputAvailable::provider_executed: bool
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolInputAvailable::tool_call_id: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolInputAvailable::tool_name: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolInputDelta
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolInputDelta::input_text_delta: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolInputDelta::tool_call_id: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolInputStart
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolInputStart::tool_call_id: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolInputStart::tool_name: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolOutputAvailable
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolOutputAvailable::output: serde_json::value::Value
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolOutputAvailable::tool_call_id: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolOutputError
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolOutputError::error_text: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolOutputError::tool_call_id: alloc::string::String
+impl awaken_protocol_ai_sdk::types::UIStreamEvent
+pub fn awaken_protocol_ai_sdk::types::UIStreamEvent::error(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_protocol_ai_sdk::types::UIStreamEvent::finish(&str) -> Self
+pub struct awaken_protocol_ai_sdk::types::AiSdkChatRequest
+pub awaken_protocol_ai_sdk::types::AiSdkChatRequest::agent_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_ai_sdk::types::AiSdkChatRequest::messages: alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIMessage>
+pub awaken_protocol_ai_sdk::types::AiSdkChatRequest::thread_id: core::option::Option<alloc::string::String>
+pub struct awaken_protocol_ai_sdk::types::ApprovalResponse
+pub awaken_protocol_ai_sdk::types::ApprovalResponse::approved: bool
+pub struct awaken_protocol_ai_sdk::types::FinishMetadata
+pub awaken_protocol_ai_sdk::types::FinishMetadata::total_usage: awaken_protocol_ai_sdk::types::Usage
+pub struct awaken_protocol_ai_sdk::types::ToolDecisionPart
+pub awaken_protocol_ai_sdk::types::ToolDecisionPart::approval: core::option::Option<awaken_protocol_ai_sdk::types::ApprovalResponse>
+pub awaken_protocol_ai_sdk::types::ToolDecisionPart::error_text: core::option::Option<alloc::string::String>
+pub awaken_protocol_ai_sdk::types::ToolDecisionPart::kind: alloc::string::String
+pub awaken_protocol_ai_sdk::types::ToolDecisionPart::output: core::option::Option<serde_json::value::Value>
+pub awaken_protocol_ai_sdk::types::ToolDecisionPart::provider_executed: bool
+pub awaken_protocol_ai_sdk::types::ToolDecisionPart::state: core::option::Option<alloc::string::String>
+pub awaken_protocol_ai_sdk::types::ToolDecisionPart::tool_call_id: core::option::Option<alloc::string::String>
+pub struct awaken_protocol_ai_sdk::types::UIMessage
+pub awaken_protocol_ai_sdk::types::UIMessage::id: core::option::Option<alloc::string::String>
+pub awaken_protocol_ai_sdk::types::UIMessage::parts: alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIMessagePart>
+pub awaken_protocol_ai_sdk::types::UIMessage::role: alloc::string::String
+pub struct awaken_protocol_ai_sdk::types::Usage
+pub awaken_protocol_ai_sdk::types::Usage::input_tokens: u64
+pub awaken_protocol_ai_sdk::types::Usage::output_tokens: u64
+pub awaken_protocol_ai_sdk::types::Usage::total_tokens: u64
+pub fn awaken_protocol_ai_sdk::types::attach_usage(&mut [awaken_protocol_ai_sdk::types::UIStreamEvent], (u64, u64))
+pub fn awaken_protocol_ai_sdk::types::history_message(&str, &str, alloc::vec::Vec<serde_json::value::Value>) -> serde_json::value::Value
+pub fn awaken_protocol_ai_sdk::types::text_parts(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::vec::Vec<serde_json::value::Value>
+pub enum awaken_protocol_ai_sdk::UIStreamEvent
+pub awaken_protocol_ai_sdk::UIStreamEvent::Error
+pub awaken_protocol_ai_sdk::UIStreamEvent::Error::error_text: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::Finish
+pub awaken_protocol_ai_sdk::UIStreamEvent::Finish::finish_reason: core::option::Option<alloc::string::String>
+pub awaken_protocol_ai_sdk::UIStreamEvent::Finish::message_metadata: core::option::Option<awaken_protocol_ai_sdk::types::FinishMetadata>
+pub awaken_protocol_ai_sdk::UIStreamEvent::FinishStep
+pub awaken_protocol_ai_sdk::UIStreamEvent::Start
+pub awaken_protocol_ai_sdk::UIStreamEvent::StartStep
+pub awaken_protocol_ai_sdk::UIStreamEvent::TextDelta
+pub awaken_protocol_ai_sdk::UIStreamEvent::TextDelta::delta: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::TextDelta::id: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::TextEnd
+pub awaken_protocol_ai_sdk::UIStreamEvent::TextEnd::id: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::TextStart
+pub awaken_protocol_ai_sdk::UIStreamEvent::TextStart::id: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolInputAvailable
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolInputAvailable::input: serde_json::value::Value
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolInputAvailable::provider_executed: bool
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolInputAvailable::tool_call_id: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolInputAvailable::tool_name: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolInputDelta
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolInputDelta::input_text_delta: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolInputDelta::tool_call_id: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolInputStart
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolInputStart::tool_call_id: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolInputStart::tool_name: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolOutputAvailable
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolOutputAvailable::output: serde_json::value::Value
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolOutputAvailable::tool_call_id: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolOutputError
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolOutputError::error_text: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolOutputError::tool_call_id: alloc::string::String
+impl awaken_protocol_ai_sdk::types::UIStreamEvent
+pub fn awaken_protocol_ai_sdk::types::UIStreamEvent::error(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_protocol_ai_sdk::types::UIStreamEvent::finish(&str) -> Self
+pub struct awaken_protocol_ai_sdk::AiSdkChatRequest
+pub awaken_protocol_ai_sdk::AiSdkChatRequest::agent_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_ai_sdk::AiSdkChatRequest::messages: alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIMessage>
+pub awaken_protocol_ai_sdk::AiSdkChatRequest::thread_id: core::option::Option<alloc::string::String>
+pub fn awaken_protocol_ai_sdk::router(alloc::sync::Arc<dyn awaken_session_contract::run_application::RunApplication>) -> axum::routing::Router

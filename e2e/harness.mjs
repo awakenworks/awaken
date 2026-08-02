@@ -159,6 +159,27 @@ export const RED_PNG_B64 =
   'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdLep8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3IPanc8OLDQitxAAAAAElFTkSuQmCC';
 export const RED_PNG_DATA_URI = `data:image/png;base64,${RED_PNG_B64}`;
 
+// Canonical causal boundary for request/reply E2Es.
+// Decision table:
+// R1 no history + new events -> return every new event.
+// R2 history + new events -> exclude every stable id observed before send.
+// R3 history + no new events -> return empty; the caller must fail rather than
+//    treating a historical reply as evidence for this request.
+// Constraint: events.list() is the authoritative durable log and event ids are
+// stable across pagination, reconnect, and restart.
+export async function sendAndListNewEvents(client, sessionId, request) {
+  const priorIds = new Set();
+  for await (const event of client.beta.sessions.events.list(sessionId, { betas: request.betas })) {
+    priorIds.add(event.id);
+  }
+  await client.beta.sessions.events.send(sessionId, request);
+  const events = [];
+  for await (const event of client.beta.sessions.events.list(sessionId, { betas: request.betas })) {
+    if (!priorIds.has(event.id)) events.push(event);
+  }
+  return events;
+}
+
 export function waitForPort(port, timeoutMs = 900_000, server = null) {
   // Readiness is an elapsed-time deadline. Wall-clock adjustments can jump
   // `Date.now()` past the deadline between retries even though the child has
@@ -277,7 +298,13 @@ export function realServerEnv(behavior, upstream, { mode = 'real', extraEnv = {}
 
 export async function withRealServer(behavior, port, fn, opts = {}) {
   const bin = ensureBuilt();
-  const upstream = await startFakeAnthropic(FAKE_KEY, { behavior });
+  // One authoritative fake-provider fixture owns both inference behavior and
+  // optional model discovery; callers must not start a parallel `/v1/models`
+  // server merely to seed the live catalog.
+  const upstream = await startFakeAnthropic(FAKE_KEY, {
+    behavior,
+    ...(opts.upstream ?? {}),
+  });
   const listenPort = await availablePort(port);
   const addr = `127.0.0.1:${listenPort}`;
   // When `opts.capture` is set, pipe the child's stdout/stderr so a test can scan
@@ -345,6 +372,14 @@ export function stopServer(server) {
 
 export function pass(msg) {
   console.log(`  ok: ${msg}`);
+}
+
+// Canonical Managed turn terminal predicate. An `agent.message` may carry an
+// intermediate tool-calling assistant fact, so only the committed idle fact with
+// `end_turn` proves a multi-step run has finished.
+export function hasEndTurn(events) {
+  const latestIdle = [...events].reverse().find((event) => event.type === 'session.status_idle');
+  return latestIdle?.stop_reason?.type === 'end_turn';
 }
 
 // Reassemble the assistant's text from a streamed SSE body the way a real client

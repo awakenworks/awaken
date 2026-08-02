@@ -12,6 +12,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
@@ -32,6 +33,30 @@ use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 
 struct ToolThenText {
     calls: AtomicUsize,
+}
+
+struct TwoToolsThenText {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for TwoToolsThenText {
+    async fn infer(&self, _r: ChatRequest) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let turn = self.calls.fetch_add(1, Ordering::SeqCst);
+        let output = match turn {
+            0 | 1 => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: format!("call-{}", turn + 1),
+                tool_id: "echo".to_string(),
+                arguments: serde_json::json!({"text": "ping"}),
+            }]),
+            _ => AssistantOutput::text("all done"),
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
 }
 #[async_trait::async_trait]
 impl LlmExecutor for ToolThenText {
@@ -79,6 +104,22 @@ impl ToolGateHook for ScheduleGate {
     ) -> GateOutcome {
         GateOutcome::Schedule {
             correlation_id: "sched-1".to_string(),
+            action_kind: None,
+        }
+    }
+}
+
+struct ScheduleEveryGate;
+
+#[async_trait::async_trait]
+impl ToolGateHook for ScheduleEveryGate {
+    async fn gate(
+        &self,
+        call: &ToolCall,
+        _state: &awaken_agent_contract::agent::state::Store,
+    ) -> GateOutcome {
+        GateOutcome::Schedule {
+            correlation_id: format!("sched-{}", call.call_id),
             action_kind: None,
         }
     }
@@ -234,6 +275,73 @@ async fn scheduled_action_commits_then_perform_runs_it() {
             .is_none(),
         "the ticket is cleared once performed"
     );
+}
+
+#[tokio::test]
+async fn repeated_scheduled_resumes_keep_every_assistant_fact() {
+    // Cause/effect graph and decision table:
+    // C1 first inference schedules call-1 -> E1 assistant step 0 is committed.
+    // C2 first resume schedules call-2 -> E2 assistant step 1 is committed.
+    // C3 second resume returns text -> E3 assistant step 2 remains visible and
+    // the Run ends naturally. Constraint: a retry of the same committed resume
+    // must derive the same next id; a later distinct resume must derive N+1.
+    // R1=C1, R2=C1+C2, R3=C1+C2+C3; all three facts have unique stable ids.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(TwoToolsThenText {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+        .with_gate(Arc::new(ScheduleEveryGate));
+    runtime.register_snapshot(snapshot());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let run_id = RunId("run-1".to_string());
+
+    assert_eq!(
+        runtime
+            .execute(activation(), context(&commit))
+            .await
+            .expect("first call schedules"),
+        RunState::Awaiting
+    );
+    assert_eq!(
+        runtime
+            .perform_scheduled_action(&run_id, commit.as_ref(), context(&commit), 0)
+            .await
+            .expect("second call schedules"),
+        RunState::Awaiting
+    );
+    assert_eq!(
+        runtime
+            .perform_scheduled_action(&run_id, commit.as_ref(), context(&commit), 0)
+            .await
+            .expect("final text ends"),
+        RunState::Ended(EndCause::NaturalEnd)
+    );
+
+    let assistant = commit
+        .committed_messages(&ThreadId("thread-1".to_string()))
+        .into_iter()
+        .filter(|message| message.role == Role::Assistant)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        assistant.len(),
+        3,
+        "no resumed assistant fact was deduplicated"
+    );
+    assert_eq!(
+        assistant
+            .iter()
+            .map(|message| message.id.0.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "run-1-assistant-0",
+            "run-1-assistant-1",
+            "run-1-assistant-2"
+        ]
+    );
+    assert_eq!(assistant[2].text_content(), "all done");
+    assert_eq!(ran.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

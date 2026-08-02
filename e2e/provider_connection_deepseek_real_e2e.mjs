@@ -4,6 +4,12 @@
 // valid key + /models + active model -> atomically Ready -> exact Profile ->
 // auto Agent publication -> Chat Completions turn; invalid/missing key fails or
 // skips before persisted execution. The write-only key must never enter output.
+//
+// | Rule | live key | provider sync | active offering | no-login fixture | Result |
+// |---|---|---|---|---|---|
+// | D1 | absent | - | - | yes | explicit skip before mutation |
+// | D2 | valid | success | yes | yes | saved Profile/Agent completes a turn |
+// | D3 | invalid | failure | - | yes | no executable publication |
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -32,13 +38,14 @@ async function main() {
     return;
   }
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-deepseek-live-'));
-  const env = deploymentEnv(directory);
+  const env = deploymentEnv(directory, { identityMode: 'no-login' });
   const { server } = spawnServer('management-providers', PORT, env);
   try {
     await waitForPort(PORT, 180_000, server);
     const base = `http://127.0.0.1:${PORT}`;
     const workspace = fs.readFileSync(path.join(directory, 'platform-workspace-id'), 'utf8').trim();
     let result = await request(base, 'POST', '/v1/config/provider-connections', {
+      idempotency_key: 'deepseek-real-provider-connection',
       workspace_id: workspace,
       provider_id: 'deepseek',
       display_name: 'DeepSeek',

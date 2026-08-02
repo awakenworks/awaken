@@ -81,6 +81,88 @@ pub(crate) struct SessionAttemptExecutor {
     registry: AttemptExecutorRegistry,
 }
 
+/// The one privacy-context decorator shared by direct and durable attempts.
+///
+/// Delivery topology may replace commit, cancellation, and ownership wiring,
+/// but it must not replace the request's subject attribution or the deployment
+/// capture policy. Keeping this at the `RunAttemptExecutor` boundary means a
+/// queued/recovered attempt and an inline attempt resolve consent identically.
+pub(crate) struct CaptureContextAttemptExecutor {
+    inner: Arc<dyn RunAttemptExecutor>,
+    decision: awaken_runtime_contract::CaptureDecision,
+    sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
+    consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+}
+
+impl CaptureContextAttemptExecutor {
+    pub(crate) fn new(
+        inner: Arc<dyn RunAttemptExecutor>,
+        decision: awaken_runtime_contract::CaptureDecision,
+        sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
+        consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+    ) -> Self {
+        Self {
+            inner,
+            decision,
+            sink,
+            consent,
+        }
+    }
+
+    async fn context_for(
+        &self,
+        activation: &RunActivation,
+        mut context: RuntimeRunContext,
+    ) -> RuntimeRunContext {
+        context = context.with_capture(self.decision.clone());
+        if let Some(subject) = activation.data_subject_id.clone() {
+            let consent = self
+                .consent
+                .consent_ceiling(&subject, awaken_runtime_contract::Purpose::TelemetryContent)
+                .await;
+            context.capture.decision.level = context.capture.decision.level.meet(consent);
+            context = match self.sink.clone() {
+                Some(sink) => context.with_capture_sink(subject, sink),
+                None => context.with_data_subject(subject),
+            };
+        }
+        context
+    }
+}
+
+#[async_trait::async_trait]
+impl RunExecutor for CaptureContextAttemptExecutor {
+    async fn execute(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        let context = self.context_for(&activation, context).await;
+        self.inner.execute(activation, context).await
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for CaptureContextAttemptExecutor {
+    async fn resume(
+        &self,
+        activation: RunActivation,
+        command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        let context = self.context_for(&activation, context).await;
+        self.inner.resume(activation, command, context).await
+    }
+
+    async fn cancel(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<()> {
+        self.inner.cancel(activation, context).await
+    }
+}
+
 /// Host composition adapter for the ordinary `RunExecutor` port. It binds one
 /// Thread's backend routing, durable ingress, and live-context construction;
 /// Runtime extensions still submit an ordinary `RunActivation` and remain
@@ -254,7 +336,7 @@ impl SharedHost {
         ctx: &Arc<SessionCtx>,
         activation: &RunActivation,
     ) -> Result<RuntimeRunContext, HostError> {
-        let mut context = ctx.context_for(activation).await;
+        let mut context = ctx.context();
         let candidates = activation
             .snapshot
             .resolved_spec

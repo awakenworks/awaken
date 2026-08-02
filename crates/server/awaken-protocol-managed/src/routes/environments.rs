@@ -683,9 +683,28 @@ fn map_environment_application_error(error: EnvironmentApplicationError) -> Wire
             StatusCode::CONFLICT,
             Json(ErrorResponse::new("conflict_error", message)),
         ),
-        EnvironmentApplicationError::Policy(_) => (
+        EnvironmentApplicationError::Policy(
+            awaken_provisioning_contract::SandboxExecutionPolicyError::NotFound,
+        ) => not_found("sandbox execution policy"),
+        EnvironmentApplicationError::Policy(
+            awaken_provisioning_contract::SandboxExecutionPolicyError::VersionConflict,
+        ) => (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse::new("conflict_error", message)),
+        ),
+        EnvironmentApplicationError::Policy(
+            awaken_provisioning_contract::SandboxExecutionPolicyError::Disabled
+            | awaken_provisioning_contract::SandboxExecutionPolicyError::Invalid(_),
+        ) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ErrorResponse::new("invalid_request_error", message)),
+        ),
+        EnvironmentApplicationError::Policy(
+            awaken_provisioning_contract::SandboxExecutionPolicyError::StoreFailed(_),
+        )
+        | EnvironmentApplicationError::PolicyStoreUnavailable => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse::new("api_error", message)),
         ),
         EnvironmentApplicationError::Create(
             awaken_environment_contract::CreateEnvironmentError::Store(_),
@@ -1214,6 +1233,49 @@ mod tests {
 
     fn config(value: serde_json::Value) -> awaken_environment_contract::EnvironmentConfig {
         serde_json::from_value(value).expect("valid neutral Environment config")
+    }
+
+    #[test]
+    fn sandbox_policy_application_errors_keep_their_wire_taxonomy() {
+        // Cause/effect decision table: P1 missing exact policy -> 404; P2 stale
+        // version -> 409; P3 disabled/invalid -> 422; P4 store failure or absent
+        // store -> 503. Each cause must survive the application boundary as a
+        // typed error; string erasure would collapse P1/P2/P4 into 422.
+        use awaken_provisioning_contract::SandboxExecutionPolicyError as PolicyError;
+
+        for (rule, error, expected) in [
+            (
+                "P1",
+                EnvironmentApplicationError::Policy(PolicyError::NotFound),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                "P2",
+                EnvironmentApplicationError::Policy(PolicyError::VersionConflict),
+                StatusCode::CONFLICT,
+            ),
+            (
+                "P3",
+                EnvironmentApplicationError::Policy(PolicyError::Disabled),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                "P4a",
+                EnvironmentApplicationError::Policy(PolicyError::StoreFailed("x".into())),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                "P4b",
+                EnvironmentApplicationError::PolicyStoreUnavailable,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+        ] {
+            assert_eq!(
+                map_environment_application_error(error).0,
+                expected,
+                "{rule}"
+            );
+        }
     }
 
     async fn create_definition(

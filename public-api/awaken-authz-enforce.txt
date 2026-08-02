@@ -1,0 +1,46 @@
+pub mod awaken_authz_enforce
+pub enum awaken_authz_enforce::SessionDecision
+pub awaken_authz_enforce::SessionDecision::Allow
+pub awaken_authz_enforce::SessionDecision::Deny
+pub struct awaken_authz_enforce::ApplicationAccessStore
+impl awaken_authz_enforce::ApplicationAccessStore
+pub fn awaken_authz_enforce::ApplicationAccessStore::authenticate(&self, &str) -> core::option::Option<awaken_authz_enforce::ApplicationIdentity>
+pub fn awaken_authz_enforce::ApplicationAccessStore::mint(&self, alloc::string::String, alloc::string::String, core::option::Option<alloc::string::String>, awaken_authz_enforce::ApplicationGrant) -> core::result::Result<alloc::string::String, awaken_iam_core::IamError>
+pub fn awaken_authz_enforce::ApplicationAccessStore::new() -> Self
+pub fn awaken_authz_enforce::ApplicationAccessStore::revoke(&self, &str) -> core::result::Result<(), awaken_iam_core::IamError>
+impl core::default::Default for awaken_authz_enforce::ApplicationAccessStore
+pub fn awaken_authz_enforce::ApplicationAccessStore::default() -> Self
+pub struct awaken_authz_enforce::ApplicationGrant
+pub awaken_authz_enforce::ApplicationGrant::actor_key: core::option::Option<alloc::string::String>
+pub awaken_authz_enforce::ApplicationGrant::application_scope: alloc::string::String
+pub awaken_authz_enforce::ApplicationGrant::authority_id: alloc::string::String
+pub awaken_authz_enforce::ApplicationGrant::operations: std::collections::hash::set::HashSet<alloc::string::String>
+pub awaken_authz_enforce::ApplicationGrant::protocols: std::collections::hash::set::HashSet<alloc::string::String>
+pub awaken_authz_enforce::ApplicationGrant::thread_bindings: std::collections::hash::map::HashMap<alloc::string::String, awaken_authz_enforce::ApplicationThreadBinding>
+impl awaken_authz_enforce::ApplicationGrant
+pub fn awaken_authz_enforce::ApplicationGrant::binding(&self, &str) -> core::option::Option<&awaken_authz_enforce::ApplicationThreadBinding>
+pub struct awaken_authz_enforce::ApplicationIdentity
+pub awaken_authz_enforce::ApplicationIdentity::grant: awaken_authz_enforce::ApplicationGrant
+pub awaken_authz_enforce::ApplicationIdentity::workspace_id: alloc::string::String
+pub struct awaken_authz_enforce::ApplicationThreadBinding
+pub awaken_authz_enforce::ApplicationThreadBinding::agent_id: alloc::string::String
+pub awaken_authz_enforce::ApplicationThreadBinding::managed_session_id: alloc::string::String
+pub struct awaken_authz_enforce::EnforceEngine
+impl awaken_authz_enforce::EnforceEngine
+pub fn awaken_authz_enforce::EnforceEngine::authenticate(&self, &str) -> core::result::Result<(awaken_iam_contract::PrincipalRef, awaken_iam_contract::WorkspaceId), awaken_iam_core::IamError>
+pub fn awaken_authz_enforce::EnforceEngine::authorize(&self, awaken_iam_contract::PrincipalRef, &awaken_iam_contract::ActionKey, awaken_iam_contract::ScopeRef) -> awaken_authz_enforce::SessionDecision
+pub fn awaken_authz_enforce::EnforceEngine::mint(&self, awaken_authz_enforce::TokenSpec) -> core::result::Result<alloc::string::String, awaken_iam_core::IamError>
+pub fn awaken_authz_enforce::EnforceEngine::revoke(&self, &str) -> core::result::Result<(), awaken_iam_core::IamError>
+pub fn awaken_authz_enforce::EnforceEngine::seeded() -> Self
+pub struct awaken_authz_enforce::RequestTenancy
+pub awaken_authz_enforce::RequestTenancy::workspace_id: alloc::string::String
+pub struct awaken_authz_enforce::TokenSpec
+pub awaken_authz_enforce::TokenSpec::expires_at: core::option::Option<alloc::string::String>
+pub awaken_authz_enforce::TokenSpec::role: alloc::string::String
+pub awaken_authz_enforce::TokenSpec::service_id: alloc::string::String
+pub awaken_authz_enforce::TokenSpec::token_id: alloc::string::String
+pub awaken_authz_enforce::TokenSpec::workspace_id: alloc::string::String
+pub async fn awaken_authz_enforce::application_guard(axum::extract::state::State<alloc::sync::Arc<awaken_authz_enforce::ApplicationAccessStore>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response
+pub async fn awaken_authz_enforce::guard(axum::extract::state::State<alloc::sync::Arc<awaken_authz_enforce::EnforceEngine>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response
+pub fn awaken_authz_enforce::request_scope(&str) -> awaken_iam_contract::ScopeRef
+pub fn awaken_authz_enforce::session_action(&str) -> awaken_iam_contract::ActionKey

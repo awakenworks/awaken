@@ -1,0 +1,131 @@
+pub mod awaken_scenario_host
+pub use awaken_scenario_host::ConfigService
+pub use awaken_scenario_host::ExtMcpProbe
+pub use awaken_scenario_host::HostResume
+pub use awaken_scenario_host::InferenceExecutorMaterializer
+pub use awaken_scenario_host::ManagedHost
+pub use awaken_scenario_host::RunApplicationHost
+pub use awaken_scenario_host::SharedHost
+pub use awaken_scenario_host::SkillContext
+pub use awaken_scenario_host::SkillSpec
+pub use awaken_scenario_host::ThreadEvent
+pub use awaken_scenario_host::ThreadEventHub
+pub use awaken_scenario_host::VaultRefresher
+pub use awaken_scenario_host::advertised_tools
+pub use awaken_scenario_host::capabilities_router
+pub use awaken_scenario_host::config_router
+pub use awaken_scenario_host::content_fingerprint
+pub use awaken_scenario_host::default_models
+pub use awaken_scenario_host::durable_ops_router
+pub use awaken_scenario_host::files_router
+pub use awaken_scenario_host::memory_stores_router
+pub use awaken_scenario_host::models_router
+pub use awaken_scenario_host::parse_skill_md
+pub use awaken_scenario_host::skills_router
+pub struct awaken_scenario_host::CompactionModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::CompactionModel
+pub fn awaken_scenario_host::CompactionModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::CustomToolModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::CustomToolModel
+pub fn awaken_scenario_host::CustomToolModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::DelegatingModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::DelegatingModel
+pub fn awaken_scenario_host::DelegatingModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::EchoModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::EchoModel
+pub fn awaken_scenario_host::EchoModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::ErrorModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::ErrorModel
+pub fn awaken_scenario_host::ErrorModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::GitRepoModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::GitRepoModel
+pub fn awaken_scenario_host::GitRepoModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::InstructionEchoModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::InstructionEchoModel
+pub fn awaken_scenario_host::InstructionEchoModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::LabelModel(pub &'static str)
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::LabelModel
+pub fn awaken_scenario_host::LabelModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::McpToolModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::McpToolModel
+pub fn awaken_scenario_host::McpToolModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::MemoryProbeModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::MemoryProbeModel
+pub fn awaken_scenario_host::MemoryProbeModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::MemoryResourceModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::MemoryResourceModel
+pub fn awaken_scenario_host::MemoryResourceModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::NativePlaywrightMcpModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::NativePlaywrightMcpModel
+pub fn awaken_scenario_host::NativePlaywrightMcpModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::OversizedToolModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::OversizedToolModel
+pub fn awaken_scenario_host::OversizedToolModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::ProbeModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::ProbeModel
+pub fn awaken_scenario_host::ProbeModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::RegistryDelegatingModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::RegistryDelegatingModel
+pub fn awaken_scenario_host::RegistryDelegatingModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::ReviseModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::ReviseModel
+pub fn awaken_scenario_host::ReviseModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::SkillDrivingModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::SkillDrivingModel
+pub fn awaken_scenario_host::SkillDrivingModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::StateMachineModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::StateMachineModel
+pub fn awaken_scenario_host::StateMachineModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_scenario_host::VisionProbeModel
+impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::VisionProbeModel
+pub fn awaken_scenario_host::VisionProbeModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub async fn awaken_scenario_host::build_acp_container_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_acp_control_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_acp_gateway_router() -> axum::routing::Router
+pub async fn awaken_scenario_host::build_acp_jsonrpc_router() -> axum::routing::Router
+pub async fn awaken_scenario_host::build_acp_managed_mcp_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_acp_permission_router() -> axum::routing::Router
+pub async fn awaken_scenario_host::build_acp_real_mcp_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_acp_relaunch_failure_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_acp_router() -> axum::routing::Router
+pub async fn awaken_scenario_host::build_acp_sandboxed_router() -> axum::routing::Router
+pub async fn awaken_scenario_host::build_acp_sandboxed_router_with_deployment(awaken_runtime_host::deployment_config::DeploymentConfig) -> axum::routing::Router
+pub fn awaken_scenario_host::build_compaction_router() -> axum::routing::Router
+pub async fn awaken_scenario_host::build_config_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_custom_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_delegation_router() -> axum::routing::Router
+pub async fn awaken_scenario_host::build_distributed_control_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_distributed_provider_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_dream_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_dream_router_and_host() -> (axum::routing::Router, alloc::sync::Arc<awaken_runtime_host::host::SharedHost>)
+pub fn awaken_scenario_host::build_echo_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_environment_matrix_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_ephemeral_resource_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_error_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_full_chain_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_git_repo_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_graded_router(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> axum::routing::Router
+pub fn awaken_scenario_host::build_memory_resource_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_memory_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_model_route_router() -> axum::routing::Router
+pub async fn awaken_scenario_host::build_oauth_resolved_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_outcome_matrix_router() -> axum::routing::Router
+pub async fn awaken_scenario_host::build_real_gemini_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_real_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_remote_delegation_router() -> axum::routing::Router
+pub async fn awaken_scenario_host::build_resolved_real_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_router(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>) -> axum::routing::Router
+pub fn awaken_scenario_host::build_router_and_host(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>) -> (axum::routing::Router, alloc::sync::Arc<awaken_runtime_host::host::SharedHost>)
+pub fn awaken_scenario_host::build_router_with_deployment(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, awaken_runtime_host::deployment_config::DeploymentConfig) -> axum::routing::Router
+pub fn awaken_scenario_host::build_router_with_skills(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_ext_skills::spec::SkillSpec>) -> axum::routing::Router
+pub fn awaken_scenario_host::build_schedule_router() -> axum::routing::Router
+pub async fn awaken_scenario_host::build_skills_durable_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_skills_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_statemachine_rich_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_statemachine_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_unscoped_resource_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_vision_router() -> axum::routing::Router
+pub fn awaken_scenario_host::build_worker_router() -> axum::routing::Router
+pub async fn awaken_scenario_host::run_echo_worker(&str, &str, core::option::Option<&str>, core::option::Option<alloc::sync::Arc<dyn awaken_run_ingress::transport_client::WorkerRequestAuthorizer>>) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub fn awaken_scenario_host::scenario_deployment() -> awaken_runtime_host::deployment_config::DeploymentConfig
+pub fn awaken_scenario_host::scenario_model(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, &str) -> (alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, alloc::string::String)

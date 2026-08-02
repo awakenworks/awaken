@@ -35,6 +35,7 @@ use sha2::{Digest, Sha256};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 const STATE_MACHINE_PLUGIN_ID: &str = "state_machine";
+const MAX_MCP_SERVER_URL_BYTES: usize = 2048;
 static AGENT_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn new_agent_id(workspace_id: &str) -> String {
@@ -378,6 +379,14 @@ fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgen
             return Err(ManagedAgentError::Invalid(
                 "mcp_server name must be 1-255 characters".into(),
             ));
+        }
+        if let awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::Http(transport) =
+            &server.transport
+            && transport.url.len() > MAX_MCP_SERVER_URL_BYTES
+        {
+            return Err(ManagedAgentError::Invalid(format!(
+                "mcp_server URL must be at most {MAX_MCP_SERVER_URL_BYTES} bytes"
+            )));
         }
         server.transport.normalize().map_err(|error| {
             ManagedAgentError::Invalid(format!("mcp_server transport is invalid: {error}"))
@@ -1132,6 +1141,40 @@ mod tests {
             multiagent: None,
             x_awaken: None,
         }
+    }
+
+    #[test]
+    fn managed_mcp_http_url_length_boundary_is_exact() {
+        // Cause/effect decision table: U1 a valid absolute HTTP(S) URL of 2048
+        // wire bytes is admitted; U2 max+1 is rejected before authoring. The
+        // generic MCP identity parser remains the one syntax/normalization owner;
+        // this edge owns only the Managed Agent resource bound.
+        let prefix = "https://mcp.example.test/";
+        let mut at_max = create_params("url-at-max");
+        at_max.mcp_servers = vec![
+            serde_json::from_value(json!({
+                "type": "url",
+                "name": "docs",
+                "url": format!("{prefix}{}", "x".repeat(2048 - prefix.len()))
+            }))
+            .unwrap(),
+        ];
+        assert!(
+            config_from_create("agent_at_max".into(), at_max.clone()).is_ok(),
+            "U1"
+        );
+
+        let AgentMcpServer::Url { url, .. } = &mut at_max.mcp_servers[0] else {
+            unreachable!("HTTP fixture")
+        };
+        url.push('x');
+        assert!(
+            matches!(
+                config_from_create("agent_over_max".into(), at_max),
+                Err(ManagedAgentError::Invalid(_))
+            ),
+            "U2"
+        );
     }
 
     fn plane(path: &str) -> ConfigPlane {

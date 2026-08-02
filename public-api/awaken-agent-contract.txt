@@ -158,6 +158,8 @@ pub awaken_agent_contract::agent::message::Role::User
 pub struct awaken_agent_contract::agent::message::Id(pub alloc::string::String)
 impl awaken_agent_contract::agent::message::Id
 pub fn awaken_agent_contract::agent::message::Id::assistant(&awaken_agent_contract::agent::run::Id, usize) -> Self
+pub fn awaken_agent_contract::agent::message::Id::assistant_prefix(&awaken_agent_contract::agent::run::Id) -> alloc::string::String
+pub fn awaken_agent_contract::agent::message::Id::assistant_step_of(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<usize>
 pub fn awaken_agent_contract::agent::message::Id::assistant_truncated(&awaken_agent_contract::agent::run::Id, usize, usize) -> Self
 pub fn awaken_agent_contract::agent::message::Id::continuation(&awaken_agent_contract::agent::run::Id, usize, usize) -> Self
 pub fn awaken_agent_contract::agent::message::Id::is_steer_of(&self, &awaken_agent_contract::agent::run::Id) -> bool

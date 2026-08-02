@@ -5,6 +5,16 @@
 // ManagedSessionRepository (sessions.db under typed data_dir) now restores the
 // real values.
 //
+// Cause graph / decision table:
+//   C1 config row and transcript committed -> E1 restart can rehydrate
+//   C2 same typed data/store roots reused  -> E2 agent/title/metadata preserved
+//   C3 explicit no-login fixture identity -> E3 unrelated IAM cannot mask persistence
+//
+//   Rule  C1  C2  C3  Expected
+//   R1    Y   Y   Y   E1 + E2 + E3
+//   R2    N   -   Y   no rehydration claim (covered by missing-session tests)
+//   R3    Y   N   Y   no cross-root recovery (covered by repository isolation)
+//
 // Flow: management mode with BOTH typed data_dir (session config) and
 // SESSION_DEPLOYMENT_STORAGE_DIR (transcript, the rehydration precondition). Create a session
 // with a title + metadata, commit a turn, KILL the process, respawn over the same
@@ -36,7 +46,7 @@ async function main() {
   const mgmtDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-sess-mgmt-'));
   const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-sess-store-'));
   const env = {
-    ...deploymentEnv(mgmtDir, { controlSealKey: SEAL_KEY }),
+    ...deploymentEnv(mgmtDir, { identityMode: 'no-login', controlSealKey: SEAL_KEY }),
     SESSION_DEPLOYMENT_STORAGE_DIR: storeDir,
   };
   const upstream = await startUpstream('mcp');

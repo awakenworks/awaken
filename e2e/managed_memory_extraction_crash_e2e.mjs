@@ -104,7 +104,7 @@ async function main() {
     await client.beta.sessions.events.send(session.id, { betas: BETAS, events: [] });
     assert.ok((await reply(session.id)).includes(MARKER), 'committed Session rehydrated');
     await waitUntil(async () => {
-      const page = await client.get(`/v1/memory_stores/${store.id}/memories`, {
+      const page = await client.get(`/v1/memory_stores/${store.id}/memories?view=full`, {
         headers: MEMORY_HEADERS,
       });
       return JSON.stringify(page).includes(MARKER);

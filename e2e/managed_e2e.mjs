@@ -45,7 +45,14 @@ async function main() {
     // --- single message: the reply came back through the real provider wire ---
     await sendMessage(client, session.id, 'hi there');
     let events = await listTypes(client, session.id);
-    assert.deepEqual(events.map((e) => e.type), ['session.status_running', 'agent.message', 'session.status_idle']);
+    // Event-ledger decision rule: admitted user input is the durable cause, then
+    // running/reply/idle are its ordered effects; listing omits none of them.
+    assert.deepEqual(events.map((e) => e.type), [
+      'user.message',
+      'session.status_running',
+      'agent.message',
+      'session.status_idle',
+    ]);
     assert.equal(events.find((e) => e.type === 'agent.message').content[0].text, 'Echo: hi there');
     assert.equal(events.find((e) => e.type === 'session.status_idle').stop_reason.type, 'end_turn');
     pass('single message + list');

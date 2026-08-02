@@ -57,6 +57,9 @@ pub struct ControlDependencies {
     pub resource_store: Arc<dyn AgentInputBindingRepository>,
     pub config_store: Arc<dyn ScopedConfigRegistry>,
     pub executable_agent_registrar: Arc<dyn ExecutableAgentRegistrar>,
+    /// Optional local lifecycle command edge. Present only in AllInOne
+    /// composition; its execution-owned implementation stays outside Control.
+    pub agent_archive_cascade: Option<Arc<dyn awaken_protocol_managed::AgentArchiveCascade>>,
     pub model_publication_resolver: Arc<dyn ModelPublicationResolver>,
     pub plugin_publication_resolvers: Vec<Arc<dyn PluginPublicationResolver>>,
     pub credential_probe: Arc<dyn CredentialProbe>,
@@ -115,6 +118,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         resource_store,
         config_store,
         executable_agent_registrar,
+        agent_archive_cascade,
         model_publication_resolver,
         plugin_publication_resolvers,
         credential_probe,
@@ -231,6 +235,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         model_supply,
         vault_state: vault_state.clone(),
         agent_repository: agent_repository.clone(),
+        agent_archive_cascade,
         plane: config_plane.clone(),
         global_tools,
         plugins: platform_plugins,

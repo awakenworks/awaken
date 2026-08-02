@@ -225,13 +225,13 @@ const obligations: Obligation[] = [
   { id: 'D7-A11', stage: '7 remote A2A attempt', behavior: 'parent interrupt cancels the pinned remote child task exactly once', scenario: 'remote_child_lifecycle' },
   { id: 'D7-A12', stage: '7 remote A2A attempt', behavior: 'remote child 5xx fails closed without a fabricated result', scenario: 'remote_child_lifecycle' },
 
-  { id: 'D7-13', stage: '7 governed ACP attempt', behavior: 'ACP permission asks use the Session policy and commit a durable resume ticket', scenario: 'acp_permission' },
-  { id: 'D7-14', stage: '7 governed ACP attempt', behavior: 'Managed approval resumes only the exact pending ACP tool call', scenario: 'acp_permission' },
-  { id: 'D7-15', stage: '7 governed ACP attempt', behavior: 'Managed denial selects the ACP agent reject option and terminates cleanly', scenario: 'acp_permission' },
-  { id: 'D7-16', stage: '7 governed ACP attempt', behavior: 'live control pauses an ACP attempt at a safe boundary and commits a ManualPause ticket', scenario: 'acp_control' },
-  { id: 'D7-17', stage: '7 governed ACP attempt', behavior: 'durable text resume validates and resumes exactly the paused ACP Run', scenario: 'acp_control' },
-  { id: 'D7-18', stage: '7 governed ACP attempt', behavior: 'a continuation relaunch failure is committed instead of losing queued input', scenario: 'acp_control' },
-  { id: 'D7-19', stage: '7 governed ACP attempt', behavior: 'restart rejects a permission ticket missing its call identity or pending tool', scenario: 'acp_ticket_corruption' },
+  { id: 'D7-ACP-01', stage: '7 governed ACP attempt', behavior: 'ACP permission asks use the Session policy and commit a durable resume ticket', scenario: 'acp_permission' },
+  { id: 'D7-ACP-02', stage: '7 governed ACP attempt', behavior: 'Managed approval resumes only the exact pending ACP tool call', scenario: 'acp_permission' },
+  { id: 'D7-ACP-03', stage: '7 governed ACP attempt', behavior: 'Managed denial selects the ACP agent reject option and terminates cleanly', scenario: 'acp_permission' },
+  { id: 'D7-ACP-04', stage: '7 governed ACP attempt', behavior: 'live control pauses an ACP attempt at a safe boundary and commits a ManualPause ticket', scenario: 'acp_control' },
+  { id: 'D7-ACP-05', stage: '7 governed ACP attempt', behavior: 'durable text resume validates and resumes exactly the paused ACP Run', scenario: 'acp_control' },
+  { id: 'D7-ACP-06', stage: '7 governed ACP attempt', behavior: 'a continuation relaunch failure is committed instead of losing queued input', scenario: 'acp_control' },
+  { id: 'D7-ACP-07', stage: '7 governed ACP attempt', behavior: 'restart rejects a permission ticket missing its call identity or pending tool', scenario: 'acp_ticket_corruption' },
 
   { id: 'D8-01', stage: '8 neutral MCP server core', behavior: 'newest and older protocol versions negotiate', scenario: 'mcp_stdio' },
   { id: 'D8-02', stage: '8 neutral MCP server core', behavior: 'unsupported version returns invalid params', scenario: 'mcp_stdio' },
@@ -250,6 +250,29 @@ const obligations: Obligation[] = [
   { id: 'D8-15', stage: '8 neutral MCP server core', behavior: 'progress and one final response use ordered SSE envelopes', scenario: 'mcp_http' },
   { id: 'D8-16', stage: '8 neutral MCP server core', behavior: 'tools/list_changed reaches a standing SSE client', scenario: 'mcp_http' },
   { id: 'D8-17', stage: '8 neutral MCP server core', behavior: 'DELETE closes session and stale reuse is 404', scenario: 'mcp_http' },
+
+  // G42/G43 promotion decision table. These rows consolidate existing real
+  // process effects; they do not create another Session/MCP or credential test
+  // path. G43-P07 is deliberately a fail-closed cell: positive Worker-held
+  // substitution remains unpromoted until a deployment provider proves both
+  // substitution and no-bypass networking.
+  //
+  // | Rule | exact generation/source | live claim/holder | provider proof | Effect |
+  // | G42-P01..P05 | yes | yes | n/a | freeze/realize/recover one generation |
+  // | G43-P01..P06 | yes | yes | n/a | materialize exact binding or reject |
+  // | G43-P07 | yes | yes | no | reject before launch; never downgrade |
+  { id: 'G42-P01', stage: '9 guardrail promotion evidence', behavior: 'preparing Session remains invisible until the claim-fenced application contribution freezes one root revision', scenario: 'application_session_worker' },
+  { id: 'G42-P02', stage: '9 guardrail promotion evidence', behavior: 'application and Session MCP inputs converge into one normalized attachment authority', scenario: 'application_session_worker' },
+  { id: 'G42-P03', stage: '9 guardrail promotion evidence', behavior: 'lease renewal republishes only the exact current MCP generation', scenario: 'application_session_worker' },
+  { id: 'G42-P04', stage: '9 guardrail promotion evidence', behavior: 'ownership loss revokes process-local realization without changing durable Session truth', scenario: 'application_session_worker' },
+  { id: 'G42-P05', stage: '9 guardrail promotion evidence', behavior: 'legacy Session rows establish one canonical root and ignore stale retained columns after restart', scenario: 'managed_session_legacy_upgrade' },
+  { id: 'G43-P01', stage: '9 guardrail promotion evidence', behavior: 'credential materialization binds exact source, recipient, target, usage, payload and claim epoch', scenario: 'credential_materialization_worker' },
+  { id: 'G43-P02', stage: '9 guardrail promotion evidence', behavior: 'mismatched payload or target cannot replay an envelope', scenario: 'credential_materialization_worker' },
+  { id: 'G43-P03', stage: '9 guardrail promotion evidence', behavior: 'expired or wrong-recipient material fails before provider I/O', scenario: 'credential_materialization_worker' },
+  { id: 'G43-P04', stage: '9 guardrail promotion evidence', behavior: 'ambient provider variables cannot replace the published credential reference', scenario: 'credential_reference_worker' },
+  { id: 'G43-P05', stage: '9 guardrail promotion evidence', behavior: 'revoked worker-local material fails exact use-time validation before launch', scenario: 'credential_reference_worker' },
+  { id: 'G43-P06', stage: '9 guardrail promotion evidence', behavior: 'ACP receives the publication-pinned endpoint, model, credential revision and isolated config home', scenario: 'acp_projected_local' },
+  { id: 'G43-P07', stage: '9 guardrail promotion evidence', behavior: 'authenticated container ACP MCP fails closed without provider substitution and no-bypass proof', scenario: 'acp_projected_container' },
 ];
 
 function docker(...args: string[]): string {
@@ -354,6 +377,11 @@ function stagePortAllocator(): () => Promise<number> {
 }
 
 async function main(): Promise<void> {
+  assert.equal(
+    new Set(obligations.map((obligation) => obligation.id)).size,
+    obligations.length,
+    'functional obligation ids must be globally unique',
+  );
   for (const scenario of scenarios) {
     assert.ok(
       obligations.some((obligation) => obligation.scenario === scenario.id),

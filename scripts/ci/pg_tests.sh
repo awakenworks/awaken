@@ -8,33 +8,103 @@
 # stands up a throwaway Postgres, points the tests at it via AWAKEN_TEST_DATABASE_URL,
 # runs them, and tears the container down — closing the "false green" gap (matrix P0).
 #
-# Docker-gated: if docker is unavailable the script SKIPS (exit 0), so it is safe to
-# wire into a hook/CI that also runs on machines without docker. CI images that
-# provide docker get the real coverage; laptops without it keep the fast path.
+# By default Docker absence is reported as an explicit local skip. The release
+# gate passes ``--require-docker`` so the same condition fails instead of
+# producing a false green.
 #
-# Usage: scripts/ci/pg_tests.sh   (from repo root)
+# Usage: scripts/ci/pg_tests.sh [--require-docker|--self-test]   (from repo root)
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
 awaken_configure_cargo_target "$PWD"
 
+require_docker=0
+
+published_port() {
+  local binding="$1"
+  local port="${binding##*:}"
+  if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+    printf '%s\n' "$port"
+    return 0
+  fi
+  return 1
+}
+
+self_test() {
+  # Startup cause/effect decision table:
+  # C1 an explicit port is requested; C2 Docker creates the container; C3 the
+  # dynamically published binding is a valid TCP port.
+  #
+  # | Rule | C1 | C2 | C3 | Effect |
+  # | P1   | T  | T  | -  | use exact requested port |
+  # | P2   | F  | T  | T  | discover Docker-assigned free port |
+  # | P3   | *  | F  | -  | fail immediately; never enter readiness loop |
+  # | P4   | F  | T  | F  | fail before constructing database URL |
+  test "$(published_port '127.0.0.1:49152')" = "49152" || return 1
+  ! published_port 'invalid-binding' >/dev/null || return 1
+  ! published_port '127.0.0.1:0' >/dev/null || return 1
+  # P5: every feature-gated Postgres adapter is compiled as such. Merely
+  # setting a database URL must not turn an in-memory-only test into a green
+  # Postgres gate.
+  local crate
+  for crate in awaken-admin-config-api awaken-model-catalog awaken-credential-vault \
+    awaken-data-subject awaken-memory-store awaken-skill-store; do
+    grep -Fq "cargo test -p $crate --features postgres" "$0" || {
+      echo "Postgres gate omits --features postgres for $crate" >&2
+      return 1
+    }
+  done
+}
+
+case "${1:-}" in
+  "") ;;
+  --require-docker) require_docker=1 ;;
+  --self-test) self_test; exit $? ;;
+  *) echo "usage: scripts/ci/pg_tests.sh [--require-docker|--self-test]" >&2; exit 2 ;;
+esac
+
 if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+  if [ "$require_docker" -eq 1 ]; then
+    echo "✗ Docker is required for Postgres-backed release tests" >&2
+    exit 1
+  fi
   echo "docker unavailable; skipping Postgres-backed tests (they self-skip without a DB)"
   exit 0
 fi
 
 NAME="awaken-ci-pg-$$"
-PORT="${AWAKEN_CI_PG_PORT:-55432}"
+REQUESTED_PORT="${AWAKEN_CI_PG_PORT:-}"
 PASSWORD="ci" # awaken-allow: secret (throwaway ephemeral container, torn down on exit)
 DB="awaken"
 
 cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-echo "-> starting ephemeral Postgres ($NAME) on :$PORT"
-docker run -d --name "$NAME" \
+if [ -n "$REQUESTED_PORT" ]; then
+  if ! PORT="$(published_port "127.0.0.1:$REQUESTED_PORT")"; then
+    echo "✗ AWAKEN_CI_PG_PORT must be an integer from 1 to 65535" >&2
+    exit 2
+  fi
+  PUBLISH="127.0.0.1:$PORT:5432"
+  echo "-> starting ephemeral Postgres ($NAME) on requested :$PORT"
+else
+  PUBLISH="127.0.0.1::5432"
+  echo "-> starting ephemeral Postgres ($NAME) on a Docker-assigned free port"
+fi
+if ! docker run -d --name "$NAME" \
   -e POSTGRES_PASSWORD="$PASSWORD" -e POSTGRES_DB="$DB" `# awaken-allow: secret` \
-  -p "$PORT:5432" postgres:16-alpine >/dev/null
+  -p "$PUBLISH" postgres:16-alpine >/dev/null; then
+  echo "✗ Docker could not create the ephemeral Postgres container" >&2
+  exit 1
+fi
+
+if [ -z "$REQUESTED_PORT" ]; then
+  if ! PORT="$(published_port "$(docker port "$NAME" 5432/tcp)")"; then
+    echo "✗ Docker did not publish a valid Postgres TCP port" >&2
+    exit 1
+  fi
+  echo "-> Docker published ephemeral Postgres on :$PORT"
+fi
 
 # Wait until the server accepts connections (bounded; fail loud if it never does).
 ready=0
@@ -67,13 +137,13 @@ cargo test -p awaken-runtime-host \
 cargo test -p awaken-runtime-host --test active_active_postgres -- --test-threads=1 \
   || status=1
 cargo test -p awaken-config-store --test postgres || status=1
-cargo test -p awaken-admin-config-api --test postgres_store || status=1
+cargo test -p awaken-admin-config-api --features postgres --test postgres_store || status=1
 cargo test -p awaken-store-postgres --test postgres_live || status=1
-cargo test -p awaken-model-catalog --test repo_conformance || status=1
-cargo test -p awaken-credential-vault --test repo_conformance || status=1
-cargo test -p awaken-data-subject --test repo_conformance || status=1
-cargo test -p awaken-memory-store --test conformance || status=1
-cargo test -p awaken-skill-store --test conformance || status=1
+cargo test -p awaken-model-catalog --features postgres --test repo_conformance || status=1
+cargo test -p awaken-credential-vault --features postgres --test repo_conformance || status=1
+cargo test -p awaken-data-subject --features postgres --test repo_conformance || status=1
+cargo test -p awaken-memory-store --features postgres --test conformance || status=1
+cargo test -p awaken-skill-store --features postgres --test conformance || status=1
 cargo test -p awaken-resource-store --all-features || status=1
 cargo test -p awaken-work-store || status=1
 

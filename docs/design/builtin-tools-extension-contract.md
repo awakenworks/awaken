@@ -13,7 +13,7 @@ authority, credential secrets, or public protocol DTOs.
 
 | Toolset | Default role | Execution owner | Notes |
 |---|---|---|---|
-| `builtin-hand-tools` | local hand operations | Runtime extension (in-process) | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search` |
+| `builtin-hand-tools` | local hand operations | Runtime extension (in-process) | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`; search is owned by `WebSearchPlugin` |
 | `builtin-task-tools` | runtime task and recovery helpers | Runtime extension plus Dispatch / Server | `send_message`, `cancel_task`, `recover_failed_messages` |
 | `builtin-delegation-tools` | Agent delegation | Runtime extension (local or remote child Run) | one `agent_run` tool with `agent_id` argument |
 
@@ -49,7 +49,8 @@ Rules:
    extension's environment;
 3. `bash` requires explicit shell capability and command policy;
 4. `write` and `edit` require write permission and conflict handling;
-5. `web_fetch` and `web_search` require network policy and source/audit handling;
+5. `web_fetch` requires network policy and source/audit handling; `web_search`
+   is exposed only by the separately configured `WebSearchPlugin`;
 6. filesystem, shell, and network operations run in-process in the extension; the
    runtime owns execution and commits the result through the normal tool path.
 

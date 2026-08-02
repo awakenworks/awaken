@@ -2,7 +2,7 @@
 // TS SDK against awaken-server (echo model).
 //
 // Drives one session through many running<->idle cycles and asserts the machine
-// stays well-formed for the whole run: every turn appends exactly one
+// stays well-formed for the whole run: every turn appends exactly one user.message,
 // session.status_running, one agent.message (the correct echo, in order), and one
 // session.status_idle{end_turn}; event ids are globally unique and stable when reread;
 // the session is idle between turns and at the end. Catches leaks/regressions that only
@@ -47,19 +47,23 @@ async function main() {
 
       // The state machine's ledger after the whole run.
       const events = await listAll(client, session.id);
+      const inputs = events.filter((e) => e.type === 'user.message');
       const runnings = events.filter((e) => e.type === 'session.status_running');
       const messages = events.filter((e) => e.type === 'agent.message');
       const idles = events.filter((e) => e.type === 'session.status_idle');
 
+      assert.equal(inputs.length, TURNS, `exactly one user.message per turn (${inputs.length}/${TURNS})`);
       assert.equal(runnings.length, TURNS, `exactly one status_running per turn (${runnings.length}/${TURNS})`);
       assert.equal(messages.length, TURNS, `exactly one agent.message per turn (${messages.length}/${TURNS})`);
       assert.equal(idles.length, TURNS, `exactly one status_idle per turn (${idles.length}/${TURNS})`);
-      assert.equal(events.length, 3 * TURNS, 'no stray events accumulated');
+      assert.equal(events.length, 4 * TURNS, 'no stray events accumulated');
       for (let i = 0; i < TURNS; i++) {
+        // Cause/effect decision rule per turn: one admitted input (cause) must be
+        // followed by exactly one running -> reply -> idle effect chain.
         assert.deepEqual(
-          events.slice(i * 3, i * 3 + 3).map((e) => e.type),
-          ['session.status_running', 'agent.message', 'session.status_idle'],
-          `turn ${i} kept the running -> message -> idle lifecycle order`,
+          events.slice(i * 4, i * 4 + 4).map((e) => e.type),
+          ['user.message', 'session.status_running', 'agent.message', 'session.status_idle'],
+          `turn ${i} kept the input -> running -> message -> idle lifecycle order`,
         );
       }
 

@@ -1,10 +1,13 @@
-# Formal verification expansion: 79 additional obligations
+# Formal verification expansion ledger
 
 The first batch expanded the versioned safety ledger from 28 to 56 formalizable,
 machine-linked obligations. The original 28 remain unchanged. Those additional
 28 are grouped below by the production boundary they verify; the second batch
-below raises the total to 92; transactional hardening raises it to 97; the
-production-completion batch at the end raises the final total to 107.
+below raises the historical total to 92; transactional hardening raises it to
+97; and the production-completion batch raises that historical milestone to
+107. The current count is deliberately not duplicated here:
+`formal/coverage.json` is the authority and `check_formal_coverage.py` prints the
+current proved/formalizable ratio on every strict gate run.
 
 ## No distributed-architecture change required
 

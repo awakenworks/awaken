@@ -198,7 +198,9 @@ async function main() {
         async () => {
           // The Memory API is a read-only observation here. The governed mount
           // writes through to the same repository; Files GET has no hidden write edge.
-          const page = await client.get(`/v1/memory_stores/${mem.id}/memories`, {
+          // Content is observable only in the authoritative full view; the
+          // default basic projection intentionally owns metadata alone.
+          const page = await client.get(`/v1/memory_stores/${mem.id}/memories?view=full`, {
             headers: MEMORY_HEADERS,
           });
           memContent = (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');

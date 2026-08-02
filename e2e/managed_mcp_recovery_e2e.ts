@@ -26,6 +26,7 @@ import {
   type McpServer,
   replaceMcpServers,
   responseEtag,
+  retrieveSessionWithEtag,
   sendManagedMessage,
 } from './fixtures/managed_mcp_session.ts';
 
@@ -114,15 +115,13 @@ async function main(): Promise<void> {
     assert.equal(fixtureB.calls.length, beforeReplayIo, 'R2 performs no realization I/O');
     pass('R2 idempotency receipt survives restart and replays without effect');
 
-    const current = await client.beta.sessions
-      .retrieve(session.id, { betas: BETAS })
-      .withResponse();
+    const current = await retrieveSessionWithEtag(client, session.id, BETAS);
     const removed = await update(
       client,
       session.id,
       [],
       'persisted-remove-b',
-      responseEtag(current.response),
+      current.etag,
     );
     assert.deepEqual(removed.data.agent.mcp_servers, []);
     await stopServer(server);

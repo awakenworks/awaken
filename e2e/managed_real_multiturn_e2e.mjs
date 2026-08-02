@@ -13,21 +13,18 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { pass, sendAndListNewEvents, withServer } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38253);
 const BETAS = ['managed-agents-2026-04-01'];
 
 async function ask(client, id, text) {
-  const before = [];
-  for await (const ev of client.beta.sessions.events.list(id, { betas: BETAS })) before.push(ev.id);
-  const seen = new Set(before);
-  await client.beta.sessions.events.send(id, { events: [{ type: 'user.message', content: [{ type: 'text', text }] }], betas: BETAS });
+  const events = await sendAndListNewEvents(client, id, {
+    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
+    betas: BETAS,
+  });
   // The last agent.message produced by this turn (skip prior-turn history).
-  const msgs = [];
-  for await (const ev of client.beta.sessions.events.list(id, { betas: BETAS })) {
-    if (!seen.has(ev.id) && ev.type === 'agent.message') msgs.push(ev);
-  }
+  const msgs = events.filter((event) => event.type === 'agent.message');
   return JSON.stringify(msgs.at(-1)?.content ?? '');
 }
 

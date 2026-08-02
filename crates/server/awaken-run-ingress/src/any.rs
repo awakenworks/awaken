@@ -93,7 +93,7 @@ impl AnyDispatchStore {
             .map_err(|e| e.to_string())
     }
 
-    /// Connect the Postgres backend and, sharing its pool, a [`PgNotifyWake`] over
+    /// Connect the Postgres backend and, sharing its pool, a `PgNotifyWake` over
     /// `channel`: the served pool's wake fires `pg_notify` on the same database it
     /// enqueues into, so a peer node's `LISTEN` is nudged with no extra
     /// infrastructure (ADR-0019/0024). Returns the store plus the ready wake signal;
