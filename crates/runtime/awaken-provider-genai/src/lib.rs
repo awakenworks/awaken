@@ -195,7 +195,12 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long the stream may go silent between events before the turn fails as
 /// a retryable timeout. The overall `timeout` only guards opening the call;
 /// without this, a provider that stalls mid-stream would hang the run forever.
-const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+// Strong reasoning models can legitimately produce no SSE event for more than
+// one minute before their first visible token. Keep the default aligned with
+// the call-open timeout so that this valid prefill/reasoning interval is not
+// misclassified as a stalled transport. Tests and specialized hosts can still
+// choose a tighter bound with `with_idle_timeout`.
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 fn normalize_provider_base_url(adapter: AdapterKind, base_url: Option<String>) -> Option<String> {
     base_url.map(|base_url| {
@@ -898,9 +903,20 @@ pub fn map_usage(usage: &Usage) -> TokenUsage {
 
 #[cfg(test)]
 mod classify_tests {
+    use std::time::Duration;
+
     use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
 
-    use super::{GenaiExecutor, classify_error};
+    use super::{DEFAULT_IDLE_TIMEOUT, GenaiExecutor, classify_error};
+
+    #[test]
+    fn default_stream_idle_window_allows_long_reasoning_prefill() {
+        // A live DeepSeek reasoning turn produced no SSE event for just over
+        // sixty seconds and was incorrectly terminated as a transport stall.
+        // Preserve at least two minutes for valid model-side prefill/reasoning;
+        // explicit test/host overrides retain the fast-stall path.
+        assert!(DEFAULT_IDLE_TIMEOUT >= Duration::from_secs(120));
+    }
 
     #[test]
     fn a_hard_usage_limit_is_recognised_and_not_retryable() {
