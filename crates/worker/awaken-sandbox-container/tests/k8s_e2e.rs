@@ -14,6 +14,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
+use awaken_runtime_contract::llm::ToolCall;
+use awaken_runtime_contract::tool::{ToolError, ToolExecutor};
 use awaken_sandbox_container::k8s::K8sRuntime;
 use awaken_sandbox_container::{ContainerProvider, ContainerSandbox, command_of};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -647,4 +649,127 @@ async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
         got.contains("binary-ok"),
         "a binary File must reach the Pod via a binaryData ConfigMap: {got:?}"
     );
+}
+
+#[tokio::test]
+async fn an_expired_hand_exec_is_safe_to_replace_inside_the_same_session_pod() {
+    /*
+     * Real Kubernetes Hand-expiry decision table. Causes: C1 a live Session Pod
+     * executes bash through the production relay and Hand; C2 its attached-exec
+     * process is killed before the next request; C3 the same dead executor is
+     * invoked; C4 one replacement Hand is attached to the unchanged Pod.
+     * Effects: E1 the initial call succeeds; E2 the dead channel is classified as
+     * UnavailableBeforeDispatch (and therefore safe for the Session owner to
+     * retry); E3 the replacement executes a second real bash; E4 the Session Pod
+     * identity is unchanged and is disposed. Rule KHR1=C1+C2+C3+C4=>E1+E2+E3+E4.
+     * Runtime-host's H1-H6 unit table separately proves that its canonical owner
+     * performs exactly this one bounded replacement and never retries after dispatch.
+     */
+    if std::env::var("AWAKEN_K8S_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping: set AWAKEN_K8S_E2E=1 with a reachable cluster to run");
+        return;
+    }
+    if !kubectl(&["get", "nodes"]).status.success() {
+        eprintln!("skipping: no reachable Kubernetes cluster");
+        return;
+    }
+
+    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+    let image = std::env::var("AWAKEN_K8S_SESSION_IMAGE")
+        .unwrap_or_else(|_| "awaken-sandbox:local".to_string());
+    let scope = format!("k8s-hand-recovery-{}", std::process::id());
+    let runtime = K8sRuntime::connect(&namespace, "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to Kubernetes");
+    let provider = ContainerProvider::new(Arc::new(runtime), image.clone());
+    let mut sandbox_spec = spec(&scope);
+    sandbox_spec.extra = Some(serde_json::json!({
+        "command": session_argv(),
+        "image": image,
+    }));
+    let sandbox = provider
+        .create_container(&sandbox_spec)
+        .await
+        .expect("create the Session Pod");
+    let session_handle = pc::Sandbox::handle(&sandbox);
+
+    let first = sandbox
+        .spawn_agent(pc::Command {
+            argv: vec![
+                "/usr/local/bin/awaken-sandbox".into(),
+                "hand".into(),
+                "--stdio".into(),
+            ],
+            cwd: "/workspace".into(),
+            env: Vec::new(),
+            stdio: pc::Stdio::Piped,
+        })
+        .await
+        .expect("attach the initial Hand");
+    let first_executor = awaken_tool_relay::RemoteToolExecutor::new(first.channel)
+        .with_operation_scope(pc::Sandbox::id(&sandbox));
+    let before = first_executor
+        .invoke(&ToolCall {
+            call_id: "before-expiry".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({"command": "printf before-expiry"}),
+        })
+        .await
+        .expect("the initial Hand executes a real tool");
+    assert!(before.text().contains("before-expiry"));
+    first
+        .process
+        .signal(pc::Signal::Kill)
+        .await
+        .expect("kill the attached Hand exec");
+    first.process.wait().await.expect("observe Hand exit");
+
+    let error = first_executor
+        .invoke(&ToolCall {
+            call_id: "closed-channel".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({"command": "printf must-not-run"}),
+        })
+        .await
+        .expect_err("the expired channel cannot dispatch another call");
+    assert!(matches!(error, ToolError::UnavailableBeforeDispatch(_)));
+
+    let replacement = sandbox
+        .spawn_agent(pc::Command {
+            argv: vec![
+                "/usr/local/bin/awaken-sandbox".into(),
+                "hand".into(),
+                "--stdio".into(),
+            ],
+            cwd: "/workspace".into(),
+            env: Vec::new(),
+            stdio: pc::Stdio::Piped,
+        })
+        .await
+        .expect("attach one replacement Hand");
+    let replacement_process = replacement.process;
+    let replacement_executor = awaken_tool_relay::RemoteToolExecutor::new(replacement.channel)
+        .with_operation_scope(pc::Sandbox::id(&sandbox));
+    let after = replacement_executor
+        .invoke(&ToolCall {
+            call_id: "after-expiry".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({"command": "printf after-expiry"}),
+        })
+        .await
+        .expect("the replacement Hand executes a real tool");
+    assert!(after.text().contains("after-expiry"));
+    assert_eq!(pc::Sandbox::handle(&sandbox), session_handle);
+
+    replacement_process
+        .signal(pc::Signal::Term)
+        .await
+        .expect("stop the replacement Hand");
+    replacement_process
+        .wait()
+        .await
+        .expect("observe replacement exit");
+    pc::Sandbox::dispose(&sandbox)
+        .await
+        .expect("dispose the Session Pod");
 }
