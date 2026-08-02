@@ -139,8 +139,17 @@ impl RefreshingHandExecutor {
     pub(super) async fn stop(&self) {
         self.closed
             .store(true, std::sync::atomic::Ordering::Release);
+        let _ = self.hibernate().await;
+    }
+
+    /// Release the current Hand process/channel without closing its Session owner.
+    /// The next invocation reacquires one binding through the same serialized path.
+    pub(super) async fn hibernate(&self) -> bool {
         if let Some(binding) = self.binding.lock().await.take() {
             Self::stop_binding(binding).await;
+            true
+        } else {
+            false
         }
     }
 

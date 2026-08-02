@@ -944,7 +944,8 @@ impl ManagedState {
             title: req.title.clone(),
             metadata: req.metadata.clone(),
             tools: effective_tools.clone(),
-            environment_binding: None,
+            activity: Default::default(),
+            environment: Default::default(),
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
@@ -1558,7 +1559,7 @@ impl ManagedState {
                 session
             };
             persisted = Some(recovered.clone());
-            if let Some(binding) = recovered.environment_binding.as_deref() {
+            if let Some(binding) = recovered.environment.binding() {
                 self.runtime
                     .restore_session_environment(&baseline.agent_id, id, binding)
                     .await

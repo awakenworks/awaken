@@ -390,6 +390,16 @@ impl SessionEnvironment {
         }
     }
 
+    /// Drop resumable process capabilities while retaining the Session sandbox.
+    /// Unlike terminal stop, this deliberately permits lazy reacquisition.
+    pub(crate) async fn hibernate_bound_processes(&self) -> bool {
+        if let Self::Container { hand, .. } = self {
+            hand.hibernate().await
+        } else {
+            false
+        }
+    }
+
     pub(crate) async fn spawn_agent(
         &self,
         command: pc::Command,
@@ -1123,10 +1133,12 @@ mod tests {
          * binding, spawn exactly one replacement, and safely retry; E3 serialize
          * concurrent recovery behind that one replacement; E4 return after one
          * bounded retry; E5 never replay an indeterminate call; E6 propagate a
-         * replacement-start failure without a loop; E7 never restart after close.
+         * replacement-start failure without a loop; E7 never restart after close;
+         * E8 hibernate releases the binding but permits one lazy replacement;
+         * E9 repeated hibernate is an idempotent no-op.
          * Rules: H1 success=>E1; H2 unavailable+C2+C3(success)=>E2+E3;
          * H3 unavailable+C3(unavailable)=>E4; H4 C4=>E5; H5 C5=>E6;
-         * H6 C6=>E7.
+         * H6 C6=>E7; H7 hibernate then invoke=>E8; H8 hibernate twice=>E9.
          */
         let provider = Arc::new(FakeContainerProvider::default());
         let stable = ScriptedHandFactory::new([ScriptedHandOutcome::Success]);
@@ -1158,6 +1170,27 @@ mod tests {
                 .load(std::sync::atomic::Ordering::SeqCst),
             1
         );
+        assert!(environment.hibernate_bound_processes().await);
+        assert!(!environment.hibernate_bound_processes().await);
+        assert_eq!(
+            hand.invoke(&ToolCall {
+                call_id: "after-hibernate".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({}),
+            })
+            .await
+            .unwrap()
+            .text(),
+            "recovered"
+        );
+        assert_eq!(stable.binds.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(
+            provider
+                .hand_spawns
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "hibernation reacquires exactly one Hand on demand"
+        );
         environment.stop_bound_processes().await;
         assert!(matches!(
             hand.invoke(&ToolCall {
@@ -1172,7 +1205,7 @@ mod tests {
             provider
                 .hand_spawns
                 .load(std::sync::atomic::Ordering::SeqCst),
-            1,
+            2,
             "a closed owner never launches another Hand"
         );
         environment.dispose().await.unwrap();

@@ -651,6 +651,10 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                     || session.resources.needs_reconciliation()
                     || (session.status != "idle" && session.resources.has_active())
                     || session.mcp.needs_reconciliation()
+                    || !matches!(
+                        session.environment,
+                        awaken_session_contract::SessionEnvironmentState::Unmaterialized
+                    )
             })
             .collect()
     }
@@ -1066,6 +1070,10 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 || session.resources.needs_reconciliation()
                 || (session.status != "idle" && session.resources.has_active())
                 || session.mcp.needs_reconciliation()
+                || !matches!(
+                    session.environment,
+                    awaken_session_contract::SessionEnvironmentState::Unmaterialized
+                )
         })
         .collect()
     }
@@ -1163,7 +1171,7 @@ mod tests {
         assert_eq!(created.session_id, "sesn_waiting_writer", "W2");
     }
 
-    fn sample(id: &str) -> PersistedSession {
+    pub(crate) fn sample(id: &str) -> PersistedSession {
         let mut metadata = BTreeMap::new();
         metadata.insert("team".to_string(), "research".to_string());
         PersistedSession {
@@ -1210,7 +1218,8 @@ mod tests {
             title: Some("My session".to_string()),
             metadata,
             tools: Default::default(),
-            environment_binding: None,
+            activity: Default::default(),
+            environment: Default::default(),
             mcp: SessionMcpAttachmentSet::from_initial(
                 vec![McpAttachmentDraft {
                     name: "calc".into(),
@@ -1249,7 +1258,7 @@ mod tests {
         }
     }
 
-    async fn create_fixture<R: ManagedSessionRepository>(
+    pub(crate) async fn create_fixture<R: ManagedSessionRepository>(
         repo: &R,
         owner: &str,
         mut session: PersistedSession,
@@ -1559,7 +1568,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn environment_binding_survives_sqlite_reopen() {
+    async fn environment_state_survives_sqlite_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sessions-binding.db");
         let path = path.to_string_lossy().to_string();
@@ -1567,7 +1576,7 @@ mod tests {
             let repo = SqliteManagedSessionRepository::open(&path).unwrap();
             create_fixture(&repo, "ws_a", sample("sesn_bound"), Vec::new()).await;
             let mut bound = repo.get("sesn_bound").await.unwrap();
-            bound.environment_binding = Some("opaque-binding".into());
+            bound.environment.set_resident("opaque-binding");
             replace_fixture(&repo, "ws_a", bound, "test:bind", Vec::new()).await;
         }
         let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
@@ -1575,7 +1584,7 @@ mod tests {
             reopened
                 .get("sesn_bound")
                 .await
-                .and_then(|session| session.environment_binding),
+                .and_then(|session| session.environment.binding().map(str::to_owned)),
             Some("opaque-binding".to_string())
         );
         assert_eq!(reopened.owner("sesn_bound").await.as_deref(), Some("ws_a"));

@@ -1344,17 +1344,6 @@ impl SessionRuntime for ManagedHost {
         Ok(())
     }
 
-    async fn session_environment_binding(&self, thread: &str) -> Result<Option<String>, RunError> {
-        self.host
-            .session_environment_handle(thread)
-            .await
-            .map(|handle| {
-                serde_json::to_string(&handle)
-                    .map_err(|error| RunError::internal(error.to_string()))
-            })
-            .transpose()
-    }
-
     async fn restore_session_environment(
         &self,
         agent: &str,
@@ -1375,6 +1364,13 @@ impl SessionRuntime for ManagedHost {
             .await
             .map_err(to_run_error)?;
         Ok(())
+    }
+
+    async fn hibernate_session_environment(&self, thread: &str) -> Result<bool, RunError> {
+        let Some(environment) = self.host.session_environment(thread).await else {
+            return Ok(false);
+        };
+        Ok(environment.hibernate_bound_processes().await)
     }
 
     /// Committed transcript from durable truth, so the adapter can rehydrate a

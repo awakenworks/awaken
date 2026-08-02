@@ -81,6 +81,28 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
     );
     if let Some(aggregate_json) = row.aggregate_json {
         let mut value: serde_json::Value = serde_json::from_str(&aggregate_json)?;
+        // One-way migration from the former nullable binding. The canonical
+        // aggregate now owns a typed environment phase; retained SQL columns are
+        // read only for pre-aggregate rows and never become a second write path.
+        if value.get("environment").is_none() {
+            let legacy_binding = value
+                .as_object_mut()
+                .and_then(|object| object.remove("environment_binding"));
+            let environment = match legacy_binding {
+                Some(serde_json::Value::String(binding)) => {
+                    awaken_session_contract::SessionEnvironmentState::Resident { binding }
+                }
+                _ => awaken_session_contract::SessionEnvironmentState::Unmaterialized,
+            };
+            value
+                .as_object_mut()
+                .expect("Session aggregate is an object")
+                .insert(
+                    "environment".into(),
+                    serde_json::to_value(environment)
+                        .expect("Session environment state serializes"),
+                );
+        }
         if value.get("tools").is_none()
             && let Some(agent_tools) = value
                 .as_object_mut()
@@ -210,7 +232,11 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         title: row.title,
         metadata: serde_json::from_str(&row.metadata_json)?,
         tools: Default::default(),
-        environment_binding: row.environment_binding,
+        activity: Default::default(),
+        environment: row.environment_binding.map_or(
+            awaken_session_contract::SessionEnvironmentState::Unmaterialized,
+            |binding| awaken_session_contract::SessionEnvironmentState::Resident { binding },
+        ),
         mcp,
         resources,
         realization: None,
@@ -261,4 +287,52 @@ fn legacy_credential_access(
         ));
     }
     access
+}
+
+#[cfg(test)]
+mod tests {
+    use awaken_session_contract::ManagedSessionRepository as _;
+    use rusqlite::params;
+
+    use crate::{SqliteManagedSessionRepository, tests::create_fixture, tests::sample};
+
+    /// Environment migration cause/effect decision table.
+    /// C1=typed `environment` exists; C2=legacy aggregate binding is a string.
+    /// E1=typed value remains authoritative; E2=legacy binding becomes Resident;
+    /// E3=missing/null legacy binding becomes Unmaterialized. Rules: M1 C1=>E1;
+    /// M2 !C1+C2=>E2; M3 !C1+!C2=>E3. This covers M2/M3; normal repository
+    /// round-trips cover M1.
+    #[tokio::test]
+    async fn legacy_aggregate_environment_binding_migrates_once_to_typed_state() {
+        let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+        create_fixture(&repo, "default", sample("legacy-bound"), Vec::new()).await;
+        create_fixture(&repo, "default", sample("legacy-unbound"), Vec::new()).await;
+        for (id, binding) in [
+            ("legacy-bound", serde_json::json!("opaque-binding")),
+            ("legacy-unbound", serde_json::Value::Null),
+        ] {
+            let mut legacy = serde_json::to_value(sample(id)).unwrap();
+            let object = legacy.as_object_mut().unwrap();
+            object.remove("environment");
+            object.insert("environment_binding".into(), binding);
+            repo.conn
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE managed_session SET aggregate_json = ?2 WHERE session_id = ?1",
+                    params![id, serde_json::to_string(&legacy).unwrap()],
+                )
+                .unwrap();
+        }
+
+        let bound = repo.get("legacy-bound").await.unwrap();
+        assert_eq!(bound.environment.binding(), Some("opaque-binding"), "M2");
+        assert!(
+            matches!(
+                repo.get("legacy-unbound").await.unwrap().environment,
+                awaken_session_contract::SessionEnvironmentState::Unmaterialized
+            ),
+            "M3"
+        );
+    }
 }
