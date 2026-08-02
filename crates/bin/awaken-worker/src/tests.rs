@@ -228,7 +228,7 @@ fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
         deployment: &deployment,
         materializer: Some(&materializer),
         credential_materializer: None,
-        worker_local_credentials: false,
+        worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
@@ -400,18 +400,22 @@ fn external_credential_resolver_has_one_canonical_composition_path() {
     );
 }
 
-/// Credential capability derivation cause graph:
+/// Credential capability derivation cause-effect graph:
 ///
-/// inference materializer or exact credential materializer -> its independent
-/// Worker provider-adapter profile; exact credential materializer + installed
-/// ACP profile -> an additional Workload process-secret profile. Missing ACP
-/// never removes the installed Native adapter evidence.
+/// C1 exact credential materializer is installed; C2 ACP is installed; C3 an
+/// exact Worker-local observation/revalidation resolver is installed. E1 is
+/// Provider credential-source placement, E2 is Worker/provider-adapter
+/// realization, E3 is Workload/process-secret realization, and E4 is the
+/// Worker-local observation capability. Constraints: E1 and E2 follow only C1;
+/// E3 requires C1 AND C2; E4 follows only C3. This keeps the two independent
+/// credential mechanisms from being inferred from one another.
 ///
-/// | Rule | materializer | credential store | ACP | Result |
-/// |---|---|---|---|---|
-/// | C1 | credential-aware | - | - | Worker/provider-adapter |
-/// | C2 | - | T | T | Worker/provider-adapter + Workload/process-secret |
-/// | C3 | - | T | F | Worker/provider-adapter only |
+/// | Rule | C1 materializer | C2 ACP | C3 local resolver | E1/E2 provider | E3 process secret | E4 Worker-local |
+/// |---|---|---|---|---|---|---|
+/// | R1 | T | T | F | T | T | F |
+/// | R2 | T | F | F | T | F | F |
+/// | R3 | F | F | T | F | F | T |
+/// | R4 | F | F | F | F | F | F |
 #[test]
 fn standard_manifest_advertises_only_installed_credential_mechanisms() {
     let mut acp = deployment();
@@ -423,7 +427,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         deployment: &acp,
         materializer: None,
         credential_materializer: Some(credential_support()),
-        worker_local_credentials: false,
+        worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
@@ -478,12 +482,18 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
             .capabilities
             .contains(awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY)
     );
+    assert!(
+        !workload
+            .capabilities
+            .contains(awaken_worker_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY),
+        "R1 a materializer cannot imply the independent Worker-local resolver capability"
+    );
 
     let without_acp = derive_standard_manifest(StandardManifestInputs {
         deployment: &deployment(),
         materializer: None,
         credential_materializer: Some(credential_support()),
-        worker_local_credentials: false,
+        worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
@@ -512,6 +522,81 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         without_acp
             .capabilities
             .contains(awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY)
+    );
+    assert!(
+        !supports_workload_process_secret(&native)
+            && !native
+                .alternatives
+                .iter()
+                .any(supports_workload_process_secret),
+        "R2 missing ACP cannot advertise Workload process-secret realization"
+    );
+    assert!(
+        !without_acp
+            .capabilities
+            .contains(awaken_worker_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY),
+        "R2 a materializer cannot imply the independent Worker-local resolver capability"
+    );
+
+    let local_observation_only = derive_standard_manifest(StandardManifestInputs {
+        deployment: &deployment(),
+        materializer: None,
+        credential_materializer: None,
+        worker_local_credential_resolver_installed: true,
+        remote_credential_realization: None,
+        sandbox_override: None,
+        resource_support: ResourceManifestSupport::None,
+        application_capabilities: Default::default(),
+        config: &StandardManifestConfig::default(),
+    });
+    assert!(
+        local_observation_only
+            .capabilities
+            .contains(awaken_worker_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY),
+        "R3 an installed resolver advertises its exact Worker-local capability"
+    );
+    assert!(
+        !local_observation_only
+            .capabilities
+            .contains(awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY),
+        "R3 a Worker-local resolver cannot imply a provider credential source"
+    );
+    assert!(
+        awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+            &local_observation_only.capabilities,
+        )
+        .expect("R3 credential realization evidence decodes")
+        .is_empty(),
+        "R3 observation/revalidation alone is not a material realization mechanism"
+    );
+
+    let without_credentials = derive_standard_manifest(StandardManifestInputs {
+        deployment: &deployment(),
+        materializer: None,
+        credential_materializer: None,
+        worker_local_credential_resolver_installed: false,
+        remote_credential_realization: None,
+        sandbox_override: None,
+        resource_support: ResourceManifestSupport::None,
+        application_capabilities: Default::default(),
+        config: &StandardManifestConfig::default(),
+    });
+    assert!(
+        !without_credentials
+            .capabilities
+            .contains(awaken_worker_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
+            && !without_credentials
+                .capabilities
+                .contains(awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY),
+        "R4 absent mechanisms advertise neither independent capability"
+    );
+    assert!(
+        awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+            &without_credentials.capabilities,
+        )
+        .expect("R4 credential realization evidence decodes")
+        .is_empty(),
+        "R4 absent materializers emit no realization evidence"
     );
 }
 
@@ -545,7 +630,7 @@ fn standard_manifest_requires_complete_provider_evidence_for_worker_relay() {
             deployment: &deployment,
             materializer: None,
             credential_materializer: credential_materializer.then(credential_support),
-            worker_local_credentials: false,
+            worker_local_credential_resolver_installed: false,
             remote_credential_realization: None,
             sandbox_override: Some((sandbox.clone(), "external-secure-provider")),
             resource_support: ResourceManifestSupport::None,
@@ -596,7 +681,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         deployment: &deployment,
         materializer: None,
         credential_materializer: None,
-        worker_local_credentials: false,
+        worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
@@ -625,7 +710,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         deployment: &deployment,
         materializer: None,
         credential_materializer: None,
-        worker_local_credentials: false,
+        worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::Session,
@@ -654,7 +739,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         deployment: &deployment,
         materializer: None,
         credential_materializer: None,
-        worker_local_credentials: false,
+        worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::SessionWithRepositoryCredentials,
@@ -678,7 +763,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         deployment: &deployment,
         materializer: Some(&materializer),
         credential_materializer: None,
-        worker_local_credentials: false,
+        worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
@@ -728,7 +813,7 @@ fn worker_manifest_includes_explicit_application_capabilities() {
         deployment: &deployment,
         materializer: None,
         credential_materializer: None,
-        worker_local_credentials: false,
+        worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
@@ -758,7 +843,7 @@ fn standard_manifest_uses_one_typed_metadata_source() {
         deployment: &deployment,
         materializer: None,
         credential_materializer: None,
-        worker_local_credentials: false,
+        worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
         resource_support: ResourceManifestSupport::None,
