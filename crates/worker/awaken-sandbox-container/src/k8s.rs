@@ -600,18 +600,16 @@ fn build_pod(
             });
         }
 
-        live_inputs::append_projection(
-            plan,
-            &mut volumes,
-            &mut agent_mounts,
-            &mut sidecars,
-            &mut init_containers,
-        );
+        live_inputs::append_projection(plan, &mut volumes, &mut agent_mounts, &mut sidecars);
 
         // Inline content has no host path a Pod can bind, so every item is backed by
-        // a ConfigMap created alongside the Pod. Managed inputs seed the shared tree;
-        // other paths keep the exact read-only subPath projection used by bwrap parity.
+        // a ConfigMap created alongside the Pod, except Managed Files whose initial
+        // and later generations share the runtime-owned live projector. Other paths
+        // keep the exact read-only subPath projection used by bwrap parity.
         for (i, bind) in content_binds(plan).iter().enumerate() {
+            if live_inputs::manages(bind) {
+                continue;
+            }
             let vol = format!("cfg-{i}");
             volumes.push(Volume {
                 name: vol.clone(),
@@ -621,15 +619,13 @@ fn build_pod(
                 }),
                 ..Default::default()
             });
-            if !(bind.read_only && crate::live_input_relative_path(&bind.mount_path).is_some()) {
-                agent_mounts.push(VolumeMount {
-                    name: vol,
-                    mount_path: bind.mount_path.clone(),
-                    sub_path: Some(CONFIGMAP_KEY.to_string()),
-                    read_only: Some(bind.read_only),
-                    ..Default::default()
-                });
-            }
+            agent_mounts.push(VolumeMount {
+                name: vol,
+                mount_path: bind.mount_path.clone(),
+                sub_path: Some(CONFIGMAP_KEY.to_string()),
+                read_only: Some(bind.read_only),
+                ..Default::default()
+            });
         }
 
         // A Kubernetes Secret volume is immutable/read-only. Seed each native OAuth
@@ -839,11 +835,14 @@ impl ContainerRuntime for K8sRuntime {
             )));
         }
         let runtime_id = k8s_runtime_id(id)?;
-        // Realize inline-content mounts as ConfigMaps *before* the Pod: the Pod's volumes
-        // reference them by name, and the kubelet blocks the Pod as `ContainerCreating`
-        // until they exist. Ordered + named identically to `build_pod`'s projection.
+        // Realize ordinary inline-content mounts as ConfigMaps *before* the Pod: the
+        // Pod's volumes reference them by name. Managed Files deliberately bypass
+        // this immutable path and use the one stable live projector after readiness.
         let cms = self.configmaps();
         for (i, bind) in content_binds(plan).iter().enumerate() {
+            if live_inputs::manages(bind) {
+                continue;
+            }
             let mut cm = build_configmap(
                 &runtime_id,
                 i,
@@ -878,6 +877,10 @@ impl ContainerRuntime for K8sRuntime {
             .name
             .ok_or_else(|| backend("created pod has no name"))?;
         realization::await_pod_ready(&pods, &name).await?;
+        // This is also the idempotent recovery path: an identical Pod realization
+        // is adopted first, then the current Session manifest replaces its managed
+        // files without changing the Pod or its realization digest.
+        live_inputs::project_manifest(self, &name, plan).await?;
         Ok(name)
     }
 
@@ -1544,11 +1547,25 @@ mod tests {
 
     #[test]
     fn build_pod_projects_inline_content_as_configmap_subpath_volumes() {
-        // Inline-content binds (codex config.toml, ADR-0038 resource bytes) have no host
-        // path a Pod can bind — build_pod must project each as a ConfigMap volume mounted
-        // read-only at its exact mount_path via subPath, named to match `create`'s CMs.
+        /* Cause/effect projection decision table — KP3:
+         * C1 an ordinary inline bind is outside the managed input root; C2 a managed
+         * inline bind precedes it; C3 a ref-only bind has no carried bytes.
+         * C1+C2+C3 => E1 only the ordinary bind becomes a ConfigMap/subPath, E2 its
+         * stable content-bind index remains cfg-1 in both build/create, and E3 neither
+         * the managed bind nor ref-only bind creates a parallel ConfigMap path.
+         */
         let mut plan = plan_with_memory(Vec::new());
         plan.binds = vec![
+            crate::BindPlan {
+                source_ref: String::new(),
+                mount_path: "/mnt/session/uploads/current/index.html".into(),
+                read_only: true,
+                content: Some("<h1>managed</h1>".into()),
+                content_bytes: None,
+                secret_content: None,
+                secret_writeback: false,
+                credential_file_path: None,
+            },
             crate::BindPlan {
                 source_ref: String::new(),
                 mount_path: "/acp-config/config.toml".into(),
@@ -1575,15 +1592,15 @@ mod tests {
             .spec
             .unwrap();
 
-        // One ConfigMap volume (only the content bind), named awaken-{id}-cfg-0, plus the
+        // One ConfigMap volume (only the ordinary content bind), named cfg-1, plus the
         // 2 writable-rootfs emptyDirs. The ref-backed bind adds nothing on this tier.
         let volumes = spec.volumes.as_ref().unwrap();
         let cfg = volumes
             .iter()
             .find(|v| v.config_map.is_some())
             .expect("a configmap volume");
-        assert_eq!(cfg.name, "cfg-0");
-        assert_eq!(cfg.config_map.as_ref().unwrap().name, "awaken-run-9-cfg-0");
+        assert_eq!(cfg.name, "cfg-1");
+        assert_eq!(cfg.config_map.as_ref().unwrap().name, "awaken-run-9-cfg-1");
         assert_eq!(volumes.iter().filter(|v| v.config_map.is_some()).count(), 1);
 
         // The agent mounts it as a single file at the exact path (subPath = the CM key).
@@ -1593,7 +1610,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .iter()
-            .find(|m| m.name == "cfg-0")
+            .find(|m| m.name == "cfg-1")
             .expect("the configmap mount");
         assert_eq!(m.mount_path, "/acp-config/config.toml");
         assert_eq!(m.sub_path.as_deref(), Some("content"));
