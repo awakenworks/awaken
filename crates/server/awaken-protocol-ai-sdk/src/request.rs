@@ -138,16 +138,17 @@ fn extract_decisions(messages: &[UIMessage]) -> Vec<Decision> {
             let UIMessagePart::Tool(tool) = part else {
                 continue;
             };
-            // Only assistant `tool-*` parts carry decisions; a provider-executed
-            // part is history, not a fresh decision.
-            if tool.provider_executed {
-                continue;
-            }
             let (Some(state), Some(tool_call_id)) =
                 (tool.state.as_deref(), tool.tool_call_id.clone())
             else {
                 continue;
             };
+            // Provider-executed outputs are history. A provider-executed
+            // `approval-responded` part is different: the server owns execution,
+            // while the user owns the permission decision that resumes it.
+            if tool.provider_executed && state != "approval-responded" {
+                continue;
+            }
             let kind = match state {
                 "output-available" => {
                     DecisionKind::Output(tool.output.clone().unwrap_or(Value::Null))
@@ -303,6 +304,32 @@ mod tests {
         };
         let p = process_request(req, &HashSet::new());
         assert!(p.decisions.is_empty());
+    }
+
+    #[test]
+    fn accepts_a_user_decision_for_a_provider_executed_approval() {
+        /* Decision extraction: C1 provider-executed output is historical; C2
+         * provider-executed approval-responded is a fresh human decision.
+         * E1 ignore history; E2 resume the built-in permission gate.
+         * R1=C1=>E1 (covered above); R2=C2=>E2. */
+        let req = AiSdkChatRequest {
+            messages: vec![ui(
+                "assistant",
+                "a1",
+                vec![json!({
+                    "type":"tool-bash",
+                    "toolCallId":"c1",
+                    "state":"approval-responded",
+                    "approval":{"id":"c1","approved":true},
+                    "providerExecuted":true
+                })],
+            )],
+            thread_id: Some("t".into()),
+            agent_id: None,
+        };
+        let processed = process_request(req, &HashSet::new());
+        assert!(processed.is_resume_only());
+        assert_eq!(processed.decisions[0].kind, DecisionKind::Approved);
     }
 
     fn decision_part(state: &str, extra: Value) -> Value {

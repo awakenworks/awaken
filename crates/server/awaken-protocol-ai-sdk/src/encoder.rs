@@ -137,12 +137,23 @@ impl Transcoder for AiSdkEncoder {
                 name,
                 input,
                 disposition,
-            } => vec![UIStreamEvent::ToolInputAvailable {
-                tool_call_id: id.clone(),
-                tool_name: name.clone(),
-                input: input.clone(),
-                provider_executed: matches!(disposition, ToolDisposition::Executed),
-            }],
+            } => {
+                let mut events = vec![UIStreamEvent::ToolInputAvailable {
+                    tool_call_id: id.clone(),
+                    tool_name: name.clone(),
+                    input: input.clone(),
+                    // Built-ins still execute on the server after approval;
+                    // only PendingClient asks the browser to execute a tool.
+                    provider_executed: !matches!(disposition, ToolDisposition::PendingClient),
+                }];
+                if matches!(disposition, ToolDisposition::PendingBuiltin) {
+                    events.push(UIStreamEvent::ToolApprovalRequest {
+                        approval_id: id.clone(),
+                        tool_call_id: id.clone(),
+                    });
+                }
+                events
+            }
             Fact::ToolResult {
                 id,
                 content,
@@ -244,11 +255,16 @@ fn parse_output(content: &[ContentBlock]) -> Value {
 
 /// Fold committed thread messages into AI SDK `UIMessage`s for the history
 /// endpoint. Assistant tool calls merge with their later tool result into a single
-/// `output-available` part (`providerExecuted: true`). This is a read-model fold,
-/// distinct from the streaming projection above; the shared walk lives in
+/// `output-available` part (`providerExecuted: true`). The current runtime
+/// `Pending` fact is supplied so reloads preserve the same client-tool versus
+/// server-approval distinction as the live projection. This is a read-model
+/// fold, distinct from the streaming projection above; the shared walk lives in
 /// [`fold_history`], this sink only shapes each message the AI SDK way.
-pub fn encode_history(messages: &[Message]) -> Vec<Value> {
-    let mut sink = AiSdkHistorySink::default();
+pub fn encode_history(
+    messages: &[Message],
+    pending: Option<&awaken_session_contract::Pending>,
+) -> Vec<Value> {
+    let mut sink = AiSdkHistorySink::new(pending);
     fold_history(messages, &mut sink);
     sink.encoded
 }
@@ -257,11 +273,23 @@ pub fn encode_history(messages: &[Message]) -> Vec<Value> {
 /// parts }`; an assistant tool call becomes a `tool-<name>` part that its later
 /// result mutates in place to `output-available` (there is no standalone tool
 /// message in the AI SDK shape).
-#[derive(Default)]
 struct AiSdkHistorySink {
     encoded: Vec<Value>,
     /// tool_call_id -> (message index in `encoded`, part index in that message).
     pending_parts: std::collections::HashMap<String, (usize, usize)>,
+    /// The sole current wait from the runtime; older unresolved-looking calls
+    /// are historical provider calls, not additional decisions.
+    current_wait: Option<(String, bool)>,
+}
+
+impl AiSdkHistorySink {
+    fn new(pending: Option<&awaken_session_contract::Pending>) -> Self {
+        Self {
+            encoded: Vec::new(),
+            pending_parts: std::collections::HashMap::new(),
+            current_wait: pending.map(|value| (value.tool_use_id.clone(), value.client_executed)),
+        }
+    }
 }
 
 impl HistorySink for AiSdkHistorySink {
@@ -276,14 +304,20 @@ impl HistorySink for AiSdkHistorySink {
         let message_index = self.encoded.len();
         for tool in tools {
             let part_index = parts.len();
-            parts.push(serde_json::json!({
+            let current_wait = self.current_wait.as_ref().filter(|(id, _)| id == tool.id);
+            let awaiting_builtin = matches!(current_wait, Some((_, false)));
+            let mut part = serde_json::json!({
                 "type": format!("tool-{}", tool.name),
                 "toolName": tool.name,
                 "toolCallId": tool.id,
-                "state": "input-available",
+                "state": if awaiting_builtin { "approval-requested" } else { "input-available" },
                 "input": tool.input,
-                "providerExecuted": true,
-            }));
+                "providerExecuted": !matches!(current_wait, Some((_, true))),
+            });
+            if awaiting_builtin {
+                part["approval"] = serde_json::json!({ "id": tool.id });
+            }
+            parts.push(part);
             self.pending_parts
                 .insert(tool.id.to_string(), (message_index, part_index));
         }
@@ -737,7 +771,7 @@ mod tests {
                 }],
             },
         ];
-        let encoded = encode_history(&messages);
+        let encoded = encode_history(&messages, None);
         assert_eq!(encoded.len(), 2);
         let part = &encoded[1]["parts"][0];
         assert_eq!(part["type"], "tool-read");
@@ -760,7 +794,7 @@ mod tests {
                 }],
             },
         ];
-        let encoded = encode_history(&messages);
+        let encoded = encode_history(&messages, None);
         // Only the user message survives; an orphan result has no call to merge into.
         assert_eq!(encoded.len(), 1);
         assert_eq!(encoded[0]["role"], "user");
@@ -831,7 +865,12 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_call_transcodes_to_tool_input_available() {
+    fn pending_builtin_transcodes_to_server_tool_plus_approval_request() {
+        /* Tool-disposition decision table. C1 built-in tool awaits permission;
+         * C2 client tool awaits browser output; C3 server tool already ran.
+         * E1 server-executed input + approval request; E2 client-executed
+         * input only; E3 server-executed historical input only.
+         * R1=C1=>E1; R2=C2=>E2; R3=C3=>E3. */
         use awaken_agent_contract::event::ToolDisposition;
         let events = AiSdkEncoder::new().fact(&Fact::ToolCall {
             id: "c1".into(),
@@ -840,9 +879,33 @@ mod tests {
             disposition: ToolDisposition::PendingBuiltin,
         });
         assert!(matches!(
-            &events[0],
-            UIStreamEvent::ToolInputAvailable { tool_call_id, provider_executed: false, .. }
-                if tool_call_id == "c1"
+            events.as_slice(),
+            [
+                UIStreamEvent::ToolInputAvailable { tool_call_id, provider_executed: true, .. },
+                UIStreamEvent::ToolApprovalRequest { approval_id, tool_call_id: approval_call_id },
+            ] if tool_call_id == "c1" && approval_id == "c1" && approval_call_id == "c1"
+        ));
+        assert_eq!(
+            serde_json::to_value(&events[1]).expect("approval event serializes"),
+            json!({
+                "type": "tool-approval-request",
+                "approvalId": "c1",
+                "toolCallId": "c1"
+            })
+        );
+
+        let client = AiSdkEncoder::new().fact(&Fact::ToolCall {
+            id: "c2".into(),
+            name: "browser_probe".into(),
+            input: json!({}),
+            disposition: ToolDisposition::PendingClient,
+        });
+        assert!(matches!(
+            client.as_slice(),
+            [UIStreamEvent::ToolInputAvailable {
+                provider_executed: false,
+                ..
+            }]
         ));
     }
 
@@ -919,8 +982,41 @@ mod tests {
                 vec![ContentBlock::text("")],
             ),
         ];
-        let encoded = encode_history(&messages);
+        let encoded = encode_history(&messages, None);
         assert_eq!(encoded.len(), 1);
         assert_eq!(encoded[0]["role"], "user");
+    }
+
+    #[test]
+    fn history_preserves_the_runtime_owned_current_tool_wait() {
+        /* Reload projection decision table. C1 the unmatched call is the
+         * current built-in wait; C2 it is the current client wait; C3 no wait
+         * identifies it. E1 approval-requested/providerExecuted; E2
+         * input-available/client-executed; E3 historical provider-executed.
+         * R1=C1=>E1; R2=C2=>E2; R3=C3=>E3. */
+        let messages = vec![assistant_tool("a1", "c1", "bash", json!({"command":"pwd"}))];
+        let builtin = Pending {
+            tool_use_id: "c1".into(),
+            name: "bash".into(),
+            input: json!({"command":"pwd"}),
+            client_executed: false,
+        };
+        let client = Pending {
+            client_executed: true,
+            ..builtin.clone()
+        };
+
+        let builtin_part = encode_history(&messages, Some(&builtin))[0]["parts"][0].clone();
+        assert_eq!(builtin_part["state"], "approval-requested");
+        assert_eq!(builtin_part["providerExecuted"], true);
+        assert_eq!(builtin_part["approval"]["id"], "c1");
+
+        let client_part = encode_history(&messages, Some(&client))[0]["parts"][0].clone();
+        assert_eq!(client_part["state"], "input-available");
+        assert_eq!(client_part["providerExecuted"], false);
+
+        let historical_part = encode_history(&messages, None)[0]["parts"][0].clone();
+        assert_eq!(historical_part["state"], "input-available");
+        assert_eq!(historical_part["providerExecuted"], true);
     }
 }
