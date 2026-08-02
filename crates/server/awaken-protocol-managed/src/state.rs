@@ -379,6 +379,7 @@ mod tests {
         delegated: Arc<std::sync::Mutex<Vec<DelegatedRun>>>,
         order: Arc<std::sync::Mutex<Vec<&'static str>>>,
         committed: Arc<std::sync::Mutex<Option<Vec<Message>>>>,
+        pending: Arc<std::sync::Mutex<Option<awaken_session_contract::Pending>>>,
     }
 
     #[async_trait]
@@ -442,6 +443,12 @@ mod tests {
                 awaken_agent_contract::agent::message::Role::User,
                 "hello",
             )]
+        }
+        async fn pending_tool(
+            &self,
+            _thread: &str,
+        ) -> Result<Option<awaken_session_contract::Pending>, RunError> {
+            Ok(self.pending.lock().unwrap().clone())
         }
         async fn delegated_runs(&self, _thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
             self.order.lock().unwrap().push("delegations");
@@ -1447,12 +1454,16 @@ mod tests {
     async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         // Causal graph:
         // durable Session -> one canonical projection preparation -> environment
-        // adoption -> committed history -> readable in-memory Session.
+        // adoption -> committed history + current client-tool wait -> readable
+        // in-memory Session with a resumable custom-tool event.
         //
         // Decision table:
         // | MCP state            | preparation owner          | calls |
         // | needs reconciliation | realization synchronizer  | one   |
         // | already settled      | ensure_session             | one   |
+        // | current client wait  | runtime Pending truth      | custom_tool_use |
+        // Historical/non-current tool calls remain ordinary tool_use events; the
+        // project module's disposition table owns and tests that complementary rule.
         // Both branches must converge before environment/history; duplicate
         // preparation can repeat mounts, runtime registration, and secret staging.
         // A session created in one process is gone from a fresh process's cache,
@@ -1464,6 +1475,23 @@ mod tests {
 
         // Fresh state (empty cache) sharing the durable repo — simulates a restart.
         let runtime = RehydrateFake::default();
+        *runtime.committed.lock().unwrap() = Some(vec![Message::new(
+            awaken_agent_contract::agent::message::Id("assistant-tool".into()),
+            awaken_agent_contract::agent::message::Role::Assistant,
+            vec![
+                awaken_agent_contract::agent::content::ContentBlock::ToolUse {
+                    id: "call-submit".into(),
+                    name: "design_submit_artifact".into(),
+                    input: serde_json::json!({"manifest_path":"artifact-manifest.json"}),
+                },
+            ],
+        )]);
+        *runtime.pending.lock().unwrap() = Some(awaken_session_contract::Pending {
+            tool_use_id: "call-submit".into(),
+            name: "design_submit_artifact".into(),
+            input: serde_json::json!({"manifest_path":"artifact-manifest.json"}),
+            client_executed: true,
+        });
         runtime.delegated.lock().unwrap().push(DelegatedRun {
             run_id: awaken_agent_contract::agent::run::Id("child-durable".into()),
             parent_call_id: "call-durable".into(),
@@ -1540,6 +1568,13 @@ mod tests {
         );
         let durable = repo.get("sesn_1").await.unwrap();
         assert_eq!(durable.resources.activations.len(), 1);
+        let events = restarted
+            .list_events("sesn_1", None, None)
+            .expect("list rehydrated events");
+        let encoded = serde_json::to_value(events).expect("events serialize");
+        assert!(encoded["data"].as_array().unwrap().iter().any(|event| {
+            event["type"] == "agent.custom_tool_use" && event["id"] == "call-submit"
+        }));
         assert_eq!(
             durable.resources.activations[0].state,
             awaken_session_contract::ActivationState::Active,
