@@ -1,6 +1,8 @@
 //! Live skill discovery cache for a Session-owned remote hand.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
@@ -68,6 +70,68 @@ struct HandBinding {
     executor: Arc<dyn ToolExecutor>,
 }
 
+struct HandLifecycle {
+    binding: Mutex<Option<HandBinding>>,
+    closed: AtomicBool,
+    generation: AtomicU64,
+    activity: tokio::sync::watch::Sender<u64>,
+}
+
+impl HandLifecycle {
+    fn touch(&self) {
+        let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let _ = self.activity.send(generation);
+    }
+
+    async fn hibernate_if_current(
+        &self,
+        expected_generation: Option<u64>,
+        event: &'static str,
+    ) -> bool {
+        let mut binding = self.binding.lock().await;
+        if expected_generation
+            .is_some_and(|expected| self.generation.load(Ordering::Acquire) != expected)
+        {
+            return false;
+        }
+        if let Some(binding) = binding.take() {
+            if stop_hand_binding(binding, event).await {
+                true
+            } else {
+                // The process outcome is unknown, so launching another Hand could
+                // violate the one-owner invariant. Fail closed until the complete
+                // Session Environment is reconstructed by its Worker owner.
+                self.closed.store(true, Ordering::Release);
+                self.touch();
+                false
+            }
+        } else {
+            false
+        }
+    }
+}
+
+const HAND_STOP_GRACE: Duration = Duration::from_secs(2);
+
+async fn stop_hand_binding(binding: HandBinding, event: &'static str) -> bool {
+    let started = std::time::Instant::now();
+    if let Err(error) =
+        awaken_run_executor_acp::Supervisor::reap(binding.process.as_ref(), HAND_STOP_GRACE).await
+    {
+        awaken_observability::record_hand_lifecycle(event, "error", started.elapsed());
+        tracing::warn!(
+            process = %binding.process.id(),
+            error = %error,
+            "failed to reap Session hand within the bounded signal ladder"
+        );
+        false
+    } else {
+        awaken_observability::add_live_hand(-1);
+        awaken_observability::record_hand_lifecycle(event, "ok", started.elapsed());
+        true
+    }
+}
+
 /// The one Session-Environment-owned Hand binding.
 ///
 /// Kubernetes attached-exec channels are live capabilities, not durable Session
@@ -80,8 +144,8 @@ pub(crate) struct RefreshingHandExecutor {
     factory: Arc<dyn HandExecutorFactory>,
     hand_bin: String,
     operation_scope: String,
-    binding: Mutex<Option<HandBinding>>,
-    closed: std::sync::atomic::AtomicBool,
+    lifecycle: Arc<HandLifecycle>,
+    idle_after: Duration,
 }
 
 impl RefreshingHandExecutor {
@@ -90,6 +154,7 @@ impl RefreshingHandExecutor {
         skills: Arc<ContainerSkillCache>,
         factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
+        idle_after: Duration,
     ) -> Result<Self, pc::SandboxError> {
         let hand_bin = hand_bin.into();
         let operation_scope = sandbox.id().to_string();
@@ -100,15 +165,23 @@ impl RefreshingHandExecutor {
             &operation_scope,
         )
         .await?;
-        Ok(Self {
+        let (activity, observed_activity) = tokio::sync::watch::channel(0);
+        let executor = Self {
             sandbox,
             skills,
             factory,
             hand_bin,
             operation_scope,
-            binding: Mutex::new(Some(binding)),
-            closed: std::sync::atomic::AtomicBool::new(false),
-        })
+            lifecycle: Arc::new(HandLifecycle {
+                binding: Mutex::new(Some(binding)),
+                closed: AtomicBool::new(false),
+                generation: AtomicU64::new(0),
+                activity,
+            }),
+            idle_after,
+        };
+        executor.spawn_idle_hibernation(observed_activity);
+        Ok(executor)
     }
 
     async fn launch(
@@ -117,51 +190,105 @@ impl RefreshingHandExecutor {
         hand_bin: &str,
         operation_scope: &str,
     ) -> Result<HandBinding, pc::SandboxError> {
-        let process = sandbox
+        let started = std::time::Instant::now();
+        let process = match sandbox
             .spawn_agent_process(pc::Command {
                 argv: vec![hand_bin.to_owned(), "hand".into(), "--stdio".into()],
                 cwd: "/workspace".into(),
                 env: Vec::new(),
                 stdio: pc::Stdio::Piped,
             })
-            .await?;
+            .await
+        {
+            Ok(process) => process,
+            Err(error) => {
+                awaken_observability::record_hand_lifecycle("launch", "error", started.elapsed());
+                return Err(error);
+            }
+        };
+        awaken_observability::add_live_hand(1);
+        awaken_observability::record_hand_lifecycle("launch", "ok", started.elapsed());
         Ok(HandBinding {
             executor: factory.bind(process.channel, operation_scope),
             process: process.process,
         })
     }
 
-    async fn stop_binding(binding: HandBinding) {
-        let _ = binding.process.signal(pc::Signal::Term).await;
-        let _ = binding.process.wait().await;
+    fn spawn_idle_hibernation(&self, mut activity: tokio::sync::watch::Receiver<u64>) {
+        if self.idle_after.is_zero() {
+            return;
+        }
+        let lifecycle = Arc::downgrade(&self.lifecycle);
+        let idle_after = self.idle_after;
+        let operation_scope = self.operation_scope.clone();
+        tokio::spawn(async move {
+            let mut generation = *activity.borrow_and_update();
+            loop {
+                tokio::select! {
+                    changed = activity.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        generation = *activity.borrow_and_update();
+                        if lifecycle
+                            .upgrade()
+                            .is_none_or(|lifecycle| lifecycle.closed.load(Ordering::Acquire))
+                        {
+                            break;
+                        }
+                    }
+                    () = tokio::time::sleep(idle_after) => {
+                        let Some(lifecycle) = lifecycle.upgrade() else {
+                            break;
+                        };
+                        if lifecycle.closed.load(Ordering::Acquire) {
+                            break;
+                        }
+                        if lifecycle
+                            .hibernate_if_current(Some(generation), "idle_hibernate")
+                            .await
+                        {
+                            tracing::info!(
+                                session_environment = %operation_scope,
+                                idle_after_ms = idle_after.as_millis(),
+                                "hibernated idle Session hand"
+                            );
+                        }
+                        drop(lifecycle);
+                        if activity.changed().await.is_err() {
+                            break;
+                        }
+                        generation = *activity.borrow_and_update();
+                    }
+                }
+            }
+        });
     }
 
     pub(super) async fn stop(&self) {
-        self.closed
-            .store(true, std::sync::atomic::Ordering::Release);
-        let _ = self.hibernate().await;
-    }
-
-    /// Release the current Hand process/channel without closing its Session owner.
-    /// The next invocation reacquires one binding through the same serialized path.
-    pub(super) async fn hibernate(&self) -> bool {
-        if let Some(binding) = self.binding.lock().await.take() {
-            Self::stop_binding(binding).await;
-            true
-        } else {
-            false
-        }
+        self.lifecycle.closed.store(true, Ordering::Release);
+        self.lifecycle.touch();
+        let _ = self
+            .lifecycle
+            .hibernate_if_current(None, "terminal_stop")
+            .await;
     }
 
     async fn replacement(&self) -> Result<HandBinding, ToolError> {
-        Self::launch(
+        let started = std::time::Instant::now();
+        let result = Self::launch(
             self.sandbox.as_ref(),
             self.factory.as_ref(),
             &self.hand_bin,
             &self.operation_scope,
         )
-        .await
-        .map_err(|error| {
+        .await;
+        awaken_observability::record_hand_lifecycle(
+            "reacquire",
+            if result.is_ok() { "ok" } else { "error" },
+            started.elapsed(),
+        );
+        result.map_err(|error| {
             ToolError::UnavailableBeforeDispatch(format!(
                 "failed to reacquire Session hand: {error}"
             ))
@@ -172,13 +299,14 @@ impl RefreshingHandExecutor {
 #[async_trait]
 impl ToolExecutor for RefreshingHandExecutor {
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
-        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+        if self.lifecycle.closed.load(Ordering::Acquire) {
             return Err(ToolError::UnavailableBeforeDispatch(
                 "Session hand binding is closed".into(),
             ));
         }
-        let mut binding = self.binding.lock().await;
-        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+        self.lifecycle.touch();
+        let mut binding = self.lifecycle.binding.lock().await;
+        if self.lifecycle.closed.load(Ordering::Acquire) {
             return Err(ToolError::UnavailableBeforeDispatch(
                 "Session hand binding is closed".into(),
             ));
@@ -198,10 +326,16 @@ impl ToolExecutor for RefreshingHandExecutor {
                 tool_id = %call.tool_id,
                 "reacquiring expired Session hand before tool dispatch"
             );
-            if let Some(expired) = binding.take() {
-                Self::stop_binding(expired).await;
+            if let Some(expired) = binding.take()
+                && !stop_hand_binding(expired, "expired_reap").await
+            {
+                self.lifecycle.closed.store(true, Ordering::Release);
+                self.lifecycle.touch();
+                return Err(ToolError::UnavailableBeforeDispatch(
+                    "failed to reap expired Session hand; environment must be reconstructed".into(),
+                ));
             }
-            if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            if self.lifecycle.closed.load(Ordering::Acquire) {
                 return Err(ToolError::UnavailableBeforeDispatch(
                     "Session hand binding closed during reacquisition".into(),
                 ));
@@ -221,6 +355,7 @@ impl ToolExecutor for RefreshingHandExecutor {
         {
             tracing::warn!(error = %error, "failed to refresh container skill catalog");
         }
+        self.lifecycle.touch();
         result
     }
 }

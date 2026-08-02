@@ -55,6 +55,9 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             .container_hand_bin
             .clone()
             .unwrap_or_else(|| sandbox_defaults.container_hand_bin.clone()),
+        container_hand_idle_secs: file
+            .container_hand_idle_secs
+            .unwrap_or(sandbox_defaults.container_hand_idle_secs),
         podman_bin: file
             .podman_bin
             .clone()

@@ -57,7 +57,6 @@ pub mod lifecycle_event;
 mod managed_state;
 mod mcp_attachment;
 mod realization;
-mod residency;
 mod resource;
 mod resources;
 mod sandbox_provisioning;
@@ -987,7 +986,7 @@ mod tests {
             title: Some("My session".to_string()),
             metadata,
             tools: Default::default(),
-            activity: Default::default(),
+            activity_epoch: 0,
             environment: Default::default(),
             mcp,
             resources: awaken_session_contract::SessionResourceState::from_legacy(sample_inputs()),

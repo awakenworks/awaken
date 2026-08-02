@@ -1207,7 +1207,7 @@ mod tests {
             title: Some("My session".to_string()),
             metadata,
             tools: Default::default(),
-            activity: Default::default(),
+            activity_epoch: 0,
             environment: Default::default(),
             mcp: SessionMcpAttachmentSet::from_initial(
                 vec![McpAttachmentDraft {

@@ -1447,13 +1447,6 @@ impl SessionRuntime for ManagedHost {
         Ok(())
     }
 
-    async fn hibernate_session_environment(&self, thread: &str) -> Result<bool, RunError> {
-        let Some(environment) = self.host.session_environment(thread).await else {
-            return Ok(false);
-        };
-        Ok(environment.hibernate_bound_processes().await)
-    }
-
     /// Committed transcript from durable truth, so the adapter can rehydrate a
     /// session lost to a process restart and resume its awaiting run (ADR-0039).
     async fn committed_messages(&self, thread: &str) -> Vec<awaken_agent_contract::Message> {

@@ -78,7 +78,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
         title: Some(title.to_string()),
         metadata: std::collections::BTreeMap::from([("k".into(), "v".into())]),
         tools: Default::default(),
-        activity: Default::default(),
+        activity_epoch: 0,
         environment: Default::default(),
         mcp: awaken_session_contract::SessionMcpAttachmentSet::from_initial(
             vec![McpAttachmentDraft {
@@ -307,8 +307,10 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
     assert_eq!(r.pending_lifecycle().await, vec![deleted]);
 }
 
-/// Prepared/Releasing activations remain discoverable after a process crash;
-/// terminal Active/Released/Failed records do not create reconciliation work.
+/// Reconciliation-index cause/effect rules: C1=Resource/MCP durable work is
+/// pending -> E1=index the Session; C2=that work is terminal -> E2=remove it;
+/// C3=only a durable Environment binding is resident -> E3=do not index it,
+/// because rebuildable Hand residency belongs to the Worker-local Runtime Host.
 async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepository>(r: &R) {
     let mut pending = session("sesn_pending", "pending");
     let desired = pending.resources.active.clone();
@@ -335,8 +337,15 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
     assert!(indexed[0].session.mcp.needs_reconciliation());
 
     pending.mcp.attachments[0].state = awaken_session_contract::McpAttachmentState::Failed;
-    replace_session(r, "ws_a", pending, "test:mcp-failed", Vec::new()).await;
+    pending = replace_session(r, "ws_a", pending, "test:mcp-failed", Vec::new()).await;
     assert!(r.reconcilable_sessions().await.is_empty());
+
+    pending.environment.set_resident("worker-owned-binding");
+    replace_session(r, "ws_a", pending, "test:resident-environment", Vec::new()).await;
+    assert!(
+        r.reconcilable_sessions().await.is_empty(),
+        "C3/E3: Coordinator repository scans never own local Hand residency"
+    );
 }
 
 #[derive(Clone, Copy)]

@@ -944,7 +944,7 @@ impl ManagedState {
             title: req.title.clone(),
             metadata: req.metadata.clone(),
             tools: effective_tools.clone(),
-            activity: Default::default(),
+            activity_epoch: 0,
             environment: Default::default(),
             mcp: Default::default(),
             resources: Default::default(),

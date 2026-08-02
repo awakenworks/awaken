@@ -974,21 +974,7 @@ impl ManagedState {
                 record.session.status = "idle";
             }
             if let Some(activity_epoch) = activity_epoch {
-                let still_pending = if processing.is_ok() {
-                    self.runtime
-                        .pending_tool(session_id)
-                        .await
-                        .map_err(StateError::Run)?
-                        .is_some()
-                } else {
-                    false
-                };
-                let reason = if still_pending {
-                    awaken_session_contract::SessionIdleReason::AwaitingAction
-                } else {
-                    awaken_session_contract::SessionIdleReason::EndTurn
-                };
-                self.settle_session_activity(session_id, activity_epoch, reason)
+                self.settle_session_activity(session_id, activity_epoch)
                     .await?;
             }
             processing?;

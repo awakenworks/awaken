@@ -822,12 +822,6 @@ impl ManagedState {
                         "Session realization lease renewal remains pending"
                     );
                 }
-                if let Err(error) = state.reconcile_session_residency(now).await {
-                    tracing::warn!(
-                        error = ?error,
-                        "Session environment residency reconciliation remains pending"
-                    );
-                }
                 state.reconcile_work_dispatches().await;
             }
         }))
@@ -989,7 +983,7 @@ mod tests {
             title: None,
             metadata: Default::default(),
             tools: Default::default(),
-            activity: Default::default(),
+            activity_epoch: 0,
             environment: Default::default(),
             mcp,
             resources,

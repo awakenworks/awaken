@@ -252,11 +252,12 @@ impl crate::host::SharedHost {
             )
             .await
             .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
-            crate::session_environment::SessionEnvironmentProvider::container(
+            crate::session_environment::SessionEnvironmentProvider::container_with_hand_idle(
                 provider,
                 extra_mounts,
                 hand_factory,
                 deployment.sandbox.container_hand_bin.clone(),
+                std::time::Duration::from_secs(deployment.sandbox.container_hand_idle_secs),
             )
         };
         host.session_provider_explicit = true;

@@ -72,11 +72,11 @@ pub struct PersistedSession {
     /// public protocol tool unions are projections and never persistence truth.
     #[serde(default)]
     pub tools: crate::SessionToolConfiguration,
-    /// Logical activity is distinct from public wire projection and from the
-    /// execution environment's physical residency. It is a root-CAS fence for a
-    /// stale idle scan racing newly admitted work.
+    /// Monotonic root-CAS fence for overlapping driving events. Lifecycle status
+    /// remains the one durable logical state; this scalar only prevents a stale
+    /// completion from settling a newer turn.
     #[serde(default)]
-    pub activity: crate::SessionActivity,
+    pub activity_epoch: u64,
     /// Durable, secret-free execution-environment phase. Opaque bindings are
     /// interpreted only by the runtime that produced them; this aggregate owns
     /// their transition, not their substrate meaning.
@@ -469,7 +469,7 @@ mod mutation_tests {
             title: None,
             metadata: Default::default(),
             tools: Default::default(),
-            activity: Default::default(),
+            activity_epoch: 0,
             environment: Default::default(),
             mcp: Default::default(),
             resources: Default::default(),
