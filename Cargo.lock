@@ -929,6 +929,7 @@ dependencies = [
  "async-trait",
  "awaken-runtime-contract",
  "glob",
+ "nix",
  "regex",
  "serde",
  "serde_json",
