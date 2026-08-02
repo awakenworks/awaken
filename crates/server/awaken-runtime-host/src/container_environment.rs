@@ -142,6 +142,8 @@ async fn k8s_package_provisioner(
                 settings.package_registry_insecure,
             )
             .await
+            .map_err(|error| format!("Kubernetes package builder: {error}"))?
+            .with_buildkit_image(settings.k8s_buildkit_image.clone())
             .map_err(|error| format!("Kubernetes package builder: {error}"))?,
         ))),
     }

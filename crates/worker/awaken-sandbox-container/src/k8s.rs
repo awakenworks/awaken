@@ -1135,17 +1135,15 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn overlong_or_empty_scope_fails_before_the_first_k8s_write() {
-        /* Boundary rules extending the table above: N5 an empty scope or an
-         * injective encoding whose Pod/owner-label exceeds 63 bytes produces an
-         * explicit adapter error before the lazy test client can reach its
-         * deliberately unavailable API server. */
+    async fn empty_scope_fails_before_the_first_k8s_write() {
+        /* Boundary rule extending the table above: an empty opaque scope has no
+         * runtime identity and fails before the lazy test client can reach its
+         * deliberately unavailable API server. Long valid scopes are covered by
+         * names::tests and map to a bounded content identity. */
         let runtime = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
         let plan = plan_with_memory(Vec::new());
-        for scope in [String::new(), "x".repeat(57)] {
-            let error = runtime.create(&scope, &plan).await.unwrap_err();
-            assert!(error.to_string().contains("sandbox scope"), "N5: {error}");
-        }
+        let error = runtime.create("", &plan).await.unwrap_err();
+        assert!(error.to_string().contains("sandbox scope"), "N5: {error}");
     }
 
     #[tokio::test]
@@ -1168,6 +1166,8 @@ mod tests {
             vec!["registry-auth".into()],
             true,
         )
+        .unwrap()
+        .with_buildkit_image("registry.local:5000/system/buildkit:v0.30.0-rootless")
         .unwrap();
         let packages = pc::PackageRequirements {
             managers: [("npm".into(), vec!["@playwright/mcp@latest".into()])]
@@ -1205,6 +1205,11 @@ mod tests {
         );
         let buildkit = &pod.containers[0];
         assert_eq!(
+            buildkit.image.as_deref(),
+            Some("registry.local:5000/system/buildkit:v0.30.0-rootless"),
+            "R3 the operator-selected mirror must be the only BuildKit pull reference"
+        );
+        assert_eq!(
             buildkit
                 .security_context
                 .as_ref()
@@ -1212,9 +1217,23 @@ mod tests {
             Some(1000),
             "R3"
         );
+        assert_eq!(
+            buildkit
+                .security_context
+                .as_ref()
+                .and_then(|value| value.allow_privilege_escalation),
+            Some(true),
+            "R3 rootless newuidmap/newgidmap helpers require setuid execution"
+        );
         assert!(
             buildkit.args.as_ref().unwrap()[0].contains("/dev/termination-log"),
             "R4"
+        );
+        assert!(
+            buildkit.args.as_ref().unwrap()[0].contains(
+                "mkdir -p /tmp/workspace\ncp /input/Dockerfile /tmp/workspace/Dockerfile"
+            ),
+            "R6 rootless BuildKit must use a writable workspace"
         );
         assert!(
             K8sPackageImageProvisioner::new(
@@ -1226,6 +1245,20 @@ mod tests {
             )
             .is_err(),
             "R5"
+        );
+        assert!(
+            K8sPackageImageProvisioner::new(
+                Client::try_from(kube::Config::new("http://127.0.0.1:1/".parse().unwrap()))
+                    .unwrap(),
+                "awaken-system",
+                "registry.local/environments",
+                Vec::new(),
+                true,
+            )
+            .unwrap()
+            .with_buildkit_image("registry.local/bad image")
+            .is_err(),
+            "R7 an invalid mirrored builder reference must fail before a Kubernetes write"
         );
     }
 

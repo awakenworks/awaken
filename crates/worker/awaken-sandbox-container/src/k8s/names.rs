@@ -4,11 +4,12 @@ const K8S_DNS_LABEL_MAX_LEN: usize = 63;
 const K8S_DNS_SUBDOMAIN_MAX_LEN: usize = 253;
 const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
 
-/// Injectively encode the opaque Sandbox scope as an adapter-local Kubernetes
-/// identity. Lowercase ASCII letters/digits pass through and every other UTF-8
-/// byte becomes `-hh`. Since `-` itself is escaped, the transform is reversible
-/// and cannot normalize two scopes to one name. An overlong scope fails instead
-/// of being truncated or replaced by a probabilistic hash.
+/// Encode the opaque Sandbox scope as an adapter-local Kubernetes identity.
+/// Lowercase ASCII letters/digits pass through and every other UTF-8 byte becomes
+/// `-hh`. Short identities therefore remain reversible and collision-free. A
+/// scope that cannot fit a DNS label uses the complete BLAKE3 digest in unpadded
+/// lowercase base32; Kubernetes has a finite name space, so a cryptographic
+/// content identity is the only bounded representation for arbitrary scopes.
 pub(super) fn k8s_runtime_id(scope: &str) -> Result<String, RuntimeError> {
     if scope.is_empty() {
         return Err(backend("sandbox scope cannot be empty"));
@@ -24,21 +25,44 @@ pub(super) fn k8s_runtime_id(scope: &str) -> Result<String, RuntimeError> {
         }
     }
 
+    if pod_name(&encoded).len() > K8S_DNS_LABEL_MAX_LEN {
+        encoded = format!("h-{}", base32(blake3::hash(scope.as_bytes()).as_bytes()));
+    }
+
     let pod = pod_name(&encoded);
     let configmap = configmap_name(&encoded, usize::MAX);
     let secret = credential_secret_name(&encoded, usize::MAX);
-    if pod.len() > K8S_DNS_LABEL_MAX_LEN {
-        return Err(backend(format!(
-            "sandbox scope cannot be represented as a Kubernetes label: encoded Pod name is {} bytes (max {K8S_DNS_LABEL_MAX_LEN})",
-            pod.len()
-        )));
-    }
+    debug_assert!(pod.len() <= K8S_DNS_LABEL_MAX_LEN);
     if configmap.len() > K8S_DNS_SUBDOMAIN_MAX_LEN || secret.len() > K8S_DNS_SUBDOMAIN_MAX_LEN {
         return Err(backend(
             "sandbox scope cannot be represented in projected Kubernetes resource names",
         ));
     }
     Ok(encoded)
+}
+
+fn base32(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+    let mut output = String::with_capacity(bytes.len().div_ceil(5) * 8);
+    let mut accumulator = 0_u16;
+    let mut bits = 0_u8;
+    for &byte in bytes {
+        accumulator = (accumulator << 8) | u16::from(byte);
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            output.push(char::from(
+                ALPHABET[usize::from((accumulator >> bits) & 0x1f)],
+            ));
+        }
+        accumulator &= if bits == 0 { 0 } else { (1_u16 << bits) - 1 };
+    }
+    if bits > 0 {
+        output.push(char::from(
+            ALPHABET[usize::from((accumulator << (5 - bits)) & 0x1f)],
+        ));
+    }
+    output
 }
 
 /// `id` is the already encoded adapter-local runtime identity.
@@ -104,10 +128,11 @@ mod tests {
          * replacement; C3 a scope contains uppercase or Unicode; C4 every derived
          * resource/label name and the maximum index must fit Kubernetes limits;
          * C5 scope is empty or its reversible form is overlong. Effects: E1 emit a
-         * deterministic RFC-1123-safe identity; E2 round-trip every accepted scope
+         * deterministic RFC-1123-safe identity; E2 round-trip every short scope
          * exactly, proving injectivity; E3 use one Pod identity for all names and
-         * keep them within 63/253 bytes; E4 reject invalid bounds. Rules:
-         * N1 C1|C3=>E1+E2; N2 C1+C2=>E2; N3 C1+C4=>E3; N4 C5=>E4.
+         * keep them within 63/253 bytes; E4 reject empty scope; E5 map arbitrary
+         * long scopes to a full collision-resistant digest. Rules: N1 C1|C3=>E1+E2;
+         * N2 C1+C2=>E2; N3 C1+C4=>E3; N4 empty C5=>E4; N5 long C5=>E3+E5.
          */
         let session = "sesn_fnv1a64:a13b83a56e2f77d0";
         let runtime_id = k8s_runtime_id(session).unwrap();
@@ -137,8 +162,24 @@ mod tests {
         );
         assert_eq!(cfg_owner_label(&runtime_id), pod, "N3 cleanup owner");
 
-        for scope in [String::new(), "x".repeat(57)] {
-            assert!(k8s_runtime_id(&scope).is_err(), "N4: {scope}");
-        }
+        assert!(k8s_runtime_id("").is_err(), "N4");
+
+        let long_scope = format!(
+            "state-entry:issue_{}:plan:5",
+            "0718bf2ab7d756f8bc85db4cc92b0ae77f83acc55626e9facfe8d8ab80fee99e"
+        );
+        let long_id = k8s_runtime_id(&long_scope).unwrap();
+        assert!(long_id.starts_with("h-"), "N5: {long_id}");
+        assert_eq!(long_id.len(), 54, "N5 full BLAKE3 base32");
+        assert_eq!(long_id, k8s_runtime_id(&long_scope).unwrap(), "N5 stable");
+        assert_ne!(
+            long_id,
+            k8s_runtime_id(&format!("{long_scope}-other")).unwrap(),
+            "N5 distinct long scopes"
+        );
+        assert!(
+            is_dns_name(&pod_name(&long_id), K8S_DNS_LABEL_MAX_LEN),
+            "N5 bounded Pod name"
+        );
     }
 }

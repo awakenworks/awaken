@@ -16,8 +16,25 @@ use kube::{Api, Client};
 use crate::k8s::{api_conflict, backend, install_rustls_crypto_provider};
 use crate::{PackageImageProvisioner, RuntimeError};
 
-const DEFAULT_BUILDKIT_IMAGE: &str = "moby/buildkit:v0.30.0-rootless";
+pub const DEFAULT_K8S_BUILDKIT_IMAGE: &str = "moby/buildkit:v0.30.0-rootless";
 const PACKAGE_BUILD_TIMEOUT_SECS: i64 = 10 * 60;
+
+fn immutable_registry_identity(identity: Option<String>) -> Option<String> {
+    identity.filter(|reference| {
+        reference
+            .rsplit_once("@sha256:")
+            .is_some_and(|(_, digest)| {
+                digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+    })
+}
+
+fn terminal_image_pull_reason(reason: Option<&str>) -> bool {
+    matches!(
+        reason,
+        Some("ErrImagePull" | "ImagePullBackOff" | "InvalidImageName")
+    )
+}
 
 /// A short-lived rootless BuildKit Job builds one deterministic destination and
 /// pushes it to the shared Registry. Coordinator's database remains the sole
@@ -74,10 +91,24 @@ impl K8sPackageImageProvisioner {
             client,
             namespace,
             registry,
-            buildkit_image: DEFAULT_BUILDKIT_IMAGE.into(),
+            buildkit_image: DEFAULT_K8S_BUILDKIT_IMAGE.into(),
             image_pull_secrets,
             registry_insecure,
         })
+    }
+
+    /// Override the rootless BuildKit image with an operator-managed mirror.
+    /// Air-gapped and rate-limited clusters must not depend on an implicit
+    /// Docker Hub pull at Environment materialization time.
+    pub fn with_buildkit_image(mut self, image: impl Into<String>) -> Result<Self, RuntimeError> {
+        let image = image.into();
+        if image.trim().is_empty() || image.chars().any(char::is_whitespace) {
+            return Err(backend(
+                "Kubernetes BuildKit image must be one non-empty OCI reference",
+            ));
+        }
+        self.buildkit_image = image;
+        Ok(self)
     }
 
     pub(crate) fn build_objects(
@@ -113,11 +144,12 @@ impl K8sPackageImageProvisioner {
         };
         let script = r#"
 set -eu
-cp /input/Dockerfile /workspace/Dockerfile
+mkdir -p /tmp/workspace
+cp /input/Dockerfile /tmp/workspace/Dockerfile
 buildctl-daemonless.sh build \
   --frontend dockerfile.v0 \
-  --local context=/workspace \
-  --local dockerfile=/workspace \
+  --local context=/tmp/workspace \
+  --local dockerfile=/tmp/workspace \
   --output type=image,name="$DESTINATION",push=true \
   --metadata-file /tmp/build-metadata.json
 digest=$(sed -n 's/.*"containerimage.digest"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tmp/build-metadata.json | head -n 1)
@@ -183,7 +215,13 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                 },
             ]),
             security_context: Some(SecurityContext {
-                allow_privilege_escalation: Some(false),
+                // RootlessKit enters a subordinate user namespace through the
+                // image's setuid newuidmap/newgidmap helpers. no_new_privs would
+                // disable those helpers and make every official rootless
+                // BuildKit image fail before the build starts. The process is
+                // still launched as the unprivileged uid/gid below and receives
+                // no Kubernetes service-account token.
+                allow_privilege_escalation: Some(true),
                 run_as_non_root: Some(true),
                 run_as_user: Some(1000),
                 run_as_group: Some(1000),
@@ -373,6 +411,31 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                         .map_or(identity.clone(), |(_, reference)| reference.to_owned())
                 }));
             }
+            let listed = pods
+                .list(&ListParams::default().labels(&format!("job-name={name}")))
+                .await
+                .map_err(backend)?;
+            let pull_failed = listed.items.iter().any(|pod| {
+                pod.status
+                    .as_ref()
+                    .and_then(|status| status.container_statuses.as_ref())
+                    .into_iter()
+                    .flatten()
+                    .filter(|status| status.name == "verify")
+                    .any(|status| {
+                        terminal_image_pull_reason(
+                            status
+                                .state
+                                .as_ref()
+                                .and_then(|state| state.waiting.as_ref())
+                                .and_then(|waiting| waiting.reason.as_deref()),
+                        )
+                    })
+            });
+            if pull_failed {
+                let _ = jobs.delete(&name, &DeleteParams::background()).await;
+                return Ok(None);
+            }
             if status.failed.unwrap_or_default() > 0 || tokio::time::Instant::now() >= deadline {
                 let _ = jobs.delete(&name, &DeleteParams::background()).await;
                 return Ok(None);
@@ -405,11 +468,60 @@ impl PackageImageProvisioner for K8sPackageImageProvisioner {
                 "Kubernetes package builder cannot prove a no-bypass restricted build network",
             ));
         }
-        let (config, job, _) = self.build_objects(base_image, packages)?;
+        let (config, job, destination) = self.build_objects(base_image, packages)?;
+        // The destination tag is a content fingerprint.  Coordinator build
+        // records can be rebuilt after restart, but the shared Registry is the
+        // cross-process source of truth.  Reuse its immutable digest instead of
+        // downloading and reinstalling the same package set on every restart.
+        if let Some(image) =
+            immutable_registry_identity(self.resolve_image_identity(&destination).await?)
+        {
+            return Ok(image);
+        }
         self.run_job(config, job).await
     }
 
     async fn package_image_available(&self, image: &str) -> Result<bool, RuntimeError> {
         Ok(self.resolve_image_identity(image).await?.is_some())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{immutable_registry_identity, terminal_image_pull_reason};
+
+    #[test]
+    fn only_an_exact_registry_digest_can_short_circuit_a_package_build() {
+        let digest = "a".repeat(64);
+        let exact = format!("registry.local/environments/awaken-packages@sha256:{digest}");
+        assert_eq!(
+            immutable_registry_identity(Some(exact.clone())),
+            Some(exact),
+            "a kubelet-confirmed immutable digest is reusable across Coordinator restarts"
+        );
+        assert_eq!(
+            immutable_registry_identity(Some(
+                "registry.local/environments/awaken-packages:mutable".into()
+            )),
+            None,
+            "a mutable tag must still execute the BuildKit path"
+        );
+        assert_eq!(
+            immutable_registry_identity(Some(
+                "registry.local/environments/awaken-packages@sha256:short".into()
+            )),
+            None,
+            "a malformed digest must fail closed"
+        );
+    }
+
+    #[test]
+    fn a_terminal_kubelet_pull_failure_falls_through_to_build_without_waiting_for_job_timeout() {
+        for reason in ["ErrImagePull", "ImagePullBackOff", "InvalidImageName"] {
+            assert!(terminal_image_pull_reason(Some(reason)), "{reason}");
+        }
+        for reason in [None, Some("ContainerCreating"), Some("PodInitializing")] {
+            assert!(!terminal_image_pull_reason(reason), "{reason:?}");
+        }
     }
 }

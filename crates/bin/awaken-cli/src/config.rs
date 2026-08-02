@@ -1046,6 +1046,10 @@ mod tests {
         assert_eq!(defaults.package_image_registry, None, "S1");
         assert_eq!(defaults.package_registry_auth_file, None, "S1");
         assert!(!defaults.package_registry_insecure, "S1");
+        assert_eq!(
+            defaults.k8s_buildkit_image, "moby/buildkit:v0.30.0-rootless",
+            "S1"
+        );
         assert_eq!(defaults.package_image_builder, None, "S1");
         assert!(!defaults.inherit_agent_stderr, "S1");
         assert!(defaults.reaper_enabled, "S1");
@@ -1063,6 +1067,9 @@ mod tests {
                 package_image_registry: Some("registry.internal/agents/".into()),
                 package_registry_auth_file: Some(PathBuf::from("/run/secrets/registry.json")),
                 package_registry_insecure: Some(true),
+                k8s_buildkit_image: Some(
+                    "registry.internal/system/buildkit:v0.30.0-rootless".into(),
+                ),
                 package_image_builder: Some("k8s".into()),
                 package_local_cache_ttl_secs: Some(300),
                 sandbox_inherit_agent_stderr: Some(true),
@@ -1095,6 +1102,10 @@ mod tests {
         assert_eq!(
             selected.package_image_builder,
             Some(PackageImageBuilder::Kubernetes),
+            "S2"
+        );
+        assert_eq!(
+            selected.k8s_buildkit_image, "registry.internal/system/buildkit:v0.30.0-rootless",
             "S2"
         );
         assert_eq!(
