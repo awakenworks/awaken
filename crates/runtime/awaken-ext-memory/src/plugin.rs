@@ -33,6 +33,10 @@ use crate::select::{RecallSelector, manifest, query_from};
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct MemoryConfig {
+    /// Session resource binding selected for Awaken's optional automatic
+    /// recall/extraction extension. Standard Managed MemoryStore mounts remain
+    /// available without this field and are never selected implicitly.
+    pub binding_id: Option<String>,
     /// Enable request-only recall for this parent Agent.
     pub recall_enabled: bool,
     /// Enable terminal extraction when the bound store is writable.
@@ -57,6 +61,7 @@ pub struct MemoryConfig {
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
+            binding_id: None,
             recall_enabled: true,
             extraction_enabled: true,
             recall: RecallBounds::default(),
@@ -226,6 +231,12 @@ pub fn config_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
+            "binding_id": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "title": "Automatic memory binding",
+                "description": "Exact Session MemoryStore binding used by the optional Awaken recall/extraction extension. Null leaves standard mounts available without hidden memory behavior."
+            },
             "recall_enabled": {
                 "type": "boolean",
                 "description": "Enable request-only Memory recall for this Agent."
@@ -290,6 +301,7 @@ mod config_tests {
         // keep safe compatibility defaults; C2 explicit recall flag/bounds/Agent
         // ids/prompts -> each authored value survives independently.
         let config = MemoryConfig::from_value(Some(&serde_json::json!({
+            "binding_id": "profile-memory",
             "recall_enabled": false,
             "max_entries": 7,
             "agent_id": "team-memory-extractor",
@@ -299,6 +311,7 @@ mod config_tests {
         })))
         .unwrap();
         assert!(!config.recall_enabled);
+        assert_eq!(config.binding_id.as_deref(), Some("profile-memory"));
         assert!(config.extraction_enabled);
         assert_eq!(config.recall.max_entries, 7);
         assert_eq!(config.agent_id.as_deref(), Some("team-memory-extractor"));
@@ -327,6 +340,8 @@ mod config_tests {
         let schema = config_schema();
         assert_eq!(schema["properties"]["instructions"]["format"], "textarea");
         assert_eq!(schema["properties"]["recall_enabled"]["type"], "boolean");
+        assert_eq!(schema["properties"]["binding_id"]["type"][0], "string");
+        assert_eq!(schema["properties"]["binding_id"]["minLength"], 1);
         assert_eq!(
             schema["properties"]["extraction_prompt"]["format"],
             "textarea"

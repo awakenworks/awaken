@@ -48,6 +48,10 @@ pub(crate) struct ParsedSessionInput {
     pub mount_path: String,
     pub access: awaken_resource_contract::ResourceAccess,
     pub instructions: Option<String>,
+    /// Only Managed MemoryStore inputs have a server-derived mount path. Keep
+    /// that fact until the Resource Catalog definition is available so the
+    /// Session freezes a display-name-derived path rather than a shared literal.
+    pub implicit_memory_mount: bool,
 }
 
 pub(crate) const MAX_SESSION_FILE_RESOURCES: usize = 500;
@@ -63,7 +67,41 @@ impl ManagedState {
         agent_defaults: &[awaken_resource_contract::InputBinding],
     ) -> Result<Vec<awaken_session_contract::SessionInputAttachment>, StateError> {
         let mut attachments = Vec::with_capacity(resources.len());
+        let mut used_mounts = agent_defaults
+            .iter()
+            .map(|binding| binding.mount_path.trim_start_matches('/').to_string())
+            .chain(
+                resources
+                    .iter()
+                    .filter(|resource| !resource.implicit_memory_mount)
+                    .map(|resource| resource.mount_path.trim_start_matches('/').to_string()),
+            )
+            .collect::<std::collections::BTreeSet<_>>();
         for (index, resource) in resources.iter().enumerate() {
+            let mut resource = resource.clone();
+            if resource.implicit_memory_mount {
+                let ParsedInputTarget::MemoryStore(memory_store_id) = &resource.target else {
+                    unreachable!("only MemoryStore inputs derive a Managed mount path")
+                };
+                let catalog = self.resource_catalog.as_ref().ok_or_else(|| {
+                    StateError::Run(RunError::bad_request(
+                        "memory resources require a configured Resource Catalog",
+                    ))
+                })?;
+                let definition = catalog
+                    .memory_store(owner_scope, memory_store_id.as_str())
+                    .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?
+                    .ok_or_else(|| {
+                        StateError::Run(RunError::bad_request(format!(
+                            "MemoryStore `{memory_store_id}` not found in this workspace"
+                        )))
+                    })?;
+                resource.mount_path = unique_memory_mount_path(
+                    &definition.name,
+                    memory_store_id.as_str(),
+                    &used_mounts,
+                );
+            }
             let repository_id = if let ParsedInputTarget::Repository {
                 remote_url,
                 authorization_token,
@@ -136,20 +174,77 @@ impl ManagedState {
             } else {
                 None
             };
-            let binding = input_binding(
+            let mut binding = input_binding(
                 format!("session:{session_id}:input:{index}"),
-                resource,
+                &resource,
                 repository_id,
             );
+            used_mounts.insert(binding.mount_path.trim_start_matches('/').to_string());
             let normalized = binding.mount_path.trim_start_matches('/');
             let replaces = agent_defaults
                 .iter()
                 .find(|default| default.mount_path.trim_start_matches('/') == normalized)
                 .map(|default| default.binding_id.clone());
+            // A replacement changes the resource occupying one logical Agent
+            // slot; it does not invent a new slot identity. This keeps published
+            // extension configuration (such as memory.binding_id) stable.
+            if let Some(replaced) = &replaces {
+                binding.binding_id.clone_from(replaced);
+            }
             attachments.push(awaken_session_contract::SessionInputAttachment { binding, replaces });
         }
         Ok(attachments)
     }
+}
+
+/// Anthropic-compatible MemoryStore mount component. It is deliberately local
+/// to the Managed anti-corruption layer: neutral Session and Worker contracts
+/// consume the exact frozen path and never reproduce wire naming rules.
+fn memory_mount_component(label: &str) -> String {
+    let mut component = String::new();
+    let mut separated = false;
+    for character in label.chars().flat_map(char::to_lowercase) {
+        if character.is_alphanumeric() {
+            if separated && !component.is_empty() {
+                component.push('-');
+            }
+            component.push(character);
+            separated = false;
+        } else {
+            separated = true;
+        }
+        if component.chars().count() >= 80 {
+            break;
+        }
+    }
+    let component = component.trim_matches('-');
+    if component.is_empty() {
+        "store".to_string()
+    } else {
+        component.to_string()
+    }
+}
+
+fn unique_memory_mount_path(
+    display_name: &str,
+    memory_store_id: &str,
+    used_mounts: &std::collections::BTreeSet<String>,
+) -> String {
+    let base = format!("mnt/memory/{}", memory_mount_component(display_name));
+    if !used_mounts.contains(&base) {
+        return format!("/{base}");
+    }
+    let qualified = format!("{base}-{}", memory_mount_component(memory_store_id));
+    if !used_mounts.contains(&qualified) {
+        return format!("/{qualified}");
+    }
+    for suffix in 2_u16.. {
+        let candidate = format!("{qualified}-{suffix}");
+        if !used_mounts.contains(&candidate) {
+            return format!("/{candidate}");
+        }
+    }
+    unreachable!("the finite Session resource set always has an available suffix")
 }
 
 impl ResourceInput {
@@ -165,6 +260,7 @@ impl ResourceInput {
                     .unwrap_or_else(|| format!("/mnt/session/uploads/{file_id}")),
                 access: awaken_resource_contract::ResourceAccess::ReadOnly,
                 instructions: None,
+                implicit_memory_mount: false,
             },
             ResourceInput::MemoryStore {
                 memory_store_id,
@@ -173,11 +269,12 @@ impl ResourceInput {
                 access,
             } => ParsedSessionInput {
                 target: ParsedInputTarget::MemoryStore(memory_store_id.clone().into()),
-                mount_path: mount_path
-                    .clone()
-                    .unwrap_or_else(|| "/mnt/memory/store".into()),
+                mount_path: mount_path.clone().unwrap_or_else(|| {
+                    format!("/mnt/memory/{}", memory_mount_component(memory_store_id))
+                }),
                 access: access.unwrap_or(ResourceAccess::ReadWrite).into(),
                 instructions: instructions.clone(),
+                implicit_memory_mount: mount_path.is_none(),
             },
             ResourceInput::GithubRepository {
                 url,
@@ -202,6 +299,7 @@ impl ResourceInput {
                 },
                 access: awaken_resource_contract::ResourceAccess::ReadWrite,
                 instructions: None,
+                implicit_memory_mount: false,
             },
         }
     }

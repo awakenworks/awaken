@@ -94,6 +94,12 @@ pub(crate) struct SessionRuntimeSlot {
     /// dispatch to another Worker. Runtime provisioning consumes the decoded
     /// projection above; this value is never a second configuration authority.
     pub environment_snapshot: Option<awaken_session_contract::EnvironmentSnapshot>,
+    /// Every standard MemoryStore resource frozen for this Session, keyed by
+    /// binding id. These exist independently of the optional Awaken automatic
+    /// memory extension selected into `memory` below.
+    pub memory_bindings: HashMap<String, Arc<BoundMemory>>,
+    /// The one explicitly selected automatic recall/extraction binding. This is
+    /// never the authority for which standard resources are mounted.
     pub memory: Option<Arc<BoundMemory>>,
     pub mcp: Vec<McpGenerationProjection>,
     /// Current Control-issued projection authority. It is a live cache used to
