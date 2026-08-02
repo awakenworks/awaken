@@ -157,9 +157,10 @@ pub(super) async fn remove(
     let argv = vec![
         "/bin/sh".into(),
         "-c".into(),
-        "rm -f -- \"$1\"".into(),
+        "target=$1; root=$2; rm -f -- \"$target\"; dir=$(dirname -- \"$target\"); while [ \"$dir\" != \"$root\" ] && [ \"${dir#\"$root\"/}\" != \"$dir\" ]; do rmdir -- \"$dir\" 2>/dev/null || break; dir=$(dirname -- \"$dir\"); done".into(),
         "awaken-input-remove".into(),
         path.into(),
+        crate::LIVE_INPUTS_ROOT.into(),
     ];
     exec(runtime, container_id, argv, None).await
 }

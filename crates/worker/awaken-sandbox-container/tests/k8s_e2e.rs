@@ -416,7 +416,8 @@ async fn a_live_managed_file_is_replaceable_by_the_runtime_and_read_only_to_the_
     // the writable side of the shared volume; C3 the Agent owns neither projector
     // nor Kubernetes credentials. C1+C2+C3 => E1 attach becomes immediately
     // visible, E2 Agent writes fail while bytes stay unchanged, and E3 runtime
-    // removal makes the path absent without replacing the Pod.
+    // removal makes the path and now-empty parents absent without replacing the
+    // Pod or deleting the shared projection root.
     if std::env::var("AWAKEN_K8S_E2E").as_deref() != Ok("1") {
         eprintln!("skipping: set AWAKEN_K8S_E2E=1 with a reachable cluster to run");
         return;
@@ -479,6 +480,35 @@ async fn a_live_managed_file_is_replaceable_by_the_runtime_and_read_only_to_the_
         .expect("remove the managed File through the projector");
     let absent = kubectl(&["exec", &pod, "-c", "agent", "--", "test", "!", "-e", path]);
     assert!(absent.status.success());
+    let empty_parent_absent = kubectl(&[
+        "exec",
+        &pod,
+        "-c",
+        "agent",
+        "--",
+        "test",
+        "!",
+        "-e",
+        "/mnt/session/uploads/awaken-design/current",
+    ]);
+    assert!(
+        empty_parent_absent.status.success(),
+        "hot removal must prune empty parents up to, but never including, the live-input root"
+    );
+    let root_retained = kubectl(&[
+        "exec",
+        &pod,
+        "-c",
+        "agent",
+        "--",
+        "test",
+        "-d",
+        "/mnt/session/uploads",
+    ]);
+    assert!(
+        root_retained.status.success(),
+        "projection root remains mounted"
+    );
 
     pc::Sandbox::dispose(&sandbox).await.unwrap();
 }
