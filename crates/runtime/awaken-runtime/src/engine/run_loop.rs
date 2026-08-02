@@ -672,7 +672,7 @@ pub(super) async fn drive(
         // Otherwise run each requested tool and feed the results back. A call that
         // awaits or fails the run returns its disposition here, ending the step
         // loop; every call answered with a result returns `None` and the loop goes on.
-        match dispatch::run_tool_calls(
+        let tool_execution = dispatch::run_tool_calls(
             runtime,
             context,
             delegation_origin,
@@ -685,9 +685,27 @@ pub(super) async fn drive(
             &mut ledger,
             &mut store,
             &mut opened,
-        )
-        .await
-        {
+        );
+        // Cancellation must also preempt an executing tool. Waiting until the
+        // next step boundary leaves a hung shell, package download, or nested
+        // container alive after the durable Run has already ended Cancelled.
+        // Dropping this future propagates through the tool SPI; process-backed
+        // tools use that drop to terminate their complete process group.
+        let tool_execution = match &context.cancellation {
+            Some(token) => {
+                tokio::select! {
+                    biased;
+                    _ = token.cancelled() => None,
+                    result = tool_execution => Some(result),
+                }
+            }
+            None => Some(tool_execution.await),
+        };
+        let Some(tool_execution) = tool_execution else {
+            disposition = Some(RunDisposition::ended(run_id.clone(), EndCause::Cancelled));
+            break;
+        };
+        match tool_execution {
             Ok(Some(reached)) => {
                 disposition = Some(reached);
                 break;
