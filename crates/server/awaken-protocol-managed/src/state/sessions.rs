@@ -1084,7 +1084,8 @@ impl ManagedState {
         if !application_required && self_hosted_environment {
             self.environments
                 .enqueue_session_work(&environment_id, &id)
-                .await;
+                .await
+                .map_err(|error| StateError::Run(RunError::unavailable(error.to_string())))?;
         }
         // Project the committed create as a lifecycle fact: a fresh session is idle,
         // so fan out `session.status_idled` (the webhook catalog name — past-tense
