@@ -62,7 +62,7 @@ awaken-executable-environment-contract.workspace = true
 awaken-resource-store = { workspace = true, features = ["test-support"] }
 awaken-skill-store = { workspace = true, features = ["test-support"] }
 awaken-executable-agent-catalog.workspace = true
-awaken-env-store.workspace = true
+awaken-env-store = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }

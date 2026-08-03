@@ -32,6 +32,10 @@ SKILL_STORE_SOURCE = "crates/resources/awaken-skill-store/src/lib.rs"
 SKILL_SQLITE_SOURCE = "crates/resources/awaken-skill-store/src/sqlite.rs"
 RESOURCE_STORE_SOURCE = "crates/stores/awaken-resource-store/src/lib.rs"
 RUNTIME_MEMORY_STORES = "crates/server/awaken-runtime-host/src/memory_stores.rs"
+ENV_STORE_SQLITE_SOURCE = "crates/stores/awaken-env-store/src/lib.rs"
+SANDBOX_POLICY_STORE_SOURCE = "crates/server/awaken-sandbox-policy-store/src/lib.rs"
+ENV_IMAGE_BUILD_SOURCE = "crates/server/awaken-environment-image-build/src/lib.rs"
+ENV_IMAGE_BUILD_SQLITE_SOURCE = "crates/server/awaken-environment-image-build/src/sqlite.rs"
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -95,9 +99,9 @@ TEST_SUPPORT_GATE = (
 FEATURE_TEST_SUPPORT_GATE = (
     r'#\s*\[\s*cfg\s*\(\s*feature\s*=\s*"test-support"\s*\)\s*\]'
 )
-PUBLIC_DECLARATION = r"\bpub(?:\s*\(\s*crate\s*\))?\s+(?:async\s+)?(?:struct|fn)\s+"
+PUBLIC_DECLARATION = r"\bpub(?:\s*\(\s*crate\s*\))?\s+(?:async\s+)?(?:struct|fn|use)\s+"
 
-NON_PRODUCT_RESOURCE_APIS = (
+NON_PRODUCT_APIS = (
     (
         "InMemoryFileStore",
         FILE_STORE_SOURCE,
@@ -145,6 +149,36 @@ NON_PRODUCT_RESOURCE_APIS = (
         COORDINATOR_SOURCE,
         r"\bpub\s+fn\s+ephemeral_resources_application\b",
         FEATURE_TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemoryEnvRegistry",
+        ENV_STORE_SQLITE_SOURCE,
+        r"\bpub\s+use\s+inmem::InMemoryEnvRegistry\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteEnvRegistry::open_in_memory",
+        ENV_STORE_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemorySandboxExecutionPolicyStore",
+        SANDBOX_POLICY_STORE_SOURCE,
+        r"\bpub\s+struct\s+InMemorySandboxExecutionPolicyStore\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemoryEnvironmentImageBuildStore",
+        ENV_IMAGE_BUILD_SOURCE,
+        r"\bpub\s+use\s+in_memory::InMemoryEnvironmentImageBuildStore\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "open_in_memory_environment_image_build_store",
+        ENV_IMAGE_BUILD_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory_environment_image_build_store\b",
+        TEST_SUPPORT_GATE,
     ),
 )
 
@@ -217,16 +251,16 @@ def volatile_runtime_host_surface_violations(source: str) -> list[str]:
     return errors
 
 
-def non_product_resource_surface_violations(sources: dict[str, str]) -> list[str]:
-    """Return in-memory Resource APIs reachable from a default product build."""
+def non_product_surface_violations(sources: dict[str, str]) -> list[str]:
+    """Return volatile authority APIs reachable from a default product build."""
 
     errors: list[str] = []
-    for label, path, declaration, gate in NON_PRODUCT_RESOURCE_APIS:
+    for label, path, declaration, gate in NON_PRODUCT_APIS:
         gated = _declaration_is_gated(sources[path], declaration, gate)
         if gated is None:
-            errors.append(f"missing non-product Resource API `{label}`")
+            errors.append(f"missing non-product authority API `{label}`")
         elif not gated:
-            errors.append(f"non-product Resource API `{label}` is not test-support gated")
+            errors.append(f"non-product authority API `{label}` is not test-support gated")
     return errors
 
 
@@ -410,8 +444,8 @@ def selftest() -> None:
     Resources catalog -> accepted; O14 a cross-domain store field or unconditional
     migration acquisition -> rejected; O15 every volatile Host API is test-support
     gated -> accepted; O16 one missing Host gate -> rejected; O17 all canonical
-    File/Memory/Skill/Resource volatile entrypoints and the ephemeral Resources
-    assembler are test-support gated -> accepted; O18 any one gate missing ->
+    File/Memory/Skill/Resource/Environment volatile entrypoints and the ephemeral
+    Resources assembler are test-support gated -> accepted; O18 any one gate missing ->
     rejected; O19 product defaults/normal edges do not enable test-support ->
     accepted; O20 a product default or normal edge enables it -> rejected while
     dev-dependencies and opt-in features remain accepted. Together the rules cover
@@ -515,7 +549,7 @@ def selftest() -> None:
     ) == ["volatile Host API `with_store_dir` is not test-support gated"]  # O16
     any_gate = '#[cfg(any(test, feature = "test-support"))]\n'
     feature_gate = '#[cfg(feature = "test-support")]\n'
-    resource_surfaces = {
+    volatile_surfaces = {
         FILE_STORE_SOURCE: any_gate + "pub struct InMemoryFileStore {}",
         MEMORY_STORE_SOURCE: any_gate + "pub struct VolatileMemoryRepository {}",
         MEMORY_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
@@ -525,13 +559,25 @@ def selftest() -> None:
         RUNTIME_MEMORY_STORES: any_gate + "pub(crate) fn open() {}",
         COORDINATOR_SOURCE: feature_gate
         + "pub fn ephemeral_resources_application() {}",
+        ENV_STORE_SQLITE_SOURCE: any_gate
+        + "pub use inmem::InMemoryEnvRegistry;\n"
+        + any_gate
+        + "pub fn open_in_memory() {}",
+        SANDBOX_POLICY_STORE_SOURCE: any_gate
+        + "pub struct InMemorySandboxExecutionPolicyStore {}",
+        ENV_IMAGE_BUILD_SOURCE: any_gate
+        + "pub use in_memory::InMemoryEnvironmentImageBuildStore;",
+        ENV_IMAGE_BUILD_SQLITE_SOURCE: any_gate
+        + "pub fn open_in_memory_environment_image_build_store() {}",
     }
-    assert non_product_resource_surface_violations(resource_surfaces) == []  # O17
-    for label, path, _, gate in NON_PRODUCT_RESOURCE_APIS:
-        broken = resource_surfaces.copy()
-        broken[path] = re.sub(gate, "", broken[path], count=1)
-        assert non_product_resource_surface_violations(broken) == [
-            f"non-product Resource API `{label}` is not test-support gated"
+    assert non_product_surface_violations(volatile_surfaces) == []  # O17
+    for label, path, declaration, gate in NON_PRODUCT_APIS:
+        broken = volatile_surfaces.copy()
+        broken[path] = re.sub(
+            rf"{gate}\s*(?={declaration})", "", broken[path], count=1
+        )
+        assert non_product_surface_violations(broken) == [
+            f"non-product authority API `{label}` is not test-support gated"
         ]  # O18 each independent gate-removal cause
     test_only_edges = {
         "features": {"test-support": ["store/test-support"]},
@@ -630,10 +676,10 @@ def check_all(repo_root: Path) -> list[str]:
         (repo_root / RUNTIME_HOST_BUILD).read_text(encoding="utf-8")
     ):
         errors.append(f"{RUNTIME_HOST_BUILD}: {error}")
-    resource_surface_sources = {
+    non_product_sources = {
         path: (repo_root / path).read_text(encoding="utf-8")
-        for _, path, _, _ in NON_PRODUCT_RESOURCE_APIS
+        for _, path, _, _ in NON_PRODUCT_APIS
     }
-    for error in non_product_resource_surface_violations(resource_surface_sources):
-        errors.append(f"Resource production surface: {error}")
+    for error in non_product_surface_violations(non_product_sources):
+        errors.append(f"Non-product surface: {error}")
     return errors

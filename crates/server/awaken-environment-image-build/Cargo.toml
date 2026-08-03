@@ -24,5 +24,9 @@ tokio = { workspace = true, features = ["sync", "time"] }
 awaken-executable-environment-catalog.workspace = true
 tempfile = "3"
 
+[features]
+# Process-local build state and private SQLite databases for fixtures.
+test-support = []
+
 [lints]
 workspace = true

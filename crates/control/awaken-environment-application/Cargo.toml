@@ -17,7 +17,7 @@ thiserror.workspace = true
 async-trait.workspace = true
 
 [dev-dependencies]
-awaken-env-store.workspace = true
+awaken-env-store = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [lints]

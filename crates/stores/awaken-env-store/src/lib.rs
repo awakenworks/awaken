@@ -16,9 +16,11 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
 
-// The in-memory reference backend lives here beside the durable siblings; the
+// The test-support reference backend lives here beside the durable siblings; the
 // port and value objects stay inward in `awaken-environment-contract`.
+#[cfg(any(test, feature = "test-support"))]
 mod inmem;
+#[cfg(any(test, feature = "test-support"))]
 pub use inmem::InMemoryEnvRegistry;
 
 /// The frozen presence timestamp the managed wire uses (parity with the registry).
@@ -189,6 +191,7 @@ impl SqliteEnvRegistry {
         Self::from_connection(Connection::open(path).map_err(|e| e.to_string())?)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, String> {
         Self::from_connection(Connection::open_in_memory().map_err(|e| e.to_string())?)
     }

@@ -29,7 +29,7 @@ awaken-observability = { workspace = true }
 awaken-authz-enforce = { workspace = true }
 awaken-protocol-managed = { workspace = true, features = ["test-support"] }
 awaken-protocol-awaken = { workspace = true }
-awaken-sandbox-policy-store = { workspace = true }
+awaken-sandbox-policy-store = { workspace = true, features = ["test-support"] }
 awaken-protocol-ai-sdk = { workspace = true }
 awaken-protocol-ag-ui = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
