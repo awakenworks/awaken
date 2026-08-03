@@ -119,6 +119,8 @@ mod session;
 mod session_ctx;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::{MemoryHostModel, bind_test_memory};
 mod types;
 mod worker_resolver;
 

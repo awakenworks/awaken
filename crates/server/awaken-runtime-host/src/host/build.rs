@@ -126,9 +126,9 @@ impl SharedHost {
     }
 
     /// Construct an execution Worker with its exact remote content adapters
-    /// installed before any Resource data store is selected. The Worker keeps
-    /// only process-local placeholders for management-only File capabilities;
-    /// it never opens a File or Memory authority database.
+    /// installed before any Resource data store is selected. Management-only
+    /// File and durable extraction authorities fail closed; the Worker opens no
+    /// File, Memory-content, or Memory-extraction authority database.
     pub fn new_worker_with_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
@@ -180,8 +180,14 @@ impl SharedHost {
                 },
             )
         };
-        let extraction_repository = extraction_repository
-            .unwrap_or_else(|| local_memory_extraction_repository(store_dir.as_deref()));
+        let extraction_repository = extraction_repository.unwrap_or_else(|| {
+            if worker_content.is_some() {
+                Arc::new(crate::unavailable_worker::UnavailableWorkerExtractions)
+                    as Arc<dyn awaken_ext_memory::MemoryExtractionRepository>
+            } else {
+                local_memory_extraction_repository(store_dir.as_deref())
+            }
+        });
         let memory = Arc::new(crate::memory::MemoryRuntime::new(
             llm.clone(),
             Arc::new(LocalProvider::new(sub_base("mem"))),
@@ -193,7 +199,7 @@ impl SharedHost {
             skills.set_store(plane.skill_store());
         }
         let (file_store, file_catalog) = if worker_content.is_some() {
-            let files = Arc::new(crate::unavailable_files::UnavailableWorkerFiles);
+            let files = Arc::new(crate::unavailable_worker::UnavailableWorkerFiles);
             (
                 files.clone() as Arc<dyn awaken_file_store::FileStore>,
                 files as Arc<dyn awaken_resource_contract::FileCatalog>,

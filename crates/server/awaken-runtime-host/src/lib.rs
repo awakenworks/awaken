@@ -64,7 +64,7 @@ mod store;
 #[cfg(test)]
 mod test_mcp;
 mod tool_output_spill;
-mod unavailable_files;
+mod unavailable_worker;
 mod web_search;
 mod worker_http;
 
