@@ -220,10 +220,17 @@ impl SharedHost {
                         )
                     }
                     None => {
-                        let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-                        (
-                            files.clone() as Arc<dyn awaken_file_store::FileStore>,
-                            files as Arc<dyn awaken_resource_contract::FileCatalog>,
+                        #[cfg(any(test, feature = "test-support"))]
+                        {
+                            let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+                            (
+                                files.clone() as Arc<dyn awaken_file_store::FileStore>,
+                                files as Arc<dyn awaken_resource_contract::FileCatalog>,
+                            )
+                        }
+                        #[cfg(not(any(test, feature = "test-support")))]
+                        unreachable!(
+                            "product Host construction requires an explicit Resource component"
                         )
                     }
                 },

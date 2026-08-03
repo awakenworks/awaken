@@ -15,7 +15,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-awaken-file-store.workspace = true
+awaken-file-store = { workspace = true, features = ["test-support"] }
 awaken-resource-store.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 

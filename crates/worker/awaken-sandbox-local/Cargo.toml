@@ -23,7 +23,7 @@ tempfile = "3"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util"] }
 # Tests wire a real content-addressed store behind the `BlobSource` port via a small
 # adapter — the store stays a dev-only dependency (dev-deps are boundary-exempt).
-awaken-file-store.workspace = true
+awaken-file-store = { workspace = true, features = ["test-support"] }
 # The memory-store realizer (FUSE / copy) is injected via the `MemoryMounter` port;
 # tests wire the real worker-tier mounter over an in-memory store to prove item 1
 # end-to-end. Dev-only.

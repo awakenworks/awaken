@@ -172,6 +172,7 @@ pub fn embedded_resources_application(
 }
 
 /// Hermetic in-memory Resources application for scenario composition.
+#[cfg(feature = "test-support")]
 pub fn ephemeral_resources_application() -> awaken_resource_application::ResourcesApplication {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
     let resources = Arc::new(

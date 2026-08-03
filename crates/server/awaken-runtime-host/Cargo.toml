@@ -82,7 +82,7 @@ uuid = { version = "1", features = ["v4"] }
 [features]
 # Post-construction persistence overrides are restricted to tests. Product
 # composition selects every authority before constructing SharedHost.
-test-support = []
+test-support = ["awaken-file-store/test-support"]
 # Cross-node dispatch wake over NATS: passes through to awaken-run-ingress so the
 # host's wake selector can build a `NatsWakeSignal` when AWAKEN_DISPATCH_WAKE=nats.
 # Off by default — the durable store stays Postgres either way; this only swaps the
@@ -96,6 +96,7 @@ container-podman = ["awaken-sandbox-container/podman"]
 container-k8s = ["awaken-sandbox-container/k8s"]
 
 [dev-dependencies]
+awaken-file-store = { workspace = true, features = ["test-support"] }
 awaken-file-application.workspace = true
 awaken-resource-store = { workspace = true, features = ["sqlite"] }
 awaken-run-ingress-testkit = { workspace = true }

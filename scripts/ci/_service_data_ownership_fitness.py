@@ -21,6 +21,8 @@ COORDINATOR_COMPONENT = "crates/server/awaken-coordinator/src/coordinator_compon
 RESOURCE_COMPONENT = "crates/contract/awaken-resource-contract/src/component.rs"
 RUNTIME_HOST_BUILD = "crates/server/awaken-runtime-host/src/host/build.rs"
 PROCESS_STORES = "crates/bin/awaken-cli/src/process_stores.rs"
+FILE_STORE_SOURCE = "crates/resources/awaken-file-store/src/lib.rs"
+COORDINATOR_SOURCE = "crates/server/awaken-coordinator/src/lib.rs"
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -125,6 +127,53 @@ def volatile_runtime_host_surface_violations(source: str) -> list[str]:
             prefix,
         ):
             errors.append(f"volatile Host API `{name}` is not test-support gated")
+    return errors
+
+
+def non_product_resource_surface_violations(
+    file_store_source: str, coordinator_source: str
+) -> list[str]:
+    """Return in-memory Resource APIs reachable from a default product build."""
+
+    errors: list[str] = []
+    in_memory_store = re.search(
+        r"\bpub\s+struct\s+InMemoryFileStore\b", file_store_source
+    )
+    if in_memory_store is None:
+        errors.append("missing test-support File store")
+    else:
+        prefix = file_store_source[: in_memory_store.start()]
+        previous_declaration = max(
+            (
+                item.start()
+                for item in re.finditer(r"\bpub\s+(?:struct|fn)\s+", prefix)
+            ),
+            default=0,
+        )
+        if not re.search(
+            r'#\s*\[\s*cfg\s*\(\s*any\s*\(\s*test\s*,\s*feature\s*=\s*"test-support"\s*\)\s*\)\s*\]',
+            prefix[previous_declaration:],
+        ):
+            errors.append("InMemoryFileStore is not test-support gated")
+
+    ephemeral_resources = re.search(
+        r"\bpub\s+fn\s+ephemeral_resources_application\b", coordinator_source
+    )
+    if ephemeral_resources is None:
+        errors.append("missing test-support Resources application")
+    else:
+        prefix = coordinator_source[: ephemeral_resources.start()]
+        previous_declaration = max(
+            (item.start() for item in re.finditer(r"\bpub\s+fn\s+", prefix)),
+            default=0,
+        )
+        if not re.search(
+            r'#\s*\[\s*cfg\s*\(\s*feature\s*=\s*"test-support"\s*\)\s*\]',
+            prefix[previous_declaration:],
+        ):
+            errors.append(
+                "ephemeral_resources_application is not test-support gated"
+            )
     return errors
 
 
@@ -292,9 +341,11 @@ def selftest() -> None:
     Control constructs Resources -> rejected; O13 grouped role-owned stores and
     Resources catalog -> accepted; O14 a cross-domain store field or unconditional
     migration acquisition -> rejected; O15 every volatile Host API is test-support
-    gated -> accepted; O16 one missing gate -> rejected. Together the rules cover
-    compile-time acquisition, production call paths, component ownership, and
-    schema acquisition.
+    gated -> accepted; O16 one missing Host gate -> rejected; O17 the canonical
+    in-memory File authority and ephemeral Resources assembler are test-support
+    gated -> accepted; O18 either Resource gate is missing -> rejected. Together
+    the rules cover compile-time acquisition, production call paths, component
+    ownership, and schema acquisition.
     """
 
     assert dependency_violations({"awaken-runtime-host", "awaken-runtime-contract"}) == []  # O1
@@ -391,6 +442,25 @@ def selftest() -> None:
             "pub fn with_store_dir",
         )
     ) == ["volatile Host API `with_store_dir` is not test-support gated"]  # O16
+    file_store = (
+        '#[cfg(any(test, feature = "test-support"))]\n'
+        "pub struct InMemoryFileStore {}"
+    )
+    coordinator = (
+        '#[cfg(feature = "test-support")]\n'
+        "pub fn ephemeral_resources_application() {}"
+    )
+    assert non_product_resource_surface_violations(file_store, coordinator) == []  # O17
+    assert non_product_resource_surface_violations(
+        file_store.replace('#[cfg(any(test, feature = "test-support"))]\n', ""),
+        coordinator,
+    ) == ["InMemoryFileStore is not test-support gated"]  # O18 File cause
+    assert non_product_resource_surface_violations(
+        file_store,
+        coordinator.replace('#[cfg(feature = "test-support")]\n', ""),
+    ) == [
+        "ephemeral_resources_application is not test-support gated"
+    ]  # O18 assembly cause
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -471,4 +541,9 @@ def check_all(repo_root: Path) -> list[str]:
         (repo_root / RUNTIME_HOST_BUILD).read_text(encoding="utf-8")
     ):
         errors.append(f"{RUNTIME_HOST_BUILD}: {error}")
+    for error in non_product_resource_surface_violations(
+        (repo_root / FILE_STORE_SOURCE).read_text(encoding="utf-8"),
+        (repo_root / COORDINATOR_SOURCE).read_text(encoding="utf-8"),
+    ):
+        errors.append(f"Resource production surface: {error}")
     return errors
