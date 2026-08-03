@@ -15,7 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use crate::wire::{HandError, HandErrorKind, HandReply, HandRequest, HandResult};
-use crate::{HandOperationLedger, InMemoryOperationLedger, LedgerAdmission};
+use crate::{HandOperationLedger, LedgerAdmission};
 
 /// The hand's tool catalog plus its idempotency ledger.
 ///
@@ -29,21 +29,23 @@ pub struct HandSession {
 
 impl HandSession {
     /// A session over `tools`, keyed by each tool's id.
-    pub fn new(tools: impl IntoIterator<Item = Arc<dyn RawTool>>) -> Self {
+    pub fn new(
+        tools: impl IntoIterator<Item = Arc<dyn RawTool>>,
+        ledger: Arc<dyn HandOperationLedger>,
+    ) -> Self {
         let registry = tools.into_iter().map(|t| (t.id().to_string(), t)).collect();
         Self {
             registry,
             catalog_fingerprint: None,
-            ledger: Arc::new(InMemoryOperationLedger::default()),
+            ledger,
         }
     }
 
-    /// Use a process-external operation ledger when effects must remain fenced
-    /// across hand restarts.
-    #[must_use]
-    pub fn with_operation_ledger(mut self, ledger: Arc<dyn HandOperationLedger>) -> Self {
-        self.ledger = ledger;
-        self
+    /// Process-local constructor available only to tests and explicit test-support
+    /// consumers. Production composition must select a durable ledger.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn in_memory(tools: impl IntoIterator<Item = Arc<dyn RawTool>>) -> Self {
+        Self::new(tools, Arc::new(crate::InMemoryOperationLedger::default()))
     }
 
     /// Fail closed on any request whose fingerprint does not match `fingerprint`.

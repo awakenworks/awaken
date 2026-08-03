@@ -49,8 +49,12 @@ impl AsyncWrite for ProcessChannel {
 
 #[tokio::test]
 async fn hand_stdio_executes_a_real_tool_over_the_child_process_channel() {
+    let ledger =
+        std::env::temp_dir().join(format!("awaken-hand-stdio-role-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&ledger);
     let mut child = Command::new(env!("CARGO_BIN_EXE_awaken-sandbox"))
         .args(["hand", "--stdio"])
+        .env("AWAKEN_HAND_LEDGER_DIR", &ledger)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -72,6 +76,8 @@ async fn hand_stdio_executes_a_real_tool_over_the_child_process_channel() {
         .await;
 
     child.kill().await.expect("terminate hand");
+    let _ = child.wait().await;
+    let _ = std::fs::remove_dir_all(&ledger);
     match result {
         HandResult::Ok { output } => {
             let rendered = serde_json::to_string(&output).unwrap();

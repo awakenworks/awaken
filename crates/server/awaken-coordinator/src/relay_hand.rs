@@ -51,7 +51,7 @@ mod tests {
         let (brain, hand) = tokio::io::duplex(64 * 1024);
         tokio::spawn(awaken_tool_relay::serve_hand(
             hand,
-            awaken_tool_relay::HandSession::new([Arc::new(Echo) as Arc<dyn RawTool>]),
+            awaken_tool_relay::HandSession::in_memory([Arc::new(Echo) as Arc<dyn RawTool>]),
         ));
         let executor = relay_hand_executor_factory().bind(Box::new(brain), "session-a");
         let output = executor

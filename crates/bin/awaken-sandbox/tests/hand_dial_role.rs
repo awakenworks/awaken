@@ -9,11 +9,17 @@
 
 use awaken_connection_plan::{ConnectionPlan, bind_tcp};
 use awaken_runtime_contract::llm::ToolCall;
-use awaken_sandbox::hand::{HandBind, serve};
-use awaken_tool_relay::{RemoteToolExecutor, wire::HandResult};
+use awaken_sandbox::hand::{HandBind, serve_with_operation_ledger};
+use awaken_tool_relay::{FsOperationLedger, RemoteToolExecutor, wire::HandResult};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_hand_role_reverse_dials_the_brain_and_serves_a_real_tool() {
+    let directory =
+        std::env::temp_dir().join(format!("awaken-hand-dial-role-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    let ledger = std::sync::Arc::new(
+        FsOperationLedger::open(&directory).expect("open isolated Hand ledger"),
+    );
     // Brain rendezvous: bind a local TCP listener the hand will reverse-dial back to.
     // Port 0 → the OS picks a free port; the hand dials the concrete address.
     let rendezvous = bind_tcp(&ConnectionPlan::tcp_listen("127.0.0.1:0"))
@@ -26,7 +32,10 @@ async fn the_hand_role_reverse_dials_the_brain_and_serves_a_real_tool() {
 
     // Start the hand role in reverse-dial mode — the exact path
     // `awaken-sandbox hand --dial <addr>` runs. It dials OUT to our rendezvous.
-    let hand = tokio::spawn(async move { serve(HandBind::Dial(addr)).await });
+    let hand =
+        tokio::spawn(
+            async move { serve_with_operation_ledger(HandBind::Dial(addr), ledger).await },
+        );
 
     // Accept the hand's outbound dial-back. `accept()` blocks until the hand connects,
     // so this is the readiness signal (no sleep): reaching it proves the reverse
@@ -46,6 +55,7 @@ async fn the_hand_role_reverse_dials_the_brain_and_serves_a_real_tool() {
     let result = executor.call_hand(&call).await;
 
     hand.abort();
+    let _ = std::fs::remove_dir_all(&directory);
 
     match result {
         HandResult::Ok { output } => {

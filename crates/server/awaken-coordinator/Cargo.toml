@@ -127,6 +127,7 @@ container-podman = ["awaken-runtime-host/container-podman"]
 container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
+awaken-tool-relay = { workspace = true, features = ["test-support"] }
 awaken-captured-content-store = { workspace = true }
 awaken-scenario-host = { workspace = true }
 awaken-run-ingress = { workspace = true }
