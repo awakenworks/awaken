@@ -201,6 +201,9 @@ pub struct ControlRouterInput {
     /// The admin router uses the same value for server enforcement and client
     /// capability discovery; composition must not maintain a hidden second mode.
     pub model_supply: awaken_admin_config_api::ModelSupplyCapabilityView,
+    /// Whether this same-origin process also mounts the Managed runtime and
+    /// resource surfaces. This is derived from the typed process role.
+    pub managed_runtime: bool,
     /// The Managed vault state, shared with the data-plane managed state.
     pub vault_state: Arc<VaultState>,
     /// The one authoring projection used by `/v1/agents`. Execution-owned
@@ -251,6 +254,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         model_discovery,
         brokered_catalog,
         model_supply,
+        managed_runtime,
         vault_state,
         agent_repository,
         agent_archive_cascade,
@@ -283,6 +287,10 @@ pub fn control_router(input: ControlRouterInput) -> Router {
                 .is_some(),
         },
         models: model_supply,
+        surfaces: awaken_admin_config_api::ProductSurfaceCapabilityView {
+            managed_runtime,
+            access_management: iam.is_some(),
+        },
     };
     let admin = awaken_admin_config_api::admin_router_with_capabilities(
         AdminState {

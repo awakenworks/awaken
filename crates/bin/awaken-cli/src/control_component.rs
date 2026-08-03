@@ -19,6 +19,7 @@ pub(super) async fn control_component_for_process(
     >,
     injected_brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
     model_supply: awaken_admin_config_api::ModelSupplyCapabilityView,
+    managed_runtime: bool,
     local_acp_observations: &[awaken_acp_application::AcpHostObservation],
     runtimes: Arc<dyn awaken_config_service::RuntimeCapabilitySource>,
     resource_inventory: Option<Arc<dyn awaken_admin_assistant::ResourceInventory>>,
@@ -68,6 +69,7 @@ pub(super) async fn control_component_for_process(
                 .map(|client| client as Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>)
         }),
         model_supply,
+        managed_runtime,
         mcp_probe: Some(Arc::new(ExtMcpProbe)),
         assistant_model_selection,
         global_tools: awaken_runtime_host::authorable_tools(),
@@ -178,6 +180,7 @@ pub(super) async fn assemble_control_process_router(
         brokered_client,
         assembly.brokered_catalog,
         model_supply,
+        assembly.role.exposes_managed_runtime(),
         &assembly.local_acp_observations,
         runtimes,
         None,

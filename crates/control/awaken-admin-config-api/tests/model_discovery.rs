@@ -125,6 +125,7 @@ fn cloud_capabilities(authenticated: bool) -> ConfigCapabilitiesView {
             cloud_models_enabled: true,
             profile_authoring_enabled: true,
         },
+        surfaces: Default::default(),
     }
 }
 
@@ -141,6 +142,7 @@ fn hosted_capabilities() -> ConfigCapabilitiesView {
             cloud_models_enabled: true,
             profile_authoring_enabled: false,
         },
+        surfaces: Default::default(),
     }
 }
 

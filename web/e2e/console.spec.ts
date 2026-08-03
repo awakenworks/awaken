@@ -26,13 +26,15 @@ async function openAdvanced(page: Page, section: "Orchestration" | "Plugin confi
 // the capability-driven agent editor (S1–S3), truth-driven gating (S4), the config
 // agent author→publish lifecycle, and the route-owned Workspace scope.
 
-// Cause/effect R1: a local route scope with no Organization/Workspace registry
-// renders the Agents brand + exact route scope + canonical task navigation, and
-// must not render the retired fake selectors.
+// Cause/effect R1: a local default route scope with no Organization/Workspace
+// registry renders the Agents brand + friendly canonical workspace label while
+// preserving the exact scope in title, plus canonical task navigation; it must
+// not render the retired fake selectors.
 test("shell renders the Awaken Agents brand, route scope and task-oriented rail", async ({ page }) => {
   await page.goto("/w/default/sessions");
   await expect(page.locator(".brand-anchor")).toContainText("Awaken");
-  await expect(page.locator(".workspace-context")).toContainText("default");
+  await expect(page.locator(".workspace-context")).toContainText("Default");
+  await expect(page.locator(".workspace-context")).toHaveAttribute("title", "default");
   await expect(page.locator(".org-anchor,.ws-crumb")).toHaveCount(0);
   // Rail: data-driven nav items.
   const rail = page.locator(".sidebar");
@@ -43,6 +45,43 @@ test("shell renders the Awaken Agents brand, route scope and task-oriented rail"
   await expect(rail.getByRole("button", { name: "Models & providers" })).toBeVisible();
   await expect(rail.getByRole("button", { name: "MCP overview" })).toBeVisible();
   await expect(rail.getByRole("button", { name: "Inference credentials" })).toHaveCount(0);
+});
+
+test("split Control projects only mounted surfaces and recovers stale deep links", async ({ page }) => {
+  // Cause/effect decision table:
+  // | managed runtime | access management | requested route | effect |
+  // | false           | false             | runtime route   | redirect to overview; no runtime request |
+  // | false           | false             | shell           | omit runtime and Access navigation |
+  // | true            | true              | runtime route   | covered by the full-console inventory |
+  // The server PEP remains authoritative; this test proves presentation never
+  // treats a known-unmounted API as a page-level Not Found state.
+  await page.route("**/v1/config/capabilities", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      identity: { mode: "awaken-cloud", cloud_login_enabled: true, authenticated: true },
+      models: {
+        local_catalog_enabled: false,
+        byok_enabled: false,
+        cloud_models_enabled: true,
+        profile_authoring_enabled: false,
+      },
+      surfaces: { managed_runtime: false, access_management: false },
+    }),
+  }));
+  const runtimeRequests: string[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.includes("/v1/sessions")) runtimeRequests.push(request.url());
+  });
+
+  await page.goto("/w/default/sessions");
+  await expect(page).toHaveURL(/\/w\/default\/overview$/);
+  const rail = page.locator(".sidebar");
+  await expect(rail.getByRole("button", { name: "Sessions" })).toHaveCount(0);
+  await expect(rail.getByRole("button", { name: "Runtime secrets" })).toHaveCount(0);
+  await expect(rail.getByRole("button", { name: "Access" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Admin Assistant" })).toHaveCount(0);
+  expect(runtimeRequests).toEqual([]);
 });
 
 test("responsive: a narrow viewport keeps the shell usable with no horizontal overflow", async ({ page }) => {

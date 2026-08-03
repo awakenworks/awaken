@@ -38,11 +38,13 @@ export function AgentEditorStageNavigation({
   stage,
   changed,
   onChange,
+  canTry,
   onTry,
 }: {
   stage: AuthorStage;
   changed: (stage: AuthorStage) => boolean;
   onChange: (stage: AuthorStage) => void;
+  canTry: boolean;
   onTry: () => void;
 }) {
   const app = useApp();
@@ -66,7 +68,7 @@ export function AgentEditorStageNavigation({
           {changed(item.key) && <span className="agent-change-dot">✦</span>}
         </button>
       ))}
-      <Button variant="ghost" onClick={onTry}>▷ {app.t("Try draft", "试运行草稿")}</Button>
+      {canTry && <Button variant="ghost" onClick={onTry}>▷ {app.t("Try draft", "试运行草稿")}</Button>}
     </div>
   );
 }

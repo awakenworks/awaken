@@ -9,7 +9,9 @@ import { useEffect, useState } from "react";
 import { useLocation } from "react-router";
 import { AssistantPanel } from "../../surfaces/assistant";
 import { assistantContextForLocation } from "../../lib/assistant-guidance";
+import { hasSurface } from "../../lib/navigation/paths";
 import { useApp } from "../../lib/app-state";
+import { useConfigCapabilities } from "../../lib/useConfigCapabilities";
 import {
   AGENT_DRAFT_CHANGED_EVENT,
   ASSISTANT_REPAIR_EVENT,
@@ -29,6 +31,7 @@ function routeContext(pathname: string): { wsId: string; targetAgentId?: string 
 
 export default function AssistantFab() {
   const app = useApp();
+  const capabilities = useConfigCapabilities();
   const location = useLocation();
   const [open, setOpen] = useState(() => {
     try {
@@ -70,7 +73,7 @@ export default function AssistantFab() {
   }, [open]);
 
   // The assistant is a workspace tool; hide the FAB on the workspace picker / root.
-  if (!location.pathname.startsWith("/w/")) return null;
+  if (!location.pathname.startsWith("/w/") || !hasSurface(capabilities.data, "managed_runtime")) return null;
   const { wsId, targetAgentId: routeTargetAgentId } = routeContext(location.pathname);
   const targetAgentId = repair?.id ?? routeTargetAgentId;
   const surfaceContext = assistantContextForLocation(location.pathname, location.search);

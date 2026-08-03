@@ -113,6 +113,24 @@ impl Default for ModelSupplyCapabilityView {
     }
 }
 
+/// Product surfaces actually mounted by the same-origin process composition.
+/// This is presentation discovery only; mounted routes retain their own PEP.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ProductSurfaceCapabilityView {
+    pub managed_runtime: bool,
+    pub access_management: bool,
+}
+
+impl Default for ProductSurfaceCapabilityView {
+    fn default() -> Self {
+        Self {
+            managed_runtime: false,
+            access_management: false,
+        }
+    }
+}
+
 /// Stable frontend/SDK feature discovery; callers never infer deployment
 /// posture from a failed Cloud request.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -120,6 +138,7 @@ impl Default for ModelSupplyCapabilityView {
 pub struct ConfigCapabilitiesView {
     pub identity: IdentityCapabilityView,
     pub models: ModelSupplyCapabilityView,
+    pub surfaces: ProductSurfaceCapabilityView,
 }
 
 impl Default for ConfigCapabilitiesView {
@@ -131,6 +150,7 @@ impl Default for ConfigCapabilitiesView {
                 authenticated: false,
             },
             models: ModelSupplyCapabilityView::default(),
+            surfaces: ProductSurfaceCapabilityView::default(),
         }
     }
 }
