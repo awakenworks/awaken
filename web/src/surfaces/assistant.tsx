@@ -7,10 +7,10 @@
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router";
-import Gate from "../components/app/Gate";
+import { useLocation, useNavigate, useParams } from "react-router";
 import Transcript from "../components/session/Transcript";
 import { Button, Card, Pill, Skeleton } from "../components/ui";
+import { assistantContextForLocation, type AssistantSurfaceContext } from "../lib/assistant-guidance";
 import { api, ws } from "../lib/api/client";
 import type { AgentConfig, Session } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
@@ -98,35 +98,82 @@ function NoModel({ wsId }: { wsId: string }) {
   const app = useApp();
   const nav = useNavigate();
   return (
-    <div className="banner gate">
+    <div className="banner gate assistant-prerequisite">
       <span>ⓘ</span>
-      <span>
+      <span className="assistant-prerequisite-copy">
         {app.t(
           "The assistant needs a model to run on. Configure a provider + credential first.",
           "助手需要一个模型才能运行。请先配置一个 provider + 凭证。",
         )}
       </span>
-      <Button variant="ghost" style={{ marginLeft: "auto", height: 26 }} onClick={() => nav(`/w/${wsId}/models`)}>
-        {app.t("Go to Models →", "去 Models →")}
-      </Button>
+      <div className="assistant-prerequisite-actions">
+        <Button variant="ghost" onClick={() => nav(`/w/${wsId}/models`)}>
+          {app.t("Go to Models →", "去 Models →")}
+        </Button>
+      </div>
     </div>
   );
 }
 
-/** The reusable chat panel. `targetAgentId` (set when opened over an agent editor) steers
- * the assistant to refine THAT agent (patch); `surfaceHint` (the current page's name) lets
- * it answer a how-to question about where the operator is. */
+function AssistantGuide({
+  context,
+  targetAgentId,
+  disabled,
+  onPrompt,
+}: {
+  context: AssistantSurfaceContext;
+  targetAgentId?: string;
+  disabled: boolean;
+  onPrompt: (text: string) => void;
+}) {
+  const app = useApp();
+  return (
+    <div className="assistant-guide">
+      <div className="assistant-scope">
+        <span>
+          <strong>{app.t("Ask any Console question", "询问任何 Console 问题")}</strong>
+          <small>{app.t("The current page and Workspace are included automatically.", "系统会自动带上当前页面和工作区上下文。")}</small>
+        </span>
+        <span>
+          <strong>{app.t("Complete supported setup", "完成受支持的配置")}</strong>
+          <small>{app.t("Draft or refine Agents and create Environments from plain language.", "可用自然语言起草或修改 Agent，并创建运行环境。")}</small>
+        </span>
+        <span>
+          <strong>{app.t("Review before activation", "生效前人工审阅")}</strong>
+          <small>{app.t("The Assistant never publishes Agents or reveals stored secrets.", "助手不会发布 Agent，也不会读取已保存的秘密。")}</small>
+        </span>
+      </div>
+      <div className="assistant-current-context">
+        <span className="mut">{app.t("Current context", "当前上下文")}</span>
+        <Pill tone="agent">{targetAgentId || context.label}</Pill>
+        {targetAgentId && <span className="mut">{app.t("changes apply to this draft", "修改将应用到此草稿")}</span>}
+      </div>
+      <div className="assistant-suggestions" role="list" aria-label={app.t("Suggested questions", "建议问题")}>
+        {context.suggestions.map((suggestion) => (
+          <span role="listitem" key={suggestion}>
+            <Button variant="ghost" disabled={disabled} onClick={() => onPrompt(suggestion)}>
+              {suggestion}
+            </Button>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** The reusable chat panel. `targetAgentId` steers changes to that exact draft;
+ * `surfaceContext` supplies the current route, help topic, and starter questions. */
 export function AssistantPanel({
   wsId,
   targetAgentId,
-  surfaceHint,
+  surfaceContext,
   autoMessage,
   onAgentChanged,
   onRunSettled,
 }: {
   wsId: string;
   targetAgentId?: string;
-  surfaceHint?: string;
+  surfaceContext: AssistantSurfaceContext;
   autoMessage?: { id: string; text: string };
   onAgentChanged?: (id: string, paths: string[]) => void;
   onRunSettled?: () => void;
@@ -135,38 +182,86 @@ export function AssistantPanel({
   const gate = useGate(`/v1/agents/${ASSISTANT_ID}`);
   const models = useModels();
   const [sid, setSid] = useState<string | null>(null);
+  const [promptRequest, setPromptRequest] = useState<{ id: string; text: string }>();
   const started = useRef(false);
+  const ensureAttempted = useRef(false);
+  const ensureAssistant = useMutation({
+    mutationFn: () => api.post<{ status: string }>(ws("/v1/config/agents/__admin_assistant/ensure")),
+    onSuccess: () => gate.refetch(),
+  });
   const start = useMutation({
-    mutationFn: () => api.post<Session>(ws("/v1/sessions"), { agent: ASSISTANT_ID, title: "admin assistant" }),
+    mutationFn: () => api.post<Session>(ws("/v1/sessions"), {
+      agent: ASSISTANT_ID,
+      title: `Assistant · ${targetAgentId || surfaceContext.label}`,
+    }),
     onSuccess: (s) => setSid(s.id),
   });
   useEffect(() => {
-    if (!started.current && models.ready.length > 0) {
+    if (!started.current && models.ready.length > 0 && gate.status === "live") {
       started.current = true;
       start.mutate();
     }
-  }, [start, models.ready.length]);
-
-  if (models.loading) return <Skeleton height={80} />;
-  if (models.ready.length === 0) return <NoModel wsId={wsId} />;
+  }, [start, models.ready.length, gate.status]);
+  useEffect(() => {
+    if (gate.status !== "absent" || models.ready.length === 0 || ensureAttempted.current) return;
+    ensureAttempted.current = true;
+    ensureAssistant.mutate();
+  }, [ensureAssistant, gate.status, models.ready.length]);
 
   const contextPrefix = targetAgentId
-    ? `[Refine the existing agent \`${targetAgentId}\` using admin_patch_agent (id: ${targetAgentId}).]`
-    : surfaceHint
-      ? `[The operator is viewing the "${surfaceHint}" page. For a how-to/what-is question, explain that area.]`
-      : undefined;
+    ? `[Console context: workspace=${wsId}; route=${surfaceContext.path}; current Agent draft=${targetAgentId}; help topic=${surfaceContext.topic}. Refine only this Agent with admin_patch_agent when the operator requests a change. For questions, explain before proposing changes.]`
+    : `[Console context: workspace=${wsId}; route=${surfaceContext.path}; surface=${surfaceContext.label}; help topic=${surfaceContext.topic}. Answer questions using admin_explain_console. Execute only supported Agent or Environment authoring tools; otherwise give exact UI steps and state the boundary.]`;
   const placeholder = targetAgentId
-    ? app.t(`Describe a change to ${targetAgentId}…`, `描述对 ${targetAgentId} 的修改…`)
-    : app.t("Describe the agent you want…", "描述你想要的 agent…");
+    ? app.t(`Ask about or change ${targetAgentId}…`, `询问或修改 ${targetAgentId}…`)
+    : app.t("Ask a question or describe what you want to accomplish…", "提问，或描述你想完成的事情…");
+  const assistantReady = !models.loading && models.ready.length > 0 && gate.status === "live";
+  const guide = (
+    <AssistantGuide
+      context={surfaceContext}
+      targetAgentId={targetAgentId}
+      disabled={!assistantReady}
+      onPrompt={(text) => setPromptRequest({ id: `${Date.now()}-${text}`, text })}
+    />
+  );
+
+  if (models.loading || gate.status === "loading") return <>{guide}<Skeleton height={80} /></>;
+  if (models.ready.length === 0) return <>{guide}<NoModel wsId={wsId} /></>;
+  if (gate.status === "absent") return (
+    <>
+      {guide}
+      <div className="banner gate assistant-prerequisite">
+        <span>{ensureAssistant.isPending ? "◔" : "◌"}</span>
+        <span className="assistant-prerequisite-copy">
+          {app.t(
+            ensureAssistant.isPending
+              ? "Preparing the Assistant with the verified Workspace model…"
+              : "The Assistant could not be prepared. Verify a model connection and retry.",
+            ensureAssistant.isPending
+              ? "正在使用工作区已验证模型准备助手…"
+              : "助手准备失败。请验证模型连接后重试。",
+          )}
+          {ensureAssistant.error instanceof Error && <small className="err">{ensureAssistant.error.message}</small>}
+        </span>
+        <div className="assistant-prerequisite-actions">
+          <Button
+            variant="ghost"
+            disabled={ensureAssistant.isPending}
+            onClick={() => {
+              ensureAttempted.current = true;
+              ensureAssistant.mutate();
+            }}
+          >{app.t("Retry", "重试")}</Button>
+          <Button variant="ghost" onClick={() => window.location.assign(`/w/${wsId}/models`)}>{app.t("Open Models", "打开模型")}</Button>
+        </div>
+      </div>
+    </>
+  );
+  if (gate.status === "error") return <>{guide}<div className="err">{gate.error.message}</div></>;
 
   return (
-    <Gate
-      state={gate}
-      endpoint={`/v1/agents/${ASSISTANT_ID}`}
-      note={app.t("the in-console Admin Assistant agent is not installed", "控制台助手 agent 尚未安装")}
-    >
-      {() =>
-        !sid ? (
+    <>
+      {guide}
+      {!sid ? (
           start.error instanceof Error ? (
             <div className="banner err">
               <span>{start.error.message}</span>
@@ -189,18 +284,12 @@ export function AssistantPanel({
                 </small>
               </span>
             </div>
-            {targetAgentId && (
-              <div className="row" style={{ gap: 6, marginBottom: 6 }}>
-                <span className="mut" style={{ fontSize: 12 }}>{app.t("Refining", "正在修改")}</span>
-                <Pill tone="agent">{targetAgentId}</Pill>
-              </div>
-            )}
             <Transcript
               base={ws(`/v1/sessions/${sid}`)}
               queryKey={["assistant-events", sid]}
               placeholder={placeholder}
               contextPrefix={contextPrefix}
-              autoMessage={autoMessage}
+              autoMessage={promptRequest ?? autoMessage}
               onRunSettled={onRunSettled}
               onToolComplete={(tool, result) => {
                 if (tool.type !== "agent.tool_use" || !("name" in tool) || !DRAFT_TOOLS.includes(String(tool.name))) return;
@@ -230,25 +319,18 @@ export function AssistantPanel({
             />
             <DraftedAgents base={ws(`/v1/sessions/${sid}`)} wsId={wsId} />
           </>
-        )
-      }
-    </Gate>
+        )}
+    </>
   );
 }
 
 export default function AssistantSurface() {
-  const app = useApp();
   const { ws: wsId = "default" } = useParams();
+  const location = useLocation();
+  const surfaceContext = assistantContextForLocation(location.pathname, location.search);
   return (
-    <Card>
-      <h2>{app.t("Admin Assistant", "控制台助手")}</h2>
-      <p className="hint">
-        {app.t(
-          "Describe an agent in plain English — the assistant reads platform capabilities and drafts it (tools, plugins, state machine, permissions, tool overrides). Drafts land in the editor for you to review and publish.",
-          "用自然语言描述一个 agent——助手读取平台能力并起草它(工具、插件、状态机、权限、工具覆盖)。草稿会进入编辑器供你审阅并发布。",
-        )}
-      </p>
-      <AssistantPanel wsId={wsId} />
+    <Card className="assistant-page-card">
+      <AssistantPanel wsId={wsId} surfaceContext={surfaceContext} />
     </Card>
   );
 }

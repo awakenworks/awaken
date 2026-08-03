@@ -15,42 +15,58 @@ interface StarterTemplate {
   name: string;
   system: string;
   maxSteps: number;
+  firstTask: string;
+  firstTaskZh: string;
+  requirement: string;
+  requirementZh: string;
   suggestedTools: string[];
   suggestedPlugins?: string[];
 }
 
 const STARTERS: StarterTemplate[] = [
   {
-    id: "blank",
-    title: "Blank",
-    titleZh: "空白",
-    description: "A minimal agent you shape from scratch.",
-    descriptionZh: "从最小配置开始，自行塑造能力。",
-    name: "New Agent",
-    system: "You are a helpful agent. Follow the user's goal carefully and explain important decisions.",
-    maxSteps: 8,
+    id: "task-assistant",
+    title: "Task assistant",
+    titleZh: "任务助手",
+    description: "Turn one clearly-scoped request into a checked result.",
+    descriptionZh: "把一项边界清晰的请求转化为经过检查的结果。",
+    name: "Task Assistant",
+    system: "You are a focused task assistant. Clarify the intended outcome from available context, complete the work with the configured capabilities, verify the result, and report material limitations.",
+    maxSteps: 10,
+    firstTask: "Summarize your role, list the inputs you need, and complete one small representative task.",
+    firstTaskZh: "概括你的职责、列出所需输入，并完成一项小型代表任务。",
+    requirement: "No Sandbox unless a selected Tool or Skill needs one",
+    requirementZh: "仅在所选 Tool 或 Skill 需要时创建 Sandbox",
     suggestedTools: [],
   },
   {
-    id: "coding",
-    title: "Coding",
-    titleZh: "代码助手",
-    description: "Inspect, change, and verify a codebase.",
-    descriptionZh: "检查、修改并验证代码仓。",
-    name: "Coding Agent",
+    id: "repository-change",
+    title: "Repository change",
+    titleZh: "代码仓改动",
+    description: "Inspect a repository, make a focused change, and run its checks.",
+    descriptionZh: "检查代码仓、完成聚焦改动并运行验证。",
+    name: "Repository Change Agent",
     system: "You are a careful coding agent. Inspect the repository, make focused changes, and verify behavior before reporting completion.",
     maxSteps: 16,
+    firstTask: "Inspect the mounted repository, identify its verification commands, and report the smallest safe first change.",
+    firstTaskZh: "检查已挂载代码仓，找出验证命令，并说明最小且安全的首个改动。",
+    requirement: "Requires a filesystem-capable Environment / Sandbox",
+    requirementZh: "需要具备文件系统能力的 Environment / Sandbox",
     suggestedTools: ["bash", "read", "write", "glob", "grep"],
   },
   {
-    id: "research",
-    title: "Research",
-    titleZh: "研究助手",
-    description: "Gather evidence and produce a sourced synthesis.",
-    descriptionZh: "收集证据并形成有来源的综合结论。",
-    name: "Research Agent",
+    id: "evidence-brief",
+    title: "Evidence brief",
+    titleZh: "证据简报",
+    description: "Answer a decision question with traceable sources and uncertainty.",
+    descriptionZh: "用可追溯来源与不确定性说明回答一个决策问题。",
+    name: "Evidence Brief Agent",
     system: "You are a research agent. Gather evidence, separate observation from inference, and produce a concise sourced synthesis.",
     maxSteps: 12,
+    firstTask: "Produce a short evidence brief on the supplied question, separating verified facts, inference, and open gaps.",
+    firstTaskZh: "围绕给定问题生成简短证据简报，区分已验证事实、推断与待补信息。",
+    requirement: "Requires a web/search Tool, MCP server, or supplied Files",
+    requirementZh: "需要 Web/Search Tool、MCP Server 或已提供 Files",
     suggestedTools: ["web_search"],
     suggestedPlugins: ["web_search"],
   },
@@ -86,7 +102,7 @@ export default function AgentQuickstart({
   onReviewRun: (environmentId: string | undefined, task: string) => void;
 }) {
   const app = useApp();
-  const [selectedTemplate, setSelectedTemplate] = useState("blank");
+  const [selectedTemplate, setSelectedTemplate] = useState("task-assistant");
   const [environmentId, setEnvironmentId] = useState("");
   const [task, setTask] = useState(app.t(
     "Introduce yourself in one sentence and explain how you would approach your configured role.",
@@ -109,6 +125,7 @@ export default function AgentQuickstart({
       tools: Array.from(new Set([...config.tools, ...tools])),
       plugins: Array.from(new Set([...config.plugins, ...plugins])),
     });
+    setTask(app.t(template.firstTask, template.firstTaskZh));
   };
 
   const readiness = [
@@ -149,13 +166,15 @@ export default function AgentQuickstart({
             >
               <strong>{app.t(template.title, template.titleZh)}</strong>
               <span>{app.t(template.description, template.descriptionZh)}</span>
+              <small className="mut">{app.t(template.requirement, template.requirementZh)}</small>
             </button>
           ))}
         </div>
         <Card className="quickstart-step">
-          <h2 className="section-title">{app.t("Agent identity", "Agent 标识")}</h2>
+          <h2 className="section-title">{app.t("2 · Name this Agent", "2 · 为 Agent 命名")}</h2>
           <TextField
-            label={app.t("Agent id", "Agent id")}
+            label={app.t("Agent ID", "Agent ID")}
+            hint={app.t("A stable identifier used by APIs and Sessions. It cannot be changed after creation.", "供 API 和会话使用的稳定标识；创建后不能修改。")}
             mono
             placeholder="coding-agent"
             value={config.id}
@@ -165,7 +184,7 @@ export default function AgentQuickstart({
         </Card>
 
         <Card className="quickstart-step">
-          <h2 className="section-title">{app.t("2 · Choose a runnable model", "2 · 选择可运行模型")}</h2>
+          <h2 className="section-title">{app.t("3 · Choose a runnable model", "3 · 选择可运行模型")}</h2>
           <AgentModelSelectionEditor
             model={config.model}
             readyModels={readyModels}
@@ -177,7 +196,7 @@ export default function AgentQuickstart({
         </Card>
 
         <Card className="quickstart-step">
-          <h2 className="section-title">{app.t("3 · Choose where the first run executes", "3 · 选择首次运行环境")}</h2>
+          <h2 className="section-title">{app.t("4 · Choose where the first run executes", "4 · 选择首次运行环境")}</h2>
           <label className="field">
             <span>{app.t("Environment for this run", "本次运行的 Environment")}</span>
             <select
@@ -195,14 +214,14 @@ export default function AgentQuickstart({
             </select>
           </label>
           <span className="mut">{app.t(
-            "Environment is run-scoped. It is not silently stored as an Agent property.",
-            "Environment 属于本次运行，不会被悄悄保存成 Agent 固有属性。",
+            "This choice applies to the first run only. You can choose another Environment when creating later Sessions.",
+            "此选择只用于首次运行；以后创建会话时可以选择其他运行环境。",
           )}</span>
           {environments.error instanceof Error && <div className="err">{environments.error.message}</div>}
         </Card>
 
         <Card className="quickstart-step">
-          <h2 className="section-title">{app.t("4 · Define the first real task", "4 · 定义首次真实任务")}</h2>
+          <h2 className="section-title">{app.t("5 · Define the first real task", "5 · 定义首次真实任务")}</h2>
           <TextAreaField
             label={app.t("Task sent to the new Session", "发送到新 Session 的任务")}
             rows={4}
@@ -243,7 +262,7 @@ export default function AgentQuickstart({
             disabled={!readiness.every((item) => item.ready) || runPending}
             onClick={() => onReviewRun(environmentId || undefined, task.trim())}
           >
-            {runPending ? app.t("Starting…", "正在启动…") : app.t("Review & run", "审阅并运行")} ➤
+            {runPending ? app.t("Starting…", "正在启动…") : app.t("Review, publish & run", "审阅、发布并运行")} ➤
           </Button>
         </Card>
       </aside>

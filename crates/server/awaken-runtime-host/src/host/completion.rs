@@ -259,6 +259,18 @@ impl SharedHost {
         &self,
         activation: RunActivation,
     ) -> Result<RunDispatch, HostError> {
+        // `UNCONFIGURED_MODEL_REF` is a Coordinator-owned guidance executor, not a
+        // remotely materializable model.  In a coordinator-only/all-in-one
+        // deployment the registered Worker deliberately does not advertise the
+        // generic host-executor capability, so enqueueing this activation can
+        // never make progress.  Reject it before durable enqueue instead of
+        // leaving a permanently pending run and reporting a misleading 60-second
+        // dispatch-pool timeout.
+        if activation.effective_model_ref() == crate::UNCONFIGURED_MODEL_REF {
+            return Err(HostError::bad_request(
+                "No model is configured. Connect a provider and select a model in Author > Quickstart before running this Agent.",
+            ));
+        }
         let thread = activation.thread_id.0.clone();
         let resources = self.thread_resource_manifest(&thread);
         let runtime_projection = self
@@ -875,6 +887,30 @@ mod completion_tests {
         let exported = host.dispatch_completion_sink();
 
         assert!(Arc::ptr_eq(&expected, &exported));
+    }
+
+    #[tokio::test]
+    async fn unconfigured_model_is_rejected_before_durable_enqueue() {
+        use awaken_agent_contract::agent::{run::Id as AgentRunId, thread::Id as ThreadId};
+        use awaken_runtime_contract::RunActivation;
+
+        let host = SharedHost::new(Arc::new(NoModelConfiguredExecutor), UNCONFIGURED_MODEL_REF);
+        let ctx = host
+            .ctx_for("unconfigured-model", None)
+            .await
+            .expect("Session context");
+        let activation = RunActivation::new(
+            AgentRunId("run-unconfigured".into()),
+            ThreadId("unconfigured-model".into()),
+            ctx.config.clone(),
+            Vec::new(),
+        );
+
+        let error = host
+            .resolved_dispatch(activation)
+            .expect_err("an unconfigured model must never enter durable dispatch");
+        assert!(error.to_string().contains("No model is configured"));
+        assert!(error.to_string().contains("Author > Quickstart"));
     }
 
     /// A3: dropping the guard (caller future dropped / timed out) removes the

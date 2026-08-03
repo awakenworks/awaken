@@ -379,7 +379,12 @@ pub fn mount(host: Arc<SharedHost>) -> Router {
     // webhooks (identical to an unconfigured plane before).
     let catalog = ephemeral_resource_catalog();
     let state = local_managed_state(host.clone(), catalog.clone());
-    mount_with_managed_and_resource_catalog(host, state, catalog)
+    let (data, dreams) = mount_with_managed_over(host, state, catalog, None);
+    // The bare scenario/test mount has no separate management edge. Keep the
+    // Awaken policy authoring projection reachable here so deterministic SDK and
+    // Console E2E can exercise it. Production composition mounts this exact
+    // router on `CoordinatorComponent::management_router`, behind IAM + audit.
+    data.merge(awaken_protocol_awaken::dream_policy_router(dreams))
 }
 
 /// Assemble the local/single-process Managed adapter with one shared ephemeral
@@ -521,7 +526,19 @@ pub fn mount_with_managed_and_resource_catalog(
     managed_state: Arc<ManagedState>,
     resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
 ) -> Router {
-    mount_with_managed_over(host, managed_state, resource_catalog, None).0
+    mount_with_managed_and_resource_catalog_and_dreams(host, managed_state, resource_catalog).0
+}
+
+/// Scenario/embedder variant that returns the exact Dream aggregate mounted in
+/// the data router. Production callers use the fuller application-access variant
+/// below; deterministic hosts use this handle to mount the Awaken-only policy
+/// projection without constructing a second scheduler or state authority.
+pub fn mount_with_managed_and_resource_catalog_and_dreams(
+    host: Arc<SharedHost>,
+    managed_state: Arc<ManagedState>,
+    resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
+    mount_with_managed_over(host, managed_state, resource_catalog, None)
 }
 
 /// Test-support data plane with application credentials enforced on browser-facing
@@ -681,6 +698,20 @@ fn mount_with_managed_over_and_models(
             .expect("load durable Dream jobs"),
     );
     dream_application.bind_session_source(managed_state.clone());
+    struct DreamModelDirectory(Arc<dyn awaken_protocol_managed_resources::ModelDirectory>);
+    #[async_trait::async_trait]
+    impl awaken_dream_application::DreamModelReadiness for DreamModelDirectory {
+        async fn is_ready(&self, workspace_id: &str, model_id: &str) -> Result<bool, String> {
+            self.0.list(workspace_id).await.map(|entries| {
+                entries
+                    .iter()
+                    .any(|entry| entry.id == model_id || entry.display_name == model_id)
+            })
+        }
+    }
+    if let Some(directory) = model_directory.clone() {
+        dream_application.bind_model_readiness(Arc::new(DreamModelDirectory(directory)));
+    }
     dream_application.resume_incomplete();
     let dreams = awaken_protocol_managed::dreams_router(dream_application.clone());
     let managed = router(managed_state.clone()).merge(dreams).merge(

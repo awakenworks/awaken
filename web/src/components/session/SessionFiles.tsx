@@ -60,8 +60,8 @@ export default function SessionFiles({
           {app.t("Session inputs", "Session 输入")}
         </h2>
         <p className="hint">{app.t(
-          "Files may be added through the live resource endpoint. Memory and repository bindings are fixed by the Session creation snapshot.",
-          "File 可以通过实时资源接口添加；Memory 与 Repository 绑定由 Session 创建快照固定。",
+          "Files can be added while this Session runs. Its selected Memory and repository stay the same for the life of the Session.",
+          "Session 运行期间可以继续添加文件；创建时选择的 Memory 和代码仓会在本次 Session 中保持不变。",
         )}</p>
         {mounts.length === 0 ? (
           <span className="mut">{app.t("No resources mounted for this session.", "本会话未挂载资源。")}</span>
@@ -87,13 +87,13 @@ export default function SessionFiles({
           {app.t("Session artifacts", "Session 产物")}
         </h2>
         <p className="hint">{app.t(
-          "Read-only FileCatalog projection for outputs harvested from this Session.",
-          "这是从当前 Session 收获的输出在 FileCatalog 中形成的只读投影。",
+          "Files produced by this Session appear here for review and download.",
+          "当前 Session 生成的文件会显示在这里，供你查看和下载。",
         )}</p>
         {files.length === 0 ? (
           <EmptyState
             title={app.t("No artifacts yet.", "还没有产物。")}
-            hint={app.t("Files the agent writes under its outputs mount appear here.", "agent 在 outputs 挂载里写的文件会出现在这里。")}
+            hint={app.t("Files created by the Agent will appear here after the run saves them.", "Agent 创建并保存文件后，它们会出现在这里。")}
           />
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>

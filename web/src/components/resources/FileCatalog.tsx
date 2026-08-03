@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { DataGrid, type Column } from "../ui/DataGrid";
-import { Button, Pill } from "../ui";
+import { Button, Pill, Segmented } from "../ui";
 import { useToast } from "../ui/Toast";
 import { api, ws } from "../../lib/api/client";
 import type { FileArtifact, FileListResponse } from "../../lib/api/types";
@@ -16,11 +16,33 @@ function bytesLabel(value: number | undefined): string {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+interface FileTreeRow {
+  key: string;
+  path: string;
+  depth: number;
+  directory: boolean;
+  file?: FileArtifact;
+}
+
+export function fileTreeRows(files: readonly FileArtifact[]): FileTreeRow[] {
+  const directories = new Set<string>();
+  const paths = files.map((file) => ({ file, path: (file.logical_path || file.filename).replace(/^\/+/, "") }));
+  for (const { path } of paths) {
+    const parts = path.split("/").filter(Boolean);
+    for (let index = 1; index < parts.length; index += 1) directories.add(parts.slice(0, index).join("/"));
+  }
+  return [
+    ...Array.from(directories, (path) => ({ key: `dir:${path}`, path, depth: path.split("/").length - 1, directory: true })),
+    ...paths.map(({ file, path }) => ({ key: file.id, path, depth: Math.max(0, path.split("/").length - 1), directory: false, file })),
+  ].sort((left, right) => left.path.localeCompare(right.path));
+}
+
 export default function FileCatalog({ purpose }: { purpose: "input" | "artifact" }) {
   const app = useApp();
   const toast = useToast();
   const queryClient = useQueryClient();
   const picker = useRef<HTMLInputElement>(null);
+  const [view, setView] = useState<"tree" | "list">("tree");
   const list = useListState("created_at");
   const files = useQuery({
     queryKey: ["files", app.workspaceId, purpose],
@@ -106,22 +128,24 @@ export default function FileCatalog({ purpose }: { purpose: "input" | "artifact"
   ];
 
   const rows = files.data?.data ?? [];
+  const tree = useMemo(() => fileTreeRows(rows), [rows]);
   return (
     <>
       <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
         <p className="mut" style={{ margin: 0, maxWidth: 760 }}>
           {purpose === "artifact"
             ? app.t(
-                "Read-only output view derived from FileCatalog. Every artifact remains a durable File linked to the Session that produced it.",
-                "这是由 FileCatalog 派生的只读输出视图。每个产物仍是持久化 File，并关联产生它的 Session。",
+                "These read-only files were produced by Sessions. Open the linked Session to understand how an artifact was created.",
+                "这些只读文件由会话生成。需要了解产物的生成过程时，请打开关联会话。",
               )
             : app.t(
-                "Reusable input files uploaded to this Workspace. Runtime outputs are separated under Artifacts.",
-                "上传到当前工作区、可复用的输入文件。运行输出统一在 Artifacts 中查看。",
+                "Upload inputs that can be reused by Agents in this Workspace. Files become available during runs only after you bind them to an Agent.",
+                "上传当前工作区内可复用的 Agent 输入。文件只有绑定到 Agent 后，才会在运行中可用。",
               )}
         </p>
-        {purpose === "input" && (
-          <>
+        <span className="row">
+          <Segmented value={view} onChange={setView} options={[{ value: "tree", label: app.t("Folders", "目录") }, { value: "list", label: app.t("List", "列表") }]} />
+          {purpose === "input" && <>
             <input
               ref={picker}
               type="file"
@@ -140,11 +164,11 @@ export default function FileCatalog({ purpose }: { purpose: "input" | "artifact"
             >
               + {upload.isPending ? app.t("Uploading…", "上传中…") : app.t("Upload file", "上传文件")}
             </Button>
-          </>
-        )}
+          </>}
+        </span>
       </div>
       {files.error instanceof Error && <div className="err">{files.error.message}</div>}
-      <DataGrid
+      {view === "list" ? <DataGrid
         rows={rows}
         columns={columns}
         rowKey={(file) => file.id}
@@ -173,7 +197,13 @@ export default function FileCatalog({ purpose }: { purpose: "input" | "artifact"
             ? "Agent 写入输出挂载目录的文件会显示在这里。"
             : "上传文件后，可在 Agent 的 Memory 与资源中绑定。",
         )}
-      />
+      /> : <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+        <div className="mut" style={{ padding: "10px 14px", borderBottom: "1px solid var(--line)" }}>{app.t("Names containing / are grouped into folders for easier browsing. Moving between folder and list views does not change the files.", "名称中的 / 会显示为目录，便于浏览。切换目录或列表视图不会修改文件。")}</div>
+        <table className="table"><thead><tr><th>{app.t("Folder / file", "目录 / 文件")}</th><th>{app.t("Type", "类型")}</th><th>{app.t("Size", "大小")}</th>{purpose === "artifact" && <th />}</tr></thead><tbody>
+          {tree.map((row) => row.directory ? <tr key={row.key}><td colSpan={purpose === "artifact" ? 4 : 3} className="mono mut" style={{ paddingLeft: 14 + row.depth * 18 }}>▾ {row.path.split("/").at(-1)}/</td></tr> : row.file && <tr key={row.key}><td style={{ paddingLeft: 14 + row.depth * 18 }}><code>└ {row.path.split("/").at(-1)}</code><div className="mut mono">{row.file.id}</div></td><td className="mut">{row.file.mime_type || "—"}</td><td className="mut">{bytesLabel(row.file.size_bytes)}</td>{purpose === "artifact" && <td style={{ textAlign: "right" }}><Button variant="ghost" disabled={row.file.downloadable === false} onClick={() => void download(row.file!)}>↓ {app.t("Download", "下载")}</Button></td>}</tr>)}
+          {!files.isLoading && tree.length === 0 && <tr><td colSpan={purpose === "artifact" ? 4 : 3} className="mut">{app.t(purpose === "artifact" ? "No artifacts yet." : "No input files yet.", purpose === "artifact" ? "还没有产物。" : "还没有输入文件。")}</td></tr>}
+        </tbody></table>
+      </div>}
     </>
   );
 }

@@ -140,18 +140,9 @@ export default function CredentialsSurface() {
   if (!byokEnabled) return <Navigate replace to={`/w/${workspace}/models`} />;
   return (
     <>
-      <div className="banner info">
-        <span>ⓘ</span>
-        <span>
-          {app.t(
-            "One credential source, reusable by Model Providers, MCP servers, and A2A remotes. Consumers store only a binding; secrets never return to the UI.",
-            "一个凭证源可被 Model Provider、MCP 和 A2A 复用。消费者只保存 binding，secret 永不回显。",
-          )}
-        </span>
-      </div>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <span className="mut">
-          {app.t("Credential sources — materialized only at the outbound adapter boundary.", "凭证源——仅在出站适配器边界实例化。")}
+          {app.t("Secrets are never shown again after they are saved. This table exposes only status and last verification.", "凭证保存后不会再次显示；此表只展示状态和最近验证结果。")}
         </span>
         <span className="row">
           <Button variant="ghost" onClick={() => setAddingSetupToken(true)}>
@@ -198,15 +189,6 @@ export default function CredentialsSurface() {
       </Card>
       {sources.error instanceof Error && <div className="err">{sources.error.message}</div>}
 
-      <div className="banner gate">
-        <span>ⓘ</span>
-        <span>
-          {app.t(
-            "Pools (ordinal failover) are authored via PUT /v1/config/credential-pools/:id — pool UI lands with the profile editor.",
-            "凭证池(ordinal 失效顺位)经 PUT /v1/config/credential-pools/:id 作者化——池 UI 随 profile 编辑器落地。",
-          )}
-        </span>
-      </div>
       {addingSetupToken && (
         <Modal
           title={app.t("Add Claude Code setup token", "添加 Claude Code setup token")}

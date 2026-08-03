@@ -2,6 +2,19 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Public authoring limits for the research-preview Dream API. The Managed
+/// adapter, Awaken capability projection, and Console all consume this one
+/// contract rather than copying model or validation lists.
+pub const DREAM_MAX_INSTRUCTIONS_CHARS: usize = 4096;
+pub const DREAM_MAX_SESSIONS: usize = 100;
+pub const DREAM_SUPPORTED_MODELS: &[&str] = &[
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-sonnet-5",
+    "claude-sonnet-4-6",
+];
+
 /// Typed durable Coordinator-owned Dream process. Execution usage deliberately
 /// remains absent because the linked ordinary Session owns that fact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -176,6 +189,52 @@ pub struct DreamPolicyConfig {
     pub max_sessions: usize,
     pub model: DreamModelConfig,
     pub instructions: Option<String>,
+}
+
+/// Awaken extension projection for the opt-in automatic policy of one
+/// Workspace-owned MemoryStore. Absence projects the disabled effective default
+/// without creating a durable row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DreamPolicy {
+    #[serde(rename = "type")]
+    pub object_type: &'static str,
+    pub memory_store_id: String,
+    #[serde(flatten)]
+    pub config: DreamPolicyConfig,
+    pub next_due_at: Option<String>,
+    pub last_completed_cutoff_at: Option<String>,
+}
+
+/// Neutral application failure vocabulary consumed by protocol adapters.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DreamPolicyApplicationError {
+    #[error("{0}")]
+    BadRequest(String),
+    #[error("Dream policy was not found")]
+    NotFound,
+    #[error("{0}")]
+    Conflict(String),
+    #[error("{0}")]
+    Unavailable(String),
+}
+
+/// Application port driven by the Awaken policy protocol adapter.
+///
+/// Workspace selection is resolved and authorized at the composition edge; the
+/// protocol adapter only forwards that opaque ownership coordinate.
+pub trait DreamPolicyApplication: Send + Sync {
+    fn policy(
+        &self,
+        workspace_id: &str,
+        memory_store_id: &str,
+    ) -> Result<DreamPolicy, DreamPolicyApplicationError>;
+
+    fn set_policy(
+        &self,
+        workspace_id: &str,
+        memory_store_id: &str,
+        config: DreamPolicyConfig,
+    ) -> Result<(), DreamPolicyApplicationError>;
 }
 
 impl Default for DreamPolicyConfig {

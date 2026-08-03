@@ -17,6 +17,20 @@ import { useApp } from "../../lib/app-state";
 import { sessionErrorText, textOf } from "../../lib/session-log";
 import { useSessionLog } from "../../lib/useSessionLog";
 
+export function userFacingRunError(message: string, zh: boolean): string {
+  if (message.includes("package requirements requested but backend cannot provision packages")) {
+    return zh
+      ? "所选 Environment 要求安装 Package，但当前执行器不具备安装能力。请编辑 Environment 移除 Package，或改用支持 Package 的 Environment Provider。"
+      : "The selected Environment requires packages, but this executor cannot install them. Remove the package requirements or use a package-capable Environment provider.";
+  }
+  if (message.includes("dispatch pool never drove it to completion") || message.includes("durable run did not settle")) {
+    return zh
+      ? "执行 Worker 未能完成本次运行。请先重试；若持续出现，请重启 Awaken 并在“追踪”中检查 Worker 状态。"
+      : "The execution worker did not complete this run. Retry once; if it repeats, restart Awaken and inspect the worker state under Trace.";
+  }
+  return message;
+}
+
 function ToolCard({
   ev,
   result,
@@ -296,7 +310,7 @@ export default function Transcript({
                 <span>
                   <strong>{app.t("Run failed", "运行失败")}</strong>
                   <br />
-                  {sessionErrorText(ev)}
+                  {userFacingRunError(sessionErrorText(ev), app.locale === "zh")}
                 </span>
               </div>
             );
@@ -364,7 +378,7 @@ export default function Transcript({
           )}
         />
       )}
-      {sendError && <div className="err">{sendError.message}</div>}
+      {sendError && <div className="err">{userFacingRunError(sendError.message, app.locale === "zh")}</div>}
     </div>
   );
 }

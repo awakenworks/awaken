@@ -104,6 +104,31 @@ async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_
     )
     .await;
     let store_id = store["id"].as_str().unwrap();
+    let default_policy = ok(
+        &app,
+        "GET",
+        &format!("/v1/awaken/memory-stores/{store_id}/dream-policy"),
+        None,
+    )
+    .await;
+    assert_eq!(default_policy["type"], "dream_policy");
+    assert_eq!(default_policy["enabled"], false);
+    let configured_policy = ok(
+        &app,
+        "PUT",
+        &format!("/v1/awaken/memory-stores/{store_id}/dream-policy"),
+        Some(json!({
+            "enabled": false,
+            "interval_seconds": 3600,
+            "min_new_sessions": 1,
+            "max_sessions": 25,
+            "model": {"id":"claude-sonnet-5","speed":"standard"},
+            "instructions": "Retain verified project conventions."
+        })),
+    )
+    .await;
+    assert_eq!(configured_policy["max_sessions"], 25);
+    assert!(configured_policy["next_due_at"].is_string());
     ok(
         &app,
         "POST",

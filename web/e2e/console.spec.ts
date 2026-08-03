@@ -78,6 +78,8 @@ test("agent editor Build/Advanced stages are data-driven from /v1/capabilities",
   await expect(page.locator(".behavior-card", { hasText: /Memory/ })).toBeVisible();
   await openAdvanced(page, "Orchestration");
   await expect(page.locator(".behavior-card", { hasText: "Agent behavior state machine" })).toBeVisible();
+  await expect(page.getByText("Every auxiliary Agent needs an id.", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Built-in auxiliary Agent")).toBeChecked();
 });
 
 test("Tools tab renders the Permissions editor (data-driven from capabilities.policies)", async ({ page }) => {
@@ -107,15 +109,15 @@ test("Quickstart publishes the reviewed draft and starts a durable Session in th
   const environment = JSON.parse(environmentBody);
 
   await page.goto("/w/default/agents/new");
-  await page.getByRole("button", { name: /Coding/ }).click();
+  await page.getByRole("button", { name: /Repository change/ }).click();
   await page.getByPlaceholder("coding-agent").fill(id);
-  await page.getByLabel("Model (references workspace catalog)", { exact: true })
+  await page.getByLabel("Model", { exact: true })
     .selectOption({ label: model });
   await page.getByLabel("Environment for this run")
     .selectOption(environment.id);
   const task = `Quickstart proof ${stamp}`;
   await page.getByLabel("Task sent to the new Session").fill(task);
-  await page.getByRole("button", { name: /Review & run/ }).click();
+  await page.getByRole("button", { name: /Review, publish & run/ }).click();
 
   const modal = page.locator(".modal");
   await expect(modal.getByRole("heading", { name: /Review the first real run/ })).toBeVisible();
@@ -174,15 +176,34 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   const credentialBody = await credentialResponse.text();
   expect(credentialResponse.ok(), credentialBody).toBe(true);
   const credentialSources = JSON.parse(credentialBody);
-  const mcpCredential = credentialSources.find((credential: { status: string }) =>
-    credential.status === "active");
+  let mcpCredential = credentialSources.find((credential: {
+    status: string;
+    kind?: string;
+    provider_id?: string;
+    env_key?: string;
+  }) => credential.status === "active"
+    && credential.kind !== "worker_local"
+    && !credential.provider_id
+    && !credential.env_key);
+  if (!mcpCredential) {
+    const created = await request.post("/v1/config/credentials", {
+      data: {
+        workspace_id: "default",
+        kind: "vault",
+        secret: `mcp-token-${Date.now()}`,
+      },
+    });
+    const createdBody = await created.text();
+    expect(created.status(), createdBody).toBe(201);
+    mcpCredential = JSON.parse(createdBody);
+  }
   expect(mcpCredential).toBeTruthy();
 
   await page.goto("/w/default/agents/new");
   await page.getByPlaceholder("coding-agent").fill(id);
   await openBuild(page, "Instructions");
   await page.getByLabel("System instructions").fill("Use the issue tracker when the goal requires it.");
-  await page.getByLabel("Model (references workspace catalog)", { exact: true })
+  await page.getByLabel("Model", { exact: true })
     .selectOption({ label: model });
 
   await openBuild(page, "Tools & permissions");
@@ -207,10 +228,8 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   await page.getByLabel("Sandbox command").fill("playwright-mcp");
   await page.getByLabel("Arguments (one per line)").fill("--headless\n--isolated");
   await openAdvanced(page, "Orchestration");
-  await page.getByLabel("multiagent JSON").fill("{");
-  await expect(page.getByRole("button", { name: "Save draft", exact: true })).toBeDisabled();
-  await expect(page.getByRole("alert")).toContainText("Invalid JSON");
-  await page.getByLabel("multiagent JSON").fill("");
+  await expect(page.getByRole("heading", { name: "Auxiliary Agents" })).toBeVisible();
+  await expect(page.getByLabel("Budget profile")).toHaveValue("conservative");
   await expect(page.getByRole("button", { name: "Save draft", exact: true })).toBeEnabled();
 
   const initialMcpSave = page.waitForResponse((response) =>
@@ -264,7 +283,7 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   const lossless = await (await request.get(`/v1/config/agents/${id}`)).json();
   expect(lossless.compaction).toEqual({ window: 32000, keep_recent: 12 });
 
-  await page.getByRole("button", { name: "Publish", exact: false }).first().click();
+  await page.getByRole("button", { name: /^Review & publish/ }).click();
   const publication = page.waitForResponse((response) =>
     response.request().method() === "POST"
       && response.url().endsWith(`/v1/config/agents/${id}/publish`));
@@ -304,7 +323,8 @@ test("new session sends the inline MCP prompt-skill opt-in", async ({ page }) =>
   await page.goto("/w/default/sessions");
   await page.getByRole("button", { name: /New session/ }).click();
   await page.locator(".modal select").first().selectOption({ index: 1 });
-  await page.getByRole("button", { name: /add inline server/ }).click();
+  await page.getByText("Advanced runtime overrides", { exact: true }).click();
+  await page.getByRole("button", { name: /Add temporary server/ }).click();
   await page.getByPlaceholder("name").fill("docs");
   await page.getByPlaceholder("https://…").fill("https://docs.test/mcp");
   await page.getByLabel("Prompts as skills").check();
@@ -313,6 +333,132 @@ test("new session sends the inline MCP prompt-skill opt-in", async ({ page }) =>
   expect(posted?.mcp_servers).toEqual([
     { name: "docs", url: "https://docs.test/mcp", prompts_as_skills: true },
   ]);
+});
+
+test("Agent orchestration authors a typed auxiliary roster, pins a version, and persists its safety budget", async ({ page, request }) => {
+  const stamp = Date.now();
+  const model = `collaboration-model-${stamp}`;
+  const auxiliary = `researcher-${stamp}`;
+  const coordinator = `coordinator-${stamp}`;
+  await syntheticModels.configure(request, model);
+  expect((await request.put(`/v1/config/agents/${auxiliary}`, {
+    data: {
+      id: auxiliary,
+      name: "Research specialist",
+      model,
+      system: "Research verified facts.",
+      metadata: {
+        "awaken.parent_agent_id": coordinator,
+        "awaken.agent_role": "auxiliary",
+      },
+      tools: [],
+      mcp_servers: [],
+      skills: [],
+      plugins: [],
+      plugin_config: {},
+      context_policy: { kind: "keep_all" },
+      max_steps: 8,
+    },
+  })).ok()).toBe(true);
+  const auxiliaryPublish = await request.post(`/v1/config/agents/${auxiliary}/publish`);
+  expect(auxiliaryPublish.ok(), await auxiliaryPublish.text()).toBe(true);
+
+  await page.goto("/w/default/agents/new");
+  await page.getByPlaceholder("coding-agent").fill(coordinator);
+  await openBuild(page, "Instructions");
+  await page.getByLabel("System instructions").fill("Coordinate specialists and synthesize their evidence.");
+  await page.getByLabel("Model", { exact: true }).selectOption({ label: model });
+  await openAdvanced(page, "Orchestration");
+  await page.getByLabel("Add a published specialist").selectOption(auxiliary);
+  await page.getByRole("button", { name: "+ Add", exact: true }).click();
+  await expect(page.getByRole("list", { name: "Auxiliary Agent roster" })).toContainText(auxiliary);
+  await expect(page.getByLabel("Budget profile")).toHaveValue("conservative");
+  await page.getByLabel("Version policy").selectOption("pinned");
+  await page.getByLabel("Published version 1").fill("1");
+  await page.getByLabel("Budget profile").selectOption("balanced");
+  await expect(page.getByLabel("Built-in auxiliary Agent")).toBeChecked();
+
+  const saveResponse = page.waitForResponse((response) =>
+    response.request().method() === "PUT" && response.url().endsWith(`/v1/config/agents/${coordinator}`));
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
+  expect((await saveResponse).ok()).toBe(true);
+  const stored = await (await request.get(`/v1/config/agents/${coordinator}`)).json();
+  expect(stored.multiagent).toEqual({
+    type: "coordinator",
+    agents: [
+      { type: "agent", id: auxiliary, version: 1 },
+      { type: "self" },
+    ],
+  });
+  expect(stored.delegation_limits).toEqual({ max_depth: 3, max_parallel: 4, max_total: 16 });
+
+  await page.goto("/w/default/agents?view=collaborations");
+  await expect(page.getByRole("button", { name: "Collaborations" })).toHaveAttribute("aria-pressed", "true");
+  const card = page.locator(".coordinator-card", { hasText: coordinator });
+  await expect(card).toContainText(auxiliary);
+  await expect(card).toContainText("pinned v1");
+  await expect(card).toContainText("Built-in auxiliary");
+  await card.getByRole("button", { name: "Edit roster" }).click();
+  await expect(page).toHaveURL(new RegExp(`/agents/${coordinator}\\?stage=advanced&section=orchestration$`));
+  await expect(page.getByLabel("Version policy")).toHaveValue("pinned");
+  await expect(page.getByLabel("Maximum total")).toHaveValue("16");
+});
+
+test("a specialist is created inside its primary Agent, published first, and hidden from the top-level Agent list", async ({ page, request }) => {
+  const stamp = Date.now();
+  const model = `attached-model-${stamp}`;
+  const primary = `primary-${stamp}`;
+  const specialist = `${primary}--research`;
+  await syntheticModels.configure(request, model);
+  expect((await request.put(`/v1/config/agents/${primary}`, {
+    data: {
+      id: primary,
+      name: "Primary coordinator",
+      model,
+      system: "Coordinate attached specialists.",
+      tools: [],
+      mcp_servers: [],
+      skills: [],
+      multiagent: { type: "coordinator", agents: [{ type: "self" }] },
+      delegation_limits: { max_depth: 2, max_parallel: 2, max_total: 8 },
+      plugins: [],
+      plugin_config: {},
+      context_policy: { kind: "keep_all" },
+      max_steps: 8,
+    },
+  })).ok()).toBe(true);
+
+  await page.goto(`/w/default/agents/${primary}`);
+  await openAdvanced(page, "Orchestration");
+  await expect(page.getByLabel("Built-in auxiliary Agent")).toBeChecked();
+  await page.getByRole("link", { name: /New specialist/ }).click();
+  await expect(page).toHaveURL(new RegExp(`/agents/new\\?parent=${primary}$`));
+  await expect(page.getByText(`Specialist for ${primary}`, { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Back to primary Agent", exact: true })).toBeVisible();
+  await page.getByPlaceholder("coding-agent").fill(specialist);
+  await openBuild(page, "Instructions");
+  await page.getByLabel("System instructions").fill("Research sources for the primary Agent.");
+  await page.getByLabel("Model", { exact: true }).selectOption({ label: model });
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/agents/${specialist}\\?parent=${primary}$`));
+  await page.getByRole("button", { name: "Publish", exact: false }).first().click();
+  const modal = page.locator(".modal");
+  await expect(modal.getByRole("heading", { name: "Publish changes?" })).toBeVisible();
+  await modal.getByRole("button", { name: "Publish", exact: false }).click();
+  await expect(page).toHaveURL(new RegExp(`/agents/${primary}\\?stage=advanced&section=orchestration&attach=${specialist}$`));
+  await expect(page.getByRole("list", { name: "Auxiliary Agent roster" })).toContainText(specialist);
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
+
+  const attached = await (await request.get(`/v1/config/agents/${specialist}`)).json();
+  expect(attached.metadata).toMatchObject({
+    "awaken.parent_agent_id": primary,
+    "awaken.agent_role": "auxiliary",
+  });
+  await page.goto("/w/default/agents");
+  await expect(page.getByText("Primary coordinator", { exact: true })).toBeVisible();
+  await expect(page.getByText(specialist, { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Collaborations" }).click();
+  await expect(page.locator(".coordinator-card", { hasText: primary })).toContainText(specialist);
 });
 
 test("enabling a behavior renders a schema-driven form (not raw JSON)", async ({ page }) => {
@@ -378,6 +524,132 @@ test("session detail toggles Chat ⇄ Trace (the log read as spans)", async ({ p
   await expect(page.getByRole("button", { name: "Chat", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Trace", exact: true }).click();
   await expect(page.getByText(/No spans yet|暂无 span/)).toBeVisible();
+  await page.getByRole("button", { name: "Child runs", exact: true }).click();
+  await expect(page.getByText("No child runs in this Session")).toBeVisible();
+  await expect(page.locator(".primary-thread-row")).toContainText(agent);
+});
+
+test("Session Child runs exposes a delegated thread, its projected events, and a scoped stop action", async ({ page }) => {
+  const sessionId = "session-child-runs-ui";
+  const childId = "run_child_1";
+  let childStatus = "running";
+  await page.route(`**/v1/sessions/${sessionId}**`, async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path.endsWith(`/threads/${childId}/archive`) && request.method() === "POST") {
+      childStatus = "terminated";
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: childId,
+          type: "session_thread",
+          session_id: sessionId,
+          parent_thread_id: `${sessionId}:primary`,
+          agent: { id: "research-agent", type: "agent", version: 3, model: { id: "synthetic" }, name: "Research Agent", tools: [], mcp_servers: [], skills: [] },
+          created_at: "2026-08-03T00:00:00Z",
+          updated_at: "2026-08-03T00:01:00Z",
+          archived_at: "2026-08-03T00:01:00Z",
+          status: childStatus,
+          stats: { duration_seconds: 12.5 },
+          usage: { input_tokens: 21, output_tokens: 13 },
+        }),
+      });
+      return;
+    }
+    if (path.endsWith(`/threads/${childId}/events`)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: [
+            { id: "evt_child_1", type: "session.thread_status_running", session_thread_id: childId },
+            { id: "evt_child_2", type: "agent.message", content: [{ type: "text", text: "Verified three primary sources." }] },
+          ],
+          has_more: false,
+          next_page: null,
+        }),
+      });
+      return;
+    }
+    if (path.endsWith("/threads")) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: [
+            {
+              id: `${sessionId}:primary`,
+              type: "session_thread",
+              session_id: sessionId,
+              parent_thread_id: null,
+              agent: { id: "lead-agent", type: "agent", version: 2, model: { id: "synthetic" }, name: "Lead Agent", tools: [], mcp_servers: [], skills: [] },
+              created_at: "2026-08-03T00:00:00Z",
+              updated_at: "2026-08-03T00:01:00Z",
+              archived_at: null,
+              status: "running",
+              stats: null,
+              usage: null,
+            },
+            {
+              id: childId,
+              type: "session_thread",
+              session_id: sessionId,
+              parent_thread_id: `${sessionId}:primary`,
+              agent: { id: "research-agent", type: "agent", version: 3, model: { id: "synthetic" }, name: "Research Agent", tools: [], mcp_servers: [], skills: [] },
+              created_at: "2026-08-03T00:00:00Z",
+              updated_at: "2026-08-03T00:01:00Z",
+              archived_at: childStatus === "terminated" ? "2026-08-03T00:01:00Z" : null,
+              status: childStatus,
+              stats: { duration_seconds: 12.5 },
+              usage: { input_tokens: 21, output_tokens: 13 },
+            },
+          ],
+          has_more: false,
+          next_page: null,
+        }),
+      });
+      return;
+    }
+    if (path.endsWith("/events")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [], has_more: false, next_page: null }) });
+      return;
+    }
+    if (path.endsWith(sessionId)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: sessionId,
+          type: "session",
+          agent: { id: "lead-agent", type: "agent", version: 2, model: { id: "synthetic" }, name: "Lead Agent", tools: [], mcp_servers: [], skills: [], multiagent: { type: "coordinator", agents: ["research-agent"] } },
+          created_at: "2026-08-03T00:00:00Z",
+          updated_at: "2026-08-03T00:01:00Z",
+          archived_at: null,
+          title: "Delegation proof",
+          metadata: {},
+          resources: [],
+          outcome_evaluations: [],
+          status: "running",
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(`/w/default/sessions/${sessionId}`);
+  await page.getByRole("button", { name: "Child runs", exact: true }).click();
+  const child = page.locator(".thread-node-child", { hasText: "Research Agent" });
+  await expect(child).toContainText("34");
+  await expect(child).toContainText("12.5s");
+  await child.getByRole("button", { name: "Inspect events" }).click();
+  await expect(page.getByRole("log", { name: "Child run events" })).toContainText("Verified three primary sources.");
+  await child.getByRole("button", { name: "Stop", exact: true }).click();
+  await page.getByRole("button", { name: "Stop child run", exact: true }).click();
+  await expect(child.getByText("terminated", { exact: true })).toBeVisible();
+  await expect(child.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0);
 });
 
 test("Session Integrations shows only the durable active MCP projection", async ({ page }) => {
@@ -413,7 +685,7 @@ test("Session Integrations shows only the durable active MCP projection", async 
 
   await page.goto(`/w/default/sessions/${sessionId}`);
   await page.locator(".segmented").getByRole("button", { name: "Integrations", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Active MCP integrations" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "MCP connections used by this Session" })).toBeVisible();
   await expect(page.getByText("https://mcp.example.test/docs")).toBeVisible();
   await expect(page.getByText("remote Skills")).toBeVisible();
   await expect(page.getByText("active", { exact: true }).last()).toBeVisible();
@@ -482,12 +754,115 @@ test("Models either tests a discovered model or closes the provider prerequisite
 
 test("Admin Assistant truthfully shows a composer or the missing-model prerequisite", async ({ page }) => {
   await page.goto("/w/default/assistant");
-  await expect(page.getByRole("heading", { name: /Admin Assistant|控制台助手/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Ask the Console Assistant|询问 Console 助手/ })).toBeVisible();
+  await expect(page.getByText(/Ask any Console question|询问任何 Console 问题/)).toBeVisible();
+  await expect(page.getByRole("list", { name: /Suggested questions|建议问题/ })).toBeVisible();
   // The assistant is seeded into the reserved scope (ADR-0052), but a composer is
   // only runnable when the current backend has a credentialed model.
-  const composer = page.getByPlaceholder("Describe the agent you want…");
+  const composer = page.getByPlaceholder("Ask a question or describe what you want to accomplish…");
   const prerequisite = page.getByText(/The assistant needs a model to run on|助手需要一个模型才能运行/i);
-  await expect(composer.or(prerequisite)).toBeVisible();
+  const unavailable = page.getByText(/The Assistant (?:is not runnable yet|could not be prepared)|助手(?:尚不可运行|准备失败)/i);
+  await expect(composer.or(prerequisite).or(unavailable)).toBeVisible();
+});
+
+test("Assistant prepares itself after a runnable model becomes available", async ({ page }) => {
+  let probes = 0;
+  let ensures = 0;
+  await page.route("**/v1/config/executable-models?**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{ model_id: "assistant-model", readiness: "ready" }]),
+    });
+  });
+  await page.route("**/v1/agents/__admin_assistant", async (route) => {
+    probes += 1;
+    await route.fulfill({
+      status: probes === 1 ? 404 : 200,
+      contentType: "application/json",
+      body: JSON.stringify(
+        probes === 1
+          ? { code: "not_found", title: "Not found" }
+          : { id: "__admin_assistant", type: "agent", tools: [], skills: [], mcp_servers: [] },
+      ),
+    });
+  });
+  await page.route("**/v1/config/agents/__admin_assistant/ensure", async (route) => {
+    ensures += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ status: "ready", agent_id: "__admin_assistant" }),
+    });
+  });
+  await page.route("**/v1/sessions", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ id: "assistant-recovery-e2e" }),
+    });
+  });
+  await page.route("**/v1/sessions/assistant-recovery-e2e/events**", async (route) => {
+    await route.fulfill({
+      status: route.request().method() === "GET" ? 200 : 202,
+      contentType: "application/json",
+      body: JSON.stringify(route.request().method() === "GET" ? { data: [] } : {}),
+    });
+  });
+
+  await page.goto("/w/default/assistant");
+  await expect(page.getByPlaceholder("Ask a question or describe what you want to accomplish…")).toBeVisible();
+  await expect.poll(() => ensures).toBe(1);
+  await expect.poll(() => probes).toBeGreaterThanOrEqual(2);
+});
+
+test("Assistant keeps one page-aware conversation while the operator navigates", async ({ page }) => {
+  let createdSessions = 0;
+  await page.route("**/v1/config/executable-models?**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{ model_id: "assistant-model", readiness: "ready" }]),
+    });
+  });
+  await page.route("**/v1/agents/__admin_assistant", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ id: "__admin_assistant", type: "agent", tools: [], skills: [], mcp_servers: [] }),
+    });
+  });
+  await page.route("**/v1/sessions", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    createdSessions += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ id: "assistant-context-e2e" }),
+    });
+  });
+  await page.route("**/v1/sessions/assistant-context-e2e/events**", async (route) => {
+    await route.fulfill({
+      status: route.request().method() === "GET" ? 200 : 202,
+      contentType: "application/json",
+      body: JSON.stringify(route.request().method() === "GET" ? { data: [] } : {}),
+    });
+  });
+
+  await page.goto("/w/default/files");
+  await page.getByRole("button", { name: "Admin Assistant", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Admin Assistant", exact: true });
+  await expect(panel.getByText("Files", { exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "How do I attach a file to an Agent?", exact: true })).toBeVisible();
+  await expect(panel.getByPlaceholder("Ask a question or describe what you want to accomplish…")).toBeVisible();
+  await expect.poll(() => createdSessions).toBe(1);
+
+  await page.locator(".sidebar").getByRole("button", { name: "Runtime secrets", exact: true }).click();
+  await expect(page).toHaveURL(/\/w\/default\/vaults$/);
+  await expect(panel.getByText("Runtime secrets", { exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Which Vault type should I use?", exact: true })).toBeVisible();
+  expect(createdSessions).toBe(1);
 });
 
 test("Try draft truthfully requires runnable fields", async ({ page }) => {
@@ -510,7 +885,7 @@ test("author an agent, publish when runnable, and see the truthful outcome", asy
   // a regression this e2e caught and fixed), then Publish compiles + installs it.
   await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
   // Publish opens a confirm modal previewing the config diff; confirm inside it.
-  await page.getByRole("button", { name: /Publish/ }).click();
+  await page.getByRole("button", { name: /^Review & publish/ }).click();
   const publishPreview = page.getByRole("heading", { name: /Publish changes|发布改动/ });
   const canPublish = await publishPreview.waitFor({ state: "visible", timeout: 2_000 })
     .then(() => true)
@@ -553,7 +928,7 @@ test("Publish saves the Draft, validates it, and withholds confirmation when inv
 
   // No separate Save or Validate click: Publish performs both and only then opens
   // the operator checkpoint.
-  await page.getByRole("button", { name: /Publish/ }).click();
+  await page.getByRole("button", { name: /^Review & publish/ }).click();
   await expect(page.getByText(/Needs input|需要处理/).first()).toBeVisible();
   expect((await request.get(`/v1/config/agents/${id}`)).ok()).toBe(true);
   await expect(page.locator(".modal")).toHaveCount(0);
@@ -605,7 +980,7 @@ test("publish preview shows the config diff, domain-labeled", async ({ page, req
   await page.locator("textarea").first().fill("edited instructions");
   await page.getByRole("button", { name: "Save draft", exact: true }).click();
   await expect(page.locator(".ui-toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
-  await page.getByRole("button", { name: /Publish/ }).click();
+  await page.getByRole("button", { name: /^Review & publish/ }).click();
   // The diff names the change with its domain label (not the raw path).
   const diff = page.locator(".modal").getByText("System instructions");
   const previewed = await diff.waitFor({ state: "visible", timeout: 2_000 })
@@ -621,7 +996,7 @@ test("validation issues are field-routed to their section", async ({ page, reque
   await page.goto(`/w/default/agents/${id}`);
   await openBuild(page, "Instructions");
   await expect(page.getByLabel("System instructions")).toHaveValue("hi"); // wait for load
-  await page.getByRole("button", { name: "Validate", exact: true }).click();
+  await page.getByRole("button", { name: "Check draft", exact: true }).click();
   // The first backend-owned structured issue is projected with its section…
   await expect(page.locator(".banner").filter({ hasText: "Model" })).toBeVisible();
   // …and routes the user there (no client-side rule was re-derived).

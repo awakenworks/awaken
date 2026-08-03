@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use awaken_dream_application::InMemoryDreamProcessStore;
+use awaken_dream_application::{DreamModelReadiness, InMemoryDreamProcessStore};
 use awaken_protocol_managed::types::{DreamModelConfig, DreamUsage};
 use awaken_protocol_managed::{
     BUILT_IN_DREAM_AGENT_ID, DREAMING_BETA, DreamApplication, DreamCancellation, DreamExecutor,
@@ -381,6 +381,36 @@ fn create_body(memory: &str, sessions: &[&str]) -> Value {
         "model": {"id":"claude-sonnet-5", "speed":"standard"},
         "instructions":"Prefer durable decisions."
     })
+}
+
+struct NoReadyDreamModels;
+
+#[async_trait::async_trait]
+impl DreamModelReadiness for NoReadyDreamModels {
+    async fn is_ready(&self, _workspace_id: &str, _model_id: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+}
+
+#[tokio::test]
+async fn create_rejects_a_supported_but_not_executable_workspace_model() {
+    let (state, _, _) = state(Outcome::Complete);
+    state.bind_model_readiness(Arc::new(NoReadyDreamModels));
+    let app = dreams_router(state);
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/v1/dreams",
+        Some(create_body("memory", &["session"])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not connected or executable")
+    );
 }
 
 async fn request(

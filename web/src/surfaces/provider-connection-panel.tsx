@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Button,
   Card,
@@ -10,6 +10,7 @@ import {
 import { api, workspaceFields, ws } from "../lib/api/client";
 import type {
   CredentialSource,
+  ProviderCatalog,
   ProviderConnectionView,
   ProviderConnectionSummary,
   ProviderDriverDescriptor,
@@ -20,6 +21,7 @@ interface ProviderConnectionPanelProps {
   credentials: CredentialSource[];
   descriptors: ProviderDriverDescriptor[];
   connections: ProviderConnectionSummary[];
+  catalog?: ProviderCatalog;
 }
 
 interface ProviderDraft {
@@ -27,6 +29,38 @@ interface ProviderDraft {
   endpointName: string;
   baseUrl: string;
   dialect: string;
+}
+
+function connectionStatusLabel(
+  status: ProviderConnectionSummary["status"] | undefined,
+  t: (en: string, zh: string) => string,
+) {
+  switch (status) {
+    case "ready": return t("Ready", "可用");
+    case "connected": return t("Connected", "已连接");
+    case "stale": return t("Needs recheck", "需要重新检查");
+    case "needs_attention": return t("Needs attention", "需要处理");
+    case "unavailable": return t("Unavailable", "不可用");
+    default: return t("Not connected", "未连接");
+  }
+}
+
+function dialectLabel(dialect: string, t: (en: string, zh: string) => string) {
+  switch (dialect) {
+    case "anthropic_messages": return t("Anthropic Messages", "Anthropic Messages 格式");
+    case "open_ai_responses": return t("OpenAI Responses", "OpenAI Responses 格式");
+    case "open_ai_chat": return t("OpenAI Chat Completions", "OpenAI Chat Completions 格式");
+    case "gemini": return t("Gemini API", "Gemini API 格式");
+    case "vertex_gemini": return t("Vertex AI Gemini", "Vertex AI Gemini 格式");
+    default: return dialect;
+  }
+}
+
+function credentialLabel(credential: CredentialSource) {
+  const parts = credential.id.split(":");
+  const modelMarker = parts.lastIndexOf("model");
+  const storedLabel = modelMarker >= 0 ? parts[modelMarker + 2] : undefined;
+  return storedLabel?.replaceAll("-", " ") || credential.env_key || credential.provider_id || credential.id;
 }
 
 export function providerDraftDefaults(descriptor: ProviderDriverDescriptor) {
@@ -47,10 +81,25 @@ export function providerConfigurationDefaults(descriptor: ProviderDriverDescript
   );
 }
 
+export function credentialReusableForProvider(
+  credential: CredentialSource,
+  descriptor: ProviderDriverDescriptor | undefined,
+): boolean {
+  if (!descriptor || credential.status !== "active") return false;
+  if (credential.env_key === "CLAUDE_CODE_OAUTH_TOKEN") return false;
+  // Untagged Vault entries are Runtime Secrets (environment variables, static
+  // bearer tokens, or MCP OAuth material), not model API keys.  Reuse only a
+  // credential that was explicitly classified for this provider.
+  if (credential.provider_id !== descriptor.provider_kind) return false;
+  if (credential.kind === "oauth") return descriptor.auth_methods.includes("oauth");
+  return credential.kind === "vault" && descriptor.auth_methods.includes("api_key");
+}
+
 export default function ProviderConnectionPanel({
   credentials,
   descriptors,
   connections,
+  catalog,
 }: ProviderConnectionPanelProps) {
   const app = useApp();
   const workspace = app.workspaceId;
@@ -62,12 +111,14 @@ export default function ProviderConnectionPanel({
     dialect: "anthropic_messages",
   });
   const [apiKey, setApiKey] = useState("");
+  const [credentialName, setCredentialName] = useState("Anthropic · primary");
   const [authMode, setAuthMode] = useState<"api_key" | "oauth" | "existing">(
     "api_key",
   );
   const [configuration, setConfiguration] = useState<Record<string, string>>({});
   const [syncCredential, setSyncCredential] = useState("");
   const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
+  const initialized = useRef(false);
   const selectedDescriptor = descriptors.find(
     (descriptor) => descriptor.provider_kind === draft.provider,
   );
@@ -78,15 +129,33 @@ export default function ProviderConnectionPanel({
         credential.status === "active" &&
         credential.provider_id === descriptor.provider_kind,
     );
+    const savedConnection = connections.find((connection) => connection.provider_id === descriptor.provider_kind);
+    const savedEndpoint = savedConnection?.endpoint_ids
+      .map((id) => catalog?.endpoints[id])
+      .find(Boolean);
+    const defaults = providerDraftDefaults(descriptor);
     setDraft({
       ...draft,
-      ...providerDraftDefaults(descriptor),
+      ...defaults,
+      ...(savedEndpoint ? { baseUrl: savedEndpoint.base_url ?? defaults.baseUrl, dialect: savedEndpoint.dialect } : {}),
     });
     setConfiguration(providerConfigurationDefaults(descriptor));
     setApiKey("");
+    setCredentialName(`${descriptor.display_name} · primary`);
     setAuthMode(existing ? "existing" : descriptor.auth_methods[0] ?? "api_key");
     setSyncCredential(existing?.id ?? "");
   };
+
+  useEffect(() => {
+    if (initialized.current || descriptors.length === 0) return;
+    initialized.current = true;
+    selectDescriptor(
+      descriptors.find((descriptor) => descriptor.provider_kind === draft.provider)
+        ?? descriptors[0],
+    );
+  // Initialization follows the first authoritative descriptor snapshot only.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [descriptors]);
 
   const connect = useMutation({
     mutationFn: () => {
@@ -97,6 +166,7 @@ export default function ProviderConnectionPanel({
           ...workspaceFields(workspace),
           provider_id: draft.provider,
           display_name: selectedDescriptor?.display_name ?? draft.provider,
+          credential_name: credentialName.trim() || `${draft.provider} primary`,
           dialect: draft.dialect,
           ...(draft.endpointName ? { endpoint_name: draft.endpointName } : {}),
           base_url: draft.baseUrl || null,
@@ -121,12 +191,8 @@ export default function ProviderConnectionPanel({
     },
   });
 
-  const reusableCredentials = credentials.filter(
-    (credential) =>
-      credential.status === "active" &&
-      credential.env_key !== "CLAUDE_CODE_OAUTH_TOKEN" &&
-      (credential.provider_id == null ||
-        credential.provider_id === draft.provider),
+  const reusableCredentials = credentials.filter((credential) =>
+    credentialReusableForProvider(credential, selectedDescriptor),
   );
   const requiredConfigurationMissing = (
     selectedDescriptor?.configuration_fields ?? []
@@ -149,8 +215,8 @@ export default function ProviderConnectionPanel({
         <h2>{app.t("Provider connections", "供应商连接")}</h2>
         <p className="hint">
           {app.t(
-            "One guided command verifies authentication, saves or reuses one credential, authors the endpoint, and imports the provider's models.",
-            "一个引导式命令完成鉴权验证、凭证新建或复用、端点写入和供应商模型导入。",
+            "Choose a provider and authentication method. Verify & import models checks the credential and endpoint before making the models available to Agents.",
+            "选择供应商和认证方式。“验证并导入模型”会先检查凭证与端点，再将模型提供给 Agent。",
           )}
         </p>
         <div className="row" style={{ marginBottom: 14 }}>
@@ -168,9 +234,9 @@ export default function ProviderConnectionPanel({
               >
                 {descriptor.display_name}
                 <span className="mut" style={{ marginLeft: 6 }}>
-                  {connection?.status ?? "…"}
+                  {connectionStatusLabel(connection?.status, app.t)}
                   {connection?.active_models
-                    ? ` · ${connection.active_models} models`
+                    ? ` · ${connection.active_models} ${app.t("models", "个模型")}`
                     : ""}
                 </span>
               </Button>
@@ -230,11 +296,19 @@ export default function ProviderConnectionPanel({
             </span>
           </span>
           {authMode === "api_key" && (
-            <SecretField
-              label={app.t("API key (write-only)", "API Key（仅写入）")}
-              hasStored={false}
-              onChange={(intent) => setApiKey(intent.value ?? "")}
-            />
+            <>
+              <TextField
+                label={app.t("Credential name", "凭证名称")}
+                value={credentialName}
+                placeholder={app.t("Provider · purpose", "供应商 · 用途")}
+                onChange={(event) => setCredentialName(event.target.value)}
+              />
+              <SecretField
+                label={app.t("API key (write-only)", "API Key（仅写入）")}
+                hasStored={false}
+                onChange={(intent) => setApiKey(intent.value ?? "")}
+              />
+            </>
           )}
           {authMode === "oauth" && (
             <span className="field">
@@ -251,7 +325,7 @@ export default function ProviderConnectionPanel({
               <option value="">{app.t("Choose credential", "选择凭证")}</option>
               {reusableCredentials.map((credential) => (
                 <option key={credential.id} value={credential.id}>
-                  {credential.id} · {credential.kind}
+                  {credentialLabel(credential)} · {credential.provider_id ?? app.t("Shared", "通用")}
                 </option>
               ))}
             </SelectField>
@@ -284,16 +358,20 @@ export default function ProviderConnectionPanel({
               }
             />
             <SelectField
-              label="Dialect"
+              label={app.t("API format", "API 格式")}
               value={draft.dialect}
-              onChange={(event) =>
-                setDraft({ ...draft, dialect: event.target.value })
-              }
+              onChange={(event) => {
+                const dialect = event.target.value;
+                const endpoint = selectedDescriptor?.default_endpoints.find(
+                  (candidate) => candidate.dialect === dialect,
+                );
+                setDraft({ ...draft, dialect, baseUrl: endpoint?.base_url ?? draft.baseUrl });
+              }}
             >
               {(selectedDescriptor?.supported_dialects ?? [draft.dialect]).map(
                 (dialect) => (
                   <option key={dialect} value={dialect}>
-                    {dialect}
+                    {dialectLabel(dialect, app.t)}
                   </option>
                 ),
               )}

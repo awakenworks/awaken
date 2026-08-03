@@ -474,6 +474,10 @@ pub struct SaveProviderConnectionRequest {
     pub workspace_id: String,
     pub provider_id: String,
     pub display_name: String,
+    /// Optional human label embedded into the generated credential source id.
+    /// It is non-secret and does not replace the stable idempotency fingerprint.
+    #[serde(default)]
+    pub credential_name: Option<String>,
     /// Deprecated compatibility input. Endpoint identity is canonicalized from
     /// `(provider_id, dialect)`; retained clients may still send this field, but
     /// it never creates a second route for the same protocol surface.
@@ -561,6 +565,7 @@ async fn test_and_save_provider_connection(
             workspace_id,
             provider_id: body.provider_id,
             display_name: body.display_name,
+            credential_name: body.credential_name,
             dialect: body.dialect,
             endpoint_name: body.endpoint_name,
             base_url: body.base_url,

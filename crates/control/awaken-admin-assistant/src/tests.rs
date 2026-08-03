@@ -992,6 +992,9 @@ fn seeded_instructions_are_authorable_and_mention_no_publish() {
     assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("management assistant"));
     assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("self-contained visible answer"));
     assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("Never say the answer was given above"));
+    assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("single conversational entry"));
+    assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("at most one concise clarifying question"));
+    assert!(ADMIN_ASSISTANT_INSTRUCTIONS.contains("do not claim to have done it"));
     // The no-publish safety invariant (case-insensitive — the prompt may emphasize it).
     assert!(
         ADMIN_ASSISTANT_INSTRUCTIONS

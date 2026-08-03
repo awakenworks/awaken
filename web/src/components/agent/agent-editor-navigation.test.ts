@@ -16,8 +16,10 @@ describe("agent authoring navigation", () => {
 
   it("routes expert mechanisms into Advanced", () => {
     expect(stageForPath("multiagent")).toBe("advanced");
+    expect(stageForPath("delegation_limits.max_depth")).toBe("advanced");
     expect(stageForPath("plugin_config.state_machine.states")).toBe("advanced");
     expect(advancedSectionForPath("multiagent")).toBe("orchestration");
+    expect(advancedSectionForPath("delegation_limits.max_total")).toBe("orchestration");
     expect(advancedSectionForPath("compaction")).toBe("extensions");
   });
 });

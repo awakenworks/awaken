@@ -6,26 +6,17 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_session_contract::{
-    Dream, DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig,
-    DreamModelInput, DreamModelSpeed, DreamOutput, DreamPage, DreamPolicyRecord,
-    DreamProcessFailure, DreamProcessRecord, DreamProcessStore, DreamStatus, DreamUsage,
+    DREAM_MAX_INSTRUCTIONS_CHARS, DREAM_MAX_SESSIONS, DREAM_SUPPORTED_MODELS, Dream,
+    DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig, DreamModelInput,
+    DreamModelSpeed, DreamOutput, DreamPage, DreamPolicyApplication, DreamPolicyApplicationError,
+    DreamPolicyRecord, DreamProcessFailure, DreamProcessRecord, DreamProcessStore, DreamStatus,
+    DreamUsage,
 };
+pub use awaken_session_contract::{DreamPolicy, DreamPolicyConfig};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
 
-pub use awaken_session_contract::DreamPolicyConfig;
-
-const MAX_INSTRUCTIONS_CHARS: usize = 4096;
-const MAX_SESSIONS: usize = 100;
 const DEFAULT_PAGE_SIZE: usize = 20;
 const MAX_PAGE_SIZE: usize = 100;
-const SUPPORTED_MODELS: &[&str] = &[
-    "claude-fable-5",
-    "claude-opus-4-8",
-    "claude-opus-4-7",
-    "claude-sonnet-5",
-    "claude-sonnet-4-6",
-];
 
 pub const BUILT_IN_DREAM_AGENT_ID: &str = "awaken_builtin_dream_agent";
 
@@ -53,20 +44,6 @@ pub struct DreamPreparation {
     pub transcript_file_ids: Vec<String>,
 }
 
-/// Awaken extension projection for the opt-in automatic policy of one
-/// Workspace-owned MemoryStore. Absence projects the disabled effective default
-/// without creating a durable row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DreamPolicy {
-    #[serde(rename = "type")]
-    pub object_type: &'static str,
-    pub memory_store_id: String,
-    #[serde(flatten)]
-    pub config: DreamPolicyConfig,
-    pub next_due_at: Option<String>,
-    pub last_completed_cutoff_at: Option<String>,
-}
-
 type StoredDreamPolicy = DreamPolicyRecord;
 
 #[async_trait]
@@ -83,6 +60,13 @@ pub trait DreamSessionSource: Send + Sync {
     fn session_usage(&self, _workspace_id: &str, _session_id: &str) -> Option<DreamUsage> {
         None
     }
+}
+
+/// Workspace-aware readiness seam used before a Dream is persisted. Supported
+/// model ids are a protocol contract; executable readiness is deployment state.
+#[async_trait]
+pub trait DreamModelReadiness: Send + Sync {
+    async fn is_ready(&self, workspace_id: &str, model_id: &str) -> Result<bool, String>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -388,6 +372,7 @@ pub struct DreamApplication {
     next_id: AtomicU64,
     store: Arc<dyn DreamProcessStore>,
     session_source: Mutex<Option<Arc<dyn DreamSessionSource>>>,
+    model_readiness: Mutex<Option<Arc<dyn DreamModelReadiness>>>,
 }
 
 impl DreamApplication {
@@ -421,6 +406,7 @@ impl DreamApplication {
             next_id: AtomicU64::new(next_id),
             store,
             session_source: Mutex::new(None),
+            model_readiness: Mutex::new(None),
         })
     }
 
@@ -461,6 +447,10 @@ impl DreamApplication {
         *self.session_source.lock().unwrap() = Some(source);
     }
 
+    pub fn bind_model_readiness(&self, source: Arc<dyn DreamModelReadiness>) {
+        *self.model_readiness.lock().unwrap() = Some(source);
+    }
+
     fn project_process(&self, process: &DreamProcess) -> Dream {
         let usage = process
             .session_id
@@ -493,14 +483,14 @@ impl DreamApplication {
         if config.interval_seconds < 60
             || config.min_new_sessions == 0
             || config.max_sessions == 0
-            || config.max_sessions > MAX_SESSIONS
+            || config.max_sessions > DREAM_MAX_SESSIONS
             || config.min_new_sessions > config.max_sessions
-            || !SUPPORTED_MODELS.contains(&config.model.id.as_str())
+            || !DREAM_SUPPORTED_MODELS.contains(&config.model.id.as_str())
             || config.model.speed == Some(DreamModelSpeed::Fast)
             || config
                 .instructions
                 .as_ref()
-                .is_some_and(|value| value.chars().count() > MAX_INSTRUCTIONS_CHARS)
+                .is_some_and(|value| value.chars().count() > DREAM_MAX_INSTRUCTIONS_CHARS)
         {
             return Err(DreamApiError::BadRequest(
                 "invalid Dream policy interval, session bounds, model, or instructions".into(),
@@ -726,6 +716,19 @@ impl DreamApplication {
     ) -> Result<Dream, DreamApiError> {
         let (source_memory_store_id, session_ids) = validate_create(&params)?;
         let model = params.model.into_config();
+        let readiness = self.model_readiness.lock().unwrap().clone();
+        if let Some(readiness) = readiness {
+            match readiness.is_ready(workspace_id, &model.id).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(DreamApiError::BadRequest(format!(
+                        "Dream model `{}` is not connected or executable in this Workspace",
+                        model.id
+                    )));
+                }
+                Err(error) => return Err(DreamApiError::Unavailable(error)),
+            }
+        }
         let request_guidance = params.instructions;
         let mut job = DreamProcess {
             id: String::new(),
@@ -1062,6 +1065,37 @@ impl DreamApplication {
     }
 }
 
+impl DreamPolicyApplication for DreamApplication {
+    fn policy(
+        &self,
+        workspace_id: &str,
+        memory_store_id: &str,
+    ) -> Result<DreamPolicy, DreamPolicyApplicationError> {
+        DreamApplication::policy(self, workspace_id, memory_store_id).map_err(Into::into)
+    }
+
+    fn set_policy(
+        &self,
+        workspace_id: &str,
+        memory_store_id: &str,
+        config: DreamPolicyConfig,
+    ) -> Result<(), DreamPolicyApplicationError> {
+        DreamApplication::set_policy(self, workspace_id, memory_store_id, config)
+            .map_err(Into::into)
+    }
+}
+
+impl From<DreamApiError> for DreamPolicyApplicationError {
+    fn from(error: DreamApiError) -> Self {
+        match error {
+            DreamApiError::BadRequest(message) => Self::BadRequest(message),
+            DreamApiError::NotFound => Self::NotFound,
+            DreamApiError::Conflict(message) => Self::Conflict(message),
+            DreamApiError::Unavailable(message) => Self::Unavailable(message),
+        }
+    }
+}
+
 #[cfg(test)]
 mod product_readiness_tests {
     #[test]
@@ -1114,7 +1148,7 @@ fn validate_create(params: &DreamCreateParams) -> Result<(String, Vec<String>), 
             "model id must contain 1 to 256 characters".into(),
         ));
     }
-    if !SUPPORTED_MODELS.contains(&model.as_str()) {
+    if !DREAM_SUPPORTED_MODELS.contains(&model.as_str()) {
         return Err(DreamApiError::BadRequest(format!(
             "unsupported Dream model `{model}`"
         )));
@@ -1133,10 +1167,10 @@ fn validate_create(params: &DreamCreateParams) -> Result<(String, Vec<String>), 
     if params
         .instructions
         .as_ref()
-        .is_some_and(|value| value.chars().count() > MAX_INSTRUCTIONS_CHARS)
+        .is_some_and(|value| value.chars().count() > DREAM_MAX_INSTRUCTIONS_CHARS)
     {
         return Err(DreamApiError::BadRequest(format!(
-            "instructions may contain at most {MAX_INSTRUCTIONS_CHARS} characters"
+            "instructions may contain at most {DREAM_MAX_INSTRUCTIONS_CHARS} characters"
         )));
     }
     let mut memory = None;
@@ -1161,9 +1195,9 @@ fn validate_create(params: &DreamCreateParams) -> Result<(String, Vec<String>), 
     }
     let sessions =
         sessions.ok_or_else(|| DreamApiError::BadRequest("sessions input is required".into()))?;
-    if sessions.is_empty() || sessions.len() > MAX_SESSIONS {
+    if sessions.is_empty() || sessions.len() > DREAM_MAX_SESSIONS {
         return Err(DreamApiError::BadRequest(format!(
-            "sessions input must contain 1 to {MAX_SESSIONS} session ids"
+            "sessions input must contain 1 to {DREAM_MAX_SESSIONS} session ids"
         )));
     }
     let unique = sessions.iter().collect::<BTreeSet<_>>();
@@ -1235,7 +1269,7 @@ mod tests {
         assert!(validate_create(&unsupported).is_err(), "R4");
 
         let mut long_instructions = valid_params();
-        long_instructions.instructions = Some("x".repeat(MAX_INSTRUCTIONS_CHARS + 1));
+        long_instructions.instructions = Some("x".repeat(DREAM_MAX_INSTRUCTIONS_CHARS + 1));
         assert!(validate_create(&long_instructions).is_err(), "R5");
     }
 

@@ -11,6 +11,7 @@ import EnvironmentsSurface from "./surfaces/environments";
 import FilesSurface from "./surfaces/files";
 import { Navigate } from "react-router";
 import MemorySurface from "./surfaces/memory";
+import DreamDetailSurface from "./surfaces/dream-detail";
 import ModelsSurface from "./surfaces/models";
 import McpOverviewSurface from "./surfaces/mcp-overview";
 import SkillsSurface from "./surfaces/skills";
@@ -44,6 +45,7 @@ export const router = createBrowserRouter([
       { path: "w/:ws/mcp", element: <McpOverviewSurface /> },
       { path: "w/:ws/vaults", element: <VaultsSurface /> },
       { path: "w/:ws/memory", element: <MemorySurface /> },
+      { path: "w/:ws/memory/dreams/:dreamId", element: <DreamDetailSurface /> },
       { path: "w/:ws/deployments", element: <DeploymentsSurface /> },
       { path: "w/:ws/skills", element: <SkillsSurface /> },
       { path: "w/:ws/models", element: <ModelsSurface /> },

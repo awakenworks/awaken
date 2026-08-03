@@ -6,6 +6,7 @@ import Transcript from "../components/session/Transcript";
 import { Button, Card, Modal, Pill, Skeleton, UsageBadges } from "../components/ui";
 import { api, workspaceQuery, ws } from "../lib/api/client";
 import type {
+  AgentConfig,
   CatalogSyncResult,
   CredentialSource,
   ProviderCatalog,
@@ -41,17 +42,80 @@ function fmtObservedAt(timestamp: number): string {
   });
 }
 
-/** A live model test: a scratch session (via the `default` agent) pinned to the
- * chosen model, so a real reply proves the connection — the same transcript
- * engine as the Sandbox. No provider key → the run errors honestly, not a stub. */
+function dialectLabel(dialect: string, zh: boolean): string {
+  const labels: Record<string, [string, string]> = {
+    anthropic_messages: ["Anthropic Messages", "Anthropic Messages 格式"],
+    open_ai_responses: ["OpenAI Responses", "OpenAI Responses 格式"],
+    open_ai_chat: ["OpenAI Chat Completions", "OpenAI Chat Completions 格式"],
+    gemini: ["Gemini API", "Gemini API 格式"],
+    vertex_gemini: ["Vertex AI Gemini", "Vertex AI Gemini 格式"],
+  };
+  return labels[dialect]?.[zh ? 1 : 0] ?? dialect;
+}
+
+function fnv1a64(value: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(value)) {
+    hash ^= BigInt(byte);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, "0");
+}
+
+export function modelTestAgentId(model: string): string {
+  return `awaken-model-test-${fnv1a64(model)}`;
+}
+
+export function modelTestAgentConfig(model: string): AgentConfig {
+  return {
+    id: modelTestAgentId(model),
+    name: `Model test · ${model}`,
+    description: "Internal Agent used to verify a published model connection.",
+    model: { id: model },
+    system: "Reply briefly to verify this model connection.",
+    metadata: { "awaken.internal": "model-test" },
+    tools: [],
+    mcp_servers: [],
+    skills: [],
+    max_steps: 2,
+    plugins: [],
+    plugin_config: {},
+    context_policy: { kind: "keep_all" },
+  };
+}
+
+/** A live model test. Runtime refuses to stitch an arbitrary model id onto a
+ * different Agent's published backend/credential pins, so each model gets one
+ * deterministic internal publication and then uses the real durable Session. */
 function TestChat({ model }: { model: string }) {
   const app = useApp();
   const [sid, setSid] = useState<string | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | undefined>();
   const started = useRef(false);
   const start = useMutation({
-    mutationFn: () =>
-      api.post<Session>(ws("/v1/sessions"), { agent: "default", title: `test · ${model}` }),
+    mutationFn: async () => {
+      const config = modelTestAgentConfig(model);
+      const saved = await api.put<{ id: string; generation: number }>(
+        ws(`/v1/config/agents/${config.id}`),
+        config,
+      );
+      const validation = await api.post<{
+        valid: boolean;
+        issues?: Array<{ path: string; message: string }>;
+      }>(ws(`/v1/config/agents/${config.id}/validate`), config);
+      if (!validation.valid) {
+        throw new Error(validation.issues?.[0]?.message ?? "Model test Agent is not valid.");
+      }
+      await api.post(
+        ws(`/v1/config/agents/${config.id}/publish`),
+        { source_revision: saved.generation, resource_revision: 0 },
+      );
+      return api.post<Session>(ws("/v1/sessions"), {
+        agent: config.id,
+        title: `test · ${model}`,
+        metadata: { "awaken.session.origin": "model-test" },
+      });
+    },
     onSuccess: (s) => setSid(s.id),
   });
   useEffect(() => {
@@ -95,7 +159,7 @@ function TestChat({ model }: { model: string }) {
     );
   }
   return (
-    <>
+    <div className="model-test-chat">
       <div className="row" style={{ margin: "4px 0 8px" }}>
         <Pill tone="agent">{model}</Pill>
         <UsageBadges usage={session.data?.usage} latencyMs={latencyMs} />
@@ -111,7 +175,7 @@ function TestChat({ model }: { model: string }) {
         placeholder={app.t("Say hello…", "打个招呼…")}
         onLatency={setLatencyMs}
       />
-    </>
+    </div>
   );
 }
 
@@ -166,6 +230,33 @@ export default function ModelsSurface() {
   }
   return (
     <>
+      {byokEnabled && (descriptors.isPending || credentials.isPending || connections.isPending || catalog.isPending ? (
+        <Card>
+          <h2>{app.t("Provider connections", "供应商连接")}</h2>
+          <Skeleton height={84} />
+        </Card>
+      ) : descriptors.isError || credentials.isError || connections.isError || catalog.isError ? (
+        <Card>
+          <h2>{app.t("Provider connections", "供应商连接")}</h2>
+          <div className="empty-state error-text" role="alert">
+            {app.t(
+              "Provider setup could not load. Your existing configuration is unchanged.",
+              "无法加载供应商配置。已有配置未发生变化。",
+            )}
+          </div>
+          <Button onClick={() => void descriptors.refetch()}>
+            {app.t("Try again", "重试")}
+          </Button>
+        </Card>
+      ) : (
+        <ProviderConnectionPanel
+          catalog={c}
+          credentials={credentials.data ?? []}
+          descriptors={descriptors.data}
+          connections={connections.data ?? []}
+        />
+      ))}
+
       <Card style={{ padding: 0 }}>
         <div className="row" style={{ padding: "13px 16px", justifyContent: "space-between" }}>
           <div className="row">
@@ -174,8 +265,14 @@ export default function ModelsSurface() {
           <span className="mut">
             {c
               ? managedSupply
-                ? `${Object.keys(c.providers).length} providers · ${c.offerings.length} models`
-                : `${Object.keys(c.providers).length} providers · ${Object.keys(c.endpoints).length} endpoints · ${c.offerings.length} offerings`
+                ? app.t(
+                    `${Object.keys(c.providers).length} providers · ${c.offerings.length} models`,
+                    `${Object.keys(c.providers).length} 个供应商 · ${c.offerings.length} 个模型`,
+                  )
+                : app.t(
+                    `${Object.keys(c.providers).length} providers · ${Object.keys(c.endpoints).length} endpoints · ${c.offerings.length} models`,
+                    `${Object.keys(c.providers).length} 个供应商 · ${Object.keys(c.endpoints).length} 个端点 · ${c.offerings.length} 个模型`,
+                  )
               : "…"}
           </span>
           </div>
@@ -194,11 +291,11 @@ export default function ModelsSurface() {
         <table className="table">
           <thead>
             <tr>
-              <th>Model</th>
-              {presentation.showSupplyInfrastructure && <th>Provider</th>}
-              {presentation.showSupplyInfrastructure && <th>Endpoint</th>}
-              {presentation.showSupplyInfrastructure && <th>Dialect</th>}
-              <th>Status</th>
+              <th>{app.t("Model", "模型")}</th>
+              {presentation.showSupplyInfrastructure && <th>{app.t("Provider", "供应商")}</th>}
+              {presentation.showSupplyInfrastructure && <th>{app.t("Endpoint", "端点")}</th>}
+              {presentation.showSupplyInfrastructure && <th>{app.t("API format", "API 格式")}</th>}
+              <th>{app.t("Status", "状态")}</th>
               <th>{app.t("Context", "上下文")}</th>
               <th>{app.t("Max output", "最大输出")}</th>
               {presentation.allowSessionTest && <th style={{ textAlign: "right" }}></th>}
@@ -221,11 +318,14 @@ export default function ModelsSurface() {
                 {presentation.showSupplyInfrastructure && <td>{o.provider_id}</td>}
                 {presentation.showSupplyInfrastructure && <td className="mono mut">{o.protocol_endpoint_id}</td>}
                 {presentation.showSupplyInfrastructure && <td>
-                  <Pill tone="neutral">{o.dialect}</Pill>
+                  <Pill tone="neutral">{dialectLabel(o.dialect, app.locale === "zh")}</Pill>
                 </td>}
                 <td>
                   <Pill tone={(o.status ?? "active") === "active" ? "agent" : "neutral"}>
-                    {o.status ?? "active"}{managedSupply ? "" : ` · ${o.source ?? "manual"}`}
+                    {(o.status ?? "active") === "active" ? app.t("Available", "可用") : app.t("Unavailable", "不可用")}
+                    {!managedSupply && (
+                      <> · {(o.source ?? "manual") === "provider_api" ? app.t("Provider sync", "供应商同步") : app.t("Added manually", "手动添加")}</>
+                    )}
                   </Pill>
                   {!managedSupply && (o.source ?? "manual") === "provider_api" && (
                     <div
@@ -281,10 +381,10 @@ export default function ModelsSurface() {
                 <td colSpan={managedSupply ? 4 : 8} className="mut">
                   {app.t(
                     byokEnabled
-                      ? "No models yet — connect a provider below."
+                      ? "No models yet. Complete the provider connection above, then verify and import its models."
                       : "No managed models are currently available. Contact your workspace administrator.",
                     byokEnabled
-                      ? "暂无模型——请在下方连接供应商。"
+                      ? "还没有模型。请先完成上方供应商连接，再验证并导入模型。"
                       : "当前没有可用的托管模型，请联系 Workspace 管理员。",
                   )}
                 </td>
@@ -294,19 +394,12 @@ export default function ModelsSurface() {
         </table>
       </Card>
 
-      {byokEnabled && (
-        <ProviderConnectionPanel
-          credentials={credentials.data ?? []}
-          descriptors={descriptors.data ?? []}
-          connections={connections.data ?? []}
-        />
-      )}
-
       {presentation.allowSessionTest && testModel && (
         <Modal
           title={app.t(`Test model · ${testModel}`, `测试模型 · ${testModel}`)}
           onClose={() => setTestModel(null)}
           width="min(680px, 94vw)"
+          className="model-test-modal"
         >
           <p className="hint">
             {app.t(

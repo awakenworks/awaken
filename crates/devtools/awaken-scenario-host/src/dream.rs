@@ -5,7 +5,9 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::Router;
+use axum::routing::get;
 
 use crate::{SharedHost, build_router_and_host};
 
@@ -16,7 +18,26 @@ pub fn build_dream_router() -> Router {
 
 /// Return the same router plus its Host for focused cross-module assertions.
 pub fn build_dream_router_and_host() -> (Router, Arc<SharedHost>) {
-    build_router_and_host(Arc::new(DreamScenarioModel), "claude-sonnet-5")
+    let (router, host) = build_router_and_host(Arc::new(DreamScenarioModel), "claude-sonnet-5");
+    let capabilities = awaken_config_service::capabilities_router(
+        awaken_runtime_host::authorable_tools(),
+        awaken_runtime_host::platform_plugin_capabilities(),
+        vec![awaken_config_service::RuntimeCapability::native()],
+    );
+    let console_context = Router::new()
+        .route(
+            "/.well-known/awaken-suite-navigation",
+            get(|| async { Json(serde_json::json!({ "hub_url": null })) }),
+        )
+        .route(
+            "/v1/session",
+            get(|| async { Json(serde_json::json!({ "authenticated": true })) }),
+        )
+        .route(
+            "/v1/config/workspace-context",
+            get(|| async { Json(serde_json::json!({ "workspace_id": "default" })) }),
+        );
+    (router.merge(capabilities).merge(console_context), host)
 }
 
 struct DreamScenarioModel;

@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ws, type MultipartFile } from "../lib/api/client";
 import type { Page, Skill, SkillVersion } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, EmptyState, Modal, SkeletonRows, TextAreaField, TextField, useConfirm, useToast } from "../components/ui";
+import { Button, Card, EmptyState, Modal, Pill, Segmented, SkeletonRows, TextAreaField, TextField, useConfirm, useToast } from "../components/ui";
 
 interface DraftFile {
   path: string;
@@ -44,6 +44,103 @@ function textFile(file: DraftFile): boolean {
 
 function multipart(files: readonly DraftFile[]): MultipartFile[] {
   return files.map((file) => ({ path: file.path, blob: new Blob([file.bytes as BlobPart]) }));
+}
+
+export function skillNeedsSandbox(paths: readonly string[], skillMd: string): boolean {
+  const supportFiles = paths.filter((path) => !path.endsWith("SKILL.md"));
+  if (supportFiles.length > 0) return true;
+  const frontmatter = skillMd.match(/^---\s*\n([\s\S]*?)\n---(?:\s*\n|$)/)?.[1] ?? "";
+  return /^environment\s*:\s*(filesystem|hand)\s*$/im.test(frontmatter);
+}
+
+function CreateSkillModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const app = useApp();
+  const [id, setId] = useState("");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [environment, setEnvironment] = useState<"instruction-only" | "filesystem">("instruction-only");
+  const [instructions, setInstructions] = useState("");
+  const [error, setError] = useState("");
+  const create = useMutation({
+    mutationFn: () => {
+      const skillId = id.trim();
+      if (!skillId) throw new Error(app.t("Skill id is required.", "必须填写 Skill id。"));
+      if (!instructions.trim()) throw new Error(app.t("Instructions are required.", "必须填写指令。"));
+      const document = [
+        "---",
+        `name: ${skillId}`,
+        `description: ${description.trim() || title.trim() || skillId}`,
+        `environment: ${environment}`,
+        "---",
+        "",
+        instructions.trim(),
+        "",
+      ].join("\n");
+      return api.uploadMany<Skill>(
+        ws("/v1/skills"),
+        [{ path: "SKILL.md", blob: new Blob([document], { type: "text/markdown" }) }],
+        title.trim() ? { display_title: title.trim() } : undefined,
+      );
+    },
+    onSuccess: () => {
+      onCreated();
+      onClose();
+    },
+    onError: (cause) => setError(cause instanceof Error ? cause.message : String(cause)),
+  });
+  return (
+    <Modal
+      title={app.t("Create Skill", "在线新建 Skill")}
+      onClose={onClose}
+      width="min(760px, 94vw)"
+      footer={<><Button onClick={onClose}>{app.t("Cancel", "取消")}</Button><Button variant="primary" disabled={create.isPending} onClick={() => create.mutate()}>{app.t("Create & publish", "创建并发布")}</Button></>}
+    >
+      <div className="stack">
+        <div className="grid-2">
+          <TextField label="Skill id" mono placeholder="release-check" value={id} onChange={(event) => setId(event.target.value)} />
+          <TextField label={app.t("Display title", "显示名称")} value={title} onChange={(event) => setTitle(event.target.value)} />
+        </div>
+        <TextField label={app.t("Description", "描述")} value={description} onChange={(event) => setDescription(event.target.value)} />
+        <div className="field">
+          <label>{app.t("Execution substrate", "运行载体")}</label>
+          <Segmented
+            value={environment}
+            onChange={setEnvironment}
+            options={[
+              { value: "instruction-only", label: app.t("Instruction only · no Sandbox", "纯指令 · 无需 Sandbox") },
+              { value: "filesystem", label: app.t("Filesystem/scripts · Sandbox required", "文件/脚本 · 需要 Sandbox") },
+            ]}
+          />
+          <span className="mut">{environment === "instruction-only"
+            ? app.t("Runs in the Agent brain. Add supporting files later and the runtime will require a Sandbox automatically.", "在 Agent Brain 中运行；若后续添加支持文件，运行时会自动要求 Sandbox。")
+            : app.t("Use when the Skill reads files, runs scripts, or needs a forked workspace.", "适用于读取文件、运行脚本或需要独立工作区的 Skill。")}</span>
+        </div>
+        <TextAreaField label={app.t("Instructions", "指令")} rows={12} value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder={app.t("Explain when and how the Agent should use this Skill…", "说明 Agent 应在何时、如何使用这个 Skill…")} />
+        {error && <div className="err">{error}</div>}
+      </div>
+    </Modal>
+  );
+}
+
+function SkillRuntimeCell({ skill }: { skill: Skill }) {
+  const app = useApp();
+  const runtime = useQuery({
+    queryKey: ["skill-runtime", skill.id, skill.latest_version],
+    queryFn: async () => {
+      const version = await api.get<SkillVersion>(ws(`/v1/skills/${encodeURIComponent(skill.id)}/versions/latest`));
+      const path = version.files.find((candidate) => candidate.endsWith("SKILL.md"));
+      const markdown = path
+        ? decoder.decode(await api.bytes(ws(`/v1/skills/${encodeURIComponent(skill.id)}/versions/${encodeURIComponent(version.version)}/files/${filePathUrl(path)}`)))
+        : "";
+      return skillNeedsSandbox(version.files, markdown);
+    },
+    staleTime: 60_000,
+  });
+  if (runtime.isLoading) return <span className="mut">…</span>;
+  if (runtime.isError) return <Pill tone="warn">{app.t("Unknown", "未知")}</Pill>;
+  return runtime.data
+    ? <Pill tone="warn">{app.t("Sandbox required", "需要 Sandbox")}</Pill>
+    : <Pill tone="ok">{app.t("No Sandbox", "无需 Sandbox")}</Pill>;
 }
 
 function ImportSkillModal({ onClose, onImported }: { onClose: () => void; onImported: () => void }) {
@@ -136,6 +233,8 @@ function SkillEditorModal({ skill, onClose, onPublished }: { skill: Skill; onClo
   }, [skill.id]);
 
   const selectedFile = files.find((file) => file.path === selected);
+  const skillMd = files.find((file) => file.path.endsWith("SKILL.md"));
+  const needsSandbox = skillNeedsSandbox(files.map((file) => file.path), skillMd && textFile(skillMd) ? decoder.decode(skillMd.bytes) : "");
   const diff = useMemo(() => {
     const before = new Map(original.map((file) => [file.path, file]));
     const after = new Map(files.map((file) => [file.path, file]));
@@ -196,6 +295,12 @@ function SkillEditorModal({ skill, onClose, onPublished }: { skill: Skill; onClo
       footer={<><span className="mut" style={{ marginRight: "auto" }}>{base ? `v${base.version} · ${diff.count} ${app.t("changes", "项变更")}` : app.t("Loading…", "加载中…")}</span><Button onClick={onClose}>{app.t("Cancel", "取消")}</Button><Button variant="primary" disabled={!base || diff.count === 0 || publish.isPending} onClick={() => publish.mutate()}>{app.t("Publish new version", "发布新版本")}</Button></>}
     >
       {loadingError && <div className="err">{loadingError}</div>}
+      {base && <div className={needsSandbox ? "banner warn" : "banner info"}>
+        <span>{needsSandbox ? "▣" : "◇"}</span>
+        <span>{needsSandbox
+          ? app.t("Sandbox required: this version declares filesystem access or includes supporting files.", "需要 Sandbox：当前版本声明了文件系统访问，或包含支持文件。")
+          : app.t("Instruction-only: this version runs without creating a Sandbox.", "纯指令：当前版本无需创建 Sandbox 即可运行。")}</span>
+      </div>}
       <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 30%) 1fr", gap: 12, minHeight: 460 }}>
         <Card style={{ padding: 8, overflow: "auto" }}>
           <div className="row" style={{ gap: 6, marginBottom: 8 }}>
@@ -257,6 +362,7 @@ export default function SkillsSurface() {
   const confirm = useConfirm();
   const toast = useToast();
   const [importing, setImporting] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Skill | null>(null);
   const skills = useQuery({
     queryKey: ["skills"],
@@ -277,8 +383,11 @@ export default function SkillsSurface() {
   return (
     <>
       <div className="row" style={{ justifyContent: "space-between" }}>
-        <span className="mut">{app.t("Import a complete Skill bundle or publish browser edits as a new immutable version.", "导入完整技能 Bundle，或将浏览器编辑发布为新的不可变版本。")}</span>
-        <Button variant="primary" onClick={() => setImporting(true)}>{app.t("Import Skill", "导入技能")}</Button>
+        <span />
+        <span className="row">
+          <Button onClick={() => setImporting(true)}>{app.t("Import Skill", "导入技能")}</Button>
+          <Button variant="primary" onClick={() => setCreating(true)}>+ {app.t("Create Skill", "在线新建")}</Button>
+        </span>
       </div>
       {skills.error instanceof Error ? <Card><EmptyState
         title={app.t("Skills could not be loaded", "技能加载失败")}
@@ -286,13 +395,14 @@ export default function SkillsSurface() {
         action={<Button onClick={() => void skills.refetch()}>{app.t("Try again", "重试")}</Button>}
       /></Card> : <Card style={{ padding: 0 }}>
         <table className="table">
-          <thead><tr><th>{app.t("Skill", "技能")}</th><th>{app.t("Title", "名称")}</th><th>{app.t("Version", "版本")}</th><th /></tr></thead>
-          {skills.isLoading ? <SkeletonRows rows={4} cols={4} /> : <tbody>
+          <thead><tr><th>{app.t("Skill", "技能")}</th><th>{app.t("Title", "名称")}</th><th>{app.t("Version", "版本")}</th><th>{app.t("Sandbox", "Sandbox")}</th><th /></tr></thead>
+          {skills.isLoading ? <SkeletonRows rows={4} cols={5} /> : <tbody>
             {rows.map((skill) => (
               <tr key={skill.id}>
                 <td className="mono">{skill.id}</td>
                 <td>{skill.display_title ?? skill.name ?? skill.display_name ?? skill.id}</td>
                 <td className="mut">{skill.latest_version ?? "—"}</td>
+                <td><SkillRuntimeCell skill={skill} /></td>
                 <td style={{ textAlign: "right" }}><div className="row" style={{ justifyContent: "flex-end", gap: 6 }}><Button onClick={() => setEditing(skill)}>{app.t("Edit", "编辑")}</Button><Button variant="danger" disabled={remove.isPending} onClick={async () => {
                   const approved = await confirm({
                     title: app.t("Delete this Skill?", "删除该技能？"),
@@ -304,11 +414,12 @@ export default function SkillsSurface() {
                 }}>{app.t("Delete", "删除")}</Button></div></td>
               </tr>
             ))}
-            {!skills.isLoading && rows.length === 0 && <tr><td colSpan={4} className="mut">{app.t("No skills delivered yet.", "尚无已交付技能。")}</td></tr>}
+            {!skills.isLoading && rows.length === 0 && <tr><td colSpan={5} className="mut">{app.t("No Skills yet. Create one online or import a Skill folder.", "还没有技能。可在线创建，或导入技能目录。")}</td></tr>}
           </tbody>}
         </table>
       </Card>}
       {importing && <ImportSkillModal onClose={() => setImporting(false)} onImported={refresh} />}
+      {creating && <CreateSkillModal onClose={() => setCreating(false)} onCreated={refresh} />}
       {editing && <SkillEditorModal skill={editing} onClose={() => setEditing(null)} onPublished={refresh} />}
     </>
   );

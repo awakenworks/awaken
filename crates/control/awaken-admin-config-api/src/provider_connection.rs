@@ -57,6 +57,10 @@ pub struct ConnectProviderCommand {
     pub workspace_id: String,
     pub provider_id: String,
     pub display_name: String,
+    /// Optional operator-authored label used only to make the otherwise opaque
+    /// credential source id recognizable in management surfaces. The stable
+    /// fingerprint remains the uniqueness/idempotency authority.
+    pub credential_name: Option<String>,
     pub dialect: ApiDialect,
     /// Optional qualifier only when this Provider exposes more than one
     /// endpoint speaking the same dialect.
@@ -380,7 +384,42 @@ fn provider_credential_id(
         endpoint_id,
         &command.idempotency_key,
     ));
-    CredentialSourceId(format!("cred:{}:{fingerprint}", command.workspace_id))
+    let requested = command
+        .credential_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(&command.provider_id);
+    let label = credential_label(requested);
+    CredentialSourceId(format!(
+        "cred:{}:model:{}:{label}:{fingerprint}",
+        command.workspace_id, command.provider_id
+    ))
+}
+
+fn credential_label(value: &str) -> String {
+    let mut label = String::with_capacity(value.len().min(48));
+    let mut separator = false;
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            label.push(character.to_ascii_lowercase());
+            separator = false;
+        } else if !separator && !label.is_empty() {
+            label.push('-');
+            separator = true;
+        }
+        if label.len() >= 48 {
+            break;
+        }
+    }
+    while label.ends_with('-') {
+        label.pop();
+    }
+    if label.is_empty() {
+        "credential".into()
+    } else {
+        label
+    }
 }
 
 fn provider_base_url(
@@ -517,6 +556,7 @@ mod tests {
             workspace_id: "workspace".into(),
             provider_id: provider_id.into(),
             display_name: provider_id.into(),
+            credential_name: None,
             dialect,
             endpoint_name: None,
             base_url: base_url.map(str::to_string),
@@ -524,6 +564,26 @@ mod tests {
             timeout_secs: 30,
             authentication: ProviderConnectionAuthentication::ApiKey(RedactedString::new("key")),
         }
+    }
+
+    #[test]
+    fn provider_credential_ids_are_classified_and_human_readable() {
+        let command = ConnectProviderCommand {
+            credential_name: Some("Production Team / Primary".into()),
+            ..command("deepseek", ApiDialect::AnthropicMessages, None)
+        };
+        let id = provider_credential_id(
+            &command,
+            &ProtocolEndpointId::for_surface(
+                &ProviderId::new("deepseek"),
+                ApiDialect::AnthropicMessages,
+                None,
+            ),
+        );
+        assert!(
+            id.0.starts_with("cred:workspace:model:deepseek:production-team-primary:"),
+            "the stable source id carries its model/provider classification and operator label"
+        );
     }
 
     #[test]

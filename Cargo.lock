@@ -1363,6 +1363,7 @@ dependencies = [
  "awaken-environment-application",
  "awaken-provisioning-contract",
  "awaken-session-contract",
+ "awaken-tenancy",
  "axum",
  "serde",
 ]
