@@ -17,25 +17,6 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
 /// Namespaced bundle id — the split/merge unit for the admin-config domain.
 pub const BUNDLE_ID: &str = "awaken.admin";
-pub(crate) const LEGACY_V9_CHECKSUM: &str =
-    "43acd8cf624d2d939bff17aadb9c34061bc8f65207007b1c8dd68196a86763c4";
-pub(crate) const CURRENT_V9_CHECKSUM: &str =
-    "987ffe8ea131956d8b11c59ec8283d880ed97ce89cf02e9e652f61fbc4478131";
-
-pub(crate) fn reconcile_published_v9_receipt(
-    checksum: Option<&str>,
-    remaining_legacy_table: Option<&str>,
-) -> Result<bool, String> {
-    if checksum != Some(LEGACY_V9_CHECKSUM) {
-        return Ok(false);
-    }
-    if let Some(table) = remaining_legacy_table {
-        return Err(format!(
-            "legacy V0009 receipt cannot be reconciled while {table} still exists"
-        ));
-    }
-    Ok(true)
-}
 
 /// The embedded migration files, in apply order. Each entry is
 /// `(file_name, file_contents)`: the name yields the version, the contents yield
@@ -116,11 +97,19 @@ pub fn admin_bundle() -> Result<MigrationBundle, MigrationError> {
     let migrations = FILES
         .iter()
         .map(|(name, contents)| {
-            Migration::new(
-                version_of(name),
-                description_of(name, contents),
-                contents.trim(),
-            )
+            let version = version_of(name);
+            let description = description_of(name, contents);
+            let sql = contents.trim();
+            if version == 9 {
+                Migration::published_legacy(
+                    version,
+                    description,
+                    sql,
+                    "43acd8cf624d2d939bff17aadb9c34061bc8f65207007b1c8dd68196a86763c4",
+                )
+            } else {
+                Migration::new(version, description, sql)
+            }
         })
         .collect::<Result<Vec<_>, _>>()?;
     MigrationBundle::new(BUNDLE_ID, migrations)
@@ -133,51 +122,15 @@ mod tests {
     #[test]
     fn admin_bundle_lints() {
         // Cause/effect decision table: every predecessor migration is applied in
-        // order (C1) and the scoped receipt is absent (C2) => V0009..V0011 execute
-        // their deterministic DROP statements (E1); receipts present => they are
-        // skipped (E2); schema drift/missing predecessors => a bare DROP fails
-        // closed (E3), rather than recording a conditional no-op as success.
+        // order (C1), the published V0009 checksum is exact (C2), and the V0010
+        // and V0011 receipts are absent/present (C3). The one canonical bundle
+        // accepts the exact old V0009 receipt, while fresh installs execute its
+        // pinned body (E1); V0010/V0011 execute once and then skip their recorded
+        // receipts (E2); edited bytes, checksum drift, or missing predecessors
+        // fail closed (E3). R1=C1+C2=>E1; R2=R1+C3=>E2;
+        // R3=!C1|!C2=>E3.
         let bundle = admin_bundle().expect("bundle builds");
         awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
-    }
-
-    #[test]
-    fn current_v9_checksum_is_a_fixed_compatibility_target() {
-        // Cause/effect decision table: the retired V0009 body was republished
-        // under the stricter migration policy (C1) and adapters may encounter
-        // the exact earlier receipt (C2). Effects: E1 keep the current checksum
-        // fixed so the one compatibility translation has a stable target; E2
-        // fail before deployment if V0009 is edited again. R1=C1+C2=>E1;
-        // R2=edited current body=>E2.
-        let bundle = admin_bundle().expect("bundle builds");
-        let migration = bundle
-            .migrations()
-            .iter()
-            .find(|migration| migration.version() == 9)
-            .expect("V0009 exists");
-        assert_eq!(
-            migration.checksum_for(awaken_scoped_migration::Dialect::Sqlite),
-            CURRENT_V9_CHECKSUM
-        );
-    }
-
-    #[test]
-    fn exact_legacy_v9_receipt_requires_the_retirement_effect() {
-        // Cause/effect decision table: C1 receipt equals the one published
-        // legacy checksum; C2 no retired table remains; C3 a retired table
-        // remains; C4 receipt is absent/current/unknown. Effects: E1 authorize
-        // one checksum translation for C1+C2; E2 reject C1+C3; E3 leave C4 to
-        // the canonical migration runner. R1=C1+C2=>E1; R2=C1+C3=>E2;
-        // R3=C4=>E3. This function is the sole backend-neutral policy owner.
-        assert!(reconcile_published_v9_receipt(Some(LEGACY_V9_CHECKSUM), None).unwrap());
-        assert!(
-            reconcile_published_v9_receipt(Some(LEGACY_V9_CHECKSUM), Some("admin_agent_mcp"))
-                .unwrap_err()
-                .contains("still exists")
-        );
-        assert!(!reconcile_published_v9_receipt(Some(CURRENT_V9_CHECKSUM), None).unwrap());
-        assert!(!reconcile_published_v9_receipt(Some("unknown"), None).unwrap());
-        assert!(!reconcile_published_v9_receipt(None, None).unwrap());
     }
 
     #[test]
