@@ -32,6 +32,10 @@ pub struct AiSdkEncoder {
     /// The id of the open live text block, if a text run is currently streaming.
     open_text: Option<String>,
     text_seq: usize,
+    /// The private reasoning phase currently announced to the UI. Reasoning
+    /// bytes are never projected; only its start/end lifecycle is visible.
+    open_reasoning: Option<String>,
+    reasoning_seq: usize,
     /// Call ids that already emitted `tool-input-start` live.
     tools: BTreeSet<String>,
 }
@@ -44,6 +48,13 @@ impl AiSdkEncoder {
     fn close_text(&mut self) -> Vec<UIStreamEvent> {
         match self.open_text.take() {
             Some(id) => vec![UIStreamEvent::TextEnd { id }],
+            None => Vec::new(),
+        }
+    }
+
+    fn close_reasoning(&mut self) -> Vec<UIStreamEvent> {
+        match self.open_reasoning.take() {
+            Some(id) => vec![UIStreamEvent::ReasoningEnd { id }],
             None => Vec::new(),
         }
     }
@@ -70,6 +81,7 @@ impl AiSdkEncoder {
             .collect::<Vec<_>>();
 
         let mut output = self.fact(&Fact::RunStarted);
+        output.extend(self.close_reasoning());
         output.extend(self.close_text());
         for event in &events {
             if self.streamed_text && matches!(event, Fact::AssistantMessage { .. }) {
@@ -94,6 +106,7 @@ impl AiSdkEncoder {
 
     pub fn fail(&mut self, message: impl Into<String>) -> Vec<UIStreamEvent> {
         let mut output = self.fact(&Fact::RunStarted);
+        output.extend(self.close_reasoning());
         output.extend(self.close_text());
         self.tools.clear();
         output.extend(self.fact(&Fact::RunFailed {
@@ -187,7 +200,8 @@ impl Transcoder for AiSdkEncoder {
             ],
             // An internal continuation-guard round is not an AI-SDK wire part; the
             // committed fold never emits it into this stream.
-            // Reasoning is not in the AI-SDK data-stream vocabulary; drop the marker.
+            // The committed thinking fact has no content and the live delta path
+            // already owns the standard start/end lifecycle, so do not duplicate it.
             Fact::Continuation { .. } | Fact::AssistantThinking => Vec::new(),
         }
     }
@@ -196,7 +210,7 @@ impl Transcoder for AiSdkEncoder {
         match delta {
             Delta::TextDelta { delta } => {
                 self.streamed_text = true;
-                let mut out = Vec::new();
+                let mut out = self.close_reasoning();
                 let id = match &self.open_text {
                     Some(id) => id.clone(),
                     None => {
@@ -218,7 +232,8 @@ impl Transcoder for AiSdkEncoder {
                 name,
                 args_delta,
             } => {
-                let mut out = self.close_text();
+                let mut out = self.close_reasoning();
+                out.extend(self.close_text());
                 if self.tools.insert(id.clone()) {
                     out.push(UIStreamEvent::ToolInputStart {
                         tool_call_id: id.clone(),
@@ -235,8 +250,18 @@ impl Transcoder for AiSdkEncoder {
                 }
                 out
             }
-            // Reasoning is not projected to the AI SDK live prefix (opt-in tier).
-            Delta::ReasoningDelta { .. } => Vec::new(),
+            // Keep private reasoning private while still making its lifecycle
+            // visible through AI SDK's standard reasoning part.
+            Delta::ReasoningDelta { .. } => {
+                let mut out = self.close_text();
+                if self.open_reasoning.is_none() {
+                    let id = format!("reasoning-{}", self.reasoning_seq);
+                    self.reasoning_seq += 1;
+                    self.open_reasoning = Some(id.clone());
+                    out.push(UIStreamEvent::ReasoningStart { id });
+                }
+                out
+            }
         }
     }
 }
@@ -463,12 +488,37 @@ mod tests {
     }
 
     #[test]
-    fn delta_reasoning_is_not_projected() {
+    fn delta_reasoning_projects_only_a_bounded_private_lifecycle() {
+        /* Reasoning visibility decision table. Causes: C1 one or more private
+         * reasoning deltas arrive; C2 public text or a tool delta follows; C3
+         * the run terminates while reasoning is open. Effects: E1 emit one
+         * standard reasoning-start without content; E2 emit one reasoning-end
+         * before the next public part; E3 never emit reasoning-delta bytes.
+         * Rules: R1 C1=>E1+E3; R2 C1+C2=>E2; R3 C1+C3=>E2. */
         let mut enc = AiSdkEncoder::new();
-        let out = enc.delta(&Delta::ReasoningDelta {
+        let mut out = enc.delta(&Delta::ReasoningDelta {
             delta: "hmm".into(),
         });
-        assert!(out.is_empty());
+        out.extend(enc.delta(&Delta::ReasoningDelta {
+            delta: " still private".into(),
+        }));
+        out.extend(enc.delta(&td("answer")));
+        assert_eq!(
+            out,
+            vec![
+                UIStreamEvent::ReasoningStart {
+                    id: "reasoning-0".into()
+                },
+                UIStreamEvent::ReasoningEnd {
+                    id: "reasoning-0".into()
+                },
+                UIStreamEvent::TextStart { id: "txt-0".into() },
+                UIStreamEvent::TextDelta {
+                    id: "txt-0".into(),
+                    delta: "answer".into()
+                },
+            ]
+        );
     }
 
     /// A continuation-guard round (steering) is an audit lifecycle fact
@@ -701,8 +751,9 @@ mod tests {
 
     #[test]
     fn reasoning_only_prefix_keeps_committed_text_without_restarting_stream() {
-        // CE-AI3/AI4: a non-projected reasoning delta is not visible text.
-        // Completion emits the committed answer and does not repeat start frames.
+        // CE-AI3/AI4: private reasoning bytes are not visible text. Completion
+        // closes the activity marker, emits the committed answer, and does not
+        // repeat start frames.
         let outcome = StepOutcome::ended(
             vec![Message::text(Id("a1".into()), Role::Assistant, "answer")],
             EndCause::NaturalEnd,
@@ -711,12 +762,13 @@ mod tests {
         );
         let mut encoder = AiSdkEncoder::new();
         assert_eq!(encoder.fact(&Fact::RunStarted).len(), 2);
-        assert!(
-            encoder
-                .delta(&Delta::ReasoningDelta {
-                    delta: "hmm".into()
-                })
-                .is_empty()
+        assert_eq!(
+            encoder.delta(&Delta::ReasoningDelta {
+                delta: "hmm".into()
+            }),
+            vec![UIStreamEvent::ReasoningStart {
+                id: "reasoning-0".into()
+            }],
         );
         let events = encoder.complete(&outcome);
         assert!(
@@ -727,6 +779,9 @@ mod tests {
         assert!(events.iter().any(
             |event| matches!(event, UIStreamEvent::TextDelta { delta, .. } if delta == "answer")
         ));
+        assert!(events.contains(&UIStreamEvent::ReasoningEnd {
+            id: "reasoning-0".into()
+        }));
     }
 
     #[test]

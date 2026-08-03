@@ -26,6 +26,12 @@ pub enum UIStreamEvent {
     TextEnd {
         id: String,
     },
+    ReasoningStart {
+        id: String,
+    },
+    ReasoningEnd {
+        id: String,
+    },
     /// A tool call has begun streaming its input, before any argument bytes.
     /// `useChat` opens an `input-streaming` tool part on this frame.
     ToolInputStart {

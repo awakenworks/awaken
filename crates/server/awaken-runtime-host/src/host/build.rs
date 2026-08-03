@@ -339,6 +339,7 @@ impl SharedHost {
             terminal_reconciliation_started: std::sync::OnceLock::new(),
             dispatch_store_override: None,
             completion: Arc::new(CompletionRegistry::default()),
+            worker_stream_publisher: None,
             environment_binding_sink: std::sync::RwLock::new(None),
             capture_sink: std::sync::RwLock::new(None),
             capture_decision,
@@ -678,6 +679,16 @@ impl SharedHost {
         upstream: awaken_worker_transport_security::WorkerUpstream,
     ) -> Self {
         self.upstream = Some(upstream);
+        self
+    }
+
+    /// Install the registered Worker's claim-fenced live-progress publisher.
+    #[must_use]
+    pub fn with_worker_stream_publisher(
+        mut self,
+        publisher: Arc<dyn awaken_run_ingress::ClaimedStreamPublisher>,
+    ) -> Self {
+        self.worker_stream_publisher = Some(publisher);
         self
     }
 

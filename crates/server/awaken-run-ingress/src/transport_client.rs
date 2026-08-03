@@ -24,12 +24,14 @@ use crate::{
     CredentialRealizationRequest, DeliverAndClaimRequest, DispatchError, DispatchOutcome,
     DispatchQueue, DispatchSummary, EnqueueRequest, Inbox, Outbox, PendingInput, PendingRecord,
     RecoveryRequest, RenewRequest, RunClaim, RunDispatch, SettleOutcome, SettleRequest,
-    SubmitOptions,
+    StreamEventRequest, SubmitOptions,
 };
-use crate::{WorkerIdentity, WorkerSnapshot};
+use crate::{ClaimedStreamPublisher, WorkerIdentity, WorkerSnapshot};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
+use awaken_agent_contract::stream::event::Event as StreamEvent;
+use awaken_agent_contract::stream::sink::Error as StreamError;
 use awaken_runtime_contract::resume::ResumeResult;
 
 const IDEMPOTENT_TRANSPORT_ATTEMPTS: usize = 3;
@@ -231,6 +233,27 @@ impl HttpDispatchQueue {
 
     fn worker_id(&self) -> &str {
         &self.worker_identity.worker_id
+    }
+}
+
+#[async_trait]
+impl ClaimedStreamPublisher for HttpDispatchQueue {
+    async fn publish(&self, claim: &RunClaim, event: StreamEvent) -> Result<(), StreamError> {
+        let result = self
+            .post(
+                "/v1/worker/dispatch/stream",
+                &StreamEventRequest {
+                    claim: claim.clone(),
+                    identity: self.worker_identity.clone(),
+                    event,
+                },
+                self.worker_id(),
+            )
+            .await;
+        if let Err(error) = result {
+            tracing::warn!(%error, "best-effort live Worker event was not delivered");
+        }
+        Ok(())
     }
 }
 

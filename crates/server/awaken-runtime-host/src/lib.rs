@@ -155,6 +155,7 @@ pub use crate::dispatch_transport::{
     RegisteredWorkerTransportBuildError, WorkerDispatchService,
     dispatch_transport_router_with_service, registered_worker_transport_router,
     registered_worker_transport_router_with_services, worker_dispatch_store_with_upstream,
+    worker_transports_with_upstream,
 };
 pub use crate::durable_ops::durable_ops_router;
 // The model-route seam (R1/R2/R5): a composition root supplies its own

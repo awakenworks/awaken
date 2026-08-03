@@ -1,5 +1,6 @@
-//! Durable-foreground completion: the [`SharedHost`] pool-submit/await methods
-//! and the [`CompletionRegistry`] event-wakeup machinery.
+//! Durable-foreground observation: the [`SharedHost`] pool-submit/await methods
+//! and the [`CompletionRegistry`] that owns one temporary completion waiter plus
+//! best-effort live route for each foreground Run.
 
 use super::*;
 use awaken_run_ingress::{
@@ -362,13 +363,14 @@ impl SharedHost {
         ctx: &Arc<SessionCtx>,
         activation: RunActivation,
         supersede: bool,
+        stream_sink: Option<Arc<dyn StreamSink>>,
     ) -> Result<awaken_agent_contract::agent::run::RunState, HostError> {
         let run_id = activation.run_id.clone();
         // Register for the settle event BEFORE enqueue, so the pool cannot drive and
         // settle the run before this caller is listening (no lost wakeup). The guard
         // removes the waiter if this future is dropped (client disconnect) before it
         // settles — held to the end of this method.
-        let (settled, _waiter_guard) = self.completion.register(&run_id);
+        let (settled, _waiter_guard) = self.completion.register(&run_id, stream_sink);
         let request = self.resolved_dispatch(activation)?;
         // Enqueue only — never drive here; the pool is the sole claimer. The common
         // path goes through `pool.submit` (which stamps the trace); a superseding
@@ -426,7 +428,7 @@ impl SharedHost {
         let correlation_id = command.correlation_id.clone();
         // Register before append so a local pool cannot settle between input
         // publication and waiter installation.
-        let (settled, _waiter_guard) = self.completion.register(&run_id);
+        let (settled, _waiter_guard) = self.completion.register(&run_id, None);
         let input = durable_resume_input(command);
         let ingress = ctx
             .durable_ingress
@@ -592,13 +594,18 @@ where
     }
 }
 
-/// Wakes a foreground durable submitter the instant the pool settles its run, so
-/// the durable foreground path waits by **event** rather than polling committed
-/// truth — removing the poll-interval latency floor. Keyed by run id; a run with no
-/// registered waiter (a fire-and-forget background submit) settles as a no-op.
+/// Wakes a foreground durable submitter when the pool settles its Run and relays
+/// that Run's best-effort live progress while the caller remains connected. Both
+/// registrations share one run-id slot and one drop guard; neither is durable
+/// truth. A fire-and-forget background Run has no slot and observes no side effect.
 #[derive(Default)]
 pub(crate) struct CompletionRegistry {
-    waiters: std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<RunState>>>,
+    waiters: std::sync::Mutex<HashMap<String, ForegroundRegistration>>,
+}
+
+struct ForegroundRegistration {
+    settled: tokio::sync::oneshot::Sender<RunState>,
+    stream_sink: Option<Arc<dyn StreamSink>>,
 }
 
 impl CompletionRegistry {
@@ -610,12 +617,25 @@ impl CompletionRegistry {
     fn register(
         self: &Arc<Self>,
         run_id: &RunId,
+        stream_sink: Option<Arc<dyn StreamSink>>,
     ) -> (tokio::sync::oneshot::Receiver<RunState>, WaiterGuard) {
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let has_stream_sink = stream_sink.is_some();
         self.waiters
             .lock()
             .expect("completion registry poisoned")
-            .insert(run_id.0.clone(), tx);
+            .insert(
+                run_id.0.clone(),
+                ForegroundRegistration {
+                    settled: tx,
+                    stream_sink,
+                },
+            );
+        tracing::trace!(
+            run_id = %run_id.0,
+            has_stream_sink,
+            "registered durable foreground observation"
+        );
         let guard = WaiterGuard {
             registry: Arc::downgrade(self),
             run_id: run_id.0.clone(),
@@ -638,21 +658,51 @@ impl Drop for WaiterGuard {
         if let Some(registry) = self.registry.upgrade()
             && let Ok(mut waiters) = registry.waiters.lock()
         {
-            waiters.remove(&self.run_id);
+            let removed = waiters.remove(&self.run_id).is_some();
+            tracing::trace!(
+                run_id = %self.run_id,
+                removed,
+                "released durable foreground observation"
+            );
         }
     }
 }
 
 impl CompletionSink for CompletionRegistry {
     fn settled(&self, run_id: &RunId, state: &RunState) {
-        if let Some(tx) = self
+        if let Some(registration) = self
             .waiters
             .lock()
             .expect("completion registry poisoned")
             .remove(&run_id.0)
         {
+            tracing::trace!(run_id = %run_id.0, ?state, "settled durable foreground observation");
             // The receiver may have already gone (timed out) — a dropped send is fine.
-            let _ = tx.send(state.clone());
+            let _ = registration.settled.send(state.clone());
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl StreamSink for CompletionRegistry {
+    async fn send(
+        &self,
+        event: awaken_agent_contract::stream::event::Event,
+    ) -> Result<(), awaken_agent_contract::stream::sink::Error> {
+        let sink = self
+            .waiters
+            .lock()
+            .expect("completion registry poisoned")
+            .get(&event.run_id.0)
+            .and_then(|registration| registration.stream_sink.clone());
+        tracing::trace!(
+            run_id = %event.run_id.0,
+            matched = sink.is_some(),
+            "routed durable foreground stream event"
+        );
+        match sink {
+            Some(sink) => sink.send(event).await,
+            None => Ok(()),
         }
     }
 }
@@ -666,12 +716,16 @@ mod completion_tests {
     };
     use awaken_agent_contract::agent::run::RunState;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_agent_contract::event::{AgentEvent, Delta};
+    use awaken_agent_contract::stream::event::Event as StreamEvent;
+    use awaken_agent_contract::stream::sink::Sink as StreamSink;
     use awaken_run_ingress::CompletionSink;
     use awaken_runtime_contract::resolved::{
         CatalogFingerprint, ModelBinding, ResolvedModelCandidate,
     };
     use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
     use awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId;
+    use awaken_store_inmem::MemoryStreamSink;
     use std::sync::Arc;
 
     use crate::{NoModelConfiguredExecutor, SharedHost, UNCONFIGURED_MODEL_REF};
@@ -918,7 +972,7 @@ mod completion_tests {
     #[tokio::test]
     async fn dropping_the_guard_removes_the_registration() {
         let registry = Arc::new(CompletionRegistry::default());
-        let (rx, guard) = registry.register(&RunId("r".into()));
+        let (rx, guard) = registry.register(&RunId("r".into()), None);
         assert_eq!(registry.waiters.lock().unwrap().len(), 1);
         drop(guard);
         drop(rx);
@@ -933,10 +987,56 @@ mod completion_tests {
     #[tokio::test]
     async fn settled_delivers_the_state_and_clears_the_slot() {
         let registry = Arc::new(CompletionRegistry::default());
-        let (rx, _guard) = registry.register(&RunId("r".into()));
+        let (rx, _guard) = registry.register(&RunId("r".into()), None);
         registry.settled(&RunId("r".into()), &RunState::Awaiting);
         assert!(matches!(rx.await, Ok(RunState::Awaiting)));
         assert!(registry.waiters.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn durable_foreground_registry_routes_only_the_current_runs_live_stream() {
+        // Cause/effect graph: C1 a foreground durable Run registers a live sink;
+        // C2 an emitted StreamEvent carries the exact vs another Run id; C3 the
+        // registration remains active vs settles/drops. Effects: E1 exact active
+        // progress reaches that connection; E2 foreign progress is ignored; E3
+        // settlement delivers the authoritative state and removes both waiter and
+        // live route; E4 later progress is ignored. Constraint: StreamEvent remains
+        // best-effort observation and never changes committed RunState.
+        //
+        // | Rule | registered | event id | phase | Effects |
+        // | R1 | yes | exact | active | E1 |
+        // | R2 | yes | foreign | active | E2 |
+        // | R3 | yes | exact | settled | E3+E4 |
+        // | R4 | no/dropped | any | any | E2 |
+        let registry = Arc::new(CompletionRegistry::default());
+        let downstream = Arc::new(MemoryStreamSink::new());
+        let run = RunId("run-live".into());
+        let (settled, _guard) =
+            registry.register(&run, Some(downstream.clone() as Arc<dyn StreamSink>));
+        let event = |run_id: &str, delta: &str| StreamEvent {
+            run_id: RunId(run_id.into()),
+            kind: AgentEvent::Delta(Delta::TextDelta {
+                delta: delta.into(),
+            }),
+        };
+
+        registry
+            .send(event("run-foreign", "ignored"))
+            .await
+            .unwrap();
+        assert!(downstream.events().is_empty(), "R2");
+
+        registry.send(event("run-live", "forwarded")).await.unwrap();
+        assert_eq!(
+            downstream.events(),
+            vec![event("run-live", "forwarded")],
+            "R1"
+        );
+
+        registry.settled(&run, &RunState::Awaiting);
+        assert!(matches!(settled.await, Ok(RunState::Awaiting)), "R3 state");
+        registry.send(event("run-live", "too-late")).await.unwrap();
+        assert_eq!(downstream.events().len(), 1, "R3/R4 route removed");
     }
 
     #[tokio::test]

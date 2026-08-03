@@ -183,6 +183,34 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         self
     }
 
+    /// Attach the process-local best-effort stream relay before sharing this
+    /// Session's worker. The relay is observation only: dispatch settlement and
+    /// committed messages remain the durable authorities.
+    #[must_use]
+    pub fn with_stream_sink(
+        mut self,
+        sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Self {
+        let worker = Arc::into_inner(self.worker)
+            .expect("stream sink must be configured before sharing the worker")
+            .with_stream_sink(sink);
+        self.worker = Arc::new(worker);
+        self
+    }
+
+    /// Attach the claim-aware live publisher used by a database-less Worker.
+    #[must_use]
+    pub fn with_claimed_stream_publisher(
+        mut self,
+        publisher: Arc<dyn crate::ClaimedStreamPublisher>,
+    ) -> Self {
+        let worker = Arc::into_inner(self.worker)
+            .expect("stream publisher must be configured before sharing the worker")
+            .with_claimed_stream_publisher(publisher);
+        self.worker = Arc::new(worker);
+        self
+    }
+
     /// Replace the local guarded commit service with another atomic claimed-run
     /// implementation. Database-less workers use this to send one combined
     /// claim-and-commit request to the store-owning server.

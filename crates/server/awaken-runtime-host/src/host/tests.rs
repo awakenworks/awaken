@@ -6258,6 +6258,44 @@ async fn client_result_delivers_a_client_tool_result_and_ends_the_turn() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn durable_foreground_run_relays_live_progress_before_committed_completion() {
+    // Cause/effect graph: C1 the Host uses durable dispatch with a local pool;
+    // C2 a foreground run supplies a StreamSink; C3 the model emits a live text
+    // delta; C4 the run commits its terminal state. Effects: E1 C3 reaches the
+    // caller's exact sink while its run-id registration is active; E2 C4 returns
+    // the same authoritative terminal result as the non-streaming durable path;
+    // E3 the registration is removed at settlement (owned by the registry unit
+    // test). Constraint: background runs
+    // and remote workers without this process-local registration still use the
+    // committed projection and never create a durable delta source of truth.
+    //
+    // | Rule | durable | foreground sink | local worker | Effects |
+    // | R1 | yes | yes | yes | E1+E2+E3 |
+    // | R2 | yes | no | yes | E2 (existing durable tests) |
+    // | R3 | yes | yes | remote | E2 fallback; no false replay guarantee |
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("in-memory dispatch"),
+    );
+    let host =
+        Arc::new(SharedHost::new(Arc::new(MemoryHostModel), "stub").with_dispatch_store(dispatch));
+    host.ensure_dispatch_pool();
+    let sink = Arc::new(awaken_store_inmem::MemoryStreamSink::new());
+
+    let outcome = host
+        .run_streaming(
+            None,
+            "t-durable-live",
+            user("stream this"),
+            sink.clone() as Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+        )
+        .await
+        .expect("durable streaming run");
+
+    assert!(matches!(outcome.state, RunState::Ended(_)), "R1/E2");
+    assert!(!sink.events().is_empty(), "R1/E1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn durable_client_result_settles_the_authoritative_dispatch() {
     // Cause/effect graph: C1 durable ingress; C2 a claimed Run settles Awaiting
     // on a client-tool ticket; C3 the exact ClientResult arrives; C4 resumed work
