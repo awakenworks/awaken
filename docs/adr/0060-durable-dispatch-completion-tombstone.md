@@ -63,6 +63,23 @@ would reintroduce run resurrection.
   replayed enqueue/exact-claim stays absent, executed by the shared backend
   conformance suite.
 
+### D5: Commit/settle gaps repair through the same fenced Done path
+
+A quiescent `awaiting` dispatch can survive a historical crash or defect even
+after the matching committed Run is terminal. The Runtime Host periodically
+reads each row through its own Thread commit boundary. Only an exact committed
+`RunState::Ended` proof permits a special claim of that unleased `awaiting` row;
+the claim skips execution placement and credentials because it cannot execute.
+It then reuses the ordinary epoch-fenced `Done` settlement, including terminal
+observer redelivery and the D2 completion tombstone.
+
+The dispatch store never accepts or derives Run outcome truth. It only exposes
+the narrowly scoped claim command, preserves the one-running-dispatch-per-Thread
+constraint, and rejects pending, running, leased, dead-lettered, or superseded
+rows. The worker checks committed truth both before and after the claim; a stale
+proof restores `Awaiting`. This adds no cleanup table, outcome status, or direct
+row-deletion path.
+
 ## Consequences
 
 - A separate process can project terminal delivery after either side restarts,
@@ -74,6 +91,8 @@ would reintroduce run resurrection.
   tombstone invariant.
 - Remote worker transports need not expose this server-local projection query;
   their default implementation fails explicitly.
+- Legacy commit/settle gaps converge without replaying execution or provisioning
+  a Session environment; nonterminal Awaiting and Running rows remain untouched.
 
 ## References
 

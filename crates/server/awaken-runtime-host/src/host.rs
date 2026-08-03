@@ -117,9 +117,11 @@ mod build;
 mod completion;
 pub use completion::remote_worker_placement;
 pub use completion::self_hosted_inference_holder;
+mod credential_capabilities;
 mod run;
 mod session;
 mod session_ctx;
+mod terminal_reconciliation;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

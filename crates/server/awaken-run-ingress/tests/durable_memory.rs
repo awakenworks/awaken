@@ -892,6 +892,93 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
     assert_eq!(store.pending_count(&RunId("run-1".to_string())), 0);
 }
 
+/// Cause/effect decision table for a legacy quiescent delivery row:
+///
+/// | Rule | Dispatch | Committed Run | Expected effect |
+/// |------|----------|---------------|-----------------|
+/// | R1 | Awaiting, no input | absent/nonterminal | keep row; no completion |
+/// | R2 | Awaiting, no input | Ended | fenced Done; emit tombstone; never execute |
+/// | R3 | R1 precedes R2 and limit=1 | mixed | skip R1 and still repair one R2 |
+///
+/// Constraints: committed Run truth is the only terminal cause; queue order is
+/// not outcome evidence; the limit bounds repaired terminals, not inspected rows.
+#[tokio::test]
+async fn reconciliation_repairs_only_committed_terminal_awaiting_rows() {
+    let (runtime, ran) = tool_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let ingress = DurableRunIngress::new(runtime.clone(), store.clone(), commit.clone());
+
+    // R1 is deliberately first so it cannot consume the one-repair budget.
+    let mut control = activation("run-control");
+    control.thread_id = ThreadId("thread-control".to_string());
+    store
+        .enqueue(RunDispatch::new(control))
+        .await
+        .expect("enqueue nonterminal control");
+    let control_claim = store
+        .claim("setup", 1_000, 0, &Default::default())
+        .await
+        .expect("claim nonterminal control")
+        .expect("control is runnable");
+    store
+        .settle(
+            &control_claim.lease.run_id,
+            control_claim.lease.epoch,
+            DispatchOutcome::Awaiting,
+            &[],
+        )
+        .await
+        .expect("make control quiescent");
+
+    assert_eq!(
+        ingress
+            .submit_background(activation("run-terminal"))
+            .await
+            .expect("terminal candidate reaches await"),
+        RunState::Awaiting
+    );
+    let mut command = allow_command();
+    command.run_id = RunId("run-terminal".to_string());
+    let state = runtime
+        .resume(
+            command,
+            commit.as_ref(),
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .expect("model historical commit-before-settle gap");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+
+    let reconciled = ingress
+        .reconcile_committed_terminals(2_000, 1)
+        .await
+        .expect("reconcile committed terminal");
+    assert_eq!(
+        reconciled,
+        vec![(
+            RunId("run-terminal".to_string()),
+            RunState::Ended(EndCause::NaturalEnd),
+        )]
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "R2 never re-executes");
+
+    let rows = store.list_dispatches().await.expect("remaining rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].run_id, RunId("run-control".to_string()), "R1");
+    let completions = store
+        .completion_events_after(0, 10)
+        .await
+        .expect("completion tombstone");
+    assert_eq!(completions.len(), 1);
+    assert_eq!(
+        completions[0].run_id,
+        RunId("run-terminal".to_string()),
+        "R2"
+    );
+}
+
 #[tokio::test]
 async fn input_for_a_superseded_ticket_is_not_delivered(/* M1 */) {
     // Input whose correlation does not match the run's committed ticket is stale;

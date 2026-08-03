@@ -21,10 +21,10 @@ use sqlx::{Executor, Postgres, Row};
 use crate::dispatch::{
     AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
     DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
-    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome,
-    SubmitOptions, can_admit_attempt_credentials, compile_attempt_credential_bindings,
-    installed_worker_credential_capabilities, normalize_pending_millis,
-    verify_credential_realization_receipt,
+    DispatchSummary, ExactClaimMode, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,
+    SettleOutcome, SubmitOptions, can_admit_attempt_credentials,
+    compile_attempt_credential_bindings, installed_worker_credential_capabilities,
+    normalize_pending_millis, verify_credential_realization_receipt,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::{
@@ -732,6 +732,29 @@ impl DispatchQueue for PostgresDispatchStore {
             now_ms,
             None,
             capabilities,
+        )
+        .await?;
+        tx.commit().await.map_err(reject)?;
+        Ok(claimed)
+    }
+
+    async fn claim_awaiting_for_terminal_recovery(
+        &self,
+        requested_run: &RunId,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let claimed = claim_exact_transaction_with_mode(
+            &mut tx,
+            requested_run,
+            owner,
+            lease_ms,
+            now_ms,
+            None,
+            &Default::default(),
+            ExactClaimMode::QuiescentAwaiting,
         )
         .await?;
         tx.commit().await.map_err(reject)?;
@@ -1558,6 +1581,30 @@ async fn claim_exact_transaction(
     worker: Option<&WorkerSnapshot>,
     capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
+    claim_exact_transaction_with_mode(
+        tx,
+        requested_run,
+        owner,
+        lease_ms,
+        now_ms,
+        worker,
+        capabilities,
+        ExactClaimMode::Runnable,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn claim_exact_transaction_with_mode(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    requested_run: &RunId,
+    owner: &str,
+    lease_ms: u64,
+    now_ms: u64,
+    worker: Option<&WorkerSnapshot>,
+    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    mode: ExactClaimMode,
+) -> Result<Option<Claimed>, DispatchError> {
     let p = NS;
     let thread_id = sqlx::query_scalar::<_, String>(&format!(
         "SELECT thread_id FROM {p}_dispatch WHERE run_id = $1"
@@ -1581,16 +1628,25 @@ async fn claim_exact_transaction(
         "NOT EXISTS (SELECT 1 FROM {p}_dispatch r \
          WHERE r.thread_id = d.thread_id AND r.status = 'running')"
     );
+    let eligibility = match mode {
+        ExactClaimMode::Runnable => format!(
+            "(d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $2) \
+             OR (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
+               SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
+               AND (pe.available_at IS NULL OR pe.available_at <= $2))) AND {not_running}) \
+             OR (d.status = 'pending' AND {not_running})"
+        ),
+        ExactClaimMode::QuiescentAwaiting => {
+            format!(
+                "d.status = 'awaiting' AND d.lease_owner IS NULL AND d.lease_until IS NULL \
+                 AND {not_running} AND $2 IS NOT NULL"
+            )
+        }
+    };
     let sql = format!(
         "SELECT d.request, d.sandbox, d.status, d.worker_assignment, d.cancel_requested, \
                 d.lease_owner, d.lease_epoch FROM {p}_dispatch d \
-         WHERE d.run_id = $1 AND ( \
-           (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $2) \
-           OR (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
-             SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
-             AND (pe.available_at IS NULL OR pe.available_at <= $2))) AND {not_running}) \
-           OR (d.status = 'pending' AND {not_running}) \
-         ) FOR UPDATE SKIP LOCKED LIMIT 1"
+         WHERE d.run_id = $1 AND ({eligibility}) FOR UPDATE SKIP LOCKED LIMIT 1"
     );
     let Some(row) = sqlx::query(&sql)
         .bind(&requested_run.0)
@@ -1608,7 +1664,9 @@ async fn claim_exact_transaction(
     let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
     let previous_owner: Option<String> = row.try_get("lease_owner").map_err(reject)?;
     let previous_epoch: i64 = row.try_get("lease_epoch").map_err(reject)?;
-    if cancellation_requested == 0
+    let terminal_recovery = mode == ExactClaimMode::QuiescentAwaiting;
+    if !terminal_recovery
+        && cancellation_requested == 0
         && match worker {
             Some(worker) => can_assign(
                 worker,
@@ -1627,7 +1685,7 @@ async fn claim_exact_transaction(
     let claim_epoch = (previous_epoch.max(0) as u64)
         .checked_add(1)
         .ok_or_else(|| DispatchError::Rejected("dispatch claim epoch exhausted".to_string()))?;
-    let credential_bindings = if cancellation_requested != 0 {
+    let credential_bindings = if terminal_recovery || cancellation_requested != 0 {
         Vec::new()
     } else {
         compile_attempt_credential_bindings(&request, capabilities, claim_epoch, now_ms).map_err(
@@ -1647,7 +1705,12 @@ async fn claim_exact_transaction(
     .bind(i64::from(status == "running"))
     .bind(&requested_run.0)
     .bind(claim_epoch as i64)
-    .bind(worker.map(WorkerAssignment::from).map(Json))
+    .bind(
+        (!terminal_recovery)
+            .then(|| worker.map(WorkerAssignment::from))
+            .flatten()
+            .map(Json),
+    )
     .bind(Json(&credential_bindings))
     .bind(Json(Vec::<CredentialRealizationReceipt>::new()))
     .execute(&mut **tx)
@@ -1733,7 +1796,9 @@ async fn claim_exact_transaction(
         pending,
         recovered: status == "running",
         sandbox,
-        assignment: worker.map(WorkerAssignment::from),
+        assignment: (!terminal_recovery)
+            .then(|| worker.map(WorkerAssignment::from))
+            .flatten(),
     }))
 }
 

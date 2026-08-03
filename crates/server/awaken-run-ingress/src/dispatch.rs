@@ -4,6 +4,12 @@
 
 pub use awaken_run_ingress_contract::dispatch::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExactClaimMode {
+    Runnable,
+    QuiescentAwaiting,
+}
+
 /// Canonical host-side normalization for every pending/outbox ingress path.
 /// Persistent backends store signed BIGINT values, so all implementations use
 /// the same bounded representation before idempotency comparisons.

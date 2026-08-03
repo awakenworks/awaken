@@ -54,6 +54,16 @@ self_test() {
       return 1
     }
   done
+  # P6: integration targets whose Cargo metadata requires `test-support` must
+  # receive it explicitly; a database URL cannot satisfy a missing feature gate.
+  grep -Fq 'cargo test -p awaken-run-ingress \' "$0" || return 1
+  grep -Fq -- '--features test-support' "$0" || return 1
+  for crate in awaken-model-catalog awaken-credential-vault awaken-data-subject; do
+    grep -Fq "cargo test -p $crate --features postgres,test-support" "$0" || {
+      echo "Postgres gate omits test-support for $crate" >&2
+      return 1
+    }
+  done
 }
 
 case "${1:-}" in
@@ -125,6 +135,7 @@ echo "-> AWAKEN_TEST_DATABASE_URL=$AWAKEN_TEST_DATABASE_URL"
 # in a fresh schema.
 status=0
 cargo test -p awaken-run-ingress \
+  --features test-support \
   --test dispatch_conformance \
   --test durable_postgres \
   --test runtime_postgres \
@@ -139,9 +150,9 @@ cargo test -p awaken-runtime-host --test active_active_postgres -- --test-thread
 cargo test -p awaken-config-store --test postgres || status=1
 cargo test -p awaken-admin-config-api --features postgres --test postgres_store || status=1
 cargo test -p awaken-store-postgres --test postgres_live || status=1
-cargo test -p awaken-model-catalog --features postgres --test repo_conformance || status=1
-cargo test -p awaken-credential-vault --features postgres --test repo_conformance || status=1
-cargo test -p awaken-data-subject --features postgres --test repo_conformance || status=1
+cargo test -p awaken-model-catalog --features postgres,test-support --test repo_conformance || status=1
+cargo test -p awaken-credential-vault --features postgres,test-support --test repo_conformance || status=1
+cargo test -p awaken-data-subject --features postgres,test-support --test repo_conformance || status=1
 cargo test -p awaken-memory-store --features postgres --test conformance || status=1
 cargo test -p awaken-skill-store --features postgres --test conformance || status=1
 cargo test -p awaken-resource-store --all-features || status=1

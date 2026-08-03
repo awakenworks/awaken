@@ -80,13 +80,13 @@ pub(crate) struct HostWorkerResolver {
 }
 
 impl HostWorkerResolver {
-    fn execution_error(message: impl Into<String>) -> awaken_run_ingress::Error {
+    pub(super) fn execution_error(message: impl Into<String>) -> awaken_run_ingress::Error {
         awaken_run_ingress::Error::Execution(awaken_runtime_contract::execution::Error::Execution(
             message.into(),
         ))
     }
 
-    fn host(&self) -> Result<Arc<SharedHost>, awaken_run_ingress::Error> {
+    pub(super) fn host(&self) -> Result<Arc<SharedHost>, awaken_run_ingress::Error> {
         self.host
             .upgrade()
             .ok_or_else(|| Self::execution_error("host dropped; pool idling"))
@@ -130,102 +130,6 @@ impl HostWorkerResolver {
             .ok_or_else(|| {
                 Self::execution_error(format!("thread {} has no durable ingress", thread_id.0))
             })
-    }
-
-    /// Resolve the terminal-control path without creating, adopting, or probing a
-    /// Session environment. Cancellation only needs the dispatch fence and the
-    /// thread commit boundary; making it depend on the run's model, credentials,
-    /// placement capabilities, or sandbox would let the failed dependency prevent
-    /// its own termination.
-    async fn cancellation_worker(
-        &self,
-        host: &SharedHost,
-        claimed: &awaken_run_ingress::Claimed,
-    ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
-    {
-        let thread_id = claimed.request.session_thread_id();
-        let commit = Arc::new(
-            host.build_commit(&thread_id.0)
-                .await
-                .map_err(|error| Self::execution_error(error.to_string()))?,
-        );
-        let recovery_projection = commit.recovery_projection();
-        let store = host
-            .dispatch_store()
-            .map_err(|error| Self::execution_error(error.to_string()))?;
-        let mut worker = awaken_run_ingress::DispatchWorker::new(
-            Arc::new(awaken_runtime::Runtime::new()),
-            store,
-            commit.clone(),
-            claimed.lease.owner.clone(),
-        );
-        if host.upstream.is_none()
-            && let Some(observer) = host
-                .memory_terminal_observer(
-                    &thread_id.0,
-                    &claimed.request.activation.snapshot,
-                    commit,
-                )
-                .await
-        {
-            worker = worker.with_context(
-                awaken_runtime_contract::RuntimeRunContext::new().with_terminal_observer(observer),
-            );
-        }
-        if matches!(
-            awaken_runtime_contract::resolved::Backend::from_ref(
-                &claimed
-                    .request
-                    .activation
-                    .snapshot
-                    .resolved_spec
-                    .model_binding
-                    .backend_ref
-            ),
-            awaken_runtime_contract::resolved::Backend::Remote { .. }
-        ) {
-            let executor = host.remote_attempt_executor.clone().ok_or_else(|| {
-                Self::execution_error(
-                    "remote cancellation requires a configured remote attempt executor",
-                )
-            })?;
-            worker.install_attempt_executor(executor);
-        }
-        if let Some(upstream) = &host.upstream {
-            let claimed_commit = crate::commit_ingest::remote_claimed_commit(upstream)
-                .map_err(|error| Self::execution_error(error.to_string()))?;
-            worker = worker.with_claimed_commit(claimed_commit);
-        }
-        if let Some(projection) = recovery_projection {
-            worker = worker.with_recovery_projection(projection);
-        }
-        Ok(Arc::new(worker))
-    }
-}
-
-impl SharedHost {
-    /// Exact independent credential-adapter profiles installed in this process.
-    /// Both the process dispatch pool and per-Session durable ingress consume this
-    /// one declaration; neither may infer custody from only the Native adapter.
-    pub(crate) fn local_credential_realization_capabilities(
-        &self,
-    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
-        let mut profiles = vec![self.inference_routing.credential_realization_capabilities()];
-        if let (Some(acp), Some(profile)) = (&self.acp, &self.deployment.acp) {
-            profiles.extend(profile.cli_ids().filter_map(|cli| {
-                let backend =
-                    awaken_runtime_contract::resolved::Backend::from_ref(&format!("acp:{cli}"));
-                match acp.credential_realization_capabilities(&backend) {
-                    Ok(capabilities) => Some(capabilities),
-                    Err(error) => {
-                        tracing::error!(backend = %format!("acp:{cli}"), %error,
-                            "configured ACP credential capability is unavailable");
-                        None
-                    }
-                }
-            }));
-        }
-        awaken_runtime_contract::CredentialRealizationCapabilities::alternatives(profiles)
     }
 }
 
@@ -471,6 +375,14 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         }
         Ok(worker)
     }
+
+    async fn reconcile_committed_terminals(
+        &self,
+        now_ms: u64,
+        limit: usize,
+    ) -> Result<Vec<(RunId, RunState)>, awaken_run_ingress::Error> {
+        super::terminal_reconciliation::reconcile_committed_terminals(self, now_ms, limit).await
+    }
 }
 
 #[cfg(test)]
@@ -611,6 +523,98 @@ mod tests {
             .await
             .expect("claim deferred run")
             .expect("deferred run available")
+    }
+
+    /// Cause/effect decision table for Host-wide legacy reconciliation:
+    ///
+    /// | Rule | Dispatch | Thread commit | Expected effect |
+    /// |------|----------|---------------|-----------------|
+    /// | R1 | Awaiting | no terminal Run | preserve row and Session state |
+    /// | R2 | Awaiting | exact Run Ended | environment-free fenced Done |
+    /// | R3 | R2 | exact settlement | completion tombstone, no Sandbox |
+    ///
+    /// Constraints: each row is read through its own Thread commit boundary;
+    /// neither queue metadata nor environment availability can prove outcome.
+    #[tokio::test]
+    async fn host_reconciles_only_exact_committed_terminals_without_opening_sessions() {
+        use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
+        use awaken_run_ingress::{Clock, DispatchQueue, WorkerResolver};
+
+        let storage = tempfile::tempdir().expect("storage");
+        let now = awaken_run_ingress::SystemClock.now_ms();
+        let store = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+        );
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .with_store_dir(storage.path())
+                .with_dispatch_store(store.clone()),
+        );
+        let resolver = HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        };
+
+        let control = claim(&store, "thread-control", "run-control", "setup", now).await;
+        store
+            .settle(
+                &control.lease.run_id,
+                control.lease.epoch,
+                awaken_run_ingress::DispatchOutcome::Awaiting,
+                &[],
+            )
+            .await
+            .expect("quiesce control");
+        let terminal = claim(&store, "thread-terminal", "run-terminal", "setup", now).await;
+        store
+            .settle(
+                &terminal.lease.run_id,
+                terminal.lease.epoch,
+                awaken_run_ingress::DispatchOutcome::Awaiting,
+                &[],
+            )
+            .await
+            .expect("quiesce terminal candidate");
+
+        let commit = host
+            .build_commit("thread-terminal")
+            .await
+            .expect("terminal Thread commit");
+        commit_run(
+            &commit,
+            &ThreadId("thread-terminal".to_string()),
+            RunDisposition::ended(RunId("run-terminal".to_string()), EndCause::NaturalEnd),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        .expect("record exact terminal truth");
+
+        let reconciled = resolver
+            .reconcile_committed_terminals(now, 1)
+            .await
+            .expect("host reconciliation");
+        assert_eq!(
+            reconciled,
+            vec![(
+                RunId("run-terminal".to_string()),
+                RunState::Ended(EndCause::NaturalEnd),
+            )],
+            "R2"
+        );
+        let rows = store.list_dispatches().await.expect("remaining dispatches");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].run_id, RunId("run-control".to_string()), "R1");
+        assert!(host.session_environment("thread-control").await.is_none());
+        assert!(
+            host.session_environment("thread-terminal").await.is_none(),
+            "R3"
+        );
+        let completions = store
+            .completion_events_after(0, 10)
+            .await
+            .expect("completion tombstone");
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].run_id, RunId("run-terminal".to_string()));
     }
 
     /// C1-C3: a cold Worker must derive eager-vs-deferred provisioning only from

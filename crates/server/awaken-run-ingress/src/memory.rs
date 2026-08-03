@@ -20,10 +20,10 @@ use awaken_runtime_contract::resume::ResumeResult;
 use crate::dispatch::{
     AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
     DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
-    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome,
-    SubmitOptions, can_admit_attempt_credentials, compile_attempt_credential_bindings,
-    installed_worker_credential_capabilities, normalize_pending_millis,
-    verify_credential_realization_receipt,
+    DispatchSummary, ExactClaimMode, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,
+    SettleOutcome, SubmitOptions, can_admit_attempt_credentials,
+    compile_attempt_credential_bindings, installed_worker_credential_capabilities,
+    normalize_pending_millis, verify_credential_realization_receipt,
 };
 use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
@@ -316,12 +316,57 @@ fn claim_exact(
     worker: Option<&WorkerSnapshot>,
     capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
-    let Some(was_recovery) = runnable(state, requested_run, now_ms) else {
-        return Ok(None);
+    claim_exact_with_mode(
+        state,
+        requested_run,
+        owner,
+        lease_ms,
+        now_ms,
+        worker,
+        capabilities,
+        ExactClaimMode::Runnable,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn claim_exact_with_mode(
+    state: &mut State,
+    requested_run: &RunId,
+    owner: &str,
+    lease_ms: u64,
+    now_ms: u64,
+    worker: Option<&WorkerSnapshot>,
+    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    mode: ExactClaimMode,
+) -> Result<Option<Claimed>, DispatchError> {
+    let was_recovery = match mode {
+        ExactClaimMode::Runnable => {
+            let Some(was_recovery) = runnable(state, requested_run, now_ms) else {
+                return Ok(None);
+            };
+            was_recovery
+        }
+        ExactClaimMode::QuiescentAwaiting => {
+            let Some(row) = state.rows.get(requested_run) else {
+                return Ok(None);
+            };
+            let thread_busy = state.rows.values().any(|candidate| {
+                candidate.state == RowState::Leased
+                    && candidate.request.thread_id() == row.request.thread_id()
+            });
+            if row.state != RowState::Awaiting || row.lease.is_some() || thread_busy {
+                return Ok(None);
+            }
+            false
+        }
     };
+    let terminal_recovery = mode == ExactClaimMode::QuiescentAwaiting;
     let run_id = requested_run.clone();
-    let row = state.rows.get(&run_id).expect("runnable row exists");
-    if worker.is_none() && !row.cancellation_requested && !can_claim_locally(&row.request.placement)
+    let row = state.rows.get(&run_id).expect("claimable row exists");
+    if !terminal_recovery
+        && worker.is_none()
+        && !row.cancellation_requested
+        && !can_claim_locally(&row.request.placement)
     {
         return Ok(None);
     }
@@ -331,7 +376,7 @@ fn claim_exact(
         .lease_epoch
         .checked_add(1)
         .ok_or_else(|| DispatchError::Rejected("dispatch claim epoch exhausted".to_string()))?;
-    let credential_bindings = if row.cancellation_requested {
+    let credential_bindings = if terminal_recovery || row.cancellation_requested {
         Vec::new()
     } else {
         compile_attempt_credential_bindings(&row.request, capabilities, claim_epoch, now_ms)
@@ -339,7 +384,9 @@ fn claim_exact(
                 DispatchError::Rejected(format!("credential attempt admission failed: {error}"))
             })?
     };
-    let assignment = worker.map(WorkerAssignment::from);
+    let assignment = (!terminal_recovery)
+        .then(|| worker.map(WorkerAssignment::from))
+        .flatten();
     let (request, sandbox, cancellation_requested, lease) = {
         let row = state.rows.get_mut(&run_id).expect("runnable row exists");
         row.lease_epoch = claim_epoch;
@@ -832,6 +879,27 @@ impl DispatchQueue for MemoryDispatchStore {
             now_ms,
             None,
             capabilities,
+        )
+    }
+
+    async fn claim_awaiting_for_terminal_recovery(
+        &self,
+        requested_run: &RunId,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        claim_exact_with_mode(
+            &mut state,
+            requested_run,
+            owner,
+            lease_ms,
+            now_ms,
+            None,
+            &Default::default(),
+            ExactClaimMode::QuiescentAwaiting,
         )
     }
 

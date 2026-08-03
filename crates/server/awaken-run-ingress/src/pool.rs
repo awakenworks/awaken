@@ -78,6 +78,18 @@ pub trait WorkerResolver<S>: Send + Sync {
         self.worker_for(thread_id, (!agent_id.is_empty()).then_some(agent_id))
             .await
     }
+
+    /// Reconcile up to `limit` quiescent dispatches against the resolver's
+    /// authoritative committed Run readers. Generic resolvers have no global
+    /// reader registry and do nothing; a Runtime Host overrides this once for
+    /// its Session/commit ownership boundary.
+    async fn reconcile_committed_terminals(
+        &self,
+        _now_ms: u64,
+        _limit: usize,
+    ) -> Result<Vec<(RunId, RunState)>, Error> {
+        Ok(Vec::new())
+    }
 }
 
 /// Notified the instant the pool settles a run, so a foreground submitter can await
@@ -340,6 +352,8 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             wake.clone(),
             shutdown.clone(),
             config,
+            resolver.clone(),
+            completion.clone(),
         ));
         let renewal = config.lease_renewal_interval.map(|interval| {
             tokio::spawn(renewal_loop(
@@ -636,7 +650,10 @@ async fn maintenance_loop<S: Dispatch + 'static>(
     wake: Arc<dyn WakeSignal>,
     shutdown: CancellationToken,
     config: DispatchServiceConfig,
+    resolver: Arc<dyn WorkerResolver<S>>,
+    completion: Option<Arc<dyn CompletionSink>>,
 ) {
+    let mut next_terminal_reconciliation = tokio::time::Instant::now();
     loop {
         if shutdown.is_cancelled() {
             break;
@@ -652,6 +669,23 @@ async fn maintenance_loop<S: Dispatch + 'static>(
         // than at the next poll.
         if store.relay().await.unwrap_or(0) > 0 {
             let _ = wake.publish().await;
+        }
+        if let Some(interval) = config.terminal_reconciliation_interval
+            && tokio::time::Instant::now() >= next_terminal_reconciliation
+        {
+            match resolver.reconcile_committed_terminals(now, 256).await {
+                Ok(reconciled) => {
+                    if let Some(sink) = &completion {
+                        for (run_id, state) in reconciled {
+                            sink.settled(&run_id, &state);
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "terminal dispatch reconciliation failed; retrying")
+                }
+            }
+            next_terminal_reconciliation = tokio::time::Instant::now() + interval;
         }
         tokio::select! {
             _ = shutdown.cancelled() => break,
@@ -700,6 +734,62 @@ async fn renewal_loop<S: Dispatch + 'static>(
 #[cfg(test)]
 mod in_flight_tests {
     use super::*;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+
+    use crate::{ManualClock, MemoryDispatchStore};
+    use awaken_agent_contract::agent::run::EndCause;
+
+    struct ReconciliationResolver {
+        calls: AtomicUsize,
+        fail_first: bool,
+    }
+
+    #[async_trait]
+    impl WorkerResolver<MemoryDispatchStore> for ReconciliationResolver {
+        async fn worker_for(
+            &self,
+            _thread_id: &ThreadId,
+            _agent_id: Option<&str>,
+        ) -> Result<Arc<DispatchWorker<MemoryDispatchStore>>, Error> {
+            unreachable!("maintenance reconciliation does not resolve an execution worker")
+        }
+
+        async fn reconcile_committed_terminals(
+            &self,
+            _now_ms: u64,
+            _limit: usize,
+        ) -> Result<Vec<(RunId, RunState)>, Error> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_first && call == 0 {
+                return Err(Error::Execution(
+                    awaken_runtime_contract::execution::Error::Execution(
+                        "injected reconciliation failure".to_string(),
+                    ),
+                ));
+            }
+            Ok(vec![(
+                RunId("run-reconciled".to_string()),
+                RunState::Ended(EndCause::NaturalEnd),
+            )])
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingCompletion {
+        values: Mutex<Vec<(RunId, RunState)>>,
+        notified: Notify,
+    }
+
+    impl CompletionSink for RecordingCompletion {
+        fn settled(&self, run_id: &RunId, state: &RunState) {
+            self.values
+                .lock()
+                .expect("completion lock")
+                .push((run_id.clone(), state.clone()));
+            self.notified.notify_one();
+        }
+    }
 
     #[test]
     fn guard_tracks_and_releases_exactly_once() {
@@ -714,5 +804,84 @@ mod in_flight_tests {
             assert_eq!(counter.load(Ordering::SeqCst), 1);
         }
         assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    /// Cause/effect decision table for process-level terminal maintenance:
+    ///
+    /// | Rule | Interval | Resolver result | Expected effect |
+    /// |------|----------|-----------------|-----------------|
+    /// | R1 | None | n/a | no reconciliation call |
+    /// | R2 | Some | transient error | loop survives and retries |
+    /// | R3 | Some | terminal rows | forward each row to CompletionSink |
+    ///
+    /// Constraint: this cadence orchestrates the resolver only; it never infers
+    /// terminal truth or mutates dispatch rows itself.
+    #[tokio::test]
+    async fn maintenance_reconciliation_is_optional_retryable_and_event_driven() {
+        let store = Arc::new(MemoryDispatchStore::new());
+        let clock = Arc::new(ManualClock::new(42));
+        let wake = Arc::new(LocalWakeSignal::new());
+
+        let disabled_resolver = Arc::new(ReconciliationResolver {
+            calls: AtomicUsize::new(0),
+            fail_first: false,
+        });
+        let disabled_shutdown = CancellationToken::new();
+        let disabled = tokio::spawn(maintenance_loop(
+            store.clone(),
+            clock.clone(),
+            wake.clone(),
+            disabled_shutdown.clone(),
+            DispatchServiceConfig {
+                poll_interval: Duration::from_millis(2),
+                terminal_reconciliation_interval: None,
+                ..Default::default()
+            },
+            disabled_resolver.clone(),
+            None,
+        ));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        disabled_shutdown.cancel();
+        disabled.await.expect("disabled maintenance exits");
+        assert_eq!(disabled_resolver.calls.load(Ordering::SeqCst), 0, "R1");
+
+        let retrying_resolver = Arc::new(ReconciliationResolver {
+            calls: AtomicUsize::new(0),
+            fail_first: true,
+        });
+        let completion = Arc::new(RecordingCompletion::default());
+        let enabled_shutdown = CancellationToken::new();
+        let enabled = tokio::spawn(maintenance_loop(
+            store,
+            clock,
+            wake,
+            enabled_shutdown.clone(),
+            DispatchServiceConfig {
+                poll_interval: Duration::from_millis(2),
+                terminal_reconciliation_interval: Some(Duration::from_millis(2)),
+                ..Default::default()
+            },
+            retrying_resolver.clone(),
+            Some(completion.clone()),
+        ));
+        tokio::time::timeout(Duration::from_secs(1), completion.notified.notified())
+            .await
+            .expect("R2 retry reaches R3 completion");
+        enabled_shutdown.cancel();
+        enabled.await.expect("enabled maintenance exits");
+
+        assert!(retrying_resolver.calls.load(Ordering::SeqCst) >= 2, "R2");
+        assert_eq!(
+            completion
+                .values
+                .lock()
+                .expect("completion lock")
+                .as_slice(),
+            &[(
+                RunId("run-reconciled".to_string()),
+                RunState::Ended(EndCause::NaturalEnd),
+            )],
+            "R3"
+        );
     }
 }
