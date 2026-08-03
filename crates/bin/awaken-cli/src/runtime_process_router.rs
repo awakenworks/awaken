@@ -58,13 +58,9 @@ pub(super) async fn assemble_runtime_process_router(
             .unwrap_or_else(|error| panic!("restore Deployment state: {error}"));
     let agent_archive_cascade =
         deployment_state.clone() as Arc<dyn awaken_protocol_managed::AgentArchiveCascade>;
-    let executable_environment_wiring =
-        assembly.executable_environment_wiring.unwrap_or_else(|| {
-            executable_environment_registration::ExecutableEnvironmentWiring::local(
-                coordinator_stores.environment_work.clone(),
-            )
-            .expect("compose local executable Environment catalog")
-        });
+    let executable_environment_wiring = executable_environment_registration::require_process_wiring(
+        assembly.executable_environment_wiring,
+    );
     let executable_environment_catalog = executable_environment_wiring.catalog;
     let executable_environment_registrar = executable_environment_wiring.registrar;
     let executable_environment_projection_refresher =
