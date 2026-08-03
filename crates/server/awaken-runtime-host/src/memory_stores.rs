@@ -1,14 +1,15 @@
 //! `MemoryStores` — the Resources context's Memory content backends (ADR-0038/0053).
 //!
 //! Owns the one path-addressed CAS [`MemoryRepository`] used by the Memory API, sandbox
-//! mounts, recall, and extraction. A configured storage dir makes it durable;
-//! otherwise it is process-local.
+//! mounts, recall, and extraction. Product composition injects the selected
+//! repository; the local opener exists only for tests and scenario fixtures.
 //!
 //! Resource definition/configuration/lifecycle lives in the platform
 //! `ResourceCatalog`, injected at the server composition root. The runtime host owns
 //! only content backends; it does not own an authorization policy or a second identity
 //! registry.
 
+#[cfg(any(test, feature = "test-support"))]
 use std::path::Path;
 use std::sync::Arc;
 
@@ -27,8 +28,9 @@ impl MemoryStores {
         Self { fs }
     }
 
-    /// Open the content stores under one storage-dir durability rule (`Some` → durable
+    /// Test-support opener under one storage-dir durability rule (`Some` → durable
     /// under the dir, `None` → ephemeral per-process).
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn open(store_dir: Option<&Path>) -> Self {
         // ADR-0053 path-addressed memory files persist alongside, under the same
         // durability rule. Backed by the SQLite store so rename-replace and CAS are

@@ -166,19 +166,20 @@ impl SharedHost {
             .as_ref()
             .map(|dir| dir.join("sandboxes"))
             .unwrap_or_else(|| sub_base(""));
-        // The ADR-0038/0053 memory content stores follow one storage-dir durability
-        // rule, owned by `MemoryStores::open` (durable under the dir; ephemeral
-        // per-process otherwise). Resource identity/configuration is injected into
-        // the server composition root through `ResourceCatalog`.
+        // Product Resource content is injected atomically through ResourceComponent;
+        // a Worker receives its remote adapter. Only test-support construction may
+        // still use the local opener below.
         let memory_stores = if let Some((_, repository)) = &worker_content {
             crate::memory_stores::MemoryStores::with_repository(repository.clone())
+        } else if let Some(plane) = &resources {
+            crate::memory_stores::MemoryStores::with_repository(plane.memory_repository())
         } else {
-            resources.as_ref().map_or_else(
-                || crate::memory_stores::MemoryStores::open(store_dir.as_deref()),
-                |plane| {
-                    crate::memory_stores::MemoryStores::with_repository(plane.memory_repository())
-                },
-            )
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                crate::memory_stores::MemoryStores::open(store_dir.as_deref())
+            }
+            #[cfg(not(any(test, feature = "test-support")))]
+            unreachable!("product Host construction requires an explicit Resource component")
         };
         let extraction_repository = extraction_repository.unwrap_or_else(|| {
             if worker_content.is_some() {

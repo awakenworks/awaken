@@ -16,7 +16,7 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 awaken-file-store = { workspace = true, features = ["test-support"] }
-awaken-resource-store.workspace = true
+awaken-resource-store = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]

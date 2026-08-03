@@ -28,5 +28,5 @@ awaken-file-store = { workspace = true, features = ["test-support"] }
 # tests wire the real worker-tier mounter over an in-memory store to prove item 1
 # end-to-end. Dev-only.
 awaken-sandbox-memoryd.workspace = true
-awaken-memory-store.workspace = true
+awaken-memory-store = { workspace = true, features = ["test-support"] }
 async-trait.workspace = true

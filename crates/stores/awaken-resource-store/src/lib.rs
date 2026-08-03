@@ -49,6 +49,7 @@ impl SqliteResourceStore {
     ///
     /// Ephemeral mode intentionally reuses the durable adapter so lifecycle,
     /// reference and fencing semantics have one implementation on a node.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn in_memory() -> Result<Self, ResourcePurgeError> {
         Self::open(":memory:")
     }

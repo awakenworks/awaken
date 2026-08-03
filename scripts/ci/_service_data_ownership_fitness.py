@@ -21,8 +21,17 @@ COORDINATOR_COMPONENT = "crates/server/awaken-coordinator/src/coordinator_compon
 RESOURCE_COMPONENT = "crates/contract/awaken-resource-contract/src/component.rs"
 RUNTIME_HOST_BUILD = "crates/server/awaken-runtime-host/src/host/build.rs"
 PROCESS_STORES = "crates/bin/awaken-cli/src/process_stores.rs"
+RUNTIME_HOST_MANIFEST = "crates/server/awaken-runtime-host/Cargo.toml"
+COORDINATOR_MANIFEST = "crates/server/awaken-coordinator/Cargo.toml"
+CLI_MANIFEST = "crates/bin/awaken-cli/Cargo.toml"
 FILE_STORE_SOURCE = "crates/resources/awaken-file-store/src/lib.rs"
 COORDINATOR_SOURCE = "crates/server/awaken-coordinator/src/lib.rs"
+MEMORY_STORE_SOURCE = "crates/resources/awaken-memory-store/src/repository.rs"
+MEMORY_SQLITE_SOURCE = "crates/resources/awaken-memory-store/src/sqlite.rs"
+SKILL_STORE_SOURCE = "crates/resources/awaken-skill-store/src/lib.rs"
+SKILL_SQLITE_SOURCE = "crates/resources/awaken-skill-store/src/sqlite.rs"
+RESOURCE_STORE_SOURCE = "crates/stores/awaken-resource-store/src/lib.rs"
+RUNTIME_MEMORY_STORES = "crates/server/awaken-runtime-host/src/memory_stores.rs"
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -80,6 +89,72 @@ VOLATILE_RUNTIME_HOST_APIS = (
     "with_memory_repository",
 )
 
+TEST_SUPPORT_GATE = (
+    r'#\s*\[\s*cfg\s*\(\s*any\s*\(\s*test\s*,\s*feature\s*=\s*"test-support"\s*\)\s*\)\s*\]'
+)
+FEATURE_TEST_SUPPORT_GATE = (
+    r'#\s*\[\s*cfg\s*\(\s*feature\s*=\s*"test-support"\s*\)\s*\]'
+)
+PUBLIC_DECLARATION = r"\bpub(?:\s*\(\s*crate\s*\))?\s+(?:async\s+)?(?:struct|fn)\s+"
+
+NON_PRODUCT_RESOURCE_APIS = (
+    (
+        "InMemoryFileStore",
+        FILE_STORE_SOURCE,
+        r"\bpub\s+struct\s+InMemoryFileStore\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "VolatileMemoryRepository",
+        MEMORY_STORE_SOURCE,
+        r"\bpub\s+struct\s+VolatileMemoryRepository\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteMemoryRepository::open_in_memory",
+        MEMORY_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemorySkillStore",
+        SKILL_STORE_SOURCE,
+        r"\bpub\s+struct\s+InMemorySkillStore\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteSkillStore::open_in_memory",
+        SKILL_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteResourceStore::in_memory",
+        RESOURCE_STORE_SOURCE,
+        r"\bpub\s+fn\s+in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "MemoryStores::open",
+        RUNTIME_MEMORY_STORES,
+        r"\bpub\s*\(\s*crate\s*\)\s+fn\s+open\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "ephemeral_resources_application",
+        COORDINATOR_SOURCE,
+        r"\bpub\s+fn\s+ephemeral_resources_application\b",
+        FEATURE_TEST_SUPPORT_GATE,
+    ),
+)
+
+PRODUCT_MANIFESTS = (
+    WORKER_MANIFEST,
+    RUNTIME_HOST_MANIFEST,
+    COORDINATOR_MANIFEST,
+    CLI_MANIFEST,
+)
+
 
 def dependency_violations(dependencies: set[str]) -> list[str]:
     """Return the durable-authority packages accidentally linked by Worker."""
@@ -107,73 +182,51 @@ def retired_launch_violations(source: str) -> list[str]:
     return sorted({match.group(0) for match in FORBIDDEN_RETIRED_LAUNCH_SOURCE.finditer(source)})
 
 
+def _declaration_is_gated(
+    source: str, declaration_pattern: str, gate_pattern: str
+) -> bool | None:
+    """Whether the declaration exists and its own attribute prefix has the gate."""
+
+    declaration = re.search(declaration_pattern, source)
+    if declaration is None:
+        return None
+    previous_start = max(
+        (
+            item.start()
+            for item in re.finditer(PUBLIC_DECLARATION, source)
+            if item.start() < declaration.start()
+        ),
+        default=0,
+    )
+    return re.search(gate_pattern, source[previous_start : declaration.start()]) is not None
+
+
 def volatile_runtime_host_surface_violations(source: str) -> list[str]:
     """Return volatile Host APIs that are reachable without test-support."""
 
     errors: list[str] = []
-    declarations = list(re.finditer(r"\bpub\s+fn\s+[A-Za-z0-9_]+\b", source))
     for name in VOLATILE_RUNTIME_HOST_APIS:
-        declaration = re.search(rf"\bpub\s+fn\s+{re.escape(name)}\b", source)
-        if declaration is None:
+        gated = _declaration_is_gated(
+            source, rf"\bpub\s+fn\s+{re.escape(name)}\b", TEST_SUPPORT_GATE
+        )
+        if gated is None:
             errors.append(f"missing volatile Host API `{name}`")
             continue
-        previous_start = max(
-            (item.start() for item in declarations if item.start() < declaration.start()),
-            default=0,
-        )
-        prefix = source[previous_start : declaration.start()]
-        if not re.search(
-            r'#\s*\[\s*cfg\s*\(\s*any\s*\(\s*test\s*,\s*feature\s*=\s*"test-support"\s*\)\s*\)\s*\]',
-            prefix,
-        ):
+        if not gated:
             errors.append(f"volatile Host API `{name}` is not test-support gated")
     return errors
 
 
-def non_product_resource_surface_violations(
-    file_store_source: str, coordinator_source: str
-) -> list[str]:
+def non_product_resource_surface_violations(sources: dict[str, str]) -> list[str]:
     """Return in-memory Resource APIs reachable from a default product build."""
 
     errors: list[str] = []
-    in_memory_store = re.search(
-        r"\bpub\s+struct\s+InMemoryFileStore\b", file_store_source
-    )
-    if in_memory_store is None:
-        errors.append("missing test-support File store")
-    else:
-        prefix = file_store_source[: in_memory_store.start()]
-        previous_declaration = max(
-            (
-                item.start()
-                for item in re.finditer(r"\bpub\s+(?:struct|fn)\s+", prefix)
-            ),
-            default=0,
-        )
-        if not re.search(
-            r'#\s*\[\s*cfg\s*\(\s*any\s*\(\s*test\s*,\s*feature\s*=\s*"test-support"\s*\)\s*\)\s*\]',
-            prefix[previous_declaration:],
-        ):
-            errors.append("InMemoryFileStore is not test-support gated")
-
-    ephemeral_resources = re.search(
-        r"\bpub\s+fn\s+ephemeral_resources_application\b", coordinator_source
-    )
-    if ephemeral_resources is None:
-        errors.append("missing test-support Resources application")
-    else:
-        prefix = coordinator_source[: ephemeral_resources.start()]
-        previous_declaration = max(
-            (item.start() for item in re.finditer(r"\bpub\s+fn\s+", prefix)),
-            default=0,
-        )
-        if not re.search(
-            r'#\s*\[\s*cfg\s*\(\s*feature\s*=\s*"test-support"\s*\)\s*\]',
-            prefix[previous_declaration:],
-        ):
-            errors.append(
-                "ephemeral_resources_application is not test-support gated"
-            )
+    for label, path, declaration, gate in NON_PRODUCT_RESOURCE_APIS:
+        gated = _declaration_is_gated(sources[path], declaration, gate)
+        if gated is None:
+            errors.append(f"missing non-product Resource API `{label}`")
+        elif not gated:
+            errors.append(f"non-product Resource API `{label}` is not test-support gated")
     return errors
 
 
@@ -327,6 +380,21 @@ def _normal_dependencies(manifest: dict) -> set[str]:
     return dependencies
 
 
+def product_test_support_violations(manifest: dict) -> list[str]:
+    """Return default or normal/build edges that enable test-only capabilities."""
+
+    errors: list[str] = []
+    defaults = manifest.get("features", {}).get("default", [])
+    for feature in defaults:
+        if feature == "test-support" or feature.endswith("/test-support"):
+            errors.append(f"default feature enables `{feature}`")
+    for section in ("dependencies", "build-dependencies"):
+        for name, value in manifest.get(section, {}).items():
+            if isinstance(value, dict) and "test-support" in value.get("features", []):
+                errors.append(f"{section} dependency `{name}` enables test-support")
+    return sorted(errors)
+
+
 def selftest() -> None:
     """Cause/effect decision table.
 
@@ -341,11 +409,14 @@ def selftest() -> None:
     Control constructs Resources -> rejected; O13 grouped role-owned stores and
     Resources catalog -> accepted; O14 a cross-domain store field or unconditional
     migration acquisition -> rejected; O15 every volatile Host API is test-support
-    gated -> accepted; O16 one missing Host gate -> rejected; O17 the canonical
-    in-memory File authority and ephemeral Resources assembler are test-support
-    gated -> accepted; O18 either Resource gate is missing -> rejected. Together
-    the rules cover compile-time acquisition, production call paths, component
-    ownership, and schema acquisition.
+    gated -> accepted; O16 one missing Host gate -> rejected; O17 all canonical
+    File/Memory/Skill/Resource volatile entrypoints and the ephemeral Resources
+    assembler are test-support gated -> accepted; O18 any one gate missing ->
+    rejected; O19 product defaults/normal edges do not enable test-support ->
+    accepted; O20 a product default or normal edge enables it -> rejected while
+    dev-dependencies and opt-in features remain accepted. Together the rules cover
+    compile-time acquisition, production call paths, component ownership, and
+    schema acquisition.
     """
 
     assert dependency_violations({"awaken-runtime-host", "awaken-runtime-contract"}) == []  # O1
@@ -442,32 +513,50 @@ def selftest() -> None:
             "pub fn with_store_dir",
         )
     ) == ["volatile Host API `with_store_dir` is not test-support gated"]  # O16
-    file_store = (
-        '#[cfg(any(test, feature = "test-support"))]\n'
-        "pub struct InMemoryFileStore {}"
-    )
-    coordinator = (
-        '#[cfg(feature = "test-support")]\n'
-        "pub fn ephemeral_resources_application() {}"
-    )
-    assert non_product_resource_surface_violations(file_store, coordinator) == []  # O17
-    assert non_product_resource_surface_violations(
-        file_store.replace('#[cfg(any(test, feature = "test-support"))]\n', ""),
-        coordinator,
-    ) == ["InMemoryFileStore is not test-support gated"]  # O18 File cause
-    assert non_product_resource_surface_violations(
-        file_store,
-        coordinator.replace('#[cfg(feature = "test-support")]\n', ""),
-    ) == [
-        "ephemeral_resources_application is not test-support gated"
-    ]  # O18 assembly cause
+    any_gate = '#[cfg(any(test, feature = "test-support"))]\n'
+    feature_gate = '#[cfg(feature = "test-support")]\n'
+    resource_surfaces = {
+        FILE_STORE_SOURCE: any_gate + "pub struct InMemoryFileStore {}",
+        MEMORY_STORE_SOURCE: any_gate + "pub struct VolatileMemoryRepository {}",
+        MEMORY_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        SKILL_STORE_SOURCE: any_gate + "pub struct InMemorySkillStore {}",
+        SKILL_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        RESOURCE_STORE_SOURCE: any_gate + "pub fn in_memory() {}",
+        RUNTIME_MEMORY_STORES: any_gate + "pub(crate) fn open() {}",
+        COORDINATOR_SOURCE: feature_gate
+        + "pub fn ephemeral_resources_application() {}",
+    }
+    assert non_product_resource_surface_violations(resource_surfaces) == []  # O17
+    for label, path, _, gate in NON_PRODUCT_RESOURCE_APIS:
+        broken = resource_surfaces.copy()
+        broken[path] = re.sub(gate, "", broken[path], count=1)
+        assert non_product_resource_surface_violations(broken) == [
+            f"non-product Resource API `{label}` is not test-support gated"
+        ]  # O18 each independent gate-removal cause
+    test_only_edges = {
+        "features": {"test-support": ["store/test-support"]},
+        "dev-dependencies": {
+            "store": {"features": ["test-support"]},
+        },
+    }
+    assert product_test_support_violations(test_only_edges) == []  # O19/O20 accepted
+    assert product_test_support_violations(
+        {"dependencies": {"store": {"features": ["test-support"]}}}
+    ) == ["dependencies dependency `store` enables test-support"]  # O20 normal edge
+    assert product_test_support_violations(
+        {"features": {"default": ["store/test-support"]}}
+    ) == ["default feature enables `store/test-support`"]  # O20 default edge
 
 
 def check_all(repo_root: Path) -> list[str]:
     errors: list[str] = []
-    manifest_path = repo_root / WORKER_MANIFEST
-    with manifest_path.open("rb") as handle:
-        dependencies = _normal_dependencies(tomllib.load(handle))
+    product_manifests: dict[str, dict] = {}
+    for product_manifest in PRODUCT_MANIFESTS:
+        with (repo_root / product_manifest).open("rb") as handle:
+            product_manifests[product_manifest] = tomllib.load(handle)
+        for error in product_test_support_violations(product_manifests[product_manifest]):
+            errors.append(f"{product_manifest}: {error}")
+    dependencies = _normal_dependencies(product_manifests[WORKER_MANIFEST])
     for package in dependency_violations(dependencies):
         errors.append(
             f"{WORKER_MANIFEST}: Worker links authority-store dependency `{package}`; "
@@ -541,9 +630,10 @@ def check_all(repo_root: Path) -> list[str]:
         (repo_root / RUNTIME_HOST_BUILD).read_text(encoding="utf-8")
     ):
         errors.append(f"{RUNTIME_HOST_BUILD}: {error}")
-    for error in non_product_resource_surface_violations(
-        (repo_root / FILE_STORE_SOURCE).read_text(encoding="utf-8"),
-        (repo_root / COORDINATOR_SOURCE).read_text(encoding="utf-8"),
-    ):
+    resource_surface_sources = {
+        path: (repo_root / path).read_text(encoding="utf-8")
+        for _, path, _, _ in NON_PRODUCT_RESOURCE_APIS
+    }
+    for error in non_product_resource_surface_violations(resource_surface_sources):
         errors.append(f"Resource production surface: {error}")
     return errors
