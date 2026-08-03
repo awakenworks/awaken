@@ -158,6 +158,16 @@ fn stream_turn(
     agent: Option<String>,
     messages: Vec<Message>,
 ) -> Response {
+    stream_turn_with_keep_alive(rt, thread, agent, messages, STREAM_KEEP_ALIVE_INTERVAL)
+}
+
+fn stream_turn_with_keep_alive(
+    rt: Runtime,
+    thread: String,
+    agent: Option<String>,
+    messages: Vec<Message>,
+    keep_alive_interval: std::time::Duration,
+) -> Response {
     let (out_tx, out_rx) = mpsc::unbounded_channel::<String>();
     // Kept for the post-turn usage read (the turn future consumes `rt`/`thread`).
     let rt_usage = Arc::clone(&rt);
@@ -177,14 +187,20 @@ fn stream_turn(
         // Drive the turn on its own task so live events drain concurrently. The
         // sink lives inside that future; when the turn ends it drops, closing
         // `live_rx` and ending the drain loop.
-        let turn =
+        let mut turn =
             tokio::spawn(async move { rt.run_streaming(&thread, agent, messages, sink).await });
-        let mut keep_alive = tokio::time::interval(STREAM_KEEP_ALIVE_INTERVAL);
+        let mut keep_alive = tokio::time::interval(keep_alive_interval);
         keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut disconnected = false;
+        let mut live_closed = false;
+        let mut turn_result = None;
         'live: loop {
-            match next_stream_item(&mut live_rx, &mut keep_alive).await {
-                StreamItem::Event(event) => {
+            if live_closed && turn_result.is_some() {
+                break;
+            }
+            tokio::select! {
+                event = live_rx.recv(), if !live_closed => match event {
+                    Some(event) => {
                     let wires = match &event {
                         AgentEvent::Delta(delta) => transcoder.delta(delta),
                         AgentEvent::Fact(fact @ Fact::RunStarted) => transcoder.fact(fact),
@@ -196,14 +212,18 @@ fn stream_turn(
                             break 'live;
                         }
                     }
-                }
-                StreamItem::KeepAlive => {
+                    }
+                    None => live_closed = true,
+                },
+                result = &mut turn, if turn_result.is_none() => {
+                    turn_result = Some(result);
+                },
+                _ = keep_alive.tick() => {
                     if out_tx.send(": keep-alive\n\n".to_string()).is_err() {
                         disconnected = true;
                         break;
                     }
                 }
-                StreamItem::Closed => break,
             }
         }
         if disconnected {
@@ -213,7 +233,7 @@ fn stream_turn(
             let _ = rt_usage.interrupt(&thread_usage).await;
             return;
         }
-        let mut close = match turn.await {
+        let mut close = match turn_result.expect("turn completes before stream closes") {
             Ok(Ok(outcome)) => transcoder.complete(&outcome),
             Ok(Err(err)) => transcoder.fail(driver_error_message(err)),
             Err(_) => transcoder.fail("turn task cancelled"),
@@ -228,22 +248,6 @@ fn stream_turn(
         let _ = out_tx.send("data: [DONE]\n\n".to_string());
     });
     stream_response(out_rx)
-}
-
-enum StreamItem {
-    Event(AgentEvent),
-    KeepAlive,
-    Closed,
-}
-
-async fn next_stream_item(
-    live_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
-    keep_alive: &mut tokio::time::Interval,
-) -> StreamItem {
-    tokio::select! {
-        event = live_rx.recv() => event.map_or(StreamItem::Closed, StreamItem::Event),
-        _ = keep_alive.tick() => StreamItem::KeepAlive,
-    }
 }
 
 /// Translate the request's decisions into a resume against the awaiting tool and
@@ -400,41 +404,80 @@ mod tests {
     use super::*;
 
     /* Idle-stream cause/effect decision table. Causes: C1 the run is live but
-     * the provider has not produced an AgentEvent inside one keep-alive window;
-     * C2 an AgentEvent arrives; C3 the client receiver closes. Effects: E1 emit
-     * recurring SSE comments without inventing a UIMessage event; E2 preserve
-     * ordinary event projection; E3 the existing send-failure path interrupts
-     * the detached run. Rules: K1=C1=>E1; K2=C2=>E2; K3=C3=>E3. This test owns
-     * the timer classification; streaming integration tests own E2 and the
-     * runtime cancellation suite owns E3. */
+     * its best-effort AgentEvent sink closes before the authoritative turn;
+     * C2 the authoritative turn later completes; C3 the client receiver closes.
+     * Effects: E1 keep emitting protocol-neutral SSE comments after C1 without
+     * inventing UIMessage events; E2 append the committed terminal projection
+     * after C2; E3 the existing send-failure path interrupts a detached run.
+     * Rules: K1=C1&&!C2=>E1; K2=C1+C2=>E1+E2; K3=C3=>E3. The disconnect
+     * integration suite owns E3. */
     #[tokio::test]
-    async fn idle_stream_ticks_are_transport_keep_alives_not_agent_events() {
-        let (_sender, mut receiver) = mpsc::unbounded_channel();
-        let mut keep_alive = tokio::time::interval(std::time::Duration::from_millis(5));
-        keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    async fn idle_turn_outlives_its_closed_detail_sink_without_closing_the_sse() {
+        struct DelayedSilent;
+        #[async_trait::async_trait]
+        impl RunApplication for DelayedSilent {
+            async fn run(
+                &self,
+                _thread: &str,
+                _agent: Option<String>,
+                _messages: Vec<Message>,
+            ) -> Result<StepOutcome, RunApplicationError> {
+                unreachable!()
+            }
 
-        assert!(matches!(
-            tokio::time::timeout(
-                std::time::Duration::from_millis(20),
-                next_stream_item(&mut receiver, &mut keep_alive),
-            )
-            .await
-            .expect("initial keep-alive"),
-            StreamItem::KeepAlive
-        ));
-        assert!(matches!(
-            tokio::time::timeout(
-                std::time::Duration::from_millis(20),
-                next_stream_item(&mut receiver, &mut keep_alive),
-            )
-            .await
-            .expect("recurring keep-alive"),
-            StreamItem::KeepAlive
-        ));
-        let (sender, receiver) = mpsc::unbounded_channel();
-        sender.send(": keep-alive\n\n".to_string()).unwrap();
-        drop(sender);
-        let response = stream_response(receiver);
+            async fn run_streaming(
+                &self,
+                _thread: &str,
+                _agent: Option<String>,
+                _messages: Vec<Message>,
+                _sink: Arc<dyn StreamSink>,
+            ) -> Result<StepOutcome, RunApplicationError> {
+                tokio::time::sleep(std::time::Duration::from_millis(18)).await;
+                Ok(StepOutcome::ended(
+                    vec![Message::text(
+                        awaken_agent_contract::agent::message::Id("a1".into()),
+                        awaken_agent_contract::agent::message::Role::Assistant,
+                        "done",
+                    )],
+                    awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+                    false,
+                    false,
+                ))
+            }
+
+            async fn resume(
+                &self,
+                _thread: &str,
+                _tool_use_id: &str,
+                _resume: RunResume,
+            ) -> Result<StepOutcome, RunApplicationError> {
+                unreachable!()
+            }
+
+            async fn pending(&self, _thread: &str) -> Option<Pending> {
+                None
+            }
+
+            async fn history(&self, _thread: &str) -> Vec<Message> {
+                Vec::new()
+            }
+
+            fn model(&self) -> String {
+                "delayed-silent".into()
+            }
+        }
+
+        let response = stream_turn_with_keep_alive(
+            Arc::new(DelayedSilent),
+            "thread-1".into(),
+            None,
+            vec![Message::text(
+                awaken_agent_contract::agent::message::Id("u1".into()),
+                awaken_agent_contract::agent::message::Role::User,
+                "go",
+            )],
+            std::time::Duration::from_millis(5),
+        );
         assert_eq!(
             response.headers().get(header::CACHE_CONTROL).unwrap(),
             "no-cache, no-transform"
@@ -442,7 +485,10 @@ mod tests {
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        assert_eq!(body.as_ref(), b": keep-alive\n\n");
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.matches(": keep-alive\n\n").count() >= 3, "{body}");
+        assert!(body.contains("\"type\":\"text-delta\""), "{body}");
+        assert!(body.contains("\"type\":\"finish\""), "{body}");
     }
 
     fn pending(client_executed: bool) -> Pending {
