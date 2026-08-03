@@ -2,6 +2,7 @@
 //! the live-inbox surface, and `send_events`/`list_events`.
 
 use super::*;
+use awaken_agent_contract::RunLifecycleKind;
 use awaken_agent_contract::agent::delegation::DelegationStatus;
 
 struct DelegateCall {
@@ -285,7 +286,7 @@ impl ManagedState {
     /// Project a committed turn into events and append them. Preview allocations
     /// carry the ids minted for message and thinking starts; their corresponding
     /// buffered events reuse them so a client reconciles by id.
-    fn append_step(
+    pub(super) fn append_step(
         &self,
         session_id: &str,
         outcome: StepOutcome,
@@ -305,6 +306,9 @@ impl ManagedState {
                 _ => None,
             })
             .collect();
+        let project_terminal = outcome
+            .run_id()
+            .is_none_or(|run_id| record.projected_terminal_run_ids.insert(run_id.clone()));
         // A concurrent GET may already have observed this process's committed
         // messages through the shared transcript and projected them. Message ids
         // are the canonical dedupe key; status brackets remain request-local.
@@ -314,20 +318,26 @@ impl ManagedState {
             .filter(|message| record.projected_message_ids.insert(message.id.0.clone()))
             .cloned()
             .collect::<Vec<_>>();
-        let projected = project_step(&new_messages, outcome.state(), pending, prior_mcp_ids);
+        let projected = if project_terminal {
+            project_step(&new_messages, outcome.state(), pending, prior_mcp_ids)
+        } else {
+            project_messages_with_mcp_ids(&new_messages, pending, prior_mcp_ids)
+        };
         // Everything appended from here is republished on the live broadcast at the end.
         let start = record.events.len();
         // Each processing segment is bracketed `running` … `idle`; the running
         // marker leads before any fold or message.
-        record.events.push(Event {
-            id: self.next_event_id(),
-            kind: OutboundKind::SessionStatusRunning {},
-            processed_at: Some(PROCESSED_AT.to_string()),
-        });
+        if project_terminal {
+            record.events.push(Event {
+                id: self.next_event_id(),
+                kind: OutboundKind::SessionStatusRunning {},
+                processed_at: Some(PROCESSED_AT.to_string()),
+            });
+        }
         // A transparent transient-retry recovery surfaces as `session.status_rescheduled`
         // between the running marker and the turn's output, so a client observes that
         // the runtime auto-recovered rather than seeing an unexplained pause.
-        if outcome.rescheduled {
+        if project_terminal && outcome.rescheduled {
             record.events.push(Event {
                 id: self.next_event_id(),
                 kind: OutboundKind::SessionStatusRescheduled {},
@@ -336,7 +346,7 @@ impl ManagedState {
         }
         // Compaction ran at BeforeInference, so its marker precedes the turn's
         // message events. `true` ⇒ this terminal step folded (emit-once upstream).
-        if outcome.compacted {
+        if project_terminal && outcome.compacted {
             record.events.push(Event {
                 id: self.next_event_id(),
                 kind: OutboundKind::ThreadContextCompacted {},
@@ -347,7 +357,7 @@ impl ManagedState {
         // so a streaming/listing client observes the failure. The neutral fault's
         // `code` classifies the SDK error variant + retry status; its `message` is
         // carried through.
-        if let Some(failure) = outcome.failure() {
+        if project_terminal && let Some(failure) = outcome.failure() {
             record.events.push(Event {
                 id: self.next_event_id(),
                 kind: OutboundKind::SessionError {
@@ -868,13 +878,43 @@ impl ManagedState {
     }
 
     /// Refresh this process's disposable event projection from the Runtime's one
-    /// durable transcript. A Session cache hit is not proof that it contains
-    /// commits accepted through another Coordinator replica.
+    /// durable transcript and Run lifecycle feed. A Session cache hit is not proof
+    /// that it contains commits accepted through another protocol or Coordinator.
     pub(crate) async fn refresh_committed_events(
         &self,
         session_id: &str,
     ) -> Result<(), StateError> {
         self.ensure_session(session_id).await?;
+        let initial_cursor = self
+            .sessions
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .ok_or(StateError::NotFound)?
+            .projected_lifecycle_cursor;
+        const LIFECYCLE_PAGE_SIZE: usize = 256;
+        let mut lifecycle_cursor = initial_cursor;
+        let mut latest_lifecycle = None;
+        loop {
+            let page = self
+                .runtime
+                .committed_run_lifecycle(session_id, lifecycle_cursor, LIFECYCLE_PAGE_SIZE)
+                .await
+                .map_err(StateError::Run)?;
+            let count = page.events.len();
+            for event in page
+                .events
+                .into_iter()
+                .filter(|event| event.thread_id.0 == session_id)
+            {
+                latest_lifecycle = Some(event);
+            }
+            if page.next_cursor == lifecycle_cursor || count < LIFECYCLE_PAGE_SIZE {
+                lifecycle_cursor = page.next_cursor;
+                break;
+            }
+            lifecycle_cursor = page.next_cursor;
+        }
         let pending = self.runtime.pending_tool(session_id).await;
         let messages = self.runtime.committed_messages(session_id).await;
         let mut sessions = self.sessions.lock().unwrap();
@@ -883,18 +923,60 @@ impl ManagedState {
             .into_iter()
             .filter(|message| record.projected_message_ids.insert(message.id.0.clone()))
             .collect::<Vec<_>>();
-        if new_messages.is_empty() {
-            return Ok(());
-        }
-        let prior_mcp_ids = record.events.iter().filter_map(|event| match event.kind {
-            OutboundKind::AgentMcpToolUse { .. } => Some(event.id.clone()),
-            _ => None,
-        });
+        let prior_mcp_ids = record
+            .events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                OutboundKind::AgentMcpToolUse { .. } => Some(event.id.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let pending = pending
             .as_ref()
             .map(|pending| (pending.tool_use_id.as_str(), pending.client_executed));
-        let projected = project_messages_with_mcp_ids(&new_messages, pending, prior_mcp_ids);
         let start = record.events.len();
+        let terminal = latest_lifecycle.as_ref().filter(|event| {
+            matches!(
+                event.kind,
+                RunLifecycleKind::Awaiting
+                    | RunLifecycleKind::Completed
+                    | RunLifecycleKind::Failed
+                    | RunLifecycleKind::Cancelled
+            )
+        });
+        // An Awaiting fact without its exact committed ticket cannot carry the
+        // required action id. Keep the cursor before it and retry; never publish an
+        // empty requires_action terminal that could supersede the real call.
+        let awaiting_ticket_pending = terminal
+            .is_some_and(|event| event.kind == RunLifecycleKind::Awaiting && pending.is_none());
+        if !awaiting_ticket_pending {
+            record.projected_lifecycle_cursor = lifecycle_cursor;
+        }
+        if latest_lifecycle.as_ref().is_some_and(|event| {
+            matches!(
+                event.kind,
+                RunLifecycleKind::Running | RunLifecycleKind::Resumed
+            )
+        }) {
+            record.session.status = "running";
+        } else if terminal.is_some() {
+            record.session.status = "idle";
+        }
+        let project_terminal = terminal.filter(|event| {
+            !awaiting_ticket_pending
+                && record
+                    .projected_terminal_run_ids
+                    .insert(event.run_id.clone())
+        });
+        if project_terminal.is_some() {
+            record.events.push(Event {
+                id: self.next_event_id(),
+                kind: OutboundKind::SessionStatusRunning {},
+                processed_at: Some(PROCESSED_AT.to_string()),
+            });
+        }
+        let projected =
+            project_messages_with_mcp_ids(&new_messages, pending, prior_mcp_ids.iter().cloned());
         record
             .events
             .extend(projected.into_iter().map(|event| Event {
@@ -902,6 +984,29 @@ impl ManagedState {
                 kind: event.kind,
                 processed_at: Some(PROCESSED_AT.to_string()),
             }));
+        if let Some(terminal) = project_terminal {
+            if let awaken_agent_contract::agent::run::RunState::Ended(
+                awaken_agent_contract::agent::run::EndCause::Error(failure),
+            ) = &terminal.state
+            {
+                record.events.push(Event {
+                    id: self.next_event_id(),
+                    kind: OutboundKind::SessionError {
+                        error: SessionError::classify(failure.code(), failure.message()),
+                    },
+                    processed_at: Some(PROCESSED_AT.to_string()),
+                });
+            }
+            record.events.extend(
+                project_step(&[], &terminal.state, pending, prior_mcp_ids)
+                    .into_iter()
+                    .map(|event| Event {
+                        id: event.id.unwrap_or_else(|| self.next_event_id()),
+                        kind: event.kind,
+                        processed_at: Some(PROCESSED_AT.to_string()),
+                    }),
+            );
+        }
         self.broadcast_committed_from(session_id, record, start);
         Ok(())
     }
@@ -988,5 +1093,263 @@ impl awaken_session_contract::LiveInboxApplication for ManagedState {
         ManagedState::live_inbox_reorder(self, session_id, order)
             .await
             .map_err(live_inbox_application_error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+    use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+    use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_agent_contract::{LifecycleCursor, LifecyclePage, RunLifecycleEvent};
+    use awaken_session_contract::{
+        OutcomeReport, Pending, RunError, SessionRuntime, ToolPermissionDecision,
+    };
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct LifecycleRuntime {
+        messages: Arc<Mutex<Vec<Message>>>,
+        lifecycle: Arc<Mutex<Vec<RunLifecycleEvent>>>,
+        pending: Arc<Mutex<Option<Pending>>>,
+    }
+
+    #[async_trait]
+    impl SessionRuntime for LifecycleRuntime {
+        async fn run(
+            &self,
+            _agent: &str,
+            _thread: &str,
+            _content: Vec<ContentBlock>,
+        ) -> Result<StepOutcome, RunError> {
+            unreachable!()
+        }
+
+        async fn resume(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _decision: ToolPermissionDecision,
+        ) -> Result<StepOutcome, RunError> {
+            unreachable!()
+        }
+
+        async fn resume_custom(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _content: Vec<ContentBlock>,
+            _is_error: bool,
+        ) -> Result<StepOutcome, RunError> {
+            unreachable!()
+        }
+
+        async fn committed_messages(&self, _thread: &str) -> Vec<Message> {
+            self.messages.lock().unwrap().clone()
+        }
+
+        async fn committed_run_lifecycle(
+            &self,
+            _thread: &str,
+            cursor: LifecycleCursor,
+            limit: usize,
+        ) -> Result<LifecyclePage, RunError> {
+            let events = self
+                .lifecycle
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| event.cursor > cursor)
+                .take(limit)
+                .cloned()
+                .collect::<Vec<_>>();
+            Ok(LifecyclePage {
+                next_cursor: events.last().map_or(cursor, |event| event.cursor),
+                events,
+            })
+        }
+
+        async fn pending_tool(&self, _thread: &str) -> Option<Pending> {
+            self.pending.lock().unwrap().clone()
+        }
+
+        async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+            Ok(())
+        }
+
+        async fn define_outcome(
+            &self,
+            _thread: &str,
+            _description: &str,
+            _rubric: &str,
+            _max_iterations: u32,
+        ) -> Result<OutcomeReport, RunError> {
+            unreachable!()
+        }
+
+        fn model(&self) -> String {
+            "test-model".into()
+        }
+    }
+
+    fn lifecycle(
+        cursor: u64,
+        thread: &str,
+        run_id: &RunId,
+        kind: RunLifecycleKind,
+        state: RunState,
+    ) -> RunLifecycleEvent {
+        RunLifecycleEvent {
+            cursor: LifecycleCursor(cursor),
+            thread_id: ThreadId(thread.into()),
+            run_id: run_id.clone(),
+            kind,
+            state,
+        }
+    }
+
+    #[tokio::test]
+    async fn committed_lifecycle_closes_cross_protocol_managed_projection_once() {
+        // Cause/effect graph: C1=the Session cache is warm; C2=a Run is committed
+        // through AI SDK rather than Managed; C3=latest lifecycle is Running;
+        // C4=latest lifecycle is Awaiting with its exact pending ticket; C5=latest
+        // lifecycle is Ended; C6=the same read refresh repeats; C7=the Managed
+        // request already projected that exact Run terminal. E1=Managed status is
+        // running without a fabricated terminal; E2=Awaiting appends one
+        // running→requires_action bracket carrying the custom-call id; E3=Ended
+        // appends one running→idle bracket; E4=messages and terminals are not
+        // duplicated; E5=the lifecycle cursor fences the projection.
+        // Decision table:
+        // | Rule | C2 | C3 | C4 | C5 | C6 | C7 | Effect       |
+        // | R1   | T  | T  | F  | F  | F  | F  | E1,E5        |
+        // | R2   | T  | F  | T  | F  | T  | F  | E2,E4,E5     |
+        // | R3   | T  | F  | F  | T  | T  | F  | E3,E4,E5     |
+        // | R4   | T  | F  | F  | T  | T  | T  | E3 once,E4   |
+        let runtime = LifecycleRuntime::default();
+        let state = ManagedState::new(runtime.clone());
+        let request = serde_json::from_value(serde_json::json!({"agent":"coder"})).unwrap();
+        let session = state.create_session(request, None).await.unwrap();
+        let thread = session.id;
+        let first = Message::text(MessageId("cross-user".into()), Role::User, "build");
+        runtime.messages.lock().unwrap().push(first);
+
+        let run = RunId("run-cross-1".into());
+        runtime.lifecycle.lock().unwrap().push(lifecycle(
+            10,
+            &thread,
+            &run,
+            RunLifecycleKind::Running,
+            RunState::Running,
+        ));
+        state.refresh_committed_events(&thread).await.unwrap();
+        assert_eq!(state.get_session(&thread).unwrap().status, "running", "R1");
+        let rendered =
+            serde_json::to_string(&state.list_events(&thread, None, None).unwrap().data).unwrap();
+        assert!(!rendered.contains("session.status_idle"), "R1");
+
+        let call_id = "call-cross-submit";
+        runtime.messages.lock().unwrap().push(Message::new(
+            MessageId("cross-tool".into()),
+            Role::Assistant,
+            vec![ContentBlock::tool_use(
+                call_id,
+                "design_submit_artifact",
+                serde_json::json!({"manifest_path":"artifact-manifest.json"}),
+            )],
+        ));
+        *runtime.pending.lock().unwrap() = Some(Pending {
+            tool_use_id: call_id.into(),
+            name: "design_submit_artifact".into(),
+            input: serde_json::json!({"manifest_path":"artifact-manifest.json"}),
+            client_executed: true,
+        });
+        runtime.lifecycle.lock().unwrap().push(lifecycle(
+            20,
+            &thread,
+            &run,
+            RunLifecycleKind::Awaiting,
+            RunState::Awaiting,
+        ));
+        state.refresh_committed_events(&thread).await.unwrap();
+        state.refresh_committed_events(&thread).await.unwrap();
+        let rendered =
+            serde_json::to_string(&state.list_events(&thread, None, None).unwrap().data).unwrap();
+        assert_eq!(rendered.matches(call_id).count(), 2, "R2");
+        assert_eq!(rendered.matches("session.status_idle").count(), 1, "R2/E4");
+
+        let second_run = RunId("run-cross-2".into());
+        *runtime.pending.lock().unwrap() = None;
+        runtime.lifecycle.lock().unwrap().extend([
+            lifecycle(
+                30,
+                &thread,
+                &second_run,
+                RunLifecycleKind::Running,
+                RunState::Running,
+            ),
+            lifecycle(
+                40,
+                &thread,
+                &second_run,
+                RunLifecycleKind::Completed,
+                RunState::Ended(EndCause::NaturalEnd),
+            ),
+        ]);
+        runtime.messages.lock().unwrap().push(Message::text(
+            MessageId("cross-final".into()),
+            Role::Assistant,
+            "done",
+        ));
+        state.refresh_committed_events(&thread).await.unwrap();
+        state.refresh_committed_events(&thread).await.unwrap();
+        let rendered =
+            serde_json::to_string(&state.list_events(&thread, None, None).unwrap().data).unwrap();
+        assert_eq!(rendered.matches("session.status_idle").count(), 2, "R3/E4");
+        assert_eq!(rendered.matches("done").count(), 1, "R3/E4");
+
+        let local_run = RunId("run-local-3".into());
+        let local_message = Message::text(
+            MessageId("local-final".into()),
+            Role::Assistant,
+            "local done",
+        );
+        state
+            .append_step(
+                &thread,
+                StepOutcome::ended(
+                    vec![local_message.clone()],
+                    EndCause::NaturalEnd,
+                    false,
+                    false,
+                )
+                .with_run_id(local_run.clone()),
+                PreviewAllocations::default(),
+            )
+            .unwrap();
+        runtime.lifecycle.lock().unwrap().extend([
+            lifecycle(
+                50,
+                &thread,
+                &local_run,
+                RunLifecycleKind::Running,
+                RunState::Running,
+            ),
+            lifecycle(
+                60,
+                &thread,
+                &local_run,
+                RunLifecycleKind::Completed,
+                RunState::Ended(EndCause::NaturalEnd),
+            ),
+        ]);
+        runtime.messages.lock().unwrap().push(local_message);
+        state.refresh_committed_events(&thread).await.unwrap();
+        state.refresh_committed_events(&thread).await.unwrap();
+        let rendered =
+            serde_json::to_string(&state.list_events(&thread, None, None).unwrap().data).unwrap();
+        assert_eq!(rendered.matches("session.status_idle").count(), 3, "R4/E4");
+        assert_eq!(rendered.matches("local done").count(), 1, "R4/E4");
     }
 }

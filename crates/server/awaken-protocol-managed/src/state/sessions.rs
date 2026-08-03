@@ -1068,14 +1068,13 @@ impl ManagedState {
             Some(fact)
         };
         self.owners.lock().unwrap().insert(id.clone(), owner_scope);
-        let record = SessionRecord {
+        let record = SessionRecord::new(
             agent_id,
             session,
-            resource_state: persisted.resources,
-            events: Vec::new(),
-            projected_message_ids: Default::default(),
-            child_threads: Vec::new(),
-        };
+            persisted.resources,
+            Vec::new(),
+            Default::default(),
+        );
         let session = record.session_projection();
         self.sessions.lock().unwrap().insert(id.clone(), record);
         // Dispatch only after the active activation and Session lifecycle fact are
@@ -1580,14 +1579,13 @@ impl ManagedState {
             .delegated_runs(id)
             .await
             .map_err(StateError::Run)?;
-        let mut record = SessionRecord {
+        let mut record = SessionRecord::new(
             agent_id,
             session,
             resource_state,
             events,
             projected_message_ids,
-            child_threads: Vec::new(),
-        };
+        );
         self.append_delegation_projections(&mut record, &delegated_runs);
         self.sessions
             .lock()
@@ -1626,14 +1624,13 @@ impl ManagedState {
             .delegated_runs(id)
             .await
             .map_err(StateError::Run)?;
-        let mut record = SessionRecord {
-            agent_id: persisted.agent_id().unwrap_or("assistant").to_string(),
-            session: self.rehydrated_session(id, Some(persisted.clone()))?,
-            resource_state: persisted.resources,
-            events: Vec::new(),
-            projected_message_ids: Default::default(),
-            child_threads: Vec::new(),
-        };
+        let mut record = SessionRecord::new(
+            persisted.agent_id().unwrap_or("assistant").to_string(),
+            self.rehydrated_session(id, Some(persisted.clone()))?,
+            persisted.resources,
+            Vec::new(),
+            Default::default(),
+        );
         self.append_delegation_projections(&mut record, &delegated_runs);
         self.sessions
             .lock()
