@@ -1147,6 +1147,13 @@ impl ManagedState {
             .ensure_repository_credentials_pinned(owner_scope, session)
             .await?;
         let session_id = session.session_id.clone();
+        // Running/rescheduling are live aggregate states, not terminal Resource
+        // cleanup. A broad repository recovery scan can legitimately include them
+        // for Environment, MCP, or WorkQueue convergence; Resource reconciliation
+        // must leave their resident sandbox and active manifest untouched.
+        if session.status != "idle" && !session.is_terminal() {
+            return Ok(session);
+        }
         if session.status == "idle" {
             if let Some(desired) = session.resources.pending.clone() {
                 session

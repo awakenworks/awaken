@@ -239,6 +239,12 @@ impl HttpDispatchQueue {
 #[async_trait]
 impl ClaimedStreamPublisher for HttpDispatchQueue {
     async fn publish(&self, claim: &RunClaim, event: StreamEvent) -> Result<(), StreamError> {
+        // `classify` is the single routing truth. Complete content/lifecycle Facts
+        // are committed through the durable path and must never be posted to the
+        // Coordinator's live-only observation endpoint.
+        if !awaken_agent_contract::event::classify(&event.kind).live {
+            return Ok(());
+        }
         let result = self
             .post(
                 "/v1/worker/dispatch/stream",

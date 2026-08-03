@@ -20,9 +20,12 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
+use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_run_ingress::{
-    DispatchError, DispatchOutcome, DispatchQueue, HttpDispatchQueue, Inbox, MemoryDispatchStore,
-    Outbox, PendingInput, RunClaim, RunDispatch, SettleOutcome, SubmitOptions, WorkerIdentity,
+    ClaimedStreamPublisher, DispatchError, DispatchOutcome, DispatchQueue, HttpDispatchQueue,
+    Inbox, MemoryDispatchStore, Outbox, PendingInput, RunClaim, RunDispatch, SettleOutcome,
+    StreamEventRequest, SubmitOptions, WorkerIdentity,
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use axum::extract::State;
@@ -66,12 +69,19 @@ fn provider_candidate(
 struct TransportState {
     store: Arc<MemoryDispatchStore>,
     now_ms: Arc<AtomicU64>,
+    stream_calls: Arc<AtomicUsize>,
     credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
 }
 
-async fn spawn_transport_server() -> (String, Arc<MemoryDispatchStore>, Arc<AtomicU64>) {
+async fn spawn_transport_server() -> (
+    String,
+    Arc<MemoryDispatchStore>,
+    Arc<AtomicU64>,
+    Arc<AtomicUsize>,
+) {
     let store = Arc::new(MemoryDispatchStore::new());
     let now_ms = Arc::new(AtomicU64::new(0));
+    let stream_calls = Arc::new(AtomicUsize::new(0));
     let holder = awaken_runtime_contract::PlaintextHolder::new(
         awaken_runtime_contract::PlaintextBoundary::Worker,
         awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
@@ -79,6 +89,7 @@ async fn spawn_transport_server() -> (String, Arc<MemoryDispatchStore>, Arc<Atom
     let state = Arc::new(TransportState {
         store: store.clone(),
         now_ms: now_ms.clone(),
+        stream_calls: stream_calls.clone(),
         credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities {
             holders: [holder].into_iter().collect(),
             material_sources: [
@@ -104,6 +115,7 @@ async fn spawn_transport_server() -> (String, Arc<MemoryDispatchStore>, Arc<Atom
         .route("/v1/worker/dispatch/renew_owned", post(renew_owned))
         .route("/v1/worker/dispatch/bind_sandbox", post(bind_sandbox))
         .route("/v1/worker/dispatch/settle", post(settle))
+        .route("/v1/worker/dispatch/stream", post(stream_event))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -112,7 +124,10 @@ async fn spawn_transport_server() -> (String, Arc<MemoryDispatchStore>, Arc<Atom
     tokio::spawn(async move {
         axum::serve(listener, app).await.expect("serve");
     });
-    (format!("http://{addr}"), store, now_ms)
+    // Keep one externally observable counter while the Router owns the state.
+    // The handler increments both values through this shared wrapper.
+    let observed = stream_calls;
+    (format!("http://{addr}"), store, now_ms, observed)
 }
 
 fn run_id(v: &Value) -> RunId {
@@ -246,6 +261,17 @@ async fn settle(
         .await
         .expect("settle");
     Json(json!({ "settled": outcome.applied() }))
+}
+
+async fn stream_event(
+    State(state): State<Arc<TransportState>>,
+    headers: HeaderMap,
+    Json(request): Json<StreamEventRequest>,
+) -> Json<Value> {
+    assert_eq!(worker_id(&headers), request.identity.worker_id);
+    assert_eq!(request.claim.run_id, request.event.run_id);
+    state.stream_calls.fetch_add(1, Ordering::SeqCst);
+    Json(json!({ "accepted": true }))
 }
 
 async fn bind_sandbox(
@@ -446,9 +472,51 @@ async fn recovery_snapshot_retries_only_ambiguous_transport_outcomes() {
 
 // ── 1. The db-less remote-worker seam: enqueue → claim → fence → settle ──────────
 
+/// Live-publication cause/effect graph: C1 the canonical event classifier marks
+/// an event live; C2 it marks a complete content/lifecycle Fact non-live. E1 sends
+/// exactly one authenticated HTTP observation; E2 performs no HTTP request and
+/// leaves durable commit/settlement as the sole Fact path.
+///
+/// | Rule | event | classify.live | HTTP calls | effect |
+/// |---|---|---|---|---|
+/// | S1 | TextDelta | true | 1 | best-effort observation |
+/// | S2 | RunFinished | false | unchanged | durable path only |
+#[tokio::test]
+async fn worker_stream_transport_posts_only_canonically_live_events() {
+    let (base, _, _, stream_calls) = spawn_transport_server().await;
+    let queue = HttpDispatchQueue::new(base, WorkerIdentity::new("worker-A", "boot-A", 1));
+    let claim = RunClaim {
+        run_id: RunId("run-live".into()),
+        owner: "worker-A:1:boot-A".into(),
+        epoch: 1,
+    };
+    let event = |kind| StreamEvent {
+        run_id: claim.run_id.clone(),
+        kind,
+    };
+
+    queue
+        .publish(
+            &claim,
+            event(AgentEvent::Delta(Delta::TextDelta { delta: "x".into() })),
+        )
+        .await
+        .expect("S1 live publication is best effort");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1, "S1");
+
+    queue
+        .publish(
+            &claim,
+            event(AgentEvent::Fact(Fact::RunFinished { exhausted: false })),
+        )
+        .await
+        .expect("S2 durable Fact is intentionally absent from live transport");
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1, "S2");
+}
+
 #[tokio::test]
 async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
-    let (base, store, clock) = spawn_transport_server().await;
+    let (base, store, clock, _) = spawn_transport_server().await;
     let queue = HttpDispatchQueue::new(base, WorkerIdentity::new("worker-A", "boot-A", 1));
     let run = RunId("run-1".into());
 
@@ -545,7 +613,7 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
 
 #[tokio::test]
 async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
-    let (base, store, clock) = spawn_transport_server().await;
+    let (base, store, clock, _) = spawn_transport_server().await;
     let queue_a =
         HttpDispatchQueue::new(base.clone(), WorkerIdentity::new("worker-A", "boot-A", 1));
     let queue_b = HttpDispatchQueue::new(base, WorkerIdentity::new("worker-B", "boot-B", 1));

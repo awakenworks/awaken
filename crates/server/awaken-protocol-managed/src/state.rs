@@ -156,77 +156,6 @@ pub struct ManagedState {
 /// directly and publishes no compatibility alias.
 use awaken_session_contract::SessionLifecycleSink;
 
-impl ManagedState {
-    pub(crate) async fn deployment_environment(
-        &self,
-        environment_id: &str,
-    ) -> Result<
-        Option<crate::env_registry::EnvItem>,
-        awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError,
-    > {
-        self.environments.get(environment_id).await
-    }
-
-    pub(crate) fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
-        self.config_source
-            .as_ref()
-            .is_some_and(|source| source.agent_unavailable_in(workspace_id, agent_id))
-    }
-
-    pub(crate) fn deployment_unavailable_delegate(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-    ) -> Option<String> {
-        self.config_source
-            .as_ref()
-            .and_then(|source| source.unavailable_delegate_in(workspace_id, agent_id))
-    }
-
-    fn next_event_id(&self) -> String {
-        format!("evt_{}", self.event_seq.fetch_add(1, Ordering::SeqCst))
-    }
-
-    /// The session's live SSE broadcast sender, created on first use. Capacity is
-    /// generous so a fast turn's preview burst doesn't lag a slow subscriber into
-    /// `Lagged` (which the stream tolerates by skipping). Never removed.
-    fn live_sender(&self, session_id: &str) -> broadcast::Sender<StreamFrame> {
-        let mut live = self.live.lock().unwrap();
-        live.entry(session_id.to_string())
-            .or_insert_with(|| broadcast::channel(1024).0)
-            .clone()
-    }
-
-    /// Open a live SSE subscription for `session_id`: the current committed-event
-    /// snapshot (backfill) plus a receiver for frames published after this call.
-    /// Subscribing *before* cloning the snapshot means no committed event can slip
-    /// through the gap — an event that lands mid-call is on the receiver, and the
-    /// caller dedupes it against the snapshot by id.
-    pub fn stream_subscribe(
-        &self,
-        session_id: &str,
-    ) -> Result<(Vec<Event>, broadcast::Receiver<StreamFrame>), StateError> {
-        let rx = self.live_sender(session_id).subscribe();
-        let sessions = self.sessions.lock().unwrap();
-        let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
-        Ok((record.events.clone(), rx))
-    }
-
-    /// Publish each committed `Event` appended to `session_id` since `from` on the
-    /// live broadcast, so an open SSE connection receives it without a reconnect.
-    /// Best-effort: no subscriber (or a lagging one) is not an error.
-    fn broadcast_committed_from(&self, session_id: &str, record: &SessionRecord, from: usize) {
-        if from >= record.events.len() {
-            return;
-        }
-        if let Some(tx) = self.live.lock().unwrap().get(session_id) {
-            for event in &record.events[from..] {
-                let _ = tx.send(StreamFrame::Committed(event.clone()));
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,6 +309,7 @@ mod tests {
         order: Arc<std::sync::Mutex<Vec<&'static str>>>,
         committed: Arc<std::sync::Mutex<Option<Vec<Message>>>>,
         pending: Arc<std::sync::Mutex<Option<awaken_session_contract::Pending>>>,
+        ended: Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     #[async_trait]
@@ -453,6 +383,10 @@ mod tests {
         async fn delegated_runs(&self, _thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
             self.order.lock().unwrap().push("delegations");
             Ok(self.delegated.lock().unwrap().clone())
+        }
+        async fn end_session(&self, thread: &str) -> Result<(), RunError> {
+            self.ended.lock().unwrap().push(thread.to_string());
+            Ok(())
         }
         async fn restore_session_environment(
             &self,
@@ -1761,6 +1695,107 @@ mod tests {
             "D3: a successful retry converges the hidden cleanup row to a tombstone"
         );
         assert!(repo.reconcilable_sessions().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resource_reclaimer_never_tears_down_a_live_session_environment() {
+        // Resource-reclaimer cause/effect graph:
+        // C1 lifecycle is live (idle/running/rescheduling) or terminal; C2 an
+        // active Resource generation exists; C3 another convergence concern keeps
+        // the row in the broad repository scan. E1 live rows receive no Resource
+        // apply/release/end effect; E2 terminal+active releases exactly once; E3 a
+        // deleted row completes cleanup and tombstones. This reproduces the
+        // production failure where C1=running+C2+C3 previously deleted a K8s Pod.
+        //
+        // | Rule | status | active | broad scan | apply | end | durable outcome |
+        // |---|---|---|---|---|---|---|
+        // | R1 | idle | true | environment | 0 | 0 | unchanged |
+        // | R2 | running | true | environment | 0 | 0 | unchanged |
+        // | R3 | rescheduling | true | environment | 0 | 0 | unchanged |
+        // | R4 | terminated | true | terminal | 0 | 1 | released |
+        // | R5 | deleted | false | deleted | 0 | 1 | tombstoned |
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+        for status in ["idle", "running", "rescheduling", "terminated"] {
+            let id = format!("sesn_{status}");
+            let mut session = sample_persisted(&id);
+            session.status = status.into();
+            session.resources.adopt_legacy_active(&id);
+            session
+                .environment
+                .set_resident(format!("binding-{status}"));
+            create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, session).await;
+        }
+        let mut deleted = sample_persisted("sesn_deleted_empty");
+        deleted.status = "deleted".into();
+        deleted.resources = Default::default();
+        create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, deleted).await;
+
+        let runtime = RehydrateFake::default();
+        let applied = runtime.restored.clone();
+        let ended = runtime.ended.clone();
+        let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo.clone());
+
+        assert_eq!(restarted.reconcile_resource_activations().await, 2);
+        assert!(applied.lock().unwrap().is_empty(), "R1-R5");
+        assert_eq!(
+            ended.lock().unwrap().as_slice(),
+            &["sesn_deleted_empty", "sesn_terminated"],
+            "R4/R5; repository order is stable by Session id"
+        );
+        for status in ["idle", "running", "rescheduling"] {
+            let session = repo.get(&format!("sesn_{status}")).await.unwrap();
+            assert!(session.resources.has_active(), "R1-R3 {status}");
+            assert_eq!(
+                session.environment.binding(),
+                Some(format!("binding-{status}").as_str())
+            );
+        }
+        let terminated = repo.get("sesn_terminated").await.unwrap();
+        assert!(!terminated.resources.has_active(), "R4");
+        assert!(repo.get("sesn_deleted_empty").await.is_none(), "R5");
+    }
+
+    #[tokio::test]
+    async fn cold_rehydrate_preserves_a_running_sessions_resource_generation() {
+        // Cold-rehydrate cause/effect rule C1: a broad durable read finds a
+        // running Session with active Resources and a resident Environment after
+        // process cache loss. E1 reinstalls the readable/runtime projection; E2
+        // performs neither Resource re-apply nor terminal environment teardown.
+        // The terminal and pending branches are covered by the reclaimer table
+        // above and `ensure_session_retries_and_commits_a_crash_interrupted_activation`.
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+        let mut running = sample_persisted("sesn_running_rehydrate");
+        running.status = "running".into();
+        running
+            .resources
+            .adopt_legacy_active("sesn_running_rehydrate");
+        running.environment.set_resident("running-binding");
+        create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, running).await;
+
+        let runtime = RehydrateFake::default();
+        let applied = runtime.restored.clone();
+        let ended = runtime.ended.clone();
+        let restored_environment = runtime.restored_environments.clone();
+        let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo.clone());
+
+        restarted
+            .ensure_session("sesn_running_rehydrate")
+            .await
+            .expect("C1 running Session remains recoverable");
+        assert!(
+            applied.lock().unwrap().is_empty(),
+            "E2 no Resource re-apply"
+        );
+        assert!(ended.lock().unwrap().is_empty(), "E2 no terminal teardown");
+        assert_eq!(restored_environment.lock().unwrap().len(), 1, "E1");
+        assert!(
+            repo.get("sesn_running_rehydrate")
+                .await
+                .unwrap()
+                .resources
+                .has_active(),
+            "E1 active generation preserved"
+        );
     }
 
     #[tokio::test]
