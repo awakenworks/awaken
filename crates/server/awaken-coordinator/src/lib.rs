@@ -659,6 +659,11 @@ fn mount_with_managed_over_and_models(
         ));
     }
     let a2a = awaken_protocol_a2a::router_with_storage_root(port.clone(), host.storage_dir());
+    // A coordinator-only Host owns both dispatch and committed Thread truth but
+    // deliberately has no execution pool. Start its one environment-free repair
+    // loop before exposing the Worker transport; local-pool embeddings already
+    // perform the same maintenance inside that pool.
+    host.ensure_terminal_dispatch_reconciliation();
     // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
     // (supersede / reconcile / reap / dead-letter GC) over the same shared host.
     let durable_ops = durable_ops_router(host.clone());

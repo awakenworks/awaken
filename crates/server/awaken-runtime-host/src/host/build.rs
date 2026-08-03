@@ -330,6 +330,7 @@ impl SharedHost {
             memory_mounter: std::sync::RwLock::new(None),
             gate_override: None,
             dispatch_pool: std::sync::OnceLock::new(),
+            terminal_reconciliation_started: std::sync::OnceLock::new(),
             dispatch_store_override: None,
             completion: Arc::new(CompletionRegistry::default()),
             environment_binding_sink: std::sync::RwLock::new(None),

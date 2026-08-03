@@ -527,32 +527,39 @@ mod tests {
 
     /// Cause/effect decision table for Host-wide legacy reconciliation:
     ///
-    /// | Rule | Dispatch | Thread commit | Expected effect |
-    /// |------|----------|---------------|-----------------|
-    /// | R1 | Awaiting | no terminal Run | preserve row and Session state |
-    /// | R2 | Awaiting | exact Run Ended | environment-free fenced Done |
-    /// | R3 | R2 | exact settlement | completion tombstone, no Sandbox |
+    /// | Rule | Host role | Dispatch | Thread commit | Expected effect |
+    /// |------|-----------|----------|---------------|-----------------|
+    /// | R0 | local pool | any | any | no duplicate coordinator daemon |
+    /// | R1 | coordinator-only | Awaiting | no terminal Run | preserve row and Session state |
+    /// | R2 | coordinator-only | Awaiting | exact Run Ended | environment-free fenced Done |
+    /// | R3 | coordinator-only + R2 | exact settlement | exact terminal | completion tombstone, no Sandbox |
     ///
     /// Constraints: each row is read through its own Thread commit boundary;
     /// neither queue metadata nor environment availability can prove outcome.
     #[tokio::test]
     async fn host_reconciles_only_exact_committed_terminals_without_opening_sessions() {
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
-        use awaken_run_ingress::{Clock, DispatchQueue, WorkerResolver};
+        use awaken_run_ingress::{Clock, DispatchQueue};
+
+        let mut local_pool = SharedHost::new(Arc::new(AdoptionModel), "stub");
+        local_pool.deployment.durable = true;
+        local_pool.deployment.disable_local_pool = false;
+        assert!(
+            !Arc::new(local_pool).ensure_terminal_dispatch_reconciliation(),
+            "R0"
+        );
 
         let storage = tempfile::tempdir().expect("storage");
         let now = awaken_run_ingress::SystemClock.now_ms();
         let store = Arc::new(
             awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
         );
-        let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub")
-                .with_store_dir(storage.path())
-                .with_dispatch_store(store.clone()),
-        );
-        let resolver = HostWorkerResolver {
-            host: Arc::downgrade(&host),
-        };
+        let mut coordinator = SharedHost::new(Arc::new(AdoptionModel), "stub")
+            .with_store_dir(storage.path())
+            .with_dispatch_store(store.clone());
+        coordinator.deployment.durable = true;
+        coordinator.deployment.disable_local_pool = true;
+        let host = Arc::new(coordinator);
 
         let control = claim(&store, "thread-control", "run-control", "setup", now).await;
         store
@@ -589,18 +596,27 @@ mod tests {
         .await
         .expect("record exact terminal truth");
 
-        let reconciled = resolver
-            .reconcile_committed_terminals(now, 1)
-            .await
-            .expect("host reconciliation");
-        assert_eq!(
-            reconciled,
-            vec![(
-                RunId("run-terminal".to_string()),
-                RunState::Ended(EndCause::NaturalEnd),
-            )],
-            "R2"
+        assert!(host.ensure_terminal_dispatch_reconciliation());
+        assert!(
+            !host.ensure_terminal_dispatch_reconciliation(),
+            "one coordinator daemon"
         );
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if store
+                    .list_dispatches()
+                    .await
+                    .expect("reconciliation rows")
+                    .len()
+                    == 1
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("R2 coordinator daemon reconciles immediately");
         let rows = store.list_dispatches().await.expect("remaining dispatches");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].run_id, RunId("run-control".to_string()), "R1");

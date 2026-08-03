@@ -6,6 +6,47 @@
 //! executor, because repair can settle only a Run already committed as terminal.
 
 use super::*;
+use awaken_run_ingress::Clock as _;
+
+const RECONCILIATION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+impl SharedHost {
+    /// Start the one coordinator-side reconciliation loop when this Host owns
+    /// durable dispatch/commit truth but intentionally does not run an execution
+    /// pool. A local-pool Host already performs the same maintenance in its pool;
+    /// a database-less Worker has no global committed reader and must not start it.
+    /// Returns whether this call started the loop.
+    pub fn ensure_terminal_dispatch_reconciliation(self: &Arc<Self>) -> bool {
+        if !self.deployment.durable
+            || self.runs_local_dispatch_pool()
+            || self.upstream.is_some()
+            || self.terminal_reconciliation_started.set(()).is_err()
+        {
+            return false;
+        }
+        spawn_reconciliation_loop(Arc::downgrade(self), RECONCILIATION_INTERVAL);
+        true
+    }
+}
+
+fn spawn_reconciliation_loop(host: std::sync::Weak<SharedHost>, interval: std::time::Duration) {
+    tokio::spawn(async move {
+        loop {
+            let Some(host) = host.upgrade() else {
+                break;
+            };
+            let resolver = HostWorkerResolver {
+                host: Arc::downgrade(&host),
+            };
+            let now_ms = awaken_run_ingress::SystemClock.now_ms();
+            if let Err(error) = reconcile_committed_terminals(&resolver, now_ms, 256).await {
+                tracing::warn!(%error, "coordinator terminal dispatch reconciliation failed; retrying");
+            }
+            drop(host);
+            tokio::time::sleep(interval).await;
+        }
+    });
+}
 
 impl HostWorkerResolver {
     pub(super) async fn cancellation_worker(

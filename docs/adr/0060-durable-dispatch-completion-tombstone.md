@@ -66,8 +66,11 @@ would reintroduce run resurrection.
 ### D5: Commit/settle gaps repair through the same fenced Done path
 
 A quiescent `awaiting` dispatch can survive a historical crash or defect even
-after the matching committed Run is terminal. The Runtime Host periodically
-reads each row through its own Thread commit boundary. Only an exact committed
+after the matching committed Run is terminal. The store-owning Runtime Host
+periodically reads each row through its own Thread commit boundary. A Host with
+a local execution pool uses that pool's maintenance loop; a coordinator-only
+Host starts one mutually exclusive reconciliation daemon. Database-less Workers
+do neither. Only an exact committed
 `RunState::Ended` proof permits a special claim of that unleased `awaiting` row;
 the claim skips execution placement and credentials because it cannot execute.
 It then reuses the ordinary epoch-fenced `Done` settlement, including terminal
