@@ -393,49 +393,20 @@ impl SharedHost {
     }
 
     /// Wait for the pool's settle signal for `run_id` (sub-millisecond wakeup), with
-    /// a bounded timeout after which a single committed-truth read is the safety net
-    /// (in case the pool died mid-drive). The event path replaces the old poll loop,
-    /// removing the poll-interval floor from every durable foreground turn.
+    /// committed-truth reconciliation for peer Coordinators. A foreground transport
+    /// lifetime is not a Run deadline: long-running work remains `Running` until the
+    /// runtime commits `Awaiting` or `Ended`, and client cancellation drops this
+    /// future and its waiter guard.
     async fn await_settled_event(
         &self,
         ctx: &Arc<SessionCtx>,
         run_id: &RunId,
         settled: tokio::sync::oneshot::Receiver<RunState>,
     ) -> Result<RunState, HostError> {
-        // The local event is the fast path. A peer Coordinator can commit the same
-        // shared PostgreSQL Run without owning this process's oneshot sender, so a
-        // bounded committed-truth reconciliation is also required. One foreground
-        // waiter performs one narrow read per interval; it never claims, settles,
-        // or creates a second completion authority.
-        let mut settled = std::pin::pin!(settled);
-        let deadline = tokio::time::sleep(std::time::Duration::from_secs(60));
-        tokio::pin!(deadline);
-        loop {
-            tokio::select! {
-                result = &mut settled => {
-                    if let Ok(state) = result {
-                        return Ok(state);
-                    }
-                    return self.read_settled_phase(ctx, run_id).await?.ok_or_else(|| {
-                        HostError::internal(
-                            "durable run did not settle: the dispatch pool never drove it to completion",
-                        )
-                    });
-                }
-                _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
-                    if let Some(state) = self.read_settled_phase(ctx, run_id).await? {
-                        return Ok(state);
-                    }
-                }
-                _ = &mut deadline => {
-                    return self.read_settled_phase(ctx, run_id).await?.ok_or_else(|| {
-                        HostError::internal(
-                            "durable run did not settle: the dispatch pool never drove it to completion",
-                        )
-                    });
-                }
-            }
-        }
+        await_completion_state(settled, std::time::Duration::from_millis(250), || {
+            self.read_settled_phase(ctx, run_id)
+        })
+        .await
     }
 
     /// One committed-truth read: the run's state if it has settled (`Ended` or
@@ -455,6 +426,46 @@ impl SharedHost {
                 Ok(Some(record.state))
             }
             _ => Ok(None),
+        }
+    }
+}
+
+/// Await the existing completion signal while reconciling the one committed Run
+/// authority. `None` means the Run is still live and must never be projected as a
+/// timeout/error by this transport helper. Dispatch lease recovery and dead-letter
+/// policy own genuinely abandoned execution; cancellation owns caller departure.
+async fn await_completion_state<Read, ReadFuture>(
+    settled: tokio::sync::oneshot::Receiver<RunState>,
+    reconciliation_interval: std::time::Duration,
+    mut read_settled: Read,
+) -> Result<RunState, HostError>
+where
+    Read: FnMut() -> ReadFuture,
+    ReadFuture: std::future::Future<Output = Result<Option<RunState>, HostError>>,
+{
+    let mut settled = std::pin::pin!(settled);
+    // The local event is the fast path. A peer Coordinator can commit the same
+    // shared PostgreSQL Run without owning this process's oneshot sender, so
+    // committed-truth reconciliation is also required. One foreground waiter
+    // performs one narrow read per interval; it never claims, settles, times out,
+    // or creates a second completion authority.
+    loop {
+        tokio::select! {
+            result = &mut settled => {
+                if let Ok(state) = result {
+                    return Ok(state);
+                }
+                return read_settled().await?.ok_or_else(|| {
+                    HostError::internal(
+                        "durable completion signal closed before committed Run settlement",
+                    )
+                });
+            }
+            _ = tokio::time::sleep(reconciliation_interval) => {
+                if let Some(state) = read_settled().await? {
+                    return Ok(state);
+                }
+            }
         }
     }
 }
@@ -528,7 +539,7 @@ impl CompletionSink for CompletionRegistry {
 mod completion_tests {
     use super::{
         CompletionRegistry, HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, RunId,
-        remote_worker_placement,
+        await_completion_state, remote_worker_placement,
     };
     use awaken_agent_contract::agent::run::RunState;
     use awaken_run_ingress::CompletionSink;
@@ -705,6 +716,48 @@ mod completion_tests {
         registry.settled(&RunId("r".into()), &RunState::Awaiting);
         assert!(matches!(rx.await, Ok(RunState::Awaiting)));
         assert!(registry.waiters.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_live_run_outlives_foreground_reconciliation_without_a_transport_timeout() {
+        // Durable foreground completion cause/effect table:
+        // C1=the local completion sender remains open; C2=committed Run truth is
+        // still Running (`read_settled -> None`); C3=multiple reconciliation
+        // intervals pass; C4=the runtime later commits/sends Awaiting. Effects:
+        // E1=the foreground waiter remains pending through C3; E2=no transport
+        // timeout invents Error/Ended; E3=C4 alone releases the waiter with the
+        // exact authoritative state. Rule F1=C1+C2+C3=>E1+E2;
+        // F2=F1+C4=>E3. Caller cancellation is covered by the existing guard-drop
+        // test and is intentionally independent of Run terminal authority.
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_reads = reads.clone();
+        let future =
+            await_completion_state(receiver, std::time::Duration::from_millis(2), move || {
+                observed_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::future::ready(Ok(None))
+            });
+        tokio::pin!(future);
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(15), &mut future)
+                .await
+                .is_err(),
+            "F1/F2: live committed truth must keep the foreground wait open"
+        );
+        assert!(
+            reads.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+            "F1: reconciliation observed live truth repeatedly"
+        );
+
+        sender
+            .send(RunState::Awaiting)
+            .expect("waiter remains live");
+        let state = tokio::time::timeout(std::time::Duration::from_millis(100), &mut future)
+            .await
+            .expect("authoritative settlement wakes promptly")
+            .expect("settlement succeeds");
+        assert!(matches!(state, RunState::Awaiting), "F2");
     }
 
     #[test]
