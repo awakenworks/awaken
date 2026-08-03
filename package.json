@@ -7,6 +7,7 @@
     "typecheck": "pnpm -C web typecheck",
     "build": "pnpm -C web build",
     "dev": "pnpm -C web dev",
-    "test": "pnpm -C web test"
+    "test:e2e-process-policy": "node --test e2e/awaken_cli_args.test.mjs",
+    "test": "pnpm -C web test && pnpm test:e2e-process-policy"
   }
 }

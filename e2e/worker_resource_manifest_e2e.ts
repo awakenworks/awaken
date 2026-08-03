@@ -9,6 +9,7 @@ import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import {
   childDirectories,
   deploymentEnv,
@@ -400,7 +401,7 @@ async function main(): Promise<void> {
   const database = await postgres();
   const configStorage = mkdtempSync(path.join(tmpdir(), 'awaken-resource-config-'));
   const workerStorage = mkdtempSync(path.join(tmpdir(), 'awaken-resource-worker-'));
-  const management = spawn(buildAwaken(), ['all-in-one', '--port', String(PORT)], {
+  const management = spawn(buildAwaken(), automatedAllInOneArgs('--port', String(PORT)), {
     cwd: ROOT,
     env: {
       ...process.env,

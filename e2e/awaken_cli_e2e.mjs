@@ -23,6 +23,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
+import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38411);
@@ -57,9 +58,7 @@ function startAwaken(bin, port, configPath, extraEnv = {}) {
   // This is a process-lifecycle test, not a browser-launch test. Keeping the
   // product opener enabled can leave a desktop/browser descendant holding the
   // harness PTY after Awaken itself has shut down and make a passing run hang.
-  const server = spawn(bin, [
-    'all-in-one', '--config', configPath, '--port', String(port), '--no-browser',
-  ], {
+  const server = spawn(bin, automatedAllInOneArgs('--config', configPath, '--port', String(port)), {
     env: { ...process.env, ...extraEnv },
     stdio: ['ignore', 'inherit', 'pipe'],
   });

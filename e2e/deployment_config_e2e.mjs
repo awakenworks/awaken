@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import {
   deploymentEnv,
   ensureProductionBuilt,
@@ -43,7 +44,7 @@ async function rejected(bin, fields, expected) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-config-reject-'));
   try {
     const env = deploymentEnv(root, { fields });
-    const result = await runToExit(bin, ['all-in-one', '--config', configPath(env)], env);
+    const result = await runToExit(bin, automatedAllInOneArgs('--config', configPath(env)), env);
     assert.notEqual(result.code, 0, `configuration unexpectedly booted: ${result.output}`);
     assert.match(result.output, expected);
   } finally {
@@ -113,7 +114,7 @@ async function main() {
       admin_listen: `127.0.0.1:${adminPort}`,
     },
   });
-  const serve = spawn(bin, ['all-in-one', '--config', configPath(env)], {
+  const serve = spawn(bin, automatedAllInOneArgs('--config', configPath(env)), {
     env: { ...process.env, ...env, AWAKEN_HTTP_ADDR: '127.0.0.1:1' },
     stdio: ['ignore', 'ignore', 'inherit'],
   });
