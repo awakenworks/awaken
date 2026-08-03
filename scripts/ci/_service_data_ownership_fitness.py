@@ -44,6 +44,7 @@ WORKER_REGISTRY_SQLITE_SOURCE = "crates/server/awaken-worker-registry/src/sqlite
 RUN_INGRESS_ANY_SOURCE = "crates/server/awaken-run-ingress/src/any.rs"
 RUN_INGRESS_SQLITE_SOURCE = "crates/server/awaken-run-ingress/src/sqlite.rs"
 DISPATCH_BACKEND_SOURCE = "crates/server/awaken-runtime-host/src/dispatch_backend.rs"
+RUNTIME_STORE_SOURCE = "crates/server/awaken-runtime-host/src/store.rs"
 CAPTURE_STORE_SOURCE = "crates/stores/awaken-captured-content-store/src/lib.rs"
 CAPTURE_SQLITE_SOURCE = "crates/stores/awaken-captured-content-store/src/sqlite.rs"
 DATA_SUBJECT_SOURCE = "crates/control/awaken-data-subject/src/lib.rs"
@@ -617,6 +618,19 @@ def product_dispatch_fallback_violations(source: str) -> list[str]:
     return [] if guarded else ["SQLite dispatch missing-storage path does not fail closed"]
 
 
+def product_commit_fallback_violations(source: str) -> list[str]:
+    """Require SQLite commit without durable storage to be test-only."""
+
+    guarded = re.search(
+        rf"{TEST_SUPPORT_GATE}\s*return\s+CommitPlan::Memory\s*;.*?"
+        rf"#\s*\[\s*cfg\s*\(\s*not\s*\(\s*any\s*\(\s*test\s*,\s*feature\s*=\s*\"test-support\"\s*\)\s*\)\s*\)\s*\].*?"
+        r"return\s+CommitPlan::SqliteNeedsStorageDir",
+        source,
+        re.DOTALL,
+    )
+    return [] if guarded else ["SQLite commit missing-storage path does not fail closed"]
+
+
 def redundant_admin_store_reexport_violations(source: str) -> list[str]:
     """Keep resolver store contracts on their one authoritative public path."""
 
@@ -650,7 +664,9 @@ def selftest() -> None:
     dispatch durability fails closed in product and selects memory only with test
     support -> accepted; O22 an unconditional in-memory fallback -> rejected;
     O23 one authoritative Config Resolver store path -> accepted; O24 an Admin
-    compatibility re-export of that path -> rejected.
+    compatibility re-export of that path -> rejected; O25 missing SQLite commit
+    durability selects memory only for test-support and fails closed in product ->
+    accepted; O26 an unconditional Memory commit fallback -> rejected.
     Together the rules cover compile-time acquisition, production call paths,
     component ownership, and schema acquisition.
     """
@@ -840,6 +856,15 @@ def selftest() -> None:
     assert redundant_admin_store_reexport_violations(
         "pub use awaken_config_resolver::{InferenceProfileStore, InMemoryProfileStore};"
     ) == ["Admin API re-exports Config Resolver store contracts or fixtures"]  # O24
+    guarded_commit = (
+        '#[cfg(any(test, feature = "test-support"))] return CommitPlan::Memory; '
+        '#[cfg(not(any(test, feature = "test-support")))] '
+        "return CommitPlan::SqliteNeedsStorageDir;"
+    )
+    assert product_commit_fallback_violations(guarded_commit) == []  # O25
+    assert product_commit_fallback_violations("return CommitPlan::Memory;") == [
+        "SQLite commit missing-storage path does not fail closed"
+    ]  # O26
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -934,6 +959,10 @@ def check_all(repo_root: Path) -> list[str]:
         (repo_root / DISPATCH_BACKEND_SOURCE).read_text(encoding="utf-8")
     ):
         errors.append(f"{DISPATCH_BACKEND_SOURCE}: {error}")
+    for error in product_commit_fallback_violations(
+        (repo_root / RUNTIME_STORE_SOURCE).read_text(encoding="utf-8")
+    ):
+        errors.append(f"{RUNTIME_STORE_SOURCE}: {error}")
     for error in redundant_admin_store_reexport_violations(
         (repo_root / ADMIN_CONFIG_SOURCE).read_text(encoding="utf-8")
     ):

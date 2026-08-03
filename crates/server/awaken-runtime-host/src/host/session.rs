@@ -257,7 +257,8 @@ impl SharedHost {
 
     /// Build a thread's commit boundary under the configured store directory: a
     /// durable SQLite database (default) or the filesystem append-log backend when
-    /// `DeploymentConfig::store=Fs`, or an in-memory coordinator when no store dir is set.
+    /// `DeploymentConfig::store=Fs`. Only test-support composition may omit the
+    /// storage directory and select an in-memory coordinator.
     pub(crate) async fn build_commit(&self, thread: &str) -> Result<HostCommit, HostError> {
         use crate::store::{CommitPlan, plan_commit};
         // The backend-selection decision is pure config (see `plan_commit`): worker
@@ -275,9 +276,14 @@ impl SharedHost {
             // thread, connected once at startup (the non-Send sqlx connect stays out of
             // the run loop). Fails closed when uninitialised, independent of a store dir.
             CommitPlan::Postgres => crate::store::postgres_commit_or_err(),
+            #[cfg(any(test, feature = "test-support"))]
             CommitPlan::Memory => Ok(HostCommit::Local(std::sync::Arc::new(
                 MemoryCommitCoordinator::new(),
             ))),
+            #[cfg(not(any(test, feature = "test-support")))]
+            CommitPlan::SqliteNeedsStorageDir => Err(HostError::internal(
+                "product SQLite commit requires DeploymentConfig::storage_dir; refusing to drop committed history on restart",
+            )),
             // Fail closed: an explicit fs backend with no storage dir would otherwise
             // silently degrade to an ephemeral in-memory store and drop committed
             // history on restart (the filesystem append-log has no in-memory form).

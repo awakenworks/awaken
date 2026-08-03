@@ -34,7 +34,9 @@ use awaken_run_ingress::{
     DispatchServiceConfig, DurableRunIngress, RunDispatch, SubmitOptions, SystemClock,
     WorkerResolver,
 };
-use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
+#[cfg(any(test, feature = "test-support"))]
+use awaken_runtime::memory::MemoryCommitCoordinator;
+use awaken_runtime::memory::MemoryStreamCheckpointStore;
 use awaken_runtime::{DirectRunIngress, RunIngress, RunService, Runtime};
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::RunDelegations;

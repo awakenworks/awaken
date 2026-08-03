@@ -385,9 +385,12 @@ pub(crate) enum CommitPlan {
     Fs(std::path::PathBuf),
     /// Per-thread SQLite database file.
     Sqlite(std::path::PathBuf),
-    /// In-memory ephemeral coordinator: the intended mode when no store dir is set and
-    /// the backend is the default/sqlite (tests, ephemeral sessions).
+    /// In-memory ephemeral coordinator for tests and scenario fixtures.
+    #[cfg(any(test, feature = "test-support"))]
     Memory,
+    /// Fail closed: product SQLite composition has no durable storage directory.
+    #[cfg(not(any(test, feature = "test-support")))]
+    SqliteNeedsStorageDir,
     /// Fail closed: `DeploymentConfig::store=Fs` was selected but there is no storage dir. The
     /// filesystem append-log has no in-memory form, so silently using an ephemeral
     /// memory store would drop committed history on restart (data loss).
@@ -397,8 +400,8 @@ pub(crate) enum CommitPlan {
 /// Decide a thread's commit backend from the deployment axes alone (see [`CommitPlan`]).
 /// Ordering mirrors the historic `build_commit`: a database-less worker (`upstream`)
 /// wins first, then the shared Postgres backend, then the on-disk fs/sqlite layout —
-/// with the no-store-dir case splitting into the fail-closed fs row and the ephemeral
-/// memory row.
+/// with every product no-store-dir case failing closed. Test-support composition
+/// retains the explicit ephemeral memory row.
 pub(crate) fn plan_commit(
     store: crate::deployment_config::StoreKind,
     store_dir: Option<&std::path::Path>,
@@ -413,14 +416,13 @@ pub(crate) fn plan_commit(
         return CommitPlan::Postgres;
     }
     let Some(dir) = store_dir else {
-        // No store dir: the default/sqlite path is the intended ephemeral mode, but an
-        // explicit fs selection with no dir is a misconfiguration — fail closed rather
-        // than silently drop committed history on restart.
-        return if store == StoreKind::Fs {
-            CommitPlan::FsNeedsStorageDir
-        } else {
-            CommitPlan::Memory
-        };
+        if store == StoreKind::Fs {
+            return CommitPlan::FsNeedsStorageDir;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        return CommitPlan::Memory;
+        #[cfg(not(any(test, feature = "test-support")))]
+        return CommitPlan::SqliteNeedsStorageDir;
     };
     match store {
         StoreKind::Fs => CommitPlan::Fs(thread_commit_path(store, dir, thread)),
@@ -572,9 +574,10 @@ mod tests {
     }
 
     #[test]
-    fn plan_sqlite_without_a_dir_is_the_intended_ephemeral_mode() {
-        // The default/sqlite no-dir case is the documented ephemeral mode (unit tests,
-        // throwaway sessions) — NOT a footgun, so it stays memory rather than an error.
+    fn plan_sqlite_without_a_dir_is_test_only_ephemeral_mode() {
+        // Cause/effect rule C6: SQLite + no storage dir + test build selects the
+        // volatile fixture. The production complement is enforced by the
+        // service-data-ownership fitness rule and fails closed.
         assert_eq!(
             plan_commit(StoreKind::Sqlite, None, None, "t1"),
             CommitPlan::Memory
