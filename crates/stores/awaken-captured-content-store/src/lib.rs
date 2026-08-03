@@ -4,12 +4,14 @@
 //! this crate owns only capture records, restriction state, TTL, and subject
 //! erasure at the Coordinator boundary.
 
+#[cfg(any(test, feature = "test-support"))]
 mod capture_store;
 #[cfg(feature = "postgres")]
 mod postgres;
 mod schema;
 mod sqlite;
 
+#[cfg(any(test, feature = "test-support"))]
 pub use capture_store::{CapturedRecord, InMemoryCapturedContentStore};
 #[cfg(feature = "postgres")]
 pub use postgres::PgCapturedContentStore;

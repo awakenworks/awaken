@@ -44,6 +44,10 @@ WORKER_REGISTRY_SQLITE_SOURCE = "crates/server/awaken-worker-registry/src/sqlite
 RUN_INGRESS_ANY_SOURCE = "crates/server/awaken-run-ingress/src/any.rs"
 RUN_INGRESS_SQLITE_SOURCE = "crates/server/awaken-run-ingress/src/sqlite.rs"
 DISPATCH_BACKEND_SOURCE = "crates/server/awaken-runtime-host/src/dispatch_backend.rs"
+CAPTURE_STORE_SOURCE = "crates/stores/awaken-captured-content-store/src/lib.rs"
+CAPTURE_SQLITE_SOURCE = "crates/stores/awaken-captured-content-store/src/sqlite.rs"
+DATA_SUBJECT_SOURCE = "crates/control/awaken-data-subject/src/lib.rs"
+DATA_SUBJECT_SQLITE_SOURCE = "crates/control/awaken-data-subject/src/sqlite.rs"
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -233,6 +237,30 @@ NON_PRODUCT_APIS = (
     (
         "SqliteDispatchStore::open_in_memory",
         RUN_INGRESS_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemoryCapturedContentStore",
+        CAPTURE_STORE_SOURCE,
+        r"\bpub\s+use\s+capture_store::\{CapturedRecord,\s*InMemoryCapturedContentStore\}",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteCapturedContentStore::open_in_memory",
+        CAPTURE_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemoryDataSubjectRepo",
+        DATA_SUBJECT_SOURCE,
+        r"\bpub\s+struct\s+InMemoryDataSubjectRepo\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteDataSubjectRepo::open_in_memory",
+        DATA_SUBJECT_SQLITE_SOURCE,
         r"\bpub\s+fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
@@ -651,6 +679,11 @@ def selftest() -> None:
         WORKER_REGISTRY_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
         RUN_INGRESS_ANY_SOURCE: any_gate + "pub fn open_sqlite_in_memory() {}",
         RUN_INGRESS_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        CAPTURE_STORE_SOURCE: any_gate
+        + "pub use capture_store::{CapturedRecord, InMemoryCapturedContentStore};",
+        CAPTURE_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        DATA_SUBJECT_SOURCE: any_gate + "pub struct InMemoryDataSubjectRepo {}",
+        DATA_SUBJECT_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
     }
     assert non_product_surface_violations(volatile_surfaces) == []  # O17
     for label, path, declaration, gate in NON_PRODUCT_APIS:

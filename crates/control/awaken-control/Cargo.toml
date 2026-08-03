@@ -57,6 +57,7 @@ tracing = "0.1"
 axum = { version = "0.8", features = ["multipart"] }
 
 [dev-dependencies]
+awaken-data-subject = { workspace = true, features = ["test-support"] }
 awaken-environment-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
 awaken-resource-store = { workspace = true, features = ["test-support"] }

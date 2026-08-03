@@ -109,6 +109,8 @@ url.workspace = true
 # Volatile composition helpers used by integration/scenario harnesses. The default
 # product library and binary cannot link the process-local WorkQueue backend.
 test-support = [
+    "awaken-captured-content-store/test-support",
+    "awaken-data-subject/test-support",
     "awaken-env-store/test-support",
     "awaken-sandbox-policy-store/test-support",
     "awaken-session-store/test-support",
@@ -124,6 +126,8 @@ container-podman = ["awaken-runtime-host/container-podman"]
 container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
+awaken-captured-content-store = { workspace = true, features = ["test-support"] }
+awaken-data-subject = { workspace = true, features = ["test-support"] }
 awaken-env-store = { workspace = true, features = ["test-support"] }
 awaken-sandbox-policy-store = { workspace = true, features = ["test-support"] }
 awaken-session-store = { workspace = true, features = ["test-support"] }
