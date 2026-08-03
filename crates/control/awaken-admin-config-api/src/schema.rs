@@ -101,11 +101,12 @@ pub fn admin_bundle() -> Result<MigrationBundle, MigrationError> {
             let description = description_of(name, contents);
             let sql = contents.trim();
             if version == 9 {
-                Migration::published_legacy(
+                Migration::published_legacy_with_aliases(
                     version,
                     description,
                     sql,
                     "43acd8cf624d2d939bff17aadb9c34061bc8f65207007b1c8dd68196a86763c4",
+                    ["987ffe8ea131956d8b11c59ec8283d880ed97ce89cf02e9e652f61fbc4478131"],
                 )
             } else {
                 Migration::new(version, description, sql)
@@ -117,6 +118,10 @@ pub fn admin_bundle() -> Result<MigrationBundle, MigrationError> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use awaken_scoped_migration::{Dialect, MigrationError, plan};
+
     use super::*;
 
     #[test]
@@ -131,6 +136,37 @@ mod tests {
         // R3=!C1|!C2=>E3.
         let bundle = admin_bundle().expect("bundle builds");
         awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
+    }
+
+    #[test]
+    fn published_v9_receipts_are_accepted_without_rewriting_the_ledger() {
+        // Cause/effect decision table for the immutable Admin V9 body:
+        // R1 canonical 43acd receipt -> accept and apply nothing; R2 known
+        // 987ffe receipt written by the retired compatibility adapter -> accept
+        // and apply nothing; R3 any other receipt -> checksum mismatch. In all
+        // rules the ledger remains untouched and fresh installs execute only the
+        // canonical historical SQL owned by `admin_bundle`.
+        let bundle = admin_bundle().expect("bundle builds");
+        for receipt in [
+            "43acd8cf624d2d939bff17aadb9c34061bc8f65207007b1c8dd68196a86763c4",
+            "987ffe8ea131956d8b11c59ec8283d880ed97ce89cf02e9e652f61fbc4478131",
+        ] {
+            let applied = BTreeMap::from([(9, receipt.to_string())]);
+            assert!(
+                plan(&bundle, &applied, Dialect::Sqlite)
+                    .unwrap()
+                    .iter()
+                    .all(|migration| migration.version() != 9)
+            );
+        }
+        let unknown = BTreeMap::from([(
+            9,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+        )]);
+        assert!(matches!(
+            plan(&bundle, &unknown, Dialect::Sqlite).unwrap_err(),
+            MigrationError::ChecksumMismatch { version: 9, .. }
+        ));
     }
 
     #[test]
