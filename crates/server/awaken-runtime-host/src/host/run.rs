@@ -120,7 +120,13 @@ impl SharedHost {
             Ok(ctx) => ctx,
             Err(_) => return false,
         };
-        ctx.commit.open_wait_for_thread(&ctx.thread_id).is_some()
+        match ctx.commit.open_wait_for_thread(&ctx.thread_id).await {
+            Ok(waiting) => waiting.is_some(),
+            Err(error) => {
+                tracing::warn!(thread, %error, "failed to read authoritative awaiting position");
+                true
+            }
+        }
     }
 
     /// The tool an awaiting run on `thread` is awaiting on, if any.
@@ -131,7 +137,13 @@ impl SharedHost {
         // before the foreground caller reaches `finish_step` and updates its
         // disposable `SessionState`; consulting that cache here would briefly
         // misclassify a client-executed call as an ordinary executed tool.
-        let (_, ticket) = ctx.commit.open_wait_for_thread(&ctx.thread_id)?;
+        let (_, ticket) = match ctx.commit.open_wait_for_thread(&ctx.thread_id).await {
+            Ok(waiting) => waiting?,
+            Err(error) => {
+                tracing::warn!(thread, %error, "failed to read authoritative pending tool");
+                return None;
+            }
+        };
         let client_tools = self.client_tools_for(&ctx);
         pending_from_ticket(&ticket, &client_tools)
     }
@@ -250,7 +262,14 @@ impl SharedHost {
         let ctx = self.ctx_for(thread, agent).await?;
         let _execution = ctx.execution.lock().await;
         let mut st = ctx.state.lock().await;
-        if ctx.commit.open_wait_for_thread(&ctx.thread_id).is_some() && !supersede {
+        if ctx
+            .commit
+            .open_wait_for_thread(&ctx.thread_id)
+            .await
+            .map_err(HostError::internal)?
+            .is_some()
+            && !supersede
+        {
             return Err(HostError::bad_request("thread is awaiting a tool decision"));
         }
         if supersede && ctx.durable_ingress.is_none() {
@@ -520,6 +539,8 @@ impl SharedHost {
         let (run_id, ticket) = ctx
             .commit
             .open_wait_for_thread(&ctx.thread_id)
+            .await
+            .map_err(HostError::internal)?
             .ok_or_else(|| HostError::bad_request("no awaiting run to resume"))?;
         let awaiting_snapshot = self.authoritative_step_snapshot(&ctx, &run_id).await?;
 

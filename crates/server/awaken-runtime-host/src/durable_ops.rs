@@ -116,9 +116,14 @@ impl SharedHost {
         let ctx = self.ctx_for(thread, None).await?;
         let pool = self.dispatch_pool_or_err()?;
         let thread_id = ThreadId(thread.to_string());
-        let (run_id, ticket) = ctx.commit.open_wait_for_thread(&thread_id).ok_or_else(|| {
-            HostError::bad_request("no awaiting run on this thread to deliver to")
-        })?;
+        let (run_id, ticket) = ctx
+            .commit
+            .open_wait_for_thread(&thread_id)
+            .await
+            .map_err(HostError::internal)?
+            .ok_or_else(|| {
+                HostError::bad_request("no awaiting run on this thread to deliver to")
+            })?;
         let input = awaken_run_ingress::PendingInput {
             message_id: awaken_runtime::fresh_process_id("xthread"),
             run_id: run_id.clone(),
@@ -147,6 +152,8 @@ impl SharedHost {
         let (run_id, ticket) = ctx
             .commit
             .open_wait_for_thread(&thread_id)
+            .await
+            .map_err(HostError::internal)?
             .ok_or_else(|| HostError::bad_request("no awaiting run on this thread to resume"))?;
         if ticket.reason != awaken_agent_contract::agent::awaiting::AwaitReason::ManualPause {
             return Err(HostError::bad_request(
