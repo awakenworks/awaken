@@ -16,9 +16,10 @@ pub(super) struct SessionRecord {
     pub(super) projected_message_ids: HashSet<String>,
     /// Last committed Run lifecycle fact consumed by this disposable projection.
     pub(super) projected_lifecycle_cursor: awaken_agent_contract::LifecycleCursor,
-    /// Run terminals already lowered locally or from the lifecycle feed. Run id
-    /// is the cross-protocol idempotency key; event position is not authority.
-    pub(super) projected_terminal_run_ids: HashSet<awaken_agent_contract::agent::run::Id>,
+    /// Exact committed lifecycle positions already lowered locally or from the
+    /// feed. A Run may await and resume repeatedly, so Run id alone is not an
+    /// idempotency key; each terminal transition owns a distinct cursor.
+    pub(super) projected_terminal_cursors: HashSet<awaken_agent_contract::LifecycleCursor>,
     /// Subagent child threads spawned in this Session. Each is announced by a
     /// `session.thread_created` event and remains a projection of durable truth.
     pub(super) child_threads: Vec<SessionThread>,
@@ -39,7 +40,7 @@ impl SessionRecord {
             events,
             projected_message_ids,
             projected_lifecycle_cursor: Default::default(),
-            projected_terminal_run_ids: Default::default(),
+            projected_terminal_cursors: Default::default(),
             child_threads: Vec::new(),
         }
     }

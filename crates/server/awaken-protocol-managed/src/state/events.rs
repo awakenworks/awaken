@@ -2,8 +2,8 @@
 //! the live-inbox surface, and `send_events`/`list_events`.
 
 use super::*;
-use awaken_agent_contract::RunLifecycleKind;
 use awaken_agent_contract::agent::delegation::DelegationStatus;
+use awaken_agent_contract::{LifecycleCursor, RunLifecycleKind};
 
 struct DelegateCall {
     run_id: String,
@@ -281,6 +281,74 @@ impl ManagedState {
         }
     }
 
+    fn lifecycle_cursor(&self, session_id: &str) -> Result<LifecycleCursor, StateError> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map(|record| record.projected_lifecycle_cursor)
+            .ok_or(StateError::NotFound)
+    }
+
+    async fn terminal_cursor_after(
+        &self,
+        session_id: &str,
+        after: LifecycleCursor,
+        outcome: &StepOutcome,
+    ) -> Result<Option<LifecycleCursor>, StateError> {
+        let Some(run_id) = outcome.run_id() else {
+            return Ok(None);
+        };
+        const PAGE_SIZE: usize = 256;
+        let mut cursor = after;
+        let mut found = None;
+        loop {
+            let page = self
+                .runtime
+                .committed_run_lifecycle(session_id, cursor, PAGE_SIZE)
+                .await
+                .map_err(StateError::Run)?;
+            let count = page.events.len();
+            for event in page.events {
+                if event.thread_id.0 == session_id
+                    && &event.run_id == run_id
+                    && &event.state == outcome.state()
+                    && matches!(
+                        event.kind,
+                        RunLifecycleKind::Awaiting
+                            | RunLifecycleKind::Completed
+                            | RunLifecycleKind::Failed
+                            | RunLifecycleKind::Cancelled
+                    )
+                {
+                    found = Some(event.cursor);
+                }
+            }
+            if page.next_cursor == cursor || count < PAGE_SIZE {
+                return Ok(found);
+            }
+            cursor = page.next_cursor;
+        }
+    }
+
+    async fn append_committed_step(
+        &self,
+        session_id: &str,
+        outcome: StepOutcome,
+        preview_ids: PreviewAllocations,
+        lifecycle_start: LifecycleCursor,
+    ) -> Result<(), StateError> {
+        let terminal_cursor = self
+            .terminal_cursor_after(session_id, lifecycle_start, &outcome)
+            .await?;
+        if outcome.run_id().is_some() && terminal_cursor.is_none() {
+            return Err(StateError::Run(RunError::internal(
+                "committed Run terminal is missing from the lifecycle feed",
+            )));
+        }
+        self.append_step(session_id, outcome, preview_ids, terminal_cursor)
+    }
+
     /// Append one step's projected events to the session, minting ids where the
     /// projection did not supply one.
     /// Project a committed turn into events and append them. Preview allocations
@@ -291,6 +359,7 @@ impl ManagedState {
         session_id: &str,
         outcome: StepOutcome,
         mut preview_ids: PreviewAllocations,
+        terminal_cursor: Option<LifecycleCursor>,
     ) -> Result<(), StateError> {
         let pending = outcome
             .pending()
@@ -306,12 +375,12 @@ impl ManagedState {
                 _ => None,
             })
             .collect();
-        let project_terminal = outcome
-            .run_id()
-            .is_none_or(|run_id| record.projected_terminal_run_ids.insert(run_id.clone()));
+        let project_terminal =
+            terminal_cursor.is_none_or(|cursor| record.projected_terminal_cursors.insert(cursor));
         // A concurrent GET may already have observed this process's committed
         // messages through the shared transcript and projected them. Message ids
-        // are the canonical dedupe key; status brackets remain request-local.
+        // deduplicate messages; the exact lifecycle cursor deduplicates its status
+        // bracket regardless of whether the feed or local request wins the race.
         let new_messages = outcome
             .new_messages
             .iter()
@@ -546,6 +615,7 @@ impl ManagedState {
     ) -> Result<(), StateError> {
         match inbound {
             InboundEvent::UserMessage { content, model, .. } => {
+                let lifecycle_start = self.lifecycle_cursor(session_id)?;
                 if let Some(model) = model {
                     self.runtime.rebind_model(session_id, model).await?;
                 }
@@ -570,13 +640,20 @@ impl ManagedState {
                         return Err(StateError::Run(error));
                     }
                 };
-                self.append_step(session_id, outcome, sink.take_allocations())?;
+                self.append_committed_step(
+                    session_id,
+                    outcome,
+                    sink.take_allocations(),
+                    lifecycle_start,
+                )
+                .await?;
             }
             InboundEvent::UserToolConfirmation {
                 tool_use_id,
                 result,
                 deny_message,
             } => {
+                let lifecycle_start = self.lifecycle_cursor(session_id)?;
                 let decision = ToolPermissionDecision {
                     allow: matches!(result, ConfirmResult::Allow),
                     note: deny_message.clone(),
@@ -585,13 +662,20 @@ impl ManagedState {
                     .runtime
                     .resume(session_id, tool_use_id, decision)
                     .await?;
-                self.append_step(session_id, outcome, PreviewAllocations::default())?;
+                self.append_committed_step(
+                    session_id,
+                    outcome,
+                    PreviewAllocations::default(),
+                    lifecycle_start,
+                )
+                .await?;
             }
             InboundEvent::UserCustomToolResult {
                 custom_tool_use_id,
                 content,
                 is_error,
             } => {
+                let lifecycle_start = self.lifecycle_cursor(session_id)?;
                 let outcome = self
                     .runtime
                     .resume_custom(
@@ -601,13 +685,20 @@ impl ManagedState {
                         *is_error,
                     )
                     .await?;
-                self.append_step(session_id, outcome, PreviewAllocations::default())?;
+                self.append_committed_step(
+                    session_id,
+                    outcome,
+                    PreviewAllocations::default(),
+                    lifecycle_start,
+                )
+                .await?;
             }
             InboundEvent::UserToolResult {
                 tool_use_id,
                 content,
                 is_error,
             } => {
+                let lifecycle_start = self.lifecycle_cursor(session_id)?;
                 let outcome = self
                     .runtime
                     .resume_custom(
@@ -617,7 +708,13 @@ impl ManagedState {
                         *is_error,
                     )
                     .await?;
-                self.append_step(session_id, outcome, PreviewAllocations::default())?;
+                self.append_committed_step(
+                    session_id,
+                    outcome,
+                    PreviewAllocations::default(),
+                    lifecycle_start,
+                )
+                .await?;
             }
             InboundEvent::UserDefineOutcome {
                 description,
@@ -963,10 +1060,7 @@ impl ManagedState {
             record.session.status = "idle";
         }
         let project_terminal = terminal.filter(|event| {
-            !awaiting_ticket_pending
-                && record
-                    .projected_terminal_run_ids
-                    .insert(event.run_id.clone())
+            !awaiting_ticket_pending && record.projected_terminal_cursors.insert(event.cursor)
         });
         if project_terminal.is_some() {
             record.events.push(Event {
@@ -1217,19 +1311,27 @@ mod tests {
         // C4=latest lifecycle is Awaiting with its exact pending ticket; C5=latest
         // lifecycle is Ended; C6=the same read refresh repeats; C7=the Managed
         // request already projected that exact Run terminal; C8=the disposable
-        // Session cache is cold while the committed ticket remains open. E1=Managed status is
+        // Session cache is cold while the committed ticket remains open; C9=the
+        // same Run resumes and reaches a second Awaiting terminal. E1=Managed status is
         // running without a fabricated terminal; E2=Awaiting appends one
         // running→requires_action bracket carrying the custom-call id; E3=Ended
         // appends one running→idle bracket; E4=messages and terminals are not
         // duplicated; E5=the lifecycle cursor fences the projection; E6=cold
-        // recovery still classifies the call as client-executed.
+        // recovery still classifies the call as client-executed; C10=a concurrent
+        // read observes the committed terminal before the local request appends it.
+        // E7=each terminal occurrence has exactly one status bracket even when Run
+        // id is reused; C11=a durable outcome has no matching lifecycle fact.
+        // E8=the exact lifecycle cursor deduplicates either race order; E9=missing
+        // durable identity fails closed without appending an unkeyed bracket.
         // Decision table:
-        // | Rule | C2 | C3 | C4 | C5 | C6 | C7 | C8 | Effect       |
-        // | R1   | T  | T  | F  | F  | F  | F  | F  | E1,E5        |
-        // | R2   | T  | F  | T  | F  | T  | F  | F  | E2,E4,E5     |
-        // | R3   | T  | F  | F  | T  | T  | F  | F  | E3,E4,E5     |
-        // | R4   | T  | F  | F  | T  | T  | T  | F  | E3 once,E4   |
-        // | R5   | T  | F  | T  | F  | T  | F  | T  | E2,E4,E5,E6  |
+        // | Rule | C2 | C3 | C4 | C5 | C6 | C7 | C8 | C9 | C10 | C11 | Effect          |
+        // | R1   | T  | T  | F  | F  | F  | F  | F  | F  | F   | F   | E1,E5           |
+        // | R2   | T  | F  | T  | F  | T  | F  | F  | F  | F   | F   | E2,E4,E5        |
+        // | R3   | T  | F  | F  | T  | T  | F  | F  | F  | F   | F   | E3,E4,E5        |
+        // | R4   | T  | F  | F  | T  | T  | T  | F  | F  | F   | F   | E3 once,E4,E8   |
+        // | R5   | T  | F  | T  | F  | T  | F  | T  | F  | F   | F   | E2,E4,E5,E6     |
+        // | R6   | T  | F  | T  | F  | T  | T  | F  | T  | T   | F   | E2,E4,E5,E7,E8  |
+        // | R7   | T  | F  | F  | F  | F  | T  | F  | F  | F   | T   | E4,E9           |
         let runtime = LifecycleRuntime::default();
         let state = ManagedState::new(runtime.clone());
         let request = serde_json::from_value(serde_json::json!({"agent":"coder"})).unwrap();
@@ -1329,6 +1431,7 @@ mod tests {
                 )
                 .with_run_id(local_run.clone()),
                 PreviewAllocations::default(),
+                Some(LifecycleCursor(60)),
             )
             .unwrap();
         runtime.lifecycle.lock().unwrap().extend([
@@ -1355,6 +1458,61 @@ mod tests {
         assert_eq!(rendered.matches("session.status_idle").count(), 3, "R4/E4");
         assert_eq!(rendered.matches("local done").count(), 1, "R4/E4");
 
+        let resumed_call_id = "call-local-resumed";
+        let resumed_message = Message::new(
+            MessageId("local-resumed-tool".into()),
+            Role::Assistant,
+            vec![ContentBlock::tool_use(
+                resumed_call_id,
+                "design_submit_artifact",
+                serde_json::json!({"manifest_path":"artifact-manifest.json"}),
+            )],
+        );
+        let resumed_pending = Pending {
+            tool_use_id: resumed_call_id.into(),
+            name: "design_submit_artifact".into(),
+            input: serde_json::json!({"manifest_path":"artifact-manifest.json"}),
+            client_executed: true,
+        };
+        *runtime.pending.lock().unwrap() = Some(resumed_pending);
+        runtime.messages.lock().unwrap().push(resumed_message);
+        runtime.lifecycle.lock().unwrap().extend([
+            lifecycle(
+                70,
+                &thread,
+                &local_run,
+                RunLifecycleKind::Resumed,
+                RunState::Running,
+            ),
+            lifecycle(
+                80,
+                &thread,
+                &local_run,
+                RunLifecycleKind::Awaiting,
+                RunState::Awaiting,
+            ),
+        ]);
+        state.refresh_committed_events(&thread).await.unwrap();
+        state
+            .append_step(
+                &thread,
+                StepOutcome::awaiting(
+                    Vec::new(),
+                    runtime.pending.lock().unwrap().clone(),
+                    false,
+                    false,
+                )
+                .with_run_id(local_run.clone()),
+                PreviewAllocations::default(),
+                Some(LifecycleCursor(80)),
+            )
+            .unwrap();
+        state.refresh_committed_events(&thread).await.unwrap();
+        let rendered =
+            serde_json::to_string(&state.list_events(&thread, None, None).unwrap().data).unwrap();
+        assert_eq!(rendered.matches("session.status_idle").count(), 4, "R6/E7");
+        assert_eq!(rendered.matches(resumed_call_id).count(), 2, "R6/E2/E4");
+
         let cold_run = RunId("run-cold-4".into());
         let cold_call_id = "call-cold-submit";
         *runtime.messages.lock().unwrap() = vec![Message::new(
@@ -1374,14 +1532,14 @@ mod tests {
         });
         runtime.lifecycle.lock().unwrap().extend([
             lifecycle(
-                70,
+                90,
                 &thread,
                 &cold_run,
                 RunLifecycleKind::Running,
                 RunState::Running,
             ),
             lifecycle(
-                80,
+                100,
                 &thread,
                 &cold_run,
                 RunLifecycleKind::Awaiting,
@@ -1400,5 +1558,28 @@ mod tests {
         );
         assert!(!rendered.contains("\"type\":\"agent.tool_use\""), "R5/E6");
         assert_eq!(rendered.matches(cold_call_id).count(), 2, "R5/E2/E4");
+
+        let before = state.list_events(&thread, None, None).unwrap().data.len();
+        let missing = state
+            .append_committed_step(
+                &thread,
+                StepOutcome::ended(Vec::new(), EndCause::NaturalEnd, false, false)
+                    .with_run_id(RunId("run-missing-lifecycle".into())),
+                PreviewAllocations::default(),
+                LifecycleCursor(100),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            missing
+                .to_string()
+                .contains("missing from the lifecycle feed"),
+            "R7/E9"
+        );
+        assert_eq!(
+            state.list_events(&thread, None, None).unwrap().data.len(),
+            before,
+            "R7/E4/E9"
+        );
     }
 }
