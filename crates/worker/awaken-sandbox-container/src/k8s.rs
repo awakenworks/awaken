@@ -1144,6 +1144,36 @@ mod tests {
             buildkit.args.as_ref().unwrap()[0].contains("/dev/termination-log"),
             "R4"
         );
+        let environment = buildkit.env.as_ref().unwrap();
+        for name in [
+            "FORWARD_PROXY",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "http_proxy",
+            "https_proxy",
+        ] {
+            assert!(
+                environment.iter().any(|variable| {
+                    variable.name == name
+                        && variable.value.as_deref() == Some("http://proxy.internal:8080")
+                }),
+                "R6 BuildKit and package-manager egress must inherit {name}"
+            );
+        }
+        assert!(
+            environment.iter().any(|variable| {
+                variable.name == "NO_PROXY"
+                    && variable
+                        .value
+                        .as_deref()
+                        .is_some_and(|value| value.contains("registry.local:5000"))
+            }),
+            "R6 the package Registry must bypass the external proxy"
+        );
+        assert!(
+            buildkit.args.as_ref().unwrap()[0].contains("build-arg:HTTP_PROXY"),
+            "R6 predefined proxy args must reach package-manager RUN steps"
+        );
         assert!(
             buildkit.args.as_ref().unwrap()[0].contains(
                 "mkdir -p /tmp/workspace\ncp /input/Dockerfile /tmp/workspace/Dockerfile"
