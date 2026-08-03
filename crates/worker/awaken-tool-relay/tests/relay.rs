@@ -8,7 +8,8 @@ use async_trait::async_trait;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolExecutor, ToolOutput};
 use awaken_tool_relay::wire::{HandError, HandErrorKind, HandReply, HandRequest, HandResult};
 use awaken_tool_relay::{
-    FsOperationLedger, HandOperationLedger, HandSession, RemoteToolExecutor, serve_hand,
+    FsOperationLedger, HandOperationLedger, HandSession, LedgerAdmission, RemoteToolExecutor,
+    serve_hand,
 };
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -312,16 +313,49 @@ async fn filesystem_ledger_survives_a_hand_restart() {
 }
 
 #[tokio::test]
-async fn filesystem_ledger_rejects_an_oversized_operation_identity() {
+async fn filesystem_ledger_accepts_a_long_nested_workflow_operation_identity() {
     let directory = TestDirectory::create();
     let ledger = FsOperationLedger::open(directory.path()).expect("open ledger");
+    let operation_id = format!(
+        "workflow-execution:state-entry:issue_{}:deliver:3:coding:tool-call-17",
+        "nested".repeat(40)
+    );
+    let result = HandResult::Ok {
+        output: awaken_runtime_contract::tool::ToolOutput::ok(
+            "nested-workflow-call",
+            "nested-hand-ok",
+        ),
+    };
 
-    let error = ledger
-        .begin(&"x".repeat(97))
+    assert_eq!(
+        ledger
+            .begin(&operation_id)
+            .await
+            .expect("long identity is admitted"),
+        LedgerAdmission::Execute
+    );
+    ledger
+        .complete(&operation_id, &result)
         .await
-        .expect_err("an identity that cannot fit losslessly must fail closed");
+        .expect("long identity completes durably");
 
-    assert!(error.contains("operation id exceeds"));
+    let restarted = FsOperationLedger::open(directory.path()).expect("reopen ledger");
+    assert_eq!(
+        restarted
+            .begin(&operation_id)
+            .await
+            .expect("long identity survives restart"),
+        LedgerAdmission::Cached(result)
+    );
+
+    for entry in std::fs::read_dir(directory.path()).expect("read ledger directory") {
+        let name = entry
+            .expect("ledger entry")
+            .file_name()
+            .to_string_lossy()
+            .into_owned();
+        assert!(name.len() <= 255, "ledger filename must remain bounded");
+    }
 }
 
 /// A tool whose own `invoke` returns an error — the hand reports it as an

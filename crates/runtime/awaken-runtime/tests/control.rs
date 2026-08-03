@@ -22,8 +22,8 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_store_inmem::MemoryCommitCoordinator;
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
+use awaken_store_inmem::MemoryCommitCoordinator;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 

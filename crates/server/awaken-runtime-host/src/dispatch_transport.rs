@@ -438,6 +438,10 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
             post(application_contribution),
         )
         .route(
+            "/v1/worker/session/application-resume",
+            post(application_resume),
+        )
+        .route(
             "/v1/worker/session/realization/begin",
             post(begin_session_realization),
         )
@@ -494,6 +498,88 @@ struct ApplicationContributionReq {
     claim: RunClaim,
     identity: WorkerIdentity,
     contribution: awaken_session_contract::ApplicationSessionContribution,
+}
+
+#[derive(Deserialize)]
+struct ApplicationResumeReq {
+    claim: RunClaim,
+    identity: WorkerIdentity,
+    session_id: String,
+}
+
+async fn application_resume(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<ApplicationResumeReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let authority = claim_authority(&service, &worker, Some(&request.identity), false).await?;
+        if authority.owner != request.claim.owner {
+            return Err(HostError::bad_request(
+                "authenticated worker does not own the Session resume claim",
+            ));
+        }
+        let guard = service
+            .dispatch
+            .lock_commit_epoch(&request.claim)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?
+            .ok_or_else(|| HostError::bad_request("Session resume claim is stale"))?;
+        if !guard.is_live_at(authority.now_ms) {
+            return Err(HostError::bad_request(
+                "Session resume claim lease has expired",
+            ));
+        }
+        let dispatch = guard.request();
+        if dispatch.run_id() != &request.claim.run_id {
+            return Err(HostError::bad_request(
+                "guarded dispatch does not match the Session resume claim",
+            ));
+        }
+        if dispatch.thread_id().0 != request.session_id {
+            return Err(HostError::bad_request(
+                "Session resume target does not match the claimed Run",
+            ));
+        }
+        let control = service
+            .application_session_control
+            .as_ref()
+            .ok_or_else(|| HostError::internal("application Session control is not configured"))?;
+        let registry_expiry = authority
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.expires_at_ms)
+            .unwrap_or(u64::MAX);
+        let realization_expiry = authority
+            .now_ms
+            .saturating_add(authority.lease_ms)
+            .min(registry_expiry);
+        let realization = match control
+            .begin_session_realization(awaken_session_contract::BeginSessionRealization {
+                session_id: request.session_id,
+                target: awaken_session_contract::SessionRealizationTarget {
+                    owner: request.identity.worker_id.clone(),
+                    runtime_incarnation: request.identity.lease_owner(),
+                    lease_expires_at_unix_ms: realization_expiry,
+                    renew_existing_lease: false,
+                },
+            })
+            .await
+        {
+            Ok(realization) => Some(realization),
+            Err(awaken_session_contract::SessionRealizationControlFailure::NotReady) => None,
+            Err(error) => return Err(HostError::bad_request(error.to_string())),
+        };
+        if !guard.is_live_at(service.clock.now_ms()) {
+            return Err(HostError::bad_request(
+                "Session resume claim expired before realization assignment",
+            ));
+        }
+        drop(guard);
+        Ok(json!({ "realization": realization }))
+    }
+    .await;
+    respond(result)
 }
 
 async fn application_contribution(

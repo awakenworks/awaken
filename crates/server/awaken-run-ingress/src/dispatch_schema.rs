@@ -82,43 +82,35 @@ const FILES: &[(&str, &str)] = &[
         include_str!("migrations/V0014__normalize_awaiting_state.sql"),
     ),
     (
-        "V0015__delegation_group.sql",
-        include_str!("migrations/V0015__delegation_group.sql"),
-    ),
-    (
-        "V0016__drop_legacy_delegation_group.sql",
-        include_str!("migrations/V0016__drop_legacy_delegation_group.sql"),
-    ),
-    (
-        "V0017__dispatch_worker_assignment.sql",
+        "V0015__dispatch_worker_assignment.sql",
         include_str!("migrations/V0017__dispatch_worker_assignment.sql"),
     ),
     (
-        "V0018__dispatch_completion.sql",
+        "V0016__dispatch_completion.sql",
         include_str!("migrations/V0018__dispatch_completion.sql"),
     ),
     (
-        "V0019__stream_checkpoint.sql",
+        "V0017__stream_checkpoint.sql",
         include_str!("migrations/V0019__stream_checkpoint.sql"),
     ),
     (
-        "V0020__durable_cancellation_intent.sql",
+        "V0018__durable_cancellation_intent.sql",
         include_str!("migrations/V0020__durable_cancellation_intent.sql"),
     ),
     (
-        "V0021__dispatch_operational_feed.sql",
+        "V0019__dispatch_operational_feed.sql",
         include_str!("migrations/V0021__dispatch_operational_feed.sql"),
     ),
     (
-        "V0022__dispatch_attempt_credentials.sql",
+        "V0020__dispatch_attempt_credentials.sql",
         include_str!("migrations/V0022__dispatch_attempt_credentials.sql"),
     ),
     (
-        "V0023__dispatch_operation_recorded_at.sql",
+        "V0021__dispatch_operation_recorded_at.sql",
         include_str!("migrations/V0023__dispatch_operation_recorded_at.sql"),
     ),
     (
-        "V0024__normalize_signed_millis.sql",
+        "V0022__normalize_signed_millis.sql",
         include_str!("migrations/V0024__normalize_signed_millis.sql"),
     ),
 ];
@@ -153,16 +145,7 @@ pub fn dispatch_bundle() -> Result<MigrationBundle, MigrationError> {
             let version = version_of(name);
             let description = description_of(name, contents);
             let sql = contents.trim();
-            if version == 16 {
-                Migration::published_legacy(
-                    version,
-                    description,
-                    sql,
-                    "b69507cd88429793df7d48d30bf84246ff61873687be7938cd737a602776db6b",
-                )
-            } else {
-                Migration::new(version, description, sql)
-            }
+            Migration::new(version, description, sql)
         })
         .collect::<Result<Vec<_>, _>>()?;
     MigrationBundle::new(BUNDLE_ID, migrations)
@@ -179,7 +162,7 @@ mod tests {
 
     #[test]
     fn dispatch_bundle_lints_clean() {
-        // Cause/effect rule: deterministic V1..V24 bodies plus a valid scoped
+        // Cause/effect rule: deterministic V1..V22 bodies plus a valid scoped
         // receipt contract produce a lint-clean bundle; conditional DDL or a
         // malformed migration fails before either database runner executes it.
         let bundle = dispatch_bundle().expect("bundle builds");
@@ -189,48 +172,74 @@ mod tests {
     #[test]
     fn versions_parse_from_file_names() {
         let bundle = dispatch_bundle().expect("bundle builds");
-        // Cause/effect decision table: empty ledgers apply the immutable V1..V24
-        // stream; any published prefix applies only the missing suffix; deleting
-        // retired V15/V16 and shifting later versions breaks checksum proof.
+        // Cause/effect decision table: empty ledgers apply the immutable V1..V22
+        // stream and any published prefix applies only the missing suffix.
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, (1..=24).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=22).collect::<Vec<_>>());
     }
 
     #[test]
-    fn compressed_dispatch_numbering_is_rejected_as_a_competing_history() {
+    fn deployed_dispatch_receipts_remain_the_canonical_history() {
         use std::collections::BTreeMap;
 
         use awaken_scoped_migration::{Dialect, plan};
 
-        // R1 canonical V15 receipt -> verify; R2 compressed-track V15 receipt
-        // (actually worker-assignment SQL) -> checksum mismatch at V15. The
-        // latter cannot be merged because it maps a different effect to the same
-        // version and would create a second migration source of truth.
-        let applied = BTreeMap::from([(
-            15,
-            "e835f0eaae0017589eda70e1f1049fc1d2e428e7ade63f42defdc2366c737a90".into(),
-        )]);
+        // These exact receipts were written by released V15..V22. Inserting two
+        // transient migrations before them and renumbering their effects is not
+        // a forward migration: it makes every deployed database fail startup.
+        let applied = BTreeMap::from([
+            (
+                15,
+                "e835f0eaae0017589eda70e1f1049fc1d2e428e7ade63f42defdc2366c737a90".into(),
+            ),
+            (
+                16,
+                "545591fc3352db71247bf94a31dc195a06b32ca4e1d3b52052601d463afd3a2c".into(),
+            ),
+            (
+                17,
+                "557e6d23c5f135df6932dd96d61f1fa997e84a686f9b48ceb264fa0e65d9a716".into(),
+            ),
+            (
+                18,
+                "d1ab5678a30aa454ca8ba01de23511dc9e9d99f7c6f654b3d64841e4eeb2d72b".into(),
+            ),
+            (
+                19,
+                "378d530aacb8236ef6bc385615720b0ac74f66b6579e498b939d816cd48d6e4d".into(),
+            ),
+            (
+                20,
+                "19ea60ea79d9c80ec872cccbb9bb810458cf3b446d1b5581d208d1da7868a36a".into(),
+            ),
+            (
+                21,
+                "75178da4f1b5e3c8ec83550ae11cc13efd26cb66cd16ea20459ec19d8586399b".into(),
+            ),
+            (
+                22,
+                "e609358db6e3dc1fd1e1548ecf6a9b3072510e33a0c28234d910f028b7720246".into(),
+            ),
+        ]);
 
         let bundle = dispatch_bundle().expect("bundle builds");
-        assert!(matches!(
-            plan(&bundle, &applied, Dialect::Sqlite).unwrap_err(),
-            awaken_scoped_migration::MigrationError::ChecksumMismatch { version: 15, .. }
-        ));
+        let pending = plan(&bundle, &applied, Dialect::Sqlite).expect("deployed receipts verify");
+        assert!(pending.iter().all(|migration| migration.version() < 15));
     }
 
     #[test]
-    fn v24_normalizes_legacy_negative_millis_during_forward_migration() {
+    fn v22_normalizes_legacy_negative_millis_during_forward_migration() {
         use awaken_scoped_migration::MigrationBundle;
         use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
         use rusqlite::Connection;
 
         // CE-TM10 decision rules:
-        // R1 published V1..V23 + non-negative millis -> V24 preserves the value;
-        // R2 published V1..V23 + legacy negative millis -> V24 maps it to i64::MAX;
-        // R3 current V1..V24 ledger -> reopening applies nothing (runner idempotency).
+        // R1 published V1..V21 + non-negative millis -> V22 preserves the value;
+        // R2 published V1..V21 + legacy negative millis -> V22 maps it to i64::MAX;
+        // R3 current V1..V22 ledger -> reopening applies nothing (runner idempotency).
         let conn = Connection::open_in_memory().expect("open sqlite");
         let full = dispatch_bundle().expect("bundle builds");
-        let published = MigrationBundle::new(BUNDLE_ID, full.migrations()[..23].to_vec())
+        let published = MigrationBundle::new(BUNDLE_ID, full.migrations()[..21].to_vec())
             .expect("published bundle");
         let runner = SqliteMigrationRunner::with_prefix(NS).expect("runner");
         runner
@@ -251,9 +260,9 @@ mod tests {
         )
         .expect("seed legacy rows");
 
-        let applied = runner.run_bundle(&conn, &full).expect("apply V24");
+        let applied = runner.run_bundle(&conn, &full).expect("apply V22");
         assert_eq!(applied.len(), 1);
-        assert_eq!(applied[0].version, 24);
+        assert_eq!(applied[0].version, 22);
         let maximum = i64::MAX;
         assert_eq!(
             conn.query_row(

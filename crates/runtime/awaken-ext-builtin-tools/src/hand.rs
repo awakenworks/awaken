@@ -9,6 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_runtime_contract::tool::{RawTool, Tool, ToolError, ToolExecutionTarget};
 use serde::Deserialize;
+use tokio::io::AsyncReadExt;
 
 use crate::erasure::erase_for;
 
@@ -267,9 +268,11 @@ impl Tool for BashTool {
     async fn call(&self, args: BashArgs) -> Result<String, ToolError> {
         // The async child wait yields to authority heartbeats and, unlike a
         // `spawn_blocking(Command::output)` task, remains cancellation-safe. Each
-        // shell leads a private process group: dropping this tool call kills the
-        // entire group, so WorkUnit cancellation cannot orphan approval prompts,
-        // compilers, or other descendants under the Worker service.
+        // shell leads a private process group: finishing or dropping this tool call
+        // kills the entire group, so neither a successful `cmd &` nor WorkUnit
+        // cancellation can orphan servers, approval prompts, compilers, or other
+        // descendants under the Worker service. A background service that must live
+        // for several checks belongs inside one bounded shell call with a trap.
         let mut command = platform_shell_command(&args.command);
         let shell = command
             .as_std()
@@ -282,22 +285,49 @@ impl Tool for BashTool {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        let child = command
+        let mut child = command
             .spawn()
             .map_err(|err| ToolError::Execution(format!("spawn {shell}: {err}")))?;
-        let mut process_group = ProcessGroupGuard::new(child.id());
-        let output = child
-            .wait_with_output()
+        let process_group = ProcessGroupGuard::new(child.id());
+        let mut child_stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ToolError::Execution(format!("capture {shell} stdout")))?;
+        let mut child_stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| ToolError::Execution(format!("capture {shell} stderr")))?;
+        let stdout_reader = tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            child_stdout.read_to_end(&mut bytes).await.map(|_| bytes)
+        });
+        let stderr_reader = tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            child_stderr.read_to_end(&mut bytes).await.map(|_| bytes)
+        });
+        let status = child
+            .wait()
             .await
             .map_err(|err| ToolError::Execution(format!("wait for {shell}: {err}")))?;
-        process_group.disarm();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if output.status.success() {
+        // `wait_with_output` waits for pipe EOF as well as the foreground shell.
+        // An unredirected `server &` keeps both pipes open indefinitely even
+        // after that shell has exited. Reap the private process group as soon as
+        // the foreground status is known; only then can the readers observe EOF.
+        drop(process_group);
+        let stdout = stdout_reader
+            .await
+            .map_err(|err| ToolError::Execution(format!("join {shell} stdout reader: {err}")))?
+            .map_err(|err| ToolError::Execution(format!("read {shell} stdout: {err}")))?;
+        let stderr = stderr_reader
+            .await
+            .map_err(|err| ToolError::Execution(format!("join {shell} stderr reader: {err}")))?
+            .map_err(|err| ToolError::Execution(format!("read {shell} stderr: {err}")))?;
+        let stdout = String::from_utf8_lossy(&stdout);
+        let stderr = String::from_utf8_lossy(&stderr);
+        if status.success() {
             Ok(stdout.into_owned())
         } else {
-            let code = output
-                .status
+            let code = status
                 .code()
                 .map_or_else(|| "signal".to_string(), |c| c.to_string());
             Err(ToolError::Execution(format!(
@@ -372,6 +402,35 @@ mod bash_tests {
             leaked.display()
         );
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn completed_bash_call_kills_background_descendants() {
+        // A successful shell used to disarm the process-group guard. `server &`
+        // therefore escaped the tool boundary and accumulated in a reusable K8s
+        // Session even though the Agent had already returned an approved verdict.
+        let directory = tempfile::tempdir().expect("temporary marker directory");
+        let leaked = directory.path().join("leaked");
+        let command = format!(
+            "sh -c 'sleep 0.4; printf leaked > {}' & printf done",
+            leaked.display()
+        );
+
+        let output = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            BashTool.call(BashArgs { command }),
+        )
+        .await
+        .expect("an unredirected background child must not hold the tool pipe open")
+        .expect("foreground shell succeeds");
+        assert_eq!(output, "done");
+
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        assert!(
+            !leaked.exists(),
+            "a successful bash tool call must reap its background process group"
+        );
+    }
 }
 
 #[cfg(windows)]
@@ -423,9 +482,9 @@ fn configure_process_group(command: &mut tokio::process::Command) {
     }
 }
 
-/// Synchronously terminates a Unix process group when an in-flight tool future
+/// Synchronously terminates a Unix process group when a tool future finishes or
 /// is dropped. Tokio's `kill_on_drop` covers the direct child on every platform;
-/// this guard extends that guarantee to descendants on Unix.
+/// this guard extends that guarantee to background descendants on Unix.
 struct ProcessGroupGuard {
     #[cfg(unix)]
     group: Option<nix::unistd::Pid>,
@@ -436,13 +495,6 @@ impl ProcessGroupGuard {
         Self {
             #[cfg(unix)]
             group: pid.map(|value| nix::unistd::Pid::from_raw(value as i32)),
-        }
-    }
-
-    fn disarm(&mut self) {
-        #[cfg(unix)]
-        {
-            self.group = None;
         }
     }
 }

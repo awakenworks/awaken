@@ -101,3 +101,6 @@ fi
 # of surfacing later as a closed Session hand channel.
 run_with_deadline "$operation_timeout_seconds" \
   "$engine" run --rm --entrypoint /usr/local/bin/awaken-sandbox "$image" hand --stdio </dev/null
+run_with_deadline "$operation_timeout_seconds" \
+  "$engine" run --rm --entrypoint /bin/sh "$image" -c \
+  'command -v curl >/dev/null && curl --version >/dev/null'

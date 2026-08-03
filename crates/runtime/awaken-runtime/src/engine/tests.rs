@@ -625,6 +625,24 @@ impl LlmExecutor for SucceedingLlm {
 struct NeverCalledLlm {
     calls: std::sync::Mutex<usize>,
 }
+
+/// Never yields a stream item or a terminal response, modeling a provider
+/// connection that stays open forever while the host heartbeat remains healthy.
+struct HangingStreamLlm;
+#[async_trait]
+impl LlmExecutor for HangingStreamLlm {
+    async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+        unreachable!("streaming-only")
+    }
+
+    async fn infer_streaming(
+        &self,
+        _request: ChatRequest,
+        _sink: &dyn DeltaSink,
+    ) -> LlmResult<ChatResponse> {
+        std::future::pending().await
+    }
+}
 #[async_trait]
 impl LlmExecutor for NeverCalledLlm {
     async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
@@ -686,6 +704,7 @@ fn policy(max_retries: usize) -> crate::retry::LlmRetryPolicy {
         max_retries,
         backoff_base_ms: 0,
         overloaded_backoff_base_ms: 0,
+        attempt_timeout: std::time::Duration::from_secs(5),
     }
 }
 fn assistant_prefixes(request: &ChatRequest) -> Vec<String> {
@@ -727,6 +746,29 @@ fn content_gate_is_closed_by_default_and_open_at_full() {
             .as_deref(),
         Some(rendered.as_str())
     );
+}
+
+#[tokio::test]
+async fn a_provider_stream_has_a_total_attempt_deadline() {
+    let llm: Arc<dyn LlmExecutor> = Arc::new(HangingStreamLlm);
+    let mut timeout_policy = policy(0);
+    timeout_policy.attempt_timeout = std::time::Duration::from_millis(10);
+    let error = infer_with_retry(
+        &llm,
+        one_step_request(),
+        &timeout_policy,
+        &crate::circuit_breaker::CircuitBreaker::default(),
+        &recording(),
+        None,
+        None,
+        &awaken_runtime_contract::CaptureDecision::default(),
+        None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, LlmError::Timeout(message) if message.contains("10ms")));
 }
 
 #[tokio::test]

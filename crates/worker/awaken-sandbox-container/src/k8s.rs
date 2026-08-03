@@ -20,12 +20,14 @@ use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, AgentTransport, SplitChannel};
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::{
-    Capabilities, ConfigMap, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar,
+    ConfigMap, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar,
     LocalObjectReference, Pod, PodSecurityContext, PodSpec, ResourceRequirements, Secret,
-    SecretVolumeSource, SecurityContext, Volume, VolumeMount,
+    SecretVolumeSource, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference, Status};
+#[cfg(test)]
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::Status;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use kube::api::{AttachParams, DeleteParams, ListParams};
 use kube::{Api, Client};
 use std::collections::BTreeMap;
@@ -38,10 +40,17 @@ use crate::{
 
 mod live_inputs;
 mod names;
+mod pod_security;
+mod process;
 mod realization;
 use names::{cfg_owner_label, configmap_name, credential_secret_name, k8s_runtime_id, pod_name};
+use pod_security::{egress_label, fuse_sidecar_security_context, hardened_security_context};
+#[cfg(test)]
+use process::k8s_exit_status;
+use process::{K8sExecProcess, K8sExecState, k8s_exec_argv};
 use realization::{
-    PodReadiness, await_pod_deleted, create_or_verify, pod_readiness, stamp_realization,
+    PodReadiness, await_pod_deleted, create_or_verify, pod_readiness, reap_terminal_pod,
+    stamp_realization,
 };
 
 pub use crate::k8s_package_image::K8sPackageImageProvisioner;
@@ -58,154 +67,6 @@ pub(crate) fn api_conflict(error: &kube::Error) -> bool {
 
 pub(crate) fn api_not_found(error: &kube::Error) -> bool {
     matches!(error, kube::Error::Api(response) if response.code == 404)
-}
-
-struct K8sExecState {
-    completion: Option<tokio::task::JoinHandle<Option<Status>>>,
-    status: Option<pc::ExitStatus>,
-}
-
-struct K8sExecProcess {
-    id: String,
-    pod: String,
-    pid_file: String,
-    pods: Api<Pod>,
-    state: tokio::sync::Mutex<K8sExecState>,
-}
-
-fn k8s_exit_status(status: Option<Status>) -> pc::ExitStatus {
-    let success = status.as_ref().and_then(|status| status.status.as_deref()) == Some("Success");
-    let code = status
-        .and_then(|status| status.details)
-        .and_then(|details| details.causes)
-        .and_then(|causes| {
-            causes.into_iter().find_map(|cause| {
-                (cause.reason.as_deref() == Some("ExitCode"))
-                    .then_some(cause.message)
-                    .flatten()
-            })
-        })
-        .and_then(|message| message.parse::<i32>().ok())
-        .or(Some(if success { 0 } else { 1 }));
-    pc::ExitStatus {
-        code,
-        signaled: false,
-    }
-}
-
-fn k8s_exec_argv(
-    id: &str,
-    command: pc::MaterializedCommand,
-) -> Result<(String, Vec<String>), RuntimeError> {
-    if command.argv.is_empty() {
-        return Err(backend("exec command argv is empty"));
-    }
-    let pid_file = format!("/tmp/{id}.pid");
-    let mut argv = vec!["env".to_string()];
-    for var in command.env {
-        if var.value.is_secret() {
-            return Err(backend(
-                "Kubernetes exec cannot deliver a process secret without argv exposure",
-            ));
-        }
-        argv.push(format!("{}={}", var.name, var.value.expose()));
-    }
-    argv.extend([
-        "sh".into(),
-        "-c".into(),
-        "pid_file=$1; cwd=$2; shift 2; printf '%s' \"$$\" > \"$pid_file\"; \
-         if [ -n \"$cwd\" ]; then cd -- \"$cwd\" || exit 126; fi; exec \"$@\""
-            .into(),
-        "awaken-exec".into(),
-        pid_file.clone(),
-        command.cwd,
-    ]);
-    argv.extend(command.argv);
-    Ok((pid_file, argv))
-}
-
-#[async_trait]
-impl pc::ProcessHandle for K8sExecProcess {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
-        let mut state = self.state.lock().await;
-        if let Some(status) = &state.status {
-            return Ok(status.clone());
-        }
-        let completion = state
-            .completion
-            .take()
-            .ok_or_else(|| pc::SandboxError::new("k8s exec completion is unavailable"))?;
-        let status = completion
-            .await
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        let status = k8s_exit_status(status);
-        state.status = Some(status.clone());
-        Ok(status)
-    }
-
-    async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
-        let mut state = self.state.lock().await;
-        if let Some(status) = &state.status {
-            return Ok(Some(status.clone()));
-        }
-        let Some(completion) = state.completion.as_ref() else {
-            return Err(pc::SandboxError::new("k8s exec completion is unavailable"));
-        };
-        if !completion.is_finished() {
-            return Ok(None);
-        }
-        let completion = state.completion.take().expect("checked above");
-        let status = completion
-            .await
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        let status = k8s_exit_status(status);
-        state.status = Some(status.clone());
-        Ok(Some(status))
-    }
-
-    async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
-        let name = match signal {
-            pc::Signal::Term => "TERM",
-            pc::Signal::Kill => "KILL",
-            pc::Signal::Int => "INT",
-        };
-        let script = format!(
-            "pid=$(cat -- '{}') && kill -{} \"$pid\"",
-            self.pid_file.replace('\'', "'\\''"),
-            name
-        );
-        let mut attached = self
-            .pods
-            .exec(
-                &self.pod,
-                vec!["sh", "-c", &script],
-                &AttachParams::default()
-                    .container("agent")
-                    .stdin(false)
-                    .stdout(true)
-                    .stderr(false),
-            )
-            .await
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        let mut stdout = attached
-            .stdout()
-            .ok_or_else(|| pc::SandboxError::new("k8s signal exec has no stdout"))?;
-        let status = attached
-            .take_status()
-            .ok_or_else(|| pc::SandboxError::new("k8s signal exec has no status"))?;
-        let mut ignored = Vec::new();
-        let (read, status) = tokio::join!(stdout.read_to_end(&mut ignored), status);
-        read.map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        if k8s_exit_status(status).code == Some(0) {
-            Ok(())
-        } else {
-            Err(pc::SandboxError::new("k8s exec signal failed"))
-        }
-    }
 }
 
 /// The single ConfigMap data key each inline-content mount is stored under; the Pod
@@ -356,6 +217,8 @@ pub struct K8sRuntime {
     namespace: String,
     agent_addr: SocketAddr,
     owner: Option<OwnerReference>,
+    /// Process-incarnation fence used by the cross-restart orphan reaper.
+    owner_id: String,
     /// The image of the memoryd sidecar that FUSE-serves a memory store into the
     /// shared volume the agent reads (ADR-0038 MemoryStore, in-pod realization).
     memoryd_image: String,
@@ -402,6 +265,7 @@ impl K8sRuntime {
             namespace: namespace.into(),
             agent_addr,
             owner: None,
+            owner_id: crate::runtime_owner_id(),
             memoryd_image: DEFAULT_MEMORYD_IMAGE.to_string(),
             rendezvous: None,
             memoryd_fuse: false,
@@ -466,6 +330,7 @@ impl K8sRuntime {
             namespace: "default".into(),
             agent_addr,
             owner: None,
+            owner_id: crate::runtime_owner_id(),
             memoryd_image: DEFAULT_MEMORYD_IMAGE.to_string(),
             rendezvous: None,
             memoryd_fuse: false,
@@ -509,7 +374,7 @@ impl K8sRuntime {
 
     fn pod(&self, id: &str, plan: &ContainerPlan) -> Pod {
         let rendezvous = self.rendezvous.map(|a| a.to_string());
-        build_pod(
+        let mut pod = build_pod(
             id,
             plan,
             &self.owner,
@@ -517,7 +382,11 @@ impl K8sRuntime {
             rendezvous.as_deref(),
             self.memoryd_fuse,
             &self.image_pull_secrets,
-        )
+        );
+        let labels = pod.metadata.labels.get_or_insert_with(Default::default);
+        labels.insert(crate::REAPER_LABEL.to_string(), "1".to_string());
+        labels.insert(crate::REAPER_OWNER_LABEL.to_string(), self.owner_id.clone());
+        pod
     }
 }
 
@@ -641,6 +510,25 @@ fn build_pod(
         // exec subresource before terminating the agent and writes it back to the broker.
         for (i, bind) in credential_binds(plan).iter().enumerate() {
             let seed_vol = format!("credential-seed-{i}");
+            if bind.credential_file_path.is_none() {
+                volumes.push(Volume {
+                    name: seed_vol.clone(),
+                    secret: Some(SecretVolumeSource {
+                        secret_name: Some(credential_secret_name(id, i)),
+                        default_mode: Some(0o440),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                });
+                agent_mounts.push(VolumeMount {
+                    name: seed_vol,
+                    mount_path: bind.mount_path.clone(),
+                    sub_path: Some(credential_key(bind).to_string()),
+                    read_only: Some(true),
+                    ..Default::default()
+                });
+                continue;
+            }
             let writable_vol = format!("credential-rw-{i}");
             volumes.push(Volume {
                 name: seed_vol.clone(),
@@ -749,16 +637,6 @@ fn build_pod(
     }
 }
 
-/// The egress-posture label value an external platform policy may select on. The
-/// label itself is metadata, not enforcement, so this adapter does not advertise
-/// network isolation until composition can verify that policy separately.
-fn egress_label(network: &crate::NetworkMode) -> &'static str {
-    match network {
-        crate::NetworkMode::Open => "open",
-        crate::NetworkMode::None => "restricted",
-    }
-}
-
 /// Host side of the reverse-dial: bind the rendezvous and accept the Pod's outbound
 /// connection, returning it as the agent channel. Extracted so it is testable with a
 /// stand-in dialer (no cluster).
@@ -769,33 +647,6 @@ async fn accept_reverse(addr: SocketAddr) -> Result<Box<dyn AgentChannel>, Runti
         .map_err(backend)?;
     let chan = listen.accept().await.map_err(backend)?;
     Ok(Box::new(chan))
-}
-
-/// The memoryd sidecar's `securityContext` in FUSE mode: it needs `SYS_ADMIN` to
-/// mount `/dev/fuse`. Only granted when FUSE is enabled — the copy fallback needs no
-/// privilege, so a locked-down (no-FUSE) cluster runs the sidecar unprivileged.
-fn fuse_sidecar_security_context() -> SecurityContext {
-    SecurityContext {
-        capabilities: Some(Capabilities {
-            add: Some(vec!["SYS_ADMIN".to_string()]),
-            drop: None,
-        }),
-        ..Default::default()
-    }
-}
-
-/// The hardened `securityContext` for the untrusted agent container: no privilege
-/// escalation, every Linux capability dropped.
-fn hardened_security_context() -> SecurityContext {
-    SecurityContext {
-        allow_privilege_escalation: Some(false),
-        read_only_root_filesystem: Some(true),
-        capabilities: Some(Capabilities {
-            drop: Some(vec!["ALL".to_string()]),
-            add: None,
-        }),
-        ..Default::default()
-    }
 }
 
 #[async_trait]
@@ -842,6 +693,8 @@ impl ContainerRuntime for K8sRuntime {
             )));
         }
         let runtime_id = k8s_runtime_id(id)?;
+        let pods = self.pods();
+        reap_terminal_pod(&pods, &pod_name(&runtime_id)).await?;
         // Realize ordinary inline-content mounts as ConfigMaps *before* the Pod: the
         // Pod's volumes reference them by name. Managed Files deliberately bypass
         // this immutable path and use the one stable live projector after readiness.
@@ -877,7 +730,6 @@ impl ContainerRuntime for K8sRuntime {
         }
         let mut pod = self.pod(&runtime_id, plan);
         stamp_realization(&mut pod)?;
-        let pods = self.pods();
         let created = create_or_verify(&pods, &pod).await?;
         let name = created
             .metadata
@@ -1125,14 +977,70 @@ impl ContainerRuntime for K8sRuntime {
             Err(error) => Err(backend(error)),
         }
     }
+
+    async fn list_managed(&self) -> Result<Vec<crate::ManagedContainer>, RuntimeError> {
+        let pods = self
+            .pods()
+            // `app=awaken-sandbox` predates the reaper labels. Selecting the stable
+            // legacy label lets the first upgraded process collect Pods leaked by
+            // older ownerless runtimes as well as all newly fenced Pods.
+            .list(&ListParams::default().labels("app=awaken-sandbox"))
+            .await
+            .map_err(backend)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        Ok(pods
+            .into_iter()
+            .filter_map(|pod| {
+                let id = pod.metadata.name?;
+                let owned_by_current_runtime = pod
+                    .metadata
+                    .labels
+                    .as_ref()
+                    .and_then(|labels| labels.get(crate::REAPER_OWNER_LABEL))
+                    == Some(&self.owner_id);
+                let running = !matches!(
+                    pod.status
+                        .as_ref()
+                        .and_then(|status| status.phase.as_deref()),
+                    Some("Succeeded" | "Failed")
+                );
+                let age_secs = pod
+                    .metadata
+                    .creation_timestamp
+                    .map(|created| now.saturating_sub(created.0.timestamp().max(0) as u64))
+                    .unwrap_or(0);
+                Some(crate::ManagedContainer {
+                    id,
+                    owned_by_current_runtime,
+                    running,
+                    age_secs,
+                })
+            })
+            .collect())
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::ForwardProxy;
     use awaken_provisioning_contract::ProcessHandle;
     use std::sync::Arc;
 
     use super::*;
+
+    #[tokio::test]
+    async fn kube_client_accepts_an_http_proxy_from_deployment_environment() {
+        // A host-level HTTP(S)_PROXY is consumed by kube::Config discovery. K8s
+        // workers must keep accepting that standard deployment posture instead of
+        // panicking while the Session runtime is being composed.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let mut config = kube::Config::new("https://127.0.0.1:1/".parse().unwrap());
+        config.proxy_url = Some("http://127.0.0.1:18082/".parse().unwrap());
+        Client::try_from(config).expect("the k8s client is compiled with HTTP proxy support");
+    }
 
     #[tokio::test]
     async fn empty_scope_fails_before_the_first_k8s_write() {
@@ -1168,6 +1076,10 @@ mod tests {
         )
         .unwrap()
         .with_buildkit_image("registry.local:5000/system/buildkit:v0.30.0-rootless")
+        .unwrap()
+        .with_forward_proxy(ForwardProxy {
+            url: "http://proxy.internal:8080".into(),
+        })
         .unwrap();
         let packages = pc::PackageRequirements {
             managers: [("npm".into(), vec!["@playwright/mcp@latest".into()])]
@@ -1187,7 +1099,10 @@ mod tests {
         assert!(data["buildkitd.toml"].contains("http = true"), "R2");
         let spec = job.spec.unwrap();
         assert_eq!(spec.backoff_limit, Some(0), "R3");
-        assert!(spec.active_deadline_seconds.unwrap() < 15 * 60, "R3");
+        assert!(
+            (30 * 60..60 * 60).contains(&spec.active_deadline_seconds.unwrap()),
+            "R3 cold package builds stay bounded below the Coordinator run ceiling"
+        );
         let pod = spec.template.spec.unwrap();
         assert_eq!(pod.automount_service_account_token, Some(false), "R3");
         assert_eq!(
@@ -1235,6 +1150,36 @@ mod tests {
             ),
             "R6 rootless BuildKit must use a writable workspace"
         );
+        let environment = buildkit.env.as_ref().unwrap();
+        for name in [
+            "FORWARD_PROXY",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "http_proxy",
+            "https_proxy",
+        ] {
+            assert!(
+                environment.iter().any(|variable| {
+                    variable.name == name
+                        && variable.value.as_deref() == Some("http://proxy.internal:8080")
+                }),
+                "R8 BuildKit and package-manager egress must inherit {name}"
+            );
+        }
+        assert!(
+            environment.iter().any(|variable| {
+                variable.name == "NO_PROXY"
+                    && variable
+                        .value
+                        .as_deref()
+                        .is_some_and(|value| value.contains("registry.local:5000"))
+            }),
+            "R8 the package Registry must bypass the external proxy"
+        );
+        assert!(
+            buildkit.args.as_ref().unwrap()[0].contains("build-arg:HTTP_PROXY"),
+            "R8 predefined proxy args must reach package-manager RUN steps"
+        );
         assert!(
             K8sPackageImageProvisioner::new(
                 client,
@@ -1259,6 +1204,22 @@ mod tests {
             .with_buildkit_image("registry.local/bad image")
             .is_err(),
             "R7 an invalid mirrored builder reference must fail before a Kubernetes write"
+        );
+        assert!(
+            K8sPackageImageProvisioner::new(
+                Client::try_from(kube::Config::new("http://127.0.0.1:1/".parse().unwrap()))
+                    .unwrap(),
+                "awaken-system",
+                "registry.local/environments",
+                Vec::new(),
+                true,
+            )
+            .unwrap()
+            .with_forward_proxy(ForwardProxy {
+                url: "file:///tmp/not-a-proxy".into(),
+            })
+            .is_err(),
+            "R9 an invalid package-build proxy must fail before a Kubernetes write"
         );
     }
 
@@ -1428,6 +1389,19 @@ mod tests {
         assert!(rt.owner.is_some());
         assert_eq!(rt.rendezvous, Some("127.0.0.1:7000".parse().unwrap()));
         assert_eq!(rt.memoryd_image, "custom/memoryd:1");
+        let labels = rt
+            .pod("s1", &plan_with_memory(vec![]))
+            .metadata
+            .labels
+            .unwrap();
+        assert_eq!(
+            labels.get(crate::REAPER_LABEL).map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            labels.get(crate::REAPER_OWNER_LABEL).map(String::as_str),
+            Some(rt.owner_id.as_str())
+        );
         assert_eq!(
             rt.pod("s1", &plan_with_memory(vec![]))
                 .spec
@@ -1720,6 +1694,43 @@ mod tests {
             Some(credential.as_slice())
         );
         assert!(!format!("{plan:?}").contains("never-log-me"));
+    }
+
+    #[test]
+    fn readonly_secret_is_projected_as_the_exact_file_not_a_directory() {
+        let mut plan = plan_with_memory(Vec::new());
+        plan.binds = vec![crate::BindPlan {
+            source_ref: "credential://github".into(),
+            mount_path: "/run/secrets/awaken-git-credential-0".into(),
+            read_only: true,
+            content: None,
+            content_bytes: None,
+            secret_content: Some(crate::SecretBytes::new(b"synthetic-token".to_vec())),
+            secret_writeback: false,
+            credential_file_path: None,
+        }];
+
+        let spec = build_pod("git", &plan, &None, "memoryd", None, false, &[])
+            .spec
+            .unwrap();
+        assert!(spec.init_containers.is_none());
+        let secret = spec
+            .volumes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find_map(|volume| volume.secret.as_ref())
+            .expect("read-only credential Secret volume");
+        assert_eq!(secret.default_mode, Some(0o440));
+        let mount = spec.containers[0]
+            .volume_mounts
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|mount| mount.mount_path == "/run/secrets/awaken-git-credential-0")
+            .expect("exact credential file mount");
+        assert_eq!(mount.sub_path.as_deref(), Some(CONFIGMAP_KEY));
+        assert_eq!(mount.read_only, Some(true));
     }
 
     #[test]

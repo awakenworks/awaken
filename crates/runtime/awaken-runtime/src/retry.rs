@@ -29,6 +29,8 @@ pub struct LlmRetryPolicy {
     /// Backoff base when the provider reports overload — deliberately longer,
     /// since hammering an overloaded provider extends the outage.
     pub overloaded_backoff_base_ms: u64,
+    /// Hard ceiling for one provider attempt, including its complete stream.
+    pub attempt_timeout: Duration,
 }
 
 impl Default for LlmRetryPolicy {
@@ -37,6 +39,7 @@ impl Default for LlmRetryPolicy {
             max_retries: 2,
             backoff_base_ms: 500,
             overloaded_backoff_base_ms: 2_000,
+            attempt_timeout: Duration::from_secs(300),
         }
     }
 }
