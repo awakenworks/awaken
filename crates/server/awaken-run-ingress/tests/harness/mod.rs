@@ -562,12 +562,17 @@ impl MetricsRecorder for RecordingMetrics {
 /// resumes. Every other operation delegates to the inner [`MemoryDispatchStore`].
 /// The seam for proving a daemon/pool drain loop swallows a transient store error
 /// and recovers on a later tick rather than dying.
+/// Compile-surface decision table: `test-support` enabled exposes the volatile
+/// failure injector to the memory suites; disabled leaves Postgres-only suites
+/// compilable without reopening the in-memory production authority.
+#[cfg(feature = "test-support")]
 pub struct FlakyDispatchStore {
     inner: Arc<awaken_run_ingress::MemoryDispatchStore>,
     fail_claims: AtomicUsize,
     claim_attempts: AtomicUsize,
 }
 
+#[cfg(feature = "test-support")]
 impl FlakyDispatchStore {
     /// Wrap a fresh in-memory store that fails its first `fail_claims` claims.
     pub fn new(fail_claims: usize) -> Self {
@@ -590,6 +595,7 @@ impl FlakyDispatchStore {
 }
 
 #[async_trait::async_trait]
+#[cfg(feature = "test-support")]
 impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
     async fn lock_commit_epoch(
         &self,
@@ -733,6 +739,7 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
 }
 
 #[async_trait::async_trait]
+#[cfg(feature = "test-support")]
 impl awaken_run_ingress::Inbox for FlakyDispatchStore {
     async fn append(
         &self,
@@ -764,6 +771,7 @@ impl awaken_run_ingress::Inbox for FlakyDispatchStore {
 }
 
 #[async_trait::async_trait]
+#[cfg(feature = "test-support")]
 impl awaken_run_ingress::Outbox for FlakyDispatchStore {
     async fn stage(
         &self,
