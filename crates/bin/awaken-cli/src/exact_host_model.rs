@@ -8,6 +8,9 @@ pub(super) fn local_test_process_options() -> super::ProcessAssemblyOptions {
     deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
     super::ProcessAssemblyOptions {
         deployment: Some(deployment),
+        executable_agent_wiring: Some(
+            super::executable_agent_registration::ExecutableAgentWiring::local(),
+        ),
         ..Default::default()
     }
 }

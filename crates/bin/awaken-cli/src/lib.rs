@@ -697,7 +697,9 @@ async fn build_all_in_one_router_with_composition(
             local_acp_observations: deployment.local_acp_observations,
             web_search_providers: None,
             web_search_publication_resolver: None,
-            executable_agent_wiring: None,
+            executable_agent_wiring: Some(
+                executable_agent_registration::ExecutableAgentWiring::local(),
+            ),
             executable_environment_wiring: None,
             worker_authenticator: None,
             control_service_token: None,
@@ -1241,6 +1243,9 @@ mod process_role_surface_tests {
                 executable_environment_wiring: Some(
                     executable_environment_registration::local_test_wiring(),
                 ),
+                executable_agent_wiring: Some(
+                    executable_agent_registration::ExecutableAgentWiring::local(),
+                ),
                 ..Default::default()
             },
         )
@@ -1408,6 +1413,9 @@ mod process_role_surface_tests {
                 role: config::Role::Control,
                 executable_environment_wiring: Some(
                     executable_environment_registration::local_test_wiring(),
+                ),
+                executable_agent_wiring: Some(
+                    executable_agent_registration::ExecutableAgentWiring::local(),
                 ),
                 ..Default::default()
             },
