@@ -117,6 +117,7 @@ tower-http = { version = "0.6", features = ["fs"] }
 test-support = [
     "awaken-protocol-managed/test-support",
     "awaken-dream-application/test-support",
+    "awaken-runtime-host/test-support",
 ]
 # Cross-node dispatch wake over NATS (AWAKEN_DISPATCH_WAKE=nats). Passes through to
 # awaken-runtime-host → awaken-run-ingress so the built binary carries a NATS-capable

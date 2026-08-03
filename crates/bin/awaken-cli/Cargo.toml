@@ -112,6 +112,7 @@ test-support = [
     "awaken-work-store/test-support",
     "awaken-protocol-managed/test-support",
     "awaken-coordinator/test-support",
+    "awaken-runtime-host/test-support",
 ]
 # Container ACP tiers (AWAKEN_SANDBOX_TIER=docker/podman/k8s): enable the backend a
 # deployment runs its agents on. Off by default — the namespace tier needs no feature.

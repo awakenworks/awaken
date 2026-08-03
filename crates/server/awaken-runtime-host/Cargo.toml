@@ -80,6 +80,9 @@ regex = "1"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 [features]
+# Post-construction persistence overrides are restricted to tests. Product
+# composition selects every authority before constructing SharedHost.
+test-support = []
 # Cross-node dispatch wake over NATS: passes through to awaken-run-ingress so the
 # host's wake selector can build a `NatsWakeSignal` when AWAKEN_DISPATCH_WAKE=nats.
 # Off by default — the durable store stays Postgres either way; this only swaps the
@@ -104,3 +107,11 @@ awaken-store-inmem = { workspace = true }
 # Drives the durable-ops axum router in-process (ServiceExt::oneshot) to exercise
 # the SharedHost operational verbs over their real HTTP surface.
 tower = { version = "0.5", features = ["util"] }
+
+[[test]]
+name = "durable_child_run"
+required-features = ["test-support"]
+
+[[test]]
+name = "durable_verbs"
+required-features = ["test-support"]

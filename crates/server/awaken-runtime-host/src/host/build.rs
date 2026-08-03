@@ -18,12 +18,23 @@ impl SharedHost {
         resolve_local_workspace(Some(root))
     }
 
+    /// Test-support selection of the same local extraction repository used by
+    /// volatile/local host fixtures. Product composition injects its role-owned
+    /// repository directly into the production constructor.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_memory_extraction_repository(
+        storage_dir: Option<&std::path::Path>,
+    ) -> Arc<dyn awaken_ext_memory::MemoryExtractionRepository> {
+        local_memory_extraction_repository(storage_dir)
+    }
+
     /// A host over `llm`. Configure it with the chainable `with_*` builders
     /// (client tools, delegates, a judge grader, a durable store).
     pub fn new(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
         Self::build(
             llm,
             model_ref.into(),
+            None,
             None,
             None,
             crate::deployment_config::DeploymentConfig::ephemeral(),
@@ -37,7 +48,7 @@ impl SharedHost {
         model_ref: impl Into<String>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
-        Self::build(llm, model_ref.into(), None, None, deployment)
+        Self::build(llm, model_ref.into(), None, None, None, deployment)
     }
 
     /// Replace the environment-derived deployment value with the exact typed
@@ -90,6 +101,7 @@ impl SharedHost {
             model_ref.into(),
             Some(resources),
             None,
+            None,
             crate::deployment_config::DeploymentConfig::ephemeral(),
         )
     }
@@ -100,9 +112,17 @@ impl SharedHost {
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
         resources: awaken_resource_contract::ResourceComponent,
+        extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
-        Self::build(llm, model_ref.into(), Some(resources), None, deployment)
+        Self::build(
+            llm,
+            model_ref.into(),
+            Some(resources),
+            None,
+            Some(extraction_repository),
+            deployment,
+        )
     }
 
     /// Construct an execution Worker with its exact remote content adapters
@@ -121,6 +141,7 @@ impl SharedHost {
             model_ref.into(),
             None,
             Some((file_content_source, memory_repository)),
+            None,
             deployment,
         )
     }
@@ -133,6 +154,7 @@ impl SharedHost {
             Arc<dyn crate::FileContentSource>,
             Arc<dyn awaken_memory_store::MemoryRepository>,
         )>,
+        extraction_repository: Option<Arc<dyn awaken_ext_memory::MemoryExtractionRepository>>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
         // Composition root: the deployment axes are parsed once from the environment
@@ -158,23 +180,8 @@ impl SharedHost {
                 },
             )
         };
-        let extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository> =
-            match store_dir.as_ref() {
-                Some(dir) => {
-                    std::fs::create_dir_all(dir)
-                        .expect("create durable Memory extraction repository directory");
-                    Arc::new(
-                        awaken_session_store::SqliteManagedSessionRepository::open(
-                            &dir.join("sessions.db").to_string_lossy(),
-                        )
-                        .expect("open durable Memory extraction repository"),
-                    )
-                }
-                None => Arc::new(
-                    awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-                        .expect("open ephemeral Memory extraction repository"),
-                ),
-            };
+        let extraction_repository = extraction_repository
+            .unwrap_or_else(|| local_memory_extraction_repository(store_dir.as_deref()));
         let memory = Arc::new(crate::memory::MemoryRuntime::new(
             llm.clone(),
             Arc::new(LocalProvider::new(sub_base("mem"))),
@@ -1144,4 +1151,63 @@ fn resolve_local_workspace(store_dir: Option<&std::path::Path>) -> String {
         .expect("persist platform workspace id");
     }
     generated
+}
+
+fn local_memory_extraction_repository(
+    storage_dir: Option<&std::path::Path>,
+) -> Arc<dyn awaken_ext_memory::MemoryExtractionRepository> {
+    match storage_dir {
+        Some(dir) => {
+            std::fs::create_dir_all(dir)
+                .expect("create durable Memory extraction repository directory");
+            Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open(
+                    &dir.join("sessions.db").to_string_lossy(),
+                )
+                .expect("open durable Memory extraction repository"),
+            )
+        }
+        None => Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("open ephemeral Memory extraction repository"),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod composition_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_extraction_repository_is_the_initial_authority() {
+        // Cause/effect graph: C1 an extraction repository is explicit; C2 local
+        // storage is configured. Effects: E1 exact injected identity is installed;
+        // E2 a local SQLite repository is derived; E3 volatile fixture is derived.
+        // Constraint: the production resource/deployment constructor requires C1.
+        //
+        // | Rule | explicit repo | storage dir | initial extraction authority |
+        // | T1   | yes           | any         | exact injected repository    |
+        // | T2   | no            | yes         | derived durable SQLite       |
+        // | T3   | no            | no          | test-only ephemeral SQLite   |
+        //
+        // T2/T3 remain covered by existing local restart/fixture suites. T1
+        // prevents the former construct-then-replace duplicate authority.
+        let expected: Arc<dyn awaken_ext_memory::MemoryExtractionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("test extraction repository"),
+        );
+        let host = SharedHost::build(
+            Arc::new(crate::NoModelConfiguredExecutor),
+            crate::UNCONFIGURED_MODEL_REF.into(),
+            None,
+            None,
+            Some(expected.clone()),
+            crate::DeploymentConfig::ephemeral(),
+        );
+
+        assert!(
+            Arc::ptr_eq(&expected, &host.memory.extraction_repository()),
+            "T1/E1"
+        );
+    }
 }
