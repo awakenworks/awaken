@@ -27,7 +27,7 @@ awaken-observability = { workspace = true }
 # Open enforcement (S1): the session-axis guard + RequestTenancy the project
 # ingress stamps. The standalone wraps the session router with it.
 awaken-authz-enforce = { workspace = true }
-awaken-protocol-managed = { workspace = true }
+awaken-protocol-managed = { workspace = true, features = ["test-support"] }
 awaken-protocol-awaken = { workspace = true }
 awaken-sandbox-policy-store = { workspace = true }
 awaken-protocol-ai-sdk = { workspace = true }
@@ -98,14 +98,14 @@ tower = { version = "0.5", features = ["util"] }
 
 # Depends on the product crate for the now-pub assembly helpers + production executors.
 awaken-environment-application.workspace = true
-awaken-coordinator = { workspace = true }
+awaken-coordinator = { workspace = true, features = ["test-support"] }
 # Reuse the production worker lifecycle/registration/heartbeat/dispatch wiring in
 # the worker-failover scenario; only its deterministic executor provider differs.
 awaken-worker = { workspace = true }
 # The composition root: the `management` scenario mode + the brain-admin surface moved
 # to awaken-cli's library (Stage B2). Dev-dep cycle-free: awaken-cli dev-depends back
 # on this crate for the mock models its moved integration tests drive.
-awaken-cli = { workspace = true }
+awaken-cli = { workspace = true, features = ["test-support"] }
 # The authoring plane (Stage B2): the config-router scenario mode seeds the admin
 # assistant + builds its tool executables through awaken-control's ports.
 awaken-control = { workspace = true }

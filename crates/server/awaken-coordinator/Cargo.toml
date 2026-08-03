@@ -62,8 +62,8 @@ awaken-run-executor-a2a = { workspace = true }
 awaken-config-resolver = { workspace = true }
 awaken-provider-genai = { workspace = true }
 # The management-plane HTTP surfaces this binary mounts: admin config CRUD and the
-# Managed vault/credential front door, over shared stores — in-memory by default,
-# SQLite-backed when typed data_dir selects durable persistence (`sqlite` features).
+# Managed vault/credential front door over stores selected by the outer product
+# composition. Volatile scenario wiring is available only through `test-support`.
 awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-model-catalog = { workspace = true, features = ["sqlite", "postgres"] }
 # `oauth-command`: refresh a Google OAuth2 token (gcloud) for the `real-gemini` mode.
@@ -113,6 +113,8 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["fs"] }
 
 [features]
+# Volatile embedded/scenario assembly is excluded from product builds.
+test-support = ["awaken-protocol-managed/test-support"]
 # Cross-node dispatch wake over NATS (AWAKEN_DISPATCH_WAKE=nats). Passes through to
 # awaken-runtime-host → awaken-run-ingress so the built binary carries a NATS-capable
 # wake selector. This is the *wake* channel only and is independent of the crate's

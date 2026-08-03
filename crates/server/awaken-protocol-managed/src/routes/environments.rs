@@ -7,9 +7,10 @@
 //! Open-tier semantics: the API shape is complete and usable, but a single-machine
 //! build leases work to **one** worker at a time — `poll` hands out a queued item
 //! only when no item in the environment is already `active`. Multi-worker
-//! fan-out (many concurrent leases) is the managed scaling boundary; here the
-//! queue is one in-process store. Every new environment is seeded with one
-//! `healthcheck` work item so the queue is exercisable end to end.
+//! fan-out (many concurrent leases) is the managed scaling boundary. Product
+//! composition injects a durable SQLite/PostgreSQL queue; only explicit test-support
+//! composition uses the reference in-memory queue. Every new environment is seeded
+//! with one `healthcheck` work item so the queue is exercisable end to end.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,9 +22,11 @@ use axum::{Json, Router};
 #[cfg(test)]
 use serde_json::json;
 
+#[cfg(any(test, feature = "test-support"))]
+use crate::env_registry::InMemoryEnvRegistry;
 use crate::env_registry::{
     EnvItem, EnvRegistry, EnvUpdate, EnvironmentConfigMutation, EnvironmentNetworkingMutation,
-    EnvironmentPackagesMutation, InMemoryEnvRegistry,
+    EnvironmentPackagesMutation,
 };
 use crate::routes::ManagedJson;
 use crate::types::environment::{
@@ -35,6 +38,7 @@ use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 use awaken_environment_application::{
     EnvironmentApplication, EnvironmentApplicationError, default_environment_registration,
 };
+#[cfg(any(test, feature = "test-support"))]
 use awaken_work_store::InMemoryWorkQueue;
 
 use crate::work_queue::WorkQueue;
@@ -318,6 +322,7 @@ impl EnvironmentExecutionState {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Default for EnvironmentExecutionState {
     fn default() -> Self {
         let catalog =
@@ -329,6 +334,7 @@ impl Default for EnvironmentExecutionState {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Default for EnvironmentState {
     fn default() -> Self {
         let envs: Arc<dyn EnvRegistry> = Arc::new(InMemoryEnvRegistry::new());
@@ -355,6 +361,9 @@ impl Default for EnvironmentState {
 }
 
 impl EnvironmentState {
+    /// Volatile all-in-one fixture. Product composition must call
+    /// [`EnvironmentState::with_stores`] with explicitly selected stores.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn new() -> Self {
         Self::default()

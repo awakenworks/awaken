@@ -438,15 +438,17 @@ pub(super) async fn assemble_runtime_process_router(
     if let Some(credentials) = credential_materializer {
         managed_host = managed_host.with_credential_materializer(credentials);
     }
-    let mut managed_state = ManagedState::new_with_mcp(managed_host)
-        .with_credential_source(credential_source)
-        .with_environments(environment_execution.clone())
-        .with_resource_catalog(resource_catalog.clone())
-        .with_resource_purge_scheduler(resource_application.purge_scheduler())
-        // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
-        // published agent's model sees the authoritative config-plane truth (M2).
-        .with_config_source(executable_agent_catalog.clone())
-        .with_session_repo(sessions.clone());
+    let mut managed_state = ManagedState::from_required_ports_with_mcp(
+        managed_host,
+        sessions.clone(),
+        environment_execution.clone(),
+    )
+    .with_credential_source(credential_source)
+    .with_resource_catalog(resource_catalog.clone())
+    .with_resource_purge_scheduler(resource_application.purge_scheduler())
+    // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
+    // published agent's model sees the authoritative config-plane truth (M2).
+    .with_config_source(executable_agent_catalog.clone());
     managed_state = managed_state.with_lifecycle_sink(webhook_sink);
     let managed_state = Arc::new(managed_state);
     // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat

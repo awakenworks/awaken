@@ -1,11 +1,8 @@
-//! In-memory reference [`WorkQueue`] backend + the shared lease bookkeeping.
+//! In-memory reference [`WorkQueue`] backend.
 //!
-//! [`InMemoryWorkQueue`] is the open-tier single-process default the routes wire when
-//! no durable backend is configured; [`LeaseBook`] is its process-local lease model and
-//! the poll-liveness bookkeeping used by the durable stores. Durable stores keep lease
-//! safety authority in their rows. All three
-//! backends live in this crate, beside the durable siblings; the neutral port + value
-//! objects they operate on live inward in `awaken-session-contract`.
+//! This executable specification is available only to unit tests and consumers that
+//! explicitly enable `test-support`. Product composition must select SQLite or
+//! PostgreSQL so accepted work survives process loss.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -17,126 +14,13 @@ use awaken_session_contract::work_queue::{
     WorkQueue, WorkQueueError, WorkState,
 };
 
-use super::heartbeat_at;
+use super::{LeaseBook, heartbeat_at};
 
 /// The lease TTL a heartbeat reports (seconds).
 const HEARTBEAT_TTL_SECONDS: u64 = 60;
-/// The lease window in ms: an `active` item whose lease last extended more than
-/// this ago is no longer held by a live worker and is reclaimable on the next poll.
-pub const LEASE_TTL_MS: u64 = HEARTBEAT_TTL_SECONDS * 1000;
-/// The liveness window for `workers_polling`: a worker counts as polling if it
-/// polled within this many ms of now (the SDK's ~30s window).
-pub const POLLER_WINDOW_MS: u64 = 30_000;
-/// Process-local bookkeeping. The in-memory backend uses both maps; durable stores
-/// use only `polls`, because their lease owner/epoch/expiry must survive restarts and
-/// coordinate across processes in the database.
-#[derive(Default)]
-pub struct LeaseBook {
-    /// work_id → lease refresh/expiry window. Absent ⇒ no live lease.
-    leases: Mutex<BTreeMap<String, LeaseWindow>>,
-    /// work_id → worker identity that owns the current lease.
-    owners: Mutex<BTreeMap<String, String>>,
-    /// env_id → (worker_id → last poll ms).
-    polls: Mutex<BTreeMap<String, BTreeMap<String, u64>>>,
-}
 
-#[derive(Clone, Copy)]
-struct LeaseWindow {
-    refreshed_at_ms: u64,
-    expires_at_ms: u64,
-}
-
-impl LeaseBook {
-    /// Record that `worker_id` polled `env_id` at `now_ms`.
-    pub fn record_poll(&self, env_id: &str, worker_id: &str, now_ms: u64) {
-        self.polls
-            .lock()
-            .unwrap()
-            .entry(env_id.to_string())
-            .or_default()
-            .insert(worker_id.to_string(), now_ms);
-    }
-    /// True while `wid` holds a lease that has not expired as of `now_ms`.
-    pub fn is_leased(&self, wid: &str, now_ms: u64) -> bool {
-        self.leases
-            .lock()
-            .unwrap()
-            .get(wid)
-            .is_some_and(|lease| lease.expires_at_ms > now_ms)
-    }
-    pub fn is_leased_with_reclaim_age(&self, wid: &str, now_ms: u64, age_ms: u64) -> bool {
-        self.leases
-            .lock()
-            .unwrap()
-            .get(wid)
-            .is_some_and(|lease| now_ms < lease.refreshed_at_ms.saturating_add(age_ms))
-    }
-    /// Start/extend `wid`'s lease to `now_ms + LEASE_TTL_MS`.
-    pub fn lease(&self, wid: &str, now_ms: u64) {
-        self.lease_for(wid, now_ms, LEASE_TTL_MS);
-    }
-
-    /// Bind the current lease to the worker that claimed it.
-    pub fn own(&self, wid: &str, worker_id: &str) {
-        self.owners
-            .lock()
-            .unwrap()
-            .insert(wid.to_string(), worker_id.to_string());
-    }
-
-    /// Whether `worker_id` owns `wid`'s current lease.
-    pub fn is_owned_by(&self, wid: &str, worker_id: &str) -> bool {
-        self.owners
-            .lock()
-            .unwrap()
-            .get(wid)
-            .is_some_and(|owner| owner == worker_id)
-    }
-
-    /// Start/extend `wid`'s lease by the requested duration.
-    pub fn lease_for(&self, wid: &str, now_ms: u64, ttl_ms: u64) {
-        self.leases.lock().unwrap().insert(
-            wid.to_string(),
-            LeaseWindow {
-                refreshed_at_ms: now_ms,
-                expires_at_ms: now_ms.saturating_add(ttl_ms),
-            },
-        );
-    }
-    /// Drop `wid`'s lease (on stop / reclaim).
-    pub fn release(&self, wid: &str) {
-        self.leases.lock().unwrap().remove(wid);
-        self.owners.lock().unwrap().remove(wid);
-    }
-    /// Distinct workers that polled `env_id` within `POLLER_WINDOW_MS` of `now_ms`.
-    pub fn workers_polling(&self, env_id: &str, now_ms: u64) -> i64 {
-        self.polls
-            .lock()
-            .unwrap()
-            .get(env_id)
-            .map(|m| {
-                m.values()
-                    .filter(|&&t| t + POLLER_WINDOW_MS > now_ms)
-                    .count() as i64
-            })
-            .unwrap_or(0)
-    }
-    /// Forget an environment's leases + polls (on `remove_env`).
-    pub fn forget_env(&self, env_id: &str, work_ids: &[String]) {
-        let mut leases = self.leases.lock().unwrap();
-        for wid in work_ids {
-            leases.remove(wid);
-        }
-        let mut owners = self.owners.lock().unwrap();
-        for wid in work_ids {
-            owners.remove(wid);
-        }
-        self.polls.lock().unwrap().remove(env_id);
-    }
-}
-
-/// The default single-process work queue: a `BTreeMap` keyed by monotonic work id
-/// (ascending id == enqueue order), the exact behavior the routes had inline.
+/// Test-support single-process reference queue: a `BTreeMap` keyed by monotonic
+/// work id (ascending id == enqueue order).
 pub struct InMemoryWorkQueue {
     works: Mutex<BTreeMap<String, WorkItem>>,
     seq: AtomicU64,
@@ -483,6 +367,7 @@ impl WorkQueue for InMemoryWorkQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{LEASE_TTL_MS, POLLER_WINDOW_MS};
 
     fn q() -> InMemoryWorkQueue {
         InMemoryWorkQueue::new()
@@ -505,11 +390,57 @@ mod tests {
 
     #[tokio::test]
     async fn healthcheck_seed_carries_its_own_id_and_is_queued() {
-        let q = q();
-        let id = q.enqueue_healthcheck("env_a").await.expect("enqueue");
-        let w = q.get("env_a", &id).await.expect("get").expect("seeded");
+        // Cause/effect graph: C1 queue starts empty; C2 enqueue kind is
+        // healthcheck/session; C3 enqueue is repeated. Effects: E1 one monotonic id
+        // is consumed per accepted item; E2 a healthcheck data id equals its work id;
+        // E3 list order equals enqueue order.
+        //
+        // | Rule | first kind | second kind | ids                | health self-ref | order |
+        // | T1   | health     | session     | work_0, work_1     | yes             | H,S   |
+        // | T2   | session    | health      | work_0, work_1     | yes             | S,H   |
+        let queue = q();
+        let id = queue.enqueue_healthcheck("env_a").await.expect("enqueue");
+        let w = queue.get("env_a", &id).await.expect("get").expect("seeded");
         assert_eq!(w.state, WorkState::Queued);
         assert!(matches!(w.data, WorkPayload::HealthCheck { id: ref d } if *d == id));
+        let session = queue
+            .enqueue_session("env_a", "session_a")
+            .await
+            .expect("enqueue");
+        assert_eq!(id, "work_0000000000000000", "T1/E1");
+        assert_eq!(session, "work_0000000000000001", "T1/E1");
+        assert_eq!(
+            queue
+                .list("env_a")
+                .await
+                .expect("list")
+                .into_iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>(),
+            vec![id, session],
+            "T1/E3"
+        );
+
+        let reversed = q();
+        let session = reversed
+            .enqueue_session("env_a", "session_a")
+            .await
+            .expect("T2 session");
+        let health = reversed
+            .enqueue_healthcheck("env_a")
+            .await
+            .expect("T2 health");
+        assert_eq!(session, "work_0000000000000000", "T2/E1");
+        assert_eq!(health, "work_0000000000000001", "T2/E1");
+        let item = reversed
+            .get("env_a", &health)
+            .await
+            .expect("T2 get")
+            .expect("T2 item");
+        assert!(
+            matches!(item.data, WorkPayload::HealthCheck { id } if id == health),
+            "T2/E2"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

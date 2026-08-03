@@ -38,11 +38,13 @@ use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_host::{ExtMcpProbe, ManagedHost, SharedHost};
 use axum::Router;
 use exact_host_model::ExactHostModelPublicationResolver;
+#[cfg(any(test, feature = "test-support"))]
+use local_process_stores::in_memory_process_stores;
+use local_process_stores::open_local_process_stores;
 #[cfg(test)]
 use local_process_stores::{
     in_memory_control_stores, in_memory_split_coordinator, process_stores_for_runtime_storage,
 };
-use local_process_stores::{in_memory_process_stores, open_local_process_stores};
 
 pub use crate::process_admin::{
     DrainController, process_admin_router, register_active_streams_gauge, with_connection_metric,
@@ -70,7 +72,9 @@ use process_stores::{
     ControlStores, CoordinatorStores, MigrationComponent, PostgresSchemaMode, ProcessStores,
     migration_manifest, role_owns_control_component, role_owns_managed_execution,
 };
-use resource_component::{ephemeral_resource_component, open_resource_component};
+#[cfg(any(test, feature = "test-support"))]
+use resource_component::ephemeral_resource_component;
+use resource_component::open_resource_component;
 use runtime_process_router::assemble_runtime_process_router;
 pub use worker_transport_security::load_request_authorizer as load_worker_request_authorizer;
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
@@ -586,6 +590,7 @@ pub async fn build_all_in_one_router() -> Router {
 
 /// Hermetic all-in-one composition for tests and embedders that explicitly want
 /// volatile stores. It never consults the standard deployment config path.
+#[cfg(any(test, feature = "test-support"))]
 pub async fn build_ephemeral_all_in_one_router() -> Router {
     let stores = in_memory_process_stores();
     let options = exact_host_model::local_test_process_options(&stores);
@@ -742,6 +747,7 @@ async fn build_all_in_one_router_with_composition(
 /// standard process assembly does not provide, e.g. `host.with_acp(executor)` so `acp:*`
 /// threads run on an external CLI while the full managed plane (vault + MCP staging +
 /// config plane) is still in play. Keeps the ACP executor's crate out of this module.
+#[cfg(any(test, feature = "test-support"))]
 pub async fn build_all_in_one_router_with_host_customizer(
     model: Arc<dyn LlmExecutor>,
     binding: awaken_runtime_contract::resolved::ModelBinding,
@@ -802,6 +808,7 @@ pub async fn build_durable_all_in_one_router_with_host_customizer(
 /// model injected — a **test-only** seam so an integration test can drive the real
 /// management router with a deterministic (mock) model, keeping the mock out of the
 /// production assembly.
+#[cfg(any(test, feature = "test-support"))]
 pub async fn build_all_in_one_router_with_model(
     model: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,

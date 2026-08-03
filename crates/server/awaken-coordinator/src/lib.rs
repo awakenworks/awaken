@@ -306,6 +306,7 @@ pub fn a2a_attempt_executor(
 /// An [`InferenceExecutorMaterializer`] mapping a model ref to a labeled executor, so a
 /// session bound to `fast`/`slow` resolves a distinct model — the R1/R2/R5 demo
 /// surface.
+#[cfg(feature = "test-support")]
 pub fn mount(host: Arc<SharedHost>) -> Router {
     // The webhook plane (ADR-0048) now lives in the management path
     // (all-in-one process assembly): subscriptions are a config resource in the admin
@@ -322,6 +323,7 @@ pub fn mount(host: Arc<SharedHost>) -> Router {
 /// only a credential reference. Production composition roots replace these
 /// in-memory adapters with their durable equivalents; resource services remain
 /// unaware of principals, API keys, roles, or authorization policy.
+#[cfg(feature = "test-support")]
 pub fn local_managed_state(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
@@ -332,6 +334,7 @@ pub fn local_managed_state(
 /// [`local_managed_state`] with one immutable Agent projection source. Embedded
 /// scenario hosts use this to exercise publication-owned routing without mounting
 /// a second authoring plane.
+#[cfg(feature = "test-support")]
 pub fn local_managed_state_with_agent_source(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
@@ -344,6 +347,7 @@ pub fn local_managed_state_with_agent_source(
 /// the same Managed aggregate. Composition roots that mount `/v1/environments`
 /// must pass that exact state here so Session environment pins resolve through the
 /// registry that authored them.
+#[cfg(feature = "test-support")]
 pub fn local_managed_state_with_environments(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
@@ -354,6 +358,7 @@ pub fn local_managed_state_with_environments(
 
 /// Scenario/local composition variant that installs the same Agent projection
 /// port used by production before the Managed aggregate starts its supervisors.
+#[cfg(feature = "test-support")]
 pub fn local_managed_state_with_environments_and_agent_source(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
@@ -363,6 +368,7 @@ pub fn local_managed_state_with_environments_and_agent_source(
     local_managed_state_over(host, catalog, Some(environments), Some(agent_source))
 }
 
+#[cfg(feature = "test-support")]
 fn local_managed_state_over(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
@@ -424,10 +430,12 @@ fn local_managed_state_over(
 /// [`mount`], with a caller-assembled Managed state: the management server passes
 /// a vault-aware `ManagedState` over an MCP-wired `ManagedHost` (ADR-0043 Phase
 /// 3); every other mode goes through [`mount`], whose state is the plain host.
+#[cfg(feature = "test-support")]
 pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -> Router {
     mount_with_managed_over(host, managed_state, ephemeral_resource_catalog(), None).0
 }
 
+#[cfg(feature = "test-support")]
 fn ephemeral_resource_catalog() -> Arc<dyn awaken_resource_contract::ResourceCatalog> {
     Arc::new(
         awaken_resource_store::SqliteResourceStore::in_memory()

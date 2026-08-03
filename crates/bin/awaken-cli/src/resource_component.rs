@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use super::{PostgresSchemaMode, config};
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn ephemeral_resource_component() -> awaken_resource_contract::ResourceComponent {
     awaken_coordinator::ephemeral_resources_application().ports()
 }

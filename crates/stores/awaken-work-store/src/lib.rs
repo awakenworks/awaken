@@ -26,13 +26,50 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
 
-// The in-memory reference backend and process-local poll bookkeeping live here beside
-// the durable siblings. SQLite/PostgreSQL persist lease authority in their rows: the port +
-// value objects stay inward in `awaken-session-contract`.
+// Poll-liveness bookkeeping is shared by the durable stores. Lease authority remains
+// in their rows. The volatile executable specification is never part of a default
+// product build.
+mod lease_book;
+pub use lease_book::{LEASE_TTL_MS, LeaseBook, POLLER_WINDOW_MS};
+#[cfg(any(test, feature = "test-support"))]
 mod inmem;
-pub use inmem::{InMemoryWorkQueue, LEASE_TTL_MS, LeaseBook, POLLER_WINDOW_MS};
+#[cfg(any(test, feature = "test-support"))]
+pub use inmem::InMemoryWorkQueue;
 mod schema;
 use schema::*;
+
+#[cfg(test)]
+mod product_readiness_tests {
+    #[test]
+    fn volatile_queue_is_opt_in_and_its_export_is_feature_gated() {
+        // Cause/effect graph: C1 the product uses default features; C2 test-support
+        // is explicitly enabled. Effects: E1 the volatile backend is unreachable;
+        // E2 the reference backend is available to conformance tests. Constraint:
+        // C1 and C2 are mutually exclusive build selections for this boundary.
+        //
+        // | Rule | default product | test-support | InMemoryWorkQueue export |
+        // | T1   | yes             | no           | absent                   |
+        // | T2   | no              | yes          | present                  |
+        //
+        // T1 is completed by the default-feature `cargo check`; T2 is completed by
+        // the all-features conformance suite. This source-level fitness assertion
+        // prevents either selector from being silently removed or made default.
+        let manifest = include_str!("../Cargo.toml");
+        let source = include_str!("lib.rs");
+        assert!(manifest.contains("test-support = []"), "T2 selector");
+        assert!(
+            !manifest.contains("default = [\"test-support\"]"),
+            "T1 must remain the default"
+        );
+        assert!(
+            source.contains("#[cfg(any(test, feature = \"test-support\"))]\nmod inmem;")
+                && source.contains(
+                    "#[cfg(any(test, feature = \"test-support\"))]\npub use inmem::InMemoryWorkQueue;"
+                ),
+            "T1/T2 export gate"
+        );
+    }
+}
 
 /// SQLite persistence for the environment work queue. Ownership, epoch and expiry
 /// are durable because they are safety authority; only poller liveness is ephemeral.
