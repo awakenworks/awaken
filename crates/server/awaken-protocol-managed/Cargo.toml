@@ -6,7 +6,10 @@ license.workspace = true
 
 [features]
 # Ephemeral convenience constructors are intentionally absent from product builds.
-test-support = ["awaken-work-store/test-support"]
+test-support = [
+    "awaken-work-store/test-support",
+    "awaken-dream-application/test-support",
+]
 
 [dependencies]
 awaken-agent-contract.workspace = true
@@ -65,6 +68,10 @@ tracing = "0.1"
 
 [[test]]
 name = "adapter"
+required-features = ["test-support"]
+
+[[test]]
+name = "dreams"
 required-features = ["test-support"]
 
 [[test]]

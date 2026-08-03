@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use awaken_dream_application::InMemoryDreamProcessStore;
 use awaken_protocol_managed::types::{DreamModelConfig, DreamUsage};
 use awaken_protocol_managed::{
     BUILT_IN_DREAM_AGENT_ID, DREAMING_BETA, DreamApplication, DreamCancellation, DreamExecutor,
@@ -20,6 +21,11 @@ enum Outcome {
     Complete,
     Fail,
     Block,
+}
+
+fn in_memory_application(executor: Arc<dyn DreamExecutor>) -> DreamApplication {
+    DreamApplication::with_store(executor, Arc::new(InMemoryDreamProcessStore::default()))
+        .expect("empty test Dream store")
 }
 
 struct FixedSessionFacts;
@@ -361,7 +367,7 @@ fn state(outcome: Outcome) -> (Arc<DreamApplication>, Arc<Notify>, Arc<Notify>) 
         started: started.clone(),
         release: release.clone(),
     });
-    let state = Arc::new(DreamApplication::new(worker));
+    let state = Arc::new(in_memory_application(worker));
     state.bind_session_source(Arc::new(FixedSessionFacts));
     (state, started, release)
 }
@@ -883,7 +889,7 @@ async fn dream_uses_one_stable_ordinary_agent_id_without_selection_state() {
     // changes its executable snapshot without creating Dream-specific selection
     // state or a second API.
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let state = Arc::new(DreamApplication::new(Arc::new(RecordingWorker(
+    let state = Arc::new(in_memory_application(Arc::new(RecordingWorker(
         seen.clone(),
     ))));
     let app = dreams_router(state);
@@ -945,7 +951,7 @@ async fn input_deleted_after_create_fails_before_terminal_publication() {
     // Input lifecycle decision rule: C1 inputs exist at create but a selected
     // Session becomes unavailable before completion -> E1 typed failed Dream,
     // E2 no completed state is ever published, E3 prepared output remains listed.
-    let state = Arc::new(DreamApplication::new(Arc::new(LifecycleWorker(
+    let state = Arc::new(in_memory_application(Arc::new(LifecycleWorker(
         std::sync::atomic::AtomicUsize::new(0),
     ))));
     let app = dreams_router(state);
