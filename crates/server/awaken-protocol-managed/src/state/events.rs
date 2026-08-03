@@ -1216,17 +1216,20 @@ mod tests {
         // through AI SDK rather than Managed; C3=latest lifecycle is Running;
         // C4=latest lifecycle is Awaiting with its exact pending ticket; C5=latest
         // lifecycle is Ended; C6=the same read refresh repeats; C7=the Managed
-        // request already projected that exact Run terminal. E1=Managed status is
+        // request already projected that exact Run terminal; C8=the disposable
+        // Session cache is cold while the committed ticket remains open. E1=Managed status is
         // running without a fabricated terminal; E2=Awaiting appends one
         // running→requires_action bracket carrying the custom-call id; E3=Ended
         // appends one running→idle bracket; E4=messages and terminals are not
-        // duplicated; E5=the lifecycle cursor fences the projection.
+        // duplicated; E5=the lifecycle cursor fences the projection; E6=cold
+        // recovery still classifies the call as client-executed.
         // Decision table:
-        // | Rule | C2 | C3 | C4 | C5 | C6 | C7 | Effect       |
-        // | R1   | T  | T  | F  | F  | F  | F  | E1,E5        |
-        // | R2   | T  | F  | T  | F  | T  | F  | E2,E4,E5     |
-        // | R3   | T  | F  | F  | T  | T  | F  | E3,E4,E5     |
-        // | R4   | T  | F  | F  | T  | T  | T  | E3 once,E4   |
+        // | Rule | C2 | C3 | C4 | C5 | C6 | C7 | C8 | Effect       |
+        // | R1   | T  | T  | F  | F  | F  | F  | F  | E1,E5        |
+        // | R2   | T  | F  | T  | F  | T  | F  | F  | E2,E4,E5     |
+        // | R3   | T  | F  | F  | T  | T  | F  | F  | E3,E4,E5     |
+        // | R4   | T  | F  | F  | T  | T  | T  | F  | E3 once,E4   |
+        // | R5   | T  | F  | T  | F  | T  | F  | T  | E2,E4,E5,E6  |
         let runtime = LifecycleRuntime::default();
         let state = ManagedState::new(runtime.clone());
         let request = serde_json::from_value(serde_json::json!({"agent":"coder"})).unwrap();
@@ -1351,5 +1354,51 @@ mod tests {
             serde_json::to_string(&state.list_events(&thread, None, None).unwrap().data).unwrap();
         assert_eq!(rendered.matches("session.status_idle").count(), 3, "R4/E4");
         assert_eq!(rendered.matches("local done").count(), 1, "R4/E4");
+
+        let cold_run = RunId("run-cold-4".into());
+        let cold_call_id = "call-cold-submit";
+        *runtime.messages.lock().unwrap() = vec![Message::new(
+            MessageId("cold-tool".into()),
+            Role::Assistant,
+            vec![ContentBlock::tool_use(
+                cold_call_id,
+                "design_submit_artifact",
+                serde_json::json!({"manifest_path":"artifact-manifest.json"}),
+            )],
+        )];
+        *runtime.pending.lock().unwrap() = Some(Pending {
+            tool_use_id: cold_call_id.into(),
+            name: "design_submit_artifact".into(),
+            input: serde_json::json!({"manifest_path":"artifact-manifest.json"}),
+            client_executed: true,
+        });
+        runtime.lifecycle.lock().unwrap().extend([
+            lifecycle(
+                70,
+                &thread,
+                &cold_run,
+                RunLifecycleKind::Running,
+                RunState::Running,
+            ),
+            lifecycle(
+                80,
+                &thread,
+                &cold_run,
+                RunLifecycleKind::Awaiting,
+                RunState::Awaiting,
+            ),
+        ]);
+        state.sessions.lock().unwrap().remove(&thread);
+        state.refresh_committed_events(&thread).await.unwrap();
+        state.refresh_committed_events(&thread).await.unwrap();
+        let rendered =
+            serde_json::to_string(&state.list_events(&thread, None, None).unwrap().data).unwrap();
+        assert_eq!(
+            rendered.matches("agent.custom_tool_use").count(),
+            1,
+            "R5/E6"
+        );
+        assert!(!rendered.contains("\"type\":\"agent.tool_use\""), "R5/E6");
+        assert_eq!(rendered.matches(cold_call_id).count(), 2, "R5/E2/E4");
     }
 }

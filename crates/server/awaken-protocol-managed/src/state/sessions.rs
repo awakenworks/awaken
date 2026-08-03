@@ -1549,6 +1549,7 @@ impl ManagedState {
                     .map_err(StateError::Run)?;
             }
         }
+        let pending = self.runtime.pending_tool(id).await;
         let messages = self.runtime.committed_messages(id).await;
         if messages.is_empty() && persisted.is_none() {
             return Err(StateError::NotFound);
@@ -1557,7 +1558,10 @@ impl ManagedState {
             .iter()
             .map(|message| message.id.0.clone())
             .collect();
-        let events: Vec<Event> = project_messages(&messages, None)
+        let pending = pending
+            .as_ref()
+            .map(|pending| (pending.tool_use_id.as_str(), pending.client_executed));
+        let events: Vec<Event> = project_messages(&messages, pending)
             .into_iter()
             .map(|event| Event {
                 id: event.id.unwrap_or_else(|| self.next_event_id()),
