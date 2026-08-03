@@ -113,6 +113,7 @@ test-support = [
     "awaken-captured-content-store/test-support",
     "awaken-config-resolver/test-support",
     "awaken-config-store/test-support",
+    "awaken-credential-vault/test-support",
     "awaken-data-subject/test-support",
     "awaken-env-store/test-support",
     "awaken-model-catalog/test-support",
@@ -134,6 +135,7 @@ awaken-admin-config-api = { workspace = true, features = ["test-support"] }
 awaken-captured-content-store = { workspace = true, features = ["test-support"] }
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }
+awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-data-subject = { workspace = true, features = ["test-support"] }
 awaken-env-store = { workspace = true, features = ["test-support"] }
 awaken-model-catalog = { workspace = true, features = ["test-support"] }

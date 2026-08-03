@@ -84,6 +84,7 @@ uuid = { version = "1", features = ["v4"] }
 # composition selects every authority before constructing SharedHost.
 test-support = [
     "awaken-file-store/test-support",
+    "awaken-credential-vault/test-support",
     "awaken-memory-store/test-support",
     "awaken-run-ingress/test-support",
     "awaken-session-store/test-support",
@@ -101,6 +102,7 @@ container-podman = ["awaken-sandbox-container/podman"]
 container-k8s = ["awaken-sandbox-container/k8s"]
 
 [dev-dependencies]
+awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-file-store = { workspace = true, features = ["test-support"] }
 awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-run-ingress = { workspace = true, features = ["test-support"] }

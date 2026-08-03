@@ -54,6 +54,10 @@ ADMIN_CONFIG_SQLITE_SOURCE = "crates/control/awaken-admin-config-api/src/sqlite.
 MODEL_CATALOG_REPO_SOURCE = "crates/control/awaken-model-catalog/src/repo.rs"
 MODEL_CATALOG_SQLITE_SOURCE = "crates/control/awaken-model-catalog/src/sqlite.rs"
 CONFIG_RESOLVER_SOURCE = "crates/control/awaken-config-resolver/src/lib.rs"
+CREDENTIAL_REPO_SOURCE = "crates/control/awaken-credential-vault/src/repo.rs"
+CREDENTIAL_VAULT_SOURCE = "crates/control/awaken-credential-vault/src/lib.rs"
+CREDENTIAL_SQLITE_SOURCE = "crates/control/awaken-credential-vault/src/sqlite.rs"
+CREDENTIAL_SEALED_SOURCE = "crates/control/awaken-credential-vault/src/sealed.rs"
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -311,6 +315,36 @@ NON_PRODUCT_APIS = (
         r"InMemoryWebhookStore,?\s*\}",
         TEST_SUPPORT_GATE,
     ),
+    (
+        "InMemoryCredentialRepo",
+        CREDENTIAL_REPO_SOURCE,
+        r"\bpub\s+struct\s+InMemoryCredentialRepo\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemorySealedBlobStore",
+        CREDENTIAL_VAULT_SOURCE,
+        r"\bpub\s+struct\s+InMemorySealedBlobStore\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemorySecretStore",
+        CREDENTIAL_VAULT_SOURCE,
+        r"\bpub\s+struct\s+InMemorySecretStore\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SQLite credential open_in_memory methods",
+        CREDENTIAL_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SealedAeadSecretStore::with_key",
+        CREDENTIAL_SEALED_SOURCE,
+        r"\bpub\s+fn\s+with_key\b",
+        TEST_SUPPORT_GATE,
+    ),
 )
 
 PRODUCT_MANIFESTS = (
@@ -352,18 +386,27 @@ def _declaration_is_gated(
 ) -> bool | None:
     """Whether the declaration exists and its own attribute prefix has the gate."""
 
-    declaration = re.search(declaration_pattern, source)
-    if declaration is None:
+    declarations = list(re.finditer(declaration_pattern, source))
+    if not declarations:
         return None
-    previous_start = max(
-        (
-            item.start()
-            for item in re.finditer(PUBLIC_DECLARATION, source)
-            if item.start() < declaration.start()
-        ),
-        default=0,
+    public_declarations = list(re.finditer(PUBLIC_DECLARATION, source))
+    return all(
+        re.search(
+            gate_pattern,
+            source[
+                max(
+                    (
+                        item.start()
+                        for item in public_declarations
+                        if item.start() < declaration.start()
+                    ),
+                    default=0,
+                ) : declaration.start()
+            ],
+        )
+        is not None
+        for declaration in declarations
     )
-    return re.search(gate_pattern, source[previous_start : declaration.start()]) is not None
 
 
 def volatile_runtime_host_surface_violations(source: str) -> list[str]:
@@ -750,6 +793,16 @@ def selftest() -> None:
         CONFIG_RESOLVER_SOURCE: any_gate
         + "pub use reference_stores::{InMemoryAgentInputBindingRepository, "
         + "InMemoryProfileStore, InMemoryWebhookStore};",
+        CREDENTIAL_REPO_SOURCE: any_gate + "pub struct InMemoryCredentialRepo {}",
+        CREDENTIAL_VAULT_SOURCE: any_gate
+        + "pub struct InMemorySealedBlobStore {}\n"
+        + any_gate
+        + "pub struct InMemorySecretStore {}",
+        CREDENTIAL_SQLITE_SOURCE: any_gate
+        + "pub fn open_in_memory() {}\n"
+        + any_gate
+        + "pub fn open_in_memory() {}",
+        CREDENTIAL_SEALED_SOURCE: any_gate + "pub fn with_key() {}",
     }
     assert non_product_surface_violations(volatile_surfaces) == []  # O17
     for label, path, declaration, gate in NON_PRODUCT_APIS:

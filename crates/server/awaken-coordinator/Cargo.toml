@@ -118,6 +118,7 @@ test-support = [
     "awaken-captured-content-store/test-support",
     "awaken-config-resolver/test-support",
     "awaken-config-store/test-support",
+    "awaken-credential-vault/test-support",
     "awaken-file-store/test-support",
     "awaken-memory-store/test-support",
     "awaken-model-catalog/test-support",
@@ -145,6 +146,7 @@ container-k8s = ["awaken-runtime-host/container-k8s"]
 awaken-captured-content-store = { workspace = true, features = ["test-support"] }
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }
+awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-tool-relay = { workspace = true, features = ["test-support"] }
 awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-model-catalog = { workspace = true, features = ["test-support"] }

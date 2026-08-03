@@ -59,6 +59,7 @@ axum = { version = "0.8", features = ["multipart"] }
 [dev-dependencies]
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }
+awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-data-subject = { workspace = true, features = ["test-support"] }
 awaken-environment-contract.workspace = true
 awaken-executable-environment-contract.workspace = true

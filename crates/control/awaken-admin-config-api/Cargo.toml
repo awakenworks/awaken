@@ -46,6 +46,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 default = []
 test-support = [
     "awaken-config-resolver/test-support",
+    "awaken-credential-vault/test-support",
     "awaken-model-catalog/test-support",
 ]
 # SQLite-backed admin stores (`sqlite::SqliteAdminStore`), ADR-0043 sqlite-repos.
