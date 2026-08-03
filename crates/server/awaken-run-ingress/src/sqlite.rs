@@ -756,7 +756,7 @@ impl DispatchQueue for SqliteDispatchStore {
         .await
     }
 
-    async fn claim_awaiting_for_terminal_recovery(
+    async fn claim_for_terminal_recovery(
         &self,
         requested_run: &RunId,
         owner: &str,
@@ -777,7 +777,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 now_ms,
                 None,
                 &Default::default(),
-                ExactClaimMode::QuiescentAwaiting,
+                ExactClaimMode::TerminalRecovery,
             )?;
             tx.commit().map_err(reject)?;
             Ok(claimed)

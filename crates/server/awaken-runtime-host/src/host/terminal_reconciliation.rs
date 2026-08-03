@@ -146,10 +146,12 @@ pub(super) async fn reconcile_committed_terminals(
         .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
     let rows = store.list_dispatches().await?;
     let mut reconciled = Vec::new();
-    for row in rows
-        .into_iter()
-        .filter(|row| row.state == awaken_run_ingress::DispatchState::Awaiting)
-    {
+    for row in rows.into_iter().filter(|row| {
+        matches!(
+            row.state,
+            awaken_run_ingress::DispatchState::Awaiting | awaken_run_ingress::DispatchState::Leased
+        )
+    }) {
         if reconciled.len() >= limit {
             break;
         }
@@ -163,7 +165,7 @@ pub(super) async fn reconcile_committed_terminals(
             continue;
         }
         let Some(claimed) = store
-            .claim_awaiting_for_terminal_recovery(
+            .claim_for_terminal_recovery(
                 &row.run_id,
                 &host.deployment.dispatch_owner,
                 DEFAULT_LEASE_MS,

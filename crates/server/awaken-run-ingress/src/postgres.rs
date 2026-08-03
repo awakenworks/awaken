@@ -738,7 +738,7 @@ impl DispatchQueue for PostgresDispatchStore {
         Ok(claimed)
     }
 
-    async fn claim_awaiting_for_terminal_recovery(
+    async fn claim_for_terminal_recovery(
         &self,
         requested_run: &RunId,
         owner: &str,
@@ -754,7 +754,7 @@ impl DispatchQueue for PostgresDispatchStore {
             now_ms,
             None,
             &Default::default(),
-            ExactClaimMode::QuiescentAwaiting,
+            ExactClaimMode::TerminalRecovery,
         )
         .await?;
         tx.commit().await.map_err(reject)?;
@@ -1636,10 +1636,11 @@ async fn claim_exact_transaction_with_mode(
                AND (pe.available_at IS NULL OR pe.available_at <= $2))) AND {not_running}) \
              OR (d.status = 'pending' AND {not_running})"
         ),
-        ExactClaimMode::QuiescentAwaiting => {
+        ExactClaimMode::TerminalRecovery => {
             format!(
-                "d.status = 'awaiting' AND d.lease_owner IS NULL AND d.lease_until IS NULL \
-                 AND {not_running} AND $2 IS NOT NULL"
+                "(d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $2) \
+                 OR (d.status = 'awaiting' AND d.lease_owner IS NULL AND d.lease_until IS NULL \
+                 AND {not_running})"
             )
         }
     };
@@ -1664,7 +1665,7 @@ async fn claim_exact_transaction_with_mode(
     let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
     let previous_owner: Option<String> = row.try_get("lease_owner").map_err(reject)?;
     let previous_epoch: i64 = row.try_get("lease_epoch").map_err(reject)?;
-    let terminal_recovery = mode == ExactClaimMode::QuiescentAwaiting;
+    let terminal_recovery = mode == ExactClaimMode::TerminalRecovery;
     if !terminal_recovery
         && cancellation_requested == 0
         && match worker {

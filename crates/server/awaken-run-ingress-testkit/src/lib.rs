@@ -123,14 +123,15 @@ pub async fn assert_dispatch_conformance_with_clock(
 
 /// Committed-terminal recovery cause/effect table. Causes: C1 a dispatch is
 /// quiescent Awaiting; C2 its Thread has another Running dispatch; C3 the row is
-/// Pending; C4 the row is already Running; C5 the recovery claim epoch is
-/// current. Effects: E1 ordinary claim still cannot wake C1 without input; E2
-/// terminal recovery claims only C1+!C2; E3 C2/C3/C4 remain untouched; E4 a
-/// stale settle is fenced; E5 current Done removes the row and atomically emits
-/// the existing completion tombstone. Rules: T1 C1+!C2=>E1+E2; T2
-/// C2|C3|C4=>E3; T3 !C5=>E4; T4 C5=>E5. The Run authority is intentionally
-/// outside this store test; callers may invoke the recovery command only after
-/// committed RunState::Ended has been proved.
+/// Pending; C4 the row has a live Running lease; C5 that lease expires after a
+/// recovery-process crash; C6 the recovery claim epoch is current. Effects: E1
+/// ordinary claim still cannot wake C1 without input; E2 terminal recovery
+/// claims C1+!C2 and C5; E3 C2/C3/C4 remain untouched; E4 reclaiming C5 advances
+/// the epoch and fences the crashed owner; E5 current Done removes the row and
+/// atomically emits the existing completion tombstone. Rules: T1
+/// C1+!C2=>E1+E2; T2 C2|C3|C4=>E3; T3 C5=>E2+E4; T4 C6=>E5. The Run authority
+/// is intentionally outside this store test; callers may invoke the recovery
+/// command only after committed RunState::Ended has been proved.
 async fn committed_terminal_recovery_reuses_fenced_settlement(store: &dyn DispatchQueue, ns: &str) {
     let awaiting = dispatch(ns, "terminal-awaiting", "terminal-thread");
     let awaiting_id = awaiting.run_id().clone();
@@ -183,7 +184,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(store: &dyn Dispat
         .expect("peer runnable");
     assert!(
         store
-            .claim_awaiting_for_terminal_recovery(&awaiting_id, "repair", LEASE_MS, 60_003)
+            .claim_for_terminal_recovery(&awaiting_id, "repair", LEASE_MS, 60_003)
             .await
             .expect("repair blocked by peer")
             .is_none(),
@@ -198,7 +199,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(store: &dyn Dispat
         .expect("enqueue pending control");
     assert!(
         store
-            .claim_awaiting_for_terminal_recovery(&pending_id, "repair", LEASE_MS, 60_003)
+            .claim_for_terminal_recovery(&pending_id, "repair", LEASE_MS, 60_003)
             .await
             .expect("pending recovery query")
             .is_none(),
@@ -210,26 +211,39 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(store: &dyn Dispat
         .expect("settle peer");
 
     let repair = store
-        .claim_awaiting_for_terminal_recovery(&awaiting_id, "repair", LEASE_MS, 60_004)
+        .claim_for_terminal_recovery(&awaiting_id, "repair", LEASE_MS, 60_004)
         .await
         .expect("claim terminal repair")
         .expect("quiescent awaiting row repairable");
     assert!(
         store
-            .claim_awaiting_for_terminal_recovery(&awaiting_id, "other", LEASE_MS, 60_005)
+            .claim_for_terminal_recovery(&awaiting_id, "other", LEASE_MS, 60_005)
             .await
             .expect("running repair claim query")
             .is_none(),
         "T2: a currently claimed repair row cannot be claimed twice"
     );
+    assert!(
+        store
+            .claim_for_terminal_recovery(&awaiting_id, "boundary", LEASE_MS, 60_004 + LEASE_MS,)
+            .await
+            .expect("repair claim at lease boundary")
+            .is_none(),
+        "T2: a lease remains live at its exact expiry boundary"
+    );
+    let repair_after_crash = store
+        .claim_for_terminal_recovery(
+            &awaiting_id,
+            "repair-after-crash",
+            LEASE_MS,
+            60_004 + LEASE_MS + 1,
+        )
+        .await
+        .expect("reclaim expired terminal repair")
+        .expect("expired repair lease is recovery claimable");
     assert_eq!(
         store
-            .settle(
-                &awaiting_id,
-                repair.lease.epoch - 1,
-                DispatchOutcome::Done,
-                &[]
-            )
+            .settle(&awaiting_id, repair.lease.epoch, DispatchOutcome::Done, &[])
             .await
             .expect("stale repair settle"),
         SettleOutcome::Fenced,
@@ -243,7 +257,12 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(store: &dyn Dispat
         .map_or(0, |event| event.sequence);
     assert_eq!(
         store
-            .settle(&awaiting_id, repair.lease.epoch, DispatchOutcome::Done, &[])
+            .settle(
+                &awaiting_id,
+                repair_after_crash.lease.epoch,
+                DispatchOutcome::Done,
+                &[]
+            )
             .await
             .expect("current repair settle"),
         SettleOutcome::Applied,

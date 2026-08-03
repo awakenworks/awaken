@@ -899,11 +899,13 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
 /// | R1 | Awaiting, no input | absent/nonterminal | keep row; no completion |
 /// | R2 | Awaiting, no input | Ended | fenced Done; emit tombstone; never execute |
 /// | R3 | R1 precedes R2 and limit=1 | mixed | skip R1 and still repair one R2 |
+/// | R4 | expired Running recovery claim | Ended | reclaim; fenced Done; never execute |
 ///
 /// Constraints: committed Run truth is the only terminal cause; queue order is
-/// not outcome evidence; the limit bounds repaired terminals, not inspected rows.
+/// not outcome evidence; the limit bounds repaired terminals, not inspected rows;
+/// a reconciliation-process crash cannot strand its own expired claim.
 #[tokio::test]
-async fn reconciliation_repairs_only_committed_terminal_awaiting_rows() {
+async fn reconciliation_repairs_committed_terminal_awaiting_and_expired_rows() {
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -951,6 +953,17 @@ async fn reconciliation_repairs_only_committed_terminal_awaiting_rows() {
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1);
 
+    store
+        .claim_for_terminal_recovery(
+            &RunId("run-terminal".to_string()),
+            "crashed-reconciler",
+            10,
+            1_000,
+        )
+        .await
+        .expect("claim terminal before modeled crash")
+        .expect("terminal awaiting row is claimable");
+
     let reconciled = ingress
         .reconcile_committed_terminals(2_000, 1)
         .await
@@ -962,7 +975,7 @@ async fn reconciliation_repairs_only_committed_terminal_awaiting_rows() {
             RunState::Ended(EndCause::NaturalEnd),
         )]
     );
-    assert_eq!(ran.load(Ordering::SeqCst), 1, "R2 never re-executes");
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "R2/R4 never re-execute");
 
     let rows = store.list_dispatches().await.expect("remaining rows");
     assert_eq!(rows.len(), 1);

@@ -346,21 +346,28 @@ fn claim_exact_with_mode(
             };
             was_recovery
         }
-        ExactClaimMode::QuiescentAwaiting => {
+        ExactClaimMode::TerminalRecovery => {
             let Some(row) = state.rows.get(requested_run) else {
                 return Ok(None);
             };
+            let expired_running = row.state == RowState::Leased
+                && row
+                    .lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.expires_ms < now_ms);
             let thread_busy = state.rows.values().any(|candidate| {
                 candidate.state == RowState::Leased
                     && candidate.request.thread_id() == row.request.thread_id()
             });
-            if row.state != RowState::Awaiting || row.lease.is_some() || thread_busy {
+            let quiescent_awaiting =
+                row.state == RowState::Awaiting && row.lease.is_none() && !thread_busy;
+            if !quiescent_awaiting && !expired_running {
                 return Ok(None);
             }
-            false
+            expired_running
         }
     };
-    let terminal_recovery = mode == ExactClaimMode::QuiescentAwaiting;
+    let terminal_recovery = mode == ExactClaimMode::TerminalRecovery;
     let run_id = requested_run.clone();
     let row = state.rows.get(&run_id).expect("claimable row exists");
     if !terminal_recovery
@@ -882,7 +889,7 @@ impl DispatchQueue for MemoryDispatchStore {
         )
     }
 
-    async fn claim_awaiting_for_terminal_recovery(
+    async fn claim_for_terminal_recovery(
         &self,
         requested_run: &RunId,
         owner: &str,
@@ -899,7 +906,7 @@ impl DispatchQueue for MemoryDispatchStore {
             now_ms,
             None,
             &Default::default(),
-            ExactClaimMode::QuiescentAwaiting,
+            ExactClaimMode::TerminalRecovery,
         )
     }
 

@@ -956,11 +956,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
     }
 
-    /// Reconcile one legacy/quiescent awaiting dispatch whose committed Run is
-    /// already terminal. The committed reader is checked before the special
-    /// claim, and [`settle_claimed_terminal`](Self::settle_claimed_terminal)
-    /// checks it again under that claim before reusing the ordinary fenced Done
-    /// settlement and completion tombstone.
+    /// Reconcile one quiescent awaiting dispatch or expired running lease whose
+    /// committed Run is already terminal. The committed reader is checked before
+    /// the special claim, and
+    /// [`settle_claimed_terminal`](Self::settle_claimed_terminal) checks it again
+    /// under that claim before reusing the ordinary fenced Done settlement and
+    /// completion tombstone.
     pub async fn reconcile_committed_terminal(
         &self,
         run_id: &RunId,
@@ -971,7 +972,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
         let Some(claimed) = self
             .store
-            .claim_awaiting_for_terminal_recovery(run_id, &self.owner, self.lease_ms, now_ms)
+            .claim_for_terminal_recovery(run_id, &self.owner, self.lease_ms, now_ms)
             .await?
         else {
             return Ok(None);
@@ -991,7 +992,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         let mut processed = Vec::new();
         for row in rows
             .into_iter()
-            .filter(|row| row.state == DispatchState::Awaiting)
+            .filter(|row| matches!(row.state, DispatchState::Awaiting | DispatchState::Leased))
         {
             if processed.len() >= limit {
                 break;

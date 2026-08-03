@@ -471,17 +471,19 @@ pub trait DispatchQueue: Send + Sync {
         capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError>;
 
-    /// Claim one quiescent `awaiting` row after the committed Run authority has
-    /// already proved that the same `run_id` is terminal.
+    /// Claim one quiescent `awaiting` row or expired `running` lease after the
+    /// committed Run authority has already proved that the same `run_id` is
+    /// terminal.
     ///
     /// This is the repair-side entry into the ordinary fenced settlement path:
     /// it never reads or accepts Run outcome truth, never executes the Run, and
     /// skips execution placement/credential admission because the caller will
     /// only redeliver terminal observers and call [`settle`](Self::settle) with
     /// `Done`. Implementations must claim only an unleased `awaiting` row whose
-    /// Thread has no running dispatch. A missing, pending, running, superseded,
-    /// or dead-lettered row returns `None`.
-    async fn claim_awaiting_for_terminal_recovery(
+    /// Thread has no running dispatch, or a `running` row whose lease is strictly
+    /// expired. A live lease, missing, pending, superseded, or dead-lettered row
+    /// returns `None`.
+    async fn claim_for_terminal_recovery(
         &self,
         _run_id: &RunId,
         _owner: &str,

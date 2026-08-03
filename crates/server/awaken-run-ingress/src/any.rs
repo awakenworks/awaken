@@ -406,7 +406,7 @@ impl DispatchQueue for AnyDispatchStore {
         )
     }
 
-    async fn claim_awaiting_for_terminal_recovery(
+    async fn claim_for_terminal_recovery(
         &self,
         run_id: &RunId,
         owner: &str,
@@ -415,7 +415,7 @@ impl DispatchQueue for AnyDispatchStore {
     ) -> Result<Option<Claimed>, DispatchError> {
         delegate!(
             self,
-            claim_awaiting_for_terminal_recovery(run_id, owner, lease_ms, now_ms)
+            claim_for_terminal_recovery(run_id, owner, lease_ms, now_ms)
         )
     }
 

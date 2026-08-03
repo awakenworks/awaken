@@ -288,10 +288,11 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         Ok(processed)
     }
 
-    /// Repair quiescent awaiting delivery rows whose matching committed Run is
-    /// already terminal. This is bounded maintenance over the queue's
-    /// operational projection; the worker's committed reader remains the only
-    /// outcome authority and every repair uses the ordinary fenced settlement.
+    /// Repair quiescent awaiting delivery rows and expired running leases whose
+    /// matching committed Run is already terminal. This is bounded maintenance
+    /// over the queue's operational projection; the worker's committed reader
+    /// remains the only outcome authority and every repair uses the ordinary
+    /// fenced settlement.
     pub async fn reconcile_committed_terminals(
         &self,
         now_ms: u64,

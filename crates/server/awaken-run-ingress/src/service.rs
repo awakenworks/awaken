@@ -38,9 +38,10 @@ pub struct DispatchServiceConfig {
     /// a long run is not reclaimed while still executing; `None` disables renewal
     /// (a single in-process daemon needs none). Use well under the lease (ADR-0024).
     pub lease_renewal_interval: Option<Duration>,
-    /// Cadence for reconciling a quiescent Awaiting dispatch against committed
-    /// terminal Run truth. This repairs commit/settle gaps and legacy rows
-    /// without polling every idle queue tick; `None` disables it.
+    /// Cadence for reconciling a quiescent Awaiting dispatch or expired Running
+    /// lease against committed terminal Run truth. This repairs commit/settle
+    /// and reconciliation-claim crash gaps without polling every idle queue tick;
+    /// `None` disables it.
     pub terminal_reconciliation_interval: Option<Duration>,
 }
 

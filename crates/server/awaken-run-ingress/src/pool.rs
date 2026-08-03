@@ -79,10 +79,10 @@ pub trait WorkerResolver<S>: Send + Sync {
             .await
     }
 
-    /// Reconcile up to `limit` quiescent dispatches against the resolver's
-    /// authoritative committed Run readers. Generic resolvers have no global
-    /// reader registry and do nothing; a Runtime Host overrides this once for
-    /// its Session/commit ownership boundary.
+    /// Reconcile up to `limit` quiescent or expired dispatches against the
+    /// resolver's authoritative committed Run readers. Generic resolvers have no
+    /// global reader registry and do nothing; a Runtime Host overrides this once
+    /// for its Session/commit ownership boundary.
     async fn reconcile_committed_terminals(
         &self,
         _now_ms: u64,

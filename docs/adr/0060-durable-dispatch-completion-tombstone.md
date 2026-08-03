@@ -66,20 +66,23 @@ would reintroduce run resurrection.
 ### D5: Commit/settle gaps repair through the same fenced Done path
 
 A quiescent `awaiting` dispatch can survive a historical crash or defect even
-after the matching committed Run is terminal. The store-owning Runtime Host
-periodically reads each row through its own Thread commit boundary. A Host with
-a local execution pool uses that pool's maintenance loop; a coordinator-only
-Host starts one mutually exclusive reconciliation daemon. Database-less Workers
-do neither. Only an exact committed
-`RunState::Ended` proof permits a special claim of that unleased `awaiting` row;
-the claim skips execution placement and credentials because it cannot execute.
-It then reuses the ordinary epoch-fenced `Done` settlement, including terminal
-observer redelivery and the D2 completion tombstone.
+after the matching committed Run is terminal. The same gap can recur if the
+reconciler crashes after claiming that row but before its `Done` settlement,
+leaving an expired `running` lease. The store-owning Runtime Host periodically
+reads both shapes through its own Thread commit boundary. A Host with a local
+execution pool uses that pool's maintenance loop; a coordinator-only Host starts
+one mutually exclusive reconciliation daemon. Database-less Workers do neither.
+Only an exact committed `RunState::Ended` proof permits a special claim of an
+unleased `awaiting` row or strictly expired `running` lease; a live lease is never
+touched. The claim skips execution placement and credentials because it cannot
+execute. It then reuses the ordinary epoch-fenced `Done` settlement, including
+terminal observer redelivery and the D2 completion tombstone.
 
 The dispatch store never accepts or derives Run outcome truth. It only exposes
 the narrowly scoped claim command, preserves the one-running-dispatch-per-Thread
-constraint, and rejects pending, running, leased, dead-lettered, or superseded
-rows. The worker checks committed truth both before and after the claim; a stale
+constraint, and rejects pending, live-leased, dead-lettered, or superseded rows.
+Reclaiming an expired lease advances the existing epoch and fences the crashed
+owner. The worker checks committed truth both before and after the claim; a stale
 proof restores `Awaiting`. This adds no cleanup table, outcome status, or direct
 row-deletion path.
 
@@ -94,8 +97,9 @@ row-deletion path.
   tombstone invariant.
 - Remote worker transports need not expose this server-local projection query;
   their default implementation fails explicitly.
-- Legacy commit/settle gaps converge without replaying execution or provisioning
-  a Session environment; nonterminal Awaiting and Running rows remain untouched.
+- Legacy commit/settle and reconciliation-claim crash gaps converge without
+  replaying execution or provisioning a Session environment; nonterminal rows
+  and terminal rows with live leases remain untouched.
 
 ## References
 
