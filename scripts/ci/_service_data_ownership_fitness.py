@@ -62,6 +62,7 @@ ADMIN_CONFIG_SQLITE_SOURCE = "crates/control/awaken-admin-config-api/src/sqlite.
 MODEL_CATALOG_REPO_SOURCE = "crates/control/awaken-model-catalog/src/repo.rs"
 MODEL_CATALOG_SQLITE_SOURCE = "crates/control/awaken-model-catalog/src/sqlite.rs"
 CONFIG_RESOLVER_SOURCE = "crates/control/awaken-config-resolver/src/lib.rs"
+CONFIG_RESOLVER_STORES_SOURCE = "crates/control/awaken-config-resolver/src/stores.rs"
 CREDENTIAL_REPO_SOURCE = "crates/control/awaken-credential-vault/src/repo.rs"
 CREDENTIAL_VAULT_SOURCE = "crates/control/awaken-credential-vault/src/lib.rs"
 CREDENTIAL_SQLITE_SOURCE = "crates/control/awaken-credential-vault/src/sqlite.rs"
@@ -791,6 +792,29 @@ def redundant_admin_store_reexport_violations(source: str) -> list[str]:
     )
 
 
+def webhook_mutation_authority_violations(source: str) -> list[str]:
+    """Keep one recoverable Webhook aggregate mutation path."""
+
+    errors: list[str] = []
+    for retired in (
+        r"fn\s+put\s*\(\s*&self\s*,\s*def\s*:\s*WebhookEndpointDef",
+        r"fn\s+delete\s*\(\s*&self\s*,\s*id\s*:\s*&str",
+    ):
+        if re.search(retired, source):
+            errors.append("WebhookStore exposes a retired direct put/delete mutation")
+    for required in (
+        "fn update_authored",
+        "fn begin_mutation",
+        "fn apply_mutation",
+        "fn pending_mutations",
+        "fn complete_mutation",
+        "fn material_refs",
+    ):
+        if required not in source:
+            errors.append(f"WebhookStore is missing recoverable authority `{required}`")
+    return errors
+
+
 def selftest() -> None:
     """Cause/effect decision table.
 
@@ -826,7 +850,9 @@ def selftest() -> None:
     compatibility re-export -> accepted; O30 a second Runtime public path for the
     backend -> rejected; O31 Coordinator persistence is initialized exactly once
     per schema mode in the canonical Runtime assembly -> accepted; O32 a duplicate
-    initializer or retired global Worker authority path -> rejected.
+    initializer or retired global Worker authority path -> rejected; O33 one
+    journaled Webhook mutation authority -> accepted; O34 direct put/delete or a
+    missing recovery edge -> rejected.
     Together the rules cover compile-time acquisition, production call paths,
     component ownership, and schema acquisition.
     """
@@ -1114,6 +1140,21 @@ def selftest() -> None:
         canonical_persistence
         + " awaken_coordinator::open_coordinator_persistence( worker_directory("
     )  # O32
+    webhook_store = " ".join(
+        (
+            "fn update_authored",
+            "fn begin_mutation",
+            "fn apply_mutation",
+            "fn pending_mutations",
+            "fn complete_mutation",
+            "fn material_refs",
+        )
+    )
+    assert webhook_mutation_authority_violations(webhook_store) == []  # O33
+    assert webhook_mutation_authority_violations(
+        webhook_store.replace("fn material_refs", "")
+        + " fn put(&self, def: WebhookEndpointDef"
+    )  # O34
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -1226,6 +1267,10 @@ def check_all(repo_root: Path) -> list[str]:
         (repo_root / ADMIN_CONFIG_SOURCE).read_text(encoding="utf-8")
     ):
         errors.append(f"{ADMIN_CONFIG_SOURCE}: {error}")
+    for error in webhook_mutation_authority_violations(
+        (repo_root / CONFIG_RESOLVER_STORES_SOURCE).read_text(encoding="utf-8")
+    ):
+        errors.append(f"{CONFIG_RESOLVER_STORES_SOURCE}: {error}")
     for error in redundant_runtime_memory_reexport_violations(
         (repo_root / RUNTIME_LIB_SOURCE).read_text(encoding="utf-8")
     ):

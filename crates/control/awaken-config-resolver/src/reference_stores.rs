@@ -10,8 +10,8 @@ use std::sync::Mutex;
 
 use crate::stores::{
     AgentInputBindingRepository, AgentInputRepositoryError, ConfigRepositoryError,
-    InferenceProfileStore, WebhookDeliveryOutcome, WebhookDeliveryState, WebhookStore,
-    validate_agent_input_revision,
+    InferenceProfileStore, WebhookAuthoringPatch, WebhookAuthoringState, WebhookDeliveryOutcome,
+    WebhookDeliveryState, WebhookMutationIntent, WebhookStore, validate_agent_input_revision,
 };
 use crate::{AgentInputConfig, InferenceProfile, WebhookEndpointDef};
 
@@ -48,7 +48,13 @@ impl InferenceProfileStore for InMemoryProfileStore {
 /// Process-local reference implementation of [`WebhookStore`].
 #[derive(Default)]
 pub struct InMemoryWebhookStore {
-    endpoints: Mutex<HashMap<String, WebhookEndpointDef>>,
+    state: Mutex<InMemoryWebhookState>,
+}
+
+#[derive(Default)]
+struct InMemoryWebhookState {
+    endpoints: HashMap<String, WebhookEndpointDef>,
+    mutations: HashMap<String, WebhookMutationIntent>,
 }
 
 impl InMemoryWebhookStore {
@@ -59,28 +65,22 @@ impl InMemoryWebhookStore {
 }
 
 impl WebhookStore for InMemoryWebhookStore {
-    fn put(&self, def: WebhookEndpointDef) -> Result<(), ConfigRepositoryError> {
-        self.endpoints
-            .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?
-            .insert(def.id.clone(), def);
-        Ok(())
-    }
-
     fn get(&self, id: &str) -> Result<Option<WebhookEndpointDef>, ConfigRepositoryError> {
         Ok(self
-            .endpoints
+            .state
             .lock()
             .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?
+            .endpoints
             .get(id)
             .cloned())
     }
 
     fn list(&self, workspace_id: &str) -> Result<Vec<WebhookEndpointDef>, ConfigRepositoryError> {
         let mut rows: Vec<WebhookEndpointDef> = self
-            .endpoints
+            .state
             .lock()
             .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?
+            .endpoints
             .values()
             .filter(|definition| definition.workspace_id == workspace_id)
             .cloned()
@@ -89,13 +89,133 @@ impl WebhookStore for InMemoryWebhookStore {
         Ok(rows)
     }
 
-    fn delete(&self, id: &str) -> Result<bool, ConfigRepositoryError> {
-        Ok(self
-            .endpoints
+    fn update_authored(
+        &self,
+        patch: WebhookAuthoringPatch,
+    ) -> Result<WebhookAuthoringState, ConfigRepositoryError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?;
+        if state.mutations.contains_key(&patch.id) {
+            return Err(ConfigRepositoryError::MutationConflict(format!(
+                "webhook {} has a pending material mutation",
+                patch.id
+            )));
+        }
+        let Some(definition) = state.endpoints.get_mut(&patch.id) else {
+            return Ok(WebhookAuthoringState::Missing);
+        };
+        if definition.workspace_id != patch.workspace_id {
+            return Ok(WebhookAuthoringState::OwnerMismatch);
+        }
+        definition.url = patch.url;
+        definition.event_types = patch.event_types;
+        if let Some(disabled) = patch.disabled {
+            definition.disabled = disabled;
+            if !disabled {
+                definition.consecutive_failures = 0;
+            }
+        }
+        Ok(WebhookAuthoringState::Updated(definition.clone()))
+    }
+
+    fn begin_mutation(&self, intent: WebhookMutationIntent) -> Result<(), ConfigRepositoryError> {
+        let id = intent.id()?.to_string();
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?;
+        if let Some(pending) = state.mutations.get(&id) {
+            return if pending == &intent {
+                Ok(())
+            } else {
+                Err(ConfigRepositoryError::MutationConflict(format!(
+                    "webhook {id} already has a pending mutation"
+                )))
+            };
+        }
+        if state.endpoints.get(&id) != intent.before.as_ref() {
+            return Err(ConfigRepositoryError::MutationConflict(format!(
+                "webhook {id} changed before mutation admission"
+            )));
+        }
+        state.mutations.insert(id, intent);
+        Ok(())
+    }
+
+    fn apply_mutation(&self, intent: &WebhookMutationIntent) -> Result<(), ConfigRepositoryError> {
+        let id = intent.id()?.to_string();
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?;
+        if state.mutations.get(&id) != Some(intent)
+            || state.endpoints.get(&id) != intent.before.as_ref()
+        {
+            return Err(ConfigRepositoryError::MutationConflict(format!(
+                "webhook {id} no longer matches its pending mutation"
+            )));
+        }
+        match &intent.after {
+            Some(after) => {
+                state.endpoints.insert(id, after.clone());
+            }
+            None => {
+                state.endpoints.remove(&id);
+            }
+        }
+        Ok(())
+    }
+
+    fn pending_mutations(&self) -> Result<Vec<WebhookMutationIntent>, ConfigRepositoryError> {
+        let mut intents: Vec<_> = self
+            .state
             .lock()
             .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?
-            .remove(id)
-            .is_some())
+            .mutations
+            .values()
+            .cloned()
+            .collect();
+        intents.sort_by(|left, right| left.id().ok().cmp(&right.id().ok()));
+        Ok(intents)
+    }
+
+    fn complete_mutation(
+        &self,
+        intent: &WebhookMutationIntent,
+    ) -> Result<(), ConfigRepositoryError> {
+        let id = intent.id()?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?;
+        match state.mutations.get(id) {
+            None => return Ok(()),
+            Some(pending) if pending == intent => {}
+            Some(_) => {
+                return Err(ConfigRepositoryError::MutationConflict(format!(
+                    "webhook {id} has a different pending mutation"
+                )));
+            }
+        }
+        state.mutations.remove(id);
+        Ok(())
+    }
+
+    fn material_refs(
+        &self,
+    ) -> Result<Vec<awaken_credential_vault::SecretRef>, ConfigRepositoryError> {
+        let mut refs: Vec<_> = self
+            .state
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?
+            .endpoints
+            .values()
+            .map(|definition| definition.secret_ref.clone())
+            .collect();
+        refs.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(refs)
     }
 
     fn record_delivery(
@@ -104,11 +224,17 @@ impl WebhookStore for InMemoryWebhookStore {
         outcome: WebhookDeliveryOutcome,
         failure_threshold: u32,
     ) -> Result<WebhookDeliveryState, ConfigRepositoryError> {
-        let mut endpoints = self
-            .endpoints
+        let mut state = self
+            .state
             .lock()
             .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?;
-        Ok(endpoints
+        if state.mutations.contains_key(id) {
+            return Err(ConfigRepositoryError::MutationConflict(format!(
+                "webhook {id} has a pending material mutation"
+            )));
+        }
+        Ok(state
+            .endpoints
             .get_mut(id)
             .map_or(WebhookDeliveryState::Missing, |definition| {
                 definition.record_delivery(outcome, failure_threshold)

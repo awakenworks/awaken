@@ -11,6 +11,7 @@
 //! read-side + vault ports, never the durable admin backend — that is injected by
 //! the assembly), so the `awaken` / `awaken-coordinator` management plane uses it.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -18,7 +19,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::{
-    WebhookDeliveryOutcome, WebhookDeliveryState, WebhookEndpointDef, WebhookStore,
+    ConfigRepositoryError, WebhookAuthoringPatch, WebhookAuthoringState, WebhookDeliveryOutcome,
+    WebhookDeliveryState, WebhookEndpointDef, WebhookMutationIntent, WebhookStore,
 };
 use awaken_credential_vault::{SecretRef, SecretStore};
 use awaken_session_contract::{
@@ -27,7 +29,7 @@ use awaken_session_contract::{
 use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::{
     ReqwestSender, ResolvedSubscription, SubscriptionFailureState, SubscriptionSource,
-    WebhookDispatcher, WebhookEvent, WebhookSender, generate_secret,
+    WebhookDispatcher, WebhookEvent, WebhookSender, generate_secret, generate_secret_reference,
 };
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -284,9 +286,9 @@ fn rfc3339(secs: i64) -> String {
 /// The dispatcher's read/lifecycle port over the config plane: enumerate a
 /// workspace's [`WebhookEndpointDef`]s, drop disabled / type-mismatched ones, and
 /// resolve each `secret_ref` through the [`SecretStore`] into a signable
-/// [`ResolvedSubscription`]. Auto-disable is a config-plane write (flip `disabled`
-/// and put the row back). The secret is materialized only here, at delivery — the
-/// row and the CRUD responses stay secret-free.
+/// [`ResolvedSubscription`]. Auto-disable is one atomic config-plane delivery-state
+/// transition. The secret is materialized only here, at delivery — the row and the
+/// CRUD responses stay secret-free.
 pub struct ConfigPlaneSubscriptionSource {
     store: Arc<dyn WebhookStore>,
     secrets: Arc<dyn SecretStore>,
@@ -352,6 +354,124 @@ impl SubscriptionSource for ConfigPlaneSubscriptionSource {
             })
             .map_err(|error| error.to_string())
     }
+}
+
+/// Result of reconciling webhook-owned material in the shared SecretStore.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebhookInventoryReport {
+    pub orphaned_deleted: Vec<SecretRef>,
+    pub missing_material: Vec<SecretRef>,
+}
+
+fn material_set(definition: Option<&WebhookEndpointDef>) -> HashSet<SecretRef> {
+    definition
+        .map(|definition| HashSet::from([definition.secret_ref.clone()]))
+        .unwrap_or_default()
+}
+
+async fn cleanup_material_difference(
+    remove_from: Option<&WebhookEndpointDef>,
+    retain_from: Option<&WebhookEndpointDef>,
+    secrets: &dyn SecretStore,
+) -> Result<(), String> {
+    let remove = material_set(remove_from);
+    let retain = material_set(retain_from);
+    for reference in remove.difference(&retain) {
+        secrets
+            .delete(reference)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Resolve every interrupted create/delete after restart. The exact committed
+/// row decides which side's material is retained; an unrelated row revision is a
+/// conflict and is never guessed through.
+pub async fn recover_webhook_mutations(
+    store: &dyn WebhookStore,
+    secrets: &dyn SecretStore,
+) -> Result<usize, String> {
+    let intents = store
+        .pending_mutations()
+        .map_err(|error| error.to_string())?;
+    let mut recovered = 0;
+    for intent in intents {
+        let id = intent.id().map_err(|error| error.to_string())?;
+        let current = store.get(id).map_err(|error| error.to_string())?;
+        if current == intent.after {
+            cleanup_material_difference(intent.before.as_ref(), intent.after.as_ref(), secrets)
+                .await?;
+        } else if current == intent.before {
+            cleanup_material_difference(intent.after.as_ref(), intent.before.as_ref(), secrets)
+                .await?;
+        } else {
+            return Err(format!(
+                "webhook {id} no longer matches its pending material mutation"
+            ));
+        }
+        store
+            .complete_mutation(&intent)
+            .map_err(|error| error.to_string())?;
+        recovered += 1;
+    }
+    Ok(recovered)
+}
+
+/// Delete unreferenced webhook-owned keys and report committed references whose
+/// material is absent. The first inventory snapshot bounds deletion candidates;
+/// a second snapshot after deletion is the authority for missing-material
+/// reporting, so a concurrently published key is not diagnosed from stale data.
+pub async fn reconcile_webhook_inventory(
+    store: &dyn WebhookStore,
+    secrets: &dyn SecretStore,
+) -> Result<WebhookInventoryReport, String> {
+    let inventory = secrets
+        .inventory()
+        .await
+        .map_err(|error| error.to_string())?;
+    let pending = store
+        .pending_mutations()
+        .map_err(|error| error.to_string())?;
+    let committed = store.material_refs().map_err(|error| error.to_string())?;
+    let committed_keys: HashSet<String> = committed.iter().map(|item| item.0.clone()).collect();
+    let protected: HashSet<String> = committed_keys
+        .iter()
+        .cloned()
+        .chain(
+            pending
+                .iter()
+                .flat_map(WebhookMutationIntent::material_refs)
+                .map(|reference| reference.0),
+        )
+        .collect();
+    let mut orphaned_deleted = Vec::new();
+    for reference in inventory {
+        if (reference.0.starts_with("sec:webhook:") || reference.0.starts_with("whsec:"))
+            && !protected.contains(&reference.0)
+        {
+            secrets
+                .delete(&reference)
+                .await
+                .map_err(|error| error.to_string())?;
+            orphaned_deleted.push(reference);
+        }
+    }
+    let present_after_reconciliation: HashSet<String> = secrets
+        .inventory()
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|reference| reference.0)
+        .collect();
+    let missing_material = committed
+        .into_iter()
+        .filter(|reference| !present_after_reconciliation.contains(&reference.0))
+        .collect();
+    Ok(WebhookInventoryReport {
+        orphaned_deleted,
+        missing_material,
+    })
 }
 
 /// The workspace-scoped subscription front door, a config resource beside
@@ -424,6 +544,23 @@ fn not_found() -> Value {
     json!({ "error": { "type": "not_found_error", "message": "webhook subscription not found" } })
 }
 
+fn repository_problem(error: ConfigRepositoryError) -> (StatusCode, Json<Value>) {
+    let (status, message) = match error {
+        ConfigRepositoryError::MutationConflict(_) => (
+            StatusCode::CONFLICT,
+            "webhook subscription mutation is already in progress",
+        ),
+        ConfigRepositoryError::Storage(_) | ConfigRepositoryError::InvalidMutation(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "webhook repository unavailable",
+        ),
+    };
+    (
+        status,
+        Json(json!({"error":{"type":"api_error","message":message}})),
+    )
+}
+
 /// A secret-free projection of the row (never echoes the signing secret).
 fn view(def: &WebhookEndpointDef) -> Value {
     json!({
@@ -461,81 +598,67 @@ async fn put_subscription(
             })),
         );
     }
-    let event_types: Vec<String> = body
-        .get("event_types")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
+    let event_types: Vec<String> = match body.get("event_types") {
+        None => Vec::new(),
+        Some(Value::Array(values))
+            if values
+                .iter()
+                .all(|value| value.as_str().is_some_and(|event| !event.trim().is_empty())) =>
+        {
+            values
+                .iter()
+                .map(|value| value.as_str().expect("validated string").to_string())
                 .collect()
-        })
-        .unwrap_or_default();
-
-    let workspace_id = scope_of(scope);
-
-    // Update in place: keep the sealed secret + owner. Self-fence on the row's owner
-    // so a caller cannot hijack another tenant's id (belt-and-suspenders with the
-    // management-plane resource-ownership guard). 404, never 403 — no existence
-    // disclosure.
-    let existing = match state.store.get(&id) {
-        Ok(value) => value,
-        Err(_) => {
+        }
+        Some(_) => {
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    json!({"error":{"type":"api_error","message":"webhook repository unavailable"}}),
-                ),
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": { "type": "invalid_request_error", "message": "`event_types` must be an array of non-empty strings" }
+                })),
             );
         }
     };
-    if let Some(existing) = existing {
-        if existing.workspace_id != workspace_id {
-            return (StatusCode::NOT_FOUND, Json(not_found()));
-        }
-        let updated = WebhookEndpointDef {
-            id: id.clone(),
-            workspace_id: existing.workspace_id,
-            url,
-            event_types,
-            disabled: body
-                .get("disabled")
-                .and_then(Value::as_bool)
-                .unwrap_or(existing.disabled),
-            consecutive_failures: if body.get("disabled").and_then(Value::as_bool) == Some(false) {
-                0
-            } else {
-                existing.consecutive_failures
-            },
-            secret_ref: existing.secret_ref,
-        };
-        if state.store.put(updated.clone()).is_err() {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    json!({"error":{"type":"api_error","message":"webhook repository unavailable"}}),
-                ),
-            );
-        }
-        return (StatusCode::OK, Json(view(&updated)));
-    }
-
-    // Create: mint the `whsec_` secret, seal it in the vault, store the secret-free
-    // row referencing it. The plaintext is returned exactly once, here.
-    let secret = generate_secret();
-    let secret_ref = SecretRef(format!("whsec:{id}"));
-    if state
-        .secrets
-        .put(&secret_ref, RedactedString::new(secret.clone()))
-        .await
-        .is_err()
+    if body
+        .get("disabled")
+        .is_some_and(|value| !value.is_boolean())
     {
         return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(
-                json!({ "error": { "type": "api_error", "message": "could not seal the signing secret" } }),
-            ),
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": { "type": "invalid_request_error", "message": "`disabled` must be a boolean" }
+            })),
         );
     }
+
+    let workspace_id = scope_of(scope);
+
+    // The repository owns the atomic read/modify/write. Delivery counters and the
+    // secret reference can therefore change concurrently without being overwritten
+    // by this authored patch.
+    let patch = WebhookAuthoringPatch {
+        id: id.clone(),
+        workspace_id: workspace_id.clone(),
+        url: url.clone(),
+        event_types: event_types.clone(),
+        disabled: body.get("disabled").and_then(Value::as_bool),
+    };
+    match state.store.update_authored(patch.clone()) {
+        Ok(WebhookAuthoringState::Updated(updated)) => {
+            return (StatusCode::OK, Json(view(&updated)));
+        }
+        Ok(WebhookAuthoringState::OwnerMismatch) => {
+            return (StatusCode::NOT_FOUND, Json(not_found()));
+        }
+        Ok(WebhookAuthoringState::Missing) => {}
+        Err(error) => return repository_problem(error),
+    }
+
+    // Create is a recoverable saga. The durable intent precedes the SecretStore
+    // effect; its fresh reference prevents compensation from touching another
+    // concurrent attempt's material.
+    let secret = generate_secret();
+    let secret_ref = SecretRef(format!("sec:webhook:{}", generate_secret_reference()));
     let def = WebhookEndpointDef {
         id: id.clone(),
         workspace_id: workspace_id.clone(),
@@ -543,13 +666,51 @@ async fn put_subscription(
         event_types: event_types.clone(),
         disabled: false,
         consecutive_failures: 0,
-        secret_ref,
+        secret_ref: secret_ref.clone(),
     };
-    if state.store.put(def).is_err() {
+    let intent = WebhookMutationIntent::create(def.clone());
+    if let Err(error) = state.store.begin_mutation(intent.clone()) {
+        // A concurrent create may have committed between update_authored(Missing)
+        // and begin_mutation. Re-apply the patch once through the same atomic path.
+        if matches!(error, ConfigRepositoryError::MutationConflict(_)) {
+            match state.store.update_authored(patch) {
+                Ok(WebhookAuthoringState::Updated(updated)) => {
+                    return (StatusCode::OK, Json(view(&updated)));
+                }
+                Ok(WebhookAuthoringState::OwnerMismatch) => {
+                    return (StatusCode::NOT_FOUND, Json(not_found()));
+                }
+                Ok(WebhookAuthoringState::Missing) | Err(_) => {}
+            }
+        }
+        return repository_problem(error);
+    }
+    if let Err(error) = state
+        .secrets
+        .put(&secret_ref, RedactedString::new(secret.clone()))
+        .await
+    {
+        // A failed put may have written before losing its response. Retire the
+        // intent only after idempotent cleanup succeeds; otherwise recovery owns it.
+        if state.secrets.delete(&secret_ref).await.is_ok() {
+            let _ = state.store.complete_mutation(&intent);
+        }
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error":{"type":"api_error","message":"webhook repository unavailable"}})),
+            Json(json!({
+                "error": { "type": "api_error", "message": format!("could not seal the signing secret: {error}") }
+            })),
         );
+    }
+    if let Err(error) = state.store.apply_mutation(&intent) {
+        // Never compensate an ambiguous row commit inline: the durable intent lets
+        // recovery decide whether the row or the candidate material won.
+        return repository_problem(error);
+    }
+    if let Err(error) = state.store.complete_mutation(&intent) {
+        // Both externally visible projections committed. Preserve the successful
+        // create response; recovery idempotently retires the stale journal entry.
+        eprintln!("webhook mutation completion remains pending for {id}: {error}");
     }
     (
         StatusCode::CREATED,
@@ -597,12 +758,32 @@ async fn delete_subscription(
 ) -> StatusCode {
     // Only unsubscribe an endpoint this tenant owns; a cross-tenant or absent id is a
     // silent no-op (idempotent, and no ownership disclosure).
-    if let Ok(Some(def)) = state.store.get(&id)
-        && def.workspace_id == scope_of(scope)
-    {
-        let _ = state.store.delete(&id);
+    let workspace_id = scope_of(scope);
+    for _ in 0..3 {
+        let definition = match state.store.get(&id) {
+            Ok(Some(definition)) if definition.workspace_id == workspace_id => definition,
+            Ok(_) => return StatusCode::NO_CONTENT,
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        let intent = WebhookMutationIntent::delete(definition.clone());
+        match state.store.begin_mutation(intent.clone()) {
+            Ok(()) => {
+                if state.store.apply_mutation(&intent).is_err() {
+                    return StatusCode::INTERNAL_SERVER_ERROR;
+                }
+                if state.secrets.delete(&definition.secret_ref).await.is_err() {
+                    return StatusCode::INTERNAL_SERVER_ERROR;
+                }
+                if let Err(error) = state.store.complete_mutation(&intent) {
+                    eprintln!("webhook delete completion remains pending for {id}: {error}");
+                }
+                return StatusCode::NO_CONTENT;
+            }
+            Err(ConfigRepositoryError::MutationConflict(_)) => continue,
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
+        }
     }
-    StatusCode::NO_CONTENT
+    StatusCode::CONFLICT
 }
 
 /// Build the lifecycle sink + subscription front door over the config-plane

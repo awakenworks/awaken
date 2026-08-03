@@ -732,6 +732,7 @@ C94 → E82     C96 ∧ C97 → E85(resume)     C96 ∧ ~C97 → 整步重跑   
 | C106 | Managed 会话 id 服务端铸造(跳过 `owns_thread`);archived 写(409) | managed `create_session`/`Archived` |
 | C107 | webhook 响应 2xx vs 408/425/429/5xx vs 永久 3xx/4xx；订阅/密钥/状态权威故障；持久连败 ≥ 阈值；畸形签名密钥；SSRF/私网 | webhook `dispatch`/`WebhookStore::record_delivery`/`validate_endpoint_url` |
 | C108 | ACP 策略 `RequireConfirmation`;进程/worker 在等待期间被替换 | ACP `PermissionAwait` → durable `ResumeTicket` → one-shot resumed resolver |
+| C109 | webhook authored update/create/delete 与 delivery 并发；密钥 put/delete/apply/complete 故障；pending/orphan/missing/foreign 库存；材料在删除快照后并发可见；畸形字段 | `WebhookStore` mutation intent + managed recovery/inventory |
 
 ### 果(E86–E95)
 
@@ -748,6 +749,7 @@ C94 → E82     C96 ∧ C97 → E85(resume)     C96 ∧ ~C97 → 整步重跑   
 | E94 | webhook 投递期 SSRF 守卫:解析并钉全局可路由,拒 loopback/非https | `ReqwestSender::guarded` |
 | E95 | `session.error`(`SessionError::classify`)于 `outcome.failure`;生命周期扇出 IDLED/TERMINATED/DELETED | managed events.rs |
 | E96 | ACP permission 请求提交 `ToolPermission` await 并释放进程/租约;恢复仅对 ticket 固定 call id 应用一次裁决 | acp executor permission replacement e2e |
+| E97 | webhook authored patch 保留 operational/ref；create/delete durable saga 可跨重启收敛；库存首快照只删无保护的 webhook key、次快照诊断 missing；畸形输入零副作用拒绝 | M30 T172–T180 + M33 T190 |
 
 ### 因果图与约束
 
@@ -1023,7 +1025,7 @@ FMECA。评分是变更审查时使用的相对优先级，不是现场故障率
 变化后旧执行者失去提交权；恢复只读取 durable authority，不从临时投影反推。
 ```
 
-### 端到端 FMECA（EF24–EF48 续表见[集成判定表](./end-to-end-integration-decision-table.md)）
+### 端到端 FMECA（EF24–EF60 续表见[集成判定表](./end-to-end-integration-decision-table.md)）
 
 | ID | 流程失效模式与系统影响 | 现有消解/处理 | 判定表与测试证据 | S/O/D/RPN |
 |---|---|---|---|---|
@@ -1125,8 +1127,8 @@ M1–M15 判定表为唯一测试设计来源。
 | `awaken-mcp-wire` | frame/JSON-RPC id 错配 → 响应串线 | strict decode、correlation、roundtrip；直接，M12 | 4/1/1/4 |
 | `awaken-observability` | tracing 失败影响业务、敏感值入日志或 raw URI 造成高基数 | no-op/fail-soft exporter、redaction、`MatchedPath` 模板路由；动态参数路由直接测试 + leak scan，M15 | 4/1/1/4 |
 | `awaken-provider-genai` | provider stop/error 映射错误 → 双终结/错误重试 | canonical outcome、breaker/retry 分类；直接，M1 | 4/1/1/4 |
-| `awaken-runtime-contract` | port/vocabulary 并行实现 → 插件绕核心 | leaf contracts、crate fitness、API snapshot；直接，M1–M4 | 5/1/1/5 |
-| `awaken-runtime` | panic/取消/预算/commit 竞态或 resume ID 冲突 → 卡死、错误终态、后续事实丢失 | catch、cancel select、有限预算、单 EndCause；从 committed full assistant steps 派生 resume 起点；多次 resume 直接测试，M1/M15 | 5/1/1/5 |
+| `awaken-runtime-contract` | port/vocabulary 或 tool registry 并行实现、重复 tool id 按插入顺序覆盖 → 插件绕核心或执行 owner 不确定 | leaf contracts；唯一 `RawToolRegistry` 对 unknown/unique/duplicate fail-closed；crate fitness、API snapshot；直接，M1–M4/M31 | 5/1/1/5 |
+| `awaken-runtime` | panic/取消/预算/commit 竞态、resume ID 冲突或 Sandbox 工具回退 Brain → 卡死、错误终态、后续事实丢失或绕隔离 | catch、cancel select、有限预算、单 EndCause；从 committed full assistant steps 派生 resume 起点；target routing 缺 executor fail-closed；直接，M1/M15/M31 | 5/1/1/5 |
 | `awaken-store-inmem` | 参考实现与 durable backend 不同 → 错误规格 | 共享 14 项 conformance；直接/共享，M11 | 5/1/1/5 |
 | `awaken-tool-pattern` | glob/regex 边界错误 → 工具过授权 | compiled matcher、invalid pattern reject；直接，M4/M13 | 5/1/1/5 |
 | `awaken-file-application` | HTTP/Runtime 文件写形成双路径 → 权限/CAS 分叉 | 单 Resources application port；直接，M13 | 5/1/1/5 |
@@ -1140,11 +1142,11 @@ M1–M15 判定表为唯一测试设计来源。
 | `awaken-resource-reclaimer` | cleanup 失败被记成功 → 资源/secret 残留 | Releasing 重试、精确 receipt；直接，M14/F10 E2E | 5/1/2/10 |
 | `awaken-connection-plan` | relay/endpoint 选择 fallback → 绕策略 | deterministic plan、unsupported reject；直接，M9 | 5/1/1/5 |
 | `awaken-local-process` | env/file secret 生命周期错误 → 子进程泄漏 | typed last-mile、scoped file/env、dispose；直接，M5 | 5/1/1/5 |
-| `awaken-sandbox-container` | Docker/Podman/K8s 能力虚报 → 隔离/no-bypass 虚证 | provider-specific caps、fail-closed、strict substrate tests；直接，M8/EF11 | 5/2/2/20 |
+| `awaken-sandbox-container` | Docker/Podman/K8s 能力虚报，或 live gate 把宿主运行时故障当产品回归 → 隔离/no-bypass 虚证或测试假红 | provider-specific caps、fail-closed、strict substrate tests；Podman info×raw OCI 独立前提；直接，M8/M32/EF11 | 5/2/2/20 |
 | `awaken-sandbox-local` | namespace/FUSE 不可用却降级 → 隔离不足 | capability probe、policy-controlled reject/degrade；直接，M8 | 5/1/1/5 |
 | `awaken-sandbox-manager` | lease/pool/reap 竞态 → 复用污染或泄漏 | lease state、poison、shape key、reaper；直接，M9 | 5/1/1/5 |
 | `awaken-sandbox-memoryd` | mount/writeback 丢失或越权 → 数据丢失/跨域 | scoped mount token、hash/teardown harvest；直接，M8 | 5/1/2/10 |
-| `awaken-tool-relay` | token 重放/撤销后调用 → 未授权工具执行 | opaque scoped token、lease/revoke；直接，M9 | 5/1/1/5 |
+| `awaken-tool-relay` | token 重放/撤销后调用，或重复 tool id 选错实现 → 未授权/错误工具执行 | opaque scoped token、lease/revoke；复用唯一 `RawToolRegistry` 且 duplicate ambiguous；直接，M9/M31 | 5/1/1/5 |
 
 ### F3、F5、F9–F10：服务应用、协议与 Worker
 
@@ -1169,9 +1171,9 @@ M1–M15 判定表为唯一测试设计来源。
 | `awaken-protocol-mcp` | adapter 绕 core permission/HITL → 未授权调用 | shared core/testkit、stable reject；直接，M4/M12 | 5/1/1/5 |
 | `awaken-run-executor-a2a` | 子进程断线/退出码误映射 → 错 settle | supervised process、typed exit/recovery；直接，M12 | 4/1/2/8 |
 | `awaken-run-executor-acp` | ACP 子进程握手/stdio/secret 投影失败，或跨 Run 消息 ID 冲突 → Run 卡住、泄密或后续回复被吞 | official ACP default、typed secret、supervision、Run-scoped fact id；直接，ACP real/deterministic/EF13 | 5/1/1/5 |
-| `awaken-runtime-host` | 组装错误、direct/durable attempt context 分叉、MCP relay/credential admission 绕过 → 内容不受控或系统级泄漏 | 单 composition root；唯一 attempt-context decorator 解析 subject×consent×sink；generation relay、capability conjunction；直接+真实擦除 E2E，M16/G42/G43 | 5/1/2/10 |
-| `awaken-webhook-managed` | lifecycle 与 subscription scope 错配，或仓库/密钥错误被遮为空集合 → 跨域通知或静默漏事件 | guard→Workspace mapping；fallible source；唯一 durable outbox/dispatcher；直接，M12/M29 | 5/1/1/5 |
-| `awaken-webhook` | SSRF、签名错误、永久失败重试风暴、进程重启清空禁用计数 | URL policy、HMAC、唯一 status classifier、状态回写 SubscriptionSource；直接+真实 HTTP，M12/M29 | 5/1/1/5 |
+| `awaken-runtime-host` | 组装错误、direct/durable attempt context 分叉、Environment executor 缺失或 MCP relay/credential admission 绕过 → 工具不执行、内容不受控或系统级泄漏 | 单 composition root；唯一 attempt-context decorator；SessionEnvironment 唯一提供 Sandbox executor 并复用 `RawToolRegistry`；generation relay、capability conjunction；直接+真实擦除 E2E，M16/M31/G42/G43 | 5/1/2/10 |
+| `awaken-webhook-managed` | lifecycle/scope 错配、权威错误被遮蔽，row/secret 跨存储半提交，或旧库存快照误报并发发布 → 漏通知、孤儿/缺失密钥或错误告警 | guard→Workspace；fallible source；唯一 outbox；durable material intent + recovery；库存以首快照界定删除、次快照诊断缺失；直接，M12/M29/M30/M33 | 5/1/1/5 |
+| `awaken-webhook` | SSRF、签名错误、永久失败重试风暴、进程重启清空禁用计数或 material ref 泄露签名值 | URL policy、HMAC、唯一 classifier、持久状态回写、opaque random ref；直接+真实 HTTP，M12/M29/M30 | 5/1/1/5 |
 | `awaken-worker-registry` | heartbeat/replacement 竞态或重启丢 tombstone → 调度到死 Worker/旧身份历史消失 | incarnation+lease、monotonic replacement、SQLite/PG reopen conformance；Memory 仅 test-support；直接，F5/EF41 | 6/1/1/6 |
 | `awaken-worker-transport-security` | 签名重放/错误 trust domain → 冒充 Worker | timestamp/nonce/signature/trust store；直接，F5 | 5/1/1/5 |
 | `awaken-acp-contract` | capability fingerprint 非确定或 probe 错误丢信息 → 错兼容判断 | 顺序归一 fingerprint、serde roundtrip；直接新增判定表 | 4/1/1/4 |
@@ -1186,13 +1188,13 @@ M1–M15 判定表为唯一测试设计来源。
 | `awaken-sandbox` | CLI 参数绕 capability admission → 低隔离启动 | 所有输入编译为同一 provisioning plan；直接，sandbox E2E | 5/1/1/5 |
 | `awaken-worker` | 组装时虚报 provider/credential capability → 错 claim | installed-component-derived caps、lifecycle fence；直接，worker E2E | 5/1/1/5 |
 | `awaken-eval` | 评估 fixture 非确定/误计分 → 假回归结论 | deterministic fixture/result tests；直接 | 2/1/1/2 |
-| `awaken-runtime-examples` | 示例绕正式 API → 用户复制错误路径 | 示例编译/运行测试跟随 public API；直接 | 2/1/2/4 |
+| `awaken-runtime-examples` | 示例只注册 Sandbox tool 却不注入 executor，或隐式回退 Brain → 审批后不执行/用户复制绕隔离路径 | `publish=false` + opt-in feature；显式单进程 Hand executor；allow/deny 判定表跟随正式 target-routing API；直接，M31 | 4/2/2/16 |
 | `awaken-scenario-host` | 测试 host 与生产组合语义或能力清单分叉 → E2E 假绿/永不 claim | 复用正式 ports/contracts 与生产 A2A 安装器；能力从已安装实现派生；直接，deterministic/remote recovery E2E | 5/1/1/5 |
 
 ## 覆盖与使用说明
 
 1. **判定表即测试清单**:每一列(T#)是一个可执行测试用例——置因、驱动被测符号、断言果。列已按 CE 图归约,消除了冗余组合。
-2. **约束消除组合爆炸**:O/E 约束(单值枚举)、R 要求边、M 遮蔽优先级共同把理论 2¹³⁷ 组合压到约 136 个有效用例。每个 M(遮蔽)边都配对照用例(如 T52 vs T54、M4 Deny 绝对、M6 三闸串行)专门验证优先级不被违反。
+2. **约束消除组合爆炸**:O/E 约束(单值枚举)、R 要求边、M 遮蔽优先级共同把理论 2¹⁷¹ 组合压到 190 个有效规则。每个 M(遮蔽)边都配对照用例(如 T52 vs T54、M4 Deny 绝对、M6 三闸串行)专门验证优先级不被违反。
 3. **fail-closed 断言**:安全敏感模块(M4/M5/M6/M7/M9)的每个果都应额外断言"默认拒绝/默认封闭"分支——即因全假时落到 fail-closed 果,而非 fail-open。
-4. **已知功能空洞**:M12 列出的 A2A 带内拒绝、A2A 流式/推送、AG-UI 结构化错误、ACP 同步 HITL、MCP out-of-band 审批、webhook 永久错误分流——这些是设计缺口而非 bug,对应用例断言的是"当前遮蔽行为",发现口径改变时须同步更新本表。
+4. **已知功能空洞**:M12 列出的 A2A 带内拒绝、A2A 流式/推送、AG-UI 结构化错误、ACP 同步 HITL、MCP out-of-band 审批——这些是设计缺口而非 bug,对应用例断言的是"当前遮蔽行为",发现口径改变时须同步更新本表。
 5. **多后端等价类**:M10/M11 的后端(fs/sqlite/pg、memory/pg、local/nats/pg-notify)为 O 约束等价类;`MemoryDispatchStore` 是 pg 必须匹配的可执行规格,建议以同一判定表跑参数化后端一致性测试。

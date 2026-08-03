@@ -63,6 +63,10 @@ const FILES: &[(&str, &str)] = &[
         "V0010__retire_legacy_webhook_outbox.sql",
         include_str!("migrations/V0010__retire_legacy_webhook_outbox.sql"),
     ),
+    (
+        "V0011__webhook_mutation_intent.sql",
+        include_str!("migrations/V0011__webhook_mutation_intent.sql"),
+    ),
 ];
 
 /// Parse the version from a `Vnnnn__slug.sql` file name (`V0005__…` ⇒ 5). A name
@@ -110,7 +114,7 @@ mod tests {
     #[test]
     fn admin_bundle_lints() {
         // Cause/effect decision table: every predecessor migration is applied in
-        // order (C1) and the scoped receipt is absent (C2) => V0009/V0010 execute
+        // order (C1) and the scoped receipt is absent (C2) => V0009..V0011 execute
         // their deterministic DROP statements (E1); receipts present => they are
         // skipped (E2); schema drift/missing predecessors => a bare DROP fails
         // closed (E3), rather than recording a conditional no-op as success.
@@ -121,12 +125,12 @@ mod tests {
     #[test]
     fn versions_parse_contiguously_from_file_names() {
         // Cause/effect decision table:
-        // R1 empty ledger + V1..V10 => build the current Control schema.
-        // R2 published prefix + the same V1..V10 => apply only its missing suffix.
+        // R1 empty ledger + V1..V11 => build the current Control schema.
+        // R2 published prefix + the same V1..V11 => apply only its missing suffix.
         // R3 published prefix + a rewritten V1 => reject unknown/checksum history.
         // Retired DDL is ledger compatibility, not a second repository owner.
         let bundle = admin_bundle().expect("bundle builds");
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, (1..=10).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=11).collect::<Vec<_>>());
     }
 }

@@ -11,6 +11,8 @@ use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
 use thiserror::Error;
 
 pub use crate::llm::ToolCall;
@@ -396,6 +398,89 @@ pub trait ToolExecutor: Send + Sync {
     }
 
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError>;
+}
+
+/// One authoritative registry for schema-erased tool implementations.
+///
+/// Runtime composition, a realized local Environment, and a remote Hand all
+/// need the same `tool id -> implementation` resolution rule. Duplicate ids are
+/// retained as an explicit ambiguous slot and fail closed instead of depending
+/// on insertion order.
+#[derive(Clone, Default)]
+pub struct RawToolRegistry {
+    tools: HashMap<String, RawToolSlot>,
+}
+
+#[derive(Clone)]
+enum RawToolSlot {
+    Unique(Arc<dyn RawTool>),
+    Ambiguous,
+}
+
+impl RawToolRegistry {
+    /// Build a registry from executable tools. An id appearing more than once is
+    /// permanently ambiguous in this registry, even if the same object repeats.
+    pub fn new(tools: impl IntoIterator<Item = Arc<dyn RawTool>>) -> Self {
+        let mut registry = Self::default();
+        for tool in tools {
+            registry.insert(tool);
+        }
+        registry
+    }
+
+    /// Register one tool, failing future resolution closed if the id already
+    /// exists. Returning `false` lets composition roots surface the conflict.
+    pub fn insert(&mut self, tool: Arc<dyn RawTool>) -> bool {
+        use std::collections::hash_map::Entry;
+
+        match self.tools.entry(tool.id().to_string()) {
+            Entry::Vacant(entry) => {
+                entry.insert(RawToolSlot::Unique(tool));
+                true
+            }
+            Entry::Occupied(mut entry) => {
+                entry.insert(RawToolSlot::Ambiguous);
+                false
+            }
+        }
+    }
+
+    /// Resolve one unique implementation. Unknown and ambiguous ids both return
+    /// `None`; [`Self::invoke`] preserves the more specific model-visible error.
+    #[must_use]
+    pub fn get(&self, tool_id: &str) -> Option<&Arc<dyn RawTool>> {
+        match self.tools.get(tool_id) {
+            Some(RawToolSlot::Unique(tool)) => Some(tool),
+            Some(RawToolSlot::Ambiguous) | None => None,
+        }
+    }
+
+    fn resolution_error(&self, tool_id: &str) -> ToolError {
+        match self.tools.get(tool_id) {
+            Some(RawToolSlot::Ambiguous) => {
+                ToolError::Execution(format!("tool id `{tool_id}` is ambiguous"))
+            }
+            Some(RawToolSlot::Unique(_)) => unreachable!("unique tools resolve before errors"),
+            None => ToolError::Unknown(tool_id.to_string()),
+        }
+    }
+}
+
+#[async_trait]
+impl ToolExecutor for RawToolRegistry {
+    fn recovery_capability(&self, tool_id: &str) -> ToolRecoveryCapability {
+        self.get(tool_id)
+            .map_or(ToolRecoveryCapability::NonRecoverable, |tool| {
+                tool.recovery_capability()
+            })
+    }
+
+    async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
+        let tool = self
+            .get(&call.tool_id)
+            .ok_or_else(|| self.resolution_error(&call.tool_id))?;
+        tool.invoke(call.clone()).await
+    }
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@ use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, BindingId, InferenceProfile,
     InferenceProfileStore, InputBinding, InputResourceId, MemoryStoreId, ModelTarget,
     ProfileCandidate, ResourceAccess, WebhookDeliveryOutcome, WebhookDeliveryState,
-    WebhookEndpointDef, WebhookStore,
+    WebhookEndpointDef, WebhookMutationIntent, WebhookStore,
 };
 use awaken_credential_vault::{CredentialBinding, SecretRef};
 use sqlx::Executor;
@@ -59,6 +59,13 @@ fn profile(model: &str) -> InferenceProfile {
         fallbacks: Vec::new(),
         disabled_endpoint_ids: vec![],
     }
+}
+
+fn commit_webhook(store: &dyn WebhookStore, definition: WebhookEndpointDef) {
+    let intent = WebhookMutationIntent::create(definition);
+    store.begin_mutation(intent.clone()).unwrap();
+    store.apply_mutation(&intent).unwrap();
+    store.complete_mutation(&intent).unwrap();
 }
 
 #[tokio::test]
@@ -130,7 +137,7 @@ async fn postgres_admin_store_serves_every_port() {
     // durable Active(1); R2 second failure -> atomically Disabled(2); R3 success
     // after operator re-enable -> counter reset (the domain transition is shared
     // with memory/SQLite; this proves the Postgres transaction boundary).
-    WebhookStore::put(
+    commit_webhook(
         &store,
         WebhookEndpointDef {
             id: "wh1".into(),
@@ -141,8 +148,7 @@ async fn postgres_admin_store_serves_every_port() {
             consecutive_failures: 0,
             secret_ref: SecretRef("whsec:wh1".into()),
         },
-    )
-    .unwrap();
+    );
     assert_eq!(
         store
             .record_delivery("wh1", WebhookDeliveryOutcome::Failed, 2)
@@ -176,7 +182,7 @@ async fn postgres_admin_rows_survive_a_reconnect() {
             .await
             .unwrap();
         InferenceProfileStore::put(&store, "p1".into(), profile("m1")).unwrap();
-        WebhookStore::put(
+        commit_webhook(
             &store,
             WebhookEndpointDef {
                 id: "wh1".into(),
@@ -187,11 +193,20 @@ async fn postgres_admin_rows_survive_a_reconnect() {
                 consecutive_failures: 0,
                 secret_ref: SecretRef("whsec:wh1".into()),
             },
-        )
-        .unwrap();
+        );
         store
             .record_delivery("wh1", WebhookDeliveryOutcome::Failed, 20)
             .unwrap();
+        let pending = WebhookMutationIntent::create(WebhookEndpointDef {
+            id: "wh_pending".into(),
+            workspace_id: "ws".into(),
+            url: "https://hooks.example/pending".into(),
+            event_types: vec![],
+            disabled: false,
+            consecutive_failures: 0,
+            secret_ref: SecretRef("sec:webhook:pending".into()),
+        });
+        store.begin_mutation(pending).unwrap();
     }
     let store = tokio::task::spawn_blocking(move || PostgresAdminStore::connect(&url).unwrap())
         .await
@@ -213,4 +228,7 @@ async fn postgres_admin_rows_survive_a_reconnect() {
         1,
         "the failure counter survives a Postgres reconnect"
     );
+    let pending = store.pending_mutations().unwrap();
+    assert_eq!(pending.len(), 1, "the material intent survives reconnect");
+    assert_eq!(pending[0].id().unwrap(), "wh_pending");
 }

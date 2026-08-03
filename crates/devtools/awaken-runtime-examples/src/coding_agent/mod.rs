@@ -37,6 +37,7 @@ use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
+use awaken_runtime_contract::tool::RawToolRegistry;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 pub mod scripted;
@@ -85,15 +86,12 @@ pub fn coding_policy() -> RuleBasedToolPermissionPolicy {
     })
 }
 
-/// Assemble a runtime: the model port, the permission gate, and the executable
-/// hand tools. The tool ids match [`coding_tool_descriptors`].
+/// Assemble the model and permission-gate portion of the example runtime.
+/// [`CodingSession::new`] installs the executable Hand once so its target
+/// metadata and the explicit executor share the exact same tool instances.
 pub fn build_runtime(llm: Arc<dyn LlmExecutor>) -> Runtime {
     let gate = PermissionGate::new(Arc::new(coding_policy()));
-    let mut runtime = Runtime::new().with_llm(llm).with_gate(Arc::new(gate));
-    for tool in executable_hand_tools() {
-        runtime = runtime.with_tool(tool);
-    }
-    runtime
+    Runtime::new().with_llm(llm).with_gate(Arc::new(gate))
 }
 
 /// What the caller decides when the agent asks to run a mutating tool.
@@ -111,15 +109,25 @@ pub struct CodingSession {
     runtime: Runtime,
     config: ExecutableAgentSnapshot,
     commit: Arc<MemoryCommitCoordinator>,
+    tool_executor: Arc<RawToolRegistry>,
     thread_id: ThreadId,
 }
 
 impl CodingSession {
-    pub fn new(runtime: Runtime, config: ExecutableAgentSnapshot) -> Self {
+    pub fn new(mut runtime: Runtime, config: ExecutableAgentSnapshot) -> Self {
+        // This publish=false, opt-in example deliberately supplies a
+        // single-process Hand. Production Sessions obtain the same ToolExecutor
+        // port only from their realized SessionEnvironment (ADR-0073).
+        let tools = executable_hand_tools();
+        let tool_executor = Arc::new(RawToolRegistry::new(tools.iter().cloned()));
+        for tool in tools {
+            runtime = runtime.with_tool(tool);
+        }
         Self {
             runtime,
             config,
             commit: Arc::new(MemoryCommitCoordinator::new()),
+            tool_executor,
             thread_id: ThreadId("coding".to_string()),
         }
     }
@@ -133,6 +141,7 @@ impl CodingSession {
         RuntimeRunContext::new()
             .with_commit(self.commit.clone())
             .with_reader(self.commit.clone())
+            .with_tool_executor(self.tool_executor.clone())
     }
 
     /// Run one user turn to a terminal phase, asking `approve` before each mutating

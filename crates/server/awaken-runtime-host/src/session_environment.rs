@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_run_executor_acp::AgentChannelType;
-use awaken_runtime_contract::tool::{RawTool, ToolExecutor};
+use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
 use awaken_sandbox_local::{DiscoveredSkillFile, LocalSandbox, NamespaceSandbox};
 
 mod container_files;
@@ -181,13 +181,9 @@ impl SessionEnvironment {
     pub(crate) fn tool_executor(&self) -> Arc<dyn ToolExecutor> {
         match self {
             Self::Container { hand, .. } => hand.clone(),
-            Self::Workdir(_) | Self::Namespace(_) => Arc::new(EnvironmentToolExecutor {
-                tools: self
-                    .rooted_tools()
-                    .into_iter()
-                    .map(|tool| (tool.id().to_string(), tool))
-                    .collect(),
-            }),
+            Self::Workdir(_) | Self::Namespace(_) => {
+                Arc::new(RawToolRegistry::new(self.rooted_tools()))
+            }
         }
     }
 
@@ -412,35 +408,6 @@ impl SessionEnvironment {
                 .await
                 .map(|process| (process.process, process.channel)),
         }
-    }
-}
-
-struct EnvironmentToolExecutor {
-    tools: std::collections::HashMap<String, Arc<dyn RawTool>>,
-}
-
-#[async_trait]
-impl ToolExecutor for EnvironmentToolExecutor {
-    fn recovery_capability(
-        &self,
-        tool_id: &str,
-    ) -> awaken_runtime_contract::tool::ToolRecoveryCapability {
-        self.tools.get(tool_id).map_or(
-            awaken_runtime_contract::tool::ToolRecoveryCapability::NonRecoverable,
-            |tool| tool.recovery_capability(),
-        )
-    }
-
-    async fn invoke(
-        &self,
-        call: &awaken_runtime_contract::tool::ToolCall,
-    ) -> Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
-    {
-        self.tools
-            .get(&call.tool_id)
-            .ok_or_else(|| awaken_runtime_contract::tool::ToolError::Unknown(call.tool_id.clone()))?
-            .invoke(call.clone())
-            .await
     }
 }
 
