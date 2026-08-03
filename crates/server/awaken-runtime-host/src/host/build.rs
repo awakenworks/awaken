@@ -193,7 +193,7 @@ impl SharedHost {
             skills.set_store(plane.skill_store());
         }
         let (file_store, file_catalog) = if worker_content.is_some() {
-            let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+            let files = Arc::new(crate::unavailable_files::UnavailableWorkerFiles);
             (
                 files.clone() as Arc<dyn awaken_file_store::FileStore>,
                 files as Arc<dyn awaken_resource_contract::FileCatalog>,

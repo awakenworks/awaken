@@ -256,7 +256,8 @@ pub struct SharedHost {
     /// an `Arc<SharedHost>` cycle or a second Vault/materialization path.
     pub(crate) dispatch_session_runtime: std::sync::RwLock<Option<crate::DispatchSessionRuntime>>,
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
-    /// collected artifacts. In-memory by default (one server process).
+    /// collected artifacts. A database-less Worker carries a fail-closed adapter;
+    /// immutable claim-scoped reads use `file_content_source` instead.
     pub(crate) file_store: Arc<dyn FileStore>,
     /// Sole per-kind File materialization port. Embedded composition points it at
     /// the local catalog/store pair; a database-less Worker replaces it with the
