@@ -24,6 +24,7 @@ fn session_environment(
     awaken_session_contract::EnvironmentSnapshot {
         environment_id: "test-environment".into(),
         revision: awaken_session_contract::EnvironmentRevision(1),
+        self_hosted: false,
         config_fingerprint,
         sandbox,
         sandbox_provisioning: Default::default(),
@@ -806,6 +807,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
                 environment: awaken_session_contract::EnvironmentSnapshot {
                     environment_id: "env".into(),
                     revision: awaken_session_contract::EnvironmentRevision(1),
+                    self_hosted: false,
                     config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                         "env-fingerprint".into(),
                     ),

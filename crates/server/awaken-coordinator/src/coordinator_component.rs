@@ -110,6 +110,10 @@ pub async fn build_coordinator_component(
     if reconciled_mcp_attachments > 0 {
         eprintln!("reconciled {reconciled_mcp_attachments} durable Session MCP projection(s)");
     }
+    let reconciled_work_dispatches = managed_state.reconcile_work_dispatches().await;
+    if reconciled_work_dispatches > 0 {
+        eprintln!("reconciled {reconciled_work_dispatches} durable Session WorkQueue dispatch(es)");
+    }
     let _ = managed_state.spawn_realization_lease_supervisor();
     deployment_state.bind_launcher(Arc::new(
         awaken_protocol_managed::LocalDeploymentSessionLauncher::new(managed_state.clone()),

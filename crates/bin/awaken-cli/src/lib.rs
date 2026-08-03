@@ -1010,6 +1010,7 @@ mod runtime_session_store_tests {
                 environment: EnvironmentSnapshot {
                     environment_id: "env_local".into(),
                     revision: EnvironmentRevision(1),
+                    self_hosted: false,
                     config_fingerprint: EnvironmentFingerprint("env-local".into()),
                     sandbox: serde_json::json!({}),
                     sandbox_provisioning: Default::default(),

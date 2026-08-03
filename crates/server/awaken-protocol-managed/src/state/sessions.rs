@@ -1081,11 +1081,24 @@ impl ManagedState {
         // Dispatch only after the active activation and Session lifecycle fact are
         // durable. A worker can never claim a work item whose resource intent is
         // still merely Prepared.
-        if !application_required && self_hosted_environment {
-            self.environments
+        if !application_required
+            && self_hosted_environment
+            && let Err(error) = self
+                .environments
                 .enqueue_session_work(&environment_id, &id)
                 .await
-                .map_err(|error| StateError::Run(RunError::unavailable(error.to_string())))?;
+        {
+            // The frozen Session baseline is already durable and is the
+            // authoritative dispatch intent. Returning an ambiguous create
+            // failure here could make a client create a second Session while
+            // reconciliation later dispatches this one. Keep the successful
+            // create result and let the canonical reconciler retry projection.
+            tracing::warn!(
+                session = %id,
+                environment = %environment_id,
+                error = ?error,
+                "Session WorkQueue dispatch remains pending after create"
+            );
         }
         // Project the committed create as a lifecycle fact: a fresh session is idle,
         // so fan out `session.status_idled` (the webhook catalog name — past-tense
@@ -1126,7 +1139,7 @@ impl ManagedState {
         self.sessions_repo.owner(session_id).await
     }
 
-    async fn reconcile_persisted_resources(
+    pub(super) async fn reconcile_persisted_resources(
         &self,
         owner_scope: &str,
         mut session: PersistedSession,
@@ -1365,36 +1378,6 @@ impl ManagedState {
                 awaken_resource_contract::ResourceState::Deleted,
             )
             .is_ok()
-    }
-
-    /// ResourceReclaimer entry point. Composition roots call this after durable
-    /// stores and the Runtime Host are wired. It scans only Session application
-    /// state; authorization principals and policy objects never cross this seam.
-    pub async fn reconcile_resource_activations(&self) -> usize {
-        let pending = self.sessions_repo.reconcilable_sessions().await;
-        let mut settled = 0;
-        for record in pending {
-            let owner_scope = record.workspace_id;
-            let session = record.session;
-            if session.status != "deleted"
-                && !session.resources.needs_reconciliation()
-                && (session.status == "idle" || !session.resources.has_active())
-            {
-                continue;
-            }
-            match self
-                .reconcile_persisted_resources(&owner_scope, session.clone())
-                .await
-            {
-                Ok(_) => settled += 1,
-                Err(error) => tracing::warn!(
-                    session = %session.session_id,
-                    error = ?error,
-                    "Session resource reconciliation remains pending"
-                ),
-            }
-        }
-        settled
     }
 
     /// A session object reconstructed for a rehydrated (post-restart) session.

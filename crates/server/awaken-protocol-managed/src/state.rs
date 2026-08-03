@@ -65,6 +65,7 @@ pub(crate) use session_update::SessionUpdateCommand;
 mod sessions;
 mod threads;
 mod types;
+mod work_dispatch;
 
 pub use error::StateError;
 
@@ -1064,6 +1065,7 @@ mod tests {
         let environment = awaken_session_contract::EnvironmentSnapshot {
             environment_id: "env_local".into(),
             revision: awaken_environment_contract::EnvironmentRevision(1),
+            self_hosted: false,
             config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-1".into()),
             sandbox: serde_json::json!({"isolation": "namespace"}),
             sandbox_provisioning: Default::default(),

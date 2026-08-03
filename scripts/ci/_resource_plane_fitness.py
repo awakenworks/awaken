@@ -53,7 +53,7 @@ RESOURCE_HTTP_SOURCES = (
 # local/default scope here would turn missing routing state into cross-Workspace
 # access instead of failing closed.
 RESOURCE_RECOVERY_SOURCES = (
-    "crates/server/awaken-protocol-managed/src/state/sessions.rs",
+    "crates/server/awaken-protocol-managed/src/state/resources.rs",
 )
 
 # Driving adapters may read MemoryStore identity through the application port,

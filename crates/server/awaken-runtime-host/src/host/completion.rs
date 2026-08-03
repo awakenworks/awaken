@@ -548,6 +548,7 @@ mod completion_tests {
         awaken_session_contract::EnvironmentSnapshot {
             environment_id: "env-1".into(),
             revision: awaken_session_contract::EnvironmentRevision(3),
+            self_hosted: false,
             config_fingerprint: awaken_session_contract::EnvironmentFingerprint("fp-env".into()),
             sandbox: serde_json::json!({
                 "isolation": "container",

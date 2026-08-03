@@ -203,12 +203,33 @@ impl WorkQueue for InMemoryWorkQueue {
         env_id: &str,
         session_id: &str,
     ) -> Result<String, WorkQueueError> {
+        let mut works = self.works.lock().unwrap();
+        if let Some(existing) = works
+            .values()
+            .find(|work| {
+                work.environment_id == env_id
+                    && matches!(&work.data, WorkPayload::Session { id } if id == session_id)
+            })
+            .map(|work| work.id.clone())
+        {
+            return Ok(existing);
+        }
         let id = self.next_id();
-        self.store(
+        works.insert(
             id.clone(),
-            env_id,
-            WorkPayload::Session {
-                id: session_id.to_string(),
+            WorkItem {
+                id: id.clone(),
+                environment_id: env_id.to_string(),
+                data: WorkPayload::Session {
+                    id: session_id.to_string(),
+                },
+                metadata: BTreeMap::new(),
+                state: WorkState::Queued,
+                acknowledged_at: None,
+                latest_heartbeat_at: None,
+                started_at: None,
+                stop_requested_at: None,
+                stopped_at: None,
             },
         );
         Ok(id)

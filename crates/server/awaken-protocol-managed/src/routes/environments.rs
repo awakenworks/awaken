@@ -582,8 +582,10 @@ async fn snapshot_from_registration(
         }
         None => None,
     };
+    let self_hosted = item.is_self_hosted();
     let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
         awaken_session_contract::stable_fingerprint(&(
+            self_hosted,
             &sandbox,
             &sandbox_provisioning,
             &packages,
@@ -595,6 +597,7 @@ async fn snapshot_from_registration(
     Ok(Some(awaken_session_contract::EnvironmentSnapshot {
         environment_id: item.id.clone(),
         revision: item.revision,
+        self_hosted,
         config_fingerprint,
         sandbox,
         sandbox_provisioning,
@@ -1460,6 +1463,7 @@ mod tests {
         // | S4   | missing/archived custom | any | - | None |
         // | S5   | implicit env_local | native/ACP | - | canonical local snapshot |
         // | S6   | active empty limited allowlist | any | - | network None |
+        // | S7   | self-hosted | any | - | frozen external-Worker placement |
         // An exact sandbox-policy reference, when present, belongs to the authored
         // Environment revision and the registration carries the resolved body.
         let state = EnvironmentState::new();
@@ -1473,6 +1477,7 @@ mod tests {
         )
         .await;
         let native = state.snapshot(&item.id, None).await.unwrap().expect("S1");
+        assert!(!native.self_hosted, "S1 cloud placement");
         assert_eq!(
             native.network,
             awaken_session_contract::SessionNetworkPolicy::Allowlist {
@@ -1576,6 +1581,21 @@ mod tests {
                 .network,
             awaken_session_contract::SessionNetworkPolicy::None,
             "S6"
+        );
+        let worker = create_definition(
+            &state,
+            "worker-placement",
+            config(json!({"type": "self_hosted"})),
+        )
+        .await;
+        assert!(
+            state
+                .snapshot(&worker.id, None)
+                .await
+                .unwrap()
+                .expect("S7")
+                .self_hosted,
+            "S7"
         );
     }
 

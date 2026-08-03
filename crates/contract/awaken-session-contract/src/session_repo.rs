@@ -108,6 +108,33 @@ impl PersistedSession {
         )
     }
 
+    /// Whether this durable aggregate must be revisited by any Coordinator
+    /// convergence driver. Keeping the union here prevents SQLite, Postgres,
+    /// and future repositories from growing different recovery scans.
+    #[must_use]
+    pub fn needs_reconciliation(&self) -> bool {
+        self.status == "deleted"
+            || self.resources.needs_reconciliation()
+            || (self.status != "idle" && self.resources.has_active())
+            || self.mcp.needs_reconciliation()
+            || !matches!(
+                self.environment,
+                crate::SessionEnvironmentState::Unmaterialized
+            )
+            || self.needs_work_dispatch()
+    }
+
+    /// Whether the externally executed Session must have a WorkQueue
+    /// projection. Application-owned Sessions cross a distinct claim boundary
+    /// and are intentionally excluded.
+    #[must_use]
+    pub fn needs_work_dispatch(&self) -> bool {
+        !self.is_terminal()
+            && self.frozen_baseline().is_some_and(|baseline| {
+                baseline.environment.self_hosted && baseline.application.is_none()
+            })
+    }
+
     #[must_use]
     pub fn frozen_baseline(&self) -> Option<&crate::SessionBaseline> {
         match &self.baseline {
@@ -331,7 +358,8 @@ pub trait ManagedSessionRepository: Send + Sync {
     /// The stored configuration for `session_id`, if any.
     async fn get(&self, session_id: &str) -> Option<PersistedSession>;
 
-    /// Sessions carrying any durable Resource, MCP, or environment reconciliation work.
+    /// Sessions carrying any durable Resource, MCP, environment, or WorkQueue
+    /// projection reconciliation work.
     /// Implementations preserve the intrinsic Workspace partition in the same
     /// row scan; application coordinators filter by their owned state machine.
     /// One index avoids parallel per-feature recovery registries and scans.
@@ -390,6 +418,7 @@ mod mutation_tests {
                     environment: crate::EnvironmentSnapshot {
                         environment_id: "environment".into(),
                         revision: awaken_environment_contract::EnvironmentRevision(1),
+                        self_hosted: false,
                         config_fingerprint: crate::EnvironmentFingerprint("config".into()),
                         sandbox: serde_json::json!({}),
                         sandbox_provisioning: Default::default(),

@@ -193,6 +193,32 @@ async fn remove_env_purges<Q: WorkQueue>(q: &Q) {
     );
 }
 
+/// Session dispatch is a durable projection: exact replay converges to one row,
+/// while either identity coordinate changing creates independent work.
+async fn session_enqueue_is_idempotent<Q: WorkQueue>(q: &Q) {
+    // Cause/effect graph: C1 same Environment; C2 same Session; C3 concurrent or
+    // sequential replay. Effects: E1 C1+C2 always returns one canonical work id;
+    // E2 changing either coordinate produces a distinct item. Constraints: a
+    // WorkQueue key is exactly (environment_id, session_id).
+    //
+    // | Rule | environment | session | replay | identity / row count |
+    // | D1 | same | same | yes | same id / one row |
+    // | D2 | same | different | no | distinct id / two rows |
+    // | D3 | different | same | no | distinct id in other queue |
+    let first = q.enqueue_session("env", "session-a").await.expect("D1");
+    let replay = q.enqueue_session("env", "session-a").await.expect("D1");
+    assert_eq!(replay, first, "D1 canonical identity");
+    assert_eq!(q.list("env").await.expect("D1 list").len(), 1, "D1");
+
+    let other_session = q.enqueue_session("env", "session-b").await.expect("D2");
+    assert_ne!(other_session, first, "D2");
+    assert_eq!(q.list("env").await.expect("D2 list").len(), 2, "D2");
+
+    let other_env = q.enqueue_session("env-b", "session-a").await.expect("D3");
+    assert_ne!(other_env, first, "D3");
+    assert_eq!(q.list("env-b").await.expect("D3 list").len(), 1, "D3");
+}
+
 /// The official heartbeat compare token is an atomic CAS: first succeeds once,
 /// the returned token advances monotonically, and a stale token cannot extend
 /// the lease after a newer heartbeat has committed.
@@ -297,6 +323,7 @@ async fn run_suite<Q: WorkQueue>(fresh: impl Fn() -> Q) {
     env_isolation(&fresh()).await;
     stop_frees_next(&fresh()).await;
     remove_env_purges(&fresh()).await;
+    session_enqueue_is_idempotent(&fresh()).await;
     heartbeat_compare_and_extend(&fresh()).await;
 }
 

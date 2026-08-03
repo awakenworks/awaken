@@ -358,7 +358,9 @@ pub enum WorkQueueError {
 /// `None`, which the route maps to a `work not found` 404.
 #[async_trait]
 pub trait WorkQueue: Send + Sync {
-    /// Enqueue a `session` work item; returns the new work id.
+    /// Ensure one `session` work item exists for `(env_id, session_id)` and
+    /// return its canonical work id. Replays are idempotent so a durable Session
+    /// reconciliation loop can safely close a commit-before-dispatch crash gap.
     async fn enqueue_session(
         &self,
         env_id: &str,

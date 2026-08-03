@@ -95,6 +95,21 @@ impl SqliteWorkQueue {
         let tx = guard
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
+        if let Some(session_id) = session_id
+            && let Some(existing) = tx
+                .query_row(
+                    "SELECT work_id FROM work_queue_item \
+                     WHERE environment_id = ?1 AND data_type = 'session' AND data_id = ?2 \
+                     ORDER BY seq ASC LIMIT 1",
+                    params![environment_id, session_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?
+        {
+            tx.commit().map_err(storage)?;
+            return Ok(existing);
+        }
         // A portable monotonic order key (no backend-specific autoincrement): the
         // next seq under the write lock, so ids are enqueue-ordered on both stores.
         let next: i64 = tx
@@ -536,6 +551,21 @@ impl PostgresWorkQueue {
             .execute(&mut *tx)
             .await
             .map_err(storage)?;
+        if let Some(session_id) = session_id
+            && let Some(existing) = sqlx::query_scalar::<_, String>(
+                "SELECT work_id FROM work_queue_item \
+                 WHERE environment_id = $1 AND data_type = 'session' AND data_id = $2 \
+                 ORDER BY seq ASC LIMIT 1",
+            )
+            .bind(env_id)
+            .bind(session_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(storage)?
+        {
+            tx.commit().await.map_err(storage)?;
+            return Ok(existing);
+        }
         let next: i64 =
             sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
                 .fetch_one(&mut *tx)
@@ -980,6 +1010,34 @@ mod tests {
         let w = q.get("env_a", &id).await.expect("get").expect("seeded");
         assert_eq!(w.state, WorkState::Queued);
         assert!(matches!(w.data, WorkPayload::HealthCheck { id: ref d } if *d == id));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_session_dispatch_replay_has_one_sqlite_row() {
+        // Cause/effect graph: C1 one durable queue; C2 identical Environment and
+        // Session coordinates; C3 concurrent replay. Effects: E1 every caller
+        // observes the same canonical id and E2 exactly one row exists. The
+        // differing-coordinate rules are covered by the backend conformance table.
+        //
+        // | Rule | queue | coordinates | concurrency | ids | rows |
+        // | C1 | shared | identical | 32 callers | one | one |
+        let queue = Arc::new(q());
+        let mut tasks = Vec::new();
+        for _ in 0..32 {
+            let queue = queue.clone();
+            tasks.push(tokio::spawn(async move {
+                queue
+                    .enqueue_session("env", "session")
+                    .await
+                    .expect("C1 enqueue")
+            }));
+        }
+        let mut ids = Vec::new();
+        for task in tasks {
+            ids.push(task.await.expect("C1 join"));
+        }
+        assert!(ids.iter().all(|id| id == &ids[0]), "C1/E1");
+        assert_eq!(queue.list("env").await.unwrap().len(), 1, "C1/E2");
     }
 
     #[tokio::test]
