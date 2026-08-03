@@ -95,7 +95,7 @@ pub(super) async fn build_runtime_process_assembly(
         },
         None,
     )
-    .await;
+    .await?;
     Ok(ProcessAssembly {
         router: assembled.router,
         local_setup: identity.local_setup,

@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 struct FixedModel;
 

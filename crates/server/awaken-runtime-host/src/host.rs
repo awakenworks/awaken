@@ -34,9 +34,6 @@ use awaken_run_ingress::{
     DispatchServiceConfig, DurableRunIngress, RunDispatch, SubmitOptions, SystemClock,
     WorkerResolver,
 };
-#[cfg(any(test, feature = "test-support"))]
-use awaken_runtime::memory::MemoryCommitCoordinator;
-use awaken_runtime::memory::MemoryStreamCheckpointStore;
 use awaken_runtime::{DirectRunIngress, RunIngress, RunService, Runtime};
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::RunDelegations;
@@ -46,6 +43,10 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use awaken_runtime_contract::tool::ToolOutput;
+#[cfg(any(test, feature = "test-support"))]
+use awaken_store_inmem::MemoryCommitCoordinator;
+#[cfg(any(test, feature = "test-support"))]
+use awaken_store_inmem::MemoryStreamCheckpointStore;
 // The Workdir-tier sandbox realized through the neutral provisioning contract:
 // `LocalProvider::create_sandbox` yields a `LocalSandbox` whose host-tier helpers
 // (rooted tools, repos, artifacts) the host composes into each session's runtime.

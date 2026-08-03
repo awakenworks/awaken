@@ -10,7 +10,6 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{LlmRetryPolicy, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
@@ -24,6 +23,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 /// Routes by `model_ref`: any model whose id is in `failing` returns a retryable
 /// error; every other model returns a fixed success text. Records the ordered

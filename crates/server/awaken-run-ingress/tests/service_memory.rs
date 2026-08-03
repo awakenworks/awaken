@@ -17,8 +17,8 @@ use awaken_run_ingress::{
     DispatchQueue, DispatchServiceConfig, DurableRunIngress, ManualClock, MemoryDispatchStore,
     PendingInput, RunDispatch, SystemClock,
 };
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::resume::ResumeResult;
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 use harness::{THREAD, TICKET, activation, text_runtime, tool_runtime};
 

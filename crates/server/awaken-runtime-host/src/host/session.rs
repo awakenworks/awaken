@@ -317,21 +317,42 @@ impl SharedHost {
 
     /// Build a thread's interrupted-stream checkpoint store, mirroring
     /// `build_commit`'s durability choice: a filesystem store under the configured
-    /// directory (so a partial survives a process crash and resumes), or an
-    /// in-memory store when no store dir is set. Always filesystem when durable —
-    /// the checkpoint is a small `run_id`-keyed blob, so it needs no SQLite/fs
-    /// backend axis; it simply follows the commit boundary's durability.
+    /// directory (so a partial survives a process crash and resumes), or the
+    /// checkpoint adapter paired with the shared Postgres dispatch authority.
+    /// Only explicit test-support composition may select a process-local store.
     fn build_stream_checkpoint(
         &self,
         thread: &str,
-    ) -> Result<Arc<dyn StreamCheckpointStore>, HostError> {
+    ) -> Result<Option<Arc<dyn StreamCheckpointStore>>, HostError> {
+        // A database-less Worker persists checkpoints through its authenticated,
+        // claim-fenced dispatch transport. Installing a local store here would
+        // create a second authority that cannot survive Worker replacement.
+        if self.upstream.is_some() {
+            return Ok(None);
+        }
+        if self.deployment.store == crate::deployment_config::StoreKind::Postgres {
+            return self
+                .dispatch_store()?
+                .stream_checkpoint_store()
+                .map(Some)
+                .ok_or_else(|| {
+                    HostError::internal(
+                        "Postgres runtime requires the checkpoint store paired with its dispatch authority",
+                    )
+                });
+        }
         let Some(dir) = &self.store_dir else {
-            return Ok(Arc::new(MemoryStreamCheckpointStore::new()));
+            #[cfg(any(test, feature = "test-support"))]
+            return Ok(Some(Arc::new(MemoryStreamCheckpointStore::new())));
+            #[cfg(not(any(test, feature = "test-support")))]
+            return Err(HostError::internal(
+                "product stream checkpoints require durable storage; refusing a process-local fallback",
+            ));
         };
         let checkpoint_dir = dir.join(sanitize_thread(thread)).join("stream-checkpoints");
         let store = FsStreamCheckpointStore::open(&checkpoint_dir)
             .map_err(|e| HostError::internal(e.to_string()))?;
-        Ok(Arc::new(store))
+        Ok(Some(Arc::new(store)))
     }
 
     /// Build a thread's run-delivery ingress. Default is direct in-process
@@ -348,7 +369,7 @@ impl SharedHost {
         runtime: Arc<Runtime>,
         attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
         commit: Arc<HostCommit>,
-        stream_checkpoint: Arc<dyn StreamCheckpointStore>,
+        stream_checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
         run_context: awaken_runtime_contract::RuntimeRunContext,
     ) -> Result<
         (
@@ -390,7 +411,7 @@ impl SharedHost {
             store,
             commit,
             self.deployment.dispatch_owner.clone(),
-            Some(stream_checkpoint),
+            stream_checkpoint,
             inference_materializer,
         )
         .with_context(run_context);
@@ -820,6 +841,7 @@ impl SharedHost {
             sub_base("skill-fork"),
             self.skill_fork_placement,
             &skills_subdir,
+            commit.clone(),
         )
         .await
         .map_err(HostError::internal)?
@@ -908,6 +930,7 @@ impl SharedHost {
             Arc::new(crate::memory::AgentSelector::new(
                 self.llm.clone(),
                 snapshot,
+                commit.clone(),
             )) as Arc<dyn awaken_ext_memory::RecallSelector>
         });
         let acp_memory_recall = recalled_memory.as_ref().map(|mem| {

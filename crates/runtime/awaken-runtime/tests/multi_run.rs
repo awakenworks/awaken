@@ -10,7 +10,6 @@ use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
@@ -21,6 +20,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 const FP: &str = "catalog-a";
 

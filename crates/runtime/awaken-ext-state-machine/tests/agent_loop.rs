@@ -17,7 +17,6 @@ use awaken_ext_state_machine::{
     Metrics, RunInstances, StateMachineConfig, StateMachinePlugin, ThreadInstances,
 };
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::{MemoryCommitCoordinator, replay_state};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -31,6 +30,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
+use awaken_store_inmem::{MemoryCommitCoordinator, replay_state};
 use serde_json::json;
 
 const READ_BEFORE_WRITE: &str = r#"{"machines":[{

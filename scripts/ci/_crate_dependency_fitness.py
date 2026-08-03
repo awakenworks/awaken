@@ -10,12 +10,17 @@ from pathlib import Path
 # making that adapter a production dependency. Keeping these exceptions separate
 # means moving one into `[dependencies]` still fails the production boundary.
 DEV_ONLY_ALLOWED_DEPS = {
+    "awaken-cli": {"awaken-store-inmem"},
+    "awaken-config-store": {"awaken-store-inmem"},
+    "awaken-coordinator": {"awaken-store-inmem"},
+    "awaken-ext-state-machine": {"awaken-store-inmem"},
     "awaken-protocol-managed-resources": {
         "awaken-file-store",
         "awaken-resource-application",
         "awaken-resource-store",
     },
     "awaken-protocol-managed": {"awaken-admin-config-api"},
+    "awaken-run-ingress": {"awaken-store-inmem"},
     "awaken-runtime-host": {
         "awaken-admin-config-api",
         "awaken-file-application",

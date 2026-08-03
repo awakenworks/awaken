@@ -14,7 +14,7 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_runtime::memory::MemoryCommitCoordinator;
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 fn ended(run: &str) -> RunDisposition {
     RunDisposition::ended(RunId(run.to_string()), EndCause::NaturalEnd)

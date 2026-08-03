@@ -503,6 +503,7 @@ pub fn mount_with_managed_and_application_access_and_models(
             ),
         },
     )
+    .expect("test-support Worker transport must assemble")
     .0
 }
 
@@ -523,7 +524,10 @@ pub fn mount_with_managed_application_access_models_and_dreams(
     model_directory: Arc<dyn awaken_protocol_managed_resources::ModelDirectory>,
     dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
     routing: ManagedRoutingExtensions,
-) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
+) -> Result<
+    (Router, Arc<awaken_dream_application::DreamApplication>),
+    awaken_runtime_host::RegisteredWorkerTransportBuildError,
+> {
     mount_with_managed_over_and_models(
         host,
         managed_state,
@@ -557,6 +561,7 @@ fn mount_with_managed_over(
             ),
         },
     )
+    .expect("test-support Worker transport must assemble")
 }
 
 fn mount_with_managed_over_and_models(
@@ -567,7 +572,10 @@ fn mount_with_managed_over_and_models(
     model_directory: Option<Arc<dyn awaken_protocol_managed_resources::ModelDirectory>>,
     dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
     routing: ManagedRoutingExtensions,
-) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
+) -> Result<
+    (Router, Arc<awaken_dream_application::DreamApplication>),
+    awaken_runtime_host::RegisteredWorkerTransportBuildError,
+> {
     let ManagedRoutingExtensions {
         resource_management_router,
         worker_authenticator,
@@ -658,7 +666,7 @@ fn mount_with_managed_over_and_models(
         managed_state,
         resource_catalog.clone(),
         worker_authenticator,
-    );
+    )?;
     // The Models API (`/v1/models`) over the deployment's model directory.
     let models = model_directory.map_or_else(
         || models_router(std::sync::Arc::new(default_models())),
@@ -694,7 +702,7 @@ fn mount_with_managed_over_and_models(
                 }
             },
         ));
-    (router, dream_application)
+    Ok((router, dream_application))
 }
 
 #[cfg(feature = "test-support")]

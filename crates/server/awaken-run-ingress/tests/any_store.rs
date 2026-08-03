@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use awaken_agent_contract::agent::run::RunState;
+use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_run_ingress::{
     AnyDispatchStore, DispatchCursor, DispatchEnqueue, DispatchOperation, DispatchOperationalFeed,
     DispatchOutcome, DispatchQueue, DurableRunIngress, Inbox, LeastLoadedPolicy,
@@ -28,6 +29,18 @@ use harness::{TICKET, activation, activation_on, tool_runtime};
 
 fn any_in_memory() -> AnyDispatchStore {
     AnyDispatchStore::open_sqlite_in_memory().expect("open in-memory sqlite backend")
+}
+
+#[test]
+fn non_postgres_wrapper_does_not_fabricate_a_checkpoint_authority() {
+    // Cause/effect decision table: R1 Postgres -> paired durable checkpoint (covered
+    // by `any_postgres_connect_and_claim`); R2 SQLite -> None so the host must bind
+    // its durable FS checkpoint; R3 remote dispatch -> None so the claim-bound HTTP
+    // path remains authoritative. This test owns R2/R3 and prevents an implicit
+    // process-local checkpoint from returning inside the runtime-selected wrapper.
+    assert!(any_in_memory().stream_checkpoint_store().is_none(), "R2");
+    let remote = AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new()));
+    assert!(remote.stream_checkpoint_store().is_none(), "R3");
 }
 
 #[derive(Default)]
@@ -752,9 +765,12 @@ async fn with_owner_drives_a_durable_run_over_any_sqlite() {
 
 #[tokio::test]
 async fn any_postgres_connect_and_claim() {
-    // Skips unless a Postgres is reachable (mirrors durable_postgres.rs). Proves
-    // AnyDispatchStore::connect_postgres builds a working shared backend and the
-    // wrapper delegates enqueue/claim over it.
+    // Cause/effect graph: C1 Postgres selected; C2 schema reachable; C3 wrapper
+    // recreated over the same schema. Effects: E1 dispatch delegates to Postgres;
+    // E2 a paired checkpoint adapter is present; E3 checkpoint survives recreation.
+    // Decision table: R1 C1+!C2 -> skip environmental acceptance; R2 C1+C2+!C3 ->
+    // E1+E2; R3 C1+C2+C3 -> E1+E2+E3. SQLite/remote wrappers own the complementary
+    // `None` checkpoint row and must use FS/claim-bound transport respectively.
     let schema = "t_any_store";
     let Some(_pool) = harness::schema_pool(schema).await else {
         return;
@@ -771,4 +787,29 @@ async fn any_postgres_connect_and_claim() {
         .await
         .expect("claim");
     assert_eq!(claimed.map(|c| c.lease.owner), Some("pg-owner".to_string()));
+
+    let checkpoint = store
+        .stream_checkpoint_store()
+        .expect("Postgres wrapper carries its paired checkpoint store");
+    let partial = StreamCheckpoint {
+        run_id: "any-checkpoint".to_string(),
+        thread_id: "any-thread".to_string(),
+        model: "provider/model".to_string(),
+        partial_text: "partial".to_string(),
+        partial_tools: Vec::new(),
+    };
+    checkpoint.put(partial.clone()).await;
+
+    let restarted =
+        AnyDispatchStore::connect_postgres(&harness::database_url_in_schema(schema), 10)
+            .await
+            .expect("reconnect postgres backend");
+    assert_eq!(
+        restarted
+            .stream_checkpoint_store()
+            .expect("restarted wrapper carries checkpoint store")
+            .get("any-checkpoint")
+            .await,
+        Some(partial)
+    );
 }

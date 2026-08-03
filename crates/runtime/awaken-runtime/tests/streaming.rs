@@ -10,7 +10,6 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -23,6 +22,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
+use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 
 /// Pushes each chunk to the live sink, then returns the assembled text as the
 /// committed response.

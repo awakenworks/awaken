@@ -16,7 +16,6 @@ use awaken_agent_contract::stream::event::Event;
 use awaken_agent_contract::stream::sink::{Error as SinkError, Sink};
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
@@ -29,6 +28,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 /// A model that echoes the last user message's text, so injected feedback is
 /// observable in the next committed assistant message.

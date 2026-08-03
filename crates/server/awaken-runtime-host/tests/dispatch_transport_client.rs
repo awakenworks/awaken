@@ -8,14 +8,14 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_run_ingress::{
-    CredentialRealizationReceipt, DispatchOutcome, DispatchQueue, HttpDispatchQueue,
-    MemoryDispatchStore, PendingInput, RunClaim, RunDispatch, WorkerIdentity,
+    CredentialRealizationReceipt, DispatchOutcome, DispatchQueue, FencedStreamCheckpointStore,
+    HttpDispatchQueue, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch, WorkerIdentity,
 };
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::resume::ResumeResult;
@@ -28,6 +28,7 @@ use awaken_runtime_contract::{
     InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
 use awaken_runtime_host::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock,
 };
@@ -137,7 +138,8 @@ async fn db_less_worker_drives_runs_over_real_http() {
             clock.clone(),
             Arc::new(FixedWorkerLeasePolicy::new(1_000)),
         )
-        .with_recovery_source(recovery),
+        .with_recovery_source(recovery)
+        .with_checkpoint_store(Arc::new(MemoryStreamCheckpointStore::new())),
     );
     let router = dispatch_transport_router_with_service(service);
 
@@ -149,14 +151,14 @@ async fn db_less_worker_drives_runs_over_real_http() {
     });
 
     // The worker holds only this HTTP client — no store handle.
-    let queue = HttpDispatchQueue::new(
+    let queue = Arc::new(HttpDispatchQueue::new(
         format!("http://{addr}"),
         WorkerIdentity::new("worker-1", "boot-1", 1),
-    );
-    let recovery_queue = HttpDispatchQueue::new(
+    ));
+    let recovery_queue = Arc::new(HttpDispatchQueue::new(
         format!("http://{addr}"),
         WorkerIdentity::new("worker-2", "boot-2", 1),
-    );
+    ));
     queue
         .enqueue(RunDispatch::new(activation("run-A", "t1")))
         .await
@@ -189,6 +191,42 @@ async fn db_less_worker_drives_runs_over_real_http() {
     assert_eq!(snapshot.thread_version, 1);
     assert_eq!(snapshot.next_commit_ordinal, 1);
 
+    // Checkpoint transport cause/effect decision table:
+    // R1 authenticated current claim -> put/load applied over HTTP;
+    // R2 stale epoch after replacement -> put/delete fenced and old value retained;
+    // R3 replacement's current claim -> overwrite/delete applied. This is the
+    // database-less Worker row: no local checkpoint store exists or is consulted.
+    let checkpoint = |text: &str| StreamCheckpoint {
+        run_id: "run-A".into(),
+        thread_id: "t1".into(),
+        model: "provider/model".into(),
+        partial_text: text.into(),
+        partial_tools: Vec::new(),
+    };
+    assert_eq!(
+        queue
+            .put_stream_checkpoint(&original_claim, checkpoint("current"))
+            .await
+            .expect("put checkpoint over http"),
+        awaken_run_ingress::SettleOutcome::Applied,
+        "R1"
+    );
+    let remote_checkpoint =
+        FencedStreamCheckpointStore::new(None, queue.clone(), original_claim.clone());
+    assert_eq!(
+        remote_checkpoint.get("run-A").await,
+        Some(checkpoint("current")),
+        "R1 inner=None delegates through authenticated HTTP"
+    );
+    assert_eq!(
+        queue
+            .load_stream_checkpoint(&original_claim)
+            .await
+            .expect("load checkpoint over http"),
+        Some(checkpoint("current")),
+        "R1"
+    );
+
     clock.set(1_000);
     assert!(
         queue
@@ -210,6 +248,64 @@ async fn db_less_worker_drives_runs_over_real_http() {
     assert!(
         reclaimed.lease.epoch > claimed.lease.epoch,
         "the recovery re-claim bumped the fence epoch"
+    );
+    assert_eq!(
+        queue
+            .put_stream_checkpoint(&original_claim, checkpoint("stale"))
+            .await
+            .expect("stale checkpoint put is a fenced outcome"),
+        awaken_run_ingress::SettleOutcome::Fenced,
+        "R2"
+    );
+    assert_eq!(
+        queue
+            .delete_stream_checkpoint(&original_claim)
+            .await
+            .expect("stale checkpoint delete is a fenced outcome"),
+        awaken_run_ingress::SettleOutcome::Fenced,
+        "R2"
+    );
+    let replacement_claim = RunClaim::from(&reclaimed.lease);
+    remote_checkpoint.put(checkpoint("stale-via-fence")).await;
+    remote_checkpoint.delete("run-A").await;
+    assert_eq!(
+        recovery_queue
+            .load_stream_checkpoint(&replacement_claim)
+            .await
+            .expect("replacement reads retained checkpoint"),
+        Some(checkpoint("current")),
+        "R2"
+    );
+    assert_eq!(
+        recovery_queue
+            .put_stream_checkpoint(&replacement_claim, checkpoint("replacement"))
+            .await
+            .expect("replacement overwrites checkpoint"),
+        awaken_run_ingress::SettleOutcome::Applied,
+        "R3"
+    );
+    let replacement_checkpoint =
+        FencedStreamCheckpointStore::new(None, recovery_queue.clone(), replacement_claim.clone());
+    assert_eq!(
+        replacement_checkpoint.get("run-A").await,
+        Some(checkpoint("replacement")),
+        "R3 inner=None reads through replacement authority"
+    );
+    assert_eq!(
+        recovery_queue
+            .delete_stream_checkpoint(&replacement_claim)
+            .await
+            .expect("replacement deletes checkpoint"),
+        awaken_run_ingress::SettleOutcome::Applied,
+        "R3"
+    );
+    assert_eq!(
+        recovery_queue
+            .load_stream_checkpoint(&replacement_claim)
+            .await
+            .expect("deleted checkpoint is absent"),
+        None,
+        "R3"
     );
     assert!(
         queue.load_recovery_snapshot(&original_claim).await.is_err(),

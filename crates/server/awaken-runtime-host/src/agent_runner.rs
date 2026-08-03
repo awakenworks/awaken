@@ -26,7 +26,6 @@ use awaken_run_ingress::{
     SystemClock,
 };
 use awaken_runtime::RunInput;
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::delegation::RunDelegationService;
@@ -711,12 +710,11 @@ async fn run_configured_agent_inner(
     if let Some(service) = run_delegation {
         runtime = runtime.with_run_delegation(service);
     }
-    let mut ctx = context.unwrap_or_else(|| {
-        let commit = Arc::new(MemoryCommitCoordinator::new());
-        RuntimeRunContext::new()
-            .with_commit(commit.clone())
-            .with_reader(commit)
-    });
+    let mut ctx = context.ok_or_else(|| {
+        AgentRunError::Configuration(
+            "an Agent Run requires an explicitly owned commit/history context".to_string(),
+        )
+    })?;
     if let Some(token) = cancellation {
         ctx = ctx.with_cancellation(token);
     }
@@ -837,7 +835,7 @@ pub(crate) async fn run_agent_until_boundary(
         request.seed,
         request.resume,
         execution.context.unwrap_or_else(|| {
-            let commit = Arc::new(MemoryCommitCoordinator::new());
+            let commit = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new());
             RuntimeRunContext::new()
                 .with_commit(commit.clone())
                 .with_reader(commit)
@@ -853,6 +851,7 @@ pub(crate) async fn run_agent_until_boundary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_store_inmem::MemoryCommitCoordinator;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use awaken_agent_contract::agent::awaiting::ResumeTicket;
@@ -892,6 +891,13 @@ mod tests {
                 upstream_model: model.into(),
             },
         )
+    }
+
+    fn memory_context() -> RuntimeRunContext {
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        RuntimeRunContext::new()
+            .with_commit(commit.clone())
+            .with_reader(commit)
     }
 
     /// A model that replies with the leading system instruction it was given, so a
@@ -1234,7 +1240,7 @@ mod tests {
             vec![user("go")],
             Vec::new(),
             None,
-            None,
+            Some(memory_context()),
             None,
         )
         .await
@@ -1250,7 +1256,7 @@ mod tests {
             vec![user("go")],
             Vec::new(),
             None,
-            None,
+            Some(memory_context()),
             None,
         )
         .await
@@ -1404,7 +1410,7 @@ mod tests {
             vec![user("go")],
             Vec::new(),
             None,
-            None,
+            Some(memory_context()),
             None,
         )
         .await
@@ -1449,6 +1455,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn known_agent_without_commit_history_authority_fails_closed() {
+        // Cause/effect graph:
+        // C1 agent resolves; C2 commit authority supplied; C3 history reader supplied.
+        // E1 execute on caller authority; E2 configuration error; E3 no volatile store.
+        // Decision table: R1 C1/T,C2/T,C3/T -> E1; R2 C1/T,C2/F,C3/F -> E2+E3.
+        // This case owns R2; ordinary successful Agent tests above own R1.
+        let provider = LocalProvider::new(std::env::temp_dir().join("awaken-no-implicit-store"));
+        let catalog = AgentCatalog::new().with_agent(agent("assistant", "hi"));
+        let error = run_configured_agent(
+            &catalog,
+            AgentRunSandbox::Fresh(&provider),
+            Arc::new(InstructionEchoModel),
+            "assistant",
+            "t",
+            vec![user("go")],
+            Vec::new(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect_err("missing commit/history wiring must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("explicitly owned commit/history context"),
+            "got: {error}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_shared_agent_run_reuses_the_parent_sandbox_while_fresh_makes_its_own() {
         let tmp = tempfile::tempdir().unwrap();
         let parent_base = tmp.path().join("parent");
@@ -1472,7 +1509,7 @@ mod tests {
             vec![user("go")],
             Vec::new(),
             None,
-            None,
+            Some(memory_context()),
             None,
         )
         .await
@@ -1492,7 +1529,7 @@ mod tests {
             vec![user("go")],
             Vec::new(),
             None,
-            None,
+            Some(memory_context()),
             None,
         )
         .await

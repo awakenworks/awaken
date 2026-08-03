@@ -373,10 +373,10 @@ mod durable_cancel_tests {
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
     use awaken_run_ingress::{AnyDispatchStore, DispatchQueue};
-    use awaken_runtime::memory::MemoryCommitCoordinator;
     use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
     use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};
     use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+    use awaken_store_inmem::MemoryCommitCoordinator;
     use std::collections::HashSet;
 
     struct AwaitPermission;

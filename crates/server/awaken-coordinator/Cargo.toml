@@ -99,7 +99,6 @@ awaken-connection-plan.workspace = true
 # workspace-scoped subscriptions. Env-gated by AWAKEN_WEBHOOK_DIR.
 awaken-webhook = { workspace = true }
 awaken-webhook-managed = { workspace = true }
-awaken-runtime = { workspace = true }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -155,6 +154,7 @@ awaken-session-store = { workspace = true, features = ["test-support"] }
 awaken-skill-store = { workspace = true, features = ["test-support"] }
 awaken-scenario-host = { workspace = true }
 awaken-run-ingress = { workspace = true }
+awaken-store-inmem.workspace = true
 http-body-util = "0.1"
 awaken-agent-contract = { workspace = true }
 # mcp_sessions test: drives the VaultRefresher's RFC 6749 refresh grant and

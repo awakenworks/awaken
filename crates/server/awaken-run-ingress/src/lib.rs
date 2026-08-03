@@ -24,6 +24,7 @@ mod dispatch_schema;
 mod durable;
 mod fenced_checkpoint;
 mod live_control;
+#[cfg(any(test, feature = "test-support"))]
 pub mod memory;
 mod pool;
 mod postgres;
@@ -71,6 +72,7 @@ pub use dispatch_schema::dispatch_bundle;
 pub use durable::DurableRunIngress;
 pub use fenced_checkpoint::FencedStreamCheckpointStore;
 pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
+#[cfg(any(test, feature = "test-support"))]
 pub use memory::MemoryDispatchStore;
 pub use pool::{CompletionSink, DispatchPool, WorkerResolver};
 pub use postgres::{

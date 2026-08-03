@@ -26,8 +26,9 @@ use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use std::sync::Arc;
 
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_store_fs::FsCommitCoordinator;
+#[cfg(any(test, feature = "test-support"))]
+use awaken_store_inmem::MemoryCommitCoordinator;
 use awaken_store_postgres::PostgresCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
@@ -103,6 +104,7 @@ fn awaiting_from_reader<R: CheckpointReader>(
     (&ticket.thread_id == thread).then_some((run.id, ticket))
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl HostStore for MemoryCommitCoordinator {
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         let run = self.committed().latest_run?;

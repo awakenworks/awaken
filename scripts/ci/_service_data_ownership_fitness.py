@@ -42,9 +42,12 @@ COMMIT_SQLITE_SOURCE = "crates/stores/awaken-store-sqlite/src/lib.rs"
 FILE_SQLITE_SOURCE = "crates/resources/awaken-file-store/src/sqlite.rs"
 WORKER_REGISTRY_SQLITE_SOURCE = "crates/server/awaken-worker-registry/src/sqlite.rs"
 RUN_INGRESS_ANY_SOURCE = "crates/server/awaken-run-ingress/src/any.rs"
+RUN_INGRESS_LIB_SOURCE = "crates/server/awaken-run-ingress/src/lib.rs"
 RUN_INGRESS_SQLITE_SOURCE = "crates/server/awaken-run-ingress/src/sqlite.rs"
 DISPATCH_BACKEND_SOURCE = "crates/server/awaken-runtime-host/src/dispatch_backend.rs"
 RUNTIME_STORE_SOURCE = "crates/server/awaken-runtime-host/src/store.rs"
+RUNTIME_LIB_SOURCE = "crates/runtime/awaken-runtime/src/lib.rs"
+STORE_FS_MANIFEST = "crates/stores/awaken-store-fs/Cargo.toml"
 CAPTURE_STORE_SOURCE = "crates/stores/awaken-captured-content-store/src/lib.rs"
 CAPTURE_SQLITE_SOURCE = "crates/stores/awaken-captured-content-store/src/sqlite.rs"
 DATA_SUBJECT_SOURCE = "crates/control/awaken-data-subject/src/lib.rs"
@@ -131,8 +134,6 @@ TEST_SUPPORT_GATE = (
 FEATURE_TEST_SUPPORT_GATE = (
     r'#\s*\[\s*cfg\s*\(\s*feature\s*=\s*"test-support"\s*\)\s*\]'
 )
-PUBLIC_DECLARATION = r"\bpub(?:\s*\(\s*crate\s*\))?\s+(?:async\s+)?(?:struct|fn|use)\s+"
-
 NON_PRODUCT_APIS = (
     (
         "InMemoryFileStore",
@@ -255,6 +256,18 @@ NON_PRODUCT_APIS = (
         TEST_SUPPORT_GATE,
     ),
     (
+        "awaken_run_ingress::memory",
+        RUN_INGRESS_LIB_SOURCE,
+        r"\bpub\s+mod\s+memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "MemoryDispatchStore",
+        RUN_INGRESS_LIB_SOURCE,
+        r"\bpub\s+use\s+memory::MemoryDispatchStore\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
         "SqliteDispatchStore::open_in_memory",
         RUN_INGRESS_SQLITE_SOURCE,
         r"\bpub\s+fn\s+open_in_memory\b",
@@ -348,14 +361,6 @@ NON_PRODUCT_APIS = (
     ),
 )
 
-PRODUCT_MANIFESTS = (
-    WORKER_MANIFEST,
-    RUNTIME_HOST_MANIFEST,
-    COORDINATOR_MANIFEST,
-    CLI_MANIFEST,
-)
-
-
 def dependency_violations(dependencies: set[str]) -> list[str]:
     """Return the durable-authority packages accidentally linked by Worker."""
 
@@ -390,20 +395,10 @@ def _declaration_is_gated(
     declarations = list(re.finditer(declaration_pattern, source))
     if not declarations:
         return None
-    public_declarations = list(re.finditer(PUBLIC_DECLARATION, source))
     return all(
         re.search(
-            gate_pattern,
-            source[
-                max(
-                    (
-                        item.start()
-                        for item in public_declarations
-                        if item.start() < declaration.start()
-                    ),
-                    default=0,
-                ) : declaration.start()
-            ],
+            rf"{gate_pattern}(?:\s*(?:#\s*\[[^]]*\]|//[^\n]*))*\s*$",
+            source[: declaration.start()],
         )
         is not None
         for declaration in declarations
@@ -579,10 +574,20 @@ def process_store_ownership_violations(
     return errors
 
 
+def _normal_dependency_tables(manifest: dict):
+    """Yield every non-dev Cargo edge, including target-conditioned tables."""
+
+    for section in ("dependencies", "build-dependencies"):
+        yield section, manifest.get(section, {})
+    for target, target_manifest in manifest.get("target", {}).items():
+        for section in ("dependencies", "build-dependencies"):
+            yield f"target.{target}.{section}", target_manifest.get(section, {})
+
+
 def _normal_dependencies(manifest: dict) -> set[str]:
     dependencies: set[str] = set()
-    for section in ("dependencies", "build-dependencies"):
-        for name, value in manifest.get(section, {}).items():
+    for _, table in _normal_dependency_tables(manifest):
+        for name, value in table.items():
             dependencies.add(name)
             if isinstance(value, dict) and isinstance(value.get("package"), str):
                 dependencies.add(value["package"])
@@ -597,11 +602,49 @@ def product_test_support_violations(manifest: dict) -> list[str]:
     for feature in defaults:
         if feature == "test-support" or feature.endswith("/test-support"):
             errors.append(f"default feature enables `{feature}`")
-    for section in ("dependencies", "build-dependencies"):
-        for name, value in manifest.get(section, {}).items():
+    for section, table in _normal_dependency_tables(manifest):
+        for name, value in table.items():
             if isinstance(value, dict) and "test-support" in value.get("features", []):
                 errors.append(f"{section} dependency `{name}` enables test-support")
     return sorted(errors)
+
+
+def product_inmem_dependency_violations(manifest_path: str, manifest: dict) -> list[str]:
+    """Keep the volatile backend off normal product edges.
+
+    The sole non-optional exception is `awaken-store-fs`: it uses the coordinator
+    as a deterministic projection rebuilt from its fsync append log, never as the
+    selected persistence authority. Optional dependencies remain legal only when
+    an explicit non-default test-support feature enables them.
+    """
+
+    if manifest_path == STORE_FS_MANIFEST:
+        return []
+    test_feature = set(manifest.get("features", {}).get("test-support", []))
+    errors: list[str] = []
+    for section, table in _normal_dependency_tables(manifest):
+        for name, value in table.items():
+            package = value.get("package") if isinstance(value, dict) else None
+            if name != "awaken-store-inmem" and package != "awaken-store-inmem":
+                continue
+            explicitly_test_only = (
+                isinstance(value, dict)
+                and value.get("optional") is True
+                and (f"dep:{name}" in test_feature or name in test_feature)
+            )
+            if not explicitly_test_only:
+                errors.append(
+                    f"{section} dependency `{name}` links the selectable in-memory backend"
+                )
+    return sorted(errors)
+
+
+def redundant_runtime_memory_reexport_violations(source: str) -> list[str]:
+    """The reference backend has one public owner: `awaken-store-inmem`."""
+
+    if re.search(r"\bpub\s+mod\s+memory\b|\bawaken_store_inmem\b", source):
+        return ["Runtime recreates the awaken-store-inmem public API path"]
+    return []
 
 
 def product_dispatch_fallback_violations(source: str) -> list[str]:
@@ -659,14 +702,20 @@ def selftest() -> None:
     File/Memory/Skill/Resource/Environment volatile entrypoints and the ephemeral
     Resources assembler are test-support gated -> accepted; O18 any one gate missing ->
     rejected; O19 product defaults/normal edges do not enable test-support ->
-    accepted; O20 a product default or normal edge enables it -> rejected while
-    dev-dependencies and opt-in features remain accepted; O21 missing SQLite
+    accepted; O20 a product default, top-level normal edge, or target-conditioned
+    normal edge enables it -> rejected while dev-dependencies and opt-in features
+    remain accepted; O21 missing SQLite
     dispatch durability fails closed in product and selects memory only with test
     support -> accepted; O22 an unconditional in-memory fallback -> rejected;
     O23 one authoritative Config Resolver store path -> accepted; O24 an Admin
     compatibility re-export of that path -> rejected; O25 missing SQLite commit
     durability selects memory only for test-support and fails closed in product ->
-    accepted; O26 an unconditional Memory commit fallback -> rejected.
+    accepted; O26 an unconditional Memory commit fallback -> rejected; O27 the
+    FS log's rebuild projection and an optional test-support feature may depend on
+    inmem -> accepted; O28 an ordinary, aliased, or target-conditioned product
+    dependency on the selectable backend -> rejected; O29 Runtime has no
+    compatibility re-export -> accepted; O30 a second Runtime public path for the
+    backend -> rejected.
     Together the rules cover compile-time acquisition, production call paths,
     component ownership, and schema acquisition.
     """
@@ -796,6 +845,10 @@ def selftest() -> None:
         FILE_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
         WORKER_REGISTRY_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
         RUN_INGRESS_ANY_SOURCE: any_gate + "pub fn open_sqlite_in_memory() {}",
+        RUN_INGRESS_LIB_SOURCE: any_gate
+        + "pub mod memory;\n"
+        + any_gate
+        + "pub use memory::MemoryDispatchStore;",
         RUN_INGRESS_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
         CAPTURE_STORE_SOURCE: any_gate
         + "pub use capture_store::{CapturedRecord, InMemoryCapturedContentStore};",
@@ -842,6 +895,17 @@ def selftest() -> None:
     assert product_test_support_violations(
         {"features": {"default": ["store/test-support"]}}
     ) == ["default feature enables `store/test-support`"]  # O20 default edge
+    assert product_test_support_violations(
+        {
+            "target": {
+                "cfg(unix)": {
+                    "dependencies": {"store": {"features": ["test-support"]}}
+                }
+            }
+        }
+    ) == [
+        "target.cfg(unix).dependencies dependency `store` enables test-support"
+    ]  # O20 target-conditioned normal edge
     guarded_dispatch = (
         'None => { #[cfg(any(test, feature = "test-support"))] '
         "AnyDispatchStore::open_sqlite_in_memory()?; "
@@ -865,15 +929,59 @@ def selftest() -> None:
     assert product_commit_fallback_violations("return CommitPlan::Memory;") == [
         "SQLite commit missing-storage path does not fail closed"
     ]  # O26
+    assert product_inmem_dependency_violations(
+        STORE_FS_MANIFEST, {"dependencies": {"awaken-store-inmem": {}}}
+    ) == []  # O27 rebuild projection
+    assert product_inmem_dependency_violations(
+        RUNTIME_HOST_MANIFEST,
+        {
+            "dependencies": {"awaken-store-inmem": {"optional": True}},
+            "features": {"test-support": ["dep:awaken-store-inmem"]},
+        },
+    ) == []  # O27 explicit test feature
+    assert product_inmem_dependency_violations(
+        "crates/runtime/product/Cargo.toml",
+        {"dependencies": {"awaken-store-inmem": {}}},
+    ) == [
+        "dependencies dependency `awaken-store-inmem` links the selectable in-memory backend"
+    ]  # O28
+    assert product_inmem_dependency_violations(
+        "crates/runtime/product/Cargo.toml",
+        {
+            "target": {
+                "cfg(unix)": {
+                    "dependencies": {
+                        "reference_store": {"package": "awaken-store-inmem"}
+                    }
+                }
+            }
+        },
+    ) == [
+        "target.cfg(unix).dependencies dependency `reference_store` links the selectable in-memory backend"
+    ]  # O28 target-conditioned alias
+    assert redundant_runtime_memory_reexport_violations("pub mod engine;") == []  # O29
+    assert redundant_runtime_memory_reexport_violations(
+        "pub mod memory; pub use awaken_store_inmem::*;"
+    ) == ["Runtime recreates the awaken-store-inmem public API path"]  # O30
 
 
 def check_all(repo_root: Path) -> list[str]:
     errors: list[str] = []
     product_manifests: dict[str, dict] = {}
-    for product_manifest in PRODUCT_MANIFESTS:
+    product_manifest_paths = sorted(
+        path
+        for path in (repo_root / "crates").rglob("Cargo.toml")
+        if "devtools" not in path.relative_to(repo_root / "crates").parts
+    )
+    for manifest_path in product_manifest_paths:
+        product_manifest = manifest_path.relative_to(repo_root).as_posix()
         with (repo_root / product_manifest).open("rb") as handle:
             product_manifests[product_manifest] = tomllib.load(handle)
         for error in product_test_support_violations(product_manifests[product_manifest]):
+            errors.append(f"{product_manifest}: {error}")
+        for error in product_inmem_dependency_violations(
+            product_manifest, product_manifests[product_manifest]
+        ):
             errors.append(f"{product_manifest}: {error}")
     dependencies = _normal_dependencies(product_manifests[WORKER_MANIFEST])
     for package in dependency_violations(dependencies):
@@ -967,4 +1075,8 @@ def check_all(repo_root: Path) -> list[str]:
         (repo_root / ADMIN_CONFIG_SOURCE).read_text(encoding="utf-8")
     ):
         errors.append(f"{ADMIN_CONFIG_SOURCE}: {error}")
+    for error in redundant_runtime_memory_reexport_violations(
+        (repo_root / RUNTIME_LIB_SOURCE).read_text(encoding="utf-8")
+    ):
+        errors.append(f"{RUNTIME_LIB_SOURCE}: {error}")
     return errors

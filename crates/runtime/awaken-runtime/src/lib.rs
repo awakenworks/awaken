@@ -6,7 +6,6 @@
 mod circuit_breaker;
 mod engine;
 mod ingress;
-pub mod memory;
 mod permission;
 mod resolve;
 mod retry;

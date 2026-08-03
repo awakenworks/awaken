@@ -25,8 +25,8 @@ use awaken_run_ingress::{
     PendingInput, RunDispatch, SystemClock, WakeSignal, WorkerResolver,
 };
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::resume::ResumeResult;
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 use harness::{
     FlakyDispatchStore, activation, activation_on, blocking_tool_runtime, text_runtime,

@@ -20,7 +20,6 @@ use awaken_run_ingress::{
     MemoryDispatchStore, Outbox, OutboxMessageSender, PendingInput, RunDispatch,
     RunIngressCapabilities,
 };
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress, RunService};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{
@@ -28,6 +27,7 @@ use awaken_runtime_contract::execution::{
 };
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 use harness::{
     FP, SNAP, THREAD, TICKET, activation, input_echo_runtime, schedule_runtime, text_runtime,

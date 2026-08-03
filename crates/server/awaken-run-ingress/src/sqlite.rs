@@ -6,7 +6,7 @@
 //! takes the database write lock, so claims serialize and a run is owned by one
 //! worker at a time. The claim policy — recover an expired lease, then wake a
 //! awaiting run with pending input, then a fresh run — matches
-//! [`MemoryDispatchStore`](crate::MemoryDispatchStore) exactly. The synchronous
+//! the test-support `MemoryDispatchStore` reference backend exactly. The synchronous
 //! `rusqlite` driver runs each operation on a blocking thread.
 
 use std::sync::{Arc, Mutex};

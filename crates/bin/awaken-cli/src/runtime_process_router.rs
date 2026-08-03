@@ -15,7 +15,7 @@ pub(super) async fn assemble_runtime_process_router(
     // module naming that backend's crate. `None` in production; `Some` in a scenario that
     // serves external-CLI sessions.
     customize_host: Option<Box<dyn FnOnce(SharedHost) -> SharedHost + Send>>,
-) -> ProcessRouterAssembly {
+) -> Result<ProcessRouterAssembly, String> {
     let role = assembly.role;
     debug_assert!(matches!(
         role,
@@ -55,7 +55,7 @@ pub(super) async fn assemble_runtime_process_router(
     let deployment_state =
         awaken_coordinator::restore_deployment_state(coordinator_stores.deployments.clone())
             .await
-            .unwrap_or_else(|error| panic!("restore Deployment state: {error}"));
+            .map_err(|error| format!("restore Deployment state: {error}"))?;
     let agent_archive_cascade =
         deployment_state.clone() as Arc<dyn awaken_protocol_managed::AgentArchiveCascade>;
     let executable_environment_wiring = executable_environment_registration::require_process_wiring(
@@ -509,7 +509,7 @@ pub(super) async fn assemble_runtime_process_router(
         },
     )
     .await
-    .unwrap_or_else(|error| panic!("build Coordinator component: {error}"));
+    .map_err(|error| format!("build Coordinator component: {error}"))?;
     let coordinator_management = awaken_control::protect_management_router(
         coordinator.management_router,
         deployment_audit_plane,
@@ -538,7 +538,7 @@ pub(super) async fn assemble_runtime_process_router(
         config::Role::Control => unreachable!("Control returned before Coordinator assembly"),
         config::Role::Worker => unreachable!("Worker has its own process composition"),
     };
-    ProcessRouterAssembly::new(
+    Ok(ProcessRouterAssembly::new(
         process_surface::finish(
             flat,
             mcp_export,
@@ -547,5 +547,5 @@ pub(super) async fn assemble_runtime_process_router(
             managed_rate_limiter,
         ),
         registration_supervisor,
-    )
+    ))
 }

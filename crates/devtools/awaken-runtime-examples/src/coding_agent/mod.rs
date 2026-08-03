@@ -30,7 +30,6 @@ use awaken_ext_permission::{
     Mode, PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
     ToolPermissionBehavior,
 };
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{PermissionGate, Runtime};
 use awaken_runtime_contract::execution::Error;
 use awaken_runtime_contract::llm::LlmExecutor;
@@ -38,6 +37,7 @@ use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 pub mod scripted;
 pub use scripted::ScriptedCoder;

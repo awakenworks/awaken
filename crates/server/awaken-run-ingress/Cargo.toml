@@ -40,6 +40,7 @@ nats = ["dep:async-nats", "dep:futures-lite"]
 
 [dev-dependencies]
 awaken-run-ingress-testkit = { workspace = true }
+awaken-store-inmem.workspace = true
 awaken-store-postgres = { workspace = true }
 awaken-store-sqlite = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
@@ -57,7 +58,15 @@ name = "crash_before_settle"
 required-features = ["test-support"]
 
 [[test]]
+name = "checkpoint_fence"
+required-features = ["test-support"]
+
+[[test]]
 name = "dispatch_conformance"
+required-features = ["test-support"]
+
+[[test]]
+name = "durable_memory"
 required-features = ["test-support"]
 
 [[test]]
@@ -65,7 +74,19 @@ name = "lease_semantics"
 required-features = ["test-support"]
 
 [[test]]
+name = "pool_memory"
+required-features = ["test-support"]
+
+[[test]]
+name = "resilience_and_metrics"
+required-features = ["test-support"]
+
+[[test]]
 name = "sandbox_binding"
+required-features = ["test-support"]
+
+[[test]]
+name = "service_memory"
 required-features = ["test-support"]
 
 [[test]]
@@ -73,7 +94,19 @@ name = "sqlite_dispatch"
 required-features = ["test-support"]
 
 [[test]]
+name = "transport_client"
+required-features = ["test-support"]
+
+[[test]]
+name = "units"
+required-features = ["test-support"]
+
+[[test]]
 name = "worker_edge_cases"
+required-features = ["test-support"]
+
+[[test]]
+name = "worker_error_paths"
 required-features = ["test-support"]
 
 [lints]

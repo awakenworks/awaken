@@ -64,6 +64,8 @@ pub struct CoordinatorComponent {
 pub enum CoordinatorBuildError {
     #[error("restore Deployment state: {0}")]
     DeploymentRestore(String),
+    #[error("build registered Worker transport: {0}")]
+    WorkerTransport(#[from] awaken_runtime_host::RegisteredWorkerTransportBuildError),
 }
 
 pub async fn restore_deployment_state(
@@ -130,7 +132,7 @@ pub async fn build_coordinator_component(
             resource_management_router,
             worker_authenticator,
         },
-    );
+    )?;
     let data = data.merge(registration_router);
     let management_router = awaken_protocol_managed::deployments_router(deployment_state.clone())
         .merge(awaken_protocol_managed::environment_work_router(

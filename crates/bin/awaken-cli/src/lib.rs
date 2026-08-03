@@ -604,6 +604,7 @@ pub async fn build_ephemeral_all_in_one_router() -> Router {
         None,
     )
     .await
+    .expect("assemble ephemeral all-in-one process")
     .router
 }
 
@@ -739,6 +740,7 @@ async fn build_all_in_one_router_with_composition(
         None,
     )
     .await
+    .unwrap_or_else(|error| panic!("assemble all-in-one process: {error}"))
     .router
 }
 
@@ -768,6 +770,7 @@ pub async fn build_all_in_one_router_with_host_customizer(
         Some(Box::new(customize_host)),
     )
     .await
+    .expect("assemble test-support customized all-in-one process")
     .router
 }
 
@@ -801,6 +804,7 @@ pub async fn build_durable_all_in_one_router_with_host_customizer(
         Some(Box::new(customize_host)),
     )
     .await
+    .expect("assemble durable customized all-in-one process")
     .router
 }
 
@@ -830,6 +834,7 @@ pub async fn build_all_in_one_router_with_model(
         None,
     )
     .await
+    .expect("assemble test-support modeled all-in-one process")
     .router
 }
 
@@ -853,6 +858,7 @@ pub async fn build_durable_all_in_one_router(dir: &std::path::Path, key: &[u8; 3
         None,
     )
     .await
+    .expect("assemble durable all-in-one process")
     .router
 }
 
@@ -879,6 +885,7 @@ pub async fn build_secured_all_in_one_router(
         None,
     )
     .await
+    .expect("assemble secured all-in-one process")
     .router;
     (router, iam)
 }
@@ -1369,6 +1376,7 @@ mod process_role_surface_tests {
             None,
         )
         .await
+        .expect("assemble split Coordinator test process")
         .router;
         let control = app
             .clone()

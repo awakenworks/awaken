@@ -135,14 +135,15 @@ impl SkillRegistry for CompositeSkillRegistry {
     }
 }
 
-/// An in-memory registry built from a fixed set of specs. The composition root
-/// (e.g. the local server) constructs this from configured skills.
+/// An immutable runtime registry built from a fixed set of specs. It is a
+/// resolved configuration snapshot, not a persistence backend or mutable catalog;
+/// the composition root constructs it from its authoritative Skill sources.
 #[derive(Debug, Clone, Default)]
-pub struct InMemorySkillRegistry {
+pub struct FixedSkillRegistry {
     skills: BTreeMap<String, SkillSpec>,
 }
 
-impl InMemorySkillRegistry {
+impl FixedSkillRegistry {
     pub fn new() -> Self {
         Self::default()
     }
@@ -169,7 +170,7 @@ impl InMemorySkillRegistry {
 }
 
 #[async_trait]
-impl SkillRegistry for InMemorySkillRegistry {
+impl SkillRegistry for FixedSkillRegistry {
     fn get(&self, id: &str) -> Option<SkillSpec> {
         self.skills.get(id).cloned()
     }
@@ -185,7 +186,11 @@ mod tests {
 
     #[test]
     fn from_specs_lists_in_id_order_and_gets_by_id() {
-        let registry = InMemorySkillRegistry::from_specs([
+        // Cause/effect decision table: R1 unique fixed ids -> stable id order and
+        // exact lookup; R2 missing id -> None; R3 duplicate id -> later snapshot
+        // value replaces earlier (covered by `insert_replaces_a_duplicate_id`).
+        // These effects describe an immutable resolved snapshot, not persistence.
+        let registry = FixedSkillRegistry::from_specs([
             SkillSpec::new("b", "B", "second", "body-b"),
             SkillSpec::new("a", "A", "first", "body-a"),
         ]);
@@ -218,7 +223,7 @@ mod tests {
 
     #[test]
     fn composite_first_registry_wins_on_duplicate_id() {
-        let delivered = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+        let delivered = Arc::new(FixedSkillRegistry::from_specs([SkillSpec::new(
             "dup",
             "Delivered",
             "trusted",
@@ -248,7 +253,7 @@ mod tests {
 
     #[test]
     fn insert_replaces_a_duplicate_id() {
-        let registry = InMemorySkillRegistry::from_specs([
+        let registry = FixedSkillRegistry::from_specs([
             SkillSpec::new("a", "A", "old", "old-body"),
             SkillSpec::new("a", "A", "new", "new-body"),
         ]);

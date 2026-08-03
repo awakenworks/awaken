@@ -13,7 +13,7 @@ use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpoi
 use crate::{DispatchQueue, RunClaim};
 
 pub struct FencedStreamCheckpointStore {
-    inner: Arc<dyn StreamCheckpointStore>,
+    inner: Option<Arc<dyn StreamCheckpointStore>>,
     dispatch: Arc<dyn DispatchQueue>,
     claim: RunClaim,
 }
@@ -21,7 +21,7 @@ pub struct FencedStreamCheckpointStore {
 impl FencedStreamCheckpointStore {
     #[must_use]
     pub fn new(
-        inner: Arc<dyn StreamCheckpointStore>,
+        inner: Option<Arc<dyn StreamCheckpointStore>>,
         dispatch: Arc<dyn DispatchQueue>,
         claim: RunClaim,
     ) -> Self {
@@ -40,7 +40,10 @@ impl StreamCheckpointStore for FencedStreamCheckpointStore {
             return None;
         }
         match self.dispatch.lock_commit_epoch(&self.claim).await {
-            Ok(Some(_guard)) => self.inner.get(run_id).await,
+            Ok(Some(_guard)) => match &self.inner {
+                Some(inner) => inner.get(run_id).await,
+                None => None,
+            },
             Ok(None) => None,
             Err(_) => self
                 .dispatch
@@ -56,7 +59,11 @@ impl StreamCheckpointStore for FencedStreamCheckpointStore {
             return;
         }
         match self.dispatch.lock_commit_epoch(&self.claim).await {
-            Ok(Some(_guard)) => self.inner.put(checkpoint).await,
+            Ok(Some(_guard)) => {
+                if let Some(inner) = &self.inner {
+                    inner.put(checkpoint).await;
+                }
+            }
             Ok(None) => {}
             Err(_) => {
                 let _ = self
@@ -72,7 +79,11 @@ impl StreamCheckpointStore for FencedStreamCheckpointStore {
             return;
         }
         match self.dispatch.lock_commit_epoch(&self.claim).await {
-            Ok(Some(_guard)) => self.inner.delete(run_id).await,
+            Ok(Some(_guard)) => {
+                if let Some(inner) = &self.inner {
+                    inner.delete(run_id).await;
+                }
+            }
             Ok(None) => {}
             Err(_) => {
                 let _ = self.dispatch.delete_stream_checkpoint(&self.claim).await;
