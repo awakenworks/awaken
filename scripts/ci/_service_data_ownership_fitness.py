@@ -64,6 +64,20 @@ FORBIDDEN_RETIRED_LAUNCH_SOURCE = re.compile(
     r"deployment_session_launch_router|DeploymentSessionLaunchConfig)\b"
 )
 
+VOLATILE_RUNTIME_HOST_APIS = (
+    "new",
+    "new_with_deployment",
+    "with_deployment_config",
+    "new_with_resource_component",
+    "with_resource_lifecycle",
+    "with_upstream",
+    "with_skill_store",
+    "with_skill_store_backend",
+    "with_store_dir",
+    "with_file_content_source",
+    "with_memory_repository",
+)
+
 
 def dependency_violations(dependencies: set[str]) -> list[str]:
     """Return the durable-authority packages accidentally linked by Worker."""
@@ -89,6 +103,29 @@ def retired_launch_violations(source: str) -> list[str]:
     """Return vocabulary from the deleted remote Deployment launch path."""
 
     return sorted({match.group(0) for match in FORBIDDEN_RETIRED_LAUNCH_SOURCE.finditer(source)})
+
+
+def volatile_runtime_host_surface_violations(source: str) -> list[str]:
+    """Return volatile Host APIs that are reachable without test-support."""
+
+    errors: list[str] = []
+    declarations = list(re.finditer(r"\bpub\s+fn\s+[A-Za-z0-9_]+\b", source))
+    for name in VOLATILE_RUNTIME_HOST_APIS:
+        declaration = re.search(rf"\bpub\s+fn\s+{re.escape(name)}\b", source)
+        if declaration is None:
+            errors.append(f"missing volatile Host API `{name}`")
+            continue
+        previous_start = max(
+            (item.start() for item in declarations if item.start() < declaration.start()),
+            default=0,
+        )
+        prefix = source[previous_start : declaration.start()]
+        if not re.search(
+            r'#\s*\[\s*cfg\s*\(\s*any\s*\(\s*test\s*,\s*feature\s*=\s*"test-support"\s*\)\s*\)\s*\]',
+            prefix,
+        ):
+            errors.append(f"volatile Host API `{name}` is not test-support gated")
+    return errors
 
 
 def control_component_violations(
@@ -254,8 +291,10 @@ def selftest() -> None:
     cross-owner or parallel component construction -> rejected; O12 standalone
     Control constructs Resources -> rejected; O13 grouped role-owned stores and
     Resources catalog -> accepted; O14 a cross-domain store field or unconditional
-    migration acquisition -> rejected. Together the rules cover compile-time
-    acquisition, production call paths, component ownership, and schema acquisition.
+    migration acquisition -> rejected; O15 every volatile Host API is test-support
+    gated -> accepted; O16 one missing gate -> rejected. Together the rules cover
+    compile-time acquisition, production call paths, component ownership, and
+    schema acquisition.
     """
 
     assert dependency_violations({"awaken-runtime-host", "awaken-runtime-contract"}) == []  # O1
@@ -341,6 +380,17 @@ def selftest() -> None:
         ),
         resource_owner,
     )  # O14
+    volatile_surface = "\n".join(
+        f'#[cfg(any(test, feature = "test-support"))]\npub fn {name}() {{}}'
+        for name in VOLATILE_RUNTIME_HOST_APIS
+    )
+    assert volatile_runtime_host_surface_violations(volatile_surface) == []  # O15
+    assert volatile_runtime_host_surface_violations(
+        volatile_surface.replace(
+            '#[cfg(any(test, feature = "test-support"))]\npub fn with_store_dir',
+            "pub fn with_store_dir",
+        )
+    ) == ["volatile Host API `with_store_dir` is not test-support gated"]  # O16
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -417,4 +467,8 @@ def check_all(repo_root: Path) -> list[str]:
             (repo_root / RESOURCE_COMPONENT).read_text(encoding="utf-8"),
         )
     )
+    for error in volatile_runtime_host_surface_violations(
+        (repo_root / RUNTIME_HOST_BUILD).read_text(encoding="utf-8")
+    ):
+        errors.append(f"{RUNTIME_HOST_BUILD}: {error}")
     return errors

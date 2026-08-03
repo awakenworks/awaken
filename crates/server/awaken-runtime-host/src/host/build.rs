@@ -28,8 +28,8 @@ impl SharedHost {
         local_memory_extraction_repository(storage_dir)
     }
 
-    /// A host over `llm`. Configure it with the chainable `with_*` builders
-    /// (client tools, delegates, a judge grader, a durable store).
+    /// Volatile test/scenario host over `llm`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
         Self::build(
             llm,
@@ -41,8 +41,8 @@ impl SharedHost {
         )
     }
 
-    /// Construct without resource overrides from an explicitly resolved
-    /// deployment snapshot.
+    /// Test/scenario construction without an injected Resource component.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new_with_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
@@ -51,8 +51,8 @@ impl SharedHost {
         Self::build(llm, model_ref.into(), None, None, None, deployment)
     }
 
-    /// Replace the environment-derived deployment value with the exact typed
-    /// value owned by an embedding composition root.
+    /// Test-support replacement of a volatile fixture's deployment value.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_deployment_config(mut self, deployment: crate::DeploymentConfig) -> Self {
         self.session_blob_root = deployment.acp_session_blob_root.clone();
@@ -88,9 +88,9 @@ impl SharedHost {
         )
     }
 
-    /// Construct with an already selected resource persistence family. Unlike
-    /// post-construction overrides, this never opens node-local resource stores
-    /// before installing shared adapters, so there is no unused second truth.
+    /// Test/scenario construction with resources but no explicit deployment or
+    /// durable extraction authority.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new_with_resource_component(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
@@ -459,10 +459,8 @@ impl SharedHost {
         self.store_dir.as_deref()
     }
 
-    /// Install the resource-lifecycle adapter selected by the composition root.
-    /// The runtime sees only the resource contract and remains independent of IAM
-    /// and storage technology; without this port, managed resource operations fail
-    /// closed instead of creating a second Host-local resource truth.
+    /// Test-support replacement of a volatile fixture's Resource lifecycle port.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_resource_lifecycle(
         mut self,
@@ -640,9 +638,8 @@ impl SharedHost {
         self
     }
 
-    /// Make this host a database-less **Worker** of the Coordinator at `url`.
-    /// Attempts use the registered HTTP dispatch transport and a claim-fenced
-    /// operation coordinator; the Worker holds no authoritative store.
+    /// Test-support shorthand for an unauthenticated Worker upstream.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_upstream(mut self, url: impl Into<String>) -> Self {
         self.upstream = Some(awaken_worker_transport_security::WorkerUpstream::new(url));
@@ -735,12 +732,8 @@ impl SharedHost {
         self
     }
 
-    /// Back the delivered skill catalog with a durable [`awaken_skill_store::SkillStore`]
-    /// rooted at `dir`. Its `SKILL.md`s are offered on every thread alongside any
-    /// static [`with_skills`](Self::with_skills) set and survive a restart, so a skill
-    /// added through `/v1/skills` is still offered by a later process over the same
-    /// dir. The extension never learns of the store — the host scans it into the
-    /// `SkillSource` port as plain file data.
+    /// Test/scenario shorthand for a filesystem Skill store.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_skill_store(mut self, dir: impl Into<PathBuf>) -> Self {
         let store = awaken_skill_store::FsSkillStore::open(dir.into())
             .expect("open durable skill store root");
@@ -748,9 +741,8 @@ impl SharedHost {
         self
     }
 
-    /// Back the delivered skill catalog with an arbitrary [`SkillStore`] backend
-    /// (e.g. `PgSkillStore` for a multi-node deployment). Sibling of
-    /// [`with_skill_store`](Self::with_skill_store), which wires the filesystem one.
+    /// Test-support replacement of a volatile fixture's Skill store.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_skill_store_backend(
         mut self,
         store: Arc<dyn awaken_skill_store::SkillStore>,
@@ -782,10 +774,8 @@ impl SharedHost {
         self
     }
 
-    /// Persist every thread's committed truth to a durable SQLite database under
-    /// `dir` (one file per thread). A run awaiting on a thread survives a restart:
-    /// a host rebuilt over the same directory recovers the awaiting position and can
-    /// resume it. Without this, sessions are in-memory and lost on restart.
+    /// Test-support upgrade of a volatile fixture to local durable storage.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_store_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         let dir = dir.into();
         // A durable host must place its Workdir sandboxes under a stable root too;
@@ -873,18 +863,16 @@ impl SharedHost {
         self
     }
 
-    /// Replace the embedded File adapter with the exact per-kind boundary selected
-    /// by the composition root. This does not change Files API authoring ownership.
+    /// Test-support replacement of a volatile fixture's File content port.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_file_content_source(mut self, source: Arc<dyn crate::FileContentSource>) -> Self {
         self.file_content_source = source;
         self
     }
 
-    /// Replace only the Memory content data-plane port. Distributed Workers use
-    /// the claim-fenced HTTP repository through
-    /// [`new_worker_with_deployment`](Self::new_worker_with_deployment), which
-    /// installs it before store selection and therefore opens no Resource DB.
+    /// Test-support replacement of a volatile fixture's Memory content port.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_memory_repository(
         mut self,
