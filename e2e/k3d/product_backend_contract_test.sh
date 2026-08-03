@@ -8,8 +8,9 @@ trap 'rm -f "$RENDERED"' EXIT
 
 # Internal-product topology cause/effect decision table.
 # Causes: C1 the product overlay renders; C2 the Awaken Service is ClusterIP and
-# no external Kubernetes route exists; C3 state/config/tmp mounts and probes are
-# declared; C4 ingress is restricted to namespaces explicitly labelled as an
+# no external Kubernetes route exists; C3 state/config/tmp mounts and a bounded
+# startup grace plus readiness/liveness probes are declared; C4 ingress is
+# restricted to namespaces explicitly labelled as an
 # Awaken Design backend; C5 K8s sandbox uses the imported non-`latest` base while
 # BuildKit Jobs, the derived-image Registry, and namespace-scoped RBAC are
 # coherent; C6 model/provider secret names or values
@@ -43,6 +44,8 @@ grep -q 'serviceAccountName: awaken-product' "$RENDERED"
 grep -q -- '- jobs' "$RENDERED"
 grep -q -- '- pods/exec' "$RENDERED"
 grep -q 'persistentVolumeClaim:' "$RENDERED"
+grep -q 'startupProbe:' "$RENDERED"
+grep -q 'failureThreshold: 180' "$RENDERED"
 grep -q 'path: /readyz' "$RENDERED"
 grep -q 'awaken.design/backend-access: "true"' "$RENDERED"
 ! grep -Eqi 'deepseek_api_key|provider-secret|api[_-]?key:|secret:' "$RENDERED"
