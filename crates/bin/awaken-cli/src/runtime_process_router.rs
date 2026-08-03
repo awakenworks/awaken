@@ -473,11 +473,8 @@ pub(super) async fn assemble_runtime_process_router(
             ),
         ),
     };
-    let registration_router = executable_projection_refresh::layer(
-        executable_agent_private_router.merge(executable_environment_private_router),
-        executable_agent_projection_refresher,
-        executable_environment_projection_refresher,
-    );
+    let registration_router =
+        executable_agent_private_router.merge(executable_environment_private_router);
     let resource_ports = resource_application.ports();
     let resource_management_router =
         awaken_coordinator::resources_router(awaken_coordinator::ResourcesRouterInput {
@@ -514,7 +511,11 @@ pub(super) async fn assemble_runtime_process_router(
         deployment_iam,
         deployment_remote_iam,
     );
-    let mut data = coordinator.router.merge(coordinator_management);
+    let mut data = executable_projection_refresh::layer(
+        coordinator.router.merge(coordinator_management),
+        executable_agent_projection_refresher,
+        executable_environment_projection_refresher,
+    );
     if let Some(iam) = resource_iam {
         data = data.layer(axum::middleware::from_fn_with_state(
             iam,

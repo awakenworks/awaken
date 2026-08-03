@@ -46,8 +46,9 @@ pub struct CoordinatorDependencies {
     pub environments: Arc<EnvironmentExecutionState>,
     pub sessions: Arc<dyn ManagedSessionRepository>,
     pub default_workspace: String,
-    /// Authenticated executable-Agent registration routes, including any
-    /// process-selected projection refresh middleware.
+    /// Authenticated executable Agent and Environment registration routes.
+    /// Process composition installs projection refresh around the final
+    /// Runtime-admitting surface, not around these transport-only routes.
     pub registration_router: Router,
 }
 
