@@ -36,6 +36,8 @@ use crate::types::{AiSdkChatRequest, UIStreamEvent, attach_usage};
 
 type Runtime = Arc<dyn RunApplication>;
 
+const STREAM_KEEP_ALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// The AI SDK v6 header `DefaultChatTransport` uses to identify the stream format.
 const AI_SDK_STREAM_HEADER: &str = "x-vercel-ai-ui-message-stream";
 
@@ -177,22 +179,39 @@ fn stream_turn(
         // `live_rx` and ending the drain loop.
         let turn =
             tokio::spawn(async move { rt.run_streaming(&thread, agent, messages, sink).await });
-        while let Some(event) = live_rx.recv().await {
-            let wires = match &event {
-                AgentEvent::Delta(delta) => transcoder.delta(delta),
-                AgentEvent::Fact(fact @ Fact::RunStarted) => transcoder.fact(fact),
-                AgentEvent::Fact(_) => Vec::new(),
-            };
-            for wire in wires {
-                if out_tx.send(sse_line(&wire)).is_err() {
-                    // The client hung up: cancel the in-flight turn so it ends
-                    // promptly instead of running to completion detached (a token
-                    // leak). The cooperative cancel lets the run commit cleanly, so
-                    // the spawned turn finishes on its own — no hard abort needed.
-                    let _ = rt_usage.interrupt(&thread_usage).await;
-                    return;
+        let mut keep_alive = tokio::time::interval(STREAM_KEEP_ALIVE_INTERVAL);
+        keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut disconnected = false;
+        'live: loop {
+            match next_stream_item(&mut live_rx, &mut keep_alive).await {
+                StreamItem::Event(event) => {
+                    let wires = match &event {
+                        AgentEvent::Delta(delta) => transcoder.delta(delta),
+                        AgentEvent::Fact(fact @ Fact::RunStarted) => transcoder.fact(fact),
+                        AgentEvent::Fact(_) => Vec::new(),
+                    };
+                    for wire in wires {
+                        if out_tx.send(sse_line(&wire)).is_err() {
+                            disconnected = true;
+                            break 'live;
+                        }
+                    }
                 }
+                StreamItem::KeepAlive => {
+                    if out_tx.send(": keep-alive\n\n".to_string()).is_err() {
+                        disconnected = true;
+                        break;
+                    }
+                }
+                StreamItem::Closed => break,
             }
+        }
+        if disconnected {
+            // The client hung up: cancel the in-flight turn so it ends promptly
+            // instead of running to completion detached (a token leak). The
+            // cooperative cancel lets the run commit cleanly; no hard abort needed.
+            let _ = rt_usage.interrupt(&thread_usage).await;
+            return;
         }
         let mut close = match turn.await {
             Ok(Ok(outcome)) => transcoder.complete(&outcome),
@@ -209,6 +228,22 @@ fn stream_turn(
         let _ = out_tx.send("data: [DONE]\n\n".to_string());
     });
     stream_response(out_rx)
+}
+
+enum StreamItem {
+    Event(AgentEvent),
+    KeepAlive,
+    Closed,
+}
+
+async fn next_stream_item(
+    live_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
+    keep_alive: &mut tokio::time::Interval,
+) -> StreamItem {
+    tokio::select! {
+        event = live_rx.recv() => event.map_or(StreamItem::Closed, StreamItem::Event),
+        _ = keep_alive.tick() => StreamItem::KeepAlive,
+    }
 }
 
 /// Translate the request's decisions into a resume against the awaiting tool and
@@ -301,7 +336,7 @@ async fn thread_messages(
 }
 
 /// The AI SDK UI Message Stream response headers (SSE + the transport marker).
-fn sse_headers() -> [(header::HeaderName, HeaderValue); 2] {
+fn sse_headers() -> [(header::HeaderName, HeaderValue); 3] {
     [
         (
             header::CONTENT_TYPE,
@@ -310,6 +345,10 @@ fn sse_headers() -> [(header::HeaderName, HeaderValue); 2] {
         (
             header::HeaderName::from_static(AI_SDK_STREAM_HEADER),
             HeaderValue::from_static("v1"),
+        ),
+        (
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache, no-transform"),
         ),
     ]
 }
@@ -359,6 +398,52 @@ fn sse_error(err: RunApplicationError) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /* Idle-stream cause/effect decision table. Causes: C1 the run is live but
+     * the provider has not produced an AgentEvent inside one keep-alive window;
+     * C2 an AgentEvent arrives; C3 the client receiver closes. Effects: E1 emit
+     * recurring SSE comments without inventing a UIMessage event; E2 preserve
+     * ordinary event projection; E3 the existing send-failure path interrupts
+     * the detached run. Rules: K1=C1=>E1; K2=C2=>E2; K3=C3=>E3. This test owns
+     * the timer classification; streaming integration tests own E2 and the
+     * runtime cancellation suite owns E3. */
+    #[tokio::test]
+    async fn idle_stream_ticks_are_transport_keep_alives_not_agent_events() {
+        let (_sender, mut receiver) = mpsc::unbounded_channel();
+        let mut keep_alive = tokio::time::interval(std::time::Duration::from_millis(5));
+        keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        assert!(matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                next_stream_item(&mut receiver, &mut keep_alive),
+            )
+            .await
+            .expect("initial keep-alive"),
+            StreamItem::KeepAlive
+        ));
+        assert!(matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                next_stream_item(&mut receiver, &mut keep_alive),
+            )
+            .await
+            .expect("recurring keep-alive"),
+            StreamItem::KeepAlive
+        ));
+        let (sender, receiver) = mpsc::unbounded_channel();
+        sender.send(": keep-alive\n\n".to_string()).unwrap();
+        drop(sender);
+        let response = stream_response(receiver);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-cache, no-transform"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), b": keep-alive\n\n");
+    }
 
     fn pending(client_executed: bool) -> Pending {
         Pending {
