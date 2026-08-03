@@ -308,26 +308,18 @@ pub trait ManagedSessionRepository: Send + Sync {
     /// Insert one new aggregate together with owner, idempotency and outbox.
     async fn create(
         &self,
-        _owner_scope: &str,
-        _session: PersistedSession,
-        _idempotency: IdempotencyRecord,
-        _lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<SessionRevision, SessionRepositoryError> {
-        Err(SessionRepositoryError::Storage(
-            "repository does not implement root Session create".into(),
-        ))
-    }
+        owner_scope: &str,
+        session: PersistedSession,
+        idempotency: IdempotencyRecord,
+        lifecycle_facts: Vec<ManagedLifecycleFact>,
+    ) -> Result<SessionRevision, SessionRepositoryError>;
 
     /// Commit the one root-revision CAS transaction.
     async fn commit_mutation(
         &self,
-        _owner_scope: &str,
-        _mutation: SessionMutation,
-    ) -> Result<SessionMutationResult, SessionRepositoryError> {
-        Err(SessionRepositoryError::Storage(
-            "repository does not implement root Session mutation".into(),
-        ))
-    }
+        owner_scope: &str,
+        mutation: SessionMutation,
+    ) -> Result<SessionMutationResult, SessionRepositoryError>;
 
     /// Commit a lifecycle transition fact idempotently by stable id.
     async fn append_lifecycle(&self, fact: ManagedLifecycleFact);
@@ -343,25 +335,19 @@ pub trait ManagedSessionRepository: Send + Sync {
     /// Implementations preserve the intrinsic Workspace partition in the same
     /// row scan; application coordinators filter by their owned state machine.
     /// One index avoids parallel per-feature recovery registries and scans.
-    async fn reconcilable_sessions(&self) -> Vec<ScopedPersistedSession> {
-        Vec::new()
-    }
+    async fn reconcilable_sessions(&self) -> Vec<ScopedPersistedSession>;
 
     /// Durable application-command receipt. This is a read of the same
     /// idempotency table written atomically by `create`/`commit_mutation`, not a
     /// second command registry.
     async fn idempotency_receipt(
         &self,
-        _session_id: &str,
-        _key: &str,
-    ) -> Option<SessionIdempotencyReceipt> {
-        None
-    }
+        session_id: &str,
+        key: &str,
+    ) -> Option<SessionIdempotencyReceipt>;
 
     /// The atomically persisted owner scope of `session_id`, if the row exists.
-    async fn owner(&self, _session_id: &str) -> Option<String> {
-        None
-    }
+    async fn owner(&self, session_id: &str) -> Option<String>;
 }
 
 // In-memory and durable adapters live outward in `awaken-session-store`.

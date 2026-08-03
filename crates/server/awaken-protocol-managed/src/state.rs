@@ -1203,6 +1203,20 @@ mod tests {
             self.inner.get(session_id).await
         }
 
+        async fn reconcilable_sessions(
+            &self,
+        ) -> Vec<awaken_session_contract::ScopedPersistedSession> {
+            self.inner.reconcilable_sessions().await
+        }
+
+        async fn idempotency_receipt(
+            &self,
+            session_id: &str,
+            key: &str,
+        ) -> Option<awaken_session_contract::SessionIdempotencyReceipt> {
+            self.inner.idempotency_receipt(session_id, key).await
+        }
+
         async fn owner(&self, session_id: &str) -> Option<String> {
             self.inner.owner(session_id).await
         }

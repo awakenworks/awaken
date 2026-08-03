@@ -255,6 +255,34 @@ mod tests {
 
     #[async_trait]
     impl ManagedSessionRepository for TestSessions {
+        async fn create(
+            &self,
+            _owner_scope: &str,
+            _session: PersistedSession,
+            _idempotency: awaken_session_contract::IdempotencyRecord,
+            _lifecycle_facts: Vec<ManagedLifecycleFact>,
+        ) -> Result<
+            awaken_session_contract::SessionRevision,
+            awaken_session_contract::SessionRepositoryError,
+        > {
+            Err(awaken_session_contract::SessionRepositoryError::Storage(
+                "read-only TestSessions".into(),
+            ))
+        }
+
+        async fn commit_mutation(
+            &self,
+            _owner_scope: &str,
+            _mutation: awaken_session_contract::SessionMutation,
+        ) -> Result<
+            awaken_session_contract::SessionMutationResult,
+            awaken_session_contract::SessionRepositoryError,
+        > {
+            Err(awaken_session_contract::SessionRepositoryError::Storage(
+                "read-only TestSessions".into(),
+            ))
+        }
+
         async fn append_lifecycle(&self, _fact: ManagedLifecycleFact) {}
 
         async fn pending_lifecycle(&self) -> Vec<ManagedLifecycleFact> {
@@ -267,6 +295,20 @@ mod tests {
             self.rows
                 .get(session_id)
                 .map(|(_, session)| session.clone())
+        }
+
+        async fn reconcilable_sessions(
+            &self,
+        ) -> Vec<awaken_session_contract::ScopedPersistedSession> {
+            Vec::new()
+        }
+
+        async fn idempotency_receipt(
+            &self,
+            _session_id: &str,
+            _key: &str,
+        ) -> Option<awaken_session_contract::SessionIdempotencyReceipt> {
+            None
         }
 
         async fn owner(&self, session_id: &str) -> Option<String> {
