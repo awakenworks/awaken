@@ -31,8 +31,8 @@ use awaken_file_store::FileStore;
 use awaken_resource_contract::FileCatalog;
 use awaken_run_ingress::{
     AnyDispatchStore, CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue,
-    DispatchServiceConfig, DurableRunIngress, RunDispatch, SubmitOptions, SystemClock,
-    WorkerResolver,
+    DispatchServiceConfig, DurableRunIngress, Inbox, PendingInput, RunDispatch, SubmitOptions,
+    SystemClock, WorkerResolver,
 };
 use awaken_runtime::{DirectRunIngress, RunIngress, RunService, Runtime};
 use awaken_runtime_contract::CancellationToken;

@@ -6003,9 +6003,18 @@ async fn confirm_cannot_answer_a_client_tool() {
 
 /// The happy path for the client-executed binding: a `ClientResult` delivers the
 /// caller-run tool's output, it reaches the model's next inference, and the turn
-/// ends. Complements the Confirm-only resume path the memory tests already cover.
+/// ends. This is the direct-ingress row of the resume-delivery decision table;
+/// `durable_client_result_settles_the_authoritative_dispatch` covers the durable
+/// row against the same model and protocol-neutral Host API.
 #[tokio::test]
 async fn client_result_delivers_a_client_tool_result_and_ends_the_turn() {
+    // Cause/effect graph: C1 direct ingress; C2 valid committed client-tool
+    // ticket; C3 exact ClientResult. Effects: E1 resume executes inline once;
+    // E2 result reaches the next inference; E3 Run ends. Constraint: no durable
+    // dispatch is authored in direct mode.
+    //
+    // | Rule | ingress | ticket | answer | Effects |
+    // | R1 | direct | valid client tool | exact result | E1+E2+E3 |
     let host = SharedHost::new(Arc::new(ClientLookupModel), "stub")
         .with_client_tools(HashSet::from(["lookup".to_string()]));
     let r1 = host
@@ -6036,6 +6045,73 @@ async fn client_result_delivers_a_client_tool_result_and_ends_the_turn() {
     assert_eq!(
         reply, "result was sunny",
         "the delivered client result reached the model's next inference"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn durable_client_result_settles_the_authoritative_dispatch() {
+    // Cause/effect graph: C1 durable ingress; C2 a claimed Run settles Awaiting
+    // on a client-tool ticket; C3 the exact ClientResult arrives; C4 resumed work
+    // ends; C5 resumed work awaits on a new ticket. Effects: E1 input is appended
+    // to the canonical durable Inbox; E2 the Worker alone claims/resumes/settles;
+    // E3 Done removes the dispatch row; E4 Awaiting retains exactly one row; E5
+    // committed result reaches the model. Constraints: direct ingress remains the
+    // R1 path above; one ticket accepts one idempotency identity.
+    //
+    // | Rule | ingress | initial state | resume result | Effect |
+    // | R1 | direct | Awaiting | Ended | inline E1/E2 not applicable (sibling test) |
+    // | R2 | durable | Awaiting(old ticket) | Ended | E1+E2+E3+E5 |
+    // | R3 | durable | Awaiting(old ticket) | Awaiting(new ticket) | E1+E2+E4 |
+    // | R4 | durable | Awaiting(old ticket) | exact retry | one Inbox identity |
+    // R3 is owned by run-ingress worker settle tests; R4 by the resume-identity
+    // test plus each Inbox backend's idempotency-conflict conformance suite.
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("in-memory dispatch"),
+    );
+    let host = Arc::new(
+        SharedHost::new(Arc::new(ClientLookupModel), "stub")
+            .with_client_tools(HashSet::from(["lookup".to_string()]))
+            .with_dispatch_store(dispatch.clone()),
+    );
+    host.ensure_dispatch_pool();
+
+    let first = host
+        .run(None, "t-durable-client", user("hi"))
+        .await
+        .expect("durable turn awaits");
+    assert!(matches!(first.state, RunState::Awaiting), "R2 precondition");
+    let pending = first.pending.expect("client tool ticket");
+    let awaiting = dispatch
+        .list_dispatches()
+        .await
+        .expect("list awaiting dispatch");
+    assert_eq!(awaiting.len(), 1, "one durable dispatch owns the wait");
+    assert_eq!(awaiting[0].run_id, first.run_id);
+    assert_eq!(
+        awaiting[0].state,
+        awaken_run_ingress::DispatchState::Awaiting
+    );
+
+    let resumed = host
+        .resume(
+            "t-durable-client",
+            &pending.tool_use_id,
+            HostResume::ClientResult {
+                content: vec![ContentBlock::text("sunny")],
+                is_error: false,
+            },
+        )
+        .await
+        .expect("durable worker resumes the client result");
+    assert!(matches!(resumed.state, RunState::Ended(_)), "R2/E5");
+    assert!(
+        dispatch
+            .list_dispatches()
+            .await
+            .expect("list settled dispatches")
+            .iter()
+            .all(|summary| summary.run_id != resumed.run_id),
+        "R2/E3: terminal settlement removes the authoritative dispatch row"
     );
 }
 

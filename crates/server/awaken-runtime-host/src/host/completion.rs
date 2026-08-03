@@ -389,7 +389,45 @@ impl SharedHost {
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
         }
-        self.await_settled_event(ctx, &run_id, settled).await
+        self.await_settled_event(ctx, &run_id, None, settled).await
+    }
+
+    /// Deliver one foreground answer through the durable inbox and wait until the
+    /// dispatch worker settles the exact resumed ticket. The queue remains the sole
+    /// durable execution/settlement authority; this method only authors input and
+    /// observes the resulting committed Run fact.
+    pub(crate) async fn resume_durable_foreground(
+        &self,
+        ctx: &Arc<SessionCtx>,
+        command: ResumeCommand,
+    ) -> Result<RunState, HostError> {
+        let run_id = command.run_id.clone();
+        let correlation_id = command.correlation_id.clone();
+        // Register before append so a local pool cannot settle between input
+        // publication and waiter installation.
+        let (settled, _waiter_guard) = self.completion.register(&run_id);
+        let input = durable_resume_input(command);
+        let ingress = ctx
+            .durable_ingress
+            .as_ref()
+            .ok_or_else(|| HostError::internal("durable resume requires durable ingress"))?;
+        if let Some(pool) = self.dispatch_pool.get() {
+            pool.deliver(input)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
+        } else {
+            // Coordinator-only cells publish to the same shared store. Remote
+            // Workers claim it on their ordinary wake/poll path and committed-truth
+            // reconciliation below observes their settlement.
+            ingress
+                .worker()
+                .store()
+                .append(input)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
+        }
+        self.await_settled_event(ctx, &run_id, Some(&correlation_id), settled)
+            .await
     }
 
     /// Wait for the pool's settle signal for `run_id` (sub-millisecond wakeup), with
@@ -401,10 +439,11 @@ impl SharedHost {
         &self,
         ctx: &Arc<SessionCtx>,
         run_id: &RunId,
+        answered_correlation: Option<&str>,
         settled: tokio::sync::oneshot::Receiver<RunState>,
     ) -> Result<RunState, HostError> {
         await_completion_state(settled, std::time::Duration::from_millis(250), || {
-            self.read_settled_phase(ctx, run_id)
+            self.read_settled_phase(ctx, run_id, answered_correlation)
         })
         .await
     }
@@ -415,18 +454,80 @@ impl SharedHost {
         &self,
         ctx: &Arc<SessionCtx>,
         run_id: &RunId,
+        answered_correlation: Option<&str>,
     ) -> Result<Option<RunState>, HostError> {
-        match ctx
+        let record = ctx
             .commit
             .authoritative_run(run_id)
             .await
-            .map_err(HostError::internal)?
-        {
-            Some(record) if matches!(record.state, RunState::Ended(_) | RunState::Awaiting) => {
-                Ok(Some(record.state))
+            .map_err(HostError::internal)?;
+        match record {
+            Some(
+                record @ awaken_agent_contract::agent::run::Record {
+                    state: RunState::Ended(_),
+                    ..
+                },
+            ) => Ok(Some(record.state)),
+            Some(
+                record @ awaken_agent_contract::agent::run::Record {
+                    state: RunState::Awaiting,
+                    ..
+                },
+            ) => {
+                let Some(answered_correlation) = answered_correlation else {
+                    return Ok(Some(record.state));
+                };
+                // Before a remote Worker consumes the answer, committed truth is
+                // still Awaiting on the answered ticket. That is not a settlement
+                // of this resume. Only a newly committed ticket (or Ended above)
+                // releases the foreground caller.
+                let current = ctx
+                    .commit
+                    .open_wait_for_thread(&ctx.thread_id)
+                    .await
+                    .map_err(HostError::internal)?;
+                Ok(awaiting_ticket_advanced(
+                    run_id,
+                    answered_correlation,
+                    current
+                        .as_ref()
+                        .map(|(current_run, ticket)| (current_run, ticket.correlation_id.as_str())),
+                )
+                .then_some(record.state))
             }
             _ => Ok(None),
         }
+    }
+}
+
+fn awaiting_ticket_advanced(
+    observed_run: &RunId,
+    answered_correlation: &str,
+    current_wait: Option<(&RunId, &str)>,
+) -> bool {
+    current_wait.is_some_and(|(current_run, current_correlation)| {
+        current_run == observed_run && current_correlation != answered_correlation
+    })
+}
+
+/// A resume ticket is a one-answer idempotency boundary. Encoding the exact
+/// `(run, correlation)` pair with a run-length prefix is collision-free for
+/// arbitrary string contents; replaying another payload for that same ticket is
+/// rejected by the Inbox's existing idempotency-conflict rule.
+fn durable_resume_input(command: ResumeCommand) -> PendingInput {
+    let message_id = format!(
+        "foreground-resume:{}:{}{}",
+        command.run_id.0.len(),
+        command.run_id.0,
+        command.correlation_id
+    );
+    PendingInput {
+        message_id,
+        run_id: command.run_id,
+        thread_id: command.thread_id,
+        correlation_id: command.correlation_id,
+        available_at_ms: None,
+        result: command.result,
     }
 }
 
@@ -539,11 +640,17 @@ impl CompletionSink for CompletionRegistry {
 mod completion_tests {
     use super::{
         CompletionRegistry, HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, RunId,
-        await_completion_state, remote_worker_placement,
+        await_completion_state, awaiting_ticket_advanced, durable_resume_input,
+        remote_worker_placement,
     };
     use awaken_agent_contract::agent::run::RunState;
+    use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_run_ingress::CompletionSink;
-    use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
+    use awaken_runtime_contract::resolved::{
+        CatalogFingerprint, ModelBinding, ResolvedModelCandidate,
+    };
+    use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
+    use awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId;
     use std::sync::Arc;
 
     use crate::{NoModelConfiguredExecutor, SharedHost, UNCONFIGURED_MODEL_REF};
@@ -577,6 +684,75 @@ mod completion_tests {
             credential_realization:
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
         }
+    }
+
+    fn resume_command(run_id: &str, correlation_id: &str, answer: &str) -> ResumeCommand {
+        ResumeCommand {
+            correlation_id: correlation_id.into(),
+            run_id: RunId(run_id.into()),
+            thread_id: ThreadId("thread-1".into()),
+            snapshot_id: ExecutableAgentSnapshotId("snapshot-1".into()),
+            catalog_fingerprint: CatalogFingerprint("catalog-1".into()),
+            result: ResumeResult::Input(answer.into()),
+            now_ms: 10,
+        }
+    }
+
+    #[test]
+    fn durable_resume_identity_is_exactly_the_answered_ticket() {
+        // Cause/effect graph: C1 exact retry of one (Run, correlation, payload);
+        // C2 same ticket with a conflicting payload; C3 delimiter-ambiguous raw
+        // strings belonging to different tickets. Effects: E1 exact retry yields
+        // one identical PendingInput; E2 conflict keeps the same message id but a
+        // different payload so the canonical Inbox rejects it; E3 distinct ticket
+        // pairs never alias. Constraint: caller time is not delivery identity.
+        //
+        // | Rule | ticket pair | payload | Effect |
+        // | R1 | same | same | E1 identical input |
+        // | R2 | same | different | E2 same id, conflicting input |
+        // | R3 | different but delimiter-ambiguous | any | E3 different id |
+        let exact = durable_resume_input(resume_command("run-a", "corr-a", "yes"));
+        let retry = durable_resume_input(resume_command("run-a", "corr-a", "yes"));
+        assert_eq!(exact, retry, "R1");
+
+        let conflict = durable_resume_input(resume_command("run-a", "corr-a", "no"));
+        assert_eq!(exact.message_id, conflict.message_id, "R2 identity");
+        assert_ne!(exact, conflict, "R2 payload conflict");
+
+        let left = durable_resume_input(resume_command("a", "bc", "yes"));
+        let right = durable_resume_input(resume_command("ab", "c", "yes"));
+        assert_ne!(left.message_id, right.message_id, "R3");
+    }
+
+    #[test]
+    fn peer_completion_waits_for_exact_ticket_advancement() {
+        // Cause/effect graph: C1 initial durable submit vs resumed wait; C2 the
+        // committed Run is still Awaiting; C3 open ticket is the answered ticket,
+        // a new ticket, absent, or belongs to another Run. Effects: E1 old truth
+        // cannot prematurely release a resume waiter; E2 a new ticket releases it;
+        // E3 missing/inconsistent truth remains fail-closed. Ended and initial
+        // Awaiting are handled by the enclosing read-settled state match.
+        //
+        // | Rule | observed Run | current ticket | Effect |
+        // | R1 | run-1 | same correlation | E1 false |
+        // | R2 | run-1 | new correlation | E2 true |
+        // | R3 | run-1 | absent | E3 false |
+        // | R4 | run-1 | ticket for run-2 | E3 false |
+        let run_1 = RunId("run-1".into());
+        let run_2 = RunId("run-2".into());
+        assert!(
+            !awaiting_ticket_advanced(&run_1, "ticket-1", Some((&run_1, "ticket-1"))),
+            "R1"
+        );
+        assert!(
+            awaiting_ticket_advanced(&run_1, "ticket-1", Some((&run_1, "ticket-2"))),
+            "R2"
+        );
+        assert!(!awaiting_ticket_advanced(&run_1, "ticket-1", None), "R3");
+        assert!(
+            !awaiting_ticket_advanced(&run_1, "ticket-1", Some((&run_2, "ticket-2"))),
+            "R4"
+        );
     }
 
     #[test]

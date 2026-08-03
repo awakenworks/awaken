@@ -346,14 +346,14 @@ impl SharedHost {
         activation: RunActivation,
         command: ResumeCommand,
     ) -> Result<RunState, HostError> {
+        if ctx.durable {
+            return self.resume_durable_foreground(ctx, command).await;
+        }
         let run_id = activation.run_id.clone();
         *ctx.active_run.lock().expect("active run mutex poisoned") = Some(run_id.clone());
-        // Cause graph: C1 foreground resume (direct or DurableRunIngress inline),
-        // C2 snapshot pins provider/brokered access. C1+C2 must rematerialize an
-        // attempt-scoped executor (and a fresh grant when brokered). Background
-        // dispatch uses the Worker's separate claimed-resume path and never enters
-        // this method. Reusing a dropped first-step executor is neither safe nor
-        // viable after an arbitrarily long client-action wait.
+        // Direct execution rematerializes an attempt-scoped executor (and a fresh
+        // grant when brokered). Durable execution returned above and resumes only
+        // through the dispatch worker's claimed path.
         let context = self.native_attempt_context(ctx, &activation).await?;
         let result = ctx.ingress.resume(activation, command, context).await;
         {

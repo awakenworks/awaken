@@ -90,10 +90,12 @@ operator call.
   through the dispatch queue end-to-end, proven by `e2e/managed_durable_e2e.mjs`
   (durable submit through the worker, dispatch DB on disk, cross-restart
   continuity, startup `recover`).
-- Direct delivery remains the default; existing behavior and all foreground e2e
-  are unchanged. Durable HITL await→resume works because committed truth is the
-  authority; the awaiting dispatch row is settled by the foreground resume path (a
-  benign no-daemon simplification — see the deferred reconciler surface above).
+- Direct delivery remains the default. Durable HITL await→resume publishes one
+  idempotent `PendingInput` for the committed ticket; the dispatch Worker is the
+  sole resume executor and settles the same awaiting row to `Done` or `Awaiting`.
+  The foreground request only waits on the pool completion event (with an exact
+  committed-ticket advancement fallback for peer Coordinators), so it cannot
+  leave an `awaiting` dispatch behind after the Run has ended.
 - Exposing operational verbs / an autonomous reconciler daemon is a scoped
   follow-up, to be taken only alongside a feature that emits scheduled actions or
   requires out-of-band GC/supersession.
