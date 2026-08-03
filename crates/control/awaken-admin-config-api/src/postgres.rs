@@ -23,8 +23,8 @@ use tokio::runtime::{Builder, Handle, Runtime};
 
 use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError,
-    ConfigRepositoryError, InferenceProfile, InferenceProfileStore, WebhookEndpointDef,
-    WebhookStore, validate_agent_input_revision,
+    ConfigRepositoryError, InferenceProfile, InferenceProfileStore, WebhookDeliveryOutcome,
+    WebhookDeliveryState, WebhookEndpointDef, WebhookStore, validate_agent_input_revision,
 };
 
 use crate::schema::admin_bundle;
@@ -332,6 +332,48 @@ impl WebhookStore for PostgresAdminStore {
                 .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
                 .rows_affected()
                 > 0)
+        })
+    }
+
+    fn record_delivery(
+        &self,
+        id: &str,
+        outcome: WebhookDeliveryOutcome,
+        failure_threshold: u32,
+    ) -> Result<WebhookDeliveryState, ConfigRepositoryError> {
+        let pool = self.pool.clone();
+        let id = id.to_string();
+        block(&self.handle, move || async move {
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            let row = sqlx::query(&format!(
+                "SELECT data FROM {NS}_webhook WHERE id = $1 FOR UPDATE"
+            ))
+            .bind(&id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            let Some(row) = row else {
+                return Ok(WebhookDeliveryState::Missing);
+            };
+            let Json(mut definition): Json<WebhookEndpointDef> = row
+                .try_get("data")
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            let state = definition.record_delivery(outcome, failure_threshold);
+            let data = serde_json::to_value(&definition)
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            sqlx::query(&format!("UPDATE {NS}_webhook SET data = $2 WHERE id = $1"))
+                .bind(id)
+                .bind(Json(data))
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            tx.commit()
+                .await
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            Ok(state)
         })
     }
 }

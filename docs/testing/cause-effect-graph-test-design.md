@@ -730,7 +730,7 @@ C94 → E82     C96 ∧ C97 → E85(resume)     C96 ∧ ~C97 → 整步重跑   
 | C104 | AG-UI 工具结果 `error.is_some()` | ag-ui `to_resume` |
 | C105 | MCP 门裁决 Allow/Block/SetResult/(Suspend\|Schedule) | mcp `gate_verdict` |
 | C106 | Managed 会话 id 服务端铸造(跳过 `owns_thread`);archived 写(409) | managed `create_session`/`Archived` |
-| C107 | webhook 响应 2xx vs 非2xx;连败 ≥ 阈值;畸形签名密钥;SSRF/私网 | webhook `dispatch`/`validate_endpoint_url` |
+| C107 | webhook 响应 2xx vs 408/425/429/5xx vs 永久 3xx/4xx；订阅/密钥/状态权威故障；持久连败 ≥ 阈值；畸形签名密钥；SSRF/私网 | webhook `dispatch`/`WebhookStore::record_delivery`/`validate_endpoint_url` |
 | C108 | ACP 策略 `RequireConfirmation`;进程/worker 在等待期间被替换 | ACP `PermissionAwait` → durable `ResumeTicket` → one-shot resumed resolver |
 
 ### 果(E86–E95)
@@ -744,7 +744,7 @@ C94 → E82     C96 ∧ C97 → E85(resume)     C96 ∧ ~C97 → 整步重跑   
 | E90 | 跨协议共享:一 wire 起的 turn 可在同线程另一 wire 恢复/观察(单 `RunApplication`) | run_application.rs |
 | E91 | Managed 会话铸造 id `sesn_`(跳过已拥线程);create 先 provision 后 insert,fail closed;`VaultNotFound`→404 | managed sessions.rs |
 | E92 | 单一终结权威 `RunState`:Failed→投影 `RunFailed{code,message}`(防丢错静默空收尾) | run_application.rs |
-| E93 | webhook 签名重试投递(Standard-Webhooks 头,稳定 `webhook-id`);2xx→delivered,非2xx→failed 重试;≥阈值→自动禁用 | webhook dispatch |
+| E93 | webhook 签名投递(Standard-Webhooks 头,稳定 `webhook-id`)；2xx→delivered+持久清零；408/425/429/5xx/网络→有界重试并保留 outbox；永久 3xx/4xx→单次 rejected；持久连败达阈值→原子禁用 | webhook dispatch + config-plane source |
 | E94 | webhook 投递期 SSRF 守卫:解析并钉全局可路由,拒 loopback/非https | `ReqwestSender::guarded` |
 | E95 | `session.error`(`SessionError::classify`)于 `outcome.failure`;生命周期扇出 IDLED/TERMINATED/DELETED | managed events.rs |
 | E96 | ACP permission 请求提交 `ToolPermission` await 并释放进程/租约;恢复仅对 ticket 固定 call id 应用一次裁决 | acp executor permission replacement e2e |
@@ -753,7 +753,9 @@ C94 → E82     C96 ∧ C97 → E85(resume)     C96 ∧ ~C97 → 整步重跑   
 
 ```
 C98 → E86     C99 → E87     C100 → E88     C101 → E89     C102(共享) → E90
-C105=Block/Suspend → is_error(遮蔽执行)     C106 → E91     C107=2xx → delivered / 非2xx → 重试(E93)     C107=SSRF → E94(拒 POST)
+C105=Block/Suspend → is_error(遮蔽执行)     C106 → E91
+C107=2xx → delivered / 可重试故障 → retry+pending / 永久响应 → rejected / 权威故障 → outbox pending(E93)
+C107=SSRF → E94(拒 POST)
 C108 → E96
 ```
 
@@ -763,7 +765,6 @@ C108 → E96
   - **A2A 无流式/推送**——card `streaming=false,push_notifications=false`;`Working/InputRequired/AuthRequired` 遮为 `Indeterminate`(无法轮询/await)。
   - **AG-UI 错误通道仅单串**——拒绝/错误只经 `ToolMessage.error` 表达,无结构化故障通道。
   - **MCP `Suspend`/`Schedule` 遮蔽**——外部客户端无 await run,fail closed 为模型可见 `is_error`。
-  - **webhook 重试遮蔽**——唯一成功谓词是 `2xx`;永久 4xx(404/410/422)如瞬态 5xx 般重试到耗尽;`300` 非 2xx 亦重试。
 
 ### 判定表 M12
 
@@ -777,7 +778,7 @@ C108 → E96
 | C104 AG-UI error | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 |
 | C105 MCP Suspend | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 |
 | C106 Managed archived 写 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 |
-| C107 webhook 非2xx | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
+| C107 webhook 状态/权威故障 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
 | C107 webhook SSRF | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
 | **E86 中止→Cancelled** | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | **E87 RateLimited** | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
@@ -787,7 +788,7 @@ C108 → E96
 | **AG-UI 拒(仅 error 串)** | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 |
 | **MCP Suspend→is_error** | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 |
 | **E91 archived→409** | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 |
-| **E93 failed 重试** | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
+| **E93 分类/持久计数/pending** | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 |
 | **E94 SSRF 拒 POST** | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
 
 ---
@@ -1022,7 +1023,7 @@ FMECA。评分是变更审查时使用的相对优先级，不是现场故障率
 变化后旧执行者失去提交权；恢复只读取 durable authority，不从临时投影反推。
 ```
 
-### 端到端 FMECA（EF24–EF43 续表见[集成判定表](./end-to-end-integration-decision-table.md)）
+### 端到端 FMECA（EF24–EF48 续表见[集成判定表](./end-to-end-integration-decision-table.md)）
 
 | ID | 流程失效模式与系统影响 | 现有消解/处理 | 判定表与测试证据 | S/O/D/RPN |
 |---|---|---|---|---|
@@ -1169,8 +1170,8 @@ M1–M15 判定表为唯一测试设计来源。
 | `awaken-run-executor-a2a` | 子进程断线/退出码误映射 → 错 settle | supervised process、typed exit/recovery；直接，M12 | 4/1/2/8 |
 | `awaken-run-executor-acp` | ACP 子进程握手/stdio/secret 投影失败，或跨 Run 消息 ID 冲突 → Run 卡住、泄密或后续回复被吞 | official ACP default、typed secret、supervision、Run-scoped fact id；直接，ACP real/deterministic/EF13 | 5/1/1/5 |
 | `awaken-runtime-host` | 组装错误、direct/durable attempt context 分叉、MCP relay/credential admission 绕过 → 内容不受控或系统级泄漏 | 单 composition root；唯一 attempt-context decorator 解析 subject×consent×sink；generation relay、capability conjunction；直接+真实擦除 E2E，M16/G42/G43 | 5/1/2/10 |
-| `awaken-webhook-managed` | lifecycle 与 subscription scope 错配 → 跨域通知 | guard→Workspace mapping、single dispatcher；直接，M12 | 5/1/1/5 |
-| `awaken-webhook` | SSRF、签名错误、永久失败无限重试 → 泄漏/风暴 | URL policy、HMAC、retry classification；直接，M12 | 5/1/1/5 |
+| `awaken-webhook-managed` | lifecycle 与 subscription scope 错配，或仓库/密钥错误被遮为空集合 → 跨域通知或静默漏事件 | guard→Workspace mapping；fallible source；唯一 durable outbox/dispatcher；直接，M12/M29 | 5/1/1/5 |
+| `awaken-webhook` | SSRF、签名错误、永久失败重试风暴、进程重启清空禁用计数 | URL policy、HMAC、唯一 status classifier、状态回写 SubscriptionSource；直接+真实 HTTP，M12/M29 | 5/1/1/5 |
 | `awaken-worker-registry` | heartbeat/replacement 竞态或重启丢 tombstone → 调度到死 Worker/旧身份历史消失 | incarnation+lease、monotonic replacement、SQLite/PG reopen conformance；Memory 仅 test-support；直接，F5/EF41 | 6/1/1/6 |
 | `awaken-worker-transport-security` | 签名重放/错误 trust domain → 冒充 Worker | timestamp/nonce/signature/trust store；直接，F5 | 5/1/1/5 |
 | `awaken-acp-contract` | capability fingerprint 非确定或 probe 错误丢信息 → 错兼容判断 | 顺序归一 fingerprint、serde roundtrip；直接新增判定表 | 4/1/1/4 |

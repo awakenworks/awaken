@@ -17,15 +17,17 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_agent_contract::RedactedString;
-use awaken_config_resolver::{WebhookEndpointDef, WebhookStore};
+use awaken_config_resolver::{
+    WebhookDeliveryOutcome, WebhookDeliveryState, WebhookEndpointDef, WebhookStore,
+};
 use awaken_credential_vault::{SecretRef, SecretStore};
 use awaken_session_contract::{
     ManagedLifecycleFact, ManagedSessionRepository, SessionLifecycleSink,
 };
 use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::{
-    ReqwestSender, ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookEvent,
-    WebhookSender, generate_secret,
+    ReqwestSender, ResolvedSubscription, SubscriptionFailureState, SubscriptionSource,
+    WebhookDispatcher, WebhookEvent, WebhookSender, generate_secret,
 };
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -93,7 +95,11 @@ impl LifecycleFactDelivery for ConfigPlaneLifecycleDelivery {
             workspace_id,
             self.org_id.clone(),
         );
-        let report = self.dispatcher.dispatch(&event, fact.timestamp).await;
+        let report = self
+            .dispatcher
+            .dispatch(&event, fact.timestamp)
+            .await
+            .map_err(|error| error.to_string())?;
         if report.failed.is_empty() {
             Ok(())
         } else {
@@ -294,30 +300,57 @@ impl ConfigPlaneSubscriptionSource {
 
 #[async_trait::async_trait]
 impl SubscriptionSource for ConfigPlaneSubscriptionSource {
-    async fn matching(&self, workspace_id: &str, event_type: &str) -> Vec<ResolvedSubscription> {
+    async fn matching(
+        &self,
+        workspace_id: &str,
+        event_type: &str,
+    ) -> Result<Vec<ResolvedSubscription>, String> {
         let mut out = Vec::new();
-        for def in self.store.list(workspace_id).unwrap_or_default() {
+        for def in self
+            .store
+            .list(workspace_id)
+            .map_err(|error| error.to_string())?
+        {
             if def.disabled || !def.wants(event_type) {
                 continue;
             }
-            // An unresolvable secret can never sign — skip the endpoint this dispatch.
-            let Ok(secret) = self.secrets.get(&def.secret_ref).await else {
-                continue;
-            };
+            // A missing/unavailable secret authority is not an empty subscription:
+            // falsely omitting the row would retire the durable event. Keep the
+            // outbox fact pending until the authoritative material is recoverable
+            // or an operator disables/deletes the subscription.
+            let secret =
+                self.secrets.get(&def.secret_ref).await.map_err(|error| {
+                    format!("could not resolve subscription {}: {error}", def.id)
+                })?;
             out.push(ResolvedSubscription {
                 id: def.id,
                 url: def.url,
                 secret: secret.expose_secret().to_string(),
             });
         }
-        out
+        Ok(out)
     }
 
-    async fn disable(&self, id: &str) {
-        if let Ok(Some(mut def)) = self.store.get(id) {
-            def.disabled = true;
-            let _ = self.store.put(def);
-        }
+    async fn record_success(&self, id: &str) -> Result<(), String> {
+        self.store
+            .record_delivery(id, WebhookDeliveryOutcome::Succeeded, 1)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    async fn record_failure(
+        &self,
+        id: &str,
+        failure_threshold: u32,
+    ) -> Result<SubscriptionFailureState, String> {
+        self.store
+            .record_delivery(id, WebhookDeliveryOutcome::Failed, failure_threshold)
+            .map(|state| match state {
+                WebhookDeliveryState::Active { .. } => SubscriptionFailureState::Active,
+                WebhookDeliveryState::Disabled { .. } => SubscriptionFailureState::Disabled,
+                WebhookDeliveryState::Missing => SubscriptionFailureState::Removed,
+            })
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -464,7 +497,15 @@ async fn put_subscription(
             workspace_id: existing.workspace_id,
             url,
             event_types,
-            disabled: existing.disabled,
+            disabled: body
+                .get("disabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(existing.disabled),
+            consecutive_failures: if body.get("disabled").and_then(Value::as_bool) == Some(false) {
+                0
+            } else {
+                existing.consecutive_failures
+            },
             secret_ref: existing.secret_ref,
         };
         if state.store.put(updated.clone()).is_err() {
@@ -501,6 +542,7 @@ async fn put_subscription(
         url: url.clone(),
         event_types: event_types.clone(),
         disabled: false,
+        consecutive_failures: 0,
         secret_ref,
     };
     if state.store.put(def).is_err() {
@@ -590,7 +632,8 @@ pub fn assemble_with_session_repo(
 /// guarded production posture pins to globally-routable addresses and rejects a
 /// `127.0.0.1` endpoint at both admission and delivery, so an in-process e2e (its
 /// receiver is a real loopback axum server) wires this instead. Never the production
-/// path — [`assemble`] is.
+/// path — [`assemble_with_session_repo`] is.
+#[cfg(feature = "test-support")]
 pub fn assemble_loopback(
     store: Arc<dyn WebhookStore>,
     secrets: Arc<dyn SecretStore>,

@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use awaken_webhook::{
-    ReqwestSender, ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookEvent,
-    verify,
+    ReqwestSender, ResolvedSubscription, SubscriptionFailureState, SubscriptionSource,
+    WebhookDispatcher, WebhookEvent, verify,
 };
 use axum::{Router, extract::State, http::HeaderMap, routing::post};
 use tokio::io::AsyncReadExt;
@@ -24,10 +24,19 @@ const SECRET: &str = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"; // awaken-allow: 
 struct OneSub(ResolvedSubscription);
 #[async_trait::async_trait]
 impl SubscriptionSource for OneSub {
-    async fn matching(&self, _ws: &str, _event: &str) -> Vec<ResolvedSubscription> {
-        vec![self.0.clone()]
+    async fn matching(&self, _ws: &str, _event: &str) -> Result<Vec<ResolvedSubscription>, String> {
+        Ok(vec![self.0.clone()])
     }
-    async fn disable(&self, _id: &str) {}
+    async fn record_success(&self, _id: &str) -> Result<(), String> {
+        Ok(())
+    }
+    async fn record_failure(
+        &self,
+        _id: &str,
+        _failure_threshold: u32,
+    ) -> Result<SubscriptionFailureState, String> {
+        Ok(SubscriptionFailureState::Active)
+    }
 }
 
 /// What the receiver captured from a delivery.
@@ -90,7 +99,7 @@ async fn a_committed_fact_is_delivered_signed_and_scoped_to_a_real_receiver() {
     );
     let ts = 1_752_000_000_i64;
     let dispatcher = WebhookDispatcher::new(source, Arc::new(ReqwestSender::default()));
-    let report = dispatcher.dispatch(&event, ts).await;
+    let report = dispatcher.dispatch(&event, ts).await.unwrap();
     assert_eq!(
         report.delivered,
         vec!["wh_e2e".to_string()],
@@ -198,7 +207,8 @@ async fn real_http_429_is_retried_and_a_later_204_retires_the_delivery() {
     .await;
     let report = dispatcher(url, Duration::from_secs(1), 3)
         .dispatch(&event("event_429"), 1_752_000_000)
-        .await;
+        .await
+        .unwrap();
     assert_eq!(report.delivered, vec!["wh_fault"]);
     assert!(report.failed.is_empty());
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
@@ -210,7 +220,8 @@ async fn real_http_500_exhausts_the_attempt_budget_and_stays_failed() {
         serve_status_sequence(vec![axum::http::StatusCode::INTERNAL_SERVER_ERROR]).await;
     let report = dispatcher(url, Duration::from_secs(1), 3)
         .dispatch(&event("event_500"), 1_752_000_000)
-        .await;
+        .await
+        .unwrap();
     assert!(report.delivered.is_empty());
     assert_eq!(report.failed, vec!["wh_fault"]);
     assert_eq!(attempts.load(Ordering::SeqCst), 3);
@@ -232,7 +243,8 @@ async fn a_hung_receiver_is_bounded_by_the_attempt_timeout() {
     let started = tokio::time::Instant::now();
     let report = dispatcher(url, Duration::from_millis(40), 2)
         .dispatch(&event("event_timeout"), 1_752_000_000)
-        .await;
+        .await
+        .unwrap();
     assert_eq!(report.failed, vec!["wh_fault"]);
     assert!(
         started.elapsed() < Duration::from_secs(1),
@@ -273,7 +285,8 @@ async fn response_loss_retries_with_the_same_webhook_identity() {
     });
     let report = dispatcher(url, Duration::from_secs(1), 2)
         .dispatch(&event("event_response_lost"), 1_752_000_000)
-        .await;
+        .await
+        .unwrap();
     assert_eq!(report.failed, vec!["wh_fault"]);
     assert_eq!(
         seen.lock().unwrap().clone(),
@@ -282,4 +295,20 @@ async fn response_loss_retries_with_the_same_webhook_identity() {
             "event_response_lost".to_string()
         ]
     );
+}
+
+#[tokio::test]
+async fn real_http_permanent_4xx_is_not_retried() {
+    // Cause/effect decision table (real transport): R1 429 then 204 -> retry then
+    // retire; R2 persistent 500 -> exhaust and pending; R3 persistent 404 -> one
+    // attempt and terminal rejection. This case owns R3 and proves the reqwest
+    // status reaches the canonical dispatcher classifier unchanged.
+    let (url, attempts) = serve_status_sequence(vec![axum::http::StatusCode::NOT_FOUND]).await;
+    let report = dispatcher(url, Duration::from_secs(1), 3)
+        .dispatch(&event("event_404"), 1_752_000_000)
+        .await
+        .unwrap();
+    assert!(report.failed.is_empty(), "R3 is not retry-pending");
+    assert_eq!(report.rejected, vec!["wh_fault"], "R3");
+    assert_eq!(attempts.load(Ordering::SeqCst), 1, "R3");
 }

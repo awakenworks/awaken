@@ -9,15 +9,21 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
-use awaken_config_resolver::{WebhookEndpointDef, WebhookStore};
+use awaken_config_resolver::{
+    WebhookDeliveryOutcome, WebhookDeliveryState, WebhookEndpointDef, WebhookStore,
+};
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
 use awaken_session_contract::{
     ManagedLifecycleFact, ManagedSessionRepository, PersistedSession, SessionLifecycleSink,
 };
 use awaken_tenancy::WorkspaceScope;
-use awaken_webhook::{ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookSender};
+use awaken_webhook::{
+    ResolvedSubscription, SubscriptionFailureState, SubscriptionSource, WebhookDispatcher,
+    WebhookSender,
+};
 use awaken_webhook_managed::{
-    ConfigPlaneSubscriptionSource, WebhookLifecycleSink, webhook_config_router,
+    ConfigPlaneSubscriptionSource, WebhookLifecycleSink, config_plane_lifecycle_delivery,
+    webhook_config_router,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -141,6 +147,19 @@ impl WebhookStore for MemStore {
     fn delete(&self, id: &str) -> Result<bool, awaken_config_resolver::ConfigRepositoryError> {
         Ok(MemStore::delete(self, id))
     }
+    fn record_delivery(
+        &self,
+        id: &str,
+        outcome: WebhookDeliveryOutcome,
+        failure_threshold: u32,
+    ) -> Result<WebhookDeliveryState, awaken_config_resolver::ConfigRepositoryError> {
+        let mut rows = self.0.lock().unwrap();
+        Ok(rows
+            .get_mut(id)
+            .map_or(WebhookDeliveryState::Missing, |definition| {
+                definition.record_delivery(outcome, failure_threshold)
+            }))
+    }
 }
 
 /// An in-memory secret vault. `failing` makes every `put` return a storage fault,
@@ -198,6 +217,7 @@ fn seed(store: &MemStore, id: &str, ws: &str) {
         url: "https://old.example/hook".into(),
         event_types: vec!["run.completed".into()],
         disabled: false,
+        consecutive_failures: 0,
         secret_ref: SecretRef(format!("whsec:{id}")),
     });
 }
@@ -394,6 +414,7 @@ async fn update_in_place_preserves_the_sealed_secret() {
         url: "https://old.example/hook".into(),
         event_types: vec![],
         disabled: true,
+        consecutive_failures: 7,
         secret_ref: SecretRef("whsec:original".into()),
     });
     let (status, body) = call(
@@ -415,6 +436,40 @@ async fn update_in_place_preserves_the_sealed_secret() {
         "sealed secret preserved"
     );
     assert!(row.disabled, "disabled flag preserved across an update");
+    assert_eq!(row.consecutive_failures, 7, "failure state is preserved");
+}
+
+#[tokio::test]
+async fn an_operator_can_reenable_an_auto_disabled_subscription() {
+    // Cause/effect graph: C1 existing disabled row; C2 PUT omits `disabled`; C3
+    // PUT explicitly sets false. Effects E1 preserve disabled/count (covered by
+    // `update_in_place...`); E2 re-enable and reset count while preserving secret.
+    // Decision rule R2=C1∧C3 -> E2 closes the auto-disable recovery loop.
+    let store = Arc::new(MemStore::default());
+    store.put(WebhookEndpointDef {
+        id: "wh1".into(),
+        workspace_id: "ws_a".into(),
+        url: "https://old.example/hook".into(),
+        event_types: vec![],
+        disabled: true,
+        consecutive_failures: 20,
+        secret_ref: SecretRef("whsec:original".into()),
+    });
+    let (status, body) = call(
+        store.clone(),
+        Arc::new(MemSecrets::ok()),
+        "PUT",
+        "/v1/config/webhook-subscriptions/wh1",
+        Some("ws_a"),
+        Some(json!({ "url": "https://fixed.example/hook", "disabled": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R2");
+    assert_eq!(body["disabled"], false, "R2");
+    let row = store.get("wh1").unwrap();
+    assert!(!row.disabled, "R2");
+    assert_eq!(row.consecutive_failures, 0, "R2");
+    assert_eq!(row.secret_ref.0, "whsec:original", "R2");
 }
 
 #[tokio::test]
@@ -483,6 +538,7 @@ async fn seed_resolvable(
         url: "https://x.example/hook".into(),
         event_types: types.iter().map(|s| s.to_string()).collect(),
         disabled: false,
+        consecutive_failures: 0,
         secret_ref,
     });
 }
@@ -501,7 +557,8 @@ async fn matching_resolves_an_enabled_subscription_with_its_secret() {
     seed_resolvable(&store, &secrets, "wh1", "ws_a", &["run.completed"]).await;
     let out = source(store, secrets)
         .matching("ws_a", "run.completed")
-        .await;
+        .await
+        .unwrap();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].id, "wh1");
     assert!(
@@ -511,18 +568,41 @@ async fn matching_resolves_an_enabled_subscription_with_its_secret() {
 }
 
 #[tokio::test]
-async fn matching_skips_a_subscription_whose_secret_is_unresolvable() {
+async fn matching_fails_closed_when_a_subscription_secret_is_unresolvable() {
+    // Cause/effect graph: C1 matching durable row; C2 secret material absent;
+    // E1 source error; E2 caller keeps the lifecycle outbox fact pending. Decision
+    // rule R1=C1∧C2 -> E1 (never an empty match set that would imply delivery).
     let store = Arc::new(MemStore::default());
     let secrets = Arc::new(MemSecrets::ok());
-    // Row present, but its secret was never sealed → unsignable → skipped.
+    // Row present, but its secret was never sealed.
     seed(&store, "wh1", "ws_a");
-    let out = source(store, secrets)
+    let error = source(store, secrets)
         .matching("ws_a", "run.completed")
-        .await;
+        .await
+        .unwrap_err();
     assert!(
-        out.is_empty(),
-        "an endpoint that can never sign is not delivered to"
+        error.contains("wh1") && error.contains("not found"),
+        "R1 reports the affected subscription without leaking material: {error}"
     );
+
+    let store = Arc::new(MemStore::default());
+    seed(&store, "wh1", "ws_a");
+    let delivery = config_plane_lifecycle_delivery(
+        store as Arc<dyn WebhookStore>,
+        Arc::new(MemSecrets::ok()) as Arc<dyn SecretStore>,
+        None,
+    );
+    let error = delivery
+        .deliver(&ManagedLifecycleFact {
+            id: "event_missing_secret".into(),
+            object_id: "sesn_1".into(),
+            workspace_id: Some("ws_a".into()),
+            event_type: "run.completed".into(),
+            timestamp: 1,
+        })
+        .await
+        .unwrap_err();
+    assert!(error.contains("wh1"), "R1/E2: {error}");
 }
 
 #[tokio::test]
@@ -538,7 +618,8 @@ async fn matching_skips_disabled_and_type_mismatched_subscriptions() {
 
     let out = source(store, secrets)
         .matching("ws_a", "run.completed")
-        .await;
+        .await
+        .unwrap();
     let ids: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(
         ids,
@@ -548,15 +629,35 @@ async fn matching_skips_disabled_and_type_mismatched_subscriptions() {
 }
 
 #[tokio::test]
-async fn disable_flips_the_row_in_the_store() {
+async fn delivery_results_persist_failure_disable_and_success_reset() {
+    // Cause/effect decision table: R1 failure below threshold -> durable count 1,
+    // active; R2 next failure at threshold -> disabled; R3 success on an active
+    // endpoint -> count reset. This proves the adapter delegates to the one store
+    // transition rather than maintaining a process-local counter.
     let store = Arc::new(MemStore::default());
     let secrets = Arc::new(MemSecrets::ok());
     seed_resolvable(&store, &secrets, "wh1", "ws_a", &[]).await;
-    source(store.clone(), secrets).disable("wh1").await;
+    let source = source(store.clone(), secrets);
+    assert_eq!(
+        source.record_failure("wh1", 2).await.unwrap(),
+        SubscriptionFailureState::Active,
+        "R1"
+    );
+    assert_eq!(store.get("wh1").unwrap().consecutive_failures, 1, "R1");
+    assert_eq!(
+        source.record_failure("wh1", 2).await.unwrap(),
+        SubscriptionFailureState::Disabled,
+        "R2"
+    );
     assert!(
         store.get("wh1").unwrap().disabled,
-        "auto-disable is a config-plane write"
+        "R2: auto-disable is a config-plane write"
     );
+
+    seed_resolvable(&store, &MemSecrets::ok(), "wh2", "ws_a", &[]).await;
+    source.record_failure("wh2", 2).await.unwrap();
+    source.record_success("wh2").await.unwrap();
+    assert_eq!(store.get("wh2").unwrap().consecutive_failures, 0, "R3");
 }
 
 // --- WebhookLifecycleSink: the no-owner early return ---
@@ -564,11 +665,20 @@ async fn disable_flips_the_row_in_the_store() {
 struct CountingSource(Arc<Mutex<u32>>);
 #[async_trait]
 impl SubscriptionSource for CountingSource {
-    async fn matching(&self, _ws: &str, _event: &str) -> Vec<ResolvedSubscription> {
+    async fn matching(&self, _ws: &str, _event: &str) -> Result<Vec<ResolvedSubscription>, String> {
         *self.0.lock().unwrap() += 1;
-        Vec::new()
+        Ok(Vec::new())
     }
-    async fn disable(&self, _id: &str) {}
+    async fn record_success(&self, _id: &str) -> Result<(), String> {
+        Ok(())
+    }
+    async fn record_failure(
+        &self,
+        _id: &str,
+        _failure_threshold: u32,
+    ) -> Result<SubscriptionFailureState, String> {
+        Ok(SubscriptionFailureState::Active)
+    }
 }
 
 struct NoopSender;
@@ -612,14 +722,23 @@ impl WebhookSender for RecordingSender {
 struct OneSubSource(String);
 #[async_trait]
 impl SubscriptionSource for OneSubSource {
-    async fn matching(&self, _ws: &str, _event: &str) -> Vec<ResolvedSubscription> {
-        vec![ResolvedSubscription {
+    async fn matching(&self, _ws: &str, _event: &str) -> Result<Vec<ResolvedSubscription>, String> {
+        Ok(vec![ResolvedSubscription {
             id: "wh1".into(),
             url: "https://x.example/hook".into(),
             secret: self.0.clone(),
-        }]
+        }])
     }
-    async fn disable(&self, _id: &str) {}
+    async fn record_success(&self, _id: &str) -> Result<(), String> {
+        Ok(())
+    }
+    async fn record_failure(
+        &self,
+        _id: &str,
+        _failure_threshold: u32,
+    ) -> Result<SubscriptionFailureState, String> {
+        Ok(SubscriptionFailureState::Active)
+    }
 }
 
 struct CountingStatusSender {

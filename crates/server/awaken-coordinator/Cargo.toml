@@ -96,7 +96,7 @@ awaken-tool-relay.workspace = true
 awaken-connection-plan.workspace = true
 # Webhook plane (ADR-0048 / S10): the WebhookLifecycleSink bridges the managed
 # session lifecycle to the neutral dispatcher; the CRUD router manages
-# workspace-scoped subscriptions. Env-gated by AWAKEN_WEBHOOK_DIR.
+# workspace-scoped subscriptions over the injected durable admin store/vault.
 awaken-webhook = { workspace = true }
 awaken-webhook-managed = { workspace = true }
 async-trait.workspace = true
@@ -128,6 +128,8 @@ test-support = [
     "awaken-dream-application/test-support",
     "awaken-runtime-host/test-support",
     "awaken-worker-registry/test-support",
+    "awaken-webhook/test-support",
+    "awaken-webhook-managed/test-support",
 ]
 # Cross-node dispatch wake over NATS (AWAKEN_DISPATCH_WAKE=nats). Passes through to
 # awaken-runtime-host → awaken-run-ingress so the built binary carries a NATS-capable
@@ -143,6 +145,8 @@ container-podman = ["awaken-runtime-host/container-podman"]
 container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
+awaken-webhook = { workspace = true, features = ["test-support"] }
+awaken-webhook-managed = { workspace = true, features = ["test-support"] }
 awaken-worker-registry = { workspace = true, features = ["test-support"] }
 awaken-captured-content-store = { workspace = true, features = ["test-support"] }
 awaken-config-resolver = { workspace = true, features = ["test-support"] }

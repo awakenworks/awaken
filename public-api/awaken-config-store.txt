@@ -219,7 +219,6 @@ pub fn awaken_config_store::ScopedConfig<S>::put_publication_if_config_revision<
 pub struct awaken_config_store::SqliteConfigStore
 impl awaken_config_store::SqliteConfigStore
 pub fn awaken_config_store::SqliteConfigStore::open(&str) -> core::result::Result<Self, awaken_config_store::SqliteStoreError>
-pub fn awaken_config_store::SqliteConfigStore::open_in_memory() -> core::result::Result<Self, awaken_config_store::SqliteStoreError>
 impl awaken_config_store::ConfigRegistry for awaken_config_store::SqliteConfigStore
 pub fn awaken_config_store::SqliteConfigStore::get_config<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_config_store::AgentConfig>, awaken_config_store::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_config_store::SqliteConfigStore::get_config_revision<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_config_store::AgentConfigRevision>, awaken_config_store::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

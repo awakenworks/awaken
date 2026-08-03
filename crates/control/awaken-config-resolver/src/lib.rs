@@ -47,8 +47,9 @@ pub use reference_stores::{
 };
 pub use stores::{
     AgentInputBindingRepository, AgentInputRepositoryError, ConfigRepositoryError,
-    InferenceProfileStore, WebhookStore, get_workspace_profile, put_workspace_profile,
-    validate_agent_input_revision, workspace_profile_key,
+    InferenceProfileStore, WebhookDeliveryOutcome, WebhookDeliveryState, WebhookStore,
+    get_workspace_profile, put_workspace_profile, validate_agent_input_revision,
+    workspace_profile_key,
 };
 pub use telemetry::{RedactionMode, TelemetryCeiling};
 
@@ -665,6 +666,11 @@ pub struct WebhookEndpointDef {
     pub event_types: Vec<String>,
     /// Delivery suspended (manual, or auto after repeated failures).
     pub disabled: bool,
+    /// Consecutive event deliveries that did not receive a 2xx acknowledgement.
+    /// This is durable operational state rather than dispatcher-local memory, so
+    /// auto-disable remains correct across process restarts and Control replicas.
+    #[serde(default)]
+    pub consecutive_failures: u32,
     /// Handle to the sealed `whsec_` signing secret in the [`SecretStore`] — never
     /// the secret itself, never echoed after create.
     pub secret_ref: SecretRef,
@@ -675,6 +681,36 @@ impl WebhookEndpointDef {
     #[must_use]
     pub fn wants(&self, event_type: &str) -> bool {
         self.event_types.is_empty() || self.event_types.iter().any(|t| t == event_type)
+    }
+
+    /// Apply the canonical delivery-state transition. Store adapters call this
+    /// while holding their own atomic write boundary; keeping the transition here
+    /// prevents memory, SQLite, and Postgres from acquiring competing semantics.
+    pub fn record_delivery(
+        &mut self,
+        outcome: WebhookDeliveryOutcome,
+        failure_threshold: u32,
+    ) -> WebhookDeliveryState {
+        match outcome {
+            WebhookDeliveryOutcome::Succeeded => {
+                self.consecutive_failures = 0;
+            }
+            WebhookDeliveryOutcome::Failed => {
+                self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+                if self.consecutive_failures >= failure_threshold.max(1) {
+                    self.disabled = true;
+                }
+            }
+        }
+        if self.disabled {
+            WebhookDeliveryState::Disabled {
+                consecutive_failures: self.consecutive_failures,
+            }
+        } else {
+            WebhookDeliveryState::Active {
+                consecutive_failures: self.consecutive_failures,
+            }
+        }
     }
 }
 
@@ -1827,6 +1863,7 @@ mod tests {
                 url: "https://x/hook".into(),
                 event_types: types.iter().map(|s| (*s).to_string()).collect(),
                 disabled: false,
+                consecutive_failures: 0,
                 secret_ref: SecretRef("whsec".into()),
             }
         }

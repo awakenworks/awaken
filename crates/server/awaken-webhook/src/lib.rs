@@ -17,8 +17,8 @@ mod signing;
 mod url_guard;
 
 pub use dispatch::{
-    DispatchReport, ReqwestSender, ResolvedSubscription, SubscriptionSource, WebhookDispatcher,
-    WebhookSender,
+    DispatchError, DispatchReport, ReqwestSender, ResolvedSubscription, SubscriptionFailureState,
+    SubscriptionSource, WebhookDispatcher, WebhookSender,
 };
 pub use event::{WebhookEvent, WebhookEventData};
 pub use signing::{

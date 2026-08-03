@@ -10,7 +10,8 @@ use std::sync::Mutex;
 
 use crate::stores::{
     AgentInputBindingRepository, AgentInputRepositoryError, ConfigRepositoryError,
-    InferenceProfileStore, WebhookStore, validate_agent_input_revision,
+    InferenceProfileStore, WebhookDeliveryOutcome, WebhookDeliveryState, WebhookStore,
+    validate_agent_input_revision,
 };
 use crate::{AgentInputConfig, InferenceProfile, WebhookEndpointDef};
 
@@ -95,6 +96,23 @@ impl WebhookStore for InMemoryWebhookStore {
             .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?
             .remove(id)
             .is_some())
+    }
+
+    fn record_delivery(
+        &self,
+        id: &str,
+        outcome: WebhookDeliveryOutcome,
+        failure_threshold: u32,
+    ) -> Result<WebhookDeliveryState, ConfigRepositoryError> {
+        let mut endpoints = self
+            .endpoints
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("webhook store mutex poisoned".into()))?;
+        Ok(endpoints
+            .get_mut(id)
+            .map_or(WebhookDeliveryState::Missing, |definition| {
+                definition.record_delivery(outcome, failure_threshold)
+            }))
     }
 }
 

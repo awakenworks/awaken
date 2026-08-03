@@ -66,6 +66,8 @@ CREDENTIAL_REPO_SOURCE = "crates/control/awaken-credential-vault/src/repo.rs"
 CREDENTIAL_VAULT_SOURCE = "crates/control/awaken-credential-vault/src/lib.rs"
 CREDENTIAL_SQLITE_SOURCE = "crates/control/awaken-credential-vault/src/sqlite.rs"
 CREDENTIAL_SEALED_SOURCE = "crates/control/awaken-credential-vault/src/sealed.rs"
+WEBHOOK_DISPATCH_SOURCE = "crates/server/awaken-webhook/src/dispatch.rs"
+WEBHOOK_MANAGED_SOURCE = "crates/server/awaken-webhook-managed/src/lib.rs"
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -397,6 +399,24 @@ NON_PRODUCT_APIS = (
         CREDENTIAL_REPO_SOURCE,
         r"\bpub\s+struct\s+InMemoryCredentialRepo\b",
         TEST_SUPPORT_GATE,
+    ),
+    (
+        "ReqwestSender::Default permissive transport",
+        WEBHOOK_DISPATCH_SOURCE,
+        r"\bimpl\s+Default\s+for\s+ReqwestSender\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "ReqwestSender::with_timeout permissive transport",
+        WEBHOOK_DISPATCH_SOURCE,
+        r"\bpub\s+fn\s+with_timeout\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "webhook assemble_loopback",
+        WEBHOOK_MANAGED_SOURCE,
+        r"\bpub\s+fn\s+assemble_loopback\b",
+        FEATURE_TEST_SUPPORT_GATE,
     ),
     (
         "InMemorySealedBlobStore",
@@ -787,7 +807,8 @@ def selftest() -> None:
     migration acquisition -> rejected; O15 every volatile Host API is test-support
     gated -> accepted; O16 one missing Host gate -> rejected; O17 all canonical
     CLI scenario/restart helpers, File/Memory/Skill/Resource/Environment volatile
-    entrypoints, and the ephemeral Resources assembler are test-support gated ->
+    entrypoints, the ephemeral Resources assembler, and permissive webhook
+    loopback transport are test-support gated ->
     accepted; O18 any one gate missing -> rejected; O19 product defaults/normal
     edges do not enable test-support ->
     accepted; O20 a product default, top-level normal edge, or target-conditioned
@@ -988,6 +1009,11 @@ def selftest() -> None:
         + any_gate
         + "pub fn open_in_memory() {}",
         CREDENTIAL_SEALED_SOURCE: any_gate + "pub fn with_key() {}",
+        WEBHOOK_DISPATCH_SOURCE: any_gate
+        + "impl Default for ReqwestSender {}\n"
+        + any_gate
+        + "pub fn with_timeout() {}",
+        WEBHOOK_MANAGED_SOURCE: feature_gate + "pub fn assemble_loopback() {}",
     }
     assert non_product_surface_violations(volatile_surfaces) == []  # O17
     for label, path, declaration, gate in NON_PRODUCT_APIS:

@@ -24,3 +24,13 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "ti
 [dev-dependencies]
 # e2e: a real axum receiver on an ephemeral port verifies the delivered signature.
 axum = { version = "0.8", features = [] }
+
+[features]
+default = []
+# Permissive loopback sender constructors exist only for real-HTTP integration
+# tests. Product builds expose only `ReqwestSender::guarded`.
+test-support = []
+
+[[test]]
+name = "webhook_e2e"
+required-features = ["test-support"]

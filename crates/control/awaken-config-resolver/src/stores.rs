@@ -9,6 +9,23 @@
 
 use crate::{AgentInputConfig, InferenceProfile, WebhookEndpointDef};
 
+/// The delivery outcome persisted against one webhook subscription.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebhookDeliveryOutcome {
+    Succeeded,
+    Failed,
+}
+
+/// The durable state after applying one delivery outcome. `Missing` means the
+/// subscription was concurrently deleted and therefore has no future delivery
+/// obligation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebhookDeliveryState {
+    Missing,
+    Active { consecutive_failures: u32 },
+    Disabled { consecutive_failures: u32 },
+}
+
 /// Infrastructure failure from a synchronous authored-config repository.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigRepositoryError {
@@ -59,8 +76,9 @@ pub fn put_workspace_profile(
 }
 
 /// A store for authored [`WebhookEndpointDef`]s (an admin-plane aggregate,
-/// ADR-0048). Sync + in-memory by default; the durable admin backend implements
-/// the same port. Unlike [`InferenceProfileStore`] it enumerates by
+/// ADR-0048). Product composition supplies a durable admin backend; a process-local
+/// reference implementation is available only under `test-support`. Unlike
+/// [`InferenceProfileStore`] it enumerates by
 /// workspace (dispatch fan-out) and supports delete (unsubscribe).
 pub trait WebhookStore: Send + Sync {
     fn put(&self, def: WebhookEndpointDef) -> Result<(), ConfigRepositoryError>;
@@ -70,6 +88,15 @@ pub trait WebhookStore: Send + Sync {
     fn list(&self, workspace_id: &str) -> Result<Vec<WebhookEndpointDef>, ConfigRepositoryError>;
     /// Remove by id; `true` if a row was removed (idempotent unsubscribe).
     fn delete(&self, id: &str) -> Result<bool, ConfigRepositoryError>;
+    /// Atomically apply one delivery result to the existing row. A success resets
+    /// the consecutive-failure count; a failure increments it and disables the row
+    /// at `failure_threshold`. Missing rows are a terminal no-op.
+    fn record_delivery(
+        &self,
+        id: &str,
+        outcome: WebhookDeliveryOutcome,
+        failure_threshold: u32,
+    ) -> Result<WebhookDeliveryState, ConfigRepositoryError>;
 }
 
 /// Repository for an Agent's default input bindings. Workspace is mandatory on
@@ -254,6 +281,7 @@ mod tests {
             url: format!("https://example.test/{id}"),
             event_types: Vec::new(),
             disabled,
+            consecutive_failures: 0,
             secret_ref: awaken_credential_vault::SecretRef("whsec".into()),
         }
     }
@@ -314,6 +342,54 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|d| d.id == "wh-b1")
+        );
+    }
+
+    #[test]
+    fn webhook_delivery_state_machine_is_durable_in_the_store_contract() {
+        // Cause/effect graph: C1 success; C2 failure below threshold; C3 failure at
+        // threshold; C4 missing row. Effects: E1 reset counter; E2 increment while
+        // active; E3 atomically disable; E4 terminal no-op. Constraint C1 xor C2.
+        // Decision table: R1=C1 after C2 -> E1; R2=C2,count=0,threshold=2 -> E2;
+        // R3=C2,count=1,threshold=2 -> E3; R4=C4 -> E4.
+        let store = InMemoryWebhookStore::new();
+        store.put(webhook("wh", "wrkspc", false)).unwrap();
+        assert_eq!(
+            store
+                .record_delivery("wh", WebhookDeliveryOutcome::Failed, 2)
+                .unwrap(),
+            WebhookDeliveryState::Active {
+                consecutive_failures: 1
+            },
+            "R2"
+        );
+        assert_eq!(
+            store
+                .record_delivery("wh", WebhookDeliveryOutcome::Succeeded, 2)
+                .unwrap(),
+            WebhookDeliveryState::Active {
+                consecutive_failures: 0
+            },
+            "R1"
+        );
+        store
+            .record_delivery("wh", WebhookDeliveryOutcome::Failed, 2)
+            .unwrap();
+        assert_eq!(
+            store
+                .record_delivery("wh", WebhookDeliveryOutcome::Failed, 2)
+                .unwrap(),
+            WebhookDeliveryState::Disabled {
+                consecutive_failures: 2
+            },
+            "R3"
+        );
+        assert_eq!(
+            store
+                .record_delivery("missing", WebhookDeliveryOutcome::Failed, 2)
+                .unwrap(),
+            WebhookDeliveryState::Missing,
+            "R4"
         );
     }
 }

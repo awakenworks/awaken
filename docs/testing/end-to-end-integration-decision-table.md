@@ -250,3 +250,27 @@ executable registration R1–R6、ProviderConnection compatibility tests，以�
 | EF41 | Coordinator 未初始化时隐式创建进程内 WorkerDirectory → 重启丢 incarnation/generation/tombstone，旧 Worker fence 的历史依据消失，调度观察与 transport 权威也可能取到不同实例 | 删除 `OnceLock` 与隐式 fallback；启动按 typed backend 显式打开 SQLite/PG，一份 `Arc` 注入所有消费者；无持久化坐标拒绝启动 | M28 T159–T161/T164 | 6/3/4/72 |
 | EF42 | split Control 读取自己的空内存 registry，而 heartbeat 只到 Coordinator → ACP/credential readiness 永久陈旧，publication 不随 Worker 变化 | 抽出只读 `WorkerObservationSource`；复用现有 Control→Coordinator 私有 URL/token；AllInOne 心跳即时触发，split Control 5 秒轮询同一 fingerprint/retry gate | M28 T162–T163 | 5/4/4/80 |
 | EF43 | 产品 Router helper 复制完整启动流程并绕过持久化初始化 → CLI 主路径正常而 public assembly/场景路径 fail-close 或错误降级 | 删除重复 assembly；标准、公开和场景模型入口统一调用唯一 `build_runtime_process_assembly` | 静态单调用审查；CLI 默认/all-feature compile + assembly tests | 6/2/3/36 |
+
+## M29：Webhook 投递分类、持久失败状态与恢复闭环
+
+原因 C153–C156：HTTP 结果属于成功、可重试或永久拒绝；订阅枚举、密钥解析或投递状态写可能失败；Control 可重启；自动禁用后操作员需要显式恢复。结果 E152–E157：唯一 dispatcher 负责分类，现有 WebhookStore 原子持久化连续失败，任何权威故障向 Coordinator outbox 传播，永久拒绝终结当前订阅/事件义务，显式 `disabled:false` 重新启用并清零。
+
+静态结构仍只有一条权威链：`ManagedSessionRepository lifecycle outbox → LifecycleFactDelivery → WebhookDispatcher → SubscriptionSource → WebhookStore/SecretStore`；没有新增 outbox、计数缓存或第二重试器。动态状态为 `active(count=n) --2xx--> active(0)`，`active(n) --failed event--> active(n+1)|disabled`；存储故障不迁移状态且 outbox 保持 pending。
+
+| 规则 | HTTP/本地结果 | 权威状态 | 结果 | 覆盖 |
+|---|---|---|---|---|
+| T165 | 2xx（含 204/299） | 可写 | 单次 delivered；失败计数清零；outbox 完成 | dispatcher unit + real receiver E2E |
+| T166 | 408/425/429/5xx 或网络错误后恢复 | 可写 | 同一 `webhook-id` 有界重试；2xx 后完成 | classifier decision table + real 429→204 E2E |
+| T167 | 可重试故障耗尽 | 阈值未到 | `failed`；稳定 fact 保持 pending，周期恢复 | real 500/timeout/response-loss + lifecycle reconciliation |
+| T168 | 300 或永久 4xx | 可写 | 仅一次 POST；`rejected`；当前事实不被无效重试 | unit 边界表 + real 404 E2E |
+| T169 | 枚举/密钥解析失败 | 不可读 | dispatch Err、零错误性完成；outbox 保持 pending | `matching_fails_closed...` + authority table R1 |
+| T170 | 成功/失败状态回写失败 | 不可写 | dispatch Err；不声称 delivered/disabled；outbox 保持 pending | `authority_failures_never_look_like_completed_delivery` R2/R3 |
+| T171 | 连败跨重启达到阈值；后续显式恢复 | SQLite/Postgres durable | 原子禁用；重启不清零；PUT `disabled:false` 重新启用并清零 | store contract + SQLite reopen + Postgres reconnect + CRUD recovery |
+
+| ID | 失效模式与影响 | 消解/处理 | 判定表与测试证据 | S/O/D/RPN |
+|---|---|---|---|---|
+| EF44 | 永久 3xx/4xx 与瞬态故障同样重试 → 无效流量、接收方压力与重试风暴 | 唯一 classifier：仅 408/425/429/5xx/网络可重试；其余非 2xx 单次 rejected | M29 T166–T168 | 4/4/2/32 |
+| EF45 | WebhookStore 或 SecretStore 故障被转为空订阅 → durable fact 被错误完成并静默漏通知 | `SubscriptionSource::matching` fallible；任何枚举/密钥错误穿透到 delivery/outbox | M29 T169 | 6/3/4/72 |
+| EF46 | 连败计数只在 dispatcher 内存中 → 重启/副本切换归零，坏端点永不自动禁用 | 删除进程内计数；`WebhookStore::record_delivery` 在 memory/SQLite/Postgres 共用一个领域转换并各自原子提交 | M29 T165/T171 | 5/4/4/80 |
+| EF47 | 禁用或成功清零写失败被吞掉，但报告声称已完成 → 状态与 outbox 分叉 | 状态写为 dispatch 成功前提；写失败返回 typed `DispatchError` 并保留事实 | M29 T170 | 6/2/4/48 |
+| EF48 | 自动禁用后 PUT 永远保留 disabled，操作员修复 URL 仍无法恢复投递 | 更新接口显式接受 `disabled:false`，保留 secret/owner 并原子清零计数 | M29 T171 | 4/3/2/24 |

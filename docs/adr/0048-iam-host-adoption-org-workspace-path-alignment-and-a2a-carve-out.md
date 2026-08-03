@@ -239,10 +239,11 @@ driving a `SubscriptionSource` port whose config-plane adapter lives in
 - The webhook plane moves from the plain `mount()` to the all-in-one process
   assembly, where the admin store + vault exist. A deployment
   without the config plane has no durable webhooks.
-- **Standalone** (open, no `admin-config-api`) wires the plane over open
-  in-memory stores (`InMemoryWebhookStore` + `InMemorySecretStore`): webhooks
-  work but are not durable there — consistent with standalone having no durable
-  config-authoring plane. `AWAKEN_WEBHOOK_DIR` is retired.
+- Process-local WebhookStore/SecretStore implementations and permissive loopback
+  delivery are `test-support` only. Product composition requires the durable
+  admin store plus sealed vault and exposes only guarded HTTPS delivery; it never
+  silently substitutes a volatile webhook authority. `AWAKEN_WEBHOOK_DIR` is
+  retired.
 - Vocabulary boundary held: the config crate stays webhook-agnostic (it stores a
   generic secret-free row); minting + sealing live in the webhook front door,
   mirroring how the vault front door — not `admin-config-api` — seals MCP/model

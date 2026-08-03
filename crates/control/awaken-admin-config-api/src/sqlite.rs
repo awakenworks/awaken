@@ -14,8 +14,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError,
-    ConfigRepositoryError, InferenceProfile, InferenceProfileStore, WebhookEndpointDef,
-    WebhookStore, validate_agent_input_revision,
+    ConfigRepositoryError, InferenceProfile, InferenceProfileStore, WebhookDeliveryOutcome,
+    WebhookDeliveryState, WebhookEndpointDef, WebhookStore, validate_agent_input_revision,
 };
 
 use crate::schema::admin_bundle;
@@ -250,6 +250,45 @@ impl WebhookStore for SqliteAdminStore {
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         Ok(n > 0)
     }
+
+    fn record_delivery(
+        &self,
+        id: &str,
+        outcome: WebhookDeliveryOutcome,
+        failure_threshold: u32,
+    ) -> Result<WebhookDeliveryState, ConfigRepositoryError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?;
+        let tx = conn
+            .transaction()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let data: Option<String> = tx
+            .query_row(
+                &format!("SELECT data FROM {NS}_webhook WHERE id = ?1"),
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let Some(data) = data else {
+            return Ok(WebhookDeliveryState::Missing);
+        };
+        let mut definition: WebhookEndpointDef = serde_json::from_str(&data)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let state = definition.record_delivery(outcome, failure_threshold);
+        let data = serde_json::to_string(&definition)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        tx.execute(
+            &format!("UPDATE {NS}_webhook SET data = ?2 WHERE id = ?1"),
+            params![id, data],
+        )
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        tx.commit()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        Ok(state)
+    }
 }
 
 #[cfg(test)]
@@ -296,6 +335,67 @@ mod tests {
                 .target
                 .model_id,
             "m2"
+        );
+    }
+
+    #[test]
+    fn webhook_failure_state_survives_reopen_and_disables_atomically() {
+        // Cause/effect graph: C1 durable row; C2 failed delivery; C3 process/store
+        // reopen; C4 second failure reaches threshold. Effects E1 count=1 on disk;
+        // E2 reopen observes it; E3 row disabled at count=2. Decision table:
+        // R1=C1∧C2 -> E1; R2=R1∧C3 -> E2; R3=R2∧C4 -> E3.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("admin.db");
+        let path = path.to_str().unwrap();
+        {
+            let store = SqliteAdminStore::open(path).unwrap();
+            WebhookStore::put(
+                &store,
+                WebhookEndpointDef {
+                    id: "wh".into(),
+                    workspace_id: "ws".into(),
+                    url: "https://hooks.example/hook".into(),
+                    event_types: vec![],
+                    disabled: false,
+                    consecutive_failures: 0,
+                    secret_ref: awaken_credential_vault::SecretRef("whsec:wh".into()),
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                store
+                    .record_delivery("wh", WebhookDeliveryOutcome::Failed, 2)
+                    .unwrap(),
+                WebhookDeliveryState::Active {
+                    consecutive_failures: 1
+                },
+                "R1"
+            );
+        }
+        let reopened = SqliteAdminStore::open(path).unwrap();
+        assert_eq!(
+            WebhookStore::get(&reopened, "wh")
+                .unwrap()
+                .unwrap()
+                .consecutive_failures,
+            1,
+            "R2"
+        );
+        assert_eq!(
+            reopened
+                .record_delivery("wh", WebhookDeliveryOutcome::Failed, 2)
+                .unwrap(),
+            WebhookDeliveryState::Disabled {
+                consecutive_failures: 2
+            },
+            "R3"
+        );
+        assert!(
+            WebhookStore::get(&reopened, "wh")
+                .unwrap()
+                .unwrap()
+                .disabled,
+            "R3"
         );
     }
 

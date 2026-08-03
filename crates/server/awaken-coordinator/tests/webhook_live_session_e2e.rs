@@ -80,6 +80,7 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
                 "session.status_terminated".to_string(),
             ],
             disabled: false,
+            consecutive_failures: 0,
             secret_ref: SecretRef("whsec:wh_live".into()),
         })
         .unwrap();
