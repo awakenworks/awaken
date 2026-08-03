@@ -6,7 +6,7 @@
 //! the tool call's own id so a `user.tool_confirmation` can reference it.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::broadcast;
@@ -133,6 +133,10 @@ pub struct ManagedState {
     /// Unique process incarnation persisted in Session realization leases. A
     /// restarted process must acquire a higher epoch before recreating effects.
     runtime_incarnation: String,
+    /// Process-local fence for the one canonical lifecycle supervisor. Multiple
+    /// composition helpers may receive the same state, but they must never start
+    /// overlapping recovery/lease loops over it.
+    lifecycle_supervisor_started: AtomicBool,
     session_seq: AtomicU64,
     /// Shared with each turn's [`PreviewSink`] so a preview's minted `agent.message`
     /// id is drawn from the same `evt_N` sequence the committed event carries.
