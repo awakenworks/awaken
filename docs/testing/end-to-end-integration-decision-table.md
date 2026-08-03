@@ -231,3 +231,22 @@ executable registration R1–R6、ProviderConnection compatibility tests，以�
 | ID | 失效模式与影响 | 消解/处理 | 判定表与测试证据 | S/O/D/RPN |
 |---|---|---|---|---|
 | EF40 | 测试遗漏较高优先级启动前提，却把先发生的安全拒绝当目标业务分支 → 覆盖虚证；或为通过测试削弱校验顺序 | 明确遮蔽关系；用真实 0600 token 文件满足前提；每个 fail-closed 原因单独成规则 | M27 T155–T158；`test:coverage-gaps` | 5/3/4/60 |
+
+## M28：Worker 身份权威的持久化与跨进程观察闭环
+
+原因 C149–C152：Coordinator 选择 SQLite/Postgres Worker registry、是否具备持久化坐标、Control 与 Coordinator 是否分进程、私有观察边界是否可达。结果 E147–E151：整个 Coordinator 只打开并显式注入一个 durable `WorkerDirectory`；默认产品不能导出 Memory 实现；split Control 通过既有私有 URL/token 读取窄只读投影，并以同一 fingerprint gate 周期重试发布重算。
+
+| 规则 | backend/topology | 前提或故障 | 结果 | 覆盖 |
+|---|---|---|---|---|
+| T159 | SQLite Coordinator | 无 `storage_dir` | 启动拒绝，不创建易失身份权威 | `sqlite_worker_authority_is_durable_and_missing_storage_fails_closed` R1 |
+| T160 | SQLite Coordinator | 可写路径并重启 | identity/generation/tombstone 从同一 DB 恢复 | 同测试 R2/R3 + registry conformance |
+| T161 | Postgres Coordinator | migrate/verify ledger | 同一 PG registry 供 transport/placement/observation | Postgres registry conformance + migration verify |
+| T162 | split Control | token 正确/错误、URL 合法/非法 | 正确时精确只读；错误时 401/构造失败 | `boundary_and_remote_adapter_preserve_auth_and_read_only_projection` |
+| T163 | split Control | 观察源失败→恢复→未变化 | 不推进 fence；下次轮询重试；相同投影合并 | `observation_source_failure_retries_without_advancing_the_fence` |
+| T164 | default/test-support build | 默认/显式 feature | 默认无 Memory API；test-support 仍跑共享 transition conformance | crate-boundary fitness + `memory_registry_conforms` |
+
+| ID | 失效模式与影响 | 消解/处理 | 判定表与测试证据 | S/O/D/RPN |
+|---|---|---|---|---|
+| EF41 | Coordinator 未初始化时隐式创建进程内 WorkerDirectory → 重启丢 incarnation/generation/tombstone，旧 Worker fence 的历史依据消失，调度观察与 transport 权威也可能取到不同实例 | 删除 `OnceLock` 与隐式 fallback；启动按 typed backend 显式打开 SQLite/PG，一份 `Arc` 注入所有消费者；无持久化坐标拒绝启动 | M28 T159–T161/T164 | 6/3/4/72 |
+| EF42 | split Control 读取自己的空内存 registry，而 heartbeat 只到 Coordinator → ACP/credential readiness 永久陈旧，publication 不随 Worker 变化 | 抽出只读 `WorkerObservationSource`；复用现有 Control→Coordinator 私有 URL/token；AllInOne 心跳即时触发，split Control 5 秒轮询同一 fingerprint/retry gate | M28 T162–T163 | 5/4/4/80 |
+| EF43 | 产品 Router helper 复制完整启动流程并绕过持久化初始化 → CLI 主路径正常而 public assembly/场景路径 fail-close 或错误降级 | 删除重复 assembly；标准、公开和场景模型入口统一调用唯一 `build_runtime_process_assembly` | 静态单调用审查；CLI 默认/all-feature compile + assembly tests | 6/2/3/36 |

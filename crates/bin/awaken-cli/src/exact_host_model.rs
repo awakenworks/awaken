@@ -14,8 +14,13 @@ pub(super) fn local_test_process_options(
         .expect("local test composition owns Managed Execution")
         .environment_work
         .clone();
+    let worker_directory = awaken_coordinator::test_worker_directory();
     super::ProcessAssemblyOptions {
         deployment: Some(deployment),
+        worker_directory: Some(worker_directory.clone()),
+        worker_observations: Some(
+            super::worker_observation_wiring::WorkerObservationWiring::local(worker_directory),
+        ),
         executable_agent_wiring: Some(
             super::executable_agent_registration::ExecutableAgentWiring::local(),
         ),

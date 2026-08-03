@@ -168,6 +168,18 @@ name = "management_surface"
 required-features = ["test-support"]
 
 [[test]]
+name = "management_authz"
+required-features = ["test-support"]
+
+[[test]]
+name = "management_persistence"
+required-features = ["test-support"]
+
+[[test]]
+name = "management_tokens"
+required-features = ["test-support"]
+
+[[test]]
 name = "mcp_sessions"
 required-features = ["test-support"]
 

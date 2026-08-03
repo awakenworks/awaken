@@ -15,11 +15,13 @@ mod control;
 mod control_component;
 mod credential_probe;
 mod deployment_process;
+#[cfg(any(test, feature = "test-support"))]
 mod exact_host_model;
 mod executable_agent_registration;
 mod executable_environment_registration;
 mod executable_projection_refresh;
 mod identity;
+#[cfg(any(test, feature = "test-support"))]
 mod local_process_stores;
 mod observation_reconcile;
 mod process_admin;
@@ -28,6 +30,7 @@ mod process_stores;
 mod process_surface;
 mod resource_component;
 mod runtime_process_router;
+mod worker_observation_wiring;
 mod worker_transport_security;
 
 use std::sync::Arc;
@@ -37,9 +40,11 @@ use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_host::{ExtMcpProbe, ManagedHost, SharedHost};
 use axum::Router;
+#[cfg(any(test, feature = "test-support"))]
 use exact_host_model::ExactHostModelPublicationResolver;
 #[cfg(any(test, feature = "test-support"))]
 use local_process_stores::in_memory_process_stores;
+#[cfg(any(test, feature = "test-support"))]
 use local_process_stores::open_local_process_stores;
 #[cfg(test)]
 use local_process_stores::{
@@ -99,6 +104,7 @@ enum PublicationModelComposition {
     HostedPublication {
         resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
     },
+    #[cfg(any(test, feature = "test-support"))]
     Host {
         executor: Arc<dyn LlmExecutor>,
         binding: awaken_runtime_contract::resolved::ModelBinding,
@@ -125,6 +131,7 @@ struct PublicationModelAssembly {
 enum RuntimeModelAssembly {
     PublishedProviders,
     NoModelConfigured,
+    #[cfg(any(test, feature = "test-support"))]
     Host {
         executor: Arc<dyn LlmExecutor>,
         model_ref: String,
@@ -622,7 +629,13 @@ pub async fn build_all_in_one_assembly(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
 ) -> Result<ProcessAssembly, String> {
-    build_runtime_process_assembly(deployment, Some(key), config::Role::AllInOne).await
+    build_runtime_process_assembly(
+        deployment,
+        Some(key),
+        config::Role::AllInOne,
+        PublicationModelComposition::PublishedProviders,
+    )
+    .await
 }
 
 /// Coordinator-only process assembly. It reuses the exact same Session, Run,
@@ -631,13 +644,20 @@ pub async fn build_all_in_one_assembly(
 pub async fn build_coordinator_assembly(
     deployment: &config::ResolvedDeployment,
 ) -> Result<ProcessAssembly, String> {
-    build_runtime_process_assembly(deployment, None, config::Role::Coordinator).await
+    build_runtime_process_assembly(
+        deployment,
+        None,
+        config::Role::Coordinator,
+        PublicationModelComposition::PublishedProviders,
+    )
+    .await
 }
 
 /// Build the real env-selected management surface with one explicit in-process
 /// scenario executor. This is a dev/e2e composition, not a provider fallback:
 /// its exact host candidate is published by a dedicated resolver and no
 /// credential/provider materializer is installed.
+#[cfg(any(test, feature = "test-support"))]
 pub async fn build_all_in_one_router_with_scenario_model(
     model: Arc<dyn LlmExecutor>,
     model_ref: String,
@@ -660,84 +680,11 @@ async fn build_all_in_one_router_with_composition(
         .seal_key
         .load_or_create()
         .unwrap_or_else(|error| panic!("control seal key: {error}"));
-    let identity = identity_wiring(
-        deployment.identity_mode,
-        Some(&deployment.data_dir),
-        &deployment.org_id,
-        &deployment.iam_workspaces,
-        &deployment.cloud_iam,
-    )
-    .unwrap_or_else(|error| panic!("identity configuration: {error}"));
-    let postgres_schema = match deployment.mode {
-        config::OperatingMode::Local => PostgresSchemaMode::Migrate,
-        config::OperatingMode::Server => PostgresSchemaMode::Verify,
-    };
-    let resource_component = open_resource_component(deployment.resources.clone(), postgres_schema)
-        .await
-        .unwrap_or_else(|error| panic!("open resource stores: {error}"));
-    let stores = open_process_stores(ProcessStoreOpenOptions {
-        control: deployment.control.clone(),
-        coordinator: deployment.coordinator.clone(),
-        resource_component: Some(resource_component),
-        workspace_root: deployment.data_dir.clone(),
-        seal_key: Some(&key),
-        role: config::Role::AllInOne,
-        postgres_schema,
-    })
-    .await
-    .unwrap_or_else(|error| panic!("open deployment stores: {error}"));
-    let executable_environment_wiring = executable_environment_registration::for_runtime_role(
-        config::Role::AllInOne,
+    build_runtime_process_assembly(
         &deployment,
-        postgres_schema,
-        stores
-            .coordinator
-            .as_ref()
-            .expect("AllInOne owns Environment work")
-            .environment_work
-            .clone(),
-    )
-    .await
-    .unwrap_or_else(|error| panic!("compose executable Environment: {error}"));
-    let executable_agent_wiring = executable_agent_registration::for_runtime_role(
+        Some(&key),
         config::Role::AllInOne,
-        &deployment,
-        postgres_schema,
-        stores
-            .coordinator
-            .as_ref()
-            .expect("AllInOne owns captured content")
-            .captured_content_eraser
-            .clone(),
-    )
-    .await
-    .unwrap_or_else(|error| panic!("compose executable Agent: {error}"));
-    let content_capture_ceiling = deployment.runtime.content_capture.level;
-    assemble_runtime_process_router(
-        stores,
-        identity.iam,
-        identity.remote_iam,
-        identity.local_browser_auth,
         model_composition,
-        ProcessAssemblyOptions {
-            deployment: Some(deployment.runtime),
-            content_capture_ceiling,
-            org_id: Some(deployment.org_id),
-            mcp_bearer_token: deployment.mcp_bearer_token,
-            role: config::Role::AllInOne,
-            cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url),
-            model_supply: local_model_supply(deployment.cloud_models.is_enabled()),
-            brokered_catalog: None,
-            local_acp_observations: deployment.local_acp_observations,
-            web_search_providers: None,
-            web_search_publication_resolver: None,
-            executable_agent_wiring: Some(executable_agent_wiring),
-            executable_environment_wiring: Some(executable_environment_wiring),
-            worker_authenticator: None,
-            control_service_token: None,
-            control_service: None,
-        },
-        None,
     )
     .await
     .unwrap_or_else(|error| panic!("assemble all-in-one process: {error}"))
@@ -780,6 +727,7 @@ pub async fn build_all_in_one_router_with_host_customizer(
 /// that need a real external runtime while retaining the same management and
 /// resource-plane state across host lifetimes. The sealing key and storage root
 /// are supplied by the caller, avoiding process-global environment races.
+#[cfg(any(test, feature = "test-support"))]
 pub async fn build_durable_all_in_one_router_with_host_customizer(
     dir: &std::path::Path,
     key: &[u8; 32],
@@ -842,7 +790,8 @@ pub async fn build_all_in_one_router_with_model(
 /// read): durable all-in-one over `dir`, sealing secrets under `key`.
 /// Exposed so a restart test can rebuild a router over one directory across
 /// simulated process lifetimes without racing on process-global env vars.
-/// No IAM guard — the open (default) all-in-one process.
+/// No IAM guard; available only to explicit test-support compositions.
+#[cfg(any(test, feature = "test-support"))]
 pub async fn build_durable_all_in_one_router(dir: &std::path::Path, key: &[u8; 32]) -> Router {
     let stores = open_local_process_stores(dir, key)
         .await
@@ -866,6 +815,7 @@ pub async fn build_durable_all_in_one_router(dir: &std::path::Path, key: &[u8; 3
 /// typed self-managed identity composition. Returns the
 /// [`ManagementAuthz`] handle too so a test (or an embedding) can mint further
 /// workspace tokens against the same policy state.
+#[cfg(any(test, feature = "test-support"))]
 pub async fn build_secured_all_in_one_router(
     dir: &std::path::Path,
     key: &[u8; 32],
@@ -917,6 +867,7 @@ fn publication_model_assembly(
     composition: PublicationModelComposition,
     stores: &ProcessStores,
     cloud_models_enabled: bool,
+    worker_observations: Arc<dyn awaken_coordinator::WorkerObservationSource>,
 ) -> PublicationModelAssembly {
     let control = stores
         .control
@@ -933,7 +884,7 @@ fn publication_model_assembly(
                 )
                 .with_executor_capabilities(executor_model_capabilities)
                 .with_profiles(control.profiles.clone())
-                .with_worker_directory(awaken_coordinator::worker_directory())
+                .with_worker_observations(worker_observations)
                 .with_brokered_access(cloud_models_enabled),
             ),
             runtime: RuntimeModelAssembly::PublishedProviders,
@@ -942,6 +893,7 @@ fn publication_model_assembly(
             publication_resolver: resolver,
             runtime: RuntimeModelAssembly::NoModelConfigured,
         },
+        #[cfg(any(test, feature = "test-support"))]
         PublicationModelComposition::Host { executor, binding } => {
             let model_ref = binding.model_ref.clone();
             PublicationModelAssembly {
@@ -983,6 +935,7 @@ fn runtime_model_wiring(
             model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
             materializer: None,
         },
+        #[cfg(any(test, feature = "test-support"))]
         RuntimeModelAssembly::Host {
             executor,
             model_ref,
@@ -1297,6 +1250,11 @@ mod process_role_surface_tests {
                 executable_agent_wiring: Some(
                     executable_agent_registration::ExecutableAgentWiring::local(),
                 ),
+                worker_observations: Some(
+                    worker_observation_wiring::WorkerObservationWiring::local(
+                        awaken_coordinator::test_worker_directory(),
+                    ),
+                ),
                 ..Default::default()
             },
         )
@@ -1355,6 +1313,7 @@ mod process_role_surface_tests {
                     .clone(),
             )
             .expect("compose Coordinator test Environment wiring");
+        let worker_directory = awaken_coordinator::test_worker_directory();
         let app = assemble_runtime_process_router(
             coordinator_stores,
             None,
@@ -1371,6 +1330,10 @@ mod process_role_surface_tests {
                 executable_environment_wiring: Some(executable_environment_wiring),
                 control_service: Some(control_service),
                 deployment: Some(coordinator_deployment.runtime),
+                worker_directory: Some(worker_directory.clone()),
+                worker_observations: Some(
+                    worker_observation_wiring::WorkerObservationWiring::local(worker_directory),
+                ),
                 ..Default::default()
             },
             None,
@@ -1479,6 +1442,11 @@ mod process_role_surface_tests {
                 ),
                 executable_agent_wiring: Some(
                     executable_agent_registration::ExecutableAgentWiring::local(),
+                ),
+                worker_observations: Some(
+                    worker_observation_wiring::WorkerObservationWiring::local(
+                        awaken_coordinator::test_worker_directory(),
+                    ),
                 ),
                 ..Default::default()
             },

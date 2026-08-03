@@ -4,18 +4,48 @@
 
 use awaken_config_service::PublicationBindingReconciler;
 
-#[derive(Default)]
 pub(crate) struct WorkerObservationReconcileGate {
     last_reconciled: tokio::sync::Mutex<Option<String>>,
+    source: std::sync::Arc<dyn awaken_coordinator::WorkerObservationSource>,
 }
 
 impl WorkerObservationReconcileGate {
+    pub(crate) fn new(
+        source: std::sync::Arc<dyn awaken_coordinator::WorkerObservationSource>,
+    ) -> Self {
+        Self {
+            last_reconciled: tokio::sync::Mutex::new(None),
+            source,
+        }
+    }
+
     pub(crate) async fn reconcile(
         &self,
         reconciler: &dyn PublicationBindingReconciler,
     ) -> Result<usize, String> {
-        let fingerprint = current_worker_observation_fingerprint().await?;
+        let fingerprint = current_worker_observation_fingerprint(self.source.as_ref()).await?;
         self.reconcile_fingerprint(fingerprint, reconciler).await
+    }
+
+    /// Split Control has no Worker heartbeat route in its process. Poll the
+    /// authenticated Coordinator projection and feed changes into this same
+    /// fingerprint/retry state machine; AllInOne continues to use heartbeat as
+    /// its immediate clock.
+    pub(crate) fn spawn_periodic(
+        self: std::sync::Arc<Self>,
+        reconciler: std::sync::Arc<dyn PublicationBindingReconciler>,
+        period: std::time::Duration,
+    ) {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(period);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                if let Err(error) = self.reconcile(reconciler.as_ref()).await {
+                    eprintln!("Worker observation reconciliation remains pending: {error}");
+                }
+            }
+        });
     }
 
     async fn reconcile_fingerprint(
@@ -36,11 +66,10 @@ impl WorkerObservationReconcileGate {
     }
 }
 
-async fn current_worker_observation_fingerprint() -> Result<String, String> {
-    let mut workers = awaken_coordinator::worker_directory()
-        .list()
-        .await
-        .map_err(|error| error.to_string())?;
+async fn current_worker_observation_fingerprint(
+    source: &dyn awaken_coordinator::WorkerObservationSource,
+) -> Result<String, String> {
+    let mut workers = source.list().await.map_err(|error| error.to_string())?;
     workers.sort_by(|left, right| {
         (
             &left.snapshot.identity.worker_id,
@@ -69,6 +98,26 @@ async fn current_worker_observation_fingerprint() -> Result<String, String> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct FlakySource(AtomicBool);
+
+    #[async_trait::async_trait]
+    impl awaken_coordinator::WorkerObservationSource for FlakySource {
+        async fn list(
+            &self,
+        ) -> Result<
+            Vec<awaken_worker_contract::RegisteredWorker>,
+            awaken_worker_contract::RegistryError,
+        > {
+            if self.0.swap(false, Ordering::SeqCst) {
+                Err(awaken_worker_contract::RegistryError::Persistence(
+                    "offline".into(),
+                ))
+            } else {
+                Ok(Vec::new())
+            }
+        }
+    }
 
     struct RecordingReconciler {
         calls: AtomicUsize,
@@ -100,7 +149,7 @@ mod tests {
         // R4 reconcile failure         -> do not advance, next heartbeat retries.
         // These rules cover both fingerprint equality branches and both
         // reconciler terminal outcomes.
-        let gate = WorkerObservationReconcileGate::default();
+        let gate = WorkerObservationReconcileGate::new(awaken_coordinator::test_worker_directory());
         let reconciler = RecordingReconciler {
             calls: AtomicUsize::new(0),
             fail: AtomicBool::new(false),
@@ -141,5 +190,26 @@ mod tests {
             "R4 retry"
         );
         assert_eq!(reconciler.calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn observation_source_failure_retries_without_advancing_the_fence() {
+        // Cause/effect decision table for split-Control polling:
+        // P1 remote source unavailable -> no publication call and no fence;
+        // P2 next poll succeeds -> reconcile and advance; P3 unchanged next
+        // projection -> coalesce. Changed projections and reconciler failures
+        // are the R3/R4 rules in the sibling gate test.
+        let gate = WorkerObservationReconcileGate::new(std::sync::Arc::new(FlakySource(
+            AtomicBool::new(true),
+        )));
+        let reconciler = RecordingReconciler {
+            calls: AtomicUsize::new(0),
+            fail: AtomicBool::new(false),
+        };
+        assert!(gate.reconcile(&reconciler).await.is_err(), "P1");
+        assert_eq!(reconciler.calls.load(Ordering::SeqCst), 0, "P1");
+        assert_eq!(gate.reconcile(&reconciler).await.unwrap(), 2, "P2");
+        assert_eq!(gate.reconcile(&reconciler).await.unwrap(), 0, "P3");
+        assert_eq!(reconciler.calls.load(Ordering::SeqCst), 1, "P2+P3");
     }
 }

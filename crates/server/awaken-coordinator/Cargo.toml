@@ -127,6 +127,7 @@ test-support = [
     "awaken-protocol-managed/test-support",
     "awaken-dream-application/test-support",
     "awaken-runtime-host/test-support",
+    "awaken-worker-registry/test-support",
 ]
 # Cross-node dispatch wake over NATS (AWAKEN_DISPATCH_WAKE=nats). Passes through to
 # awaken-runtime-host → awaken-run-ingress so the built binary carries a NATS-capable
@@ -142,6 +143,7 @@ container-podman = ["awaken-runtime-host/container-podman"]
 container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
+awaken-worker-registry = { workspace = true, features = ["test-support"] }
 awaken-captured-content-store = { workspace = true, features = ["test-support"] }
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }

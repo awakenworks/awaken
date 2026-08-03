@@ -21,6 +21,14 @@ pub(super) async fn assemble_runtime_process_router(
         role,
         config::Role::AllInOne | config::Role::Coordinator
     ));
+    let worker_directory = assembly
+        .worker_directory
+        .expect("runtime process requires an explicit WorkerDirectory");
+    let worker_observation_wiring = assembly
+        .worker_observations
+        .expect("runtime process requires explicit Worker observation wiring");
+    let worker_observations = worker_observation_wiring.source;
+    let worker_observation_private_router = worker_observation_wiring.private_router;
     let worker_authenticator = assembly.worker_authenticator.unwrap_or_else(|| {
         Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator)
             as Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
@@ -103,8 +111,14 @@ pub(super) async fn assemble_runtime_process_router(
     let web_search_providers = assembly
         .web_search_providers
         .unwrap_or_else(awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins);
-    let model_assembly = (role == config::Role::AllInOne)
-        .then(|| publication_model_assembly(model_composition, &stores, cloud_models_enabled));
+    let model_assembly = (role == config::Role::AllInOne).then(|| {
+        publication_model_assembly(
+            model_composition,
+            &stores,
+            cloud_models_enabled,
+            worker_observations.clone(),
+        )
+    });
     let model_wiring = match (&model_assembly, &credential_materializer) {
         (Some(assembly), Some(credentials)) => runtime_model_wiring(
             assembly.runtime.clone(),
@@ -135,7 +149,7 @@ pub(super) async fn assemble_runtime_process_router(
     let live_runtime_capabilities = stores.control.as_ref().map(|control| {
         Arc::new(LiveRuntimeCapabilities {
             initial: assembly.local_acp_observations.clone(),
-            workers: awaken_coordinator::worker_directory(),
+            workers: worker_observations.clone(),
             credentials: control.credentials.clone(),
             workspace: platform_workspace.clone(),
         })
@@ -478,8 +492,9 @@ pub(super) async fn assemble_runtime_process_router(
             ),
         ),
     };
-    let registration_router =
-        executable_agent_private_router.merge(executable_environment_private_router);
+    let registration_router = executable_agent_private_router
+        .merge(executable_environment_private_router)
+        .merge(worker_observation_private_router);
     let resource_ports = resource_application.ports();
     let resource_management_router =
         awaken_coordinator::resources_router(awaken_coordinator::ResourcesRouterInput {
@@ -499,6 +514,7 @@ pub(super) async fn assemble_runtime_process_router(
             model_directory,
             dream_process_store,
             worker_authenticator,
+            worker_directory: worker_directory.clone(),
             deployment_state,
             executable_agents: executable_agent_catalog,
             rate_limiter: managed_rate_limiter.clone(),
@@ -543,6 +559,7 @@ pub(super) async fn assemble_runtime_process_router(
             flat,
             mcp_export,
             reconciler,
+            worker_observations,
             platform_workspace,
             managed_rate_limiter,
         ),

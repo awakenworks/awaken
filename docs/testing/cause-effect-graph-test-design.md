@@ -1022,7 +1022,7 @@ FMECA。评分是变更审查时使用的相对优先级，不是现场故障率
 变化后旧执行者失去提交权；恢复只读取 durable authority，不从临时投影反推。
 ```
 
-### 端到端 FMECA（EF24–EF40 续表见[集成判定表](./end-to-end-integration-decision-table.md)）
+### 端到端 FMECA（EF24–EF43 续表见[集成判定表](./end-to-end-integration-decision-table.md)）
 
 | ID | 流程失效模式与系统影响 | 现有消解/处理 | 判定表与测试证据 | S/O/D/RPN |
 |---|---|---|---|---|
@@ -1105,7 +1105,7 @@ M1–M15 判定表为唯一测试设计来源。
 | `awaken-run-ingress-contract` | queue DTO 丢 placement/binding → 错 Worker | typed command/outcome、serde tests；直接，M10 | 5/1/1/5 |
 | `awaken-run-ingress-testkit` | backend 未复用队列契约 → 行为分叉 | 同一 suite 跑 memory/sqlite/postgres，编排器 R8 强制；共享 | 5/1/1/5 |
 | `awaken-run-ingress` | broad claim 被坏行阻塞、旧 epoch settle 或 durable attempt 丢上层能力 → 饥饿、错提交或策略绕失 | skip incompatible、exact error、atomic epoch fence；继承唯一 attempt context，仅替换 claim authority；直接/共享，M10/M16 | 5/1/1/5 |
-| `awaken-coordinator` | 投影落后仍 admission/跨角色 store 写 → 陈旧执行 | high-water refresh、边界 fitness、fail-closed；直接，EF1 | 5/1/2/10 |
+| `awaken-coordinator` | 投影落后仍 admission、跨角色 store 写，或 WorkerDirectory 隐式易失 → 陈旧执行/重启丢 incarnation fence | high-water refresh、边界 fitness；显式 durable SQLite/PG Worker authority；无坐标 fail-closed；直接，EF1/EF41 | 6/1/2/12 |
 | `awaken-durable-projection` | outbox 重放重复/游标跳跃 → 重复副作用或漏投影 | monotonic cursor、idempotency key、full replay；直接，F1/F10 | 4/1/2/8 |
 
 ### F6–F7：Runtime、扩展、资源与 Sandbox
@@ -1171,17 +1171,17 @@ M1–M15 判定表为唯一测试设计来源。
 | `awaken-runtime-host` | 组装错误、direct/durable attempt context 分叉、MCP relay/credential admission 绕过 → 内容不受控或系统级泄漏 | 单 composition root；唯一 attempt-context decorator 解析 subject×consent×sink；generation relay、capability conjunction；直接+真实擦除 E2E，M16/G42/G43 | 5/1/2/10 |
 | `awaken-webhook-managed` | lifecycle 与 subscription scope 错配 → 跨域通知 | guard→Workspace mapping、single dispatcher；直接，M12 | 5/1/1/5 |
 | `awaken-webhook` | SSRF、签名错误、永久失败无限重试 → 泄漏/风暴 | URL policy、HMAC、retry classification；直接，M12 | 5/1/1/5 |
-| `awaken-worker-registry` | heartbeat/replacement 竞态 → 调度到死 Worker | incarnation+lease、monotonic replacement；直接，F5 | 5/1/1/5 |
+| `awaken-worker-registry` | heartbeat/replacement 竞态或重启丢 tombstone → 调度到死 Worker/旧身份历史消失 | incarnation+lease、monotonic replacement、SQLite/PG reopen conformance；Memory 仅 test-support；直接，F5/EF41 | 6/1/1/6 |
 | `awaken-worker-transport-security` | 签名重放/错误 trust domain → 冒充 Worker | timestamp/nonce/signature/trust store；直接，F5 | 5/1/1/5 |
 | `awaken-acp-contract` | capability fingerprint 非确定或 probe 错误丢信息 → 错兼容判断 | 顺序归一 fingerprint、serde roundtrip；直接新增判定表 | 4/1/1/4 |
 | `awaken-agent-channel` | frame 乱序/断线恢复丢 correlation → 响应串线 | sequence/correlation、close semantics；直接，F5 | 5/1/1/5 |
-| `awaken-worker-contract` | capability/claim wire 漂移 → 不安全 placement | typed capability + signed envelope；直接，F5/F6 | 5/1/1/5 |
+| `awaken-worker-contract` | capability/claim wire 漂移或 Control 获得 mutation port → 不安全 placement/所有权污染 | typed capability + signed envelope；窄只读 `WorkerObservationSource` 与 mutation authority 分离；直接，F5/F6/EF42 | 5/1/1/5 |
 
 ### 组合根与开发验证
 
 | Crate | 主失效模式 → 影响 | 消解/处理与测试证据 | S/O/D/RPN |
 |---|---|---|---|
-| `awaken-cli` | Server 无签名凭据仍启动，或 AllInOne 未共享唯一 Deployment 聚合 → 未认证 Worker / Agent 归档后调度仍存活 | Server 缺失/空 trust fail startup；Local-only header；组装兄弟组件前恢复并共享一个 `DeploymentState`；直接新增 R1–R4 + schedule E2E S6/S7 | 6/1/2/12 |
+| `awaken-cli` | Server 无签名凭据仍启动、AllInOne 未共享聚合，或 split Control 观察自己的空 registry → 未认证 Worker/陈旧 readiness/归档后调度仍存活 | trust fail startup；唯一 `DeploymentState`；唯一 runtime assembly；split Control 复用私有边界轮询 Coordinator 只读观察；直接，EF41–EF43 + schedule E2E | 6/1/2/12 |
 | `awaken-sandbox` | CLI 参数绕 capability admission → 低隔离启动 | 所有输入编译为同一 provisioning plan；直接，sandbox E2E | 5/1/1/5 |
 | `awaken-worker` | 组装时虚报 provider/credential capability → 错 claim | installed-component-derived caps、lifecycle fence；直接，worker E2E | 5/1/1/5 |
 | `awaken-eval` | 评估 fixture 非确定/误计分 → 假回归结论 | deterministic fixture/result tests；直接 | 2/1/1/2 |

@@ -53,7 +53,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     // The scenario host is a Local composition and therefore reuses the same
     // canonical Coordinator migrate-and-connect path as Local AllInOne.
-    awaken_coordinator::init_postgres_coordinator(&deployment).await?;
+    awaken_coordinator::open_coordinator_persistence(&deployment)
+        .await
+        .map(drop)?;
     let app = match std::env::var("AWAKEN_MODEL_MODE").as_deref() {
         Ok("probe") => {
             awaken_scenario_host::build_router(Arc::new(awaken_scenario_host::ProbeModel), "probe")

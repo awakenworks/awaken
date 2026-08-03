@@ -4,9 +4,9 @@ use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
     WorkerManifest, WorkerRegistration, WorkerState,
 };
-use awaken_worker_registry::{
-    MemoryWorkerDirectory, PostgresWorkerDirectory, SqliteWorkerDirectory,
-};
+#[cfg(feature = "test-support")]
+use awaken_worker_registry::MemoryWorkerDirectory;
+use awaken_worker_registry::{PostgresWorkerDirectory, SqliteWorkerDirectory};
 
 fn registration(worker: &str, incarnation: &str) -> WorkerRegistration {
     WorkerRegistration {
@@ -173,12 +173,23 @@ async fn assert_registry(directory: Arc<dyn WorkerDirectory>, worker_id: &str) {
 }
 
 #[tokio::test]
+#[cfg(feature = "test-support")]
 async fn memory_registry_conforms() {
+    // Cause/effect decision table:
+    // R1 product/default feature set -> MemoryWorkerDirectory is not exported;
+    // R2 explicit test-support -> the volatile adapter remains available and
+    // must obey the same transition kernel as durable adapters. Compile-time
+    // fitness owns R1; this conformance case owns R2.
     assert_registry(Arc::new(MemoryWorkerDirectory::new()), "dwr-memory").await;
 }
 
 #[tokio::test]
 async fn sqlite_registry_conforms_and_reopens() {
+    // Cause/effect graph: durable path -> transition sequence -> process closes
+    // -> same path reopens -> generation/tombstone remain authoritative.
+    // Decision table: S1 writable path + valid ledger -> mutations persist;
+    // S2 reopen same path -> generation/state survive; S3 volatile constructor
+    // is unavailable to product builds (compile-time fitness coverage).
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("workers.sqlite");
     let path = path.to_str().unwrap();

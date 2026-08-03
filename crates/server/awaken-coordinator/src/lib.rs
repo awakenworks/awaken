@@ -35,6 +35,7 @@ pub mod model_discovery;
 pub mod model_resolver;
 mod relay_hand;
 pub mod webhooks;
+pub mod worker_observation_boundary;
 pub mod worker_placement;
 mod worker_registry;
 pub mod workspace_path;
@@ -45,9 +46,8 @@ pub use coordinator_component::{
     build_coordinator_component, restore_deployment_state,
 };
 pub use coordinator_persistence::{
-    init_existing_postgres as init_existing_postgres_coordinator,
-    init_postgres as init_postgres_coordinator,
     migrate_postgres_schema as migrate_postgres_coordinator_schema,
+    open as open_coordinator_persistence, open_existing as open_existing_coordinator_persistence,
 };
 
 use std::sync::Arc;
@@ -87,10 +87,11 @@ pub use awaken_runtime_host::{
     VaultRefresher, advertised_tools, durable_ops_router,
 };
 pub use awaken_sandbox_local::content_fingerprint;
+pub use awaken_worker_registry::{WorkerDirectory, WorkerObservationSource};
 pub use relay_hand::relay_hand_executor_factory;
-pub use worker_registry::{
-    WorkerDirectoryHandle, inject as init_worker_registry, shared as worker_directory,
-};
+pub use worker_registry::WorkerDirectoryHandle;
+#[cfg(any(test, feature = "test-support"))]
+pub use worker_registry::test_directory as test_worker_directory;
 
 /// Canonical trusted-host ACP composition for outer product roots. This
 /// service-layer boundary joins reusable discovery with the production wire.
@@ -501,6 +502,7 @@ pub fn mount_with_managed_and_application_access_and_models(
             worker_authenticator: Arc::new(
                 awaken_worker_transport_security::HeaderWorkerAuthenticator,
             ),
+            worker_directory: test_worker_directory(),
         },
     )
     .expect("test-support Worker transport must assemble")
@@ -511,6 +513,7 @@ pub fn mount_with_managed_and_application_access_and_models(
 pub struct ManagedRoutingExtensions {
     pub resource_management_router: Router,
     pub worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
+    pub worker_directory: Arc<dyn awaken_worker_registry::WorkerDirectory>,
 }
 
 /// Production data plane with the live model directory and the exact Dream state
@@ -559,6 +562,7 @@ fn mount_with_managed_over(
             worker_authenticator: Arc::new(
                 awaken_worker_transport_security::HeaderWorkerAuthenticator,
             ),
+            worker_directory: test_worker_directory(),
         },
     )
     .expect("test-support Worker transport must assemble")
@@ -579,6 +583,7 @@ fn mount_with_managed_over_and_models(
     let ManagedRoutingExtensions {
         resource_management_router,
         worker_authenticator,
+        worker_directory,
     } = routing;
     install_platform_memory_data_plane(&host);
     // Spawn the process-level dispatch pool once when durable ingress is enabled
@@ -661,7 +666,7 @@ fn mount_with_managed_over_and_models(
     // over the dispatch transport and pushes committed facts to the commit ingest.
     let worker_transport = awaken_runtime_host::registered_worker_transport_router(
         host.clone(),
-        worker_registry::shared(),
+        worker_directory,
         worker_placement::shared_worker_placement_policy(),
         managed_state,
         resource_catalog.clone(),

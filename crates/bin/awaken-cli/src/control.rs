@@ -160,6 +160,8 @@ async fn build_control_assembly_with_model_composition(
         executable_agent_registration::ExecutableAgentWiring::control(deployment)?;
     let executable_environment_wiring =
         executable_environment_registration::ExecutableEnvironmentWiring::control(deployment)?;
+    let worker_observations =
+        worker_observation_wiring::WorkerObservationWiring::control(deployment)?;
     let assembled = assemble_control_process_router(
         stores,
         identity.iam,
@@ -186,6 +188,8 @@ async fn build_control_assembly_with_model_composition(
             executable_agent_wiring: Some(executable_agent_wiring),
             executable_environment_wiring: Some(executable_environment_wiring),
             worker_authenticator: None,
+            worker_directory: None,
+            worker_observations: Some(worker_observations),
             control_service_token: Some(deployment.control_service.control_token()?),
             control_service: None,
         },

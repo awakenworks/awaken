@@ -37,7 +37,7 @@ fn credential_state_name(state: awaken_runtime_contract::CredentialObservationSt
 
 pub(crate) struct LiveRuntimeCapabilities {
     pub(crate) initial: Vec<awaken_acp_application::AcpHostObservation>,
-    pub(crate) workers: awaken_coordinator::WorkerDirectoryHandle,
+    pub(crate) workers: Arc<dyn awaken_coordinator::WorkerObservationSource>,
     pub(crate) credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     pub(crate) workspace: String,
 }

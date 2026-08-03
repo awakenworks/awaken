@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerRegistration,
+    WorkerIdentity, WorkerObservationSource, WorkerRegistration,
 };
 use sqlx::PgConnection;
 use sqlx::postgres::PgPool;
@@ -148,6 +148,21 @@ fn persist(error: impl std::fmt::Display) -> RegistryError {
 }
 
 #[async_trait]
+impl WorkerObservationSource for PostgresWorkerDirectory {
+    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
+        let encoded: Vec<String> =
+            sqlx::query_scalar("SELECT record_json FROM worker_registry_worker ORDER BY worker_id")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(persist)?;
+        encoded
+            .into_iter()
+            .map(|value| serde_json::from_str(&value).map_err(persist))
+            .collect()
+    }
+}
+
+#[async_trait]
 impl WorkerDirectory for PostgresWorkerDirectory {
     async fn register(
         &self,
@@ -220,18 +235,6 @@ impl WorkerDirectory for PostgresWorkerDirectory {
         encoded
             .map(|value| serde_json::from_str(&value).map_err(persist))
             .transpose()
-    }
-
-    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
-        let encoded: Vec<String> =
-            sqlx::query_scalar("SELECT record_json FROM worker_registry_worker ORDER BY worker_id")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(persist)?;
-        encoded
-            .into_iter()
-            .map(|value| serde_json::from_str(&value).map_err(persist))
-            .collect()
     }
 
     async fn expire(&self, now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {

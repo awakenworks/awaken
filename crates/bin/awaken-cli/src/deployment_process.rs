@@ -6,6 +6,7 @@ pub(super) async fn build_runtime_process_assembly(
     deployment: &config::ResolvedDeployment,
     key: Option<&[u8; 32]>,
     role: config::Role,
+    model_composition: PublicationModelComposition,
 ) -> Result<ProcessAssembly, String> {
     debug_assert!(matches!(
         role,
@@ -22,6 +23,19 @@ pub(super) async fn build_runtime_process_assembly(
         config::OperatingMode::Local => PostgresSchemaMode::Migrate,
         config::OperatingMode::Server => PostgresSchemaMode::Verify,
     };
+    let worker_directory = match deployment.mode {
+        config::OperatingMode::Local => {
+            awaken_coordinator::open_coordinator_persistence(&deployment.runtime).await?
+        }
+        config::OperatingMode::Server => {
+            awaken_coordinator::open_existing_coordinator_persistence(&deployment.runtime).await?
+        }
+    };
+    let worker_observations = worker_observation_wiring::WorkerObservationWiring::runtime(
+        role,
+        deployment,
+        worker_directory.clone(),
+    )?;
     let resource_component =
         open_resource_component(deployment.resources.clone(), postgres_schema).await?;
     let stores = open_process_stores(ProcessStoreOpenOptions {
@@ -74,7 +88,7 @@ pub(super) async fn build_runtime_process_assembly(
         identity.iam,
         identity.remote_iam,
         identity.local_browser_auth,
-        PublicationModelComposition::PublishedProviders,
+        model_composition,
         ProcessAssemblyOptions {
             deployment: Some(deployment.runtime.clone()),
             content_capture_ceiling: deployment.runtime.content_capture.level,
@@ -90,6 +104,8 @@ pub(super) async fn build_runtime_process_assembly(
             executable_agent_wiring: Some(executable_agent_wiring),
             executable_environment_wiring: Some(executable_environment_wiring),
             worker_authenticator: Some(worker_authenticator),
+            worker_directory: Some(worker_directory),
+            worker_observations: Some(worker_observations),
             control_service_token: None,
             control_service,
         },

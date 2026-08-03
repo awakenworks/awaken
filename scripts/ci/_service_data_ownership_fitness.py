@@ -17,6 +17,7 @@ WORKER_MANIFEST = "crates/bin/awaken-worker/Cargo.toml"
 WORKER_SOURCE = "crates/bin/awaken-worker/src"
 CONTROL_SOURCE = "crates/control/awaken-control/src"
 CLI_SOURCE = "crates/bin/awaken-cli/src"
+CLI_LIB_SOURCE = "crates/bin/awaken-cli/src/lib.rs"
 COORDINATOR_COMPONENT = "crates/server/awaken-coordinator/src/coordinator_component.rs"
 RESOURCE_COMPONENT = "crates/contract/awaken-resource-contract/src/component.rs"
 RUNTIME_HOST_BUILD = "crates/server/awaken-runtime-host/src/host/build.rs"
@@ -41,6 +42,9 @@ WORK_STORE_SOURCE = "crates/stores/awaken-work-store/src/lib.rs"
 COMMIT_SQLITE_SOURCE = "crates/stores/awaken-store-sqlite/src/lib.rs"
 FILE_SQLITE_SOURCE = "crates/resources/awaken-file-store/src/sqlite.rs"
 WORKER_REGISTRY_SQLITE_SOURCE = "crates/server/awaken-worker-registry/src/sqlite.rs"
+WORKER_REGISTRY_LIB_SOURCE = "crates/server/awaken-worker-registry/src/lib.rs"
+DREAM_APPLICATION_SOURCE = "crates/server/awaken-dream-application/src/lib.rs"
+TOOL_RELAY_SOURCE = "crates/worker/awaken-tool-relay/src/lib.rs"
 RUN_INGRESS_ANY_SOURCE = "crates/server/awaken-run-ingress/src/any.rs"
 RUN_INGRESS_LIB_SOURCE = "crates/server/awaken-run-ingress/src/lib.rs"
 RUN_INGRESS_SQLITE_SOURCE = "crates/server/awaken-run-ingress/src/sqlite.rs"
@@ -136,6 +140,35 @@ FEATURE_TEST_SUPPORT_GATE = (
 )
 NON_PRODUCT_APIS = (
     (
+        "awaken_cli::exact_host_model",
+        CLI_LIB_SOURCE,
+        r"\bmod\s+exact_host_model\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "awaken_cli::local_process_stores",
+        CLI_LIB_SOURCE,
+        r"\bmod\s+local_process_stores\b",
+        TEST_SUPPORT_GATE,
+    ),
+    *(
+        (
+            f"awaken_cli::{name}",
+            CLI_LIB_SOURCE,
+            rf"\bpub\s+async\s+fn\s+{name}\b",
+            TEST_SUPPORT_GATE,
+        )
+        for name in (
+            "build_ephemeral_all_in_one_router",
+            "build_all_in_one_router_with_scenario_model",
+            "build_all_in_one_router_with_host_customizer",
+            "build_durable_all_in_one_router_with_host_customizer",
+            "build_all_in_one_router_with_model",
+            "build_durable_all_in_one_router",
+            "build_secured_all_in_one_router",
+        )
+    ),
+    (
         "InMemoryFileStore",
         FILE_STORE_SOURCE,
         r"\bpub\s+struct\s+InMemoryFileStore\b",
@@ -182,6 +215,12 @@ NON_PRODUCT_APIS = (
         COORDINATOR_SOURCE,
         r"\bpub\s+fn\s+ephemeral_resources_application\b",
         FEATURE_TEST_SUPPORT_GATE,
+    ),
+    (
+        "awaken_coordinator::test_worker_directory",
+        COORDINATOR_SOURCE,
+        r"\bpub\s+use\s+worker_registry::test_directory\s+as\s+test_worker_directory\b",
+        TEST_SUPPORT_GATE,
     ),
     (
         "InMemoryEnvRegistry",
@@ -247,6 +286,30 @@ NON_PRODUCT_APIS = (
         "SqliteWorkerDirectory::open_in_memory",
         WORKER_REGISTRY_SQLITE_SOURCE,
         r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "awaken_worker_registry::memory",
+        WORKER_REGISTRY_LIB_SOURCE,
+        r"\bmod\s+memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "MemoryWorkerDirectory",
+        WORKER_REGISTRY_LIB_SOURCE,
+        r"\bpub\s+use\s+memory::MemoryWorkerDirectory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemoryDreamProcessStore",
+        DREAM_APPLICATION_SOURCE,
+        r"\bpub\s+struct\s+InMemoryDreamProcessStore\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemoryOperationLedger",
+        TOOL_RELAY_SOURCE,
+        r"\bpub\s+use\s+ledger::InMemoryOperationLedger\b",
         TEST_SUPPORT_GATE,
     ),
     (
@@ -647,6 +710,30 @@ def redundant_runtime_memory_reexport_violations(source: str) -> list[str]:
     return []
 
 
+def coordinator_persistence_composition_violations(cli_source: str) -> list[str]:
+    """Keep backend initialization on the one runtime-process assembly path."""
+
+    errors: list[str] = []
+    for call in (
+        "awaken_coordinator::open_coordinator_persistence(",
+        "awaken_coordinator::open_existing_coordinator_persistence(",
+    ):
+        count = cli_source.count(call)
+        if count != 1:
+            errors.append(
+                f"awaken-cli must contain exactly one `{call}` call (found {count})"
+            )
+    for retired in (
+        "init_postgres_coordinator",
+        "init_existing_postgres_coordinator",
+        "init_worker_registry",
+        "worker_directory",
+    ):
+        if re.search(rf"\b{re.escape(retired)}\s*\(", cli_source):
+            errors.append(f"awaken-cli retains retired Worker authority path `{retired}`")
+    return errors
+
+
 def product_dispatch_fallback_violations(source: str) -> list[str]:
     """Require missing SQLite durability to fail closed outside test support."""
 
@@ -699,9 +786,10 @@ def selftest() -> None:
     Resources catalog -> accepted; O14 a cross-domain store field or unconditional
     migration acquisition -> rejected; O15 every volatile Host API is test-support
     gated -> accepted; O16 one missing Host gate -> rejected; O17 all canonical
-    File/Memory/Skill/Resource/Environment volatile entrypoints and the ephemeral
-    Resources assembler are test-support gated -> accepted; O18 any one gate missing ->
-    rejected; O19 product defaults/normal edges do not enable test-support ->
+    CLI scenario/restart helpers, File/Memory/Skill/Resource/Environment volatile
+    entrypoints, and the ephemeral Resources assembler are test-support gated ->
+    accepted; O18 any one gate missing -> rejected; O19 product defaults/normal
+    edges do not enable test-support ->
     accepted; O20 a product default, top-level normal edge, or target-conditioned
     normal edge enables it -> rejected while dev-dependencies and opt-in features
     remain accepted; O21 missing SQLite
@@ -715,7 +803,9 @@ def selftest() -> None:
     inmem -> accepted; O28 an ordinary, aliased, or target-conditioned product
     dependency on the selectable backend -> rejected; O29 Runtime has no
     compatibility re-export -> accepted; O30 a second Runtime public path for the
-    backend -> rejected.
+    backend -> rejected; O31 Coordinator persistence is initialized exactly once
+    per schema mode in the canonical Runtime assembly -> accepted; O32 a duplicate
+    initializer or retired global Worker authority path -> rejected.
     Together the rules cover compile-time acquisition, production call paths,
     component ownership, and schema acquisition.
     """
@@ -817,6 +907,22 @@ def selftest() -> None:
     any_gate = '#[cfg(any(test, feature = "test-support"))]\n'
     feature_gate = '#[cfg(feature = "test-support")]\n'
     volatile_surfaces = {
+        CLI_LIB_SOURCE: any_gate
+        + "mod exact_host_model;\n"
+        + any_gate
+        + "mod local_process_stores;\n"
+        + "\n".join(
+            any_gate + f"pub async fn {name}() {{}}"
+            for name in (
+                "build_ephemeral_all_in_one_router",
+                "build_all_in_one_router_with_scenario_model",
+                "build_all_in_one_router_with_host_customizer",
+                "build_durable_all_in_one_router_with_host_customizer",
+                "build_all_in_one_router_with_model",
+                "build_durable_all_in_one_router",
+                "build_secured_all_in_one_router",
+            )
+        ),
         FILE_STORE_SOURCE: any_gate + "pub struct InMemoryFileStore {}",
         MEMORY_STORE_SOURCE: any_gate + "pub struct VolatileMemoryRepository {}",
         MEMORY_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
@@ -825,7 +931,9 @@ def selftest() -> None:
         RESOURCE_STORE_SOURCE: any_gate + "pub fn in_memory() {}",
         RUNTIME_MEMORY_STORES: any_gate + "pub(crate) fn open() {}",
         COORDINATOR_SOURCE: feature_gate
-        + "pub fn ephemeral_resources_application() {}",
+        + "pub fn ephemeral_resources_application() {}\n"
+        + any_gate
+        + "pub use worker_registry::test_directory as test_worker_directory;",
         ENV_STORE_SQLITE_SOURCE: any_gate
         + "pub use inmem::InMemoryEnvRegistry;\n"
         + any_gate
@@ -844,6 +952,14 @@ def selftest() -> None:
         COMMIT_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
         FILE_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
         WORKER_REGISTRY_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        WORKER_REGISTRY_LIB_SOURCE: any_gate
+        + "mod memory;\n"
+        + any_gate
+        + "pub use memory::MemoryWorkerDirectory;",
+        DREAM_APPLICATION_SOURCE: any_gate
+        + "pub struct InMemoryDreamProcessStore;",
+        TOOL_RELAY_SOURCE: any_gate
+        + "pub use ledger::InMemoryOperationLedger;",
         RUN_INGRESS_ANY_SOURCE: any_gate + "pub fn open_sqlite_in_memory() {}",
         RUN_INGRESS_LIB_SOURCE: any_gate
         + "pub mod memory;\n"
@@ -963,6 +1079,15 @@ def selftest() -> None:
     assert redundant_runtime_memory_reexport_violations(
         "pub mod memory; pub use awaken_store_inmem::*;"
     ) == ["Runtime recreates the awaken-store-inmem public API path"]  # O30
+    canonical_persistence = (
+        "awaken_coordinator::open_coordinator_persistence(\n"
+        "awaken_coordinator::open_existing_coordinator_persistence("
+    )
+    assert coordinator_persistence_composition_violations(canonical_persistence) == []  # O31
+    assert coordinator_persistence_composition_violations(
+        canonical_persistence
+        + " awaken_coordinator::open_coordinator_persistence( worker_directory("
+    )  # O32
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -1079,4 +1204,6 @@ def check_all(repo_root: Path) -> list[str]:
         (repo_root / RUNTIME_LIB_SOURCE).read_text(encoding="utf-8")
     ):
         errors.append(f"{RUNTIME_LIB_SOURCE}: {error}")
+    for error in coordinator_persistence_composition_violations("\n".join(cli_sources)):
+        errors.append(f"awaken-cli persistence composition: {error}")
     return errors

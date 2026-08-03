@@ -55,9 +55,9 @@ pub use awaken_run_ingress_contract::{
     SessionRuntimeEnvelope, WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAcpCapabilityObservation,
     WorkerAcpCapabilityRequirement, WorkerAssignment, WorkerCredentialObservation,
     WorkerCredentialRevision, WorkerCredentialState, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerManifest, WorkerRecoveryMode, WorkerRegistration, WorkerSnapshot,
-    WorkerState, can_assign, can_claim, can_claim_locally, place_assignment,
-    worker_credential_realization_capabilities,
+    WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRecoveryMode,
+    WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
+    place_assignment, worker_credential_realization_capabilities,
 };
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};

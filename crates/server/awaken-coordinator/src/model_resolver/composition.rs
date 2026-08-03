@@ -70,9 +70,9 @@ impl CatalogModelPublicationResolver {
     /// Install the sole live Worker observation authority used to freeze an
     /// exact ACP capability profile into BackendOwned publications.
     #[must_use]
-    pub fn with_worker_directory(
+    pub fn with_worker_observations(
         mut self,
-        workers: Arc<dyn awaken_worker_registry::WorkerDirectory>,
+        workers: Arc<dyn awaken_worker_registry::WorkerObservationSource>,
     ) -> Self {
         self.workers = Some(workers);
         self
