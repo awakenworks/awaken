@@ -12,6 +12,7 @@ test-support = [
     "awaken-session-store/test-support",
     "awaken-work-store/test-support",
     "awaken-dream-application/test-support",
+    "awaken-model-catalog/test-support",
 ]
 
 [dependencies]
@@ -109,6 +110,7 @@ required-features = ["test-support"]
 awaken-work-store = { workspace = true, features = ["test-support"] }
 awaken-env-store = { workspace = true, features = ["test-support"] }
 awaken-session-store = { workspace = true, features = ["test-support"] }
+awaken-model-catalog = { workspace = true, features = ["test-support"] }
 awaken-sandbox-policy-store = { workspace = true, features = ["test-support"] }
 awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
@@ -116,4 +118,3 @@ tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 # Vault E2E: prove a vault credential resolves an inference end to end.
 awaken-config-resolver.workspace = true
-awaken-model-catalog.workspace = true

@@ -48,6 +48,12 @@ CAPTURE_STORE_SOURCE = "crates/stores/awaken-captured-content-store/src/lib.rs"
 CAPTURE_SQLITE_SOURCE = "crates/stores/awaken-captured-content-store/src/sqlite.rs"
 DATA_SUBJECT_SOURCE = "crates/control/awaken-data-subject/src/lib.rs"
 DATA_SUBJECT_SQLITE_SOURCE = "crates/control/awaken-data-subject/src/sqlite.rs"
+CONFIG_STORE_SQLITE_SOURCE = "crates/control/awaken-config-store/src/sqlite.rs"
+ADMIN_CONFIG_SOURCE = "crates/control/awaken-admin-config-api/src/lib.rs"
+ADMIN_CONFIG_SQLITE_SOURCE = "crates/control/awaken-admin-config-api/src/sqlite.rs"
+MODEL_CATALOG_REPO_SOURCE = "crates/control/awaken-model-catalog/src/repo.rs"
+MODEL_CATALOG_SQLITE_SOURCE = "crates/control/awaken-model-catalog/src/sqlite.rs"
+CONFIG_RESOLVER_SOURCE = "crates/control/awaken-config-resolver/src/lib.rs"
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -89,6 +95,15 @@ FORBIDDEN_CONTROL_EXECUTION_SOURCE = re.compile(
 FORBIDDEN_RETIRED_LAUNCH_SOURCE = re.compile(
     r"\b(?:HttpDeploymentSessionLauncher|DEPLOYMENT_SESSION_LAUNCH_PATH|"
     r"deployment_session_launch_router|DeploymentSessionLaunchConfig)\b"
+)
+
+REDUNDANT_ADMIN_STORE_REEXPORT = re.compile(
+    r"\bpub\s+use\s+awaken_config_resolver::(?:"
+    r"\{[^}]*\b(?:AgentInputBindingRepository|InferenceProfileStore|WebhookStore|"
+    r"InMemoryAgentInputBindingRepository|InMemoryProfileStore|InMemoryWebhookStore)\b[^}]*\}|"
+    r"(?:AgentInputBindingRepository|InferenceProfileStore|WebhookStore|"
+    r"InMemoryAgentInputBindingRepository|InMemoryProfileStore|InMemoryWebhookStore)\b)",
+    re.DOTALL,
 )
 
 VOLATILE_RUNTIME_HOST_APIS = (
@@ -262,6 +277,38 @@ NON_PRODUCT_APIS = (
         "SqliteDataSubjectRepo::open_in_memory",
         DATA_SUBJECT_SQLITE_SOURCE,
         r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteConfigStore::open_in_memory",
+        CONFIG_STORE_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteAdminStore::open_in_memory",
+        ADMIN_CONFIG_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemoryCatalogRepo",
+        MODEL_CATALOG_REPO_SOURCE,
+        r"\bpub\s+struct\s+InMemoryCatalogRepo\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteCatalogRepo::open_in_memory",
+        MODEL_CATALOG_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "Config Resolver in-memory reference stores",
+        CONFIG_RESOLVER_SOURCE,
+        r"\bpub\s+use\s+reference_stores::\{\s*"
+        r"InMemoryAgentInputBindingRepository,\s*InMemoryProfileStore,\s*"
+        r"InMemoryWebhookStore,?\s*\}",
         TEST_SUPPORT_GATE,
     ),
 )
@@ -527,6 +574,16 @@ def product_dispatch_fallback_violations(source: str) -> list[str]:
     return [] if guarded else ["SQLite dispatch missing-storage path does not fail closed"]
 
 
+def redundant_admin_store_reexport_violations(source: str) -> list[str]:
+    """Keep resolver store contracts on their one authoritative public path."""
+
+    return (
+        ["Admin API re-exports Config Resolver store contracts or fixtures"]
+        if REDUNDANT_ADMIN_STORE_REEXPORT.search(source)
+        else []
+    )
+
+
 def selftest() -> None:
     """Cause/effect decision table.
 
@@ -548,7 +605,9 @@ def selftest() -> None:
     accepted; O20 a product default or normal edge enables it -> rejected while
     dev-dependencies and opt-in features remain accepted; O21 missing SQLite
     dispatch durability fails closed in product and selects memory only with test
-    support -> accepted; O22 an unconditional in-memory fallback -> rejected.
+    support -> accepted; O22 an unconditional in-memory fallback -> rejected;
+    O23 one authoritative Config Resolver store path -> accepted; O24 an Admin
+    compatibility re-export of that path -> rejected.
     Together the rules cover compile-time acquisition, production call paths,
     component ownership, and schema acquisition.
     """
@@ -684,6 +743,13 @@ def selftest() -> None:
         CAPTURE_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
         DATA_SUBJECT_SOURCE: any_gate + "pub struct InMemoryDataSubjectRepo {}",
         DATA_SUBJECT_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        CONFIG_STORE_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        ADMIN_CONFIG_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        MODEL_CATALOG_REPO_SOURCE: any_gate + "pub struct InMemoryCatalogRepo {}",
+        MODEL_CATALOG_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        CONFIG_RESOLVER_SOURCE: any_gate
+        + "pub use reference_stores::{InMemoryAgentInputBindingRepository, "
+        + "InMemoryProfileStore, InMemoryWebhookStore};",
     }
     assert non_product_surface_violations(volatile_surfaces) == []  # O17
     for label, path, declaration, gate in NON_PRODUCT_APIS:
@@ -717,6 +783,10 @@ def selftest() -> None:
     assert product_dispatch_fallback_violations(
         "None => AnyDispatchStore::open_sqlite_in_memory()?"
     ) == ["SQLite dispatch missing-storage path does not fail closed"]  # O22
+    assert redundant_admin_store_reexport_violations("pub struct AdminState;") == []  # O23
+    assert redundant_admin_store_reexport_violations(
+        "pub use awaken_config_resolver::{InferenceProfileStore, InMemoryProfileStore};"
+    ) == ["Admin API re-exports Config Resolver store contracts or fixtures"]  # O24
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -811,4 +881,8 @@ def check_all(repo_root: Path) -> list[str]:
         (repo_root / DISPATCH_BACKEND_SOURCE).read_text(encoding="utf-8")
     ):
         errors.append(f"{DISPATCH_BACKEND_SOURCE}: {error}")
+    for error in redundant_admin_store_reexport_violations(
+        (repo_root / ADMIN_CONFIG_SOURCE).read_text(encoding="utf-8")
+    ):
+        errors.append(f"{ADMIN_CONFIG_SOURCE}: {error}")
     return errors
