@@ -1238,6 +1238,9 @@ mod process_role_surface_tests {
             PublicationModelComposition::PublishedProviders,
             ProcessAssemblyOptions {
                 role: config::Role::Control,
+                executable_environment_wiring: Some(
+                    executable_environment_registration::local_test_wiring(),
+                ),
                 ..Default::default()
             },
         )
@@ -1403,6 +1406,9 @@ mod process_role_surface_tests {
             },
             ProcessAssemblyOptions {
                 role: config::Role::Control,
+                executable_environment_wiring: Some(
+                    executable_environment_registration::local_test_wiring(),
+                ),
                 ..Default::default()
             },
         )

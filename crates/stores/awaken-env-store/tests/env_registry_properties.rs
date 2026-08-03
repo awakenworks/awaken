@@ -4,7 +4,7 @@
 //! create/archive counts and orderings the generator produces.
 
 use awaken_env_store::InMemoryEnvRegistry;
-use awaken_environment_contract::{EnvRegistry, EnvironmentConfig};
+use awaken_environment_contract::{EnvRegistry, EnvUpdate, EnvironmentConfig};
 use proptest::prelude::*;
 
 fn block<F: std::future::Future>(f: F) -> F::Output {
@@ -65,6 +65,43 @@ proptest! {
             a,
             awaken_environment_contract::EnvironmentRevision(1),
         )).is_some(), "authored history must remain exact-readable");
+    }
+
+    /// ABSORBING ARCHIVE: for every generated number of valid pre-terminal
+    /// updates and attempted post-terminal updates, archive is the last revision
+    /// and the terminal facts cannot be changed or revived.
+    #[test]
+    fn archive_is_absorbing_for_all_later_updates(
+        updates_before in 0usize..8,
+        updates_after in 1usize..8,
+    ) {
+        let r = reg();
+        let id = block(make(&r, "initial"));
+        for index in 0..updates_before {
+            let updated = block(r.update(
+                &id,
+                EnvUpdate {
+                    name: Some(format!("before-{index}")),
+                    ..Default::default()
+                },
+            ));
+            prop_assert!(updated.is_some());
+        }
+        let archived = block(r.archive(&id)).expect("archive existing definition");
+        for index in 0..updates_after {
+            let updated = block(r.update(
+                &id,
+                EnvUpdate {
+                    name: Some(format!("after-{index}")),
+                    ..Default::default()
+                },
+            ));
+            prop_assert!(updated.is_none());
+        }
+        let terminal = block(r.get(&id)).expect("terminal definition retained");
+        prop_assert_eq!(terminal.revision, archived.revision);
+        prop_assert_eq!(terminal.name, archived.name);
+        prop_assert_eq!(terminal.archived_at, archived.archived_at);
     }
 
     /// FAIL-CLOSED: archive/update on an id that was never created returns None.

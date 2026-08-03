@@ -189,7 +189,9 @@ async fn get_environment_sandbox_policy(
 fn map_application_error(error: EnvironmentApplicationError) -> StatusCode {
     match error {
         EnvironmentApplicationError::NotFound => StatusCode::NOT_FOUND,
-        EnvironmentApplicationError::BuiltinImmutable => StatusCode::CONFLICT,
+        EnvironmentApplicationError::BuiltinImmutable | EnvironmentApplicationError::Archived => {
+            StatusCode::CONFLICT
+        }
         EnvironmentApplicationError::Policy(error) => map_policy_error(error),
         EnvironmentApplicationError::PolicyStoreUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         EnvironmentApplicationError::Create(_) | EnvironmentApplicationError::Registration(_) => {

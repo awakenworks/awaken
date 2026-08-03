@@ -303,11 +303,41 @@ async function main() {
       pass('reclaim_older_than_ms=0 reclaims an abandoned lease');
 
       // -- Archive + delete --------------------------------------------------
+      // Terminal lifecycle cause/effect graph: C1 first archive withdraws the
+      // current execution projection and purges Work; C2 definition update after
+      // archive; C3 exact-policy bind after archive; C4 delete replays archive.
+      // Effects: E1 C2/C3 are 409 with no revival, E2 Work stays unavailable,
+      // E3 C4 is idempotent and returns the official deleted projection.
+      //
+      // | Rule | archived | command | status | execution/work effect |
+      // | T1 | false | archive | 200 | withdrawn and purged |
+      // | T2 | true | update | 409 | none |
+      // | T3 | true | bind policy | 409 | none |
+      // | T4 | true | delete | 200 | remains withdrawn |
       const archived = await client.beta.environments.archive(env.id, { betas: BETAS });
       assert.ok(archived.archived_at);
+      await assert.rejects(
+        client.beta.environments.update(env.id, { name: 'must-not-revive', betas: BETAS }),
+        (error) => error?.status === 409,
+        'T2 archived Environment update is a lifecycle conflict',
+      );
+      const archivedBind = await fetch(
+        `${baseUrl}/v1/awaken/environments/${env.id}/sandbox-execution-policy`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ policy_id: policyId, version: 1 }),
+        },
+      );
+      assert.equal(archivedBind.status, 409, 'T3 archived policy bind cannot revive execution');
+      await assert.rejects(
+        client.beta.environments.work.list(env.id, { betas: BETAS }),
+        (error) => error?.status === 404,
+        'T1/T3 archived Environment Work remains unavailable',
+      );
       const del = await client.beta.environments.delete(env.id, { betas: BETAS });
       assert.equal(del.type, 'environment_deleted');
-      pass('beta.environments.archive / delete');
+      pass('archive is terminal across update, policy binding, Work, and delete replay');
     });
 
     console.log('E2E PASS: the environments + work family round-trips through the official @anthropic-ai/sdk.');

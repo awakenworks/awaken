@@ -111,17 +111,7 @@ pub(super) async fn assemble_control_process_router(
     let executable_environment_registrar = assembly
         .executable_environment_wiring
         .map(|wiring| wiring.registrar)
-        .unwrap_or_else(|| {
-            let catalog = Arc::new(
-                awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new(),
-            );
-            Arc::new(
-                awaken_executable_environment_catalog::LocalExecutableEnvironmentRegistrar::new(
-                    catalog,
-                ),
-            )
-                as Arc<dyn awaken_executable_environment_contract::ExecutableEnvironmentRegistrar>
-        });
+        .expect("Control process requires executable Environment registrar wiring");
     let content_capture_ceiling = assembly.content_capture_ceiling;
     let execution_workspace = stores.workspace_root.as_deref().map_or_else(
         SharedHost::provision_local_workspace,
@@ -269,6 +259,9 @@ async fn standalone_control_uses_the_authored_capture_ceiling() {
         ProcessAssemblyOptions {
             role: config::Role::Control,
             content_capture_ceiling: awaken_runtime_contract::ContentCapture::Off,
+            executable_environment_wiring: Some(
+                executable_environment_registration::local_test_wiring(),
+            ),
             ..Default::default()
         },
     )
@@ -326,6 +319,9 @@ async fn standalone_control_projects_the_exact_model_supply_posture() {
             ProcessAssemblyOptions {
                 role: config::Role::Control,
                 model_supply: expected.clone(),
+                executable_environment_wiring: Some(
+                    executable_environment_registration::local_test_wiring(),
+                ),
                 ..Default::default()
             },
         )
@@ -348,6 +344,29 @@ async fn standalone_control_projects_the_exact_model_supply_posture() {
             "{rule}"
         );
     }
+}
+
+#[cfg(test)]
+#[tokio::test]
+#[should_panic(expected = "Control process requires executable Environment registrar wiring")]
+async fn standalone_control_rejects_missing_environment_registration_wiring() {
+    // Cause/effect graph: C1 role=Control; C2 executable Agent wiring may use its
+    // test fallback; C3 executable Environment wiring is absent. Effect E1 is a
+    // composition failure before any authoring router can return a fake success.
+    // Decision rule W1 = C1+C3 -> E1. The positive configured rules are owned by
+    // the adjacent standalone Control tests.
+    let _ = assemble_control_process_router(
+        in_memory_control_stores(),
+        None,
+        None,
+        None,
+        PublicationModelComposition::PublishedProviders,
+        ProcessAssemblyOptions {
+            role: config::Role::Control,
+            ..Default::default()
+        },
+    )
+    .await;
 }
 
 #[cfg(test)]

@@ -500,7 +500,8 @@ pub trait EnvRegistry: Send + Sync {
     async fn get_revision(&self, id: &str, revision: EnvironmentRevision) -> Option<EnvItem>;
     /// Whether `id` exists (archived or not).
     async fn exists(&self, id: &str) -> bool;
-    /// Apply an update patch; `None` when `id` does not exist.
+    /// Apply an update patch to an active definition; `None` when `id` does not
+    /// exist or the definition is already archived. Archive is terminal.
     async fn update(&self, id: &str, patch: EnvUpdate) -> Option<EnvItem>;
     /// Archive `id` (stamps `archived_at`); `None` when it does not exist.
     async fn archive(&self, id: &str) -> Option<EnvItem>;
