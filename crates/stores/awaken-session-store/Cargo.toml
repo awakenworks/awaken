@@ -31,5 +31,13 @@ tempfile = "3"
 # Property-based verification of the tenant-isolation fence (ADR-0059).
 proptest = { workspace = true }
 
+[features]
+# Private SQLite Session authority for unit/integration/scenario fixtures.
+test-support = []
+
+[[test]]
+name = "session_repo_conformance"
+required-features = ["test-support"]
+
 [lints]
 workspace = true

@@ -9,6 +9,7 @@ license.workspace = true
 test-support = [
     "dep:awaken-env-store",
     "awaken-env-store/test-support",
+    "awaken-session-store/test-support",
     "awaken-work-store/test-support",
     "awaken-dream-application/test-support",
 ]
@@ -107,6 +108,7 @@ required-features = ["test-support"]
 [dev-dependencies]
 awaken-work-store = { workspace = true, features = ["test-support"] }
 awaken-env-store = { workspace = true, features = ["test-support"] }
+awaken-session-store = { workspace = true, features = ["test-support"] }
 awaken-sandbox-policy-store = { workspace = true, features = ["test-support"] }
 awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

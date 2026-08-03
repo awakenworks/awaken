@@ -118,6 +118,7 @@ test-support = [
     "awaken-file-store/test-support",
     "awaken-memory-store/test-support",
     "awaken-resource-store/test-support",
+    "awaken-session-store/test-support",
     "awaken-skill-store/test-support",
     "awaken-protocol-managed/test-support",
     "awaken-dream-application/test-support",
@@ -140,6 +141,7 @@ container-k8s = ["awaken-runtime-host/container-k8s"]
 awaken-tool-relay = { workspace = true, features = ["test-support"] }
 awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-resource-store = { workspace = true, features = ["test-support"] }
+awaken-session-store = { workspace = true, features = ["test-support"] }
 awaken-skill-store = { workspace = true, features = ["test-support"] }
 awaken-captured-content-store = { workspace = true }
 awaken-scenario-host = { workspace = true }

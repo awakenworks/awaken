@@ -20,5 +20,21 @@ tokio.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 awaken-store-conformance.workspace = true
 
+[features]
+# Private SQLite commit authority for unit and integration fixtures.
+test-support = []
+
+[[test]]
+name = "checkpoint_reader"
+required-features = ["test-support"]
+
+[[test]]
+name = "scope_isolation"
+required-features = ["test-support"]
+
+[[test]]
+name = "sqlite_commit"
+required-features = ["test-support"]
+
 [lints]
 workspace = true

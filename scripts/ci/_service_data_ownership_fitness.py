@@ -36,6 +36,14 @@ ENV_STORE_SQLITE_SOURCE = "crates/stores/awaken-env-store/src/lib.rs"
 SANDBOX_POLICY_STORE_SOURCE = "crates/server/awaken-sandbox-policy-store/src/lib.rs"
 ENV_IMAGE_BUILD_SOURCE = "crates/server/awaken-environment-image-build/src/lib.rs"
 ENV_IMAGE_BUILD_SQLITE_SOURCE = "crates/server/awaken-environment-image-build/src/sqlite.rs"
+SESSION_STORE_SOURCE = "crates/stores/awaken-session-store/src/lib.rs"
+WORK_STORE_SOURCE = "crates/stores/awaken-work-store/src/lib.rs"
+COMMIT_SQLITE_SOURCE = "crates/stores/awaken-store-sqlite/src/lib.rs"
+FILE_SQLITE_SOURCE = "crates/resources/awaken-file-store/src/sqlite.rs"
+WORKER_REGISTRY_SQLITE_SOURCE = "crates/server/awaken-worker-registry/src/sqlite.rs"
+RUN_INGRESS_ANY_SOURCE = "crates/server/awaken-run-ingress/src/any.rs"
+RUN_INGRESS_SQLITE_SOURCE = "crates/server/awaken-run-ingress/src/sqlite.rs"
+DISPATCH_BACKEND_SOURCE = "crates/server/awaken-runtime-host/src/dispatch_backend.rs"
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -178,6 +186,54 @@ NON_PRODUCT_APIS = (
         "open_in_memory_environment_image_build_store",
         ENV_IMAGE_BUILD_SQLITE_SOURCE,
         r"\bpub\s+fn\s+open_in_memory_environment_image_build_store\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteManagedSessionRepository::open_in_memory",
+        SESSION_STORE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemoryWorkQueue",
+        WORK_STORE_SOURCE,
+        r"\bpub\s+use\s+inmem::InMemoryWorkQueue\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteWorkQueue::open_in_memory",
+        WORK_STORE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteCommitCoordinator::open_in_memory",
+        COMMIT_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteFileStore::open_in_memory",
+        FILE_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteWorkerDirectory::open_in_memory",
+        WORKER_REGISTRY_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "AnyDispatchStore::open_sqlite_in_memory",
+        RUN_INGRESS_ANY_SOURCE,
+        r"\bpub\s+fn\s+open_sqlite_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteDispatchStore::open_in_memory",
+        RUN_INGRESS_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
 )
@@ -429,6 +485,20 @@ def product_test_support_violations(manifest: dict) -> list[str]:
     return sorted(errors)
 
 
+def product_dispatch_fallback_violations(source: str) -> list[str]:
+    """Require missing SQLite durability to fail closed outside test support."""
+
+    guarded = re.search(
+        rf"None\s*=>\s*\{{.*?{TEST_SUPPORT_GATE}.*?"
+        rf"AnyDispatchStore::open_sqlite_in_memory\(\).*?"
+        rf"#\s*\[\s*cfg\s*\(\s*not\s*\(\s*any\s*\(\s*test\s*,\s*feature\s*=\s*\"test-support\"\s*\)\s*\)\s*\)\s*\].*?"
+        r"return\s+Err\(.*?product SQLite dispatch requires a durable storage_dir",
+        source,
+        re.DOTALL,
+    )
+    return [] if guarded else ["SQLite dispatch missing-storage path does not fail closed"]
+
+
 def selftest() -> None:
     """Cause/effect decision table.
 
@@ -448,9 +518,11 @@ def selftest() -> None:
     Resources assembler are test-support gated -> accepted; O18 any one gate missing ->
     rejected; O19 product defaults/normal edges do not enable test-support ->
     accepted; O20 a product default or normal edge enables it -> rejected while
-    dev-dependencies and opt-in features remain accepted. Together the rules cover
-    compile-time acquisition, production call paths, component ownership, and
-    schema acquisition.
+    dev-dependencies and opt-in features remain accepted; O21 missing SQLite
+    dispatch durability fails closed in product and selects memory only with test
+    support -> accepted; O22 an unconditional in-memory fallback -> rejected.
+    Together the rules cover compile-time acquisition, production call paths,
+    component ownership, and schema acquisition.
     """
 
     assert dependency_violations({"awaken-runtime-host", "awaken-runtime-contract"}) == []  # O1
@@ -569,6 +641,16 @@ def selftest() -> None:
         + "pub use in_memory::InMemoryEnvironmentImageBuildStore;",
         ENV_IMAGE_BUILD_SQLITE_SOURCE: any_gate
         + "pub fn open_in_memory_environment_image_build_store() {}",
+        SESSION_STORE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        WORK_STORE_SOURCE: any_gate
+        + "pub use inmem::InMemoryWorkQueue;\n"
+        + any_gate
+        + "pub fn open_in_memory() {}",
+        COMMIT_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        FILE_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        WORKER_REGISTRY_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        RUN_INGRESS_ANY_SOURCE: any_gate + "pub fn open_sqlite_in_memory() {}",
+        RUN_INGRESS_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
     }
     assert non_product_surface_violations(volatile_surfaces) == []  # O17
     for label, path, declaration, gate in NON_PRODUCT_APIS:
@@ -592,6 +674,16 @@ def selftest() -> None:
     assert product_test_support_violations(
         {"features": {"default": ["store/test-support"]}}
     ) == ["default feature enables `store/test-support`"]  # O20 default edge
+    guarded_dispatch = (
+        'None => { #[cfg(any(test, feature = "test-support"))] '
+        "AnyDispatchStore::open_sqlite_in_memory()?; "
+        '#[cfg(not(any(test, feature = "test-support")))] '
+        'return Err(internal("product SQLite dispatch requires a durable storage_dir")); }'
+    )
+    assert product_dispatch_fallback_violations(guarded_dispatch) == []  # O21
+    assert product_dispatch_fallback_violations(
+        "None => AnyDispatchStore::open_sqlite_in_memory()?"
+    ) == ["SQLite dispatch missing-storage path does not fail closed"]  # O22
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -682,4 +774,8 @@ def check_all(repo_root: Path) -> list[str]:
     }
     for error in non_product_surface_violations(non_product_sources):
         errors.append(f"Non-product surface: {error}")
+    for error in product_dispatch_fallback_violations(
+        (repo_root / DISPATCH_BACKEND_SOURCE).read_text(encoding="utf-8")
+    ):
+        errors.append(f"{DISPATCH_BACKEND_SOURCE}: {error}")
     return errors

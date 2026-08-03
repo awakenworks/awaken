@@ -85,6 +85,8 @@ uuid = { version = "1", features = ["v4"] }
 test-support = [
     "awaken-file-store/test-support",
     "awaken-memory-store/test-support",
+    "awaken-run-ingress/test-support",
+    "awaken-session-store/test-support",
 ]
 # Cross-node dispatch wake over NATS: passes through to awaken-run-ingress so the
 # host's wake selector can build a `NatsWakeSignal` when AWAKEN_DISPATCH_WAKE=nats.
@@ -101,6 +103,8 @@ container-k8s = ["awaken-sandbox-container/k8s"]
 [dev-dependencies]
 awaken-file-store = { workspace = true, features = ["test-support"] }
 awaken-memory-store = { workspace = true, features = ["test-support"] }
+awaken-run-ingress = { workspace = true, features = ["test-support"] }
+awaken-session-store = { workspace = true, features = ["test-support"] }
 awaken-skill-store = { workspace = true, features = ["test-support"] }
 awaken-file-application.workspace = true
 awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
