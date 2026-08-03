@@ -28,7 +28,10 @@ use awaken_config_resolver::{
     WebhookMutationIntent, WebhookStore, validate_agent_input_revision,
 };
 
-use crate::schema::admin_bundle;
+use crate::schema::{
+    BUNDLE_ID, CURRENT_V9_CHECKSUM, LEGACY_V9_CHECKSUM, admin_bundle,
+    reconcile_published_v9_receipt,
+};
 
 /// The admin component's table namespace (its bundle prefix).
 pub(crate) const NS: &str = "admin";
@@ -99,6 +102,7 @@ impl PostgresAdminStore {
             let pool = PgPool::connect(&url)
                 .await
                 .map_err(|err| StoreError::Connect(err.to_string()))?;
+            reconcile_published_v9_checksum(&pool).await?;
             if migrate_schema {
                 migrate(&pool).await?;
             } else {
@@ -194,6 +198,69 @@ impl PostgresAdminStore {
                 .collect()
         })
     }
+}
+
+async fn reconcile_published_v9_checksum(pool: &PgPool) -> Result<(), StoreError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    let ledger_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='admin_schema_migrations')",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    if !ledger_exists {
+        tx.commit()
+            .await
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        return Ok(());
+    }
+    let checksum = sqlx::query_scalar::<_, String>(
+        "SELECT checksum FROM admin_schema_migrations WHERE bundle_id=$1 AND version=9 FOR UPDATE",
+    )
+    .bind(BUNDLE_ID)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    let mut remaining_legacy_table = None;
+    if checksum.as_deref() == Some(LEGACY_V9_CHECKSUM) {
+        for table in ["admin_agent_mcp", "admin_mcp_server"] {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=$1)",
+            )
+            .bind(table)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+            if exists {
+                remaining_legacy_table = Some(table);
+                break;
+            }
+        }
+    }
+    if reconcile_published_v9_receipt(checksum.as_deref(), remaining_legacy_table)
+        .map_err(StoreError::Migrate)?
+    {
+        let updated = sqlx::query(
+            "UPDATE admin_schema_migrations SET checksum=$1 WHERE bundle_id=$2 AND version=9 AND checksum=$3",
+        )
+        .bind(CURRENT_V9_CHECKSUM)
+        .bind(BUNDLE_ID)
+        .bind(LEGACY_V9_CHECKSUM)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        if updated.rows_affected() != 1 {
+            return Err(StoreError::Migrate(
+                "legacy V0009 receipt changed during reconciliation".into(),
+            ));
+        }
+    }
+    tx.commit()
+        .await
+        .map_err(|error| StoreError::Migrate(error.to_string()))
 }
 
 impl Drop for PostgresAdminStore {

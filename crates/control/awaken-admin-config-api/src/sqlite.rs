@@ -10,7 +10,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError,
@@ -19,7 +19,8 @@ use awaken_config_resolver::{
     WebhookMutationIntent, WebhookStore, validate_agent_input_revision,
 };
 
-use crate::schema::admin_bundle;
+use crate::schema::reconcile_published_v9_receipt;
+use crate::schema::{BUNDLE_ID, CURRENT_V9_CHECKSUM, LEGACY_V9_CHECKSUM, admin_bundle};
 
 /// The admin component's table namespace (its bundle prefix).
 pub(crate) const NS: &str = "admin";
@@ -53,7 +54,8 @@ impl SqliteAdminStore {
         Self::over(conn)
     }
 
-    fn over(conn: Connection) -> Result<Self, StoreError> {
+    fn over(mut conn: Connection) -> Result<Self, StoreError> {
+        reconcile_published_v9_checksum(&mut conn)?;
         let bundle = admin_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(|err| StoreError::Migrate(err.to_string()))?
@@ -112,6 +114,65 @@ impl SqliteAdminStore {
         })
         .transpose()
     }
+}
+
+fn reconcile_published_v9_checksum(conn: &mut Connection) -> Result<(), StoreError> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    let ledger_exists: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='admin_schema_migrations')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    if !ledger_exists {
+        tx.commit()
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        return Ok(());
+    }
+    let checksum = tx
+        .query_row(
+            "SELECT checksum FROM admin_schema_migrations WHERE bundle_id=?1 AND version=9",
+            [BUNDLE_ID],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| StoreError::Migrate(error.to_string()))?;
+    let mut remaining_legacy_table = None;
+    if checksum.as_deref() == Some(LEGACY_V9_CHECKSUM) {
+        for table in ["admin_agent_mcp", "admin_mcp_server"] {
+            let exists: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .map_err(|error| StoreError::Migrate(error.to_string()))?;
+            if exists {
+                remaining_legacy_table = Some(table);
+                break;
+            }
+        }
+    }
+    if reconcile_published_v9_receipt(checksum.as_deref(), remaining_legacy_table)
+        .map_err(StoreError::Migrate)?
+    {
+        let updated = tx
+            .execute(
+                "UPDATE admin_schema_migrations SET checksum=?1 WHERE bundle_id=?2 AND version=9 AND checksum=?3",
+                params![CURRENT_V9_CHECKSUM, BUNDLE_ID, LEGACY_V9_CHECKSUM],
+            )
+            .map_err(|error| StoreError::Migrate(error.to_string()))?;
+        if updated != 1 {
+            return Err(StoreError::Migrate(
+                "legacy V0009 receipt changed during reconciliation".into(),
+            ));
+        }
+    }
+    tx.commit()
+        .map_err(|error| StoreError::Migrate(error.to_string()))
 }
 
 impl AgentInputBindingRepository for SqliteAdminStore {
@@ -877,6 +938,41 @@ mod tests {
                 .is_empty(),
             "the scoped receipt makes R1 idempotent"
         );
+    }
+
+    #[test]
+    fn exact_legacy_v9_receipt_is_reconciled_only_after_its_effect() {
+        // Cause/effect decision table: the shared policy authorizes an exact
+        // legacy receipt with both retired tables absent (C1); the SQLite
+        // adapter owns an immediate write transaction (C2). Effects: E1 update
+        // one row to the fixed current checksum and reopen normally; E2 preserve
+        // every domain row. R1=C1+C2=>E1+E2. Rejection combinations are owned by
+        // the shared policy test rather than duplicated here.
+        let mut compatible = Connection::open_in_memory().expect("open sqlite");
+        let bundle = admin_bundle().expect("bundle builds");
+        let runner =
+            awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS).expect("runner");
+        runner
+            .run_bundle(&compatible, &bundle)
+            .expect("apply current bundle");
+        compatible
+            .execute(
+                "UPDATE admin_schema_migrations SET checksum=?1 WHERE bundle_id=?2 AND version=9",
+                params![crate::schema::LEGACY_V9_CHECKSUM, crate::schema::BUNDLE_ID],
+            )
+            .expect("seed legacy receipt");
+        let store = SqliteAdminStore::over(compatible).expect("reconcile exact legacy receipt");
+        let checksum: String = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT checksum FROM admin_schema_migrations WHERE bundle_id=?1 AND version=9",
+                [crate::schema::BUNDLE_ID],
+                |row| row.get(0),
+            )
+            .expect("read reconciled receipt");
+        assert_eq!(checksum, crate::schema::CURRENT_V9_CHECKSUM, "R1");
     }
 
     #[test]
