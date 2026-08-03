@@ -215,6 +215,10 @@ pub struct SessionInit {
     /// Session-local replacement of the published toolset policy. `None`
     /// inherits the Agent snapshot; `Some([])` explicitly clears all toolsets.
     pub toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
+    /// Exact generation owned by `SessionResourceState`; zero is reserved for
+    /// legacy callers. Runtime must preserve this independently from the Session
+    /// root revision when it installs `resources`.
+    pub resource_revision: u64,
     /// The session's mounted resources (ADR-0038), parsed from the wire `resources[]`:
     /// files, memory stores, repos. The host realizes each into the run's sandbox and
     /// appends a prompt fragment to the system prompt (A3a). Empty = no mounts.
@@ -955,6 +959,7 @@ mod tests {
             agent_id: "a".into(),
             delegate_ids: Vec::new(),
             toolsets: None,
+            resource_revision: 0,
             resources: crate::ResolvedSessionResources::default(),
             model: None,
             runtime: None,

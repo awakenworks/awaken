@@ -1331,8 +1331,15 @@ impl SessionRuntime for ManagedHost {
         });
         // Stage only the already-resolved manifest. Runtime never reads the Agent
         // binding repository or composes defaults again.
-        self.stage_resource_manifest(thread, &init.workspace_id, 0, &init.resources, None, true)
-            .await?;
+        self.stage_resource_manifest(
+            thread,
+            &init.workspace_id,
+            init.resource_revision,
+            &init.resources,
+            None,
+            true,
+        )
+        .await?;
         Ok(())
     }
 

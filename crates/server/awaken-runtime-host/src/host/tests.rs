@@ -847,7 +847,11 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
             workspace_id: "workspace".into(),
             revision: awaken_session_contract::SessionRevision(2),
             baseline,
-            resources: Default::default(),
+            resource_revision: 7,
+            resources: awaken_session_contract::ResolvedSessionResources {
+                inputs: Vec::new(),
+                skills: Some(Vec::new()),
+            },
             mcp: Vec::new(),
             toolsets: Vec::new(),
         }
@@ -873,7 +877,8 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
 
     let recorder = PromptRecorder::default();
     let observed = recorder.0.clone();
-    let host = SharedHost::new(Arc::new(recorder), "stub");
+    let host = Arc::new(SharedHost::new(Arc::new(recorder), "stub"));
+    let _managed = crate::ManagedHost::new(host.clone());
     let frozen = projection("Use the bound Flow project.", true);
     host.install_frozen_session_projection("flow-thread", frozen.clone(), None)
         .await
@@ -881,6 +886,19 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
     host.install_frozen_session_projection("flow-thread", frozen, None)
         .await
         .expect("same frozen fingerprint is idempotent");
+
+    // Frozen-projection Resource-generation cause/effect decision table.
+    // C1=projection has an explicit non-legacy Resource generation;
+    // C2=resources are non-default and must be installed. E1=the Runtime's
+    // canonical manifest preserves that exact generation; E2=it never silently
+    // falls back to generation zero. R1 C1+C2=>E1,E2.
+    assert_eq!(
+        host.thread_resource_manifest("flow-thread")
+            .expect("frozen resources installed")
+            .revision,
+        7,
+        "R1 preserves the SessionResourceState generation"
+    );
 
     let spec = host.sandbox_spec("flow-thread");
     assert_eq!(spec.mounts.len(), 1);
@@ -1426,6 +1444,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
             agent_id: agent.into(),
             delegate_ids: Vec::new(),
             toolsets: None,
+            resource_revision: 0,
             resources: effective_resources(
                 store
                     .map(|id| TestInput {
@@ -1588,6 +1607,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         agent_id: "agent".into(),
         delegate_ids: Vec::new(),
         toolsets: None,
+        resource_revision: 0,
         resources: resources.clone(),
         model: None,
         runtime: None,
@@ -2175,6 +2195,7 @@ async fn applying_repository_detach_removes_the_resident_workdir_checkout() {
                 agent_id: "agent".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: desired,
                 model: None,
                 runtime: None,
@@ -2447,6 +2468,7 @@ async fn frozen_environment_network_follows_the_decision_table() {
                     agent_id: "a".into(),
                     delegate_ids: Vec::new(),
                     toolsets: None,
+                    resource_revision: 0,
                     resources: Default::default(),
                     model: None,
                     runtime: None,
@@ -2476,6 +2498,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         agent_id: "a".into(),
         delegate_ids: Vec::new(),
         toolsets: None,
+        resource_revision: 0,
         resources: Default::default(),
         model: None,
         runtime: None,
@@ -2520,6 +2543,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         agent_id: "a".into(),
         delegate_ids: Vec::new(),
         toolsets: None,
+        resource_revision: 0,
         resources: Default::default(),
         model: None,
         runtime: None,
@@ -2551,6 +2575,7 @@ async fn prepare_session_is_lazy_and_first_turn_materializes_the_environment() {
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: Default::default(),
                 model: None,
                 runtime: None,
@@ -2594,6 +2619,7 @@ async fn on_tool_use_text_only_turn_keeps_the_environment_absent() {
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: Default::default(),
                 model: None,
                 runtime: None,
@@ -2688,6 +2714,7 @@ async fn on_tool_use_brain_skill_call_keeps_the_environment_absent() {
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: Default::default(),
                 model: None,
                 runtime: None,
@@ -2721,6 +2748,7 @@ async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: Default::default(),
                 model: None,
                 runtime: None,
@@ -2765,6 +2793,7 @@ async fn on_tool_use_filesystem_skill_forces_an_eager_environment() {
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: Default::default(),
                 model: None,
                 runtime: None,
@@ -2887,6 +2916,7 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: Default::default(),
                 model: None,
                 runtime: None,
@@ -2941,6 +2971,7 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: Default::default(),
                 model: None,
                 runtime: None,
@@ -2989,6 +3020,7 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
         agent_id: agent.into(),
         delegate_ids: Vec::new(),
         toolsets: None,
+        resource_revision: 0,
         resources: effective_resources(
             (agent == "a")
                 .then(|| TestInput {
@@ -3184,6 +3216,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
                 agent_id: "a".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: effective_resources(vec![
                     TestInput {
                         kind: "file".into(),
@@ -4159,6 +4192,7 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
                 agent_id: "a".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: effective_repository(
                     "repo-1",
                     "https://github.com/awaken/example.git",
@@ -4500,6 +4534,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
                     agent_id: "a".into(),
                     delegate_ids: Vec::new(),
                     toolsets: None,
+                    resource_revision: 0,
                     resources,
                     model: None,
                     runtime: None,
@@ -4562,6 +4597,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
                 agent_id: "a".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: effective_repository(
                     "repo-1",
                     "https://github.com/awaken/example.git",
@@ -4639,6 +4675,7 @@ fn bare_session(agent: &str, workspace: &str) -> awaken_session_contract::Sessio
         agent_id: agent.into(),
         delegate_ids: Vec::new(),
         toolsets: None,
+        resource_revision: 0,
         resources: Default::default(),
         model: None,
         runtime: None,
@@ -6284,6 +6321,7 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
                 agent_id: "agent-a".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: Default::default(),
                 model: Some("stub".into()),
                 runtime: Some("default".into()),

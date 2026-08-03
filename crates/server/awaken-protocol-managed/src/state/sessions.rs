@@ -1531,6 +1531,7 @@ impl ManagedState {
                             agent_id: baseline.agent_id.clone(),
                             delegate_ids: baseline.delegate_ids.clone(),
                             toolsets: Some(session.tools.toolsets.clone()),
+                            resource_revision: session.resources.revision,
                             resources: session.resources.active.clone(),
                             model: Some(baseline.execution_model_ref.clone()),
                             runtime: baseline.runtime.clone(),

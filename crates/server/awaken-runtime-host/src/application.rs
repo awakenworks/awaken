@@ -629,8 +629,9 @@ impl crate::SharedHost {
 
         validate_baseline_projection(&baseline, &built_in_mounts)?;
         if projection.resources != awaken_session_contract::ResolvedSessionResources::default() {
-            let manifest = awaken_session_contract::SessionResourceManifest::new(
+            let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
                 projection.workspace_id.clone(),
+                projection.resource_revision,
                 projection.resources,
             );
             self.install_dispatched_resources(thread, &manifest, claim)
