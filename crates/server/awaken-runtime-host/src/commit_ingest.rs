@@ -131,7 +131,7 @@ impl ClaimedCommitService {
         }
     }
 
-    pub(crate) fn for_host(
+    pub fn for_host(
         dispatch: Arc<dyn DispatchQueue>,
         host: Arc<SharedHost>,
         directory: Arc<dyn WorkerDirectory>,

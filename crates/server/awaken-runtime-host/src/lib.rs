@@ -29,7 +29,6 @@ pub use container_environment::package_image_provisioner;
 mod delegate;
 mod deployment_config;
 mod dispatch_backend;
-mod dispatch_transport;
 mod file_content_transport;
 mod host;
 mod hub;
@@ -67,6 +66,7 @@ mod tool_output_spill;
 mod unavailable_worker;
 mod web_search;
 mod worker_http;
+mod worker_ports;
 
 use crate::session_environment::AgentSandbox as _;
 
@@ -142,12 +142,6 @@ pub use crate::deployment_config::{
     AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
     PackageImageBuilder, SandboxSettings, SandboxTier, StoreKind, Wake,
     default_postgres_max_connections,
-};
-pub use crate::dispatch_transport::{
-    RegisteredWorkerTransportBuildError, WorkerDispatchService,
-    dispatch_transport_router_with_service, registered_worker_transport_router,
-    registered_worker_transport_router_with_services, worker_dispatch_store_with_upstream,
-    worker_transports_with_upstream,
 };
 // The model-route seam (R1/R2/R5): a composition root supplies its own
 // `InferenceExecutorMaterializer` to map a session's model ref to a labeled executor.

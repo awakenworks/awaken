@@ -12,6 +12,7 @@ use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpoi
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_coordinator_runtime::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_run_ingress::{
     CredentialRealizationReceipt, DispatchOutcome, DispatchQueue, FencedStreamCheckpointStore,
     MemoryDispatchStore, PendingInput, RunClaim, RunDispatch, WorkerIdentity,
@@ -27,7 +28,6 @@ use awaken_runtime_contract::{
     CredentialRealizationCapabilities, CredentialRealizationKind, CredentialRef, CredentialUsage,
     InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
-use awaken_runtime_host::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
 use awaken_worker_runtime::HttpDispatchQueue;
 use awaken_worker_transport_security::{
