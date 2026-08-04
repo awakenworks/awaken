@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use awaken_config_store::{
+use awaken_agent_config::{
     AuditedConfigWrite, ManagementAuditEntry, ManagementAuditRecord, ScopedConfigRegistry,
 };
 use awaken_tenancy::ScopeId;

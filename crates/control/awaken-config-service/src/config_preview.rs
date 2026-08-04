@@ -5,8 +5,8 @@
 //! Coordinator projection. Durable authoring and publication remain in
 //! `config_service`.
 
+use awaken_agent_config::{AgentConfig, AgentConfigRevision};
 use awaken_config_resolver::AgentInputConfig;
-use awaken_config_store::{AgentConfig, AgentConfigRevision};
 use awaken_executable_agent_contract::ExecutableAgentRegistration;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
@@ -57,7 +57,7 @@ impl ConfigService {
             path: error.path,
             message: error.message,
         })?;
-        awaken_config_store::compile_published(
+        awaken_agent_config::compile_published(
             &resolved.config,
             catalog,
             snapshot_metadata(&resolved),
@@ -126,7 +126,7 @@ impl ConfigService {
         });
         metadata.resolution = awaken_runtime_contract::ResolutionManifest::new(resolved_inputs)
             .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
-        let snapshot = awaken_config_store::compile_published(
+        let snapshot = awaken_agent_config::compile_published(
             &resolved.config,
             catalog,
             metadata,

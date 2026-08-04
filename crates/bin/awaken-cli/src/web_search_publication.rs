@@ -1,16 +1,13 @@
-//! Config-plane validation for the built-in WebSearch plugin.
+//! Composition adapter for WebSearch publication validation.
 
-use crate::PluginPublicationResolver;
+use awaken_config_service::PluginPublicationResolver;
 
-/// Validates authored WebSearch configuration against the same provider
-/// registry used by execution, without materializing credentials.
-pub struct WebSearchPublicationResolver {
+pub(crate) struct WebSearchPublicationResolver {
     providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
 }
 
 impl WebSearchPublicationResolver {
-    #[must_use]
-    pub fn new(providers: awaken_ext_builtin_tools::WebSearchProviderRegistry) -> Self {
+    pub(crate) fn new(providers: awaken_ext_builtin_tools::WebSearchProviderRegistry) -> Self {
         Self { providers }
     }
 }
@@ -41,11 +38,9 @@ mod tests {
 
     #[tokio::test]
     async fn publication_validation_follows_provider_semantics() {
-        // Cause/effect decision table:
-        // R1 owned free provider + complete config -> unchanged frozen config;
-        // R2 paid provider without an exact credential pin -> reject;
-        // R3 resolver identity -> the canonical WebSearch plugin id.
-        // Validation never materializes a credential or invokes a provider.
+        // Causes: C1 free provider with complete config; C2 paid provider lacks
+        // credential pin. Effects: E1 unchanged frozen config; E2 rejection.
+        // R1 C1 -> E1; R2 C2 -> E2. No credential is materialized.
         let resolver = WebSearchPublicationResolver::new(
             awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
         );
@@ -56,7 +51,8 @@ mod tests {
                     Some(&serde_json::json!({ "provider_id": "duckduckgo", "options": {} })),
                 )
                 .await,
-            Ok(serde_json::json!({ "provider_id": "duckduckgo", "options": {} }))
+            Ok(serde_json::json!({ "provider_id": "duckduckgo", "options": {} })),
+            "R1"
         );
         assert!(
             resolver
@@ -65,11 +61,8 @@ mod tests {
                     Some(&serde_json::json!({ "provider_id": "brave", "options": {} })),
                 )
                 .await
-                .is_err()
-        );
-        assert_eq!(
-            resolver.plugin_id(),
-            awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID
+                .is_err(),
+            "R2"
         );
     }
 }

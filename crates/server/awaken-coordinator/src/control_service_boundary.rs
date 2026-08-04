@@ -7,8 +7,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use awaken_agent_config::{AuditedConfigWrite, ManagementAuditEntry, ManagementAuditRecord};
 use awaken_config_service::{ManagementAuditPlane, ManagementAuditRepository};
-use awaken_config_store::{AuditedConfigWrite, ManagementAuditEntry, ManagementAuditRecord};
 use awaken_credential_contract::CredentialSourceId;
 use awaken_session_application::SessionCredentialSource;
 use awaken_session_contract::ManagedLifecycleFact;

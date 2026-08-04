@@ -97,10 +97,11 @@ trait Dispatch: DispatchQueue + Inbox + Outbox {}
 // Worker (the claim/run loop) and Signal (wake) are in-process, not store ports.
 ```
 
-### Config — `awaken-config-store`
+### Config — `awaken-agent-config` / `awaken-config-store`
 
-`ConfigRegistry` (today's `ConfigStore`, renamed): config records + publications
-keyed by id/fingerprint. Versioned-registry surface is P1.
+`awaken-agent-config` owns `ConfigRegistry` (the former `ConfigStore` port): config
+records + publications keyed by id/fingerprint. `awaken-config-store` owns the
+durable SQLite/Postgres implementations. Versioned-registry surface is P1.
 
 ## Backend adapters (port × backend)
 

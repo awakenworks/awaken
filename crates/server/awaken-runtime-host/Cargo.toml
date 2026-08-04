@@ -6,7 +6,7 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "shared"
-layer = "application"
+layer = "infrastructure"
 authority = "runtime-host"
 
 [dependencies]

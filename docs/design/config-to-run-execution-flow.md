@@ -72,7 +72,7 @@ The crate-level static boundary is explicit:
 |---|---|---|
 | `awaken-session-application` | Coordinator application / Session | private application collaborators; exact Environment selection; repository/environment-binding consistency; one create/recovery WorkQueue projection command; lifecycle fence |
 | `awaken-protocol-managed::ManagedState` | Coordinator interface / Managed wire | explicit calls into `SessionApplication`, DTO projections, public ids, event/SSE delivery; no implicit dereference or Session repository ownership |
-| `awaken-runtime-host::SharedHost` | Shared application substrate / Runtime | one protocol-neutral execution/session substrate |
+| `awaken-runtime-host::SharedHost` | Shared host infrastructure / Runtime | one protocol-neutral execution/session substrate composed from injected ports/adapters |
 | `awaken-coordinator-runtime` | Coordinator interface / durable operations | HTTP translation into neutral Host durable-control methods |
 | `awaken-worker-runtime` | Worker infrastructure / Worker transport | authenticated registration/lifecycle and Session-control clients |
 

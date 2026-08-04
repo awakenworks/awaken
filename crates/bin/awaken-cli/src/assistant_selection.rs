@@ -4,7 +4,7 @@
 //! It never authors another default, credential, or provider record.
 
 use awaken_acp_application::AcpHostObservation;
-use awaken_config_store::ModelSelection;
+use awaken_agent_config::ModelSelection;
 use awaken_credential_vault::{CredentialKind, CredentialSource, CredentialStatus};
 use awaken_model_catalog::{OfferingStatus, ProviderCatalog};
 

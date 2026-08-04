@@ -6,7 +6,7 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "control"
-layer = "infrastructure"
+layer = "domain"
 authority = "model-catalog"
 
 [dependencies]
@@ -15,43 +15,18 @@ serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
 async-trait.workspace = true
 schemars = { version = "1", optional = true }
-# Feature `sqlite`: embedded durable CatalogRepo backend over the crate's own
-# `catalog` migration scope (ADR-0043).
-rusqlite = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true }
-# Feature `postgres`: network-DB CatalogRepo backend over the same `catalog`
-# migration scope (ADR-0043).
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
-awaken-scoped-migration = { workspace = true, features = ["postgres"] }
-awaken-scoped-migration-sqlite.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
-tempfile = "3"
-# Raw SQLite access for the reload-time corrupt-row tests: inject rows the
-# fail-closed write path can never produce (dangling refs, non-JSON `data`), then
-# assert `snapshot()` fails closed. Reuses the crate's own `sqlite`-feature pin.
-rusqlite = { workspace = true }
 # Wire-shape unit tests (serde round-trips of the catalog DTOs) — available even
 # without the `sqlite`/`postgres` features that pull `serde_json` as a lib dep.
 serde_json = { workspace = true }
-# The live Postgres conformance test (feature `postgres`) isolates each suite in
-# its own schema via `SET search_path`.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 
 [features]
 default = []
 test-support = []
 # TS-contract generation (ADR-0043): derive JsonSchema on wire DTOs.
 schema = ["dep:schemars"]
-# SQLite-backed CatalogRepo (`sqlite::SqliteCatalogRepo`), ADR-0043 sqlite-repos.
-sqlite = ["dep:rusqlite", "dep:serde_json", "dep:tokio"]
-# Postgres-backed CatalogRepo (`postgres::PostgresCatalogRepo`), ADR-0043.
-postgres = ["dep:sqlx"]
-
-[[test]]
-name = "repo_conformance"
-required-features = ["test-support"]
 
 [lints]
 workspace = true

@@ -16,11 +16,11 @@ use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-use crate::repo::{CredentialMutationIntent, CredentialRepo};
 use crate::schema::credential_bundle;
-use crate::{
-    CredentialError, CredentialPool, CredentialPoolId, CredentialSource, CredentialSourceId,
-    SealedBlobStore, SecretRef,
+use awaken_credential_contract::CredentialSourceId;
+use awaken_credential_vault::repo::{CredentialMutationIntent, CredentialRepo};
+use awaken_credential_vault::{
+    CredentialError, CredentialPool, CredentialPoolId, CredentialSource, SealedBlobStore, SecretRef,
 };
 
 /// The credential component's table namespace (its bundle prefix).
@@ -553,7 +553,7 @@ impl SealedBlobStore for SqliteSealedBlobStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CredentialKind, CredentialStatus};
+    use awaken_credential_vault::{CredentialKind, CredentialStatus};
 
     fn source(id: &str) -> CredentialSource {
         CredentialSource {

@@ -15,7 +15,7 @@ serde_json.workspace = true
 async-trait.workspace = true
 tracing = "0.1"
 awaken-runtime-contract.workspace = true
-awaken-config-store.workspace = true
+awaken-agent-config.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }

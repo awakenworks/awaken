@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use awaken_agent_config::ModelSelection;
 use awaken_config_resolver::{
     ExecutorModelCapability, InferenceProfile, InferenceProfileStore, ModelTarget,
     derive_vendor_pool, get_workspace_profile, select_offering, validate_executor_offering,
@@ -15,7 +16,6 @@ use awaken_config_resolver::{
 use awaken_config_service::{
     ModelPublicationResolver, PublicationResolutionError, ResolvedPublicationModels,
 };
-use awaken_config_store::ModelSelection;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::{
     CredentialBinding, CredentialKind, CredentialSource, CredentialStatus,

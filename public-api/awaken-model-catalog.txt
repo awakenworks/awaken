@@ -15,9 +15,6 @@ pub fn awaken_model_catalog::repo::CatalogRepo::put_provider<'life0, 'async_trai
 pub fn awaken_model_catalog::repo::CatalogRepo::reconcile_brokered_projection<'life0, 'async_trait>(&'life0 self, awaken_model_catalog::BrokeredCatalogProjection) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::CatalogSyncResult, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_model_catalog::repo::CatalogRepo::reconcile_discovered_models<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_model_catalog::ProtocolEndpointId, alloc::vec::Vec<awaken_model_catalog::DiscoveredModel>, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::CatalogSyncResult, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_model_catalog::repo::CatalogRepo::snapshot<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::ProviderCatalog, awaken_model_catalog::repo::RepoError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub mod awaken_model_catalog::schema
-pub const awaken_model_catalog::schema::BUNDLE_ID: &str
-pub fn awaken_model_catalog::schema::catalog_bundle() -> core::result::Result<awaken_scoped_migration::MigrationBundle, awaken_scoped_migration::MigrationError>
 pub enum awaken_model_catalog::ApiDialect
 pub awaken_model_catalog::ApiDialect::AnthropicMessages
 pub awaken_model_catalog::ApiDialect::Gemini
@@ -99,6 +96,7 @@ pub awaken_model_catalog::ModelAttributes::max_output_tokens: core::option::Opti
 pub awaken_model_catalog::ModelAttributes::provenance: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_model_catalog::ModelAttributeProvenance>
 impl awaken_model_catalog::ModelAttributes
 pub fn awaken_model_catalog::ModelAttributes::stamped(self, awaken_model_catalog::ModelAttributeSource, u64) -> Self
+pub fn awaken_model_catalog::ModelAttributes::validate(&self, &str) -> core::result::Result<(), awaken_model_catalog::CatalogError>
 pub struct awaken_model_catalog::Offering
 pub awaken_model_catalog::Offering::dialect: awaken_model_catalog::ApiDialect
 pub awaken_model_catalog::Offering::last_seen_at_unix_ms: core::option::Option<u64>

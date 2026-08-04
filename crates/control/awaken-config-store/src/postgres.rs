@@ -6,11 +6,10 @@ use sqlx::types::Json;
 
 use awaken_tenancy::ScopeId;
 
-use crate::config::AgentConfig;
 use crate::schema::config_bundle;
-use crate::store::{
-    AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError, ConfigWrite,
-    DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect,
+use awaken_agent_config::{
+    AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
+    ConfigWrite, DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect,
     ScopedConfigRegistry, StoredPublication,
 };
 

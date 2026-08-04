@@ -7,11 +7,10 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use awaken_tenancy::ScopeId;
 
-use crate::config::AgentConfig;
 use crate::schema::config_bundle;
-use crate::store::{
-    AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError, ConfigWrite,
-    DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect,
+use awaken_agent_config::{
+    AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
+    ConfigWrite, DEFAULT_SCOPE, ManagementAuditEntry, ManagementAuditRecord, ManagementEffect,
     ScopedConfigRegistry, StoredPublication,
 };
 
@@ -795,7 +794,7 @@ impl ConfigRegistry for SqliteConfigStore {
 #[cfg(test)]
 mod scope_tests {
     use super::*;
-    use crate::store::ScopedConfigRegistry;
+    use awaken_agent_config::ScopedConfigRegistry;
     use awaken_tenancy::ScopeId;
 
     fn agent(id: &str) -> AgentConfig {
@@ -805,7 +804,7 @@ mod scope_tests {
             instructions: "be helpful".to_string(),
             max_steps: 8,
             delegation_limits: Default::default(),
-            model_binding: crate::config::ModelSelection::pinned("p", "m", "b"),
+            model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b"),
             tool_ids: Vec::new(),
             model_fallbacks: Vec::new(),
             plugin_ids: Vec::new(),

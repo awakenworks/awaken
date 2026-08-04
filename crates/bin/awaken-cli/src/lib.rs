@@ -30,6 +30,7 @@ mod process_stores;
 mod process_surface;
 mod resource_component;
 mod runtime_process_router;
+mod web_search_publication;
 mod worker_observation_wiring;
 mod worker_transport_security;
 
@@ -238,16 +239,16 @@ async fn open_process_stores(
         ensure_parent(&cfg.catalog)?;
         Some(match &cfg.catalog {
             StoreBackend::Sqlite(p) => Arc::new(
-                awaken_model_catalog::SqliteCatalogRepo::open(&path(p))
+                awaken_model_catalog_store::SqliteCatalogRepo::open(&path(p))
                     .map_err(|error| format!("open catalog SQLite {}: {error}", p.display()))?,
             ),
             StoreBackend::Postgres(url) => Arc::new(
                 match postgres_schema {
                     PostgresSchemaMode::Migrate => {
-                        awaken_model_catalog::PostgresCatalogRepo::connect(url).await
+                        awaken_model_catalog_store::PostgresCatalogRepo::connect(url).await
                     }
                     PostgresSchemaMode::Verify => {
-                        awaken_model_catalog::PostgresCatalogRepo::connect_existing(url).await
+                        awaken_model_catalog_store::PostgresCatalogRepo::connect_existing(url).await
                     }
                 }
                 .map_err(|error| format!("connect catalog Postgres: {error}"))?,
@@ -267,11 +268,11 @@ async fn open_process_stores(
         ) = match &cfg.credential {
             StoreBackend::Sqlite(p) => {
                 let file = path(p);
-                let (creds, blobs) = awaken_credential_vault::sqlite::open_migrated_pair(&file)
+                let (creds, blobs) = awaken_credential_store::sqlite::open_migrated_pair(&file)
                     .map_err(|error| format!("open credential SQLite {}: {error}", p.display()))?;
                 (
                     Arc::new(creds),
-                    Arc::new(awaken_credential_vault::SealedAeadSecretStore::over(
+                    Arc::new(awaken_credential_store::SealedAeadSecretStore::over(
                         key,
                         Arc::new(blobs),
                     )),
@@ -280,19 +281,19 @@ async fn open_process_stores(
             StoreBackend::Postgres(url) => {
                 let (creds, blobs) = match postgres_schema {
                     PostgresSchemaMode::Migrate => {
-                        awaken_credential_vault::postgres::connect_migrated_pair(url)
+                        awaken_credential_store::postgres::connect_migrated_pair(url)
                             .await
                             .map_err(|error| format!("connect credential Postgres: {error}"))?
                     }
                     PostgresSchemaMode::Verify => {
-                        awaken_credential_vault::postgres::connect_existing_pair(url)
+                        awaken_credential_store::postgres::connect_existing_pair(url)
                             .await
                             .map_err(|error| format!("connect credential Postgres: {error}"))?
                     }
                 };
                 (
                     Arc::new(creds),
-                    Arc::new(awaken_credential_vault::SealedAeadSecretStore::over(
+                    Arc::new(awaken_credential_store::SealedAeadSecretStore::over(
                         key,
                         Arc::new(blobs),
                     )),
@@ -452,7 +453,7 @@ async fn open_process_stores(
         None
     };
 
-    let config: Option<Arc<dyn awaken_config_store::ScopedConfigRegistry>> = if opens_control {
+    let config: Option<Arc<dyn awaken_agent_config::ScopedConfigRegistry>> = if opens_control {
         ensure_parent(&cfg.config)?;
         Some(match &cfg.config {
             StoreBackend::Sqlite(p) => Arc::new(
@@ -958,8 +959,8 @@ fn local_org_id() -> String {
     awaken_control::DEFAULT_ORG_ID.to_owned()
 }
 
-// The seal-key resolution tests moved to `awaken_credential_vault::sealed`, the
-// single home of `resolve_seal_key_hex` / `parse_seal_key`.
+// Seal-key parsing and its decision tests live with the authoritative AEAD
+// adapter in `awaken_credential_store::sealed`.
 
 #[cfg(test)]
 mod runtime_session_store_tests {
@@ -1122,7 +1123,7 @@ mod runtime_session_store_tests {
         let resolved = resolver
             .resolve_models(
                 &awaken_tenancy::ScopeId::from("workspace-a"),
-                &awaken_config_store::ModelSelection::Pinned(
+                &awaken_agent_config::ModelSelection::Pinned(
                     awaken_runtime_contract::resolved::ModelBinding::new("", "scenario", ""),
                 ),
                 &[],
@@ -1144,7 +1145,7 @@ mod runtime_session_store_tests {
         let error = resolver
             .resolve_models(
                 &awaken_tenancy::ScopeId::from("workspace-a"),
-                &awaken_config_store::ModelSelection::Pinned(
+                &awaken_agent_config::ModelSelection::Pinned(
                     awaken_runtime_contract::resolved::ModelBinding::new(
                         "other", "scenario", "default",
                     ),
@@ -1400,7 +1401,7 @@ mod process_role_surface_tests {
         async fn resolve_models(
             &self,
             _workspace: &awaken_tenancy::ScopeId,
-            _selection: &awaken_config_store::ModelSelection,
+            _selection: &awaken_agent_config::ModelSelection,
             _candidates: &[awaken_runtime_contract::resolved::ModelBinding],
         ) -> Result<
             awaken_config_service::ResolvedPublicationModels,

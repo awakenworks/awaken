@@ -6,7 +6,7 @@ license.workspace = true
 
 [package.metadata.awaken]
 context = "control"
-layer = "infrastructure"
+layer = "application"
 authority = "credential-vault"
 
 [dependencies]
@@ -17,52 +17,22 @@ serde.workspace = true
 thiserror.workspace = true
 schemars = { version = "1", optional = true }
 serde_json.workspace = true
-# Encryption-at-rest adapter (feature `sealed-aead`): AEAD-seal secrets so a disk
-# or DB dump is inert without the separately-held key (ADR-0043).
-chacha20poly1305 = { version = "0.10", optional = true }
-# Feature `sqlite`: embedded durable CredentialRepo/SealedBlobStore backends over
-# the crate's own `credential` migration scope (ADR-0043).
-rusqlite = { workspace = true, optional = true }
-# Feature `postgres`: network-DB CredentialRepo/SealedBlobStore backends over the
-# same `credential` migration scope (ADR-0043).
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
 # Feature `oauth-command`: refresh OAuth access tokens by running a helper
 # (e.g. `gcloud auth print-access-token`) — needs tokio's process API.
 tokio = { workspace = true, optional = true, features = ["process"] }
-awaken-scoped-migration = { workspace = true, features = ["postgres"] }
-awaken-scoped-migration-sqlite.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process"] }
-tempfile = "3"
-# The live Postgres conformance test (feature `postgres`) isolates each suite in
-# its own schema via `SET search_path`.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 
 [features]
 default = []
 test-support = []
 schema = ["dep:schemars"]
-sealed-aead = ["dep:chacha20poly1305"]
-# SQLite-backed CredentialRepo + SealedBlobStore (`sqlite::*`); the durable secret
-# path stays sealed-only — compose with `sealed-aead` (no plaintext SecretStore).
-sqlite = ["dep:rusqlite", "dep:tokio"]
-# Postgres-backed CredentialRepo + SealedBlobStore (`postgres::*`); same
-# sealed-only durable secret path — compose with `sealed-aead`.
-postgres = ["dep:sqlx"]
 oauth-command = ["dep:tokio"]
 
 [[test]]
-name = "key_rotation"
-required-features = ["test-support"]
-
-[[test]]
 name = "material_set_lifecycle"
-required-features = ["test-support"]
-
-[[test]]
-name = "repo_conformance"
 required-features = ["test-support"]
 
 [lints]

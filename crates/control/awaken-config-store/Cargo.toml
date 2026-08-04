@@ -10,17 +10,12 @@ layer = "infrastructure"
 authority = "config"
 
 [dependencies]
-awaken-runtime-contract.workspace = true
-awaken-agent-contract.workspace = true
-# Tenancy edge aspect (ADR-0051 D4): the opaque `ScopeId` the `ScopedConfig`
-# decorator binds so the authoring aggregate is tenant-isolable.
+awaken-agent-config.workspace = true
 awaken-tenancy.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10"
 thiserror.workspace = true
-schemars = { version = "1", optional = true }
 tokio.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"] }
 rusqlite = { workspace = true }
@@ -28,6 +23,8 @@ awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 awaken-scoped-migration-sqlite.workspace = true
 
 [dev-dependencies]
+awaken-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
 awaken-runtime = { workspace = true }
 awaken-store-inmem.workspace = true
 awaken-store-sqlite = { workspace = true }
@@ -35,7 +32,7 @@ awaken-store-sqlite = { workspace = true }
 [features]
 default = []
 test-support = []
-schema = ["dep:schemars", "awaken-agent-contract/schema", "awaken-runtime-contract/schema"]
+schema = ["awaken-agent-config/schema"]
 
 [[test]]
 name = "integration"

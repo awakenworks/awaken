@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use awaken_config_store::{AgentConfig, ModelSelection, compile_resolved};
+use awaken_agent_config::{AgentConfig, ModelSelection, compile_resolved};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use serde_json::{Value, json};
@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 fn compile(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
-) -> Result<awaken_config_store::ExecutableAgentSnapshot, awaken_config_store::CompileError> {
+) -> Result<awaken_agent_config::ExecutableAgentSnapshot, awaken_agent_config::CompileError> {
     compile_resolved(config, tools, AgentSnapshotMetadata::default())
 }
 
@@ -156,7 +156,7 @@ fn configs_round_trip_through_json_losslessly() {
         "acp".into(),
         json!({ "compact_window": 120_000, "mcp_servers": [{"name": "gh"}] }),
     )]);
-    full.skills = vec![awaken_agent_contract::AgentSkillBinding::custom("review")];
+    full.skills = vec![awaken_agent_config::AgentSkillBinding::custom("review")];
     full.mcp_servers = vec![
         awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
             name: "gh".into(),

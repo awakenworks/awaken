@@ -135,9 +135,11 @@ pub(super) async fn assemble_runtime_process_router(
     };
     let web_search_publication_resolver =
         assembly.web_search_publication_resolver.unwrap_or_else(|| {
-            Arc::new(awaken_config_service::WebSearchPublicationResolver::new(
-                web_search_providers.clone(),
-            ))
+            Arc::new(
+                crate::web_search_publication::WebSearchPublicationResolver::new(
+                    web_search_providers.clone(),
+                ),
+            )
         });
     // Keep the IAM handles for the sibling resource PEP. The authoring router owns
     // its PEP; File/Memory/Skill routes are wrapped independently after the data

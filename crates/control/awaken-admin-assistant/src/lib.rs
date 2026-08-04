@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_config_store::{
+use awaken_agent_config::{
     AgentConfig, ManagementAuditRecord, ModelSelection, MultiagentConfig, ToolOverride,
 };
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
@@ -914,7 +914,7 @@ struct DraftArgs {
     #[serde(default)]
     mcp_servers: Vec<AgentMcpServerBinding>,
     #[serde(default)]
-    skills: Vec<awaken_config_store::AgentSkillBinding>,
+    skills: Vec<awaken_agent_config::AgentSkillBinding>,
     #[serde(default)]
     multiagent: Option<MultiagentConfig>,
     #[serde(default)]
@@ -1040,7 +1040,7 @@ struct PatchFields {
     #[serde(default)]
     mcp_servers: Option<Vec<AgentMcpServerBinding>>,
     #[serde(default)]
-    skills: Option<Vec<awaken_config_store::AgentSkillBinding>>,
+    skills: Option<Vec<awaken_agent_config::AgentSkillBinding>>,
     #[serde(default)]
     multiagent: Option<MultiagentConfig>,
     #[serde(default)]

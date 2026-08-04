@@ -85,7 +85,7 @@ pub fn contract_schemas() -> Map<String, Value> {
     // Authored aggregates (resolver-side domain types).
     add!("InferenceProfile", awaken_config_resolver::InferenceProfile);
     add!("AgentInputConfig", awaken_config_resolver::AgentInputConfig);
-    add!("ModelSelection", awaken_config_store::ModelSelection);
+    add!("ModelSelection", awaken_agent_config::ModelSelection);
 
     // Route request bodies (secret-in is write-only by construction).
     add!("EnterCredentialRequest", crate::EnterCredentialRequest);

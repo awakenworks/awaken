@@ -15,11 +15,11 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
-use crate::repo::{CredentialMutationIntent, CredentialRepo};
 use crate::schema::credential_bundle;
-use crate::{
-    CredentialError, CredentialPool, CredentialPoolId, CredentialSource, CredentialSourceId,
-    SealedBlobStore, SecretRef,
+use awaken_credential_contract::CredentialSourceId;
+use awaken_credential_vault::repo::{CredentialMutationIntent, CredentialRepo};
+use awaken_credential_vault::{
+    CredentialError, CredentialPool, CredentialPoolId, CredentialSource, SealedBlobStore, SecretRef,
 };
 
 /// The credential component's table namespace (its bundle prefix).

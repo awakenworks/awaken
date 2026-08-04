@@ -4,7 +4,7 @@
 //! This codec is the only place where Awaken's provider / endpoint / ACP
 //! qualifiers become config-domain model-selection intent.
 
-use awaken_config_store::{ModelSelection, ModelTarget};
+use awaken_agent_config::{ModelSelection, ModelTarget};
 use awaken_runtime_contract::resolved::{AcpSessionConfiguration, Backend, ModelBinding};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

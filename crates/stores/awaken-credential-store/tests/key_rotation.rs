@@ -7,14 +7,19 @@
 //! cutover, and the supported migration is to re-seal every plaintext under the new
 //! key. This suite asserts that documented contract. (An overlapping dual-key
 //! rotation window is a possible future feature, not a defect in this scheme.)
+//!
+//! Cause/effect rule: C1 ciphertext/key match, C2 key changes without resealing,
+//! C3 plaintext is resealed with the new key. E1 read succeeds, E2 read fails
+//! closed, E3 only the new key succeeds. R1 C1 -> E1; R2 C2 -> E2;
+//! R3 C3 -> E3.
 #![cfg(feature = "sealed-aead")]
 
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
+use awaken_credential_store::SealedAeadSecretStore;
 use awaken_credential_vault::{
-    CredentialError, InMemorySealedBlobStore, SealedAeadSecretStore, SealedBlobStore, SecretRef,
-    SecretStore,
+    CredentialError, InMemorySealedBlobStore, SealedBlobStore, SecretRef, SecretStore,
 };
 
 const OLD_KEY: [u8; 32] = [1u8; 32];

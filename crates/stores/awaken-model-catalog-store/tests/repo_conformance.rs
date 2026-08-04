@@ -1,6 +1,13 @@
 //! Conformance suite for [`CatalogRepo`]: the same behavioral assertions run
 //! against the in-memory repo and (feature `sqlite`) the sqlite repo, so both
 //! backends keep identical semantics; plus sqlite-only reopen-from-file tests.
+//!
+//! Cause/effect design for the core/adapter split: C1 select the domain in-memory
+//! port implementation, C2 select SQLite, C3 select Postgres, C4 reopen durable
+//! state, C5 violate a catalog invariant. E1 every backend satisfies the same
+//! CRUD/upsert/snapshot contract, E2 durable state survives reopen, E3 rejected
+//! writes leave no trace. Rules: R1 C1|C2|C3 -> E1; R2 C2+C4 -> E2;
+//! R3 C1|C2|C3+C5 -> E3. The shared helpers below are the rules' single test body.
 
 use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo, RepoError};
 use awaken_model_catalog::{
@@ -563,7 +570,7 @@ async fn in_memory_repo_conforms() {
 #[cfg(feature = "postgres")]
 mod postgres {
     use super::*;
-    use awaken_model_catalog::postgres::PostgresCatalogRepo;
+    use awaken_model_catalog_store::PostgresCatalogRepo;
     use sqlx::Executor;
     use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -697,7 +704,7 @@ mod postgres {
 #[cfg(feature = "sqlite")]
 mod sqlite {
     use super::*;
-    use awaken_model_catalog::sqlite::SqliteCatalogRepo;
+    use awaken_model_catalog_store::SqliteCatalogRepo;
 
     #[tokio::test]
     async fn sqlite_repo_conforms() {

@@ -20,8 +20,8 @@ use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 
 #[cfg(any(test, feature = "test-support"))]
-use crate::InMemorySealedBlobStore;
-use crate::{CredentialError, SealedBlobStore, SecretRef, SecretStore};
+use awaken_credential_vault::InMemorySealedBlobStore;
+use awaken_credential_vault::{CredentialError, SealedBlobStore, SecretRef, SecretStore};
 
 /// The 96-bit ChaCha20-Poly1305 nonce width, in bytes.
 const NONCE_LEN: usize = 12;

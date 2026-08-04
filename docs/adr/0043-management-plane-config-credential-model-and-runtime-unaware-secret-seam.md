@@ -313,18 +313,19 @@ One `MigrationBundle` per prefix (as today's `config`/`commit`) makes deployment
 
 ### Store vs resolver (DDD service vs aggregate)
 
-Config stores own aggregates; the resolver owns **none** — it reads the stores and
-emits an `ExecutableAgentSnapshot`. The earlier "inference domain" was really a
-resolver mislabeled; `InferenceProfile` (routing policy) is an aggregate and moves
-into `awaken-model-catalog`.
+The three domain crates own their aggregates and repository ports; their `*-store`
+adapter crates own durable SQLite/Postgres/encryption mechanisms. The resolver owns
+**none** — it reads the injected ports and emits an `ExecutableAgentSnapshot`. The
+earlier "inference domain" was really a resolver mislabeled; `InferenceProfile`
+(routing policy) is an aggregate and lives in `awaken-model-catalog`.
 
 ### Intent-revealing crate names
 
-| Purpose | Crate | Kind |
+| Purpose | Authoritative crate | Durable adapter |
 |---|---|---|
-| provider/endpoint/offering/model catalog + `InferenceProfile` routing policy | `awaken-model-catalog` | config store |
-| vault/credential/binding/pool/identity + `SecretStore` | `awaken-credential-vault` | config store |
-| agent config authoring/publish/compile | `awaken-agent-config` *(was `awaken-config-store`)* | config store |
+| provider/endpoint/offering/model catalog + `InferenceProfile` routing policy | `awaken-model-catalog` (domain) | `awaken-model-catalog-store` |
+| vault/credential/binding/pool/identity + materialization use cases | `awaken-credential-vault` (application) | `awaken-credential-store` |
+| agent config authoring/publish/compile + repository ports | `awaken-agent-config` (domain) | `awaken-config-store` |
 | read all config → `ExecutableAgentSnapshot` (`InferenceTriple` + `MaterializedCredential`) | `awaken-config-resolver` *(was the misnamed `awaken-inference`)* | resolver **service** — no aggregate, no execution |
 | run the model | `awaken-provider-genai` | execution |
 | Managed Agents wire | `awaken-protocol-managed` | front door |
@@ -334,7 +335,7 @@ into `awaken-model-catalog`.
 
 Rule: **name = responsibility, not layer.** "inference" is reserved for where
 inference actually runs (`awaken-provider-genai`); "resolver" for config→executable;
-"store" for persistence; "catalog" for the model registry.
+the `-store` suffix for persistence adapters; "catalog" for the model registry.
 
 ### API contract & generated TS client (like oversight-next)
 

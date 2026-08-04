@@ -16,24 +16,11 @@
 pub mod availability;
 #[cfg(feature = "oauth-command")]
 pub mod oauth;
-#[cfg(feature = "postgres")]
-pub mod postgres;
 pub mod repo;
-pub mod schema;
-#[cfg(feature = "sealed-aead")]
-pub mod sealed;
-#[cfg(feature = "sqlite")]
-pub mod sqlite;
 
 pub use availability::{AvailabilityLedger, AvailabilityState};
 #[cfg(feature = "oauth-command")]
 pub use oauth::{CommandTokenSource, TokenSource};
-#[cfg(feature = "postgres")]
-pub use postgres::{PostgresCredentialRepo, PostgresSealedBlobStore};
-#[cfg(feature = "sealed-aead")]
-pub use sealed::{SealedAeadSecretStore, generate_seal_key_hex, parse_seal_key};
-#[cfg(feature = "sqlite")]
-pub use sqlite::{SqliteCredentialRepo, SqliteSealedBlobStore};
 
 use std::collections::BTreeMap;
 #[cfg(any(test, feature = "test-support"))]

@@ -38,9 +38,7 @@ CONTEXT_DEPENDENCIES: dict[str, frozenset[str]] = {
 LAYER_DEPENDENCIES: dict[str, frozenset[str]] = {
     "contract": frozenset({"contract"}),
     "domain": frozenset({"contract", "domain"}),
-    "application": frozenset(
-        {"contract", "domain", "application", "infrastructure"}
-    ),
+    "application": frozenset({"contract", "domain", "application"}),
     # Interface and infrastructure are sibling outer rings.  A wire adapter may
     # use a concrete transport/storage adapter and an outbound adapter may use a
     # protocol codec, while Cargo still prevents cycles.
@@ -112,9 +110,9 @@ def selftest() -> None:
 
     Causes: C1 metadata complete/valid, C2 dependency layer allowed, C3 dependency
     context allowed, C4 target is a contract, C5 source is bootstrap/tooling.
-    Effects: E1 accept; E2 reject incomplete metadata; E3 reject outward layer;
-    E4 reject cross-context implementation; E5 accept explicit contract seam;
-    E6 accept composition/test assembly.
+    Effects: E1 accept; E2 reject incomplete metadata; E3 reject domain-to-adapter;
+    E4 reject application-to-adapter; E5 reject cross-context implementation;
+    E6 accept explicit contract seam; E7 accept composition/test assembly.
     """
     c = lambda n, x, l, a="owner", d=frozenset(): CrateSpec(n, x, l, a, d)
     assert metadata_violations(c("missing", "", "", "")), "R2"
@@ -122,11 +120,14 @@ def selftest() -> None:
         [c("domain", "runtime", "domain", d=frozenset({"adapter"})), c("adapter", "runtime", "infrastructure")]
     ), "R3"
     assert dependency_violations(
-        [c("worker", "worker", "application", d=frozenset({"control"})), c("control", "control", "application")]
+        [c("service", "control", "application", d=frozenset({"store"})), c("store", "control", "infrastructure")]
     ), "R4"
     assert dependency_violations(
+        [c("worker", "worker", "application", d=frozenset({"control"})), c("control", "control", "application")]
+    ), "R5"
+    assert dependency_violations(
         [c("worker", "worker", "application", d=frozenset({"contract"})), c("contract", "control", "contract")]
-    ) == [], "R5"
+    ) == [], "R6"
     assert dependency_violations(
         [c("app", "apps", "bootstrap", d=frozenset({"infra"})), c("infra", "control", "infrastructure")]
-    ) == [], "R6"
+    ) == [], "R7"

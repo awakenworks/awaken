@@ -2,6 +2,13 @@
 //! against the in-memory repo and (feature `sqlite`) the sqlite repo, so both
 //! backends keep identical semantics — workspace-scoped lists, upsert puts, and
 //! the exact NotFound arms.
+//!
+//! Cause/effect design for the Credential Vault port adapters: C1 in-memory,
+//! C2 SQLite, C3 Postgres, C4 mutation interrupted before publication, C5
+//! mutation replayed. E1 identical repository semantics, E2 durable intent is
+//! visible for compensation, E3 replay is idempotent. Rules: R1 C1|C2|C3 -> E1;
+//! R2 C2|C3+C4 -> E2; R3 C2|C3+C4+C5 -> E3. Shared helpers keep the behavior
+//! contract authoritative while concrete storage lives in this crate.
 
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{
@@ -283,7 +290,7 @@ async fn in_memory_repo_conforms() {
 #[cfg(feature = "sqlite")]
 #[tokio::test]
 async fn sqlite_repo_conforms() {
-    use awaken_credential_vault::sqlite::SqliteCredentialRepo;
+    use awaken_credential_store::sqlite::SqliteCredentialRepo;
     run_all(|| Box::new(SqliteCredentialRepo::open_in_memory().unwrap())).await;
 }
 
@@ -293,7 +300,7 @@ async fn sqlite_repo_conforms() {
 #[cfg(feature = "postgres")]
 mod postgres {
     use super::*;
-    use awaken_credential_vault::postgres::PostgresCredentialRepo;
+    use awaken_credential_store::postgres::PostgresCredentialRepo;
     use sqlx::Executor;
     use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -367,9 +374,9 @@ mod postgres {
         use std::sync::Arc;
 
         use awaken_agent_contract::RedactedString;
-        use awaken_credential_vault::postgres::PostgresSealedBlobStore;
+        use awaken_credential_store::{PostgresSealedBlobStore, SealedAeadSecretStore};
         use awaken_credential_vault::{
-            CredentialCreateParams, SealedAeadSecretStore, SecretStore, create_source, materialize,
+            CredentialCreateParams, SecretStore, create_source, materialize,
         };
 
         let Some(pool) = schema_pool("t_cred_sealed").await else {

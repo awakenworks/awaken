@@ -10,7 +10,7 @@
 //! observation changes call it after mutation. It re-resolves policy-bound configs
 //! and skips `Pinned` ones; re-publish is idempotent by content address.
 
-use awaken_config_store::ModelSelection;
+use awaken_agent_config::ModelSelection;
 use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
 use awaken_tenancy::ScopeId;
 

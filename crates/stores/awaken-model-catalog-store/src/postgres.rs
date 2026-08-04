@@ -12,9 +12,9 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
-use crate::repo::{CatalogRepo, RepoError};
 use crate::schema::catalog_bundle;
-use crate::{
+use awaken_model_catalog::repo::{CatalogRepo, RepoError};
+use awaken_model_catalog::{
     BrokeredCatalogProjection, CatalogError, CatalogSyncResult, DiscoveredModel, ModelAttributes,
     Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog, ProviderId,
     ValidCatalog,
@@ -237,8 +237,8 @@ impl CatalogRepo for PostgresCatalogRepo {
     }
 
     async fn put_offering(&self, mut offering: Offering) -> Result<(), RepoError> {
-        offering.source = crate::OfferingSource::Manual;
-        offering.status = crate::OfferingStatus::Active;
+        offering.source = awaken_model_catalog::OfferingSource::Manual;
+        offering.status = awaken_model_catalog::OfferingStatus::Active;
         offering.last_seen_at_unix_ms = None;
         let p = NS;
         // Insert + whole-catalog re-validation in one transaction (fail-closed): a
@@ -353,7 +353,7 @@ impl CatalogRepo for PostgresCatalogRepo {
             .map_err(storage)?;
         }
         for offering in catalog.offerings.iter().filter(|offering| {
-            offering.source == crate::OfferingSource::Brokered
+            offering.source == awaken_model_catalog::OfferingSource::Brokered
                 && offering
                     .protocol_endpoint_id
                     .0

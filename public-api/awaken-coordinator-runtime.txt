@@ -1,0 +1,2 @@
+pub mod awaken_coordinator_runtime
+pub fn awaken_coordinator_runtime::durable_ops_router(alloc::sync::Arc<awaken_runtime_host::host::SharedHost>) -> axum::routing::Router

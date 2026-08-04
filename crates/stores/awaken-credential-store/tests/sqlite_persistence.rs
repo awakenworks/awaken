@@ -2,11 +2,16 @@
 //! pools, and — composed with `sealed-aead` — sealed secrets that survive a
 //! process restart (drop + reopen from file) and stay fail-closed against a
 //! wrong key or SQL-level tampering with the at-rest blob.
+//!
+//! Cause/effect design: C1 reopen with the same key, C2 reopen with a different
+//! key, C3 alter ciphertext, C4 inspect at-rest bytes. E1 rows and plaintext
+//! materialize, E2 fail closed, E3 plaintext is absent from storage. Rules:
+//! R1 C1 -> E1; R2 C2|C3 -> E2; R3 C4 -> E3.
 #![cfg(feature = "sqlite")]
 
 use awaken_credential_contract::CredentialSourceId;
+use awaken_credential_store::sqlite::SqliteCredentialRepo;
 use awaken_credential_vault::repo::CredentialRepo;
-use awaken_credential_vault::sqlite::SqliteCredentialRepo;
 use awaken_credential_vault::{
     CredentialKind, CredentialPool, CredentialPoolId, CredentialPoolMember, CredentialSource,
     CredentialStatus, SelectionPolicy,
@@ -77,10 +82,9 @@ mod sealed_secrets {
     use std::sync::Arc;
 
     use awaken_agent_contract::RedactedString;
-    use awaken_credential_vault::sqlite::SqliteSealedBlobStore;
+    use awaken_credential_store::{SealedAeadSecretStore, SqliteSealedBlobStore};
     use awaken_credential_vault::{
-        CredentialCreateParams, CredentialError, SealedAeadSecretStore, SecretStore, create_source,
-        materialize,
+        CredentialCreateParams, CredentialError, SecretStore, create_source, materialize,
     };
 
     use super::*;

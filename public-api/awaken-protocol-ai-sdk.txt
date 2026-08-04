@@ -9,7 +9,7 @@ impl awaken_agent_contract::event::fold::Transcoder for awaken_protocol_ai_sdk::
 pub type awaken_protocol_ai_sdk::encoder::AiSdkEncoder::Output = awaken_protocol_ai_sdk::types::UIStreamEvent
 pub fn awaken_protocol_ai_sdk::encoder::AiSdkEncoder::delta(&mut self, &awaken_agent_contract::event::agent::Delta) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
 pub fn awaken_protocol_ai_sdk::encoder::AiSdkEncoder::fact(&mut self, &awaken_agent_contract::event::agent::Fact) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
-pub fn awaken_protocol_ai_sdk::encoder::encode_history(&[awaken_agent_contract::agent::message::Message]) -> alloc::vec::Vec<serde_json::value::Value>
+pub fn awaken_protocol_ai_sdk::encoder::encode_history(&[awaken_agent_contract::agent::message::Message], core::option::Option<&awaken_session_contract::session::Pending>) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn awaken_protocol_ai_sdk::encoder::encode_step(&awaken_session_contract::session::StepOutcome) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
 pub mod awaken_protocol_ai_sdk::request
 pub enum awaken_protocol_ai_sdk::request::DecisionKind
@@ -50,6 +50,10 @@ pub awaken_protocol_ai_sdk::types::UIStreamEvent::Finish
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::Finish::finish_reason: core::option::Option<alloc::string::String>
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::Finish::message_metadata: core::option::Option<awaken_protocol_ai_sdk::types::FinishMetadata>
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::FinishStep
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ReasoningEnd
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ReasoningEnd::id: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ReasoningStart
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ReasoningStart::id: alloc::string::String
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::Start
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::StartStep
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::TextDelta
@@ -59,6 +63,9 @@ pub awaken_protocol_ai_sdk::types::UIStreamEvent::TextEnd
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::TextEnd::id: alloc::string::String
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::TextStart
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::TextStart::id: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolApprovalRequest
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolApprovalRequest::approval_id: alloc::string::String
+pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolApprovalRequest::tool_call_id: alloc::string::String
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolInputAvailable
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolInputAvailable::input: serde_json::value::Value
 pub awaken_protocol_ai_sdk::types::UIStreamEvent::ToolInputAvailable::provider_executed: bool
@@ -113,6 +120,10 @@ pub awaken_protocol_ai_sdk::UIStreamEvent::Finish
 pub awaken_protocol_ai_sdk::UIStreamEvent::Finish::finish_reason: core::option::Option<alloc::string::String>
 pub awaken_protocol_ai_sdk::UIStreamEvent::Finish::message_metadata: core::option::Option<awaken_protocol_ai_sdk::types::FinishMetadata>
 pub awaken_protocol_ai_sdk::UIStreamEvent::FinishStep
+pub awaken_protocol_ai_sdk::UIStreamEvent::ReasoningEnd
+pub awaken_protocol_ai_sdk::UIStreamEvent::ReasoningEnd::id: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::ReasoningStart
+pub awaken_protocol_ai_sdk::UIStreamEvent::ReasoningStart::id: alloc::string::String
 pub awaken_protocol_ai_sdk::UIStreamEvent::Start
 pub awaken_protocol_ai_sdk::UIStreamEvent::StartStep
 pub awaken_protocol_ai_sdk::UIStreamEvent::TextDelta
@@ -122,6 +133,9 @@ pub awaken_protocol_ai_sdk::UIStreamEvent::TextEnd
 pub awaken_protocol_ai_sdk::UIStreamEvent::TextEnd::id: alloc::string::String
 pub awaken_protocol_ai_sdk::UIStreamEvent::TextStart
 pub awaken_protocol_ai_sdk::UIStreamEvent::TextStart::id: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolApprovalRequest
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolApprovalRequest::approval_id: alloc::string::String
+pub awaken_protocol_ai_sdk::UIStreamEvent::ToolApprovalRequest::tool_call_id: alloc::string::String
 pub awaken_protocol_ai_sdk::UIStreamEvent::ToolInputAvailable
 pub awaken_protocol_ai_sdk::UIStreamEvent::ToolInputAvailable::input: serde_json::value::Value
 pub awaken_protocol_ai_sdk::UIStreamEvent::ToolInputAvailable::provider_executed: bool

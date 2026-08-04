@@ -1,6 +1,4 @@
 pub mod awaken_protocol_mcp
-pub use awaken_protocol_mcp::NotifySink
-pub use awaken_protocol_mcp::NullSink
 pub mod awaken_protocol_mcp::export
 pub enum awaken_protocol_mcp::export::ToolExec
 pub awaken_protocol_mcp::export::ToolExec::Plain(alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>)
@@ -51,8 +49,6 @@ impl core::default::Default for awaken_protocol_mcp::http::McpHttpConfig
 pub fn awaken_protocol_mcp::http::McpHttpConfig::default() -> Self
 pub fn awaken_protocol_mcp::http::router(alloc::sync::Arc<awaken_protocol_mcp::service::McpToolService>, awaken_protocol_mcp::http::McpHttpConfig) -> axum::routing::Router
 pub mod awaken_protocol_mcp::service
-pub use awaken_protocol_mcp::service::NotifySink
-pub use awaken_protocol_mcp::service::NullSink
 pub struct awaken_protocol_mcp::service::AwakenMcpContext
 pub awaken_protocol_mcp::service::AwakenMcpContext::store: awaken_agent_contract::agent::state::Store
 pub struct awaken_protocol_mcp::service::McpToolService

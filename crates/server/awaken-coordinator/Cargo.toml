@@ -44,6 +44,7 @@ awaken-protocol-ai-sdk = { workspace = true }
 awaken-protocol-ag-ui = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
 awaken-protocol-mcp = { workspace = true }
+awaken-agent-config.workspace = true
 awaken-config-store = { workspace = true }
 # Canonical Memory data plane used by API, mount, recall, extraction, history, and
 # redaction. The composition root selects its durable or ephemeral adapter once.
@@ -72,11 +73,13 @@ awaken-provider-genai = { workspace = true }
 # Managed vault/credential front door over stores selected by the outer product
 # composition. Volatile scenario wiring is available only through `test-support`.
 awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres"] }
-awaken-model-catalog = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-model-catalog.workspace = true
+awaken-model-catalog-store = { workspace = true, features = ["sqlite", "postgres"] }
 # `oauth-command`: refresh a Google OAuth2 token (gcloud) for the `real-gemini` mode.
 # `sqlite` + `sealed-aead`: the durable management plane persists secret-free rows in
 # SQLite and secrets only as AEAD-sealed blobs under typed control_seal_key.
-awaken-credential-vault = { workspace = true, features = ["oauth-command", "sqlite", "sealed-aead", "postgres"] }
+awaken-credential-vault = { workspace = true, features = ["oauth-command"] }
+awaken-credential-store = { workspace = true, features = ["sqlite", "sealed-aead", "postgres"] }
 awaken-credential-contract.workspace = true
 # Data-subject consent/erasure store (ADR-0050): backs the /v1/user_profiles/:id/erasure endpoint.
 # Embedded IAM (ADR-0042/0043 P1): typed self-managed identity gates management

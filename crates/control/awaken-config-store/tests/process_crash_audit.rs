@@ -2,9 +2,10 @@ use std::fs;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use awaken_config_store::{
-    AuditedConfigWrite, ManagementAuditRecord, ScopeId, ScopedConfigRegistry, SqliteConfigStore,
+use awaken_agent_config::{
+    AuditedConfigWrite, ManagementAuditRecord, ScopeId, ScopedConfigRegistry,
 };
+use awaken_config_store::SqliteConfigStore;
 
 const CHILD_MODE: &str = "AWAKEN_AUDIT_CRASH_CHILD";
 const DB_PATH: &str = "AWAKEN_AUDIT_CRASH_DB";

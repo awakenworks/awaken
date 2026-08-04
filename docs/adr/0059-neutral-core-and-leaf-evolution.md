@@ -123,9 +123,10 @@ the metadata-derived rules and focused semantic predicates carry cause-effect se
 - **Metadata completeness and direction** — every crate declares a bounded context,
   Clean/DDD layer, and authority. Context and layer matrices are defined once by role;
   no per-crate dependency list and no directory bucket participates in the decision.
-- **Contract and interface semantics** — contracts reject database and wire frameworks;
-  domain/application code cannot reverse-depend on interface adapters. Live async handles
-  are allowed in an explicit contract because they are part of the published port.
+- **Contract and adapter semantics** — contracts reject database and wire frameworks;
+  domain/application code cannot reverse-depend on either interface or infrastructure
+  adapters. Live async handles are allowed in an explicit contract because they are part
+  of the published port.
 - **Ownership fitness** — resource authorization separation, runtime secret isolation,
   migration ownership, Coordinator authority, and Managed route inventory remain focused
   semantic checks over the same workspace graph/source tree.
@@ -135,6 +136,18 @@ the metadata-derived rules and focused semantic predicates carry cause-effect se
 The split keeps one protocol-neutral `SharedHost` substrate and assigns role-specific
 interfaces to explicit owners. This avoids duplicating Host construction or Session state.
 Verified state after the 2026-08-04 cut:
+
+- **Control aggregates and durable adapters** — `awaken-agent-config` owns the Agent
+  Config aggregate, compilation and repository ports; `awaken-model-catalog` owns the
+  catalog aggregate/ports; `awaken-credential-vault` owns credential materialization.
+  `awaken-config-store`, `awaken-model-catalog-store`, and
+  `awaken-credential-store` implement those ports. No application crate depends on an
+  infrastructure crate, and no compatibility re-export preserves the former mixed path.
+- **Outermost host adapters** — `awaken-runtime-host` and
+  `awaken-acp-application` are classified as infrastructure because their authoritative
+  responsibilities compose concrete execution/storage/process adapters. Their names are
+  retained to avoid inventing duplicate host or ACP catalogs; metadata records the
+  architectural role independently of the physical directory or historical suffix.
 
 - **Session application** — `awaken-session-application` owns the Session repository,
   runtime/environment/credential/resource ports, environment-binding CAS, incarnation,
@@ -188,8 +201,9 @@ reimplement that behavior.
 - The root disease cannot silently recur: a neutral port re-entering an adapter, a backend
   re-entering a contract leaf, or a new dependency on the god-hub each fail the build with
   a message naming the fix.
-- `awaken-runtime-host` is a shared substrate rather than a Coordinator/Worker facade.
-  Role-specific interfaces can shrink independently without producing two Hosts.
+- `awaken-runtime-host` is shared host infrastructure rather than a
+  Coordinator/Worker facade. Role-specific interfaces can shrink independently without
+  producing two Hosts.
 - Architecture enforcement has one source of truth: Cargo metadata interpreted by
   `check_crate_boundaries.py`. `deny.toml` retains dependency-hygiene settings only and
   intentionally contains no architecture wrappers or depender allowlists.
