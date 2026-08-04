@@ -405,12 +405,12 @@ fn external_credential_resolver_has_one_canonical_composition_path() {
 /// C1 exact credential materializer is installed; C2 ACP is installed; C3 an
 /// exact Worker-local observation/revalidation resolver is installed. E1 is
 /// Provider credential-source placement, E2 is Worker/provider-adapter
-/// realization, E3 is Workload/process-secret realization, and E4 is the
+/// realization, E3 is backend-correlated Workload realization, and E4 is the
 /// Worker-local observation capability. Constraints: E1 and E2 follow only C1;
 /// E3 requires C1 AND C2; E4 follows only C3. This keeps the two independent
 /// credential mechanisms from being inferred from one another.
 ///
-/// | Rule | C1 materializer | C2 ACP | C3 local resolver | E1/E2 provider | E3 process secret | E4 Worker-local |
+/// | Rule | C1 materializer | C2 ACP | C3 local resolver | E1/E2 provider | E3 ACP delivery | E4 Worker-local |
 /// |---|---|---|---|---|---|---|
 /// | R1 | T | T | F | T | T | F |
 /// | R2 | T | F | F | T | F | F |
@@ -420,8 +420,11 @@ fn external_credential_resolver_has_one_canonical_composition_path() {
 fn standard_manifest_advertises_only_installed_credential_mechanisms() {
     let mut acp = deployment();
     acp.acp = Some(
-        awaken_runtime_host::AcpWorkerProfile::new(["claude".to_string()], None)
-            .expect("one ACP profile"),
+        awaken_runtime_host::AcpWorkerProfile::new(
+            ["claude".to_string(), "codex".to_string()],
+            None,
+        )
+        .expect("mixed ACP profile"),
     );
     let workload = derive_standard_manifest(StandardManifestInputs {
         deployment: &acp,
@@ -476,6 +479,18 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
                 .alternatives
                 .iter()
                 .any(supports_worker_provider_adapter)
+    );
+    assert_eq!(
+        workload_realization
+            .acp_backend_realization_kind("acp:claude")
+            .expect("process delivery mapping is coherent"),
+        Some(awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment)
+    );
+    assert_eq!(
+        workload_realization
+            .acp_backend_realization_kind("acp:codex")
+            .expect("file delivery mapping is coherent"),
+        Some(awaken_runtime_contract::CredentialRealizationKind::PrivateSecretFile)
     );
     assert!(
         workload
@@ -869,6 +884,7 @@ fn configured_container_acp_uses_live_image_probe_targets_only() {
     // | R2 | yes | no  | yes | E2 no ACP target |
     // | R3 | yes | yes | yes | E1 exact container argv + image identity |
     // | R4 | yes | yes | no  | E3 error |
+    // | R5 | yes | every catalog row | yes | one exact target per row |
     let mut config = deployment();
     config.acp =
         Some(awaken_runtime_host::AcpWorkerProfile::new(vec!["gemini".into()], None).unwrap());
@@ -898,10 +914,60 @@ fn configured_container_acp_uses_live_image_probe_targets_only() {
         targets[0].adapter_version, "container-image:image@sha256:exact",
         "R3"
     );
-    assert_eq!(targets[0].argv, ["gemini", "--acp"], "R3");
+    assert_eq!(
+        targets[0].argv,
+        [
+            "/usr/bin/env",
+            "GEMINI_API_KEY=awaken-capability-probe",
+            "gemini",
+            "--acp"
+        ],
+        "R3"
+    );
+    assert_eq!(
+        targets[0].auth_method_id.as_deref(),
+        Some("gemini-api-key"),
+        "R3"
+    );
 
     config.container_image = None;
     assert!(configured_container_acp_targets(&config).is_err(), "R4");
+
+    config.container_image = Some("image@sha256:exact".into());
+    let catalog = awaken_run_executor_acp::known_acp_clis();
+    config.acp = Some(
+        awaken_runtime_host::AcpWorkerProfile::new(
+            catalog.iter().map(|cli| cli.id.to_owned()),
+            None,
+        )
+        .unwrap(),
+    );
+    let targets = configured_container_acp_targets(&config).unwrap();
+    assert_eq!(targets.len(), catalog.len(), "R5");
+    for cli in catalog {
+        let target = targets
+            .iter()
+            .find(|target| target.cli_id == cli.id)
+            .expect("R5 catalog row target");
+        assert_eq!(target.cli_id, cli.id, "R5");
+        assert_eq!(
+            target.argv,
+            cli.container_probe_argv.unwrap_or(cli.container_argv),
+            "R5"
+        );
+        assert_eq!(
+            target.auth_method_id.as_deref(),
+            cli.capability_probe_auth_method_id,
+            "R5"
+        );
+    }
+
+    let codex = targets
+        .iter()
+        .find(|target| target.cli_id == "codex")
+        .expect("R5 codex target");
+    assert_eq!(codex.argv[0], "/usr/bin/env", "R5 probe wrapper");
+    assert_eq!(codex.auth_method_id.as_deref(), Some("api-key"), "R5");
 }
 
 #[test]

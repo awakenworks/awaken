@@ -635,6 +635,47 @@ pub async fn advance_credential_revision(
     Ok(after)
 }
 
+/// Explicitly widen one active, provider-bound credential from an exact
+/// ProtocolEndpoint to every endpoint owned by that same Provider. The
+/// mutation retains the existing material references and uses exact revision
+/// and endpoint checks so a stale connection command cannot broaden authority.
+pub async fn widen_credential_to_provider_scope_exact(
+    id: &CredentialSourceId,
+    expected_version: i64,
+    expected_provider_id: &str,
+    expected_endpoint_id: &str,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialSource, CredentialError> {
+    let before = repo.get(id).await?;
+    if before.version != expected_version {
+        return Err(CredentialError::MutationConflict(
+            "credential revision changed before provider-scope widening".into(),
+        ));
+    }
+    if before.status != CredentialStatus::Active {
+        return Err(CredentialError::NotActive(id.0.clone()));
+    }
+    if before.provider_id.as_deref() != Some(expected_provider_id)
+        || before.protocol_endpoint_id.as_deref() != Some(expected_endpoint_id)
+    {
+        return Err(CredentialError::NoCredential);
+    }
+    let mut after = before.clone();
+    after.version = before
+        .version
+        .checked_add(1)
+        .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
+    after.protocol_endpoint_id = None;
+    let intent = CredentialMutationIntent {
+        before: Some(before),
+        after: after.clone(),
+    };
+    repo.begin_mutation(intent.clone()).await?;
+    repo.apply_mutation(&intent).await?;
+    repo.complete_mutation(id).await?;
+    Ok(after)
+}
+
 /// Change only lifecycle availability while retaining material. This is the
 /// canonical reversible transition for staged publication; retirement/reclaim
 /// remains a separate terminal operation.
@@ -1161,6 +1202,70 @@ mod tests {
             disabled
         );
         assert!(repo.pending_mutations().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn provider_scope_widening_is_exact_and_retains_material_authority() {
+        let store = InMemorySecretStore::new();
+        let repo = InMemoryCredentialRepo::new();
+        let before = enter_credential_idempotent(
+            CredentialSourceId("cred:ws:provider-scope".into()),
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("provider".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("retained")),
+                oauth_command: None,
+            },
+            Some("provider.chat".into()),
+            &store,
+            &repo,
+        )
+        .await
+        .unwrap()
+        .source;
+
+        assert!(
+            widen_credential_to_provider_scope_exact(
+                &before.id,
+                before.version,
+                "other-provider",
+                "provider.chat",
+                &repo,
+            )
+            .await
+            .is_err(),
+            "a different Provider cannot consume the source"
+        );
+        let widened = widen_credential_to_provider_scope_exact(
+            &before.id,
+            before.version,
+            "provider",
+            "provider.chat",
+            &repo,
+        )
+        .await
+        .unwrap();
+        assert_eq!(widened.protocol_endpoint_id, None);
+        assert_eq!(widened.version, before.version + 1);
+        assert_eq!(widened.material_ref, before.material_ref);
+        assert_eq!(
+            materialize(&widened, &store).await.unwrap().expose_secret(),
+            "retained"
+        );
+        assert!(
+            widen_credential_to_provider_scope_exact(
+                &widened.id,
+                before.version,
+                "provider",
+                "provider.chat",
+                &repo,
+            )
+            .await
+            .is_err(),
+            "a stale command cannot widen again"
+        );
     }
 
     #[tokio::test]

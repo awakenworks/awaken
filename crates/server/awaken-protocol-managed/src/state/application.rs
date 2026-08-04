@@ -213,7 +213,7 @@ impl ManagedState {
         &self,
         owner_scope: &str,
         mut session: PersistedSession,
-        compiled: awaken_session_contract::CompiledSessionCreation,
+        mut compiled: awaken_session_contract::CompiledSessionCreation,
     ) -> Result<PersistedSession, StateError> {
         match &session.baseline {
             awaken_session_contract::SessionBaselineState::Preparing(_) => {}
@@ -229,7 +229,28 @@ impl ManagedState {
             .credential_realization
             .mcp_holder
             .clone();
-        let mut resources = awaken_session_contract::SessionResourceState::default();
+        // A required application contribution can arrive after canonical File
+        // or other live inputs were attached to the still-preparing Session.
+        // Finalization adds creation-time inputs to that durable truth; replacing
+        // the state here would silently detach every pre-run upload.
+        for input in session.resources.active.inputs.iter().cloned() {
+            if compiled
+                .initial_resources
+                .inputs
+                .iter()
+                .any(|candidate| candidate == &input)
+            {
+                continue;
+            }
+            compiled.initial_resources = compiled
+                .initial_resources
+                .attach(input)
+                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        }
+        if compiled.initial_resources.skills.is_none() {
+            compiled.initial_resources.skills = session.resources.active.skills.clone();
+        }
+        let mut resources = session.resources.clone();
         resources
             .prepare(&session.session_id, compiled.initial_resources)
             .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
@@ -667,6 +688,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn contribution_preserves_a_file_attached_while_session_is_preparing() {
+        let state = ManagedState::new(NoopRuntime);
+        let session = state
+            .create_session(
+                crate::types::SessionCreateParams {
+                    agent: crate::types::AgentRef::Id("assistant".into()),
+                    initial_events: Vec::new(),
+                    application_contribution_required: true,
+                    environment_id: None,
+                    title: None,
+                    metadata: Default::default(),
+                    mcp_servers: Vec::new(),
+                    vault_ids: Vec::new(),
+                    resources: Vec::new(),
+                },
+                Some("workspace".into()),
+            )
+            .await
+            .expect("create preparing Session");
+        let id = session.id;
+        state
+            .create_resource(
+                &id,
+                serde_json::from_value(serde_json::json!({
+                    "type": "file",
+                    "file_id": "file-product-design",
+                    "mount_path": "/mnt/fab/product.pdf"
+                }))
+                .unwrap(),
+            )
+            .await
+            .expect("attach before first Run");
+
+        let receipt = state
+            .contribute_application(ApplicationSessionContribution {
+                session_id: id,
+                application_fingerprint: "flow-plan".into(),
+                input: Default::default(),
+            })
+            .await
+            .expect("freeze Session without dropping upload");
+
+        assert_eq!(receipt.projection.resources.inputs.len(), 1);
+        assert_eq!(
+            receipt.projection.resources.inputs[0].mount_path,
+            "/mnt/fab/product.pdf"
+        );
+        assert!(matches!(
+            receipt.projection.resources.inputs[0].source,
+            awaken_session_contract::ResolvedInputSource::File { ref file_id }
+                if file_id.as_str() == "file-product-design"
+        ));
     }
 
     fn server(name: &str, url: &str) -> McpServer {

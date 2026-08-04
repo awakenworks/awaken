@@ -7,7 +7,7 @@
 # ALL supported ACP CLIs are PRE-BAKED (never pulled at runtime): an egress-fenced pod
 # (network=None/Allowlist) cannot `npm install`, so the adapter versions MUST be baked
 # here and MUST match the MAJOR.MINOR pinned in
-# crates/server/awaken-run-executor-acp/src/acp_cli.rs (claude 0.44, codex 1.1).
+# crates/server/awaken-run-executor-acp/src/acp_cli.rs.
 #
 # Build (binary is built ON THE HOST, then staged into the Docker context):
 #   deploy/images/sandbox/build.sh ghcr.io/awaken/sandbox:<ver>
@@ -37,11 +37,21 @@ LABEL org.awaken.environment-packages="1"
 # egress-fenced launch is reproducible and the wire codec is a known quantity. Keep
 # these in lockstep with acp_cli.rs. A worker image may deliberately narrow this list
 # (for example a Codex-only pool) through the build arg; the default remains complete.
-ARG ACP_NPM_PACKAGES="@agentclientprotocol/claude-agent-acp@0.44 @agentclientprotocol/codex-acp@1.1 @google/gemini-cli@0.11 opencode-ai@0.6"
+ARG ACP_NPM_PACKAGES="@agentclientprotocol/claude-agent-acp@0.64.2 @agentclientprotocol/codex-acp@1.1.9 @google/gemini-cli@0.53.1 opencode-ai@1.18.12"
 RUN if [ -n "${ACP_NPM_PACKAGES}" ]; then \
       npm install -g --no-audit --no-fund ${ACP_NPM_PACKAGES}; \
     fi \
     && npm cache clean --force
+
+# Hermes is Python-native rather than an npm adapter. Keep its ACP extra pinned
+# and image-baked for the same no-runtime-install guarantee as every other row.
+# Hermes imports the Bedrock adapter while discovering provider plugins. Bake
+# that optional dependency too: an execution Pod must never mutate itself or
+# require package-index egress merely to complete the prompt-free ACP handshake.
+ARG HERMES_AGENT_PACKAGE="hermes-agent[acp,bedrock]==0.19.0"
+RUN if [ -n "${HERMES_AGENT_PACKAGE}" ]; then \
+      pip install --no-cache-dir "${HERMES_AGENT_PACKAGE}"; \
+    fi
 
 # The execution-plane binary (host-built with `hand`) supplies both the ACP bridge
 # entrypoint and the Session's attached `hand --stdio` exec process.

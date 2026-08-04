@@ -1367,10 +1367,12 @@ async fn open_agent_creates_the_container_and_returns_its_channel_and_process() 
 async fn one_container_environment_executes_native_and_agent_processes_without_recreation() {
     // Cause/effect decision table — RP1:
     // C1: native exec or C2: opaque Agent/Hand exec enters a ContainerSandbox;
-    // C3: the caller omits runtime paths or C4: attempts stale replacements.
+    // C3: the caller omits runtime paths or C4: attempts stale replacements;
+    // C5: an opaque process selects writable homes beneath /workspace.
     // Rules (C1|C2)+(C3|C4) => E1 both processes receive /workspace and the
     // sandbox's exact output boundary, E2 caller values cannot override runtime
-    // ownership, and E3 the environment is still created only once.
+    // ownership, E3 the environment is still created only once, and C5 => E4
+    // the process-scoped homes survive without changing project/output paths.
     let runtime = Arc::new(FakeRuntime::default());
     let sandbox = provider(runtime.clone())
         .create_container(&spec("shared-session"))
@@ -1416,13 +1418,34 @@ async fn one_container_environment_executes_native_and_agent_processes_without_r
         },
     ]);
     let native = pc::Sandbox::spawn(&sandbox, native_command).await.unwrap();
-    let agent = sandbox
-        .spawn_agent(pc::Command {
-            stdio: pc::Stdio::Piped,
-            ..pc::Command::new(["codex", "--acp"])
-        })
-        .await
-        .unwrap();
+    let mut agent_command = pc::Command {
+        stdio: pc::Stdio::Piped,
+        ..pc::Command::new(["opaque-agent", "--stdio"])
+    };
+    agent_command.env.extend([
+        pc::EnvVar {
+            name: "HOME".into(),
+            value: pc::EnvValue::Inline {
+                value: "/workspace/.agent-home".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        },
+        pc::EnvVar {
+            name: "XDG_CONFIG_HOME".into(),
+            value: pc::EnvValue::Inline {
+                value: "/workspace/.agent-home/config".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        },
+        pc::EnvVar {
+            name: "XDG_CACHE_HOME".into(),
+            value: pc::EnvValue::Inline {
+                value: "/workspace/.agent-home/cache".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        },
+    ]);
+    let agent = sandbox.spawn_agent(agent_command).await.unwrap();
 
     assert_eq!(native.id(), "exec-0");
     assert_eq!(agent.process.id(), "exec-1");
@@ -1439,7 +1462,10 @@ async fn one_container_environment_executes_native_and_agent_processes_without_r
         state.spawned[0].1,
         ["sh", "-c", "touch marker"].map(str::to_string)
     );
-    assert_eq!(state.spawned[1].1, ["codex", "--acp"].map(str::to_string));
+    assert_eq!(
+        state.spawned[1].1,
+        ["opaque-agent", "--stdio"].map(str::to_string)
+    );
     assert_eq!(
         state.runtime_path_observations,
         vec![
@@ -1453,9 +1479,9 @@ async fn one_container_environment_executes_native_and_agent_processes_without_r
             (
                 Some("/workspace".into()),
                 Some("/mnt/session/outputs".into()),
-                Some("/workspace".into()),
-                Some("/workspace/.config".into()),
-                Some("/workspace/.cache".into())
+                Some("/workspace/.agent-home".into()),
+                Some("/workspace/.agent-home/config".into()),
+                Some("/workspace/.agent-home/cache".into())
             ),
         ],
         "native and agent processes share the runtime-owned paths"

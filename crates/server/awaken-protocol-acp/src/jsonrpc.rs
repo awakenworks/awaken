@@ -18,20 +18,22 @@
 //! `method_not_found` — tool execution is the hand's job, never proxied over ACP.
 
 use agent_client_protocol::{
-    AGENT_METHOD_NAMES, AuthenticateRequest, AuthenticateResponse, CLIENT_METHOD_NAMES,
-    ClientCapabilities, ContentBlock, InitializeRequest, InitializeResponse, LoadSessionRequest,
-    LoadSessionResponse, NewSessionRequest, NewSessionResponse, PermissionOptionKind,
-    PromptRequest, PromptResponse, ProtocolVersion, RequestPermissionOutcome,
+    AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ContentBlock, LoadSessionRequest, LoadSessionResponse,
+    PermissionOptionKind, PromptRequest, PromptResponse, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
     SessionModeId, SessionNotification, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, SetSessionModeRequest,
+    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModelRequest,
+    SetSessionModelResponse,
 };
-use awaken_acp_contract::{AcpCapabilityProbeConfig, NegotiatedAcpCapabilities};
+use awaken_acp_contract::NegotiatedAcpCapabilities;
 use awaken_agent_channel::AgentChannel;
 use serde::Serialize;
 
+mod handshake;
 mod mcp;
 mod wire;
+pub use handshake::negotiate_capabilities;
+use handshake::{initialize_agent, open_new_session};
 use wire::{JSONRPC, Wire};
 
 use mcp::to_acp_mcp_servers;
@@ -51,9 +53,10 @@ const ID_PROMPT: u64 = 3;
 const ID_SET_MODE: u64 = 4;
 /// Adapter-selected authentication, after initialize and before opening a Session.
 const ID_AUTHENTICATE: u64 = 5;
-/// Exact backend-owned model selection, after opening the Session and before
-/// prompting. Managed/default launches never send this request.
-const ID_SET_CONFIG_OPTION: u64 = 6;
+/// Exact managed model selection through the ACP Session interface.
+const ID_SET_MODEL: u64 = 6;
+/// Exact backend-owned config option selection after opening the Session.
+const ID_SET_CONFIG_OPTION: u64 = 7;
 /// JSON-RPC "method not found" (the reply to any capability we do not advertise).
 const METHOD_NOT_FOUND: i64 = -32601;
 
@@ -77,103 +80,6 @@ struct OutError<'a> {
 struct RpcErrorBody<'a> {
     code: i64,
     message: &'a str,
-}
-
-async fn initialize_agent(
-    wire: &mut Wire<'_>,
-    sink: &mut dyn RunFactAppender,
-    seq: &mut u64,
-    resolver: &dyn PermissionResolver,
-    auth_method_id: Option<&str>,
-) -> Result<InitializeResponse, AcpError> {
-    wire.send_request(
-        ID_INITIALIZE,
-        AGENT_METHOD_NAMES.initialize,
-        InitializeRequest::new(ProtocolVersion::LATEST)
-            .client_capabilities(ClientCapabilities::default()),
-    )
-    .await?;
-    let init: InitializeResponse =
-        parse(pump_to_response(wire, ID_INITIALIZE, sink, seq, resolver).await?)?;
-    if let Some(method_id) = auth_method_id {
-        if !init
-            .auth_methods
-            .iter()
-            .any(|method| method.id().0.as_ref() == method_id)
-        {
-            return Err(AcpError::Frame(format!(
-                "configured ACP authentication method `{method_id}` was not advertised"
-            )));
-        }
-        wire.send_request(
-            ID_AUTHENTICATE,
-            AGENT_METHOD_NAMES.authenticate,
-            AuthenticateRequest::new(method_id.to_string()),
-        )
-        .await?;
-        let _: AuthenticateResponse =
-            parse(pump_to_response(wire, ID_AUTHENTICATE, sink, seq, resolver).await?)?;
-    }
-    Ok(init)
-}
-
-async fn open_new_session(
-    wire: &mut Wire<'_>,
-    sink: &mut dyn RunFactAppender,
-    seq: &mut u64,
-    resolver: &dyn PermissionResolver,
-    cwd: &str,
-    mcp_servers: &[crate::SessionMcpServer],
-) -> Result<NewSessionResponse, AcpError> {
-    wire.send_request(
-        ID_NEW_SESSION,
-        AGENT_METHOD_NAMES.session_new,
-        NewSessionRequest::new(cwd).mcp_servers(to_acp_mcp_servers(mcp_servers)),
-    )
-    .await?;
-    parse(pump_to_response(wire, ID_NEW_SESSION, sink, seq, resolver).await?)
-}
-
-/// Negotiate one prompt-free ACP Session and retain the full advertised
-/// capability descriptors. The caller bounds and reaps the process.
-pub async fn negotiate_capabilities(
-    channel: &mut dyn AgentChannel,
-    config: &AcpCapabilityProbeConfig,
-) -> Result<NegotiatedAcpCapabilities, AcpError> {
-    struct RejectPermission;
-    #[async_trait::async_trait]
-    impl PermissionResolver for RejectPermission {
-        async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
-            PermissionVerdict::Deny
-        }
-    }
-    struct DiscardFacts;
-    #[async_trait::async_trait]
-    impl RunFactAppender for DiscardFacts {
-        async fn append(
-            &mut self,
-            _seq: u64,
-            _event: &AcpProjectedEvent,
-        ) -> Result<(), AppendError> {
-            Ok(())
-        }
-    }
-
-    let cwd = config.session_cwd.as_deref().unwrap_or("/");
-    let resolver = RejectPermission;
-    let mut sink = DiscardFacts;
-    let mut seq = 0;
-    let mut wire = Wire::new(channel);
-    let init = initialize_agent(
-        &mut wire,
-        &mut sink,
-        &mut seq,
-        &resolver,
-        config.auth_method_id.as_deref(),
-    )
-    .await?;
-    let session = open_new_session(&mut wire, &mut sink, &mut seq, &resolver, cwd, &[]).await?;
-    Ok(crate::capabilities::project(init, session))
 }
 
 /// Drive one ACP prompt turn over `channel`, projecting each `session/update`
@@ -237,63 +143,73 @@ pub async fn run_turn_with_config(
     //    hold a prior id and the agent supports it; else session/new. Fail-safe:
     //    an agent that does not advertise `loadSession` falls back to a fresh
     //    session (the neutral thread history is the authority — never lost).
-    let (session_id, negotiated): (SessionId, NegotiatedAcpCapabilities) =
-        match config.session_id.clone() {
-            Some(prior) if can_load => {
-                wire.send_request(
-                    ID_NEW_SESSION,
-                    AGENT_METHOD_NAMES.session_load,
-                    LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str()),
-                )
-                .await?;
-                match pump_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await? {
-                    RpcResponse::Result(result) => {
-                        let resp: LoadSessionResponse = parse(result)?;
-                        let negotiated = crate::capabilities::project_parts(
-                            init.clone(),
-                            resp.modes,
-                            resp.config_options,
-                        );
-                        (SessionId::new(prior.as_str()), negotiated)
-                    }
-                    RpcResponse::Error(error) if is_missing_session_error(&error) => {
-                        // Some agents advertise loadSession but retain ids only for the
-                        // lifetime of one ACP process (Kimi Code is one example). No
-                        // prompt has been sent yet, so opening a fresh session is a safe
-                        // compatibility fallback and cannot replay agent work.
-                        let new_session = open_new_session(
-                            &mut wire,
-                            sink,
-                            &mut seq,
-                            resolver,
-                            &cwd,
-                            &config.mcp_servers,
-                        )
-                        .await?;
-                        let session_id = new_session.session_id.clone();
-                        let negotiated = crate::capabilities::project(init.clone(), new_session);
-                        (session_id, negotiated)
-                    }
-                    RpcResponse::Error(error) => {
-                        return Err(AcpError::Frame(error.to_string()));
-                    }
+    let (session_id, negotiated, supports_session_model): (
+        SessionId,
+        NegotiatedAcpCapabilities,
+        bool,
+    ) = match config.session_id.clone() {
+        Some(prior) if can_load => {
+            wire.send_request(
+                ID_NEW_SESSION,
+                AGENT_METHOD_NAMES.session_load,
+                LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str()),
+            )
+            .await?;
+            match pump_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await? {
+                RpcResponse::Result(result) => {
+                    let resp: LoadSessionResponse = parse(result)?;
+                    let supports_session_model = resp.models.is_some();
+                    let negotiated = crate::capabilities::project_parts(
+                        init.clone(),
+                        resp.modes,
+                        resp.config_options,
+                    );
+                    (
+                        SessionId::new(prior.as_str()),
+                        negotiated,
+                        supports_session_model,
+                    )
+                }
+                RpcResponse::Error(error) if is_missing_session_error(&error) => {
+                    // Some agents advertise loadSession but retain ids only for the
+                    // lifetime of one ACP process (Kimi Code is one example). No
+                    // prompt has been sent yet, so opening a fresh session is a safe
+                    // compatibility fallback and cannot replay agent work.
+                    let new_session = open_new_session(
+                        &mut wire,
+                        sink,
+                        &mut seq,
+                        resolver,
+                        &cwd,
+                        &config.mcp_servers,
+                    )
+                    .await?;
+                    let session_id = new_session.session_id.clone();
+                    let supports_session_model = new_session.models.is_some();
+                    let negotiated = crate::capabilities::project(init.clone(), new_session);
+                    (session_id, negotiated, supports_session_model)
+                }
+                RpcResponse::Error(error) => {
+                    return Err(AcpError::Frame(error.to_string()));
                 }
             }
-            _ => {
-                let new_session = open_new_session(
-                    &mut wire,
-                    sink,
-                    &mut seq,
-                    resolver,
-                    &cwd,
-                    &config.mcp_servers,
-                )
-                .await?;
-                let session_id = new_session.session_id.clone();
-                let negotiated = crate::capabilities::project(init.clone(), new_session);
-                (session_id, negotiated)
-            }
-        };
+        }
+        _ => {
+            let new_session = open_new_session(
+                &mut wire,
+                sink,
+                &mut seq,
+                resolver,
+                &cwd,
+                &config.mcp_servers,
+            )
+            .await?;
+            let session_id = new_session.session_id.clone();
+            let supports_session_model = new_session.models.is_some();
+            let negotiated = crate::capabilities::project(init.clone(), new_session);
+            (session_id, negotiated, supports_session_model)
+        }
+    };
     if let Some(expected) = &config.expected_capability {
         let actual = awaken_acp_contract::capability_fingerprint(
             &expected.adapter_id,
@@ -335,7 +251,26 @@ pub async fn run_turn_with_config(
         pump_to_response(&mut wire, ID_SET_MODE, sink, &mut seq, resolver).await?;
     }
 
-    // 2c. session/set_config_option — exact backend-owned model selection. The
+    // 2c. session/set_model — some provider-agnostic adapters own model
+    // selection at the protocol layer rather than reading an environment key.
+    // Fail closed unless this exact Session advertised the model interface.
+    if let Some(model) = config.session_model.clone() {
+        if !supports_session_model {
+            return Err(AcpError::Frame(
+                "configured ACP session model selection was not advertised".into(),
+            ));
+        }
+        wire.send_request(
+            ID_SET_MODEL,
+            AGENT_METHOD_NAMES.session_set_model,
+            SetSessionModelRequest::new(session_id.clone(), model),
+        )
+        .await?;
+        let _: SetSessionModelResponse =
+            parse(pump_to_response(&mut wire, ID_SET_MODEL, sink, &mut seq, resolver).await?)?;
+    }
+
+    // 2d. session/set_config_option — exact backend-owned model selection. The
     // option must be advertised by this exact Session and the agent must accept
     // the value; either failure is terminal and never falls back to its default.
     for (index, selection) in config
@@ -501,7 +436,7 @@ async fn project_notification(
         // recognized banner fails the turn closed with the classified failure
         // (RateLimited → Error) instead of landing as an ordinary assistant
         // message. Any other text still projects normally below.
-        if let AcpProjectedEvent::Message { text } = &event
+        if let AcpProjectedEvent::Message { text, .. } = &event
             && let Some(failure) = crate::streamed_hard_limit(text)
         {
             return Err(AcpError::HardLimit(failure));
@@ -640,6 +575,7 @@ fn parse<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, 
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use awaken_acp_contract::AcpCapabilityProbeConfig;
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
 
@@ -917,7 +853,7 @@ mod tests {
         // One projected message + the synthetic TurnEnd, in seq order.
         assert!(matches!(
             &sink.events[0].1,
-            AcpProjectedEvent::Message { text } if text == "hello from acp"
+            AcpProjectedEvent::Message { text, .. } if text == "hello from acp"
         ));
         assert!(matches!(
             sink.events.last().unwrap().1,
@@ -946,7 +882,7 @@ mod tests {
             .events
             .iter()
             .filter_map(|(_, e)| match e {
-                AcpProjectedEvent::Message { text } => Some(text.clone()),
+                AcpProjectedEvent::Message { text, .. } => Some(text.clone()),
                 _ => None,
             })
             .collect();
@@ -1438,6 +1374,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_exact_session_model_is_set_before_prompt_or_fails_closed() {
+        // Decision table: advertised model interface -> select exact id then
+        // prompt; absent interface -> terminal error before prompt.
+        let (mut ours, theirs) = channel();
+        let selected = Arc::new(Mutex::new(None));
+        let selected_by_agent = selected.clone();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await;
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await;
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1","models":{"currentModelId":"default","availableModels":[]}}}"#,
+            )
+            .await;
+            let set = io.read().await.unwrap();
+            *selected_by_agent.lock().unwrap() = set
+                .get("params")
+                .and_then(|params| params.get("modelId"))
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
+            assert_eq!(
+                set.get("method").and_then(|value| value.as_str()),
+                Some(AGENT_METHOD_NAMES.session_set_model)
+            );
+            io.write_line(r#"{"jsonrpc":"2.0","id":6,"result":{}}"#)
+                .await;
+            let prompt = io.read().await.unwrap();
+            assert_eq!(
+                prompt.get("method").and_then(|value| value.as_str()),
+                Some(AGENT_METHOD_NAMES.session_prompt)
+            );
+            io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                .await;
+        });
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.session_model = Some("provider/exact-model".into());
+        run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            selected.lock().unwrap().as_deref(),
+            Some("provider/exact-model")
+        );
+        agent.await.unwrap();
+
+        let (mut ours, theirs) = channel();
+        let agent = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            io.read().await;
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            io.read().await;
+            io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}"#)
+                .await;
+        });
+        let mut sink = RecordingSink::default();
+        let mut config = TurnConfig::new(&AllowAll);
+        config.session_model = Some("provider/exact-model".into());
+        let error = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
+            .await
+            .expect_err("missing model interface must fail closed");
+        assert!(error.to_string().contains("was not advertised"));
+        agent.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn an_exact_session_config_option_is_set_before_prompt_or_fails_closed() {
         // Cause graph: published exact model -> advertised Session option ->
         // session/set_config_option response -> prompt. Missing advertisement
@@ -1461,13 +1470,13 @@ mod tests {
                 r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1","configOptions":[{"id":"model","name":"Model","type":"select","currentValue":"default","options":[{"value":"gpt-exact","name":"GPT Exact"}]},{"id":"reasoning_effort","name":"Reasoning","type":"select","currentValue":"medium","options":[{"value":"high","name":"High"}]}]}}"#,
             )
             .await;
-            let set = io.read().await.unwrap(); // first session/set_config_option (id 6)
-            selected_by_agent.lock().unwrap().push(set);
-            io.write_line(r#"{"jsonrpc":"2.0","id":6,"result":{"configOptions":[]}}"#)
-                .await;
-            let set = io.read().await.unwrap(); // second session/set_config_option (id 7)
+            let set = io.read().await.unwrap(); // first session/set_config_option (id 7)
             selected_by_agent.lock().unwrap().push(set);
             io.write_line(r#"{"jsonrpc":"2.0","id":7,"result":{"configOptions":[]}}"#)
+                .await;
+            let set = io.read().await.unwrap(); // second session/set_config_option (id 8)
+            selected_by_agent.lock().unwrap().push(set);
+            io.write_line(r#"{"jsonrpc":"2.0","id":8,"result":{"configOptions":[]}}"#)
                 .await;
             let prompt = io.read().await.unwrap();
             assert_eq!(
@@ -1505,7 +1514,7 @@ mod tests {
             assert_eq!(request["params"]["configId"], "model", "C1");
             assert_eq!(request["params"]["value"], "gpt-exact", "C1");
             let request = selected.get(1).expect("C1 second set request");
-            assert_eq!(request["id"], 7, "C1 unique request id");
+            assert_eq!(request["id"], 8, "C1 unique request id");
             assert_eq!(request["params"]["configId"], "reasoning_effort", "C1");
             assert_eq!(request["params"]["value"], "high", "C1");
         }
@@ -1843,7 +1852,8 @@ mod tests {
             shape,
             vec![
                 AcpProjectedEvent::Message {
-                    text: "Hello ".into()
+                    text: "Hello ".into(),
+                    message_id: None,
                 },
                 AcpProjectedEvent::ToolCall {
                     id: "c1".into(),
@@ -1851,7 +1861,8 @@ mod tests {
                     input: serde_json::json!({ "path": "a.txt" }),
                 },
                 AcpProjectedEvent::Message {
-                    text: "world".into()
+                    text: "world".into(),
+                    message_id: None,
                 },
                 AcpProjectedEvent::TurnEnd {
                     reason: TerminationReason::NaturalEnd,
@@ -1925,7 +1936,7 @@ mod tests {
         assert!(
             sink.events.iter().any(|(_, e)| matches!(
                 e,
-                AcpProjectedEvent::Message { text } if text == "past the stale id"
+                AcpProjectedEvent::Message { text, .. } if text == "past the stale id"
             )),
             "the message after the stale id still projected: {:?}",
             sink.events
@@ -1977,7 +1988,7 @@ mod tests {
         assert!(
             !sink.events.iter().any(|(_, e)| matches!(
                 e,
-                AcpProjectedEvent::Message { text } if text == banner
+                AcpProjectedEvent::Message { text, .. } if text == banner
             )),
             "the banner is not projected as plain assistant text: {:?}",
             sink.events

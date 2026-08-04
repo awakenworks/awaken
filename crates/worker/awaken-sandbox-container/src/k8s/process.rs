@@ -24,6 +24,12 @@ pub(super) struct K8sExecProcess {
     pub(super) state: tokio::sync::Mutex<K8sExecState>,
 }
 
+pub(super) struct K8sExecPlan {
+    pub(super) pid_file: String,
+    pub(super) argv: Vec<String>,
+    pub(super) secret_stdin: Vec<pc::MaterializedEnvValue>,
+}
+
 pub(super) fn k8s_exit_status(status: Option<Status>) -> pc::ExitStatus {
     let success = status.as_ref().and_then(|status| status.status.as_deref()) == Some("Success");
     let code = status
@@ -62,32 +68,53 @@ pub(super) fn k8s_live_file_result(
 pub(super) fn k8s_exec_argv(
     id: &str,
     command: pc::MaterializedCommand,
-) -> Result<(String, Vec<String>), RuntimeError> {
+) -> Result<K8sExecPlan, RuntimeError> {
     if command.argv.is_empty() {
         return Err(backend("exec command argv is empty"));
     }
     let pid_file = format!("/tmp/{id}.pid");
-    let mut argv = vec!["env".to_string()];
+    let mut inline_env = Vec::new();
+    let mut secrets = Vec::new();
     for var in command.env {
-        if var.value.is_secret() {
-            return Err(backend(
-                "Kubernetes exec cannot deliver a process secret without argv exposure",
-            ));
+        match var.value {
+            pc::MaterializedEnvValue::Inline(value) => {
+                inline_env.push(format!("{}={value}", var.name));
+            }
+            pc::MaterializedEnvValue::Secret(value) => {
+                secrets.push((var.name, pc::MaterializedEnvValue::Secret(value)));
+            }
         }
-        argv.push(format!("{}={}", var.name, var.value.expose()));
     }
-    argv.extend([
+    let mut argv = vec![
         "sh".into(),
         "-c".into(),
-        "pid_file=$1; cwd=$2; shift 2; printf '%s' \"$$\" > \"$pid_file\"; \
+        "pid_file=$1; cwd=$2; secret_count=$3; shift 3; \
+         while [ \"$secret_count\" -gt 0 ]; do \
+           secret_name=$1; secret_length=$2; shift 2; \
+           secret_value=$(dd bs=1 count=\"$secret_length\" 2>/dev/null; printf .) || exit 125; \
+           secret_value=${secret_value%.}; export \"$secret_name=$secret_value\" || exit 125; \
+           secret_count=$((secret_count - 1)); \
+         done; \
+         printf '%s' \"$$\" > \"$pid_file\"; \
          if [ -n \"$cwd\" ]; then cd -- \"$cwd\" || exit 126; fi; exec \"$@\""
             .into(),
         "awaken-exec".into(),
         pid_file.clone(),
         command.cwd,
-    ]);
+        secrets.len().to_string(),
+    ];
+    for (name, value) in &secrets {
+        argv.push(name.clone());
+        argv.push(value.expose().len().to_string());
+    }
+    argv.push("env".into());
+    argv.extend(inline_env);
     argv.extend(command.argv);
-    Ok((pid_file, argv))
+    Ok(K8sExecPlan {
+        pid_file,
+        argv,
+        secret_stdin: secrets.into_iter().map(|(_, value)| value).collect(),
+    })
 }
 
 #[async_trait]

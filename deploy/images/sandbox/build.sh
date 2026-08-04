@@ -55,7 +55,13 @@ repo=$(cd "$(dirname "$0")/../../.." && pwd)
 image=${1:-awaken-sandbox:local}
 # `${2-...}` intentionally distinguishes an omitted package list (production
 # defaults) from an explicitly empty one (hermetic transport/E2E fixture image).
-packages=${2-"@agentclientprotocol/claude-agent-acp@0.44 @agentclientprotocol/codex-acp@1.1 @google/gemini-cli@0.11 opencode-ai@0.6"}
+packages=${2-"@agentclientprotocol/claude-agent-acp@0.64.2 @agentclientprotocol/codex-acp@1.1.9 @google/gemini-cli@0.53.1 opencode-ai@1.18.12"}
+hermes_package=${3-"hermes-agent[acp,bedrock]==0.19.0"}
+# An explicitly empty legacy package list means a transport-only fixture image;
+# preserve that contract unless the caller explicitly supplies a Hermes package.
+if [[ -z "$packages" && $# -lt 3 ]]; then
+  hermes_package=""
+fi
 engine=${CONTAINER_ENGINE:-docker}
 build_timeout_seconds=${AWAKEN_SANDBOX_BUILD_TIMEOUT_SECONDS:-1800}
 operation_timeout_seconds=${AWAKEN_SANDBOX_OPERATION_TIMEOUT_SECONDS:-60}
@@ -88,9 +94,11 @@ cd "$repo"
 if [[ -n "${AWAKEN_SANDBOX_BUILD_NETWORK:-}" ]]; then
   build_image --network "$AWAKEN_SANDBOX_BUILD_NETWORK" \
     --build-arg ACP_NPM_PACKAGES="$packages" \
+    --build-arg HERMES_AGENT_PACKAGE="$hermes_package" \
     -f deploy/images/sandbox/Dockerfile -t "$image" .
 else
   build_image --build-arg ACP_NPM_PACKAGES="$packages" \
+    --build-arg HERMES_AGENT_PACKAGE="$hermes_package" \
     -f deploy/images/sandbox/Dockerfile -t "$image" .
 fi
 
@@ -104,3 +112,20 @@ run_with_deadline "$operation_timeout_seconds" \
 run_with_deadline "$operation_timeout_seconds" \
   "$engine" run --rm --entrypoint /bin/sh "$image" -c \
   'command -v curl >/dev/null && curl --version >/dev/null'
+
+# Verify exactly the adapter executables requested for this image. This catches
+# package/bin drift before a Worker advertises an adapter and attempts a live
+# ACP handshake inside Kubernetes.
+expected_acp_commands=()
+[[ "$packages" == *"@agentclientprotocol/claude-agent-acp"* ]] && expected_acp_commands+=(claude-agent-acp)
+[[ "$packages" == *"@agentclientprotocol/codex-acp"* ]] && expected_acp_commands+=(codex-acp)
+[[ "$packages" == *"@google/gemini-cli"* ]] && expected_acp_commands+=(gemini)
+[[ "$packages" == *"opencode-ai"* ]] && expected_acp_commands+=(opencode)
+[[ -n "$hermes_package" ]] && expected_acp_commands+=(hermes-acp)
+if (( ${#expected_acp_commands[@]} > 0 )); then
+  command_list=${expected_acp_commands[*]}
+  run_with_deadline "$operation_timeout_seconds" \
+    "$engine" run --rm --entrypoint /bin/sh "$image" -c \
+    'for executable in $1; do command -v "$executable" >/dev/null || exit 1; done' \
+    _ "$command_list"
+fi

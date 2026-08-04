@@ -205,6 +205,16 @@ impl LaunchResolver for PublishedAcpLaunchResolver {
     ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
         let (material_sources, recipient_bound_envelopes) =
             self.credentials.material_source_capabilities();
+        let (realization_kind, material_type) = match self.cli.managed_credential_delivery {
+            awaken_run_executor_acp::ManagedCredentialDelivery::ProcessSecret => (
+                awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment,
+                awaken_runtime_contract::credential::PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE,
+            ),
+            awaken_run_executor_acp::ManagedCredentialDelivery::Artifact(_) => (
+                awaken_runtime_contract::CredentialRealizationKind::PrivateSecretFile,
+                awaken_runtime_contract::credential::PRIVATE_SECRET_FILE_MATERIAL_TYPE,
+            ),
+        };
         awaken_runtime_contract::CredentialRealizationCapabilities {
             holders: [awaken_runtime_contract::PlaintextHolder::new(
                 awaken_runtime_contract::PlaintextBoundary::Workload,
@@ -213,14 +223,18 @@ impl LaunchResolver for PublishedAcpLaunchResolver {
             .into_iter()
             .collect(),
             material_sources,
-            realization_kinds: [
-                awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment,
-                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
-            ]
+            realization_kinds: [realization_kind].into_iter().collect(),
+            recipient_bound_envelopes,
+            extension_consumers: [(
+                format!(
+                    "{}acp:{}",
+                    awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX,
+                    self.cli.id
+                ),
+                [material_type.to_string()].into_iter().collect(),
+            )]
             .into_iter()
             .collect(),
-            recipient_bound_envelopes,
-            extension_consumers: Default::default(),
             alternatives: Vec::new(),
         }
     }
@@ -422,6 +436,53 @@ mod tests {
             model_ref_override: None,
             data_subject_id: None,
             tool_capability_narrowing: Default::default(),
+        }
+    }
+
+    #[test]
+    fn acp_realization_capabilities_follow_the_selected_cli_delivery_contract() {
+        // C1 process-secret CLI -> only process-secret admission. C2 artifact
+        // CLI -> only private-file admission. Advertising their union makes
+        // the claim solver choose a mechanism the selected CLI cannot consume.
+        for (cli, expected, unexpected) in [
+            (
+                claude(),
+                CredentialRealizationKind::ProcessSecretEnvironment,
+                CredentialRealizationKind::PrivateSecretFile,
+            ),
+            (
+                *awaken_run_executor_acp::acp_cli("codex").unwrap(),
+                CredentialRealizationKind::PrivateSecretFile,
+                CredentialRealizationKind::ProcessSecretEnvironment,
+            ),
+        ] {
+            let resolver = PublishedAcpLaunchResolver::new(
+                cli,
+                None,
+                crate::PinnedCredentialMaterializer::new(
+                    Arc::new(InMemoryCredentialRepo::new()),
+                    Arc::new(InMemorySecretStore::new()),
+                ),
+            );
+            let capabilities = resolver.credential_realization_capabilities();
+            assert!(
+                capabilities.realization_kinds.contains(&expected),
+                "{}",
+                cli.id
+            );
+            assert!(
+                !capabilities.realization_kinds.contains(&unexpected),
+                "{}",
+                cli.id
+            );
+            assert_eq!(
+                capabilities
+                    .acp_backend_realization_kind(&format!("acp:{}", cli.id))
+                    .expect("coherent backend mapping"),
+                Some(expected),
+                "{}",
+                cli.id
+            );
         }
     }
 
