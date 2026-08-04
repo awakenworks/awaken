@@ -502,6 +502,13 @@ mod tests {
     #[derive(Default)]
     struct RecordingEnvironmentSource {
         dispatched: Mutex<BTreeSet<String>>,
+        failures: Mutex<BTreeSet<String>>,
+    }
+
+    impl RecordingEnvironmentSource {
+        fn fail_for(&self, session_id: &str) {
+            self.failures.lock().unwrap().insert(session_id.into());
+        }
     }
 
     #[async_trait::async_trait]
@@ -537,6 +544,13 @@ mod tests {
             _environment_id: &str,
             session_id: &str,
         ) -> Result<String, awaken_session_contract::work_queue::WorkQueueError> {
+            if self.failures.lock().unwrap().contains(session_id) {
+                return Err(
+                    awaken_session_contract::work_queue::WorkQueueError::Storage(format!(
+                        "injected failure for {session_id}"
+                    )),
+                );
+            }
             self.dispatched
                 .lock()
                 .unwrap()
@@ -680,5 +694,44 @@ mod tests {
         assert_eq!(replay.settled, 1, "R2");
         assert!(replay.failures.is_empty());
         assert_eq!(environments.dispatched.lock().unwrap().len(), 1, "R2");
+    }
+
+    #[tokio::test]
+    async fn work_dispatch_reconciliation_isolates_each_session_failure() {
+        // Work-projection FMECA decision table. Causes: C1 a durable Session needs
+        // external work; C2 its queue write succeeds; C3 a sibling queue write
+        // fails; C4 an unrelated Session needs no dispatch. Effects: E1 every
+        // eligible Session is attempted; E2 successes settle independently; E3
+        // failures retain exact Session/Environment diagnostics for later retry;
+        // E4 ineligible Sessions cause no side effect. Rules: W1 C1+C2=>E1+E2;
+        // W2 C1+C3=>E1+E3 without aborting W1; W3 C4=>E4.
+        let repo = awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository");
+        create(&repo, persisted("external-failed", true, false, "idle")).await;
+        create(&repo, persisted("external-settled", true, false, "idle")).await;
+        create(&repo, persisted("local-skip", false, false, "idle")).await;
+        let environments = RecordingEnvironmentSource::default();
+        environments.fail_for("external-failed");
+
+        let report = reconcile_work_dispatches(&repo, &environments).await;
+        assert_eq!(report.settled, 1, "W1/W2");
+        assert_eq!(
+            environments
+                .dispatched
+                .lock()
+                .unwrap()
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            ["external-settled".to_string()],
+            "W1/W3"
+        );
+        assert_eq!(report.failures.len(), 1, "W2");
+        assert_eq!(report.failures[0].session_id, "external-failed", "W2");
+        assert_eq!(report.failures[0].environment_id, "env-worker", "W2");
+        assert!(
+            report.failures[0].message.contains("injected failure"),
+            "W2 preserves the retry diagnostic"
+        );
     }
 }

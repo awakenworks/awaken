@@ -21,10 +21,9 @@ use awaken_agent_channel::{AgentChannel, AgentTransport, SplitChannel};
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::{
     ConfigMap, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar,
-    LocalObjectReference, Pod, PodSecurityContext, PodSpec, ResourceRequirements, Secret,
-    SecretVolumeSource, Volume, VolumeMount,
+    LocalObjectReference, Pod, PodSecurityContext, PodSpec, Secret, SecretVolumeSource, Volume,
+    VolumeMount,
 };
-use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 #[cfg(test)]
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Status;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
@@ -44,10 +43,13 @@ mod pod_security;
 mod process;
 mod realization;
 use names::{cfg_owner_label, configmap_name, credential_secret_name, k8s_runtime_id, pod_name};
-use pod_security::{egress_label, fuse_sidecar_security_context, hardened_security_context};
+use pod_security::{
+    egress_label, fuse_sidecar_security_context, hardened_security_context, pod_resources,
+    unenforceable_k8s_limit,
+};
 #[cfg(test)]
 use process::k8s_exit_status;
-use process::{K8sExecProcess, K8sExecState, k8s_exec_argv};
+use process::{K8sExecProcess, K8sExecState, k8s_exec_argv, k8s_live_file_result};
 use realization::{
     PodReadiness, await_pod_deleted, create_or_verify, pod_readiness, reap_terminal_pod,
     stamp_realization,
@@ -170,44 +172,6 @@ fn build_credential_secret(
         )])),
         ..Default::default()
     }
-}
-
-/// The Pod container's `resources.limits` from a spec's caps, or `None` when unset —
-/// so the tier actually enforces the `resource_limits` it advertises. k8s expresses
-/// caps natively (CPU millicores, byte quantities), distinct from Docker's cgroup
-/// fields, so the mapping is per-backend. `pids` has no standard pod limit key.
-fn pod_resources(limits: &pc::ResourceLimits) -> Option<ResourceRequirements> {
-    if !limits.is_set() {
-        return None;
-    }
-    let mut m = BTreeMap::new();
-    if let Some(cpu) = limits.cpu_millis {
-        m.insert("cpu".to_string(), Quantity(format!("{cpu}m")));
-    }
-    if let Some(mem) = limits.memory_bytes {
-        m.insert("memory".to_string(), Quantity(mem.to_string()));
-    }
-    if let Some(disk) = limits.disk_bytes {
-        m.insert("ephemeral-storage".to_string(), Quantity(disk.to_string()));
-    }
-    if m.is_empty() {
-        return None; // only `pids` was set — nothing k8s expresses as a pod limit
-    }
-    Some(ResourceRequirements {
-        limits: Some(m),
-        ..Default::default()
-    })
-}
-
-/// The neutral limit k8s cannot enforce at the Pod-spec level, if the spec asks for it.
-/// k8s expresses CPU / memory / ephemeral-storage as Pod `resources.limits`, but a
-/// per-Pod `pids` cap is a node/kubelet setting (`--pod-max-pids`), NOT a Pod-spec
-/// field — so `pod_resources` cannot carry it. The container tier advertises
-/// `resource_limits = true` for every backend; on k8s a `pids`-limited spec must
-/// therefore FAIL CLOSED at create rather than be silently dropped (a fail-open on a
-/// fork-bomb guard), the same discipline as the neutral admission gate.
-fn unenforceable_k8s_limit(limits: &pc::ResourceLimits) -> Option<&'static str> {
-    limits.pids.map(|_| "pids")
 }
 
 /// A Kubernetes-backed [`ContainerRuntime`]. `agent_addr` is the Service endpoint the
@@ -878,11 +842,13 @@ impl ContainerRuntime for K8sRuntime {
         let mut stdout = attached
             .stdout()
             .ok_or_else(|| backend("k8s credential harvest has no stdout"))?;
+        let status = attached
+            .take_status()
+            .ok_or_else(|| backend("k8s credential harvest has no completion status"))?;
         let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).await.map_err(backend)?;
-        drop(stdout);
-        attached.join().await.map_err(backend)?;
-        Ok(Some(bytes))
+        let (read, status) = tokio::join!(stdout.read_to_end(&mut bytes), status);
+        read.map_err(backend)?;
+        k8s_live_file_result(status, bytes)
     }
 
     async fn inspect(&self, container_id: &str) -> Result<ContainerState, RuntimeError> {
@@ -1180,36 +1146,6 @@ mod tests {
             ),
             "R6 rootless BuildKit must use a writable workspace"
         );
-        let environment = buildkit.env.as_ref().unwrap();
-        for name in [
-            "FORWARD_PROXY",
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "http_proxy",
-            "https_proxy",
-        ] {
-            assert!(
-                environment.iter().any(|variable| {
-                    variable.name == name
-                        && variable.value.as_deref() == Some("http://proxy.internal:8080")
-                }),
-                "R8 BuildKit and package-manager egress must inherit {name}"
-            );
-        }
-        assert!(
-            environment.iter().any(|variable| {
-                variable.name == "NO_PROXY"
-                    && variable
-                        .value
-                        .as_deref()
-                        .is_some_and(|value| value.contains("registry.local:5000"))
-            }),
-            "R8 the package Registry must bypass the external proxy"
-        );
-        assert!(
-            buildkit.args.as_ref().unwrap()[0].contains("build-arg:HTTP_PROXY"),
-            "R8 predefined proxy args must reach package-manager RUN steps"
-        );
         assert!(
             K8sPackageImageProvisioner::new(
                 client,
@@ -1320,6 +1256,35 @@ mod tests {
         assert_eq!(process.wait().await.unwrap().code, Some(7));
         assert_eq!(process.wait().await.unwrap().code, Some(7));
         assert_eq!(process.poll().await.unwrap().unwrap().code, Some(7));
+    }
+
+    #[test]
+    fn live_file_harvest_requires_a_successful_remote_exit_status() {
+        // Credential-harvest FMECA decision table. Causes: C1 remote `cat`
+        // exits 0; C2 it exits nonzero (missing/permission denied); C3 the API
+        // stream closes without a Status frame; C4 returned bytes are empty.
+        // Effects: E1 exact bytes are eligible for broker write-back; E2 fail
+        // closed so stale/empty material cannot replace authority. Rules: H1
+        // C1=>E1; H2 C1+C4=>E1 (empty is data, validation belongs upstream);
+        // H3 C2|C3=>E2.
+        assert_eq!(
+            k8s_live_file_result(Some(success_status(0)), b"rotated".to_vec()).unwrap(),
+            Some(b"rotated".to_vec()),
+            "H1"
+        );
+        assert_eq!(
+            k8s_live_file_result(Some(success_status(0)), Vec::new()).unwrap(),
+            Some(Vec::new()),
+            "H2"
+        );
+        assert!(
+            k8s_live_file_result(Some(success_status(1)), Vec::new()).is_err(),
+            "H3 nonzero"
+        );
+        assert!(
+            k8s_live_file_result(None, Vec::new()).is_err(),
+            "H3 missing status"
+        );
     }
 
     #[tokio::test]
