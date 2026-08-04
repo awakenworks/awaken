@@ -77,6 +77,17 @@ impl AsRef<ExecutionScopeRef> for VerifiedExecutionScope {
 #[derive(Debug, Clone)]
 pub struct WorkspaceScope(pub String);
 
+impl WorkspaceScope {
+    /// Return the edge-selected Workspace only when it is a usable ownership key.
+    ///
+    /// Protocol adapters remain responsible for mapping absence to their wire
+    /// error shape; this method is the single validation rule for a stamped scope.
+    #[must_use]
+    pub fn non_empty(&self) -> Option<&str> {
+        (!self.0.trim().is_empty()).then_some(self.0.as_str())
+    }
+}
+
 /// The real Workspace into which a configuration publication is installed.
 ///
 /// This request-local coordinate is supplied by trusted composition code. It is
@@ -558,9 +569,16 @@ mod tests {
     // --- WorkspaceScope newtype: construction + accessor + clone --------------
 
     #[test]
-    fn workspace_scope_wraps_and_exposes_its_inner_id() {
+    fn workspace_scope_wraps_and_validates_its_inner_id() {
+        // Cause/effect graph: C1 a non-empty edge stamp -> E1 expose the exact
+        // opaque Workspace id; C2 an empty stamp -> E2 reject it; C3 a
+        // whitespace-only stamp -> E2 reject it. Decision rules W1/W2/W3 cover
+        // every input class used by HTTP scope extractors.
         let scope = WorkspaceScope("wrkspc_acme".to_string());
         assert_eq!(scope.0, "wrkspc_acme");
+        assert_eq!(scope.non_empty(), Some("wrkspc_acme"));
+        assert_eq!(WorkspaceScope(String::new()).non_empty(), None);
+        assert_eq!(WorkspaceScope("  \t".into()).non_empty(), None);
         // Clone is the only other capability the newtype derives (Debug, Clone).
         let cloned = scope.clone();
         assert_eq!(cloned.0, "wrkspc_acme");

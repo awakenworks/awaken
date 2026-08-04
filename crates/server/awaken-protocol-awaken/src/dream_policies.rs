@@ -30,8 +30,11 @@ struct DreamPolicyErrorBody {
 type DreamPolicyRejection = (StatusCode, Json<DreamPolicyErrorBody>);
 
 fn request_scope(scope: Option<Extension<WorkspaceScope>>) -> Result<String, DreamPolicyRejection> {
-    match scope {
-        Some(Extension(scope)) if !scope.0.trim().is_empty() => Ok(scope.0),
+    match scope
+        .as_ref()
+        .and_then(|Extension(scope)| scope.non_empty())
+    {
+        Some(scope) => Ok(scope.to_owned()),
         _ => Err((
             StatusCode::NOT_FOUND,
             Json(DreamPolicyErrorBody {
