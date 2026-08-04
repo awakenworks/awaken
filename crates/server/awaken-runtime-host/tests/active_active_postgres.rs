@@ -29,11 +29,12 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_host::{
-    ClaimedCommitService, RemoteClaimedRunCommit, WorkerDispatchService,
-    dispatch_transport_router_with_service, registered_worker_transport_router_with_services,
+    ClaimedCommitService, WorkerDispatchService, dispatch_transport_router_with_service,
+    registered_worker_transport_router_with_services,
 };
 use awaken_store_postgres::PostgresCommitCoordinator;
 use awaken_worker_runtime::HttpDispatchQueue;
+use awaken_worker_runtime::RemoteClaimedRunCommit;
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, SystemWorkerClock,
 };

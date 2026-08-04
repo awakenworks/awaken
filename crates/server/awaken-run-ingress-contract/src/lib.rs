@@ -7,6 +7,7 @@
 //! serializable [`RunDispatch`] a durable queue persists and replays — no live
 //! handles (G3). Worker wiring stays private to the host.
 
+mod claimed_commit;
 mod claimed_session;
 mod claimed_stream;
 pub mod dispatch;
@@ -29,6 +30,7 @@ pub use awaken_worker_contract::{
     WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
     place_assignment,
 };
+pub use claimed_commit::ClaimedRunCommit;
 pub use claimed_session::{
     ClaimedSessionContributionReceipt, ClaimedSessionControl, ClaimedSessionControlError,
 };
