@@ -7,6 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_session_contract::{Pending, RunApplicationError, RunResume};
+use serde_json::Value;
 
 use crate::types::{Part, SendMessageRequest};
 
@@ -28,8 +30,17 @@ pub struct Processed {
     pub task_id: String,
     pub agent_id: Option<String>,
     pub text: String,
+    /// An explicit structured decision carried by an A2A `DataPart`. Text is
+    /// never interpreted as authorization.
+    pub(crate) approval: Option<ApprovalDecision>,
     /// The neutral user message for a fresh turn.
     pub message: Message,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ApprovalDecision {
+    Decision { allow: bool, note: Option<String> },
+    Invalid(String),
 }
 
 /// Decode a `message:send` request: the `contextId` (or `taskId`) is the thread;
@@ -51,6 +62,7 @@ pub fn process(req: SendMessageRequest, path_agent: Option<String>) -> Processed
         .unwrap_or_else(|| next("thread"));
 
     let text = req.message.text();
+    let approval = approval_decision(&req.message.parts);
     let message_id = req.message.message_id.clone();
     let blocks: Vec<ContentBlock> = req.message.parts.iter().filter_map(part_to_block).collect();
     let message = Message::new(MessageId(message_id), Role::User, blocks);
@@ -62,7 +74,74 @@ pub fn process(req: SendMessageRequest, path_agent: Option<String>) -> Processed
         // selector; either falls back to the host default.
         agent_id: path_agent.or(req.agent_id),
         text,
+        approval,
         message,
+    }
+}
+
+fn approval_decision(parts: &[Part]) -> Option<ApprovalDecision> {
+    let mut decisions = parts.iter().filter_map(|part| match part {
+        Part::Data { data, .. }
+            if data.get("type").and_then(Value::as_str) == Some("tool-approval") =>
+        {
+            Some(data)
+        }
+        _ => None,
+    });
+    let data = decisions.next()?;
+    if decisions.next().is_some() {
+        return Some(ApprovalDecision::Invalid(
+            "A2A message carries multiple tool-approval decisions".into(),
+        ));
+    }
+    let Some(allow) = data.get("allow").and_then(Value::as_bool) else {
+        return Some(ApprovalDecision::Invalid(
+            "A2A tool-approval data requires a boolean `allow`".into(),
+        ));
+    };
+    let note = match data.get("note") {
+        None => None,
+        Some(Value::String(note)) => Some(note.clone()),
+        Some(_) => {
+            return Some(ApprovalDecision::Invalid(
+                "A2A tool-approval `note` must be a string".into(),
+            ));
+        }
+    };
+    Some(ApprovalDecision::Decision { allow, note })
+}
+
+/// Convert decoded A2A input to the one neutral resume variant authorized by
+/// the pending tool binding. This stays with request decoding so the router
+/// never creates a second interpretation of approval data.
+pub(crate) fn resume_for_pending(
+    text: &str,
+    approval: Option<&ApprovalDecision>,
+    pending: &Pending,
+) -> Result<RunResume, RunApplicationError> {
+    if pending.client_executed {
+        if approval.is_some() {
+            return Err(RunApplicationError::bad_request(
+                "A2A tool-approval decision cannot answer a client-executed tool",
+            ));
+        }
+        Ok(RunResume::ClientResult {
+            content: vec![ContentBlock::text(text)],
+            is_error: false,
+        })
+    } else {
+        match approval {
+            Some(ApprovalDecision::Decision { allow, note }) => Ok(RunResume::Confirm {
+                allow: *allow,
+                note: note.clone(),
+            }),
+            Some(ApprovalDecision::Invalid(message)) => {
+                Err(RunApplicationError::bad_request(message.clone()))
+            }
+            None => Err(RunApplicationError::bad_request(
+                "A2A built-in tool approval requires a structured tool-approval DataPart",
+            )),
+        }
     }
 }
 
@@ -105,6 +184,73 @@ mod tests {
             metadata: None,
             reference_task_ids: Vec::new(),
         }
+    }
+
+    fn pending(client_executed: bool) -> Pending {
+        Pending {
+            tool_use_id: "c1".into(),
+            name: "t".into(),
+            input: serde_json::Value::Null,
+            client_executed,
+        }
+    }
+
+    #[test]
+    fn resume_delivers_text_only_to_a_client_executed_tool() {
+        let resume = resume_for_pending("the answer", None, &pending(true)).unwrap();
+        assert!(
+            matches!(resume, RunResume::ClientResult { content, is_error: false } if content == vec![ContentBlock::text("the answer")])
+        );
+    }
+
+    #[test]
+    fn resume_requires_an_explicit_builtin_tool_decision() {
+        /* Resume FMECA decision table. C1 pending binding is client-executed;
+         * C2 an explicit approval decision exists; C3 it is valid; C4 allow bit.
+         * R1=C1+!C2 => exact ClientResult; R2=!C1+C2+C3+C4 => allow;
+         * R3=!C1+C2+C3+!C4 => deny; R4=!C1+(!C2|!C3) => bad request;
+         * R5=C1+C2 => bad request. Effects are mutually exclusive and no text
+         * value can become authorization.
+         */
+        let allow = ApprovalDecision::Decision {
+            allow: true,
+            note: Some("reviewed".into()),
+        };
+        assert!(
+            matches!(
+                resume_for_pending("ignored", Some(&allow), &pending(false)).unwrap(),
+                RunResume::Confirm { allow: true, note: Some(note) } if note == "reviewed"
+            ),
+            "R2"
+        );
+        let deny = ApprovalDecision::Decision {
+            allow: false,
+            note: Some("unsafe".into()),
+        };
+        assert!(
+            matches!(
+                resume_for_pending("ignored", Some(&deny), &pending(false)).unwrap(),
+                RunResume::Confirm { allow: false, note: Some(note) } if note == "unsafe"
+            ),
+            "R3"
+        );
+        assert!(
+            resume_for_pending("approve", None, &pending(false)).is_err(),
+            "R4"
+        );
+        assert!(
+            resume_for_pending(
+                "ignored",
+                Some(&ApprovalDecision::Invalid("bad".into())),
+                &pending(false)
+            )
+            .is_err(),
+            "R4 malformed"
+        );
+        assert!(
+            resume_for_pending("result", Some(&allow), &pending(true)).is_err(),
+            "R5"
+        );
     }
 
     fn req(context: Option<&str>, text: &str) -> SendMessageRequest {
@@ -266,5 +412,50 @@ mod tests {
         r.message.role = MessageRole::Agent;
         let p = process(r, None);
         assert_eq!(p.message.role, Role::User);
+    }
+
+    #[test]
+    fn structured_tool_approval_decision_table_is_explicit_and_fail_closed() {
+        /* A2A approval FMECA graph. C1 one DataPart has type=tool-approval;
+         * C2 allow is boolean; C3 note is absent/string; C4 duplicate decision.
+         * Effects: E1 exact allow/deny decision; E2 invalid input, never implicit
+         * authorization. Rules A1=C1+C2+C3=>E1; A2=!C2|!C3|C4=>E2;
+         * A3=!C1=>no decision (the router then rejects text-only approvals).
+         */
+        let decision = |data: std::collections::BTreeMap<String, Value>| Part::Data {
+            data,
+            metadata: None,
+        };
+        let valid = decision(std::collections::BTreeMap::from([
+            ("type".into(), Value::String("tool-approval".into())),
+            ("allow".into(), Value::Bool(false)),
+            ("note".into(), Value::String("operator denied".into())),
+        ]));
+        assert_eq!(
+            approval_decision(std::slice::from_ref(&valid)),
+            Some(ApprovalDecision::Decision {
+                allow: false,
+                note: Some("operator denied".into()),
+            }),
+            "A1"
+        );
+        assert!(
+            matches!(
+                approval_decision(&[decision(std::collections::BTreeMap::from([
+                    ("type".into(), Value::String("tool-approval".into())),
+                    ("allow".into(), Value::String("deny".into())),
+                ]))]),
+                Some(ApprovalDecision::Invalid(_))
+            ),
+            "A2 malformed"
+        );
+        assert!(
+            matches!(
+                approval_decision(&[valid.clone(), valid]),
+                Some(ApprovalDecision::Invalid(_))
+            ),
+            "A2 duplicate"
+        );
+        assert_eq!(approval_decision(&[Part::text("deny")]), None, "A3");
     }
 }

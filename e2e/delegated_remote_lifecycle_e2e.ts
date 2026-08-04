@@ -307,7 +307,15 @@ async function main(): Promise<void> {
       betas: BETAS,
     }), 'parent interrupt');
     await within(activeTurn.catch(() => {}), 'interrupted parent turn');
-    await waitFor(() => peer.state.cancels.find((id) => id === 'delegated-cancel'), 'remote child cancellation');
+    try {
+      await waitFor(() => peer.state.cancels.find((id) => id === 'delegated-cancel'), 'remote child cancellation');
+    } catch (error) {
+      const committed = await listEvents(client, cancelled.id);
+      throw new Error(
+        `${String(error)}; peer=${JSON.stringify(peer.state)}; committed=${JSON.stringify(committed)}`,
+        { cause: error },
+      );
+    }
     assert.deepEqual(peer.state.cancels, ['delegated-cancel']);
     pass('parent interrupt cancels the pinned remote child task exactly once');
 

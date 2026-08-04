@@ -18,13 +18,15 @@
 # Base is trixie (glibc 2.41), not bookworm (2.36): the host-built binary links the
 # builder's glibc, so the runtime base must be >= it or the binary fails to start with
 # a `GLIBC_x.y not found` loader error (build once, run anywhere the base glibc covers).
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd
 
 # fuse3 provides fusermount3 (the FUSE-mount helper the write-through server calls);
 # tini reaps any child; ca-certificates for a store backend that dials out (pg).
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates fuse3 tini \
-    && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    DEBIAN_FRONTEND=noninteractive apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates fuse3 tini
 
 # The execution-plane binary (host-built, --features memoryd) as the sidecar entrypoint.
 ARG BIN=target/release/awaken-sandbox

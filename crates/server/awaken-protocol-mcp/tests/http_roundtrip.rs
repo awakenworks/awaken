@@ -247,9 +247,9 @@ impl ToolGateHook for SuspendGate {
 
 #[tokio::test]
 async fn an_approval_gated_tool_fails_closed_for_an_external_mcp_client() {
-    // HITL over MCP: a tool the gate would await (suspend) cannot be honored — an
-    // external client has no run to suspend — so `tools/call` returns a
-    // model-visible error instead of running the effect (ADR-0035, fail closed).
+    // HITL over MCP: a tool the gate would await cannot be honored without a
+    // correlated and authenticated server-to-client request channel, so
+    // `tools/call` returns a model-visible error instead of running the effect.
     let service = McpToolService::new(
         "http-test",
         "0.0.0",
@@ -272,7 +272,7 @@ async fn an_approval_gated_tool_fails_closed_for_an_external_mcp_client() {
     );
     let body = format!("{:?}", result.content);
     assert!(
-        body.contains("out-of-band approval"),
-        "the refusal names the missing out-of-band approval, got {body}",
+        body.contains("no authenticated client-request channel"),
+        "the refusal names the missing authenticated request channel, got {body}",
     );
 }

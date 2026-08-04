@@ -51,13 +51,19 @@ self_test() {
     echo "Postgres gate omits --features test-support for awaken-run-ingress" >&2
     return 1
   }
+  grep -Fq "cargo test -p awaken-model-catalog-store --features postgres,test-support" "$0" || {
+    echo "Postgres gate omits the authoritative model-catalog store" >&2
+    return 1
+  }
+  grep -Fq "cargo test -p awaken-credential-store --features postgres,test-support,sealed-aead" "$0" || {
+    echo "Postgres gate omits the authoritative sealed credential store" >&2
+    return 1
+  }
+  grep -Fq "cargo test -p awaken-data-subject --features postgres,test-support" "$0" || {
+    echo "Postgres gate omits postgres,test-support for awaken-data-subject" >&2
+    return 1
+  }
   local crate
-  for crate in awaken-model-catalog awaken-credential-vault awaken-data-subject; do
-    grep -Fq "cargo test -p $crate --features postgres,test-support" "$0" || {
-      echo "Postgres gate omits postgres,test-support for $crate" >&2
-      return 1
-    }
-  done
   for crate in awaken-admin-config-api awaken-memory-store awaken-skill-store; do
     grep -Fq "cargo test -p $crate --features postgres" "$0" || {
       echo "Postgres gate omits --features postgres for $crate" >&2
@@ -150,8 +156,8 @@ cargo test -p awaken-runtime-host --test active_active_postgres -- --test-thread
 cargo test -p awaken-config-store --test postgres || status=1
 cargo test -p awaken-admin-config-api --features postgres --test postgres_store || status=1
 cargo test -p awaken-store-postgres --test postgres_live || status=1
-cargo test -p awaken-model-catalog --features postgres,test-support --test repo_conformance || status=1
-cargo test -p awaken-credential-vault --features postgres,test-support --test repo_conformance || status=1
+cargo test -p awaken-model-catalog-store --features postgres,test-support --test repo_conformance || status=1
+cargo test -p awaken-credential-store --features postgres,test-support,sealed-aead --test repo_conformance || status=1
 cargo test -p awaken-data-subject --features postgres,test-support --test repo_conformance || status=1
 cargo test -p awaken-memory-store --features postgres --test conformance || status=1
 cargo test -p awaken-skill-store --features postgres --test conformance || status=1

@@ -1,6 +1,6 @@
 // Cause graph (durable management restart):
 //   C1 domain aggregate is authored before restart -> E1 durable row is restored
-//   C2 secret is sealed with the same key          -> E2 credential materializes
+//   C2 secret is sealed with the same key          -> E2 the SDK-entered MCP credential materializes
 //   C3 wire-only vault object is process-local     -> E3 vault wire GET returns 404
 //   C4 restored Agent uses restored MCP binding    -> E4 authenticated tool call works
 //   C5 session explicitly allows the MCP tool      -> E5 transport proof is not paused by HITL
@@ -119,8 +119,11 @@ async function main() {
     // id; the durable row is owned by the platform-resolved local workspace.
     r = await request('GET', `/v1/config/credentials?workspace_id=${workspace}`);
     assert.equal(r.status, 200);
-    const mcpCredential = r.json.find((credential) => credential.provider_id === 'mcp');
-    assert.ok(mcpCredential, `the MCP credential is present beside provider credentials: ${JSON.stringify(r.json)}`);
+    const mcpCredentials = r.json.filter((credential) => credential.provider_id === 'mcp');
+    assert.equal(mcpCredentials.length, 1, `exactly one normalized MCP credential is present: ${JSON.stringify(r.json)}`);
+    const [mcpCredential] = mcpCredentials;
+    assert.equal(mcpCredential.provider_id, 'mcp', 'the vault front door normalizes MCP ownership');
+    assert.equal(mcpCredential.kind, 'vault', 'the secret remains backed by the canonical vault kind');
     const credId = mcpCredential.id;
     pass(`SDK vault mcp_oauth credential entered -> domain row ${credId} (secret-free)`);
 

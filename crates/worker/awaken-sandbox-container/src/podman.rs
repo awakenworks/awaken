@@ -424,26 +424,51 @@ impl PodmanRuntime {
         if !command.cwd.is_empty() {
             args.extend(["--workdir".into(), command.cwd.clone()]);
         }
+        let mut process = OsCommand::new(&self.bin);
+        let mut secret_bindings = Vec::new();
         for var in &command.env {
-            // Podman copies a named variable from its own environment into the
-            // container. Keep the value out of the CLI argv, where `ps` and
-            // `/proc/*/cmdline` would otherwise expose process credentials.
-            args.extend(["--env".into(), var.name.clone()]);
+            match &var.value {
+                pc::MaterializedEnvValue::Inline(value) => {
+                    // Inline values are explicitly non-secret. Passing them on
+                    // the Podman argv keeps runtime-owned HOME/XDG values out of
+                    // the Podman CLI process environment, where they would
+                    // otherwise redirect Podman's own storage and config roots.
+                    args.extend(["--env".into(), format!("{}={value}", var.name)]);
+                }
+                pc::MaterializedEnvValue::Secret(_) => {
+                    // A bare `--env NAME` copies NAME from the Podman process.
+                    // Never use the target name there: HOME/XDG/CONTAINERS_*
+                    // alter the rootless Podman client before the container exec
+                    // starts. Carry the secret under an adapter-owned alias, then
+                    // restore the target name inside the container wrapper.
+                    let mut alias = format!("AWAKEN_PODMAN_EXEC_SECRET_{}", secret_bindings.len());
+                    while command.env.iter().any(|candidate| candidate.name == alias) {
+                        alias.push('_');
+                    }
+                    args.extend(["--env".into(), alias.clone()]);
+                    process.env(&alias, var.value.expose());
+                    secret_bindings.push((alias, var.name.clone()));
+                }
+            }
         }
+        let mut wrapper = "set -e; pid_file=$1; shift;".to_string();
+        for (alias, _) in &secret_bindings {
+            wrapper.push_str(&format!(
+                " export \"$1=${{{alias}}}\"; unset {alias}; shift;"
+            ));
+        }
+        wrapper.push_str(" printf '%s' \"$$\" > \"$pid_file\"; exec \"$@\"");
         args.extend([
             container_id.to_string(),
             "sh".into(),
             "-c".into(),
-            "pid_file=$1; shift; printf '%s' \"$$\" > \"$pid_file\"; exec \"$@\"".into(),
+            wrapper,
             "awaken-exec".into(),
             pid_file.clone(),
         ]);
+        args.extend(secret_bindings.into_iter().map(|(_, target)| target));
         args.extend(command.argv);
-        let mut process = OsCommand::new(&self.bin);
         process.args(args);
-        for var in &command.env {
-            process.env(&var.name, var.value.expose());
-        }
         if attached_agent {
             process
                 .stdin(Stdio::piped())
@@ -1463,17 +1488,18 @@ mod tests {
     /// Podman secret-delivery cause graph:
     ///
     /// C1 command contains a brokered process secret -> C2 the Worker resolves it
-    /// -> C3 the Podman adapter forwards only the variable name in argv and places
-    /// the value in the child environment -> E1 the target receives the value while
-    /// the host command line remains secret-free. Any value in argv is E2/failure.
+    /// -> C3 the Podman adapter forwards only an adapter-owned alias in argv and
+    /// places the value in the CLI environment -> E1 the container wrapper can
+    /// restore the target name while the host command line remains secret-free.
+    /// The live Podman test proves the wrapper-to-target half of this boundary.
     ///
     /// | Rule | C1 | C2 | value in argv | value in child env | Result |
     /// |---|---|---|---|---|---|
-    /// | D1 | T | T | F | T | launch succeeds |
+    /// | D1 | T | T | F | alias only | launch succeeds |
     /// | D2 | T | T | T | * | helper rejects observation |
     #[cfg(unix)]
     #[tokio::test]
-    async fn process_secret_is_forwarded_by_name_without_entering_podman_argv() {
+    async fn process_secret_is_forwarded_by_alias_without_entering_podman_argv() {
         use std::os::unix::fs::PermissionsExt;
 
         let script = std::env::temp_dir().join(format!(
@@ -1483,7 +1509,19 @@ mod tests {
         ));
         std::fs::write(
             &script,
-            "#!/bin/sh\ncase \" $* \" in *podman-secret*) exit 91;; esac\n[ \"$TOKEN\" = podman-secret ] || exit 92\nexit 0\n",
+            "#!/bin/sh\n\
+case \" $* \" in *podman-secret*) exit 91;; esac\n\
+[ -z \"${TOKEN-}\" ] || exit 92\n\
+alias_name=\n\
+previous=\n\
+for argument in \"$@\"; do\n\
+  if [ \"$previous\" = --env ]; then alias_name=$argument; break; fi\n\
+  previous=$argument\n\
+done\n\
+case \"$alias_name\" in AWAKEN_PODMAN_EXEC_SECRET_*) ;; *) exit 93;; esac\n\
+eval \"alias_value=\\${$alias_name-}\"\n\
+[ \"$alias_value\" = podman-secret ] || exit 94\n\
+exit 0\n",
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();

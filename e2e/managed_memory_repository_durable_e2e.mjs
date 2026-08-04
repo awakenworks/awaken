@@ -94,7 +94,10 @@ async function main() {
     assert.equal(got.content, 'first');
     pass('path-addressed memories create + retrieve via the durable store');
 
-    // -- CAS: stale precondition -> 409, fresh -> ok, version bumps -----------
+    // Cause/effect rules for CAS projection: stale sha -> 409/no mutation;
+    // matching sha + full view -> mutation/version bump/content; replay of the
+    // same effect from either old or current sha -> the same version. Basic is
+    // intentionally not used as a content oracle because it elides content.
     await assert.rejects(
       () =>
         c.beta.memoryStores.memories.update(mem.id, {
@@ -108,6 +111,7 @@ async function main() {
     );
     const up = await c.beta.memoryStores.memories.update(mem.id, {
       memory_store_id: store.id,
+      view: 'full',
       content: 'second',
       precondition: { type: 'content_sha256', content_sha256: mem.content_sha256 },
       betas: BETAS,

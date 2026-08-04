@@ -41,6 +41,23 @@ impl pc::SecretBroker for CredentialBroker {
     }
 }
 
+struct ProcessSecretBroker;
+
+#[async_trait]
+impl pc::SecretBroker for ProcessSecretBroker {
+    async fn materialize(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        Err(pc::SandboxError::new("file secrets are not configured"))
+    }
+
+    async fn materialize_process(&self, _reference: &str) -> Result<Vec<u8>, pc::SandboxError> {
+        Ok(b"podman-process-secret".to_vec())
+    }
+
+    async fn write_back(&self, _reference: &str, _bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+        Err(pc::SandboxError::new("secret write-back is not configured"))
+    }
+}
+
 fn plan(cmd: &[&str], rootfs: RootfsPlan) -> ContainerPlan {
     ContainerPlan {
         image: "docker.io/library/busybox:latest".into(),
@@ -212,6 +229,51 @@ async fn podman_materializes_inline_content_through_the_provider() {
         Some(0),
         "inline content must be staged to a host file and readable in the rootless container"
     );
+}
+
+#[tokio::test]
+async fn podman_separates_container_environment_from_cli_environment() {
+    // Cause/effect graph: C1 runtime-owned HOME/XDG inline values; C2 a
+    // process-secret target; C3 rootless Podman reads its own host environment.
+    // Effects: E1 Podman keeps its host storage/config roots and starts exec;
+    // E2 the container sees exact runtime paths and secret target; E3 no
+    // adapter alias survives into the launched command; E4 the secret is absent
+    // from Podman's argv. Decision table: R1 C1,!C2 -> E1+E2; R2 !C1,C2 ->
+    // E1+E2+E3+E4; R3 C1,C2 (this case) -> all effects together. The existing
+    // inline-content test covers R1; this mixed case covers the secret branch.
+    let Some(rt) = runtime().await else { return };
+    let provider = ContainerProvider::new(Arc::new(rt), "docker.io/library/busybox:latest")
+        .with_secret_broker(Arc::new(ProcessSecretBroker));
+    let spec = pc::SandboxSpec {
+        scope: "pod-exec-env".into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: Vec::new(),
+        env: vec![pc::EnvVar {
+            name: "PODMAN_E2E_SECRET".into(),
+            value: pc::EnvValue::Secret {
+                reference: "credential://podman/process".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        }],
+        packages: Default::default(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits: pc::ResourceLimits::default(),
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({ "command": ["sleep", "30"] })),
+    };
+    let sandbox = provider.create(&spec).await.expect("create environment");
+    let process = sandbox
+        .spawn(pc::Command::new([
+            "sh",
+            "-c",
+            "test \"$HOME\" = /workspace && test \"$XDG_CONFIG_HOME\" = /workspace/.config && test \"$PODMAN_E2E_SECRET\" = podman-process-secret && ! env | grep '^AWAKEN_PODMAN_EXEC_SECRET_'",
+        ]))
+        .await
+        .expect("spawn environment probe");
+    let status = process.wait().await.expect("wait for environment probe");
+    sandbox.dispose().await.expect("dispose environment");
+    assert_eq!(status.code, Some(0), "R3: E1-E4 must hold");
 }
 
 #[tokio::test]

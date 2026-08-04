@@ -400,7 +400,7 @@ impl RunExecutor for A2aRunExecutor {
                 task
             }
         };
-        drive_task(transport.as_ref(), &endpoint, &activation, &context, task).await
+        drive_task(transport, &endpoint, &activation, &context, task).await
     }
 }
 
@@ -456,7 +456,7 @@ impl RunAttemptExecutor for A2aRunExecutor {
             ))],
         )
         .await?;
-        drive_task(transport.as_ref(), &endpoint, &activation, &context, task).await
+        drive_task(transport, &endpoint, &activation, &context, task).await
     }
 
     async fn cancel(&self, activation: RunActivation, context: RuntimeRunContext) -> Result<()> {
@@ -487,14 +487,16 @@ impl RunAttemptExecutor for A2aRunExecutor {
 }
 
 async fn drive_task(
-    transport: &dyn Transport,
+    transport: Arc<dyn Transport>,
     endpoint: &str,
     activation: &RunActivation,
     context: &RuntimeRunContext,
     task: Task,
 ) -> Result<RunState> {
     let task =
-        match task_driver::poll_to_boundary(transport, task, context.cancellation.as_ref()).await {
+        match task_driver::poll_to_boundary(transport.clone(), task, context.cancellation.as_ref())
+            .await
+        {
             Ok(task) => task,
             Err(task_driver::PollError::Cancelled) => {
                 return finish_terminal(context, activation, Vec::new(), EndCause::Cancelled).await;

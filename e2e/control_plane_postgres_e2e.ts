@@ -7,15 +7,13 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, execSync, spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
-import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
-import { deploymentEnv } from './harness.mjs';
+import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 39413);
@@ -65,73 +63,25 @@ async function postgres(): Promise<{ container: string; url: string; owned: bool
   throw new Error('timed out waiting for disposable Postgres');
 }
 
-function awakenBin(): string {
-  const output = execSync('cargo build --quiet --message-format=json -p awaken-cli --bin awaken', {
-    cwd: ROOT,
-    maxBuffer: 64 * 1024 * 1024,
-  }).toString();
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken') return message.executable;
-    } catch {
-      // Cargo may emit non-JSON diagnostics.
-    }
-  }
-  throw new Error('could not resolve the awaken binary path');
-}
-
-function start(bin: string, directory: string, databaseUrl: string): ChildProcess {
-  return spawn(bin, automatedAllInOneArgs('--port', String(PORT)), {
-    env: {
-      ...process.env,
-      ...deploymentEnv(directory, {
-        // Authentication is an independent axis in this persistence scenario.
-        // Cause/effect rule: no-login => config requests exercise only the five
-        // selected Postgres repositories; embedded-IAM default => every request
-        // must carry its bootstrap token and the scenario no longer isolates the
-        // control-plane persistence boundary.
-        identityMode: 'no-login',
-        controlSealKey: SEAL_KEY,
-        databases: {
-          catalog_db: databaseUrl,
-          credential_db: databaseUrl,
-          config_db: databaseUrl,
-          admin_db: databaseUrl,
-          sessions_db: databaseUrl,
-        },
-      }),
-      AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
+function start(directory: string, databaseUrl: string): ChildProcess {
+  // Authentication is an independent axis in this persistence scenario.
+  // no-login makes requests exercise only the five selected Postgres
+  // repositories; the canonical production helper also disables unrelated ACP
+  // discovery so provider probing cannot consume this persistence gate's boot
+  // deadline.
+  return spawnProduction(directory, PORT, {
+    workspace: WORKSPACE,
+    identityMode: 'no-login',
+    controlSealKey: SEAL_KEY,
+    databases: {
+      catalog_db: databaseUrl,
+      credential_db: databaseUrl,
+      config_db: databaseUrl,
+      admin_db: databaseUrl,
+      sessions_db: databaseUrl,
     },
-    stdio: ['ignore', 'ignore', 'inherit'],
+    stderr: 'inherit',
   });
-}
-
-async function waitUntilReady(): Promise<void> {
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    const connected = await new Promise<boolean>((resolve) => {
-      const socket = net.createConnection({ host: '127.0.0.1', port: PORT });
-      socket.once('connect', () => {
-        socket.destroy();
-        resolve(true);
-      });
-      socket.once('error', () => {
-        socket.destroy();
-        resolve(false);
-      });
-    });
-    if (connected) return;
-    await sleep(100);
-  }
-  throw new Error('Postgres control-plane process did not become ready');
-}
-
-async function stop(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null) return;
-  child.kill('SIGINT');
-  await new Promise((resolve) => child.once('exit', resolve));
 }
 
 async function request(method: string, uri: string, body?: unknown) {
@@ -177,11 +127,16 @@ async function main(): Promise<void> {
   const database = await postgres();
   const upstream = await startFakeAnthropic(FAKE_KEY, { models: [MODEL] });
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-control-pg-'));
-  const bin = awakenBin();
-  let server = start(bin, directory, database.url);
+  let server = start(directory, database.url);
 
   try {
-    await waitUntilReady();
+    // Startup cause/effect graph: C1 all five Postgres repositories reachable;
+    // C2 production child remains live; C3 listener appears before the bounded
+    // monotonic deadline. Effects: E1 proceed only for C1+C2+C3; E2 a terminal
+    // child reports its exact exit immediately; E3 a live-but-stalled child
+    // fails at 120s. Decision table: R1 C1+C2+C3 -> drive persistence; R2 !C2
+    // -> E2; R3 C2+!C3 -> E3. The same rules are applied after replacement.
+    await waitForPort(PORT, 120_000, server);
 
     let response = await request('POST', '/v1/config/provider-connections', {
       idempotency_key: 'control-postgres-provider-connection',
@@ -314,9 +269,9 @@ async function main(): Promise<void> {
     await executePublishedAgent(1);
     assert.equal(upstream.requests.length, 1);
 
-    await stop(server);
-    server = start(bin, directory, database.url);
-    await waitUntilReady();
+    await stopServer(server);
+    server = start(directory, database.url);
+    await waitForPort(PORT, 120_000, server);
 
     response = await request('GET', `/v1/config/agents/${AGENT}`);
     assert.equal(response.status, 200, JSON.stringify(response.body));
@@ -365,7 +320,7 @@ async function main(): Promise<void> {
       'POSTGRES CONTROL PLANE TS E2E PASS: catalog, credentials, Agent publication, admin resources/webhooks, and Sessions survive one process replacement.',
     );
   } finally {
-    await stop(server);
+    await stopServer(server);
     upstream.close();
     fs.rmSync(directory, { recursive: true, force: true });
     if (database.owned) docker('rm', '-f', database.container);

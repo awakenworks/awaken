@@ -684,7 +684,7 @@ mod tests {
 
     #[test]
     fn a_large_uncached_environment_image_gets_a_bounded_multi_minute_pull_window() {
-        assert!(IMAGE_CHECK_TIMEOUT_SECS >= 10 * 60);
+        const { assert!(IMAGE_CHECK_TIMEOUT_SECS >= 10 * 60) };
         assert!(
             image_check_client_timeout()
                 > std::time::Duration::from_secs(IMAGE_CHECK_TIMEOUT_SECS as u64),
@@ -694,7 +694,7 @@ mod tests {
 
     #[test]
     fn a_cold_desktop_package_build_outlives_the_observed_ten_minute_failure() {
-        assert!(super::PACKAGE_BUILD_TIMEOUT_SECS >= 30 * 60);
-        assert!(super::PACKAGE_BUILD_TIMEOUT_SECS > IMAGE_CHECK_TIMEOUT_SECS);
+        const { assert!(super::PACKAGE_BUILD_TIMEOUT_SECS >= 30 * 60) };
+        const { assert!(super::PACKAGE_BUILD_TIMEOUT_SECS > IMAGE_CHECK_TIMEOUT_SECS) };
     }
 }
