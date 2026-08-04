@@ -83,6 +83,7 @@ use awaken_session_contract::{
 };
 
 pub use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
+pub use crate::worker_http::respond as respond_host_http;
 
 // The neutral session substrate and its resume vocabulary.
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
