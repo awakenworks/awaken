@@ -1688,7 +1688,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                             )
                         })?;
                         Some(Box::new(crate::mcp::McpRefreshMaterial::new(
-                            awaken_credential_vault::CredentialSourceId(
+                            awaken_credential_contract::CredentialSourceId(
                                 access.credential.id.clone(),
                             ),
                             refresh.clone(),

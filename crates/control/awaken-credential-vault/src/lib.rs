@@ -55,7 +55,7 @@ pub struct SecretRef(pub String);
 pub const OAUTH_REFRESH_TOKEN_SLOT: &str = "oauth_refresh_token";
 pub const OAUTH_CLIENT_SECRET_SLOT: &str = "oauth_client_secret";
 
-pub use awaken_credential_contract::CredentialSourceId;
+use awaken_credential_contract::CredentialSourceId;
 
 /// Non-secret identity of material owned by one Worker-local driver. The
 /// credential source id is derived from this tuple for idempotent registration;

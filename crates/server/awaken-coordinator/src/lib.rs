@@ -812,12 +812,12 @@ fn with_local_workspace_scope(router: Router, local_workspace: String) -> Router
                 // edges already stamped a scope, which must remain authoritative.
                 if request
                     .extensions()
-                    .get::<awaken_protocol_managed::WorkspaceScope>()
+                    .get::<awaken_tenancy::WorkspaceScope>()
                     .is_none()
                 {
                     request
                         .extensions_mut()
-                        .insert(awaken_protocol_managed::WorkspaceScope(local_workspace));
+                        .insert(awaken_tenancy::WorkspaceScope(local_workspace));
                 }
                 next.run(request).await
             }

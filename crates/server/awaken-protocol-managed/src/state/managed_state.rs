@@ -25,11 +25,3 @@ pub struct ManagedState {
     /// Per-Session live wire stream channels.
     pub(super) live: Mutex<HashMap<String, broadcast::Sender<StreamFrame>>>,
 }
-
-impl std::ops::Deref for ManagedState {
-    type Target = SessionApplication;
-
-    fn deref(&self) -> &Self::Target {
-        &self.application
-    }
-}

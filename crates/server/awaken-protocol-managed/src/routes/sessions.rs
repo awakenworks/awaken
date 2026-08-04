@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
+use awaken_tenancy::WorkspaceScope;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Path, Query, RawQuery, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -580,17 +581,6 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
     };
     (status, Json(ErrorResponse::new(kind, message)))
 }
-
-/// The owning workspace a request resolved to, stamped into the request
-/// extensions by the edge (the guard/ingress) from the API key. Authorization is
-/// a cross-cutting aspect: the core session never stores tenancy, but the edge
-/// hands the resolved workspace to `create_session` so an edge projection
-/// (webhooks/usage) can stamp it. Absent when the edge resolved no workspace.
-///
-/// Re-exported from [`awaken_tenancy`] — its orthogonal home (tenancy is an edge
-/// aspect, ADR-0051, decoupled from the session-runtime contract) — so existing
-/// `crate::…::WorkspaceScope` paths keep working.
-pub use awaken_tenancy::WorkspaceScope;
 
 /// The endpoint-specific beta required by the standalone Skills resource API.
 pub const SKILLS_BETA: &str = "skills-2025-10-02";

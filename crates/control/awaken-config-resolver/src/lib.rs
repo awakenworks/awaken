@@ -882,10 +882,11 @@ impl<'de> serde::Deserialize<'de> for AgentInputConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_credential_contract::CredentialSourceId;
     use awaken_credential_vault::repo::{InMemoryCredentialRepo, ensure_worker_local};
     use awaken_credential_vault::{
-        CredentialCreateParams, CredentialKind, CredentialSourceId, InMemorySecretStore,
-        WorkerLocalBinding, create_source,
+        CredentialCreateParams, CredentialKind, InMemorySecretStore, WorkerLocalBinding,
+        create_source,
     };
 
     use awaken_model_catalog::{

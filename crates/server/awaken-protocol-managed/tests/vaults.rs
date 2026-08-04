@@ -10,10 +10,11 @@ use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::resolve_inference;
+use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_contract::TokenEndpointAuth;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
 use awaken_credential_vault::{
-    CredentialBinding, CredentialSource, CredentialSourceId, InMemorySecretStore, SecretStore,
+    CredentialBinding, CredentialSource, InMemorySecretStore, SecretStore,
 };
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_model_catalog::repo::InMemoryCatalogRepo;

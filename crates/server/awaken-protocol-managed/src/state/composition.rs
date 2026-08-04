@@ -100,7 +100,7 @@ impl ManagedState {
     /// facts fan out to workspace-scoped subscribers (ADR-0048). Default: none.
     #[must_use]
     pub fn with_lifecycle_sink(mut self, sink: Arc<dyn SessionLifecycleSink>) -> Self {
-        self.application.lifecycle_sink = Some(sink);
+        self.application.set_lifecycle_sink(sink);
         self
     }
 
@@ -113,7 +113,7 @@ impl ManagedState {
         mut self,
         environments: Arc<crate::routes::environments::EnvironmentExecutionState>,
     ) -> Self {
-        self.application.environments = environments;
+        self.application.replace_environment_source(environments);
         self
     }
 
@@ -133,7 +133,7 @@ impl ManagedState {
         mut self,
         scheduler: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
     ) -> Self {
-        self.application.resource_purge_scheduler = Some(scheduler);
+        self.application.set_resource_purge_scheduler(scheduler);
         self
     }
 
@@ -143,8 +143,8 @@ impl ManagedState {
     /// routes see different credentials.
     #[must_use]
     pub fn with_vaults(mut self, vaults: Arc<VaultState>) -> Self {
-        self.application.credential_source = Some(vaults.clone());
-        self.application.repository_credential_ingress = Some(vaults);
+        self.application.set_credential_source(vaults.clone());
+        self.application.set_repository_credential_ingress(vaults);
         self
     }
 
@@ -155,7 +155,7 @@ impl ManagedState {
         mut self,
         ingress: Arc<dyn RepositoryCredentialIngress>,
     ) -> Self {
-        self.application.repository_credential_ingress = Some(ingress);
+        self.application.set_repository_credential_ingress(ingress);
         self
     }
 
@@ -163,7 +163,7 @@ impl ManagedState {
     /// local VaultState adapter or the authenticated split-service adapter.
     #[must_use]
     pub fn with_credential_source(mut self, source: Arc<dyn SessionCredentialSource>) -> Self {
-        self.application.credential_source = Some(source);
+        self.application.set_credential_source(source);
         self
     }
 
@@ -176,7 +176,7 @@ impl ManagedState {
         mut self,
         source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     ) -> Self {
-        self.application.config_source = Some(source);
+        self.application.set_config_source(source);
         self
     }
 
@@ -187,7 +187,7 @@ impl ManagedState {
         mut self,
         catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     ) -> Self {
-        self.application.resource_catalog = Some(catalog);
+        self.application.set_resource_catalog(catalog);
         self
     }
 }

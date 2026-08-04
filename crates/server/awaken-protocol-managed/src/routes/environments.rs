@@ -70,11 +70,6 @@ pub struct EnvironmentExecutionState {
         Option<Arc<dyn awaken_environment_realization_contract::EnvironmentImageReadiness>>,
 }
 
-pub(crate) struct ResolvedEnvironmentSnapshot {
-    pub(crate) snapshot: awaken_session_contract::EnvironmentSnapshot,
-    pub(crate) self_hosted: bool,
-}
-
 /// AllInOne/test composition facade. It contains no business behavior of its
 /// own and only combines the two canonical domain states.
 pub struct EnvironmentState {
@@ -182,10 +177,8 @@ impl EnvironmentExecutionState {
         Option<awaken_session_contract::EnvironmentSnapshot>,
         awaken_environment_realization_contract::EnvironmentImageBuildError,
     > {
-        Ok(self
-            .resolve_current_for_session(env_id, runtime, mcp_targets)
-            .await?
-            .map(|resolved| resolved.snapshot))
+        self.resolve_current_for_session(env_id, runtime, mcp_targets)
+            .await
     }
 
     pub(crate) async fn resolve_current_for_session(
@@ -194,7 +187,7 @@ impl EnvironmentExecutionState {
         runtime: Option<&str>,
         mcp_targets: &[awaken_session_contract::McpTarget],
     ) -> Result<
-        Option<ResolvedEnvironmentSnapshot>,
+        Option<awaken_session_contract::EnvironmentSnapshot>,
         awaken_environment_realization_contract::EnvironmentImageBuildError,
     > {
         let registration = self
@@ -241,10 +234,8 @@ impl EnvironmentExecutionState {
         Option<awaken_session_contract::EnvironmentSnapshot>,
         awaken_environment_realization_contract::EnvironmentImageBuildError,
     > {
-        Ok(self
-            .resolve_exact_for_session(env_id, revision, runtime, mcp_targets)
-            .await?
-            .map(|resolved| resolved.snapshot))
+        self.resolve_exact_for_session(env_id, revision, runtime, mcp_targets)
+            .await
     }
 
     pub(crate) async fn resolve_exact_for_session(
@@ -254,7 +245,7 @@ impl EnvironmentExecutionState {
         runtime: Option<&str>,
         mcp_targets: &[awaken_session_contract::McpTarget],
     ) -> Result<
-        Option<ResolvedEnvironmentSnapshot>,
+        Option<awaken_session_contract::EnvironmentSnapshot>,
         awaken_environment_realization_contract::EnvironmentImageBuildError,
     > {
         // Current availability is a live deny overlay. If Control withdrew the
@@ -347,12 +338,7 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
             mcp_targets,
         )
         .await?
-        .map(
-            |resolved| awaken_session_application::ResolvedSessionEnvironment {
-                snapshot: resolved.snapshot,
-                self_hosted: resolved.self_hosted,
-            },
-        ))
+        .map(|snapshot| awaken_session_application::ResolvedSessionEnvironment { snapshot }))
     }
 
     async fn resolve_exact_for_session(
@@ -373,12 +359,7 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
             mcp_targets,
         )
         .await?
-        .map(
-            |resolved| awaken_session_application::ResolvedSessionEnvironment {
-                snapshot: resolved.snapshot,
-                self_hosted: resolved.self_hosted,
-            },
-        ))
+        .map(|snapshot| awaken_session_application::ResolvedSessionEnvironment { snapshot }))
     }
 
     async fn enqueue_session_work(
@@ -693,18 +674,10 @@ async fn resolved_snapshot_from_registration(
         &Arc<dyn awaken_environment_realization_contract::EnvironmentImageReadiness>,
     >,
 ) -> Result<
-    Option<ResolvedEnvironmentSnapshot>,
+    Option<awaken_session_contract::EnvironmentSnapshot>,
     awaken_environment_realization_contract::EnvironmentImageBuildError,
 > {
-    let self_hosted = registration.definition.is_self_hosted();
-    Ok(
-        snapshot_from_registration(registration, runtime, mcp_targets, image_readiness)
-            .await?
-            .map(|snapshot| ResolvedEnvironmentSnapshot {
-                snapshot,
-                self_hosted,
-            }),
-    )
+    snapshot_from_registration(registration, runtime, mcp_targets, image_readiness).await
 }
 
 /// Compile static Environment networking plus the exact Session MCP set into

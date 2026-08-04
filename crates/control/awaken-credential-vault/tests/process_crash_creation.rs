@@ -5,13 +5,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use awaken_agent_contract::RedactedString;
+use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{
     CredentialMutationIntent, CredentialRepo, recover_credential_mutations,
 };
 use awaken_credential_vault::sqlite::{SqliteCredentialRepo, SqliteSealedBlobStore};
 use awaken_credential_vault::{
-    CredentialKind, CredentialSource, CredentialSourceId, CredentialStatus, SealedAeadSecretStore,
-    SecretRef, SecretStore,
+    CredentialKind, CredentialSource, CredentialStatus, SealedAeadSecretStore, SecretRef,
+    SecretStore,
 };
 
 const CHILD_MODE: &str = "AWAKEN_CREDENTIAL_CRASH_CHILD";

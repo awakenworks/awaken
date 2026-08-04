@@ -20,5 +20,3 @@ pub use server::{
     SUPPORTED_PROTOCOL_VERSIONS, jsonrpc_reply, notify_tools_list_changed,
     tools_list_changed_notification,
 };
-
-pub use awaken_mcp_wire::{CallToolResult, McpToolDefinition, ToolContent};

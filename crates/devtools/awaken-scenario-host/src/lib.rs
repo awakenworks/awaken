@@ -542,9 +542,10 @@ pub async fn build_resolved_real_router() -> Router {
 /// oauth-resolved` with a fake upstream that authenticates exactly that token.
 pub async fn build_oauth_resolved_router() -> Router {
     use awaken_config_store::ModelSelection;
+    use awaken_credential_contract::CredentialSourceId;
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
     use awaken_credential_vault::{
-        CredentialKind, CredentialSource, CredentialSourceId, CredentialStatus, InMemorySecretStore,
+        CredentialKind, CredentialSource, CredentialStatus, InMemorySecretStore,
     };
     use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
     use awaken_model_catalog::{

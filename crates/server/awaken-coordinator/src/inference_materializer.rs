@@ -1053,7 +1053,7 @@ mod tests {
 
         let mut old = p
             .credentials
-            .get(&awaken_credential_vault::CredentialSourceId(pinned_id))
+            .get(&awaken_credential_contract::CredentialSourceId(pinned_id))
             .await
             .unwrap();
         old.status = CredentialStatus::Disabled;
@@ -1271,8 +1271,9 @@ mod tests {
         else {
             panic!("primary must carry its credential pin")
         };
-        let primary_id =
-            awaken_credential_vault::CredentialSourceId(primary_credential.credential.id.clone());
+        let primary_id = awaken_credential_contract::CredentialSourceId(
+            primary_credential.credential.id.clone(),
+        );
         let mut primary_row = p.credentials.get(&primary_id).await.unwrap();
         primary_row.status = CredentialStatus::Disabled;
         p.credentials.put(primary_row).await.unwrap();

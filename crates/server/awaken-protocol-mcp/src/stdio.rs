@@ -13,6 +13,7 @@
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
+use awaken_mcp_server_core::NotifySink;
 use awaken_mcp_wire::jsonrpc::{
     JsonRpcNotifier, JsonRpcPeer, ServerRequestError, ServerRequestHandler,
 };
@@ -21,7 +22,7 @@ use serde_json::Value;
 use serde_json::json;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::service::{McpToolService, NotifySink};
+use crate::service::McpToolService;
 
 /// Delivers notifications through the peer's write queue. The peer is built
 /// around the request handler, so the notifier lands here one step later —

@@ -262,7 +262,7 @@ mod tests {
                       kind: CredentialKind,
                       status: CredentialStatus,
                       env_key: Option<&str>| CredentialSource {
-            id: awaken_credential_vault::CredentialSourceId(id.into()),
+            id: awaken_credential_contract::CredentialSourceId(id.into()),
             workspace_id: workspace.into(),
             kind,
             provider_id: Some(provider.into()),
@@ -347,7 +347,7 @@ mod tests {
         // discovery and publication can reuse one provider×endpoint join without
         // deriving dialect or credential-delivery policy from the endpoint.
         let source = |provider: &str, endpoint: Option<&str>| CredentialSource {
-            id: awaken_credential_vault::CredentialSourceId("credential".into()),
+            id: awaken_credential_contract::CredentialSourceId("credential".into()),
             workspace_id: "workspace".into(),
             kind: CredentialKind::Vault,
             provider_id: Some(provider.into()),
@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn provider_scoped_credentials_precede_unscoped_vault_fallbacks() {
         let scoped = CredentialSource {
-            id: awaken_credential_vault::CredentialSourceId("cred:z-provider".into()),
+            id: awaken_credential_contract::CredentialSourceId("cred:z-provider".into()),
             workspace_id: "ws".into(),
             kind: CredentialKind::Vault,
             provider_id: Some("anthropic".into()),
@@ -418,7 +418,7 @@ mod tests {
         };
         let unscoped = CredentialSource {
             provider_id: None,
-            id: awaken_credential_vault::CredentialSourceId("cred:a-runtime".into()),
+            id: awaken_credential_contract::CredentialSourceId("cred:a-runtime".into()),
             ..scoped.clone()
         };
         let ids = derive_vendor_pool("ws", "anthropic", None, "genai", &[unscoped, scoped])

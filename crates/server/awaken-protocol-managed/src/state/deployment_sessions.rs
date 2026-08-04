@@ -84,10 +84,14 @@ impl ManagedState {
         launch_fingerprint: &str,
         workspace_id: &str,
     ) -> Result<Option<Session>, StateError> {
-        let Some(persisted) = self.sessions_repo.get(session_id).await else {
+        let Some(persisted) = self.application.session_repository().get(session_id).await else {
             return Ok(None);
         };
-        let owner = self.sessions_repo.owner(session_id).await;
+        let owner = self
+            .application
+            .session_repository()
+            .owner(session_id)
+            .await;
         if owner.as_deref() != Some(workspace_id)
             || persisted
                 .metadata

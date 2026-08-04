@@ -39,7 +39,7 @@ LAYER_DEPENDENCIES: dict[str, frozenset[str]] = {
     "contract": frozenset({"contract"}),
     "domain": frozenset({"contract", "domain"}),
     "application": frozenset(
-        {"contract", "domain", "application", "interface", "infrastructure"}
+        {"contract", "domain", "application", "infrastructure"}
     ),
     # Interface and infrastructure are sibling outer rings.  A wire adapter may
     # use a concrete transport/storage adapter and an outbound adapter may use a

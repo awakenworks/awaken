@@ -34,13 +34,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::RedactedString;
+use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{
     CredentialMaterialPatch, CredentialRepo, CredentialRetirement, advance_credential_revision,
     enter_credential, enter_credential_with_materials, revoke_credential,
     rotate_credential_materials,
 };
 use awaken_credential_vault::{
-    CredentialCreateParams as DomainCredentialCreateParams, CredentialKind, CredentialSourceId,
+    CredentialCreateParams as DomainCredentialCreateParams, CredentialKind,
     OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretStore, StructuredCredentialMaterial,
 };
 use awaken_managed_bridge::{

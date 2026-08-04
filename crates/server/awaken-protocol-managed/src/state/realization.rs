@@ -116,8 +116,12 @@ impl ManagedState {
                         && !attachment.publication_acknowledged)
             })
             .map(|attachment| {
-                super::sessions::stage_mcp_request(owner_scope, &session.session_id, attachment)
-                    .map_err(unavailable)
+                super::session_mcp_projection::stage_mcp_request(
+                    owner_scope,
+                    &session.session_id,
+                    attachment,
+                )
+                .map_err(unavailable)
             })
             .collect()
     }
@@ -134,7 +138,7 @@ impl ManagedState {
                     && !attachment.publication_acknowledged
             })
             .map(|attachment| {
-                super::sessions::mcp_generation_ref(&session.session_id, attachment)
+                super::session_mcp_projection::mcp_generation_ref(&session.session_id, attachment)
                     .map_err(unavailable)
             })
             .collect()
@@ -149,7 +153,7 @@ impl ManagedState {
             .iter()
             .filter(|attachment| attachment.state == McpAttachmentState::Draining)
             .map(|attachment| {
-                super::sessions::mcp_generation_ref(&session.session_id, attachment)
+                super::session_mcp_projection::mcp_generation_ref(&session.session_id, attachment)
                     .map_err(unavailable)
             })
             .collect()
@@ -211,7 +215,8 @@ impl ManagedState {
             .await
             .ok_or(SessionRealizationControlFailure::NotFound)?;
         let session = self
-            .sessions_repo
+            .application
+            .session_repository()
             .get(session_id)
             .await
             .ok_or(SessionRealizationControlFailure::NotFound)?;
@@ -503,15 +508,21 @@ impl SessionRealizationControl for ManagedState {
             session.mcp.attachments.iter().any(|attachment| {
                 attachment.state == McpAttachmentState::Active
                     && attachment.publication_acknowledged
-                    && super::sessions::mcp_generation_ref(&session.session_id, attachment)
-                        .is_ok_and(|current| current == *generation)
+                    && super::session_mcp_projection::mcp_generation_ref(
+                        &session.session_id,
+                        attachment,
+                    )
+                    .is_ok_and(|current| current == *generation)
             })
         });
         let replayed_drain = command.drained.iter().all(|generation| {
             session.mcp.attachments.iter().any(|attachment| {
                 attachment.state == McpAttachmentState::Removed
-                    && super::sessions::mcp_generation_ref(&session.session_id, attachment)
-                        .is_ok_and(|current| current == *generation)
+                    && super::session_mcp_projection::mcp_generation_ref(
+                        &session.session_id,
+                        attachment,
+                    )
+                    .is_ok_and(|current| current == *generation)
             })
         });
         if expected_publish.is_empty()
@@ -670,7 +681,7 @@ impl ManagedState {
                 session_id: session_id.to_string(),
                 target: awaken_session_contract::SessionRealizationTarget {
                     owner: "managed-runtime".into(),
-                    runtime_incarnation: self.runtime_incarnation.clone(),
+                    runtime_incarnation: self.application.runtime_incarnation().to_string(),
                     lease_expires_at_unix_ms,
                     renew_existing_lease: false,
                 },
@@ -678,7 +689,8 @@ impl ManagedState {
             .await
             .map_err(Self::map_realization_failure)?;
         self.drive_local_realization(session_id, directive).await?;
-        self.sessions_repo
+        self.application
+            .session_repository()
             .get(session_id)
             .await
             .ok_or(StateError::NotFound)
@@ -697,7 +709,8 @@ impl ManagedState {
         directive: awaken_session_contract::SessionRealizationDirective,
     ) -> Result<(), StateError> {
         let environment_binding = self
-            .sessions_repo
+            .application
+            .session_repository()
             .get(session_id)
             .await
             .and_then(|session| session.environment.binding().map(str::to_string));
@@ -705,10 +718,10 @@ impl ManagedState {
             session_id,
             self,
             &LocalProjectionSynchronizer {
-                runtime: self.runtime.as_ref(),
+                runtime: self.application.runtime(),
                 environment_binding: environment_binding.as_deref(),
             },
-            self.mcp_realizer.as_ref(),
+            self.application.mcp_realizer(),
             directive,
         )
         .await
@@ -736,7 +749,11 @@ impl ManagedState {
         const LEASE_MS: u64 = 300_000;
         let renew_before = now_unix_ms.saturating_add(RENEW_BEFORE_MS);
         let requested_expiry = now_unix_ms.saturating_add(LEASE_MS);
-        let sessions = self.sessions_repo.reconcilable_sessions().await;
+        let sessions = self
+            .application
+            .session_repository()
+            .reconcilable_sessions()
+            .await;
         let mut renewed = 0;
         for scoped in sessions {
             let Some(lease) = scoped.session.realization.clone() else {
@@ -744,7 +761,7 @@ impl ManagedState {
             };
             if scoped.session.status == "deleted"
                 || lease.owner != "managed-runtime"
-                || lease.runtime_incarnation != self.runtime_incarnation
+                || lease.runtime_incarnation != self.application.runtime_incarnation()
                 || lease.expires_at_unix_ms > renew_before
                 || !scoped
                     .session

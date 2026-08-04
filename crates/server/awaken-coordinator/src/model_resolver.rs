@@ -571,12 +571,13 @@ mod tests {
     use super::*;
     use awaken_agent_contract::RedactedString;
     use awaken_config_resolver::{InMemoryProfileStore, ProfileCandidate};
+    use awaken_credential_contract::CredentialSourceId;
     use awaken_credential_vault::repo::{
         InMemoryCredentialRepo, ensure_worker_local, enter_credential, enter_credential_idempotent,
     };
     use awaken_credential_vault::{
         CredentialCreateParams, CredentialPool, CredentialPoolId, CredentialPoolMember,
-        CredentialSourceId, InMemorySecretStore, SelectionPolicy, WorkerLocalBinding,
+        InMemorySecretStore, SelectionPolicy, WorkerLocalBinding,
     };
     use awaken_model_catalog::{
         ApiDialect, ModelAttributes, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,

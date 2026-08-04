@@ -12,6 +12,7 @@ authority = "credential-materializer"
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-credential-vault.workspace = true
+awaken-credential-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-run-executor-acp.workspace = true
 awaken-runtime-contract.workspace = true

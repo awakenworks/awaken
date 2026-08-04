@@ -19,13 +19,14 @@ use awaken_config_resolver::{
     cooldown_deadline, get_workspace_profile, put_workspace_profile, resolve_inference,
     resolve_inference_target, resolve_profile, resolve_profile_candidates,
 };
+use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{
     CredentialMaterialPatch, CredentialRepo, enter_credential, rotate_credential_materials_exact,
 };
 use awaken_credential_vault::{
     AvailabilityLedger, AvailabilityState, CredentialBinding, CredentialCreateParams,
     CredentialError, CredentialKind, CredentialPool, CredentialPoolId, CredentialSource,
-    CredentialSourceId, CredentialStatus, OAuthHelper, SecretStore,
+    CredentialStatus, OAuthHelper, SecretStore,
 };
 use awaken_model_catalog::repo::{CatalogRepo, RepoError};
 use awaken_model_catalog::{
@@ -46,8 +47,7 @@ use crate::provider_connection::{
 
 mod provider_connections;
 pub use provider_connections::{
-    ExecutableModelOption, ExecutableModelReadiness, ProviderConnectionStatus,
-    ProviderConnectionSummary, ProviderConnectionView, project_executable_models,
+    ProviderConnectionStatus, ProviderConnectionSummary, ProviderConnectionView,
 };
 use provider_connections::{list_executable_models, list_provider_connections};
 

@@ -4,10 +4,11 @@ use std::sync::Arc;
 
 use awaken_protocol_managed::{
     DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher, DeploymentState,
-    LocalDeploymentSessionLauncher, ManagedState, WorkspaceScope, deployments_router,
+    LocalDeploymentSessionLauncher, ManagedState, deployments_router,
 };
 use awaken_runtime_host::ManagedHost;
 use awaken_scenario_host::{EchoModel, build_router_and_host};
+use awaken_tenancy::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

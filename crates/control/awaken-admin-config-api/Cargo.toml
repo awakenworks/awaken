@@ -12,6 +12,7 @@ authority = "admin-config"
 [dependencies]
 awaken-model-catalog.workspace = true
 awaken-credential-vault.workspace = true
+awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-api-contract.workspace = true
 # The read/resolution face: the admin `inference/resolve` route dry-runs a binding

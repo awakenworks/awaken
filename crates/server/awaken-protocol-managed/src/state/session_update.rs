@@ -28,7 +28,11 @@ impl ManagedState {
     /// repository recovery index as Resource activation, then drives only the
     /// MCP aggregate state machine through the sole stage/publish/drain paths.
     pub async fn reconcile_mcp_attachments(&self) -> usize {
-        let pending = self.sessions_repo.reconcilable_sessions().await;
+        let pending = self
+            .application
+            .session_repository()
+            .reconcilable_sessions()
+            .await;
         let mut settled = 0;
         for record in pending {
             // Root lifecycle is the outer fence. A terminal Session may retain
@@ -75,7 +79,8 @@ impl ManagedState {
         });
         if let Some(record) = &command_record
             && let Some(receipt) = self
-                .sessions_repo
+                .application
+                .session_repository()
                 .idempotency_receipt(id, &record.key)
                 .await
         {
@@ -117,12 +122,14 @@ impl ManagedState {
             }
         }
         let owner_scope = self
-            .sessions_repo
+            .application
+            .session_repository()
             .owner(id)
             .await
             .ok_or(StateError::NotFound)?;
         let mut persisted = self
-            .sessions_repo
+            .application
+            .session_repository()
             .get(id)
             .await
             .ok_or(StateError::NotFound)?;
@@ -171,7 +178,7 @@ impl ManagedState {
                 .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
                 .unwrap_or_default();
             let lease_is_current = persisted.realization.as_ref().is_some_and(|lease| {
-                lease.runtime_incarnation == self.runtime_incarnation
+                lease.runtime_incarnation == self.application.runtime_incarnation()
                     && awaken_session_contract::realization_lease_is_live_at(
                         lease.expires_at_unix_ms,
                         now_unix_ms,
@@ -272,7 +279,8 @@ impl ManagedState {
                     "replayed Session update has no idempotency key",
                 ))
             })?;
-            self.sessions_repo
+            self.application
+                .session_repository()
                 .idempotency_receipt(id, key)
                 .await
                 .ok_or_else(|| {
@@ -298,7 +306,7 @@ impl ManagedState {
             }
             if let Some(visible_mcp_servers) = visible_mcp_servers {
                 record.session.agent.mcp_servers =
-                    super::sessions::typed_mcp_servers(visible_mcp_servers);
+                    super::session_mcp_projection::typed_mcp_servers(visible_mcp_servers);
             }
             if semantic_changed && command_applied {
                 record.events.push(Event {
@@ -319,7 +327,8 @@ impl ManagedState {
         // failed, so a transient rebuild failure cannot leave a permanently stale
         // tool policy behind the successful command receipt.
         if command.tools.is_some() && (tools_changed || !command_applied) {
-            self.runtime
+            self.application
+                .runtime()
                 .replace_session_toolsets(id, persisted.tools.toolsets.clone())
                 .await
                 .map_err(StateError::Run)?;

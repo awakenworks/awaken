@@ -45,8 +45,8 @@ mod mcp_attachment;
 mod realization;
 mod resource;
 mod resources;
-mod sandbox_provisioning;
 mod session_create_idempotency;
+mod session_mcp_projection;
 mod session_record;
 mod session_update;
 pub(crate) use session_update::SessionUpdateCommand;
@@ -1935,7 +1935,12 @@ mod tests {
             "E3"
         );
         assert!(
-            state.sessions_repo.get("flow/run-2").await.is_none(),
+            state
+                .application
+                .session_repository()
+                .get("flow/run-2")
+                .await
+                .is_none(),
             "E3 no row"
         );
     }

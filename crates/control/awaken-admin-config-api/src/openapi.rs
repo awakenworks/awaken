@@ -43,8 +43,14 @@ pub fn contract_schemas() -> Map<String, Value> {
         "ProviderConnectionSummary",
         crate::ProviderConnectionSummary
     );
-    add!("ExecutableModelOption", crate::ExecutableModelOption);
-    add!("ExecutableModelReadiness", crate::ExecutableModelReadiness);
+    add!(
+        "ExecutableModelOption",
+        awaken_config_resolver::ExecutableModelOption
+    );
+    add!(
+        "ExecutableModelReadiness",
+        awaken_config_resolver::ExecutableModelReadiness
+    );
     add!("ProtocolEndpoint", awaken_model_catalog::ProtocolEndpoint);
     add!("Offering", awaken_model_catalog::Offering);
     add!("CatalogSyncResult", awaken_model_catalog::CatalogSyncResult);

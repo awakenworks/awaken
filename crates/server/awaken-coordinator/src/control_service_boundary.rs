@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use awaken_config_service::{ManagementAuditPlane, ManagementAuditRepository};
 use awaken_config_store::{AuditedConfigWrite, ManagementAuditEntry, ManagementAuditRecord};
-use awaken_credential_vault::CredentialSourceId;
+use awaken_credential_contract::CredentialSourceId;
 use awaken_session_application::SessionCredentialSource;
 use awaken_session_contract::ManagedLifecycleFact;
 use awaken_tenancy::ScopeId;

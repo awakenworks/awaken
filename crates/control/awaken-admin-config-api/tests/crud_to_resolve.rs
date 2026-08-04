@@ -8,10 +8,10 @@ use std::sync::Arc;
 
 use awaken_admin_config_api::{AdminState, admin_router};
 use awaken_config_resolver::resolve_inference;
+use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
 use awaken_credential_vault::{
-    CredentialBinding, CredentialSource, CredentialSourceId, CredentialStatus, InMemorySecretStore,
-    SecretStore,
+    CredentialBinding, CredentialSource, CredentialStatus, InMemorySecretStore, SecretStore,
 };
 use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
 use axum::Router;

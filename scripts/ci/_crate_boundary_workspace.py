@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import tomllib
+from collections.abc import Iterable
 from pathlib import Path
 
 import _arch_fitness
@@ -47,6 +48,34 @@ def normal_dependency_names(manifest: dict) -> set[str]:
     return deps
 
 
+def public_first_party_reexports(sources: Iterable[str]) -> frozenset[str]:
+    return frozenset(
+        owner
+        for source in sources
+        for owner in re.findall(r"(?m)^\s*pub\s+use\s+(awaken_[A-Za-z0-9_]+)", source)
+    )
+
+
+def selftest() -> None:
+    """Cause/effect table for first-party facade discovery.
+
+    Causes: C1 crate-root source; C2 nested-module source; C3 private import.
+    Effects: E1 public first-party owner is reported; E2 private use is ignored.
+
+    | Rule | root public | nested public | private | effect |
+    | R1   | yes         | no            | no      | E1     |
+    | R2   | no          | yes           | no      | E1     |
+    | R3   | no          | no            | yes     | E2     |
+    """
+    assert public_first_party_reexports(["pub use awaken_root::Thing;"]) == {
+        "awaken_root"
+    }, "R1"
+    assert public_first_party_reexports(["", "pub use awaken_nested::{Thing};"]) == {
+        "awaken_nested"
+    }, "R2"
+    assert public_first_party_reexports(["use awaken_private::Thing;"]) == set(), "R3"
+
+
 def _awaken_metadata(manifest: dict) -> dict:
     return manifest.get("package", {}).get("metadata", {}).get("awaken", {})
 
@@ -75,10 +104,9 @@ def architecture_fitness_specs() -> list[_arch_fitness.CrateSpec]:
     for manifest_path in iter_crate_manifests():
         manifest = load_manifest(manifest_path)
         awaken_metadata = _awaken_metadata(manifest)
-        lib_path = manifest_path.parent / "src" / "lib.rs"
-        lib_source = lib_path.read_text(encoding="utf-8") if lib_path.exists() else ""
-        public_first_party_reexports = frozenset(
-            re.findall(r"(?m)^\s*pub\s+use\s+(awaken_[A-Za-z0-9_]+)", lib_source)
+        public_reexports = public_first_party_reexports(
+            path.read_text(encoding="utf-8")
+            for path in text_files(package_name(manifest))
         )
         specs.append(
             _arch_fitness.CrateSpec(
@@ -87,7 +115,7 @@ def architecture_fitness_specs() -> list[_arch_fitness.CrateSpec]:
                 context=str(awaken_metadata.get("context", "")),
                 layer=str(awaken_metadata.get("layer", "")),
                 authority=str(awaken_metadata.get("authority", "")),
-                public_first_party_reexports=public_first_party_reexports,
+                public_first_party_reexports=public_reexports,
             )
         )
     return specs

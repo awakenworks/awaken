@@ -33,19 +33,6 @@ def contract_purity_violations(spec: CrateSpec) -> list[str]:
     ]
 
 
-def interface_leaf_violations(spec: CrateSpec, specs: list[CrateSpec]) -> list[str]:
-    """An interface adapter is consumed only by another outer adapter or assembly."""
-    if spec.layer not in {"domain", "application", "contract"}:
-        return []
-    by_name = {item.name: item for item in specs}
-    return [
-        f"{spec.name} ({spec.layer}) depends on interface adapter `{dep}`; move the needed "
-        "port/value to its authoritative contract or consume the adapter from an outer layer"
-        for dep in sorted(spec.normal_deps)
-        if dep in by_name and by_name[dep].layer == "interface"
-    ]
-
-
 def runtime_host_facade_violations(spec: CrateSpec) -> list[str]:
     if spec.name != "awaken-runtime-host":
         return []
@@ -56,22 +43,33 @@ def runtime_host_facade_violations(spec: CrateSpec) -> list[str]:
     ]
 
 
+def interface_facade_violations(spec: CrateSpec) -> list[str]:
+    """Wire adapters expose their own DTO/routes, never another owner's API."""
+    if spec.layer != "interface":
+        return []
+    return [
+        f"{spec.name} publicly re-exports `{owner}`; interface adapters must keep "
+        "first-party ownership explicit, so consumers depend on that owner directly"
+        for owner in sorted(spec.public_first_party_reexports)
+    ]
+
+
 def check_all(specs: list[CrateSpec]) -> list[str]:
     errors: list[str] = []
     for spec in specs:
         errors.extend(contract_purity_violations(spec))
-        errors.extend(interface_leaf_violations(spec, specs))
         errors.extend(runtime_host_facade_violations(spec))
+        errors.extend(interface_facade_violations(spec))
     return errors
 
 
 def selftest() -> None:
-    """Cause/effect table: contract backend and inward interface edges are rejected;
-    outer consumers and owned exports are accepted; first-party facade exports fail."""
+    """Cause/effect table: contract backends are rejected; non-contract and owned
+    exports are accepted; runtime-host and interface first-party facades fail."""
     c = lambda n, l, d=frozenset(), r=frozenset(): CrateSpec(n, d, "runtime", l, n, r)
     assert contract_purity_violations(c("contract", "contract", frozenset({"sqlx"}))), "R1"
     assert contract_purity_violations(c("application", "application", frozenset({"tokio"}))) == [], "R2"
-    interface = c("wire", "interface")
-    assert interface_leaf_violations(c("domain", "domain", frozenset({"wire"})), [interface, c("domain", "domain")]), "R3"
-    assert interface_leaf_violations(c("infra", "infrastructure", frozenset({"wire"})), [interface, c("infra", "infrastructure")]) == [], "R4"
     assert runtime_host_facade_violations(CrateSpec("awaken-runtime-host", frozenset(), "runtime", "application", "runtime", frozenset({"awaken-runtime"}))), "R5"
+    assert interface_facade_violations(
+        CrateSpec("wire", frozenset(), "coordinator", "interface", "wire", frozenset({"owner"}))
+    ), "R6"

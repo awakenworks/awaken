@@ -30,6 +30,7 @@ test-support = [
 schema = ["dep:schemars", "awaken-agent-contract/schema", "awaken-credential-vault/schema"]
 
 [dev-dependencies]
+awaken-credential-contract.workspace = true
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
 tokio.workspace = true
 serde_json.workspace = true

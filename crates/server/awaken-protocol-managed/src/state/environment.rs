@@ -10,13 +10,14 @@ impl ManagedState {
         Option<crate::env_registry::EnvItem>,
         awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError,
     > {
-        self.environments.get(environment_id).await
+        self.application
+            .deployment_environment(environment_id)
+            .await
     }
 
     pub(crate) fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
-        self.config_source
-            .as_ref()
-            .is_some_and(|source| source.agent_unavailable_in(workspace_id, agent_id))
+        self.application
+            .deployment_agent_unavailable(workspace_id, agent_id)
     }
 
     pub(crate) fn deployment_unavailable_delegate(
@@ -24,9 +25,8 @@ impl ManagedState {
         workspace_id: &str,
         agent_id: &str,
     ) -> Option<String> {
-        self.config_source
-            .as_ref()
-            .and_then(|source| source.unavailable_delegate_in(workspace_id, agent_id))
+        self.application
+            .deployment_unavailable_delegate(workspace_id, agent_id)
     }
 
     /// Resolve one exact executable Environment snapshot for a new Session.
@@ -43,43 +43,18 @@ impl ManagedState {
         >,
         published_backend_ref: Option<&str>,
         mcp_targets: &[awaken_session_contract::McpTarget],
-    ) -> Result<(String, awaken_session_contract::EnvironmentSnapshot, bool), StateError> {
-        let environment_id = requested_environment_id
-            .map(str::to_owned)
-            .or_else(|| published_environment.map(|binding| binding.environment_id.clone()))
-            .unwrap_or_else(|| "env_local".to_string());
-        let snapshot = match (requested_environment_id, published_environment) {
-            (None, Some(binding)) => {
-                self.environments
-                    .resolve_exact_for_session(
-                        &binding.environment_id,
-                        binding.revision,
-                        published_backend_ref,
-                        mcp_targets,
-                    )
-                    .await
-            }
-            _ => {
-                self.environments
-                    .resolve_current_for_session(
-                        &environment_id,
-                        published_backend_ref,
-                        mcp_targets,
-                    )
-                    .await
-            }
-        }
-        .map_err(|error| StateError::Run(RunError::unavailable(error.to_string())))?
-        .ok_or_else(|| {
-            StateError::Run(RunError::bad_request(format!(
-                "environment `{environment_id}` is unavailable"
-            )))
-        })?;
-        super::sandbox_provisioning::validate_sandbox_provisioning_runtime(
-            snapshot.snapshot.sandbox_provisioning,
-            published_backend_ref,
-        )
-        .map_err(StateError::Run)?;
-        Ok((environment_id, snapshot.snapshot, snapshot.self_hosted))
+    ) -> Result<(String, awaken_session_contract::EnvironmentSnapshot), StateError> {
+        let resolved = self
+            .application
+            .resolve_session_environment(
+                requested_environment_id,
+                published_environment,
+                published_backend_ref,
+                mcp_targets,
+            )
+            .await
+            .map_err(StateError::Run)?;
+        let environment_id = resolved.snapshot.environment_id.clone();
+        Ok((environment_id, resolved.snapshot))
     }
 }

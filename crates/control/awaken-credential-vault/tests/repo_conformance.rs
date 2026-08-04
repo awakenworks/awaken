@@ -3,12 +3,13 @@
 //! backends keep identical semantics — workspace-scoped lists, upsert puts, and
 //! the exact NotFound arms.
 
+use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{
     CredentialMutationIntent, CredentialRepo, InMemoryCredentialRepo, ensure_worker_local,
 };
 use awaken_credential_vault::{
     CredentialError, CredentialKind, CredentialPool, CredentialPoolId, CredentialPoolMember,
-    CredentialSource, CredentialSourceId, CredentialStatus, SelectionPolicy, WorkerLocalBinding,
+    CredentialSource, CredentialStatus, SelectionPolicy, WorkerLocalBinding,
 };
 
 fn source(id: &str, ws: &str) -> CredentialSource {

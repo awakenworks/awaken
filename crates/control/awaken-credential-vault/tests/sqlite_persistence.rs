@@ -4,11 +4,12 @@
 //! wrong key or SQL-level tampering with the at-rest blob.
 #![cfg(feature = "sqlite")]
 
+use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::sqlite::SqliteCredentialRepo;
 use awaken_credential_vault::{
     CredentialKind, CredentialPool, CredentialPoolId, CredentialPoolMember, CredentialSource,
-    CredentialSourceId, CredentialStatus, SelectionPolicy,
+    CredentialStatus, SelectionPolicy,
 };
 
 fn source(id: &str, ws: &str) -> CredentialSource {

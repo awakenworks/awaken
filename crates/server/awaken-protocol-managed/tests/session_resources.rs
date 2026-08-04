@@ -1441,7 +1441,7 @@ async fn repository_access_compiler_follows_the_decision_table() {
             }
             source.id
         } else {
-            awaken_credential_vault::CredentialSourceId("missing".into())
+            awaken_credential_contract::CredentialSourceId("missing".into())
         };
         let holder = awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
             .resource_holder;

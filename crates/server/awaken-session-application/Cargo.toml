@@ -20,5 +20,10 @@ awaken-resource-contract.workspace = true
 awaken-session-contract.workspace = true
 async-trait.workspace = true
 
+[dev-dependencies]
+awaken-session-store = { workspace = true, features = ["test-support"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+
 [lints]
 workspace = true

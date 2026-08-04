@@ -70,8 +70,8 @@ The crate-level static boundary is explicit:
 
 | Component | Layer/owner | Responsibility |
 |---|---|---|
-| `awaken-session-application` | Coordinator application / Session | Session repository and application ports; environment-binding consistency and lifecycle fence |
-| `awaken-protocol-managed::ManagedState` | Coordinator interface / Managed wire | DTO projections, public ids, event/SSE delivery; no Session repository ownership |
+| `awaken-session-application` | Coordinator application / Session | private application collaborators; exact Environment selection; repository/environment-binding consistency; one create/recovery WorkQueue projection command; lifecycle fence |
+| `awaken-protocol-managed::ManagedState` | Coordinator interface / Managed wire | explicit calls into `SessionApplication`, DTO projections, public ids, event/SSE delivery; no implicit dereference or Session repository ownership |
 | `awaken-runtime-host::SharedHost` | Shared application substrate / Runtime | one protocol-neutral execution/session substrate |
 | `awaken-coordinator-runtime` | Coordinator interface / durable operations | HTTP translation into neutral Host durable-control methods |
 | `awaken-worker-runtime` | Worker infrastructure / Worker transport | authenticated registration/lifecycle and Session-control clients |
@@ -80,7 +80,8 @@ The dynamic path is correspondingly single-track:
 
 ```text
 Managed HTTP -> ManagedState wire projection -> SessionApplication
-             -> Session repository / SharedHost ports -> committed outcome -> wire/SSE projection
+             -> exact Environment + Session repository / SharedHost ports
+             -> committed Session -> one idempotent WorkQueue projection -> wire/SSE projection
 
 Worker claim -> awaken-worker-runtime client -> Coordinator authenticated interface
              -> SessionApplication / SharedHost -> claim-fenced commit and settle

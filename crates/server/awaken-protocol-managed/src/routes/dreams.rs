@@ -2,15 +2,15 @@
 
 use std::sync::Arc;
 
+use awaken_session_contract::{Dream, DreamCreateParams, DreamListParams, DreamPage, DreamStatus};
+use awaken_tenancy::WorkspaceScope;
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-use crate::routes::{ManagedJson, WorkspaceScope};
-use crate::types::{
-    Dream, DreamCreateParams, DreamListParams, DreamPage, DreamStatus, ErrorResponse,
-};
+use crate::routes::ManagedJson;
+use crate::types::ErrorResponse;
 use awaken_dream_application::{DreamApiError, DreamApplication};
 
 pub const DREAMING_BETA: &str = "dreaming-2026-04-21";

@@ -83,7 +83,8 @@ pub(crate) fn select(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_credential_vault::{CredentialSourceId, WorkerLocalBinding};
+    use awaken_credential_contract::CredentialSourceId;
+    use awaken_credential_vault::WorkerLocalBinding;
     use awaken_model_catalog::{ApiDialect, Offering, ProtocolEndpointId, ProviderId};
 
     fn credential(

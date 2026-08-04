@@ -17,6 +17,7 @@ import _provider_env_fitness
 import _resource_plane_fitness
 import _runtime_secret_boundary
 import _service_data_ownership_fitness
+import _crate_boundary_workspace
 from _crate_boundary_workspace import architecture_fitness_specs, dependency_fitness_specs, text_files
 
 
@@ -117,6 +118,7 @@ def check_tests_are_not_arch_owners() -> list[str]:
 
 
 def main() -> int:
+    _crate_boundary_workspace.selftest()
     _crate_dependency_fitness.selftest()
     _arch_fitness.selftest()
     _coordinator_authority_fitness.selftest()

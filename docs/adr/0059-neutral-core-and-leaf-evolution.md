@@ -138,8 +138,11 @@ Verified state after the 2026-08-04 cut:
 
 - **Session application** — `awaken-session-application` owns the Session repository,
   runtime/environment/credential/resource ports, environment-binding CAS, incarnation,
-  and lifecycle-supervisor fence. `awaken-protocol-managed::ManagedState` owns only wire
-  projections, event ids, and SSE channels.
+  lifecycle-supervisor fence, exact Environment selection/runtime validation, and the sole
+  durable Session-to-WorkQueue projection command used by both create and recovery.
+  Its collaborators are private and reached through explicit application operations/ports;
+  `awaken-protocol-managed::ManagedState` has no `Deref` compatibility path and owns only
+  wire projections, event ids, and SSE channels.
 - **Coordinator runtime interface** — `awaken-coordinator-runtime` owns durable-operation
   HTTP routing. Neutral durable-control methods remain on `SharedHost` as its application API.
 - **Worker runtime interface** — `awaken-worker-runtime` owns registration, heartbeat,
@@ -190,6 +193,8 @@ reimplement that behavior.
 - Architecture enforcement has one source of truth: Cargo metadata interpreted by
   `check_crate_boundaries.py`. `deny.toml` retains dependency-hygiene settings only and
   intentionally contains no architecture wrappers or depender allowlists.
+- Interface adapters do not publicly re-export another first-party crate. Consumers import
+  credential, Dream, and MCP wire values from their authoritative owner directly.
 - This ADR is documentation *plus* code: Phases 0.1 / 0.2 / 3 of the layout work landed the
   three new fitness functions; the neutral-port extractions (session-contract, the InMemory
   backends, and the common Run-attempt seam) landed the structural changes it describes.
