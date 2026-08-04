@@ -25,9 +25,14 @@ def main() -> int:
         raise SystemExit(f"unknown ACP runtime ids: {', '.join(unknown)}")
 
     selected = [runtime for runtime in runtimes if runtime["id"] in selected_ids]
-    npm = [runtime["requirement"] for runtime in selected if runtime["manager"] == "npm"]
-    pip = [runtime["requirement"] for runtime in selected if runtime["manager"] == "pip"]
-    unsupported = sorted({runtime["manager"] for runtime in selected} - {"npm", "pip"})
+    requirements = [
+        requirement
+        for runtime in selected
+        for requirement in runtime["requirements"]
+    ]
+    npm = [item["requirement"] for item in requirements if item["manager"] == "npm"]
+    pip = [item["requirement"] for item in requirements if item["manager"] == "pip"]
+    unsupported = sorted({item["manager"] for item in requirements} - {"npm", "pip"})
     if unsupported:
         raise SystemExit(f"unsupported ACP runtime managers: {', '.join(unsupported)}")
     if npm:
@@ -36,12 +41,15 @@ def main() -> int:
         subprocess.run(["pip", "install", "--no-cache-dir", *pip], check=True)
 
     for runtime in selected:
-        executable = next(
-            (part for part in runtime["probe_argv"] if "=" not in part and part != "/usr/bin/env"),
-            None,
-        )
-        if executable is None or shutil.which(executable) is None:
-            raise SystemExit(f"{runtime['id']}: installed ACP executable is unavailable")
+        missing = [
+            executable
+            for executable in runtime["executables"]
+            if shutil.which(executable) is None
+        ]
+        if missing:
+            raise SystemExit(
+                f"{runtime['id']}: installed executables are unavailable: {', '.join(missing)}"
+            )
     return 0
 
 

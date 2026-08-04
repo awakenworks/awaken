@@ -52,6 +52,15 @@ async def request(process, request_id, method, params, runtime_id):
 
 async def verify(runtime, root):
     runtime_id = runtime["id"]
+    missing = [
+        executable
+        for executable in runtime["executables"]
+        if shutil.which(executable) is None
+    ]
+    if missing:
+        raise RuntimeError(
+            f"{runtime_id}: required executables are unavailable: {', '.join(missing)}"
+        )
     home = root / runtime_id
     workspace = home / "workspace"
     workspace.mkdir(parents=True)
