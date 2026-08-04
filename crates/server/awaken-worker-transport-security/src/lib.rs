@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use awaken_run_ingress::{
-    RunClaim, WorkerDirectory, WorkerIdentity, WorkerRequestAuthorizer, WorkerSnapshot, WorkerState,
+use awaken_run_ingress_contract::{
+    RunClaim, WorkerDirectory, WorkerIdentity, WorkerSnapshot, WorkerState,
 };
 use axum::Json;
 use axum::extract::{Request, State};
@@ -28,6 +28,22 @@ use sha2::Sha256;
 pub const WORKER_ID_HEADER: &str = "x-awaken-worker-id";
 /// Authorization scheme carrying a signed, short-lived Worker request assertion.
 pub const SIGNED_WORKER_SCHEME: &str = "AwakenWorker";
+
+/// Client-side counterpart of the Coordinator's Worker authenticator.
+///
+/// It decorates every lifecycle, dispatch, recovery, Resource and commit
+/// request. The absolute path is part of the signed authority.
+pub trait WorkerRequestAuthorizer: Send + Sync {
+    fn authorize(
+        &self,
+        method: &str,
+        path: &str,
+        worker_id: &str,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder, String>;
+
+    fn bind_worker_identity(&self, identity: &WorkerIdentity) -> Arc<dyn WorkerRequestAuthorizer>;
+}
 
 /// Authenticate one Worker-facing HTTP request and publish the verified context
 /// as a request extension for the typed route handler.

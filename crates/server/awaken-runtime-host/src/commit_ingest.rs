@@ -20,8 +20,9 @@ use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitRe
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_run_ingress::{
     ClaimedCommitCommand, ClaimedCommitRequest, ClaimedRunCommit, DispatchQueue, RunClaim,
-    WorkerDirectory, WorkerIdentity, WorkerRequestAuthorizer, commit_payload_hash,
+    WorkerDirectory, WorkerIdentity, commit_payload_hash,
 };
+use awaken_worker_transport_security::WorkerRequestAuthorizer;
 
 use crate::host::HostError;
 use crate::host::SharedHost;

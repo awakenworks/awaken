@@ -11,11 +11,7 @@ use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::sink::{Error as StreamError, Sink as StreamSink};
 
 use crate::RunClaim;
-
-#[async_trait::async_trait]
-pub trait ClaimedStreamPublisher: Send + Sync {
-    async fn publish(&self, claim: &RunClaim, event: StreamEvent) -> Result<(), StreamError>;
-}
+pub use awaken_run_ingress_contract::ClaimedStreamPublisher;
 
 /// Reuses an existing process-local StreamSink behind the claim-bound worker
 /// port. Local execution needs no wire fence because the dispatch worker and

@@ -49,7 +49,7 @@ fn read_projected_file(path: &Path) -> Result<String, String> {
 
 pub(crate) fn request_authorizer(
     deployment: &ResolvedDeployment,
-) -> Result<Option<Arc<dyn awaken_run_ingress::WorkerRequestAuthorizer>>, String> {
+) -> Result<Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthorizer>>, String> {
     let Some(path) = deployment.worker.request_credential_file.as_deref() else {
         return match deployment.mode {
             OperatingMode::Local => Ok(None),
@@ -67,7 +67,7 @@ pub(crate) fn request_authorizer(
 pub fn load_request_authorizer(
     path: &Path,
     worker_id: &str,
-) -> Result<Arc<dyn awaken_run_ingress::WorkerRequestAuthorizer>, String> {
+) -> Result<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthorizer>, String> {
     let projected: ProjectedWorkerCredential = serde_json::from_str(&read_projected_file(path)?)
         .map_err(|error| {
             format!(

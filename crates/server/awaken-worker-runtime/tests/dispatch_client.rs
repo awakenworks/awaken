@@ -13,28 +13,63 @@
 //! store injection, the test mirrors the same six routes over the same production
 //! in-memory store — the client, the socket, and the store are all real.)
 
-mod harness;
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_run_ingress::{
-    ClaimedStreamPublisher, DispatchError, DispatchOutcome, DispatchQueue, HttpDispatchQueue,
-    Inbox, MemoryDispatchStore, Outbox, PendingInput, RunClaim, RunDispatch, SettleOutcome,
+    ClaimedStreamPublisher, DispatchError, DispatchOutcome, DispatchQueue, Inbox,
+    MemoryDispatchStore, Outbox, PendingInput, RunClaim, RunDispatch, SettleOutcome,
     StreamEventRequest, SubmitOptions, WorkerIdentity,
 };
+use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::resolved::{
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
+};
 use awaken_runtime_contract::resume::ResumeResult;
+use awaken_runtime_contract::snapshot::{
+    AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+};
+use awaken_worker_runtime::HttpDispatchQueue;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-use harness::activation;
+fn activation(run: &str) -> RunActivation {
+    let fingerprint = CatalogFingerprint("catalog-a".into());
+    RunActivation::new(
+        RunId(run.into()),
+        ThreadId("thread-1".into()),
+        ExecutableAgentSnapshot {
+            id: ExecutableAgentSnapshotId("snapshot-1".into()),
+            metadata: Default::default(),
+            root_agent_id: AgentId("agent-1".into()),
+            resolved_spec: ResolvedSpec {
+                catalog_fingerprint: fingerprint.clone(),
+                instructions: String::new(),
+                max_steps: 16,
+                delegation_limits: Default::default(),
+                model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                    ModelBinding::new("p", "m", "b"),
+                ),
+                model_candidates: Vec::new(),
+                tool_descriptors: Vec::new(),
+                plugin_ids: Vec::new(),
+                plugin_config: Default::default(),
+                context_policy: ContextPolicy::KeepAll,
+                tool_presentation: Default::default(),
+            },
+            fingerprint,
+        },
+        vec![Message::text(MessageId("m1".into()), Role::User, "go")],
+    )
+}
 
 fn provider_candidate(
     reference: &str,
@@ -514,6 +549,17 @@ async fn worker_stream_transport_posts_only_canonically_live_events() {
     assert_eq!(stream_calls.load(Ordering::SeqCst), 1, "S2");
 }
 
+/// Dispatch lifecycle cause/effect graph: C1 the request is serializable and
+/// runnable; C2 the run is already leased; C3 settle epoch is stale; C4 settle
+/// epoch is current. Effects are E1 durable enqueue and lossless wire payload,
+/// E2 no duplicate claim, E3 fenced/no mutation, and E4 terminal removal.
+///
+/// | Rule | state/action | condition | effect |
+/// |---|---|---|---|
+/// | D1 | enqueue then claim | C1 | E1 |
+/// | D2 | second claim | C2 | E2 |
+/// | D3 | settle | C3 | E3 |
+/// | D4 | settle | C4 | E4 |
 #[tokio::test]
 async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     let (base, store, clock, _) = spawn_transport_server().await;
@@ -611,6 +657,11 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
 
 // ── 3. renew_lease FALSE path over the wire (lease stolen by recovery) ───────────
 
+/// Lease-fencing cause/effect graph: C1 owner A's lease is live; C2 it expires;
+/// C3 owner B reclaims and advances the epoch; C4 stale A renews or settles.
+/// Effects are E1 A renews, E2 B exclusively owns the same row, and E3 A is
+/// rejected without mutating B's run. Rules: L1 C1=>E1; L2 C2+C3=>E2;
+/// L3 C3+C4=>E3. The rows cover both live and superseded ownership.
 #[tokio::test]
 async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
     let (base, store, clock, _) = spawn_transport_server().await;
@@ -690,6 +741,11 @@ fn an_input() -> PendingInput {
     }
 }
 
+/// Server-authority cause/effect table: C1 a database-less Worker invokes a
+/// Coordinator-owned mutation; C2 the verb is a remote-worker write supported
+/// by this client. E1 is fail-closed without dialing; E2 is authenticated HTTP
+/// dispatch (covered by D1-D4). This test covers rule A1 C1+!C2=>E1 for recovery,
+/// cancel, Inbox mutation, and Outbox staging, preventing false success.
 #[tokio::test]
 async fn server_local_write_verbs_fail_closed() {
     // No server is needed: these verbs resolve locally on the client without a
@@ -729,15 +785,12 @@ async fn server_local_write_verbs_fail_closed() {
     ));
 }
 
-// The server-local maintenance verbs FAIL CLOSED (`Rejected`) rather than pretend,
-// matching the module contract: a database-less worker must never silently no-op a
-// reap/dead-letter/purge/supersede/list/awaiting-run/relay it did not perform. The
-// pool's maintenance loop still ticks reap/purge/relay, but discards the result
-// (`let _ =` / `unwrap_or(0)`), so the rejection is harmless there while surfacing
-// anywhere the return value is consumed. The single legitimate exception is
-// `Inbox::list`: the db-less worker's own drive reads it (`worker.rs`, with `?`) and
-// the pending is already delivered in `Claimed.pending`, so an empty list is the
-// correct answer, not a pretended mutation.
+/// Maintenance/readback cause/effect table: C1 the operation requires
+/// Coordinator store authority; C2 it is the Worker drive's local Inbox list;
+/// C3 the pending inputs were already carried by `Claimed.pending`. Rules:
+/// M1 C1+!C2=>`Rejected` without dialing; M2 C2+C3=>empty list. M2 is the sole
+/// legitimate no-op read; every maintenance mutation and authoritative query
+/// uses M1 so the client cannot pretend server work happened.
 #[tokio::test]
 async fn maintenance_verbs_fail_closed_except_the_legitimate_inbox_list_readback() {
     let queue = HttpDispatchQueue::new(
