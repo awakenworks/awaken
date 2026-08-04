@@ -810,7 +810,7 @@ impl WorkerNode {
             match attempt {
                 Ok(registration) => break registration,
                 Err(awaken_worker_runtime::WorkerRegistrationError::SlotOccupied(error)) => {
-                    if occupied_attempts % 10 == 0 {
+                    if occupied_attempts.is_multiple_of(10) {
                         eprintln!("worker registration waiting for the prior lease: {error}");
                     }
                     occupied_attempts = occupied_attempts.saturating_add(1);

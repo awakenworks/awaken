@@ -197,14 +197,6 @@ mod tests {
             assert_eq!(row.label, cli.display_name, "R2 metadata");
             assert_eq!(row.description, cli.description, "R2 metadata");
         }
-        assert!(
-            projected.iter().all(|row| row.id != "acp:kimi"),
-            "R3 unsupported Kimi is not advertised"
-        );
-        assert!(
-            projected.iter().all(|row| row.id != "acp:hermes"),
-            "R3 unsupported Hermes is not advertised"
-        );
     }
 
     #[test]

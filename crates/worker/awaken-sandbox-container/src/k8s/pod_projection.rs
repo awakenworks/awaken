@@ -1,16 +1,14 @@
-//! Pure projection of neutral bind/resource requirements into Kubernetes objects.
+//! Pure projection of neutral bind material into Kubernetes objects.
 
 use std::collections::BTreeMap;
 
-use awaken_provisioning_contract as pc;
-use k8s_openapi::api::core::v1::{ConfigMap, ResourceRequirements, Secret};
-use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+use k8s_openapi::api::core::v1::{ConfigMap, Secret};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 
 use super::names::{cfg_owner_label, configmap_name, credential_secret_name};
 use crate::{BindPlan, ContainerPlan};
 
-const CONFIGMAP_KEY: &str = "content";
+pub(super) const CONFIGMAP_KEY: &str = "content";
 
 pub(super) fn content_binds(plan: &ContainerPlan) -> Vec<&BindPlan> {
     plan.binds
@@ -98,31 +96,4 @@ pub(super) fn build_credential_secret(
         )])),
         ..Default::default()
     }
-}
-
-pub(super) fn pod_resources(limits: &pc::ResourceLimits) -> Option<ResourceRequirements> {
-    if !limits.is_set() {
-        return None;
-    }
-    let mut projected = BTreeMap::new();
-    if let Some(cpu) = limits.cpu_millis {
-        projected.insert("cpu".to_string(), Quantity(format!("{cpu}m")));
-    }
-    if let Some(memory) = limits.memory_bytes {
-        projected.insert("memory".to_string(), Quantity(memory.to_string()));
-    }
-    if let Some(disk) = limits.disk_bytes {
-        projected.insert("ephemeral-storage".to_string(), Quantity(disk.to_string()));
-    }
-    if projected.is_empty() {
-        return None;
-    }
-    Some(ResourceRequirements {
-        limits: Some(projected),
-        ..Default::default()
-    })
-}
-
-pub(super) fn unenforceable_k8s_limit(limits: &pc::ResourceLimits) -> Option<&'static str> {
-    limits.pids.map(|_| "pids")
 }

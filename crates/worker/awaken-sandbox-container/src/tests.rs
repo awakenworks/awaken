@@ -525,6 +525,14 @@ impl pc::MemoryMount for FakeMemoryMount {
 
 // ── Fake runtime + provider lifecycle ───────────────────────────────────────────
 
+type RuntimePathObservation = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 #[derive(Default)]
 struct FakeState {
     alive: HashMap<String, bool>,
@@ -543,13 +551,7 @@ struct FakeState {
     live_credential_error: Option<String>,
     credential_source: Option<std::path::PathBuf>,
     spawned: Vec<(String, Vec<String>)>,
-    runtime_path_observations: Vec<(
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )>,
+    runtime_path_observations: Vec<RuntimePathObservation>,
     process_secret_observations: Vec<(bool, bool)>,
     live_input_projection: bool,
     live_inputs: HashMap<String, Vec<u8>>,

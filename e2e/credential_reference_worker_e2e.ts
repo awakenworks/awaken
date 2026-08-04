@@ -254,6 +254,10 @@ async function main(): Promise<void> {
       AWAKEN_WORKER_ID: 'gateway-worker-ts',
       AWAKEN_WORKER_ADMIN_LISTEN: `127.0.0.1:${WORKER_ADMIN_PORT}`,
       AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1',
+      // This scenario verifies credential grant routing, not host namespace
+      // availability. Keep the production fail-closed Namespace default and
+      // make the test's unsafe local execution choice explicit.
+      AWAKEN_TEST_SANDBOX_TIER: 'local',
     });
     worker = spawn(buildGatewayWorker(), [], { cwd: ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] });
     worker.stdout.on('data', (chunk) => (workerOutput += chunk.toString()));

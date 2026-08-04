@@ -119,7 +119,7 @@ async function main() {
     // id; the durable row is owned by the platform-resolved local workspace.
     r = await request('GET', `/v1/config/credentials?workspace_id=${workspace}`);
     assert.equal(r.status, 200);
-    const mcpCredential = r.json.find((credential) => credential.provider_id === undefined);
+    const mcpCredential = r.json.find((credential) => credential.provider_id === 'mcp');
     assert.ok(mcpCredential, `the MCP credential is present beside provider credentials: ${JSON.stringify(r.json)}`);
     const credId = mcpCredential.id;
     pass(`SDK vault mcp_oauth credential entered -> domain row ${credId} (secret-free)`);

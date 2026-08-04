@@ -226,7 +226,7 @@ impl ProviderConnectionService {
             }
             ProviderConnectionAuthentication::OAuth(helper) => ConnectionCredential::OAuth(helper),
             ProviderConnectionAuthentication::Existing(id) => {
-                let mut credential = self.credentials.get(&id).await?;
+                let credential = self.credentials.get(&id).await?;
                 if credential.workspace_id != command.workspace_id {
                     return Err(CredentialError::SourceNotFound(credential.id.0).into());
                 }
@@ -240,18 +240,12 @@ impl ProviderConnectionService {
                 {
                     return Err(CredentialError::NoCredential.into());
                 }
-                if let Some(current_endpoint_id) = credential.protocol_endpoint_id.clone()
-                    && current_endpoint_id != endpoint.id.as_str()
+                if credential
+                    .protocol_endpoint_id
+                    .as_deref()
+                    .is_some_and(|current| current != endpoint.id.as_str())
                 {
-                    credential =
-                        awaken_credential_vault::repo::widen_credential_to_provider_scope_exact(
-                            &credential.id,
-                            credential.version,
-                            &command.provider_id,
-                            &current_endpoint_id,
-                            self.credentials.as_ref(),
-                        )
-                        .await?;
+                    return Err(CredentialError::NoCredential.into());
                 }
                 if credential.is_claude_code_setup_token() {
                     return Err(ProviderConnectionError::UnsupportedAuthentication {

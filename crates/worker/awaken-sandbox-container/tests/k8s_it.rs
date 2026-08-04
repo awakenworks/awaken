@@ -12,7 +12,10 @@ use awaken_sandbox_container::{
 
 fn plan(cmd: &[&str]) -> ContainerPlan {
     ContainerPlan {
-        image: "busybox:1.37.0".into(),
+        // The capability suite imports this immutable test fixture into every
+        // schedulable k3d node before running the integration test. Keeping the
+        // runtime offline proves Pod creation does not depend on registry egress.
+        image: "awaken-bb:1".into(),
         command: cmd.iter().map(|s| s.to_string()).collect(),
         env: Vec::new(),
         packages: Default::default(),

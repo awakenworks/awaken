@@ -32,7 +32,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { deploymentEnv, spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import { availablePort, deploymentEnv, spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38294);
@@ -44,8 +44,8 @@ async function drain(pagePromise) {
   return items;
 }
 
-function boot(env, upstream) {
-  const { server, baseUrl } = spawnServer('management', PORT, {
+function boot(env, upstream, port) {
+  const { server, baseUrl } = spawnServer('management', port, {
     ...env,
     ...realServerEnv('echo', upstream, { mode: 'management' }),
   });
@@ -58,12 +58,15 @@ async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-envwork-e2e-'));
   const env = deploymentEnv(dir, { identityMode: 'no-login', controlSealKey: SEAL_KEY });
   const upstream = await startUpstream('echo');
+  // Select the server port only after the fake upstream has claimed its ephemeral
+  // listener; Linux's ephemeral range overlaps the historical 38xxx fixture ports.
+  const port = await availablePort(PORT);
   let server = null;
   try {
     // ---- lifetime A: create env + session, prove enqueue semantics ---------
-    let boot_a = boot(env, upstream);
+    let boot_a = boot(env, upstream, port);
     server = boot_a.server;
-    await waitForPort(PORT);
+    await waitForPort(port);
     let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: boot_a.baseUrl });
 
     const created = await client.beta.environments.create({
@@ -117,9 +120,9 @@ async function main() {
 
     // ---- restart: kill the process, respawn over the same dir -------------
     await stopServer(server);
-    const boot_b = boot(env, upstream);
+    const boot_b = boot(env, upstream, port);
     server = boot_b.server;
-    await waitForPort(PORT);
+    await waitForPort(port);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: boot_b.baseUrl });
     pass('server killed and respawned on the same typed data_dir (SQLite backends)');
 

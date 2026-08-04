@@ -53,15 +53,10 @@ fi
 
 repo=$(cd "$(dirname "$0")/../../.." && pwd)
 image=${1:-awaken-sandbox:local}
-# `${2-...}` intentionally distinguishes an omitted package list (production
-# defaults) from an explicitly empty one (hermetic transport/E2E fixture image).
-packages=${2-"@agentclientprotocol/claude-agent-acp@0.64.2 @agentclientprotocol/codex-acp@1.1.9 @google/gemini-cli@0.53.1 opencode-ai@1.18.12"}
-hermes_package=${3-"hermes-agent[acp,bedrock]==0.19.0"}
-# An explicitly empty legacy package list means a transport-only fixture image;
-# preserve that contract unless the caller explicitly supplies a Hermes package.
-if [[ -z "$packages" && $# -lt 3 ]]; then
-  hermes_package=""
-fi
+# `${2-all}` intentionally distinguishes an omitted runtime set (the complete
+# production contract) from an explicitly empty one (a hermetic transport/E2E
+# fixture). A non-empty override is a comma-separated subset of catalog ids.
+runtime_ids=${2-all}
 engine=${CONTAINER_ENGINE:-docker}
 build_timeout_seconds=${AWAKEN_SANDBOX_BUILD_TIMEOUT_SECONDS:-1800}
 operation_timeout_seconds=${AWAKEN_SANDBOX_OPERATION_TIMEOUT_SECONDS:-60}
@@ -93,12 +88,10 @@ cd "$repo"
 "$repo/deploy/images/sandbox/stage-binary.sh" "$staged" hand
 if [[ -n "${AWAKEN_SANDBOX_BUILD_NETWORK:-}" ]]; then
   build_image --network "$AWAKEN_SANDBOX_BUILD_NETWORK" \
-    --build-arg ACP_NPM_PACKAGES="$packages" \
-    --build-arg HERMES_AGENT_PACKAGE="$hermes_package" \
+    --build-arg ACP_RUNTIME_IDS="$runtime_ids" \
     -f deploy/images/sandbox/Dockerfile -t "$image" .
 else
-  build_image --build-arg ACP_NPM_PACKAGES="$packages" \
-    --build-arg HERMES_AGENT_PACKAGE="$hermes_package" \
+  build_image --build-arg ACP_RUNTIME_IDS="$runtime_ids" \
     -f deploy/images/sandbox/Dockerfile -t "$image" .
 fi
 
@@ -113,19 +106,15 @@ run_with_deadline "$operation_timeout_seconds" \
   "$engine" run --rm --entrypoint /bin/sh "$image" -c \
   'command -v curl >/dev/null && curl --version >/dev/null'
 
-# Verify exactly the adapter executables requested for this image. This catches
-# package/bin drift before a Worker advertises an adapter and attempts a live
-# ACP handshake inside Kubernetes.
-expected_acp_commands=()
-[[ "$packages" == *"@agentclientprotocol/claude-agent-acp"* ]] && expected_acp_commands+=(claude-agent-acp)
-[[ "$packages" == *"@agentclientprotocol/codex-acp"* ]] && expected_acp_commands+=(codex-acp)
-[[ "$packages" == *"@google/gemini-cli"* ]] && expected_acp_commands+=(gemini)
-[[ "$packages" == *"opencode-ai"* ]] && expected_acp_commands+=(opencode)
-[[ -n "$hermes_package" ]] && expected_acp_commands+=(hermes-acp)
-if (( ${#expected_acp_commands[@]} > 0 )); then
-  command_list=${expected_acp_commands[*]}
+# Perform the production prompt-free initialize + session/new handshake, not
+# merely `command -v`. Independent adapters are probed concurrently by the
+# image-local verifier, bounding cold-start validation to one probe deadline.
+if [[ -n "$runtime_ids" ]]; then
+  verify_ids=()
+  if [[ "$runtime_ids" != all ]]; then
+    IFS=',' read -r -a verify_ids <<<"$runtime_ids"
+  fi
   run_with_deadline "$operation_timeout_seconds" \
-    "$engine" run --rm --entrypoint /bin/sh "$image" -c \
-    'for executable in $1; do command -v "$executable" >/dev/null || exit 1; done' \
-    _ "$command_list"
+    "$engine" run --rm --entrypoint /usr/local/bin/awaken-verify-acp-runtimes \
+    "$image" "${verify_ids[@]}"
 fi

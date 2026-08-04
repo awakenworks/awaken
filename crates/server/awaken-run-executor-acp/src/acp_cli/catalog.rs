@@ -12,7 +12,7 @@ const CLAUDE: AcpCli = AcpCli {
     description: "Claude Code via the pinned ACP adapter. Reads CLAUDE.md.",
     acquisition: AcpAcquisition::PinnedNpmWrapper {
         installer: "npm",
-        package: "@agentclientprotocol/claude-agent-acp@0.44.0",
+        package: "@agentclientprotocol/claude-agent-acp@0.64.2",
         bin: "claude-agent-acp",
     },
     discovery: AcpDiscoverySpec {
@@ -94,7 +94,7 @@ const CODEX: AcpCli = AcpCli {
     description: "OpenAI Codex via the pinned ACP adapter. Reads AGENTS.md.",
     acquisition: AcpAcquisition::PinnedNpmWrapper {
         installer: "npm",
-        package: "@agentclientprotocol/codex-acp@1.1.7",
+        package: "@agentclientprotocol/codex-acp@1.1.9",
         bin: "codex-acp",
     },
     discovery: AcpDiscoverySpec {
@@ -208,7 +208,11 @@ const GEMINI: AcpCli = AcpCli {
         "gemini",
         "--acp",
     ]),
-    capability_probe_auth_method_id: Some("gemini-api-key"),
+    // The probe key is already selected before process launch. Gemini 0.53 can
+    // deadlock when `authenticate` is sent only after `initialize` completes;
+    // opening the prompt-free Session directly uses the exact same key without
+    // adding a second protocol-side selection step.
+    capability_probe_auth_method_id: None,
     model_delivery: Some(ModelDelivery {
         base_url: "GOOGLE_GEMINI_BASE_URL",
         model: "GEMINI_MODEL",

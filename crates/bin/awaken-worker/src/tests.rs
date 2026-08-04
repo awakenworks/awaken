@@ -924,11 +924,7 @@ fn configured_container_acp_uses_live_image_probe_targets_only() {
         ],
         "R3"
     );
-    assert_eq!(
-        targets[0].auth_method_id.as_deref(),
-        Some("gemini-api-key"),
-        "R3"
-    );
+    assert_eq!(targets[0].auth_method_id, None, "R3");
 
     config.container_image = None;
     assert!(configured_container_acp_targets(&config).is_err(), "R4");

@@ -62,6 +62,7 @@ pub awaken_protocol_acp::AcpLaunchStage::Launching
 pub awaken_protocol_acp::AcpLaunchStage::Ready
 pub enum awaken_protocol_acp::AcpProjectedEvent
 pub awaken_protocol_acp::AcpProjectedEvent::Message
+pub awaken_protocol_acp::AcpProjectedEvent::Message::message_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_acp::AcpProjectedEvent::Message::text: alloc::string::String
 pub awaken_protocol_acp::AcpProjectedEvent::ToolCall
 pub awaken_protocol_acp::AcpProjectedEvent::ToolCall::id: alloc::string::String
@@ -174,6 +175,7 @@ pub awaken_protocol_acp::TurnConfig::session_config_options: alloc::vec::Vec<awa
 pub awaken_protocol_acp::TurnConfig::session_cwd: core::option::Option<alloc::string::String>
 pub awaken_protocol_acp::TurnConfig::session_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_acp::TurnConfig::session_mode: core::option::Option<alloc::string::String>
+pub awaken_protocol_acp::TurnConfig::session_model: core::option::Option<alloc::string::String>
 impl<'a> awaken_protocol_acp::TurnConfig<'a>
 pub fn awaken_protocol_acp::TurnConfig<'a>::new(&'a dyn awaken_protocol_acp::PermissionResolver) -> Self
 pub trait awaken_protocol_acp::LaunchObserver: core::marker::Send + core::marker::Sync

@@ -369,6 +369,10 @@ async function main() {
       'worker_id = "materialization-worker"',
       `worker_credential_material_root = ${JSON.stringify(materialRoot)}`,
       'worker_admin_listen = "127.0.0.1:39823"',
+      // Credential envelope materialization is this scenario's subject. The
+      // test explicitly chooses the unsafe local tier so host bwrap support is
+      // not an unrelated precondition; production remains Namespace by default.
+      'sandbox_tier = "local"',
     ].join('\n'));
     worker = spawn(workerBinary(), ['worker', '--config', workerConfig, '--server', BASE], {
       cwd: ROOT,

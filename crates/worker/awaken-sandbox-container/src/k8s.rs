@@ -20,15 +20,15 @@ use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, AgentTransport, SplitChannel};
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::{
-    ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar, LocalObjectReference, Pod,
-    PodSecurityContext, PodSpec, SecretVolumeSource, Volume, VolumeMount,
+    ConfigMap, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar,
+    LocalObjectReference, Pod, PodSecurityContext, PodSpec, Secret, SecretVolumeSource, Volume,
+    VolumeMount,
 };
 #[cfg(test)]
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Status;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use kube::api::{AttachParams, DeleteParams, ListParams};
 use kube::{Api, Client};
-use std::collections::BTreeMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::net::TcpAgentTransport;
@@ -42,15 +42,18 @@ mod pod_projection;
 mod pod_security;
 mod process;
 mod realization;
-use names::{cfg_owner_label, configmap_name, credential_secret_name, k8s_runtime_id, pod_name};
+use names::{configmap_name, credential_secret_name, k8s_runtime_id, pod_name};
 use pod_projection::{
-    build_configmap, build_credential_secret, content_binds, credential_binds, credential_key,
-    pod_resources, unenforceable_k8s_limit,
+    CONFIGMAP_KEY, build_configmap, build_credential_secret, content_binds, credential_binds,
+    credential_key,
 };
-use pod_security::{egress_label, fuse_sidecar_security_context, hardened_security_context};
+use pod_security::{
+    egress_label, fuse_sidecar_security_context, hardened_security_context, pod_resources,
+    unenforceable_k8s_limit,
+};
 #[cfg(test)]
 use process::k8s_exit_status;
-use process::{K8sExecProcess, K8sExecState, k8s_exec_argv};
+use process::{K8sExecProcess, K8sExecState, k8s_exec_argv, k8s_live_file_result};
 use realization::{
     PodReadiness, await_pod_deleted, create_or_verify, pod_readiness, reap_terminal_pod,
     stamp_realization,
@@ -760,11 +763,13 @@ impl ContainerRuntime for K8sRuntime {
         let mut stdout = attached
             .stdout()
             .ok_or_else(|| backend("k8s credential harvest has no stdout"))?;
+        let status = attached
+            .take_status()
+            .ok_or_else(|| backend("k8s credential harvest has no completion status"))?;
         let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).await.map_err(backend)?;
-        drop(stdout);
-        attached.join().await.map_err(backend)?;
-        Ok(Some(bytes))
+        let (read, status) = tokio::join!(stdout.read_to_end(&mut bytes), status);
+        read.map_err(backend)?;
+        k8s_live_file_result(status, bytes)
     }
 
     async fn inspect(&self, container_id: &str) -> Result<ContainerState, RuntimeError> {
@@ -1241,6 +1246,35 @@ mod tests {
         .await
         .expect("unreachable test API must fail promptly");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn live_file_harvest_requires_a_successful_remote_exit_status() {
+        // Credential-harvest FMECA decision table. Causes: C1 remote `cat`
+        // exits 0; C2 it exits nonzero (missing/permission denied); C3 the API
+        // stream closes without a Status frame; C4 returned bytes are empty.
+        // Effects: E1 exact bytes are eligible for broker write-back; E2 fail
+        // closed so stale/empty material cannot replace authority. Rules: H1
+        // C1=>E1; H2 C1+C4=>E1 (empty is data, validation belongs upstream);
+        // H3 C2|C3=>E2.
+        assert_eq!(
+            k8s_live_file_result(Some(success_status(0)), b"rotated".to_vec()).unwrap(),
+            Some(b"rotated".to_vec()),
+            "H1"
+        );
+        assert_eq!(
+            k8s_live_file_result(Some(success_status(0)), Vec::new()).unwrap(),
+            Some(Vec::new()),
+            "H2"
+        );
+        assert!(
+            k8s_live_file_result(Some(success_status(1)), Vec::new()).is_err(),
+            "H3 nonzero"
+        );
+        assert!(
+            k8s_live_file_result(None, Vec::new()).is_err(),
+            "H3 missing status"
+        );
     }
 
     #[tokio::test]

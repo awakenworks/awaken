@@ -486,12 +486,13 @@ mod tests {
     fn fingerprint_is_order_independent_but_changes_with_effective_evidence() {
         // Cause graph:
         // C1 identical semantic evidence in another wire order -> E1 same hash.
-        // C2 adapter/version/schema/current value changes -> E2 different hash.
+        // C2 effective protocol evidence changes -> E2 different hash.
         //
         // Decision table:
         // F1 reorder modes/choices -> same fingerprint
-        // F2 change current value  -> different fingerprint
-        // F3 change CLI version    -> different fingerprint
+        // F2 change route-derived current value -> same fingerprint
+        // F3 change protocol version -> different fingerprint
+        // F4 change CLI version      -> different fingerprint
         let original = capabilities();
         let fingerprint = capability_fingerprint("codex", "1.0", &original);
 
@@ -506,15 +507,21 @@ mod tests {
 
         let mut changed = original.clone();
         changed.config_options[0].current_value = "low".into();
-        assert_ne!(
+        assert_eq!(
             fingerprint,
             capability_fingerprint("codex", "1.0", &changed),
             "F2"
         );
+        changed.protocol_version = "2".into();
+        assert_ne!(
+            fingerprint,
+            capability_fingerprint("codex", "1.0", &changed),
+            "F3"
+        );
         assert_ne!(
             fingerprint,
             capability_fingerprint("codex", "2.0", &original),
-            "F3"
+            "F4"
         );
     }
 }

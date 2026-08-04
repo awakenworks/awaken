@@ -194,12 +194,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let storage = std::env::var("AWAKEN_TEST_WORKER_STORAGE_DIR").ok();
     match (resource, admin, storage) {
         (None, None, None) => {
-            awaken_worker::run_with_inference_and_credential_resolver(
-                &upstream,
-                materializer.clone(),
-                materializer,
+            let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+            if let Ok(tier) = std::env::var("AWAKEN_TEST_SANDBOX_TIER") {
+                deployment.sandbox_tier = match tier.as_str() {
+                    "local" => awaken_runtime_host::SandboxTier::Local,
+                    _ => return Err(format!("unsupported E2E sandbox tier `{tier}`").into()),
+                };
+            }
+            let credentials =
+                awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
+                    materializer.clone(),
+                );
+            let mut builder = awaken_worker::WorkerNodeBuilder::new(
+                awaken_worker_transport_security::WorkerUpstream::new(upstream),
             )
-            .await
+            .with_deployment_config(deployment)
+            .with_inference_materializer(materializer.clone())
+            .with_credential_materializer(credentials)
+            .with_worker_local_credential_resolver(materializer)
+            .with_standard_manifest(Default::default());
+            if let Ok(address) = std::env::var("AWAKEN_WORKER_ADMIN_LISTEN") {
+                builder = builder.with_admin_listen(address);
+            }
+            builder.build()?.run_until_shutdown().await
         }
         (Some(_resource_url), Some(_admin_url), Some(storage_dir)) => {
             let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
