@@ -309,8 +309,10 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
 
 /// Reconciliation-index cause/effect rules: C1=Resource/MCP durable work is
 /// pending -> E1=index the Session; C2=that work is terminal -> E2=remove it;
-/// C3=only a durable Environment binding is resident -> E3=do not index it,
-/// because rebuildable Hand residency belongs to the Worker-local Runtime Host.
+/// C3=only the durable Environment identity is resident -> E3=index it through
+/// the same aggregate scan for environment restoration. Constraint: this opaque
+/// binding is not Hand activity/process state; Hand inactivity remains solely in
+/// the Worker-local Runtime Host and adds no second repository predicate.
 async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepository>(r: &R) {
     let mut pending = session("sesn_pending", "pending");
     let desired = pending.resources.active.clone();
@@ -341,10 +343,14 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
     assert!(r.reconcilable_sessions().await.is_empty());
 
     pending.environment.set_resident("worker-owned-binding");
-    replace_session(r, "ws_a", pending, "test:resident-environment", Vec::new()).await;
-    assert!(
-        r.reconcilable_sessions().await.is_empty(),
-        "C3/E3: Coordinator repository scans never own local Hand residency"
+    pending = replace_session(r, "ws_a", pending, "test:resident-environment", Vec::new()).await;
+    assert_eq!(
+        r.reconcilable_sessions().await,
+        vec![ScopedPersistedSession {
+            workspace_id: "ws_a".into(),
+            session: pending,
+        }],
+        "C3/E3: restore durable Environment identity without persisting Hand activity"
     );
 }
 

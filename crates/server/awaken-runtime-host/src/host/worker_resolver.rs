@@ -3,7 +3,9 @@
 
 use super::*;
 mod claimed_dispatch;
-use claimed_dispatch::{WorkerMcpEffects, WorkerProjectionSynchronizer, adopt_bound_sandbox};
+#[cfg(test)]
+use claimed_dispatch::adopt_bound_sandbox;
+use claimed_dispatch::{WorkerMcpEffects, WorkerProjectionSynchronizer};
 
 /// Routes a claimed run to the worker that owns its thread, opening (or reusing)
 /// the session through the host. Holds a `Weak` back-reference so the pool's tasks
