@@ -348,6 +348,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         let owner = owner.into();
         let shutdown = CancellationToken::new();
         let admission = Arc::new(PoolAdmission::default());
+        let max_attempts = config.max_attempts;
         let drains = (0..concurrency.max(1))
             .map(|_| {
                 tokio::spawn(drain_loop(
@@ -359,6 +360,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
                     resolver.clone(),
                     completion.clone(),
                     admission.clone(),
+                    max_attempts,
                 ))
             })
             .collect();
@@ -544,6 +546,7 @@ async fn drain_loop<S: Dispatch + 'static>(
     resolver: Arc<dyn WorkerResolver<S>>,
     completion: Option<Arc<dyn CompletionSink>>,
     admission: Arc<PoolAdmission>,
+    max_attempts: u64,
 ) {
     loop {
         tokio::select! {
@@ -560,6 +563,7 @@ async fn drain_loop<S: Dispatch + 'static>(
             resolver.as_ref(),
             &completion,
             &admission,
+            max_attempts,
         )
         .await
         {
@@ -608,6 +612,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     resolver: &dyn WorkerResolver<S>,
     completion: &Option<Arc<dyn CompletionSink>>,
     admission: &Arc<PoolAdmission>,
+    max_attempts: u64,
 ) -> Result<bool, Error> {
     let now = clock.now_ms();
     let claimed = {
@@ -615,6 +620,12 @@ async fn claim_and_drive<S: Dispatch + 'static>(
         if !gate.open {
             return Ok(false);
         }
+        // Reap under the same short admission fence immediately before claim.
+        // The background maintenance loop remains the periodic owner, but it can
+        // race a fallback drain at the exact lease boundary. Without this final
+        // check, the drain can repeatedly reclaim one poison Run before
+        // maintenance observes it, starving the retry budget indefinitely.
+        store.reap(max_attempts, now).await?;
         store
             .claim(
                 owner,
