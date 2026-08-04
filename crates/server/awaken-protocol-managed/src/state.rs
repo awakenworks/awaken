@@ -29,24 +29,10 @@ use awaken_session_contract::{ManagedLifecycleFact, PersistedSession};
 #[cfg(test)]
 use awaken_session_store::SqliteManagedSessionRepository;
 
-/// The seeded owner scope a bare/self-hosted session is created under when the
-/// edge resolved no workspace (ADR-0051 / ADR-0048 D2 "seeded, not absent"). It
-/// matches the request scope the ownership guard derives for an unscoped request,
-/// so a single-tenant deployment never 404s itself.
-pub(crate) const DEFAULT_SCOPE: &str = "default";
-
-/// A fixed projection timestamp (M1). Real per-event timestamps arrive with a
-/// clock port; the wire only needs a valid RFC 3339 value here.
-pub(crate) const PROCESSED_AT: &str = "2026-01-01T00:00:00Z";
-
-/// The Managed Agents contract error for a `memory_store` add/remove on a running
-/// session — memory stores bind at session creation only.
-const MEMORY_CREATE_ONLY: &str = "memory stores can only be attached at session creation time; \
-     adding or removing one from a running session is not supported";
-
 mod activity;
 mod application;
 mod composition;
+mod constants;
 mod deployment_sessions;
 mod environment;
 mod error;
@@ -72,6 +58,7 @@ mod work_dispatch;
 pub use error::StateError;
 pub use managed_state::ManagedState;
 
+pub(crate) use constants::{DEFAULT_SCOPE, MEMORY_CREATE_ONLY, PROCESSED_AT};
 pub(crate) use helpers::{content_text, lifecycle_fact, rubric_text, session_usage_value};
 pub(crate) use resource::{
     ParsedInputTarget, ParsedSessionInput, input_binding, resolved_resource_dto,
@@ -999,6 +986,9 @@ mod tests {
 
     #[tokio::test]
     async fn immediate_environment_binding_sink_is_durable_and_idempotent() {
+        // Cause/effect table: C1 durable Session exists, C2 binding absent,
+        // C3 identical binding already committed. R1 C1+C2 -> persist binding
+        // and advance revision; R2 C1+C3 -> success without another revision.
         use awaken_session_contract::SessionEnvironmentBindingSink;
 
         let repo = Arc::new(ephemeral_session_repo());
@@ -1008,7 +998,7 @@ mod tests {
             sample_persisted("binding-now"),
         )
         .await;
-        let sink = crate::state::environment::RepositoryEnvironmentBindingSink::new(repo.clone());
+        let sink = awaken_session_application::RepositoryEnvironmentBindingSink::new(repo.clone());
 
         sink.persist("binding-now", "opaque-handle").await.unwrap();
         let first = repo.get("binding-now").await.unwrap();
@@ -1100,6 +1090,10 @@ mod tests {
 
     #[tokio::test]
     async fn immediate_binding_cas_retries_once_then_fails_closed_at_the_bound() {
+        // Cause/effect table: C1 conflict count below the three-attempt bound,
+        // C2 conflict count reaches the bound. R1 C1 -> retry then persist;
+        // R2 C2 -> error and leave the binding absent. These are the two
+        // equivalence classes for the moved application-owned CAS loop.
         use awaken_session_contract::SessionEnvironmentBindingSink;
 
         for (case, conflicts, accepted) in [
@@ -1117,7 +1111,7 @@ mod tests {
                 inner: inner.clone(),
                 conflicts: AtomicU64::new(conflicts),
             });
-            let sink = crate::state::environment::RepositoryEnvironmentBindingSink::new(repo);
+            let sink = awaken_session_application::RepositoryEnvironmentBindingSink::new(repo);
             let result = sink
                 .persist(&format!("binding-{conflicts}"), "opaque")
                 .await;

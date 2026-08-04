@@ -292,7 +292,7 @@ pub(super) async fn assemble_runtime_process_router(
                 Some(component.publication_reconciler),
                 component.admin_tools,
                 component.vault_state.clone()
-                    as Arc<dyn awaken_protocol_managed::SessionCredentialSource>,
+                    as Arc<dyn awaken_session_application::SessionCredentialSource>,
                 component.management_audit,
                 Some((
                     control_stores.webhooks.clone(),

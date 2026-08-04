@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "worker"
+layer = "contract"
+authority = "agent-channel"
+
 [dependencies]
 async-trait.workspace = true
 thiserror.workspace = true

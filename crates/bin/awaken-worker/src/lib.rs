@@ -53,9 +53,9 @@ pub type RegisteredMemoryMounterFactory = Arc<
         + Sync,
 >;
 
-use awaken_runtime_host::WorkerControlClient;
 use awaken_runtime_host::{InferenceExecutorMaterializer, SharedHost};
 use awaken_worker_contract::{RegistryMutation, WorkerHeartbeat, WorkerManifest};
+use awaken_worker_runtime::WorkerControlClient;
 use awaken_worker_transport_security::WorkerUpstream;
 
 struct WorkerProcessConfig {
@@ -805,7 +805,7 @@ impl WorkerNode {
                 .await;
             match attempt {
                 Ok(registration) => break registration,
-                Err(awaken_runtime_host::WorkerRegistrationError::SlotOccupied(error)) => {
+                Err(awaken_worker_runtime::WorkerRegistrationError::SlotOccupied(error)) => {
                     if occupied_attempts % 10 == 0 {
                         eprintln!("worker registration waiting for the prior lease: {error}");
                     }
@@ -904,7 +904,7 @@ impl WorkerNode {
             host = host
                 .with_application_session_provisioner(provisioner)
                 .with_application_session_control(Arc::new(
-                    awaken_runtime_host::WorkerControlApplicationSessionClient::new(
+                    awaken_worker_runtime::WorkerControlApplicationSessionClient::new(
                         control.clone(),
                         registration.snapshot.identity.clone(),
                     ),

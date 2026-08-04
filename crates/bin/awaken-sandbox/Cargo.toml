@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "apps"
+layer = "bootstrap"
+authority = "sandbox"
+
 [lib]
 name = "awaken_sandbox"
 path = "src/lib.rs"

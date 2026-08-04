@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "resources"
+layer = "infrastructure"
+authority = "memory"
+
 # Durable path-addressed memory persistence for the resources plane, with ephemeral,
 # SQLite, and Postgres backends. The adapter receives only opaque store
 # ids; ownership and authorization stay in their respective outer planes.

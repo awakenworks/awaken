@@ -5,7 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
-package-class = "contract"
+context = "runtime"
+layer = "contract"
 authority = "agent"
 
 [dependencies]

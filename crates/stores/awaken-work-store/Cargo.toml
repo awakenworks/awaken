@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "coordinator"
+layer = "infrastructure"
+authority = "work"
+
 [features]
 # Volatile executable specifications and fixtures are opt-in. Product builds have
 # no process-local WorkQueue implementation to select accidentally.

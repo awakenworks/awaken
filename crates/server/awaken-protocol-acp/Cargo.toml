@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "worker"
+layer = "interface"
+authority = "protocol-acp"
+
 [dependencies]
 awaken-agent-channel.workspace = true
 awaken-acp-contract.workspace = true

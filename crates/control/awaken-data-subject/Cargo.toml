@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "control"
+layer = "infrastructure"
+authority = "data-subject"
+
 # The data-subject aggregate (ADR-0050): the party a run is attributed to, its
 # per-purpose consent grants, and the erasure/consent-ceiling resolver. A
 # control/compliance-plane store (peer of awaken-credential-vault); Org-scoped.

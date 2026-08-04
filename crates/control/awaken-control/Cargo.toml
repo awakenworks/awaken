@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "control"
+layer = "bootstrap"
+authority = "control"
+
 # The authoring / authz plane (Stage B2): the management CRUD surfaces (admin
 # config, vault front door, webhook subscriptions, user profiles, config authoring,
 # and capabilities) plus the embedded IAM guard. Deployment/Session application

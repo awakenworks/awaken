@@ -322,6 +322,74 @@ impl EnvironmentExecutionState {
     }
 }
 
+#[async_trait::async_trait]
+impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecutionState {
+    async fn get(
+        &self,
+        environment_id: &str,
+    ) -> Result<Option<EnvItem>, ExecutableEnvironmentRegistrationError> {
+        EnvironmentExecutionState::get(self, environment_id).await
+    }
+
+    async fn resolve_current_for_session(
+        &self,
+        environment_id: &str,
+        runtime: Option<&str>,
+        mcp_targets: &[awaken_session_contract::McpTarget],
+    ) -> Result<
+        Option<awaken_session_application::ResolvedSessionEnvironment>,
+        awaken_environment_realization_contract::EnvironmentImageBuildError,
+    > {
+        Ok(EnvironmentExecutionState::resolve_current_for_session(
+            self,
+            environment_id,
+            runtime,
+            mcp_targets,
+        )
+        .await?
+        .map(
+            |resolved| awaken_session_application::ResolvedSessionEnvironment {
+                snapshot: resolved.snapshot,
+                self_hosted: resolved.self_hosted,
+            },
+        ))
+    }
+
+    async fn resolve_exact_for_session(
+        &self,
+        environment_id: &str,
+        revision: u64,
+        runtime: Option<&str>,
+        mcp_targets: &[awaken_session_contract::McpTarget],
+    ) -> Result<
+        Option<awaken_session_application::ResolvedSessionEnvironment>,
+        awaken_environment_realization_contract::EnvironmentImageBuildError,
+    > {
+        Ok(EnvironmentExecutionState::resolve_exact_for_session(
+            self,
+            environment_id,
+            revision,
+            runtime,
+            mcp_targets,
+        )
+        .await?
+        .map(
+            |resolved| awaken_session_application::ResolvedSessionEnvironment {
+                snapshot: resolved.snapshot,
+                self_hosted: resolved.self_hosted,
+            },
+        ))
+    }
+
+    async fn enqueue_session_work(
+        &self,
+        environment_id: &str,
+        session_id: &str,
+    ) -> Result<String, awaken_session_contract::work_queue::WorkQueueError> {
+        EnvironmentExecutionState::enqueue_session_work(self, environment_id, session_id).await
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 impl Default for EnvironmentExecutionState {
     fn default() -> Self {

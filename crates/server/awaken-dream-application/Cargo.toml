@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "coordinator"
+layer = "application"
+authority = "dream"
+
 [features]
 # Process-local Dream process authority is an executable test fixture only.
 test-support = []

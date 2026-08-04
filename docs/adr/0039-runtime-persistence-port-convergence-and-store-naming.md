@@ -153,7 +153,7 @@ postgres/sqlite/schema unchanged, D5); (ADR-0038) `FileStore`
 | Config | `ConfigRegistry` | `awaken-config-store` | G3 |
 
 Backends (`awaken-store-*`) implement the union; the direction is enforced by
-`deny.toml` (backends depend on contracts, never the reverse — G2) and a
+the metadata-derived crate boundary checker (backends depend on contracts, never the reverse — G2) and a
 cross-backend conformance suite.
 
 ### Slices

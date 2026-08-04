@@ -83,10 +83,11 @@ pub fn memory_store_application(
         catalog, purge,
     ))
 }
+pub use awaken_coordinator_runtime::durable_ops_router;
 pub use awaken_runtime_host::{
     ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost, NoModelConfiguredExecutor,
     RunApplicationHost, SharedHost, ThreadEvent, ThreadEventHub, UNCONFIGURED_MODEL_REF,
-    VaultRefresher, advertised_tools, durable_ops_router,
+    VaultRefresher, advertised_tools,
 };
 pub use awaken_sandbox_local::content_fingerprint;
 pub use awaken_worker_registry::{WorkerDirectory, WorkerObservationSource};

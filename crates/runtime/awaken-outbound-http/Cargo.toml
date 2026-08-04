@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "shared"
+layer = "infrastructure"
+authority = "outbound-http"
+
 [dependencies]
 async-trait.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

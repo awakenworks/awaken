@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "devtools"
+layer = "tooling"
+authority = "eval"
+
 # Fixture-driven evaluation harness (#4): replays recorded cases through the REAL
 # runtime (a scripted `LlmExecutor` feeds the recorded model responses back into
 # the engine via the `RunExecutor` port) and scores the committed output against a

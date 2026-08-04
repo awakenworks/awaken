@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "control"
+layer = "application"
+authority = "authz-enforce"
+
 [dependencies]
 # The shared authz engine (in-memory ApiTokenDirectory + PolicySet + preset role
 # catalog). This crate is the open "judgment" half — authenticate + authorize; it

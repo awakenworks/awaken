@@ -16,6 +16,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_coordinator_runtime::durable_ops_router;
 use awaken_run_ingress::{
     AnyDispatchStore, Dispatch, DispatchQueue, MemoryDispatchStore, RunDispatch, SubmitOptions,
 };
@@ -27,7 +28,7 @@ use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, Resolv
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_host::{SharedHost, durable_ops_router};
+use awaken_runtime_host::SharedHost;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -100,12 +101,11 @@ fn contains_id(list: &Value, key: &str, id: &str) -> bool {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
-    // SAFETY: this dedicated test binary sets the process-global durable flag once,
-    // before any host is built; no other thread reads it concurrently here.
-    unsafe {
-        std::env::set_var("SESSION_DEPLOYMENT_INGRESS", "durable");
-    }
-
+    // Cause/effect decision table: C1 durable queue configured, C2 run lease
+    // expired, C3 retry budget exhausted, C4 dead letter present, C5 newer turn
+    // submitted. R1 C1 -> list succeeds; R2 C2+C3 -> reap creates dead letter;
+    // R3 C4 -> purge removes it; R4 C5 -> stale run is superseded. The single
+    // sequence also proves every Coordinator HTTP effect reaches the same queue.
     // Inject one in-memory dispatch store we also keep a handle to, so we can drive
     // the queue deterministically and then assert the host verbs route to it.
     let mem = Arc::new(MemoryDispatchStore::new());

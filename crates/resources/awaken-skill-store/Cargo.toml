@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "resources"
+layer = "infrastructure"
+authority = "skill"
+
 # Durable skill catalog for the resources plane: the `SkillStore` port (mirroring
 # awaken-file-store's `FileStore`) with pluggable backends — in-memory / filesystem /
 # sqlite / postgres over one portable bundle — so a delivered skill survives a

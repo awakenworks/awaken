@@ -1,21 +1,19 @@
 //! Construction and port wiring for the Managed protocol adapter.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
+use awaken_session_application::{
+    RepositoryCredentialIngress, SessionApplication, SessionCredentialSource,
+};
 use awaken_session_contract::{ManagedSessionRepository, SessionLifecycleSink};
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_store::SqliteManagedSessionRepository;
 
 use super::mcp_attachment::UnsupportedMcpAttachmentRealizer;
 use super::{ManagedState, SessionRuntime};
-use crate::routes::vaults::{RepositoryCredentialIngress, SessionCredentialSource, VaultState};
-
-/// Distinguishes multiple Managed adapters constructed inside one process tick
-/// (tests and embedded multi-tenant composition). Production still normally has
-/// one adapter per Coordinator process.
-static MANAGED_STATE_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
+use crate::routes::vaults::VaultState;
 
 impl ManagedState {
     /// Volatile fixture constructor. Product composition must inject the durable
@@ -83,32 +81,15 @@ impl ManagedState {
         sessions_repo: Arc<dyn ManagedSessionRepository>,
         environments: Arc<crate::routes::environments::EnvironmentExecutionState>,
     ) -> Self {
-        let started_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        runtime.install_environment_binding_sink(Arc::new(
-            super::environment::RepositoryEnvironmentBindingSink::new(sessions_repo.clone()),
-        ));
         Self {
-            runtime,
-            mcp_realizer,
-            credential_source: None,
-            repository_credential_ingress: None,
-            environments,
-            config_source: None,
-            resource_catalog: None,
-            resource_purge_scheduler: None,
+            application: SessionApplication::new(
+                runtime,
+                mcp_realizer,
+                sessions_repo,
+                environments,
+            ),
             sessions: Mutex::new(HashMap::new()),
             owners: Mutex::new(HashMap::new()),
-            sessions_repo,
-            lifecycle_sink: None,
-            runtime_incarnation: format!(
-                "managed:{}:{started_at}:{}",
-                std::process::id(),
-                MANAGED_STATE_INCARNATION_SEQ.fetch_add(1, Ordering::Relaxed)
-            ),
-            lifecycle_supervisor_started: AtomicBool::new(false),
             session_seq: AtomicU64::new(0),
             event_seq: Arc::new(AtomicU64::new(0)),
             live: Mutex::new(HashMap::new()),
@@ -119,7 +100,7 @@ impl ManagedState {
     /// facts fan out to workspace-scoped subscribers (ADR-0048). Default: none.
     #[must_use]
     pub fn with_lifecycle_sink(mut self, sink: Arc<dyn SessionLifecycleSink>) -> Self {
-        self.lifecycle_sink = Some(sink);
+        self.application.lifecycle_sink = Some(sink);
         self
     }
 
@@ -132,7 +113,7 @@ impl ManagedState {
         mut self,
         environments: Arc<crate::routes::environments::EnvironmentExecutionState>,
     ) -> Self {
-        self.environments = environments;
+        self.application.environments = environments;
         self
     }
 
@@ -141,10 +122,7 @@ impl ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_session_repo(mut self, repo: Arc<dyn ManagedSessionRepository>) -> Self {
-        self.runtime.install_environment_binding_sink(Arc::new(
-            super::environment::RepositoryEnvironmentBindingSink::new(repo.clone()),
-        ));
-        self.sessions_repo = repo;
+        self.application.replace_repository(repo);
         self
     }
 
@@ -155,7 +133,7 @@ impl ManagedState {
         mut self,
         scheduler: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
     ) -> Self {
-        self.resource_purge_scheduler = Some(scheduler);
+        self.application.resource_purge_scheduler = Some(scheduler);
         self
     }
 
@@ -165,8 +143,8 @@ impl ManagedState {
     /// routes see different credentials.
     #[must_use]
     pub fn with_vaults(mut self, vaults: Arc<VaultState>) -> Self {
-        self.credential_source = Some(vaults.clone());
-        self.repository_credential_ingress = Some(vaults);
+        self.application.credential_source = Some(vaults.clone());
+        self.application.repository_credential_ingress = Some(vaults);
         self
     }
 
@@ -177,7 +155,7 @@ impl ManagedState {
         mut self,
         ingress: Arc<dyn RepositoryCredentialIngress>,
     ) -> Self {
-        self.repository_credential_ingress = Some(ingress);
+        self.application.repository_credential_ingress = Some(ingress);
         self
     }
 
@@ -185,7 +163,7 @@ impl ManagedState {
     /// local VaultState adapter or the authenticated split-service adapter.
     #[must_use]
     pub fn with_credential_source(mut self, source: Arc<dyn SessionCredentialSource>) -> Self {
-        self.credential_source = Some(source);
+        self.application.credential_source = Some(source);
         self
     }
 
@@ -198,7 +176,7 @@ impl ManagedState {
         mut self,
         source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     ) -> Self {
-        self.config_source = Some(source);
+        self.application.config_source = Some(source);
         self
     }
 
@@ -209,7 +187,7 @@ impl ManagedState {
         mut self,
         catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     ) -> Self {
-        self.resource_catalog = Some(catalog);
+        self.application.resource_catalog = Some(catalog);
         self
     }
 }

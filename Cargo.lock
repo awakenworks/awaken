@@ -417,6 +417,7 @@ dependencies = [
  "awaken-sandbox-memoryd",
  "awaken-sandbox-policy-store",
  "awaken-scenario-host",
+ "awaken-session-application",
  "awaken-session-contract",
  "awaken-session-store",
  "awaken-skill-store",
@@ -590,6 +591,7 @@ dependencies = [
  "awaken-config-service",
  "awaken-config-store",
  "awaken-connection-plan",
+ "awaken-coordinator-runtime",
  "awaken-credential-materializer",
  "awaken-credential-vault",
  "awaken-deployment-contract",
@@ -629,6 +631,7 @@ dependencies = [
  "awaken-sandbox-memoryd",
  "awaken-scenario-host",
  "awaken-service-auth-contract",
+ "awaken-session-application",
  "awaken-session-contract",
  "awaken-session-store",
  "awaken-skill-store",
@@ -638,6 +641,7 @@ dependencies = [
  "awaken-webhook",
  "awaken-webhook-managed",
  "awaken-worker-registry",
+ "awaken-worker-runtime",
  "awaken-worker-transport-security",
  "axum",
  "base64",
@@ -654,6 +658,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-coordinator-runtime"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-run-ingress",
+ "awaken-runtime",
+ "awaken-runtime-contract",
+ "awaken-runtime-host",
+ "axum",
+ "serde_json",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "awaken-credential"
 version = "0.1.0"
 dependencies = [
@@ -667,6 +687,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -696,6 +717,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "chacha20poly1305",
@@ -1393,6 +1415,7 @@ dependencies = [
  "awaken-resource-contract",
  "awaken-resource-store",
  "awaken-sandbox-policy-store",
+ "awaken-session-application",
  "awaken-session-contract",
  "awaken-session-store",
  "awaken-tenancy",
@@ -1865,6 +1888,7 @@ dependencies = [
  "awaken-config-store",
  "awaken-control",
  "awaken-coordinator",
+ "awaken-coordinator-runtime",
  "awaken-credential-vault",
  "awaken-data-subject",
  "awaken-environment-application",
@@ -1941,6 +1965,21 @@ dependencies = [
 [[package]]
 name = "awaken-service-auth-contract"
 version = "1.0.0-dev"
+
+[[package]]
+name = "awaken-session-application"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-credential-contract",
+ "awaken-environment-contract",
+ "awaken-environment-realization-contract",
+ "awaken-executable-agent-contract",
+ "awaken-executable-environment-contract",
+ "awaken-resource-contract",
+ "awaken-session-contract",
+]
 
 [[package]]
 name = "awaken-session-contract"
@@ -2188,6 +2227,7 @@ dependencies = [
  "awaken-sandbox-container",
  "awaken-session-contract",
  "awaken-worker-contract",
+ "awaken-worker-runtime",
  "awaken-worker-transport-security",
  "axum",
  "getrandom 0.2.17",
@@ -2224,6 +2264,26 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-worker-runtime"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-run-ingress",
+ "awaken-run-ingress-contract",
+ "awaken-runtime-contract",
+ "awaken-runtime-host",
+ "awaken-session-contract",
+ "awaken-worker-transport-security",
+ "axum",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
  "thiserror 2.0.19",
  "tokio",
 ]

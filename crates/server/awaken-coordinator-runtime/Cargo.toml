@@ -1,0 +1,31 @@
+[package]
+name = "awaken-coordinator-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "coordinator"
+layer = "interface"
+authority = "durable-session-operations"
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-runtime.workspace = true
+awaken-runtime-host.workspace = true
+axum.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+awaken-run-ingress = { workspace = true, features = ["test-support"] }
+awaken-runtime-contract.workspace = true
+awaken-runtime-host = { workspace = true, features = ["test-support"] }
+async-trait.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tower = { version = "0.5", features = ["util"] }
+
+[[test]]
+name = "durable_verbs"
+
+[lints]
+workspace = true

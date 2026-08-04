@@ -1,7 +1,7 @@
 //! Worker lifecycle client over the same authenticated upstream used for
 //! dispatch and commits. It carries no store and trusts no client-side clock.
 
-use awaken_run_ingress::{
+use awaken_run_ingress_contract::{
     RegisteredWorker, RegistryMutation, RunClaim, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
     WorkerRegistration,
 };
@@ -157,7 +157,7 @@ impl WorkerControlClient {
         identity: &WorkerIdentity,
         claim: &RunClaim,
         contribution: awaken_session_contract::ApplicationSessionContribution,
-    ) -> Result<crate::ApplicationSessionControlReceipt, String> {
+    ) -> Result<awaken_runtime_host::ApplicationSessionControlReceipt, String> {
         let body = self
             .post(
                 "/v1/worker/session/application-contribution",
@@ -174,7 +174,7 @@ impl WorkerControlClient {
         let realization =
             serde_json::from_value(body.get("realization").cloned().unwrap_or(Value::Null))
                 .map_err(|error| format!("Session realization directive decode: {error}"))?;
-        Ok(crate::ApplicationSessionControlReceipt {
+        Ok(awaken_runtime_host::ApplicationSessionControlReceipt {
             contribution,
             realization,
         })

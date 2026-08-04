@@ -798,11 +798,7 @@ impl ManagedState {
         self: &Arc<Self>,
     ) -> Option<tokio::task::JoinHandle<()>> {
         let runtime = tokio::runtime::Handle::try_current().ok()?;
-        if self
-            .lifecycle_supervisor_started
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
+        if !self.application.claim_lifecycle_supervisor() {
             return None;
         }
         let state = self.clone();

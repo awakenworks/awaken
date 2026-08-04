@@ -1,176 +1,26 @@
-//! The durable-ingress operations surface (slice E): the ADR-0009 follow-on verbs
-//! exposed over HTTP, each operating on one thread's durable dispatch queue.
-//!
-//! - `supersede` (ADR-0022): a newest-wins turn over the thread's stale
-//!   pending/awaiting work; the superseded runs are observable via `superseded`.
-//! - `reconcile` (ADR-0011): reclaim and re-run any dispatch left runnable by a
-//!   crash.
-//! - `reap` / `dead-letters` / `dead-letters/purge` (ADR-0015): dead-letter a
-//!   crashed dispatch that has exhausted its crash-retry budget, list the
-//!   dead-lettered runs, and GC them.
-//!
-//! Every route needs durable ingress (`typed durable ingress`) and fails closed
-//! with 400 otherwise. The deep dead-letter/recovery state machine is proven
-//! deterministically at the store level (`awaken-run-ingress`'s `sqlite_dispatch`
-//! tests) on this same SQLite stack; this surface makes the verbs operable and
-//! observable end-to-end over HTTP.
-
-use std::collections::HashMap;
-use std::sync::Arc;
+//! Coordinator-owned HTTP interface for durable Session operations.
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_runtime_host::{HostError, HostErrorKind, SharedHost, block_text};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::sync::Arc;
 
-use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_runtime_contract::resume::ResumeResult;
-
-use crate::host::{HostError, SharedHost};
-use crate::worker_http::respond;
-
-impl SharedHost {
-    /// Cancel a run by id through the durable live-control seam (ADR-0018, slice E
-    /// follow-up): tries the runtime live channel first (in-flight runs), then the
-    /// dispatch store for a queued or awaiting run, committing a terminal `Cancelled`
-    /// fact. Fail-closed: an unknown run id errors rather than silently succeeding.
-    pub(crate) async fn cancel_durable(&self, thread: &str, run_id: &str) -> Result<(), HostError> {
-        use awaken_runtime_contract::control::{LiveCommand, LiveRunControl};
-
-        let run_id = awaken_agent_contract::agent::run::Id(run_id.to_owned());
-        // Signal only an already-resident runtime. Cancellation must never open a
-        // Session, resolve current config, or touch its sandbox merely to stop the
-        // exact durable attempt.
-        if let Some(ctx) = self
-            .session_slots
-            .read(thread, |slot| slot.runtime.clone())
-            .flatten()
-        {
-            let _ = ctx.runtime.deliver(LiveCommand::Cancel {
-                run_id: run_id.clone(),
-            });
+fn respond(result: Result<Value, HostError>) -> (StatusCode, Json<Value>) {
+    match result {
+        Ok(value) => (StatusCode::OK, Json(value)),
+        Err(error) => {
+            let status = match error.kind {
+                HostErrorKind::BadRequest => StatusCode::BAD_REQUEST,
+                HostErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+                HostErrorKind::Conflict => StatusCode::CONFLICT,
+            };
+            (status, Json(json!({ "error": error.message })))
         }
-
-        let cancelled = self
-            .dispatch_pool_or_err()?
-            .cancel(&run_id)
-            .await
-            .map_err(|error| HostError::bad_request(error.to_string()))?;
-        if !cancelled {
-            return Err(HostError::bad_request(format!(
-                "run not found: {}",
-                run_id.0
-            )));
-        }
-        Ok(())
-    }
-
-    /// Wake a live run by id through the durable live-control seam (ADR-0018): a
-    /// live-only nudge. Fail-closed — no live subscriber is a hard error (G5).
-    pub(crate) async fn wake_durable(&self, thread: &str, run_id: &str) -> Result<(), HostError> {
-        self.durable_ingress(thread)
-            .await?
-            .live_control()
-            .wake(run_id)
-            .map_err(|e| HostError::bad_request(e.to_string()))
-    }
-
-    /// Pause an active run at its next safe boundary. Acceptance is live-only;
-    /// the resulting `ManualPause` ticket is committed durably by the executor.
-    pub(crate) async fn pause_durable(
-        &self,
-        thread: &str,
-        requested_run_id: Option<&str>,
-    ) -> Result<String, HostError> {
-        let ctx = self.ctx_for(thread, None).await?;
-        let run_id = requested_run_id.map(str::to_string).or_else(|| {
-            ctx.active_run
-                .lock()
-                .expect("active run mutex poisoned")
-                .as_ref()
-                .map(|run_id| run_id.0.clone())
-        });
-        let run_id = run_id.ok_or_else(|| HostError::bad_request("thread has no active run"))?;
-        ctx.durable_ingress
-            .as_ref()
-            .ok_or_else(|| HostError::bad_request("pause requires durable ingress"))?
-            .live_control()
-            .pause(&run_id)
-            .map_err(|e| HostError::bad_request(e.to_string()))?;
-        Ok(run_id)
-    }
-
-    /// Stage a durable cross-thread delivery answering `thread`'s awaiting run, then
-    /// let the daemon relay it (ADR-0017, slice E follow-up). Resolves the awaiting
-    /// run's awaiting ticket from committed truth, stages a decision into the outbox
-    /// via `DispatchService::send`, and the daemon relays it to the run's pending
-    /// input and wakes it. Exercises the outbox stage→relay path. Requires the
-    /// daemon and an awaiting run.
-    pub(crate) async fn stage_decision(
-        &self,
-        thread: &str,
-        allow: bool,
-    ) -> Result<String, HostError> {
-        let ctx = self.ctx_for(thread, None).await?;
-        let pool = self.dispatch_pool_or_err()?;
-        let thread_id = ThreadId(thread.to_string());
-        let (run_id, ticket) = ctx
-            .commit
-            .open_wait_for_thread(&thread_id)
-            .await
-            .map_err(HostError::internal)?
-            .ok_or_else(|| {
-                HostError::bad_request("no awaiting run on this thread to deliver to")
-            })?;
-        let input = awaken_run_ingress::PendingInput {
-            message_id: awaken_runtime::fresh_process_id("xthread"),
-            run_id: run_id.clone(),
-            thread_id,
-            correlation_id: ticket.correlation_id,
-            available_at_ms: None,
-            result: ResumeResult::Decision { allow, note: None },
-        };
-        pool.send(input)
-            .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
-        Ok(run_id.0)
-    }
-
-    /// RunResume the thread's durable operator pause with text. The committed ticket
-    /// is the authority: tool/auth waits are rejected here and must use their
-    /// protocol-specific result/decision surface.
-    pub(crate) async fn stage_manual_resume(
-        &self,
-        thread: &str,
-        text: String,
-    ) -> Result<String, HostError> {
-        let ctx = self.ctx_for(thread, None).await?;
-        let pool = self.dispatch_pool_or_err()?;
-        let thread_id = ThreadId(thread.to_string());
-        let (run_id, ticket) = ctx
-            .commit
-            .open_wait_for_thread(&thread_id)
-            .await
-            .map_err(HostError::internal)?
-            .ok_or_else(|| HostError::bad_request("no awaiting run on this thread to resume"))?;
-        if ticket.reason != awaken_agent_contract::agent::awaiting::AwaitReason::ManualPause {
-            return Err(HostError::bad_request(
-                "durable text resume requires a manual-pause ticket",
-            ));
-        }
-        pool.send(awaken_run_ingress::PendingInput {
-            message_id: awaken_runtime::fresh_process_id("manual-resume"),
-            run_id: run_id.clone(),
-            thread_id,
-            correlation_id: ticket.correlation_id,
-            available_at_ms: None,
-            result: ResumeResult::Input(text),
-        })
-        .await
-        .map_err(|e| HostError::internal(e.to_string()))?;
-        Ok(run_id.0)
     }
 }
 
@@ -366,7 +216,7 @@ async fn messages(
     let committed = host.committed_messages(&thread).await;
     let out: Vec<Value> = committed
         .iter()
-        .map(|m| json!({ "role": format!("{:?}", m.role), "text": crate::config::block_text(&m.content) }))
+        .map(|m| json!({ "role": format!("{:?}", m.role), "text": block_text(&m.content) }))
         .collect();
     (StatusCode::OK, Json(json!({ "messages": out })))
 }

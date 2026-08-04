@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "coordinator"
+layer = "infrastructure"
+authority = "webhook-managed"
+
 [dependencies]
 # The bridge between the managed session lifecycle (the `SessionLifecycleSink` port,
 # now in the session contract — a contract/ leaf, not the wire adapter) and the

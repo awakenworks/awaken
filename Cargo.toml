@@ -1,7 +1,8 @@
 [workspace]
 resolver = "2"
-# Plane-aligned buckets by directory (single workspace). Shared foundation +
-# three deployment planes; dependencies point inward toward contract/kernel:
+# Physical buckets keep the workspace navigable. Semantic ownership and
+# dependency direction come only from each crate's [package.metadata.awaken]
+# context/layer/authority declaration:
 #   crates/contract/*   → foundation authorities commonly shared by several roles.
 #                         Contract semantics are declared in package metadata, not inferred
 #                         from this directory or from the number of consuming planes.
@@ -15,8 +16,8 @@ resolver = "2"
 #   crates/control/*    → self-hosted config/vault/iam authoring plane (ADR-0043).
 #   crates/bin/*        → composed deployables: awaken-cli + the db-less worker daemon + the in-container sandbox bridge.
 #   crates/devtools/*   → dev tooling / harnesses / examples (publish=false), composed like bin/.
-#                         Boundaries + the neutral-core invariant (ADR-0059) enforced by
-#                         scripts/ci/check_crate_boundaries.py (+ _arch_fitness.py) and deny.toml.
+#                         Boundaries + the neutral-core invariant (ADR-0059) are enforced by
+#                         scripts/ci/check_crate_boundaries.py; deny.toml does not duplicate them.
 members = [
     "crates/contract/*",
     "crates/runtime/*",
@@ -43,6 +44,7 @@ awaken-credential-contract = { path = "crates/contract/awaken-credential-contrac
 awaken-runtime-contract = { path = "crates/runtime/awaken-runtime-contract" }
 awaken-tenancy = { path = "crates/contract/awaken-tenancy" }
 awaken-session-contract = { path = "crates/contract/awaken-session-contract" }
+awaken-session-application = { path = "crates/server/awaken-session-application" }
 awaken-deployment-contract = { path = "crates/contract/awaken-deployment-contract" }
 awaken-environment-contract = { path = "crates/contract/awaken-environment-contract" }
 awaken-environment-realization-contract = { path = "crates/contract/awaken-environment-realization-contract" }
@@ -157,6 +159,8 @@ awaken-run-ingress = { path = "crates/server/awaken-run-ingress" }
 awaken-run-ingress-testkit = { path = "crates/server/awaken-run-ingress-testkit" }
 awaken-worker-transport-security = { path = "crates/server/awaken-worker-transport-security" }
 awaken-runtime-host = { path = "crates/server/awaken-runtime-host" }
+awaken-coordinator-runtime = { path = "crates/server/awaken-coordinator-runtime" }
+awaken-worker-runtime = { path = "crates/server/awaken-worker-runtime" }
 awaken-protocol-managed-resources = { path = "crates/server/awaken-protocol-managed-resources" }
 awaken-admin-assistant = { path = "crates/control/awaken-admin-assistant" }
 awaken-coordinator = { path = "crates/server/awaken-coordinator" }

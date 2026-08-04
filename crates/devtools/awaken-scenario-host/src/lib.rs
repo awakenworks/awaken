@@ -62,13 +62,14 @@ use axum::Router;
 
 // This scenario composition depends on each authoritative owner directly.
 pub use awaken_config_service::{ConfigService, capabilities_router, config_router};
+pub use awaken_coordinator_runtime::durable_ops_router;
 pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_protocol_managed_resources::{
     default_models, files_router, memory_stores_router, models_router, skills_router,
 };
 pub use awaken_runtime_host::{
     ExtMcpProbe, HostResume, InferenceExecutorMaterializer, RunApplicationHost, SharedHost,
-    ThreadEvent, ThreadEventHub, VaultRefresher, advertised_tools, durable_ops_router,
+    ThreadEvent, ThreadEventHub, VaultRefresher, advertised_tools,
 };
 pub use awaken_sandbox_local::content_fingerprint;
 

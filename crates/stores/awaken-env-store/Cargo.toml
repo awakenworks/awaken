@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "control"
+layer = "infrastructure"
+authority = "env"
+
 [dependencies]
 # The EnvRegistry port + neutral EnvItem this crate implements a durable backend for
 # (SQLite embedded / Postgres distributed, at parity).

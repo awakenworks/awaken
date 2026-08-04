@@ -140,7 +140,7 @@ enum RuntimeModelAssembly {
 #[derive(Clone)]
 struct ControlServicePorts {
     audit: Arc<dyn awaken_config_service::ManagementAuditRepository>,
-    credentials: Arc<dyn awaken_protocol_managed::SessionCredentialSource>,
+    credentials: Arc<dyn awaken_session_application::SessionCredentialSource>,
     webhooks: Arc<dyn awaken_webhook_managed::LifecycleFactDelivery>,
     consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
 }

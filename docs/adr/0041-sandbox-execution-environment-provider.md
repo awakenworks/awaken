@@ -131,7 +131,7 @@ adapters**. The neutral seam is realized as the crate
   `awaken-sandbox-local`; artifacts do not flow through `CommitCoordinator`.
 - **G2 — one-way dependency.** `agents` → contract ← providers; `runtime`-core
   does not depend on the contract. Enforcer: `check_crate_boundaries.py`,
-  `deny.toml`.
+  the metadata-derived crate boundary checker.
 
 ## First Slice
 
@@ -186,7 +186,7 @@ it without changing the contract:
 - **Slice 3/5 are opposite sides of one seam (solidified).** Slice 3 (supervise +
   protocol-bridge) is an agents-plane *consumer*; Slice 5 (Docker/K8s) is a
   below-seam *adapter*. They never depend on each other — only on the contract —
-  and `check_crate_boundaries.py` ALLOWED_DEPS forbids the shortcut.
+  and the context/layer rule in `check_crate_boundaries.py` forbids the shortcut.
 - **Transport is segregated, not widened onto every process.** Exposing the agent
   duplex as a separate `AgentChannel` capability (ISP) keeps the provisioning
   contract data-only and spares tiers that never host a protocol; one transport

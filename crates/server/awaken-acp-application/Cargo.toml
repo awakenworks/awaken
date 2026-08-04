@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "coordinator"
+layer = "application"
+authority = "acp"
+
 [dependencies]
 awaken-run-executor-acp.workspace = true
 awaken-acp-contract.workspace = true

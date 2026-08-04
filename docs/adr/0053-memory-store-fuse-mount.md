@@ -121,7 +121,7 @@ A new crate in the **`server` bucket** (`worker ⊥ resources`, so a crate that 
 a resources-tier store cannot be `worker`). It depends on `fuser 0.15` (feature
 `fuse`, default on), `awaken-memory-store` (the `MemoryRepository` port), and the
 provisioning contract. `fuser` is added to `check_crate_boundaries.py`'s
-`ALLOWED_DEPS`.
+the metadata-derived context/layer rules.
 
 `fuse.rs` is ported **almost line-for-line** from `awaken-next` — inode/path
 interning, `OpenFile` per-fd buffer, `ContentLruCache` (TTL 1s, cap 256, key=path),

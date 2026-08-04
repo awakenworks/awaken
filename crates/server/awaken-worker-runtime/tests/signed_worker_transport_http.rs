@@ -17,9 +17,10 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_host::{
-    WorkerControlClient, WorkerDispatchService, dispatch_transport_router_with_service,
+    WorkerDispatchService, dispatch_transport_router_with_service,
     worker_dispatch_store_with_upstream,
 };
+use awaken_worker_runtime::WorkerControlClient;
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, ManualWorkerClock, SignedWorkerAuthenticator,
     SignedWorkerRequestAuthorizer, WorkerSigningCredential, WorkerUpstream,

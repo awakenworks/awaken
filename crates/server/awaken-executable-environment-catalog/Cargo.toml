@@ -5,8 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
-package-class = "application-adapter"
-authority = "coordinator"
+context = "coordinator"
+layer = "infrastructure"
+authority = "executable-environment-registration"
 
 [dependencies]
 awaken-executable-environment-contract.workspace = true

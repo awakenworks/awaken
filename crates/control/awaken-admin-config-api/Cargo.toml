@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "control"
+layer = "interface"
+authority = "admin-config"
+
 [dependencies]
 awaken-model-catalog.workspace = true
 awaken-credential-vault.workspace = true

@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "control"
+layer = "application"
+authority = "config"
+
 # The config-authoring plane (ADR-0036/slice A), extracted from the data-plane host
 # so BOTH planes can share it without the authoring/authz plane (awaken-control)
 # depending on the execution host: the config service + its CRUD router, the

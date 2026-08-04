@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "apps"
+layer = "bootstrap"
+authority = "cli"
+
 [lib]
 name = "awaken_cli"
 path = "src/lib.rs"
@@ -48,6 +53,7 @@ awaken-memory-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-resource-contract = { workspace = true }
 awaken-resource-application = { workspace = true }
 awaken-session-contract = { workspace = true }
+awaken-session-application.workspace = true
 awaken-deployment-contract = { workspace = true }
 awaken-ext-memory = { workspace = true }
 awaken-environment-contract.workspace = true

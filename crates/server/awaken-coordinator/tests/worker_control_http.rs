@@ -13,15 +13,13 @@ use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, Resolv
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_host::{
-    WorkerControlClient, WorkerDispatchService, WorkerRegistrationError,
-    dispatch_transport_router_with_service,
-};
+use awaken_runtime_host::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_store_inmem::MemoryStreamCheckpointStore;
 use awaken_worker_registry::{
     MemoryWorkerDirectory, RegistryMutation, WorkerCredentialObservation, WorkerCredentialRevision,
     WorkerDirectory, WorkerHeartbeat, WorkerManifest, WorkerState,
 };
+use awaken_worker_runtime::{WorkerControlClient, WorkerRegistrationError};
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, WorkerUpstream,
 };

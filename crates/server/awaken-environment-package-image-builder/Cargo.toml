@@ -5,8 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
-package-class = "server"
-authority = "coordinator"
+context = "coordinator"
+layer = "infrastructure"
+authority = "environment-image"
 
 [dependencies]
 async-trait.workspace = true

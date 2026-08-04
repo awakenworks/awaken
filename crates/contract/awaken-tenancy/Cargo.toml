@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "shared"
+layer = "contract"
+authority = "tenancy"
+
 [dependencies]
 serde = { workspace = true }
 

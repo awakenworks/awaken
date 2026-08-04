@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "coordinator"
+layer = "infrastructure"
+authority = "webhook"
+
 [dependencies]
 # The webhook wire event, signing, and JSON.
 serde = { workspace = true, features = ["derive"] }

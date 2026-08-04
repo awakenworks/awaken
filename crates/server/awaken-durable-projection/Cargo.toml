@@ -5,8 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
-package-class = "application-support"
-authority = "coordinator"
+context = "coordinator"
+layer = "application"
+authority = "coordinator-projection"
 
 [dependencies]
 async-trait.workspace = true

@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "shared"
+layer = "infrastructure"
+authority = "worker-transport-security"
+
 [dependencies]
 awaken-run-ingress.workspace = true
 async-trait.workspace = true

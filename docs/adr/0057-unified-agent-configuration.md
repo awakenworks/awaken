@@ -927,7 +927,7 @@ evidence.
 
 | Invariant | Mechanism | Violation becomes |
 |---|---|---|
-| Dependency direction (config-store ⊥ vault/resolver; runtime ⊥ control) | the Cargo graph itself + `deny.toml` `[bans]` edges | compile/CI error |
+| Dependency direction (config-store ⊥ vault/resolver; runtime ⊥ control) | the Cargo graph plus declared context/layer metadata | boundary-check/compile error |
 | Kind-specific axes unrepresentable on other kinds (D3a) | data lives on enum variants, not on flag-guarded shared fields | compile error |
 | One source of truth for axis ① | the stored `backend_ref` is private to config-store; the `AgentKind` lens is the only constructor/reader (parse, don't validate); routers `match Backend` with **no `_` arm**, so a new variant forces every router | compile error |
 | No secret in any snapshot / queue payload | `RedactedString` implements no `Serialize`; `ResolvedSpec`'s field list *is* the whitelist | compile error |

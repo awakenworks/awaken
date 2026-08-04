@@ -1,0 +1,24 @@
+[package]
+name = "awaken-session-application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "coordinator"
+layer = "application"
+authority = "session"
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-credential-contract.workspace = true
+awaken-environment-contract.workspace = true
+awaken-environment-realization-contract.workspace = true
+awaken-executable-agent-contract.workspace = true
+awaken-executable-environment-contract.workspace = true
+awaken-resource-contract.workspace = true
+awaken-session-contract.workspace = true
+async-trait.workspace = true
+
+[lints]
+workspace = true

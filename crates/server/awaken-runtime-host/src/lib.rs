@@ -30,7 +30,6 @@ mod delegate;
 mod deployment_config;
 mod dispatch_backend;
 mod dispatch_transport;
-mod durable_ops;
 mod file_content_transport;
 mod host;
 mod hub;
@@ -83,15 +82,14 @@ use awaken_session_contract::{
     StepOutcome, ToolPermissionDecision,
 };
 
-use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
-mod worker_control_client;
+pub use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
 
 // The neutral session substrate and its resume vocabulary.
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
 pub use crate::acp_tool_export::{AcpToolExport, AcpToolExporter};
 pub use crate::application::{
     ApplicationSessionControlClient, ApplicationSessionControlReceipt, ApplicationSessionError,
-    ApplicationSessionProvisioner, WorkerControlApplicationSessionClient,
+    ApplicationSessionProvisioner,
 };
 pub use crate::commit_backend::{
     init_shared_postgres_commit, init_shared_postgres_commit_existing,
@@ -126,7 +124,6 @@ pub use crate::skill_bundle_transport::{
     HttpSkillBundleSource, SkillBundleSource, SkillBundleSourceError, StoreSkillBundleSource,
     WorkerSkillBundleService, worker_skill_bundle_router,
 };
-pub use crate::worker_control_client::{WorkerControlClient, WorkerRegistrationError};
 use awaken_credential_materializer::PinnedCredentialMaterializer;
 // ACP launch projection consumes the Session environment selected by the host.
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
@@ -157,7 +154,6 @@ pub use crate::dispatch_transport::{
     registered_worker_transport_router_with_services, worker_dispatch_store_with_upstream,
     worker_transports_with_upstream,
 };
-pub use crate::durable_ops::durable_ops_router;
 // The model-route seam (R1/R2/R5): a composition root supplies its own
 // `InferenceExecutorMaterializer` to map a session's model ref to a labeled executor.
 pub use crate::inference_routing::InferenceExecutorMaterializer;

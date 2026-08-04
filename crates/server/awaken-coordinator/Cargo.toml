@@ -4,11 +4,18 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "coordinator"
+layer = "bootstrap"
+authority = "coordinator"
+
 
 [dependencies]
 # The extracted service layer: SharedHost / ManagedHost / RunApplicationHost and all
 # host modules live here; this bin only composes them into router modes.
 awaken-runtime-host = { workspace = true }
+awaken-coordinator-runtime.workspace = true
+awaken-worker-runtime.workspace = true
 awaken-config-service.workspace = true
 awaken-credential-materializer.workspace = true
 awaken-ext-skills.workspace = true
@@ -89,6 +96,7 @@ rusqlite = { workspace = true }
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-contract.workspace = true
+awaken-session-application.workspace = true
 awaken-ext-memory.workspace = true
 awaken-resource-contract.workspace = true
 awaken-resource-application.workspace = true

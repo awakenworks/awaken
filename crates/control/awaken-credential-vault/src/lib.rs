@@ -55,11 +55,7 @@ pub struct SecretRef(pub String);
 pub const OAUTH_REFRESH_TOKEN_SLOT: &str = "oauth_refresh_token";
 pub const OAUTH_CLIENT_SECRET_SLOT: &str = "oauth_client_secret";
 
-/// Stable id of a [`CredentialSource`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(transparent)]
-pub struct CredentialSourceId(pub String);
+pub use awaken_credential_contract::CredentialSourceId;
 
 /// Non-secret identity of material owned by one Worker-local driver. The
 /// credential source id is derived from this tuple for idempotent registration;

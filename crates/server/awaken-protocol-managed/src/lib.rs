@@ -60,7 +60,7 @@ pub use routes::environments::{
     EnvironmentState, environment_authoring_router, environment_work_router, environments_router,
 };
 pub use routes::user_profiles::{UserProfileState, user_profiles_router};
-pub use routes::vaults::{SessionCredentialSource, VaultState, vault_router};
+pub use routes::vaults::{VaultState, vault_router};
 pub use routes::{DREAMING_BETA, dreams_router};
 pub use routes::{MEMORY_BETA, SKILLS_BETA, WorkspaceScope, enforce_managed_beta, router};
 pub use state::{ManagedState, StateError};

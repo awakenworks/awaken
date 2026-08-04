@@ -3,6 +3,11 @@ name = "awaken-runtime-examples"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[package.metadata.awaken]
+context = "devtools"
+layer = "tooling"
+authority = "runtime-examples"
 publish = false
 
 [dependencies]

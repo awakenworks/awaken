@@ -348,7 +348,7 @@ Costs (accepted):
 - **S1** — New crate `crates/control/awaken-admin-assistant`: the six `ToolExecutor`s
   (bounded / redacted / never-publish) and their six `ToolDescriptor`s, plus
   the seeded instruction text. Add the crate to `check_crate_boundaries.py`
-  `ALLOWED_DEPS`.
+  metadata-derived crate dependency rules.
 - **S2** — `ToolCatalogSource` trait + `ScopedToolCatalog`; `ConfigService.tools` →
   `Arc<dyn ToolCatalogSource>`; thread `scope` into `validate`/`publish`
   (`config_plane.rs:72,88`); inject `ScopedToolCatalog { advertised_tools(...),

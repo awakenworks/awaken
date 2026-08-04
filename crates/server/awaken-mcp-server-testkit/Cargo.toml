@@ -3,6 +3,11 @@ name = "awaken-mcp-server-testkit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[package.metadata.awaken]
+context = "shared"
+layer = "tooling"
+authority = "mcp-server"
 description = "Reusable MCP server conformance suite for host adapters"
 
 [dependencies]

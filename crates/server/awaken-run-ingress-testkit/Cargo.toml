@@ -3,6 +3,11 @@ name = "awaken-run-ingress-testkit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[package.metadata.awaken]
+context = "coordinator"
+layer = "tooling"
+authority = "run-ingress"
 description = "Reusable conformance suite for DispatchQueue implementations and decorators"
 
 [dependencies]
