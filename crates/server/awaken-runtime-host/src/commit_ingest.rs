@@ -8,11 +8,6 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Extension, State};
-use axum::http::StatusCode;
-use axum::{Json, Router};
-use serde_json::{Value, json};
-
 use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
 use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
 use awaken_run_ingress::{
@@ -21,11 +16,7 @@ use awaken_run_ingress::{
 
 use crate::host::HostError;
 use crate::host::SharedHost;
-use crate::worker_http::respond;
-use awaken_worker_transport_security::{
-    VerifiedWorkerContext, WorkerRequestAuthenticator, authenticate_worker_request,
-    verify_current_worker_identity,
-};
+use awaken_worker_transport_security::WorkerRequestAuthenticator;
 
 #[async_trait::async_trait]
 trait CommitApplier: Send + Sync {
@@ -144,76 +135,21 @@ impl ClaimedCommitService {
             authenticator,
         }
     }
-}
 
-struct CommitIngestState {
-    applier: Arc<dyn CommitApplier>,
-    dispatch: Arc<dyn DispatchQueue>,
-    authenticator: Arc<dyn WorkerRequestAuthenticator>,
-    directory: Arc<dyn WorkerDirectory>,
-}
-
-/// Mount the injectable, registered-worker claimed-commit service.
-///
-/// This is the sole Worker commit surface. It accepts only a versioned
-/// [`CommitOperation`] and requires an authenticated, live Worker incarnation.
-pub fn claimed_commit_router(service: Arc<ClaimedCommitService>) -> Router {
-    commit_ingest_router_from_parts(
-        service.applier.clone(),
-        service.dispatch.clone(),
-        service.authenticator.clone(),
-        service.directory.clone(),
-    )
-}
-
-fn commit_ingest_router_from_parts(
-    applier: Arc<dyn CommitApplier>,
-    dispatch: Arc<dyn DispatchQueue>,
-    authenticator: Arc<dyn WorkerRequestAuthenticator>,
-    directory: Arc<dyn WorkerDirectory>,
-) -> Router {
-    let state = Arc::new(CommitIngestState {
-        applier,
-        dispatch,
-        authenticator,
-        directory,
-    });
-    Router::new()
-        .route(
-            "/v1/worker/commit-claimed",
-            axum::routing::post(commit_claimed),
-        )
-        .route_layer(axum::middleware::from_fn_with_state(
-            state.authenticator.clone(),
-            authenticate_worker_request,
-        ))
-        .with_state(state)
-}
-
-/// Atomically validate a remote worker's claim and apply its ThreadCommit while
-/// the dispatch authority guard is live. Reclaim/settle/cancel cannot enter the
-/// store between the validation and the commit.
-async fn commit_claimed(
-    State(state): State<Arc<CommitIngestState>>,
-    Extension(worker): Extension<VerifiedWorkerContext>,
-    Json(request): Json<ClaimedCommitRequest>,
-) -> (StatusCode, Json<Value>) {
-    let identity = &request.identity;
-    if verify_current_worker_identity(
-        state.directory.as_ref(),
-        &worker,
-        identity,
-        unix_now_ms(),
-        false,
-    )
-    .await
-    .is_err()
-        || request.claim.owner != identity.lease_owner()
-    {
-        return unauthorized("worker incarnation does not own the claim".to_string());
+    pub fn authenticator(&self) -> Arc<dyn WorkerRequestAuthenticator> {
+        self.authenticator.clone()
     }
-    let result = async {
-        let guard = state
+
+    pub fn directory(&self) -> Arc<dyn WorkerDirectory> {
+        self.directory.clone()
+    }
+
+    /// Apply one already-authenticated request while holding its exact epoch guard.
+    pub async fn apply_claimed(
+        &self,
+        request: ClaimedCommitRequest,
+    ) -> Result<CommitReceipt, HostError> {
+        let guard = self
             .dispatch
             .lock_commit_epoch(&request.claim)
             .await
@@ -228,28 +164,14 @@ async fn commit_claimed(
                 "commit operation payload hash does not match ThreadCommit",
             ));
         }
-        let receipt = state.applier.apply_operation(request.operation).await?;
-        Ok(serde_json::to_value(receipt).expect("CommitReceipt serializes"))
+        self.applier.apply_operation(request.operation).await
     }
-    .await;
-    respond(result)
-}
-
-fn unauthorized(message: String) -> (StatusCode, Json<Value>) {
-    (StatusCode::UNAUTHORIZED, Json(json!({ "error": message })))
 }
 
 pub(crate) fn remote_claimed_commit(
     upstream: &awaken_worker_transport_security::WorkerUpstream,
 ) -> Result<Arc<dyn ClaimedRunCommit>, HostError> {
     awaken_worker_runtime::remote_claimed_commit(upstream).map_err(HostError::internal)
-}
-
-fn unix_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

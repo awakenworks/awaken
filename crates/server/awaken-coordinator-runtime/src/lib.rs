@@ -4,9 +4,11 @@
 //! assembled here. The runtime Host supplies only execution/recovery ports; it
 //! does not own these routes.
 
+mod claimed_commit_http;
 mod durable_ops;
 mod worker_dispatch;
 
+pub use claimed_commit_http::claimed_commit_router;
 pub use durable_ops::durable_ops_router;
 pub use worker_dispatch::{
     RegisteredWorkerTransportBuildError, WorkerDispatchService,

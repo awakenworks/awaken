@@ -367,7 +367,7 @@ pub fn registered_worker_transport_router_with_services(
     dispatch_router: Router,
     commit_service: Arc<awaken_runtime_host::ClaimedCommitService>,
 ) -> Router {
-    dispatch_router.merge(awaken_runtime_host::claimed_commit_router(commit_service))
+    dispatch_router.merge(crate::claimed_commit_router(commit_service))
 }
 
 pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService>) -> Router {

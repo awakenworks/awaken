@@ -137,7 +137,7 @@ pub use crate::config::{
     platform_plugin_capabilities_with_web_search,
 };
 // The per-plane resource routers the composition root merges over one host.
-pub use crate::commit_ingest::{ClaimedCommitService, claimed_commit_router};
+pub use crate::commit_ingest::ClaimedCommitService;
 pub use crate::deployment_config::{
     AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
     PackageImageBuilder, SandboxSettings, SandboxTier, StoreKind, Wake,
