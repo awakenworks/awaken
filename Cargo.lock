@@ -2044,6 +2044,7 @@ dependencies = [
  "awaken-session-contract",
  "awaken-session-store",
  "serde_json",
+ "thiserror 2.0.19",
  "tokio",
 ]
 

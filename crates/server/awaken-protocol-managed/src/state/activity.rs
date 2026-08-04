@@ -5,7 +5,7 @@ use super::*;
 
 impl ManagedState {
     pub(crate) async fn begin_session_activity(&self, session_id: &str) -> Result<u64, StateError> {
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS {
             let owner_scope = self
                 .application
                 .session_repository()
@@ -29,7 +29,12 @@ impl ManagedState {
                 .await
             {
                 Ok(_) => return Ok(epoch),
-                Err(StateError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => continue,
+                Err(StateError::Conflict)
+                    if attempt + 1
+                        < awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS =>
+                {
+                    continue;
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -41,7 +46,7 @@ impl ManagedState {
         session_id: &str,
         expected_epoch: u64,
     ) -> Result<(), StateError> {
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS {
             let owner_scope = self
                 .application
                 .session_repository()
@@ -65,7 +70,12 @@ impl ManagedState {
                 .await
             {
                 Ok(_) => return Ok(()),
-                Err(StateError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => continue,
+                Err(StateError::Conflict)
+                    if attempt + 1
+                        < awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS =>
+                {
+                    continue;
+                }
                 Err(error) => return Err(error),
             }
         }
