@@ -57,6 +57,7 @@ awaken-session-store = { workspace = true }
 awaken-env-store = { workspace = true }
 awaken-tenancy = { workspace = true }
 awaken-run-ingress = { workspace = true }
+awaken-run-ingress-contract.workspace = true
 awaken-worker-transport-security = { workspace = true }
 awaken-run-executor-acp = { workspace = true }
 awaken-acp-contract = { workspace = true }

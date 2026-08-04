@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use awaken_runtime_host::{ApplicationSessionProvisioner, AttemptExecutorDecorator};
+use awaken_runtime_host::AttemptExecutorDecorator;
+use awaken_session_contract::ApplicationSessionProvisioner;
 use awaken_worker_contract::{RegisteredWorker, WorkerIdentity, WorkerSnapshot};
 use awaken_worker_transport_security::WorkerUpstream;
 

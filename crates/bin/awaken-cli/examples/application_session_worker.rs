@@ -67,7 +67,7 @@ impl InferenceExecutorMaterializer for HostMaterializer {
 struct ApplicationProvisioner;
 
 #[async_trait]
-impl awaken_runtime_host::ApplicationSessionProvisioner for ApplicationProvisioner {
+impl awaken_session_contract::ApplicationSessionProvisioner for ApplicationProvisioner {
     async fn prepare(
         &self,
         _activation: &awaken_runtime_contract::activation::RunActivation,
@@ -75,15 +75,15 @@ impl awaken_runtime_host::ApplicationSessionProvisioner for ApplicationProvision
         ownership: Arc<dyn AttemptOwnershipVerifier>,
     ) -> Result<
         awaken_session_contract::ApplicationSessionContribution,
-        awaken_runtime_host::ApplicationSessionError,
+        awaken_session_contract::ApplicationSessionProvisionError,
     > {
         // The provisioner participates in the same claim boundary as the Host;
         // checking here proves an embedding application can fence its own I/O.
         ownership.verify_current().await.map_err(|error| {
-            awaken_runtime_host::ApplicationSessionError::new(error.to_string())
+            awaken_session_contract::ApplicationSessionProvisionError::new(error.to_string())
         })?;
         let mcp_url = std::env::var("AWAKEN_TEST_MCP_URL").map_err(|error| {
-            awaken_runtime_host::ApplicationSessionError::new(format!(
+            awaken_session_contract::ApplicationSessionProvisionError::new(format!(
                 "AWAKEN_TEST_MCP_URL is required: {error}"
             ))
         })?;
@@ -99,7 +99,9 @@ impl awaken_runtime_host::ApplicationSessionProvisioner for ApplicationProvision
             application_fingerprint: format!("application-session-e2e-v2:{mcp_url}"),
             input: awaken_session_contract::ApplicationSessionInput {
                 env: vec![serde_json::to_value(env).map_err(|error| {
-                    awaken_runtime_host::ApplicationSessionError::new(error.to_string())
+                    awaken_session_contract::ApplicationSessionProvisionError::new(
+                        error.to_string(),
+                    )
                 })?],
                 prompts: vec![APPLICATION_PROMPT.to_string()],
                 mcp_inputs: vec![
