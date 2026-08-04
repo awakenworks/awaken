@@ -69,6 +69,7 @@ pub struct WorkerDispatchService {
     application_session_control:
         Option<Arc<dyn awaken_session_contract::ApplicationSessionControl>>,
     local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
+    max_attempts: u64,
 }
 
 impl WorkerDispatchService {
@@ -93,6 +94,7 @@ impl WorkerDispatchService {
             stream_sink: None,
             application_session_control: None,
             local_credential_capabilities: Default::default(),
+            max_attempts: 5,
         }
     }
 
@@ -161,6 +163,15 @@ impl WorkerDispatchService {
         capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Self {
         self.local_credential_capabilities = capabilities;
+        self
+    }
+
+    /// Set the control-side crash-retry budget enforced immediately before
+    /// every worker claim. The control plane, not the remote worker, owns this
+    /// scheduling policy.
+    #[must_use]
+    pub fn with_max_attempts(mut self, max_attempts: u64) -> Self {
+        self.max_attempts = max_attempts.max(1);
         self
     }
 
@@ -1183,6 +1194,11 @@ async fn claim(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         let authority = claim_authority(&service, &worker, request.identity.as_ref(), true).await?;
+        service
+            .dispatch
+            .reap(service.max_attempts, authority.now_ms)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
         let claimed = if let Some(snapshot) = &authority.snapshot {
             if let Some(policy) = &service.placement_policy {
                 let workers = directory(&service)?

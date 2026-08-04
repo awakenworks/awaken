@@ -14,8 +14,9 @@ use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_coordinator_runtime::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_run_ingress::{
-    CredentialRealizationReceipt, DispatchOutcome, DispatchQueue, FencedStreamCheckpointStore,
-    MemoryDispatchStore, PendingInput, RunClaim, RunDispatch, WorkerIdentity,
+    CredentialRealizationReceipt, DispatchOutcome, DispatchQueue, DispatchState,
+    FencedStreamCheckpointStore, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch,
+    WorkerIdentity,
 };
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -111,6 +112,77 @@ fn credential_dispatch(
             alternatives: Vec::new(),
         },
     )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_claim_reaps_exhausted_dispatch_on_the_control_side() {
+    let mem = Arc::new(MemoryDispatchStore::new());
+    let clock = Arc::new(ManualWorkerClock::new(0));
+    let service = Arc::new(
+        WorkerDispatchService::new(
+            mem.clone() as Arc<dyn DispatchQueue>,
+            Arc::new(HeaderWorkerAuthenticator),
+            clock.clone(),
+            Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+        )
+        .with_max_attempts(2),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, dispatch_transport_router_with_service(service))
+            .await
+            .unwrap();
+    });
+    let queue = HttpDispatchQueue::new(
+        format!("http://{addr}"),
+        WorkerIdentity::new("worker-1", "boot-1", 1),
+    );
+    queue
+        .enqueue(RunDispatch::new(activation("poison", "thread")))
+        .await
+        .unwrap();
+
+    assert!(
+        queue
+            .reap_and_claim("ignored-by-server", 1_000, 0, &Default::default(), 99)
+            .await
+            .unwrap()
+            .is_some(),
+        "initial attempt is admitted"
+    );
+    clock.set(1_001);
+    assert!(
+        queue
+            .reap_and_claim("ignored-by-server", 1_000, 1_001, &Default::default(), 99,)
+            .await
+            .unwrap()
+            .is_some(),
+        "one crash recovery is admitted"
+    );
+    clock.set(2_002);
+    assert!(
+        queue
+            .reap_and_claim("ignored-by-server", 1_000, 2_002, &Default::default(), 99,)
+            .await
+            .unwrap()
+            .is_some(),
+        "the configured second crash recovery is admitted"
+    );
+    clock.set(3_003);
+    assert!(
+        queue
+            .reap_and_claim("ignored-by-server", 1_000, 3_003, &Default::default(), 99,)
+            .await
+            .unwrap()
+            .is_none(),
+        "the remote worker cannot reclaim an exhausted dispatch"
+    );
+
+    let rows = mem.list_dispatches().await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].state, DispatchState::DeadLetter);
+    assert_eq!(rows[0].attempt_count, 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]

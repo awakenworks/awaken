@@ -588,6 +588,19 @@ impl DispatchQueue for HttpDispatchQueue {
         Ok(claimed)
     }
 
+    async fn reap_and_claim(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        _max_attempts: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        // Retry-budget enforcement is control-side policy. The authenticated
+        // claim endpoint reaps the authoritative queue before selecting work.
+        self.claim(owner, lease_ms, now_ms, capabilities).await
+    }
+
     async fn claim_compatible(
         &self,
         worker: &WorkerSnapshot,

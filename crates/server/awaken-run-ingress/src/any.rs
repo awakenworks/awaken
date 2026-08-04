@@ -369,6 +369,20 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, claim(owner, lease_ms, now_ms, capabilities))
     }
 
+    async fn reap_and_claim(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        max_attempts: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate!(
+            self,
+            reap_and_claim(owner, lease_ms, now_ms, capabilities, max_attempts)
+        )
+    }
+
     async fn claim_compatible(
         &self,
         worker: &WorkerSnapshot,

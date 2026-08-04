@@ -461,6 +461,7 @@ pub fn awaken_runtime_host::WorkerDispatchService::with_application_session_cont
 pub fn awaken_runtime_host::WorkerDispatchService::with_checkpoint_store(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
 pub fn awaken_runtime_host::WorkerDispatchService::with_completion_sink(self, alloc::sync::Arc<dyn awaken_run_ingress::pool::CompletionSink>) -> Self
 pub fn awaken_runtime_host::WorkerDispatchService::with_local_credential_capabilities(self, awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities) -> Self
+pub fn awaken_runtime_host::WorkerDispatchService::with_max_attempts(self, u64) -> Self
 pub fn awaken_runtime_host::WorkerDispatchService::with_placement_policy(self, alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>) -> Self
 pub fn awaken_runtime_host::WorkerDispatchService::with_recovery_source(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>) -> Self
 pub fn awaken_runtime_host::WorkerDispatchService::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
