@@ -2093,6 +2093,14 @@ async fn the_collection_route_is_never_fenced() {
 /// `next_page` bracket the walk, and a fabricated cursor is a 400.
 #[tokio::test]
 async fn events_are_paged_by_cursor() {
+    /* Event-list ordering decision table. Causes: C1 order is absent/asc or
+     * desc; C2 a page cursor is absent or names the prior page's terminal
+     * event; C3 every fixture event has the same processed_at; C4 order is an
+     * unsupported value. Effects: E1 default pages remain chronological; E2
+     * desc pages start at the newest committed event and walk without gaps or
+     * overlap; E3 commit order is the deterministic tie-break for equal
+     * timestamps; E4 invalid order is rejected. Rules: R1=C1(asc)+C2=>E1;
+     * R2=C1(desc)+C2+C3=>E2+E3; R3=C4=>E4. */
     let app = router(Arc::new(ManagedState::new(EchoFake)));
     let id = create(&app).await;
     // Two turns → 8 events (user/running/message/idle × 2).
@@ -2155,6 +2163,48 @@ async fn events_are_paged_by_cursor() {
     // The two pages reassemble the whole list, in order, no overlap.
     let walked: Vec<String> = ids(&p1).into_iter().chain(ids(&p2)).collect();
     assert_eq!(walked, full_ids);
+
+    let descending = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events?order=desc&limit=2"),
+        serde_json::Value::Null,
+    )
+    .await;
+    let descending_ids = ids(&descending);
+    assert_eq!(
+        descending_ids,
+        full_ids.iter().rev().take(2).cloned().collect::<Vec<_>>()
+    );
+    let descending_cursor = descending["next_page"].as_str().unwrap();
+    let descending_tail = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events?order=desc&page={descending_cursor}&limit=50"),
+        serde_json::Value::Null,
+    )
+    .await;
+    let descending_walked = descending_ids
+        .into_iter()
+        .chain(ids(&descending_tail))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        descending_walked,
+        full_ids.iter().rev().cloned().collect::<Vec<_>>()
+    );
+
+    let invalid_order = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/sessions/{id}/events?order=newest"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid_order.status(), StatusCode::BAD_REQUEST);
 
     // A fabricated cursor is a caller error (400).
     let bad = app

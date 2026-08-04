@@ -1524,9 +1524,11 @@ impl ManagedState {
                 ))
             })?;
             // Reconciliation already crosses the canonical projection synchronizer,
-            // which calls `prepare_session`. Calling it here as well used to stage
-            // resources/runtime twice after cache loss. A settled Session has no
-            // reconciliation phase, so it prepares directly through the same port.
+            // which prepares the frozen facts and restores the durable Environment
+            // before staging MCP. Calling either operation here as well would stage
+            // resources or adopt the sandbox twice after cache loss. A settled
+            // Session has no reconciliation phase, so it performs that same order
+            // directly through the Runtime port.
             let recovered = if session.mcp.needs_reconciliation() {
                 self.recover_mcp_projections(id).await?
             } else {
@@ -1547,15 +1549,15 @@ impl ManagedState {
                     )
                     .await
                     .map_err(StateError::Run)?;
+                if let Some(binding) = session.environment.binding() {
+                    self.runtime
+                        .restore_session_environment(&baseline.agent_id, id, binding)
+                        .await
+                        .map_err(StateError::Run)?;
+                }
                 session
             };
             persisted = Some(recovered.clone());
-            if let Some(binding) = recovered.environment.binding() {
-                self.runtime
-                    .restore_session_environment(&baseline.agent_id, id, binding)
-                    .await
-                    .map_err(StateError::Run)?;
-            }
         }
         let pending = self
             .runtime

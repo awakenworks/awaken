@@ -759,7 +759,7 @@ async fn archive_thread_broadcasts_to_an_open_live_stream() {
         "archive_thread publishes the terminated event to the open broadcast"
     );
     // And it was also committed to the durable log (a reconnect would replay it).
-    let list = state.list_events(&id, None, None).expect("list");
+    let list = state.list_events(&id, None, None, false).expect("list");
     assert!(
         list.data
             .iter()

@@ -356,6 +356,7 @@ mod tests {
             &self,
             request: awaken_session_contract::StageMcpAttachment,
         ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
+            self.order.lock().unwrap().push("mcp");
             if let Some(restored) = self
                 .restored_runtimes
                 .lock()
@@ -487,7 +488,7 @@ mod tests {
         assert_eq!(archived.status, SessionThreadStatus::Terminated);
         assert_eq!(ended.lock().unwrap().as_slice(), &["child-1"]);
         let terminal_count = state
-            .list_events(&session.id, None, None)
+            .list_events(&session.id, None, None, false)
             .unwrap()
             .data
             .iter()
@@ -499,7 +500,7 @@ mod tests {
         assert_eq!(ended.lock().unwrap().as_slice(), &["child-1"]);
         assert_eq!(
             state
-                .list_events(&session.id, None, None)
+                .list_events(&session.id, None, None, false)
                 .unwrap()
                 .data
                 .iter()
@@ -618,7 +619,7 @@ mod tests {
         for rejected in ["child-ended", "child-unknown"] {
             interrupted.lock().unwrap().clear();
             let event_count = state
-                .list_events(&session.id, None, None)
+                .list_events(&session.id, None, None, false)
                 .unwrap()
                 .data
                 .len();
@@ -635,7 +636,7 @@ mod tests {
             assert!(interrupted.lock().unwrap().is_empty(), "I4");
             assert_eq!(
                 state
-                    .list_events(&session.id, None, None)
+                    .list_events(&session.id, None, None, false)
                     .unwrap()
                     .data
                     .len(),
@@ -875,7 +876,7 @@ mod tests {
         );
         assert!(
             !state
-                .list_events(&session.id, None, None)
+                .list_events(&session.id, None, None, false)
                 .unwrap()
                 .data
                 .iter()
@@ -1316,18 +1317,21 @@ mod tests {
     async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         // Causal graph:
         // durable Session -> one canonical projection preparation -> environment
-        // adoption -> committed history + current client-tool wait -> readable
+        // adoption -> MCP staging -> committed history + current client-tool wait -> readable
         // in-memory Session with a resumable custom-tool event.
         //
         // Decision table:
-        // | MCP state            | preparation owner          | calls |
-        // | needs reconciliation | realization synchronizer  | one   |
-        // | already settled      | ensure_session             | one   |
-        // | current client wait  | runtime Pending truth      | custom_tool_use |
+        // | MCP state            | resident binding | authoritative order                         |
+        // | needs reconciliation | present          | prepare -> adopt -> MCP stage, each once    |
+        // | needs reconciliation | absent           | prepare -> create environment -> MCP stage  |
+        // | already settled      | present          | prepare -> adopt, each once                 |
+        // | current client wait  | either           | Runtime Pending truth -> custom_tool_use    |
         // Historical/non-current tool calls remain ordinary tool_use events; the
         // project module's disposition table owns and tests that complementary rule.
-        // Both branches must converge before environment/history; duplicate
-        // preparation can repeat mounts, runtime registration, and secret staging.
+        // Every branch must converge before history. In particular, MCP staging
+        // cannot create a replacement sandbox before the durable binding is
+        // adopted; duplicate preparation can repeat mounts, runtime registration,
+        // and secret staging.
         // A session created in one process is gone from a fresh process's cache,
         // but the shared repo + committed transcript restore it faithfully.
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
@@ -1403,10 +1407,11 @@ mod tests {
                 "resources",
                 "runtime",
                 "environment",
+                "mcp",
                 "history",
                 "delegations"
             ],
-            "resources must be staged before environment adoption and history opening"
+            "the durable environment must be adopted before MCP staging and history opening"
         );
         assert_eq!(
             restored_runtimes.lock().unwrap().as_slice(),
@@ -1431,7 +1436,7 @@ mod tests {
         let durable = repo.get("sesn_1").await.unwrap();
         assert_eq!(durable.resources.activations.len(), 1);
         let events = restarted
-            .list_events("sesn_1", None, None)
+            .list_events("sesn_1", None, None, false)
             .expect("list rehydrated events");
         let encoded = serde_json::to_value(events).expect("events serialize");
         assert!(encoded["data"].as_array().unwrap().iter().any(|event| {
@@ -1486,7 +1491,7 @@ mod tests {
             .expect("idempotent refresh");
 
         let events = state
-            .list_events("sesn_peer", None, None)
+            .list_events("sesn_peer", None, None, false)
             .expect("read refreshed projection")
             .data;
         let rendered = serde_json::to_string(&events).unwrap();
@@ -1748,6 +1753,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_mcp_recovery_adopts_the_durable_environment_before_staging() {
+        // Startup MCP recovery cause/effect graph:
+        // C1 a live durable Session has a resident Environment binding; C2 its
+        // active MCP generation needs process-local reconciliation after restart;
+        // C3 the Runtime has an empty cache. E1 install the frozen projection;
+        // E2 adopt the exact binding before MCP stage; E3 preserve that binding;
+        // E4 do not open transcript/history as a side effect of the reconciler.
+        //
+        // Decision table:
+        // | live root | binding | MCP recovery | result |
+        // | yes | present | required | prepare -> adopt -> stage; binding unchanged |
+        // | yes | absent  | required | prepare -> stage may create one Environment |
+        // | terminal | any | required | no Runtime effect (covered above) |
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+        let mut persisted = sample_persisted("sesn_startup_mcp");
+        persisted.environment.set_resident("durable-k8s-binding");
+        create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, persisted).await;
+
+        let runtime = RehydrateFake::default();
+        let order = runtime.order.clone();
+        let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo.clone());
+
+        assert_eq!(restarted.reconcile_mcp_attachments().await, 1, "C1-C3");
+        assert_eq!(
+            order.lock().unwrap().as_slice(),
+            &["runtime", "environment", "mcp"],
+            "E1/E2/E4"
+        );
+        assert_eq!(
+            repo.get("sesn_startup_mcp")
+                .await
+                .unwrap()
+                .environment
+                .binding(),
+            Some("durable-k8s-binding"),
+            "E3"
+        );
+    }
+
+    #[tokio::test]
     async fn live_file_attach_and_delete_survive_restart_without_projection_truth() {
         // Cause graph:
         // typed add/update/delete command -> prepare exact next generation
@@ -1942,7 +1987,7 @@ mod tests {
         );
         assert!(
             matches!(
-                state.list_events(&id, None, None),
+                state.list_events(&id, None, None, false),
                 Err(StateError::NotFound)
             ),
             "events.list on a deleted session is a 404, not a replay"
