@@ -5,9 +5,10 @@
 //! a fake. Public ids (`sesn_*`, `evt_*`) are minted here; a tool-use event keeps
 //! the tool call's own id so a `user.tool_confirmation` can reference it.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use tokio::sync::broadcast;
 
@@ -16,14 +17,15 @@ use awaken_agent_contract::page::paginate_by_id;
 
 use crate::preview::{PreviewAllocations, PreviewSink};
 use crate::project::{self, project_messages, project_messages_with_mcp_ids, project_step};
-use crate::routes::vaults::{RepositoryCredentialIngress, SessionCredentialSource};
 use crate::types::{
     ConfirmResult, Event, EventReceipt, InboundEvent, ListEventsResponse, ModelConfig,
     ModelOverride, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
     SessionCreateParams, SessionError, SessionStats, SessionThread, SessionThreadAgent,
     SessionThreadStatus, StopReason, StreamFrame, Usage,
 };
-use awaken_session_contract::{ManagedLifecycleFact, ManagedSessionRepository, PersistedSession};
+#[cfg(test)]
+use awaken_session_contract::ManagedSessionRepository;
+use awaken_session_contract::{ManagedLifecycleFact, PersistedSession};
 #[cfg(test)]
 use awaken_session_store::SqliteManagedSessionRepository;
 
@@ -52,6 +54,7 @@ mod events;
 mod helpers;
 #[path = "state/lifecycle_event.rs"]
 pub mod lifecycle_event;
+mod managed_state;
 mod mcp_attachment;
 mod realization;
 mod residency;
@@ -68,6 +71,7 @@ mod types;
 mod work_dispatch;
 
 pub use error::StateError;
+pub use managed_state::ManagedState;
 
 pub(crate) use helpers::{content_text, lifecycle_fact, rubric_text, session_usage_value};
 pub(crate) use resource::{
@@ -80,81 +84,6 @@ pub(crate) use types::{
     OutcomeReport, RunError, RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepOutcome,
     ToolPermissionDecision,
 };
-
-/// The adapter's in-memory session store plus the runtime port.
-pub struct ManagedState {
-    runtime: Arc<dyn SessionRuntime>,
-    /// Sole external realization port for initial and hot MCP generations.
-    /// Desired state remains in the Session aggregate; this adapter owns only
-    /// stage/publish/drain effects and their secret-free receipts.
-    mcp_realizer: Arc<dyn awaken_session_contract::McpAttachmentRealizer>,
-    /// The vault surface, when the server mounts one (ADR-0043 Phase 3): a
-    /// session's `mcp_servers` are bound to vault credentials through it at
-    /// creation. `None` means every binding resolves to no credential.
-    credential_source: Option<Arc<dyn SessionCredentialSource>>,
-    /// Sole write-only path for Managed Repository authorization material.
-    repository_credential_ingress: Option<Arc<dyn RepositoryCredentialIngress>>,
-    /// The environments surface, when the server mounts one: a session's
-    /// `environment_id` is resolved to its networking policy (egress on/off) at
-    /// creation. `None` → every session gets host network (unrestricted).
-    environments: Arc<crate::routes::environments::EnvironmentExecutionState>,
-    /// The config-plane agent projection source (ADR-0043): when wired, a session
-    /// referencing an agent published on the config plane inherits that agent's
-    /// authoritative `model` (the config plane owns model/system/tools), so it runs
-    /// the agent's model instead of the host default. Reuses the same
-    /// [`awaken_executable_agent_contract::ExecutableAgentProfileSource`] port
-    /// `/v1/agents` reads — no second source of agent truth. `None` → fall back
-    /// to the host default model.
-    config_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
-    /// Resource authoring/resolution port. The Managed ACL lowers compatibility
-    /// Repository URL/token input into catalog/vault references; the catalog owns
-    /// no principal or authorization policy.
-    resource_catalog: Option<Arc<dyn awaken_resource_contract::ResourceCatalog>>,
-    resource_purge_scheduler: Option<Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>>,
-    sessions: Mutex<HashMap<String, SessionRecord>>,
-    /// The aspect-layer session→owner index (ADR-0051): the [`ScopeId`] that
-    /// created each session, keyed by the tenancy-agnostic session id. It is NOT
-    /// on the core session aggregate (which stays tenancy-agnostic) — it lives
-    /// here so the edge ownership guard can 404 a cross-tenant request without the
-    /// core ever reading a scope. Populated at `create_session` from the
-    /// edge-resolved owner; read by [`ManagedState::owner_scope`].
-    owners: Mutex<HashMap<String, String>>,
-    /// Durable-config source of truth for the session aggregate: `create` writes
-    /// it, rehydration reads it so a restored session reports its real
-    /// agent/model/title/metadata/MCP instead of placeholder defaults. The
-    /// in-memory `sessions` map is a per-process read-through cache over it.
-    sessions_repo: Arc<dyn ManagedSessionRepository>,
-    /// Optional projection sink for committed session lifecycle facts (ADR-0048):
-    /// the assembly wires a webhook dispatcher here so a created/terminated session
-    /// fans out to workspace-scoped subscriptions. `None` = no projection (the
-    /// default, byte-identical to before). The wire crate stays webhook-agnostic —
-    /// it only knows this narrow port.
-    lifecycle_sink: Option<Arc<dyn SessionLifecycleSink>>,
-    /// Unique process incarnation persisted in Session realization leases. A
-    /// restarted process must acquire a higher epoch before recreating effects.
-    runtime_incarnation: String,
-    /// Process-local fence for the one canonical lifecycle supervisor. Multiple
-    /// composition helpers may receive the same state, but they must never start
-    /// overlapping recovery/lease loops over it.
-    lifecycle_supervisor_started: AtomicBool,
-    session_seq: AtomicU64,
-    /// Shared with each turn's [`PreviewSink`] so a preview's minted `agent.message`
-    /// id is drawn from the same `evt_N` sequence the committed event carries.
-    event_seq: Arc<AtomicU64>,
-    /// Per-session live SSE broadcast: `append_step`/`append_outcome` publish
-    /// committed [`Event`]s here (Phase 1) and each turn's `PreviewSink` publishes
-    /// `event_start`/`event_delta` previews (Phase 2). A `stream_events` connection
-    /// subscribes; senders are created lazily on first publish/subscribe and never
-    /// removed (a dropped session's channel is just an idle allocation).
-    live: Mutex<HashMap<String, broadcast::Sender<StreamFrame>>>,
-}
-
-/// A sink for committed session lifecycle facts, projected to external consumers
-/// (webhooks). The Managed adapter calls it after a lifecycle transition commits,
-/// handing the session's persisted owner (S3) so the consumer can stamp tenancy.
-/// The port lives in `awaken-session-contract`; the protocol adapter consumes it
-/// directly and publishes no compatibility alias.
-use awaken_session_contract::SessionLifecycleSink;
 
 #[cfg(test)]
 mod tests {
