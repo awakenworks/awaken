@@ -58,6 +58,7 @@ awaken-tool-pattern = { path = "crates/runtime/awaken-tool-pattern" }
 awaken-provider-genai = { path = "crates/runtime/awaken-provider-genai" }
 awaken-ext-permission = { path = "crates/runtime/awaken-ext-permission" }
 awaken-credential = { path = "crates/runtime/awaken-credential" }
+awaken-outbound-http = { path = "crates/runtime/awaken-outbound-http" }
 awaken-mcp-wire = { path = "crates/runtime/awaken-mcp-wire" }
 awaken-mcp-server-core = { path = "crates/server/awaken-mcp-server-core" }
 awaken-mcp-server-testkit = { path = "crates/server/awaken-mcp-server-testkit" }
@@ -116,6 +117,7 @@ awaken-iam-client = { git = "https://github.com/awakenworks/awaken-iam", rev = "
 awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam", rev = "1a2612550dfd4a541eedc9b62912a556bbd7fc54" }
 awaken-managed-bridge = { path = "crates/server/awaken-managed-bridge" }
 awaken-store-conformance = { path = "crates/stores/awaken-store-conformance" }
+awaken-store-runtime = { path = "crates/stores/awaken-store-runtime" }
 awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }
 awaken-store-fs = { path = "crates/stores/awaken-store-fs" }
 awaken-store-schema = { path = "crates/stores/awaken-store-schema" }

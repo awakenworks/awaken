@@ -30,6 +30,7 @@
 
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { closeHttpServer } from './http_server.mjs';
 import Anthropic from '@anthropic-ai/sdk';
 // @ts-ignore -- shared JS harness deliberately serves both JS and TS scenarios.
 import { withScenarioServer, pass } from './harness.mjs';
@@ -84,9 +85,7 @@ async function startRejectingMcp(): Promise<{
   return {
     url: `http://127.0.0.1:${address.port}/`,
     requests: () => requests,
-    close: () => new Promise<void>((resolve, reject) => {
-      server.close((error) => error ? reject(error) : resolve());
-    }),
+    close: () => closeHttpServer(server),
   };
 }
 

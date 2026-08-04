@@ -264,14 +264,22 @@ impl SharedHost {
         let runtime_projection = self
             .session_slots
             .read(&thread, |slot| {
-                slot.environment_snapshot
-                    .clone()
-                    .map(|environment| (environment, slot.toolsets.clone()))
+                slot.environment_snapshot.clone().map(|environment| {
+                    let mcp_stages = slot
+                        .mcp
+                        .iter()
+                        .filter(|projection| {
+                            projection.state == crate::session_slot::McpProjectionState::Active
+                        })
+                        .map(|projection| projection.request.clone())
+                        .collect();
+                    (environment, slot.toolsets.clone(), mcp_stages)
+                })
             })
             .flatten();
         let environment_snapshot = runtime_projection
             .as_ref()
-            .map(|(environment, _)| environment);
+            .map(|(environment, _, _)| environment);
         let inference_holder = self.inference_plaintext_holder(&activation)?;
         // A mixed deployment may have both the local pool and remote workers.
         // Any carried manifest still needs capability admission: an explicit empty
@@ -302,14 +310,15 @@ impl SharedHost {
                 ))
                 .with_session_resources(envelope);
         }
-        if let Some((environment, toolsets)) = runtime_projection {
-            let envelope =
-                crate::provisioning::encode_session_runtime_envelope(environment, toolsets)
-                    .map_err(|error| {
-                        HostError::internal(format!(
-                            "serialize Session runtime projection: {error}"
-                        ))
-                    })?;
+        if let Some((environment, toolsets, mcp_stages)) = runtime_projection {
+            let envelope = crate::provisioning::encode_session_runtime_envelope(
+                environment,
+                toolsets,
+                mcp_stages,
+            )
+            .map_err(|error| {
+                HostError::internal(format!("serialize Session runtime projection: {error}"))
+            })?;
             request = request.with_session_runtime(envelope);
         }
         if let Some(placement) = placement {

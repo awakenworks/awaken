@@ -5,8 +5,9 @@
 // HITL approval path parks).
 
 import net from 'node:net';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import { spawn, execSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
@@ -19,6 +20,11 @@ process.env.E2E_PORT ??= String(processPortBase);
 process.env.E2E_WORKER_PORT ??= String(processPortBase + 50);
 
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// Match scripts/ci/_cargo_target.sh: a caller-owned coverage/isolated target
+// wins; otherwise keep this worktree's Cargo artifacts out of any user-level
+// shared target that can contain same-name packages from another worktree.
+// Decision table: explicit target => preserve; absent target => repo/target.
+process.env.CARGO_TARGET_DIR ??= path.join(REPO_ROOT, 'target');
 export const E2E_HOME_ROOT = `/tmp/awaken-e2e-home-${process.pid}`;
 export const E2E_HOME = `${E2E_HOME_ROOT}/home`;
 fs.rmSync(E2E_HOME_ROOT, { recursive: true, force: true });
@@ -28,6 +34,16 @@ fs.writeFileSync(
   `data_dir = ${JSON.stringify(`${E2E_HOME_ROOT}/data`)}\nidentity_mode = "no-login"\n`,
 );
 process.on('exit', () => fs.rmSync(E2E_HOME_ROOT, { recursive: true, force: true }));
+
+// A2A publication-pin cause/effect rule: the advertised securitySchemes and
+// ordered security requirements are the complete security surface -> hash their
+// canonical JSON pair; omitted fields -> the protocol defaults ({}, []). Other
+// Agent Card metadata cannot silently change the transport security identity.
+export function agentCardSecurityFingerprint(card) {
+  return `sha256:${createHash('sha256')
+    .update(JSON.stringify([card.securitySchemes ?? {}, card.security ?? []]))
+    .digest('hex')}`;
+}
 
 // Create the standard, typed deployment input for a scenario that needs its own
 // durable control-plane root. Tests must not resurrect the removed AWAKEN_MGMT_*
@@ -67,6 +83,64 @@ export function deploymentEnv(
 // orphaned and keep Node alive past the test.
 let serverBin = null;
 let productionBin = null;
+const spawnedServersByPort = new Map();
+const spawnedServerPorts = new WeakMap();
+
+export function trackSpawnedServer(port, server) {
+  spawnedServersByPort.set(port, server);
+  spawnedServerPorts.set(server, port);
+  return server;
+}
+
+function untrackSpawnedServer(server) {
+  const port = spawnedServerPorts.get(server);
+  if (port !== undefined && spawnedServersByPort.get(port) === server) {
+    spawnedServersByPort.delete(port);
+  }
+  spawnedServerPorts.delete(server);
+}
+
+function buildCargoBinary(packageName, binaryName) {
+  // Cause/effect decision table: R1 successful compiler artifact with an
+  // executable => return that exact path; R2 structured compiler failure =>
+  // surface every rendered diagnostic (Cargo writes these to JSON stdout);
+  // R3 successful command without the requested artifact => fail explicitly.
+  let output;
+  try {
+    output = execFileSync(
+      'cargo',
+      ['build', '--quiet', '--message-format=json', '-p', packageName, '--bin', binaryName],
+      { cwd: REPO_ROOT, maxBuffer: 64 * 1024 * 1024 },
+    ).toString();
+  } catch (error) {
+    const diagnostics = String(error.stdout ?? '')
+      .split('\n')
+      .filter(Boolean)
+      .flatMap((line) => {
+        try {
+          const message = JSON.parse(line);
+          return message.reason === 'compiler-message' && message.message?.rendered
+            ? [message.message.rendered.trimEnd()]
+            : [];
+        } catch {
+          return [];
+        }
+      });
+    const fallback = String(error.stderr ?? '').trim();
+    throw new Error(
+      `cargo build failed for ${packageName}/${binaryName}\n${diagnostics.join('\n') || fallback}`,
+      { cause: error },
+    );
+  }
+  for (const line of output.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const message = JSON.parse(line);
+      if (message.executable && message.target?.name === binaryName) return message.executable;
+    } catch { /* non-JSON Cargo output cannot identify an artifact */ }
+  }
+  throw new Error(`could not resolve the ${packageName}/${binaryName} binary path`);
+}
 
 // Cause graph: inherited/fixture environment may contain an old listen
 // address; the address selected for this process is the sole cause of its bind
@@ -98,38 +172,13 @@ function serverProcessEnv(addr, configured = {}) {
 
 function ensureBuilt() {
   if (serverBin) return serverBin;
-  const out = execSync(
-    'cargo build --quiet --message-format=json -p awaken-scenario-host --bin awaken-scenario-host',
-    { cwd: REPO_ROOT, maxBuffer: 64 * 1024 * 1024 },
-  ).toString();
-  for (const line of out.split('\n')) {
-    if (!line.trim()) continue;
-    let msg;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (msg.executable && msg.target?.name === 'awaken-scenario-host') serverBin = msg.executable;
-  }
-  if (!serverBin) throw new Error('could not resolve the awaken-server binary path');
+  serverBin = buildCargoBinary('awaken-scenario-host', 'awaken-scenario-host');
   return serverBin;
 }
 
 export function ensureProductionBuilt() {
   if (productionBin) return productionBin;
-  const out = execSync(
-    'cargo build --quiet --message-format=json -p awaken-cli --bin awaken',
-    { cwd: REPO_ROOT, maxBuffer: 64 * 1024 * 1024 },
-  ).toString();
-  for (const line of out.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken') productionBin = message.executable;
-    } catch { /* cargo diagnostic */ }
-  }
-  if (!productionBin) throw new Error('could not resolve the awaken production binary path');
+  productionBin = buildCargoBinary('awaken-cli', 'awaken');
   return productionBin;
 }
 
@@ -139,18 +188,39 @@ export function ensureProductionBuilt() {
 export function spawnProduction(
   dataDir,
   port,
-  { workspace, controlSealKey, databases = {}, fields = {}, extraEnv = {}, stderr = 'inherit' } = {},
+  {
+    workspace,
+    controlSealKey,
+    databases = {},
+    fields = {},
+    extraEnv = {},
+    stderr = 'inherit',
+    identityMode = 'no-login',
+  } = {},
 ) {
+  // Production-composition E2Es that use this generic helper do not exercise
+  // ACP. Keep their startup independent of host CLI discovery and network
+  // wrapper acquisition; ACP-specific scenarios author their exact selection
+  // through their own production config.
+  const isolatedFields = { acp_clis: [], ...fields };
   const env = {
     ...process.env,
-    ...deploymentEnv(dataDir, { controlSealKey, databases, fields }),
+    ...deploymentEnv(dataDir, {
+      identityMode,
+      controlSealKey,
+      databases,
+      fields: isolatedFields,
+    }),
     ...extraEnv,
   };
   if (workspace) env.AWAKEN_SCENARIO_WORKSPACE = workspace;
-  return spawn(ensureProductionBuilt(), ['all-in-one', '--port', String(port)], {
-    env,
-    stdio: ['ignore', 'ignore', stderr],
-  });
+  return trackSpawnedServer(
+    port,
+    spawn(ensureProductionBuilt(), ['all-in-one', '--port', String(port)], {
+      env,
+      stdio: ['ignore', 'ignore', stderr],
+    }),
+  );
 }
 
 // A 64x64 solid-red PNG, base64-encoded (deterministic, generated offline). The
@@ -180,29 +250,149 @@ export async function sendAndListNewEvents(client, sessionId, request) {
   return events;
 }
 
+// Canonical bounded wait for committed-state E2Es. The read function owns the
+// authoritative projection (HTTP, database, or filesystem); this helper only
+// coordinates observation and never drives the product state machine.
+// Decision table: predicate true => return the observed value; predicate false
+// before deadline => retry; predicate false at deadline => fail with the last
+// value; read failure => surface it immediately instead of masking corruption.
+export async function waitForValue(
+  read,
+  predicate,
+  description,
+  { timeoutMs = 20_000, pollMs = 100 } = {},
+) {
+  const deadline = performance.now() + timeoutMs;
+  let value;
+  do {
+    value = await read();
+    if (await predicate(value)) return value;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  } while (performance.now() < deadline);
+  throw new Error(`${description}; last observed value: ${JSON.stringify(value)}`);
+}
+
+export function childDirectories(parent) {
+  return fs.existsSync(parent)
+    ? fs.readdirSync(parent, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(parent, entry.name))
+      .sort()
+    : [];
+}
+
+export function onlyChildDirectory(parent, description = 'one owned directory exists') {
+  // Opaque-directory decision table: exactly one provider-owned child => return
+  // its concrete path; zero/multiple children => fail because realization is
+  // absent/ambiguous. Callers must never reimplement the provider's private
+  // wire-id-to-filesystem-name mapping.
+  const directories = childDirectories(parent);
+  if (directories.length !== 1) {
+    throw new Error(`${description}: ${JSON.stringify(directories)}`);
+  }
+  return directories[0];
+}
+
+function mountPointsUnder(root) {
+  if (process.platform !== 'linux') return [];
+  let mountInfo;
+  try {
+    mountInfo = fs.readFileSync('/proc/self/mountinfo', 'utf8');
+  } catch {
+    return [];
+  }
+  const absoluteRoot = path.resolve(root);
+  const prefix = `${absoluteRoot}${path.sep}`;
+  return mountInfo.split('\n').flatMap((line) => {
+    const encoded = line.split(' ')[4];
+    if (!encoded) return [];
+    const mountPoint = encoded
+      .replaceAll('\\040', ' ')
+      .replaceAll('\\011', '\t')
+      .replaceAll('\\012', '\n')
+      .replaceAll('\\134', '\\');
+    return mountPoint === absoluteRoot || mountPoint.startsWith(prefix) ? [mountPoint] : [];
+  }).sort((left, right) => right.length - left.length);
+}
+
+// Canonical cleanup for crash/recovery fixtures that may own FUSE projections.
+// Decision table: no mount => ordinary recursive removal; live/disconnected
+// mount => detach deepest-first, then remove; detach/removal failure => surface
+// the cleanup failure. This is fixture hygiene only and never substitutes for a
+// success-path assertion that product teardown removed its owned sandbox.
+export function cleanupFixtureTree(root) {
+  for (const mountPoint of mountPointsUnder(root)) {
+    let detached = false;
+    for (const command of ['fusermount3', 'fusermount']) {
+      const result = spawnSync(command, ['-uz', mountPoint], { stdio: 'ignore' });
+      if (result.status === 0) {
+        detached = true;
+        break;
+      }
+    }
+    if (!detached) throw new Error(`could not detach fixture mount ${mountPoint}`);
+  }
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
 export function waitForPort(port, timeoutMs = 900_000, server = null) {
   // Readiness is an elapsed-time deadline. Wall-clock adjustments can jump
   // `Date.now()` past the deadline between retries even though the child has
   // just announced that it is listening; the monotonic clock cannot.
   const deadline = performance.now() + timeoutMs;
+  // R1 explicit child => observe it; R2 omitted child for a harness-spawned
+  // server => recover the canonical port/child registration; R3 external port
+  // => retain deadline-only probing. A child exit is terminal in R1/R2.
+  const observedServer = server ?? spawnedServersByPort.get(port) ?? null;
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let retry;
+    const cleanup = () => {
+      if (retry) clearTimeout(retry);
+      observedServer?.off('exit', onExit);
+      observedServer?.off('close', onClose);
+      observedServer?.off('error', onError);
+    };
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+    const terminalError = (detail) => new Error(
+      `server exited before it listened on ${port} (${detail})`,
+    );
+    function onExit(code, signal) {
+      finish(terminalError(`code=${code}, signal=${signal}`));
+    }
+    function onClose(code, signal) {
+      finish(terminalError(`closed: code=${code}, signal=${signal}`));
+    }
+    function onError(error) {
+      finish(terminalError(`spawn=${error?.code ?? error}`));
+    }
+    observedServer?.once('exit', onExit);
+    observedServer?.once('close', onClose);
+    observedServer?.once('error', onError);
     const attempt = () => {
+      if (settled) return;
       const sock = net.createConnection({ port, host: '127.0.0.1' });
       sock.once('connect', () => {
         sock.destroy();
-        resolve();
+        finish();
       });
       sock.once('error', () => {
         sock.destroy();
-        if (server && (server.exitCode !== null || server.signalCode !== null)) {
-          reject(
-            new Error(
-              `server exited before it listened on ${port} ` +
-                `(code=${server.exitCode}, signal=${server.signalCode})`,
-            ),
-          );
-        } else if (performance.now() > deadline) reject(new Error(`server did not listen on ${port}`));
-        else setTimeout(attempt, 200);
+        if (
+          observedServer &&
+          (observedServer.exitCode !== null || observedServer.signalCode !== null)
+        ) {
+          finish(terminalError(
+            `code=${observedServer.exitCode}, signal=${observedServer.signalCode}`,
+          ));
+        } else if (performance.now() > deadline) finish(new Error(`server did not listen on ${port}`));
+        else retry = setTimeout(attempt, 200);
       });
     };
     attempt();
@@ -340,10 +530,13 @@ export async function withRealServer(behavior, port, fn, opts = {}) {
 export function spawnServer(mode, port, extraEnv = {}) {
   const bin = ensureBuilt();
   const addr = `127.0.0.1:${port}`;
-  const server = spawn(bin, {
-    env: serverProcessEnv(addr, { ...extraEnv, AWAKEN_MODEL_MODE: mode }),
-    stdio: ['pipe', 'inherit', 'inherit'],
-  });
+  const server = trackSpawnedServer(
+    port,
+    spawn(bin, {
+      env: serverProcessEnv(addr, { ...extraEnv, AWAKEN_MODEL_MODE: mode }),
+      stdio: ['pipe', 'inherit', 'inherit'],
+    }),
+  );
   return { server, baseUrl: `http://${addr}` };
 }
 
@@ -355,8 +548,27 @@ export function stopServer(server) {
     // `signalCode`. Treat either terminal form as already stopped; otherwise a
     // recovery e2e that SIGKILLs the worker would subscribe after `exit` fired
     // and wait forever.
-    if (server.exitCode !== null || server.signalCode !== null) return resolve();
-    server.on('exit', () => resolve());
+    if (server.exitCode !== null || server.signalCode !== null) {
+      untrackSpawnedServer(server);
+      return resolve();
+    }
+    let settled = false;
+    let forceTimer;
+    let fallbackTimer;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(forceTimer);
+      clearTimeout(fallbackTimer);
+      server.off('exit', finish);
+      server.off('close', finish);
+      server.off('error', finish);
+      untrackSpawnedServer(server);
+      resolve();
+    };
+    server.once('exit', finish);
+    server.once('close', finish);
+    server.once('error', finish);
     // Shutdown decision table:
     // | stdin pipe | process terminal | action |
     // |---|---|---|
@@ -367,6 +579,13 @@ export function stopServer(server) {
     // graceful cause; Unix production signal behavior remains independently wired.
     if (server.stdin && !server.stdin.destroyed) server.stdin.end();
     else server.kill('SIGINT');
+    // Give the product its full 20s Worker drain budget plus margin. A fixture
+    // that still cannot drain is terminated by exact child handle so it cannot
+    // stall every later rule in the suite.
+    forceTimer = setTimeout(() => {
+      server.kill('SIGKILL');
+      fallbackTimer = setTimeout(finish, 5_000);
+    }, 30_000);
   });
 }
 

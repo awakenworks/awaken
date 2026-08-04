@@ -65,6 +65,19 @@ pub async fn migrate_postgres_schema(deployment: &DeploymentConfig) -> Result<()
     Ok(())
 }
 
+/// Initialize only the runtime backends selected by a scenario composition.
+///
+/// Test-support scenario routers inject their own explicit in-memory
+/// `WorkerDirectory`; opening and then discarding a production directory here
+/// would create a second authority and would incorrectly require SQLite storage
+/// for an intentionally ephemeral fixture. Production composition roots use
+/// [`open`] or [`open_existing`] and therefore still receive the durable
+/// directory returned by this module.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn init_scenario_runtime(deployment: &DeploymentConfig) -> Result<(), String> {
+    init_runtime_backends(deployment, SchemaAccess::Migrate).await
+}
+
 /// Open every Coordinator-owned runtime authority, applying schemas first.
 /// This Local-mode path returns the one WorkerDirectory instance that must be
 /// injected into every Worker-facing and observation-facing consumer.
@@ -84,21 +97,12 @@ async fn open_with(
 ) -> Result<WorkerDirectoryHandle, String> {
     let components = postgres_components(deployment);
     let database_url = database_url(deployment)?;
+    init_runtime_backends_with(deployment, schema, components, database_url).await?;
     let worker_directory = if components.dispatch {
         let url = database_url.expect("Postgres dispatch requires database URL");
         match schema {
-            SchemaAccess::Migrate => {
-                awaken_runtime_host::init_shared_postgres_dispatch_with_config(url, deployment)
-                    .await?;
-                super::worker_registry::open_postgres(url).await?
-            }
-            SchemaAccess::Verify => {
-                awaken_runtime_host::init_shared_postgres_dispatch_existing_with_config(
-                    url, deployment,
-                )
-                .await?;
-                super::worker_registry::open_existing_postgres(url).await?
-            }
+            SchemaAccess::Migrate => super::worker_registry::open_postgres(url).await?,
+            SchemaAccess::Verify => super::worker_registry::open_existing_postgres(url).await?,
         }
     } else {
         let storage_dir = deployment.storage_dir.as_deref().ok_or_else(|| {
@@ -107,6 +111,40 @@ async fn open_with(
         })?;
         super::worker_registry::open_sqlite(storage_dir)?
     };
+    Ok(worker_directory)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+async fn init_runtime_backends(
+    deployment: &DeploymentConfig,
+    schema: SchemaAccess,
+) -> Result<(), String> {
+    let components = postgres_components(deployment);
+    let database_url = database_url(deployment)?;
+    init_runtime_backends_with(deployment, schema, components, database_url).await
+}
+
+async fn init_runtime_backends_with(
+    deployment: &DeploymentConfig,
+    schema: SchemaAccess,
+    components: PostgresComponents,
+    database_url: Option<&str>,
+) -> Result<(), String> {
+    if components.dispatch {
+        let url = database_url.expect("Postgres dispatch requires database URL");
+        match schema {
+            SchemaAccess::Migrate => {
+                awaken_runtime_host::init_shared_postgres_dispatch_with_config(url, deployment)
+                    .await?
+            }
+            SchemaAccess::Verify => {
+                awaken_runtime_host::init_shared_postgres_dispatch_existing_with_config(
+                    url, deployment,
+                )
+                .await?
+            }
+        }
+    }
     if components.commit {
         let url = database_url.expect("Postgres commit requires database URL");
         match schema {
@@ -126,7 +164,7 @@ async fn open_with(
             }
         }
     }
-    Ok(worker_directory)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -187,11 +225,16 @@ mod tests {
     async fn sqlite_worker_authority_is_durable_and_missing_storage_fails_closed() {
         // Cause/effect graph: dispatch backend + storage coordinate + schema
         // mode -> one WorkerDirectory adapter -> persisted incarnation truth.
-        // Decision table: R1 SQLite + no storage_dir -> startup error; R2 SQLite
-        // + writable storage_dir -> durable registry; R3 reopen same directory ->
+        // Decision table: R0 scenario runtime init + SQLite + no storage -> no-op
+        // because the scenario injects its separate test directory; R1 production
+        // open + SQLite + no storage_dir -> startup error; R2 production open +
+        // writable storage_dir -> durable registry; R3 reopen same directory ->
         // exact identity/generation survives. Postgres migrate/verify rules are
         // covered by worker-registry conformance and migration-ledger tests.
         let missing = DeploymentConfig::ephemeral();
+        init_scenario_runtime(&missing)
+            .await
+            .expect("R0 scenario SQLite runtime needs no shared backend");
         let missing_error = match open(&missing).await {
             Ok(_) => panic!("R1 must reject volatile authority"),
             Err(error) => error,

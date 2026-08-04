@@ -73,7 +73,6 @@ pub(crate) fn resource_host_with_deployment(
     model_ref: impl Into<String>,
     deployment: awaken_runtime_host::DeploymentConfig,
 ) -> SharedHost {
-    let durable_resources = deployment.storage_dir.is_some();
     let resources = deployment.storage_dir.clone().map_or_else(
         awaken_coordinator::ephemeral_resources_application,
         |storage_dir| awaken_coordinator::embedded_resources_application(&storage_dir),
@@ -92,9 +91,6 @@ pub(crate) fn resource_host_with_deployment(
         deployment,
     )
     .with_file_application(resources.files());
-    if durable_resources {
-        awaken_coordinator::install_platform_memory_data_plane(&host);
-    }
     let scenario_workspace = std::env::var("AWAKEN_SCENARIO_WORKSPACE")
         .ok()
         .filter(|workspace| !workspace.trim().is_empty());

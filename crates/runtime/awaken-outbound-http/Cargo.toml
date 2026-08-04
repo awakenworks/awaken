@@ -1,0 +1,15 @@
+[package]
+name = "awaken-outbound-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tokio = { workspace = true, features = ["net"] }
+
+[features]
+default = []
+# A bounded permissive sender exists only for loopback integration tests.
+test-support = []

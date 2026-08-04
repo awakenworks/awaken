@@ -297,6 +297,33 @@ pub(crate) enum AgentRunBoundary {
     Awaiting,
 }
 
+fn settled_agent_boundary(
+    reader: &dyn ThreadReader,
+    thread_id: &ThreadId,
+    state: RunState,
+) -> Result<AgentRunBoundary, AgentRunError> {
+    match state {
+        RunState::Awaiting => Ok(AgentRunBoundary::Awaiting),
+        RunState::Ended(
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd
+            | awaken_agent_contract::agent::run::EndCause::MaxSteps,
+        ) => Ok(AgentRunBoundary::Ended {
+            text: latest_assistant_text(&reader.committed_messages(thread_id)),
+            usage: usage_from_committed(reader, thread_id),
+        }),
+        RunState::Ended(cause) => Err(AgentRunError::Runtime(
+            awaken_runtime_contract::execution::Error::Execution(format!(
+                "child Agent ended unsuccessfully: {cause:?}"
+            )),
+        )),
+        RunState::Running => Err(AgentRunError::Runtime(
+            awaken_runtime_contract::execution::Error::Execution(
+                "an Agent Run escaped without reaching a settled boundary".to_string(),
+            ),
+        )),
+    }
+}
+
 impl AgentRunError {
     /// A failed commit leaves the stable child Run recoverable. Resolution,
     /// provisioning, state-conflict, and ordinary execution errors are terminal
@@ -417,11 +444,8 @@ pub(crate) async fn run_configured_agent_until_boundary(
     }
     let reader = context.reader.clone().expect("checked above");
     let thread_id = ThreadId(thread.clone());
-    if matches!(reader.run_state(&child_run_id), Some(RunState::Ended(_))) {
-        return Ok(AgentRunBoundary::Ended {
-            text: latest_assistant_text(&reader.committed_messages(&thread_id)),
-            usage: usage_from_committed(reader.as_ref(), &thread_id),
-        });
+    if let Some(state @ RunState::Ended(_)) = reader.run_state(&child_run_id) {
+        return settled_agent_boundary(reader.as_ref(), &thread_id, state);
     }
     let operation = match (seed, resume) {
         (Some(seed), None) => {
@@ -568,18 +592,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
         }
         .map_err(AgentRunError::Runtime)?
     };
-    match state {
-        RunState::Awaiting => Ok(AgentRunBoundary::Awaiting),
-        RunState::Ended(_) => Ok(AgentRunBoundary::Ended {
-            text: latest_assistant_text(&reader.committed_messages(&thread_id)),
-            usage: usage_from_committed(reader.as_ref(), &thread_id),
-        }),
-        RunState::Running => Err(AgentRunError::Runtime(
-            awaken_runtime_contract::execution::Error::Execution(
-                "an Agent Run escaped without reaching a settled boundary".to_string(),
-            ),
-        )),
-    }
+    settled_agent_boundary(reader.as_ref(), &thread_id, state)
 }
 
 /// Run the agent identified by `agent_id` — its config resolved from `catalog` —
@@ -863,6 +876,42 @@ mod tests {
     };
     use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
     use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
+
+    #[test]
+    fn child_terminal_cause_is_not_collapsed_to_success() {
+        // Cause/effect graph: child boundary is Awaiting/NaturalEnd/MaxSteps/
+        // Cancelled/Stopped/Error/Indeterminate. Effects are preserve Awaiting,
+        // return successful child output, or surface an AgentRunError.
+        // Decision table: R1 Awaiting -> awaiting; R2 NaturalEnd|MaxSteps ->
+        // success; R3 every other EndCause -> error. This closes the former
+        // `Ended(_)` wildcard that reclassified remote failures as empty success.
+        let reader = MemoryCommitCoordinator::new();
+        let thread = ThreadId("child-terminal".into());
+        assert!(matches!(
+            settled_agent_boundary(&reader, &thread, RunState::Awaiting),
+            Ok(AgentRunBoundary::Awaiting)
+        ));
+        for cause in [EndCause::NaturalEnd, EndCause::MaxSteps] {
+            assert!(matches!(
+                settled_agent_boundary(&reader, &thread, RunState::Ended(cause)),
+                Ok(AgentRunBoundary::Ended { .. })
+            ));
+        }
+        for cause in [
+            EndCause::Cancelled,
+            EndCause::Stopped("budget".into()),
+            EndCause::Indeterminate,
+            EndCause::Error(awaken_agent_contract::agent::run::Failure::Inference {
+                code: "a2a_task_failed".into(),
+                message: "remote failed".into(),
+            }),
+        ] {
+            assert!(
+                settled_agent_boundary(&reader, &thread, RunState::Ended(cause)).is_err(),
+                "R3"
+            );
+        }
+    }
 
     fn published_model(
         model: &str,

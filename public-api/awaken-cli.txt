@@ -81,6 +81,7 @@ pub awaken_cli::config::ResolvedDeployment::cloud_iam: awaken_cli::config::Cloud
 pub awaken_cli::config::ResolvedDeployment::cloud_models: awaken_cli::config::CloudModelMode
 pub awaken_cli::config::ResolvedDeployment::config_file_exists: bool
 pub awaken_cli::config::ResolvedDeployment::config_path: std::path::PathBuf
+pub awaken_cli::config::ResolvedDeployment::configured_acp_clis: core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub awaken_cli::config::ResolvedDeployment::control: awaken_control::control_stores::ControlStoreConfig
 pub awaken_cli::config::ResolvedDeployment::control_service: awaken_cli::config::ControlServiceConfig
 pub awaken_cli::config::ResolvedDeployment::coordinator: awaken_cli::config::CoordinatorStoreConfig

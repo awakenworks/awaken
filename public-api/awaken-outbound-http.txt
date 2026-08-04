@@ -1,0 +1,19 @@
+pub mod awaken_outbound_http
+pub enum awaken_outbound_http::UrlRejected
+pub awaken_outbound_http::UrlRejected::Malformed
+pub awaken_outbound_http::UrlRejected::NotHttps
+pub awaken_outbound_http::UrlRejected::PrivateHost
+impl core::error::Error for awaken_outbound_http::UrlRejected
+impl core::fmt::Display for awaken_outbound_http::UrlRejected
+pub fn awaken_outbound_http::UrlRejected::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_outbound_http::GuardedHttpSender
+impl awaken_outbound_http::GuardedHttpSender
+pub fn awaken_outbound_http::GuardedHttpSender::guarded() -> Self
+impl awaken_outbound_http::HttpSender for awaken_outbound_http::GuardedHttpSender
+pub fn awaken_outbound_http::GuardedHttpSender::post<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<u16, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_outbound_http::HttpSender: core::marker::Send + core::marker::Sync
+pub fn awaken_outbound_http::HttpSender::post<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<u16, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_outbound_http::HttpSender for awaken_outbound_http::GuardedHttpSender
+pub fn awaken_outbound_http::GuardedHttpSender::post<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<u16, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_outbound_http::status_is_retryable(u16) -> bool
+pub fn awaken_outbound_http::validate_endpoint_url(&str) -> core::result::Result<(), awaken_outbound_http::UrlRejected>

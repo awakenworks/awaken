@@ -14,7 +14,8 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_host::{
-    WorkerControlClient, WorkerDispatchService, dispatch_transport_router_with_service,
+    WorkerControlClient, WorkerDispatchService, WorkerRegistrationError,
+    dispatch_transport_router_with_service,
 };
 use awaken_store_inmem::MemoryStreamCheckpointStore;
 use awaken_worker_registry::{
@@ -48,6 +49,16 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
         .register("boot-http", WorkerManifest::default())
         .await
         .unwrap();
+    // Registration cause/effect graph: C1 same Worker id; C2 incarnation differs;
+    // C3 prior lease is live. R1 C1+C2+C3 => HTTP conflict classified as
+    // SlotOccupied, preserving the old authority. Expired replacement and the
+    // resulting generation advance are covered by the crash-recovery E2E.
+    assert!(matches!(
+        client
+            .register_classified("boot-http-conflict", WorkerManifest::default())
+            .await,
+        Err(WorkerRegistrationError::SlotOccupied(_))
+    ));
     assert_eq!(registered.snapshot.state, WorkerState::Starting);
     let identity = registered.snapshot.identity;
 

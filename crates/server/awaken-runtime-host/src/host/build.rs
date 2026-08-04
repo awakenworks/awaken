@@ -60,6 +60,15 @@ impl SharedHost {
         self
     }
 
+    /// The configured Session sandbox tier selected by the authoritative
+    /// [`crate::DeploymentConfig`]. Composition adapters use this read-only view
+    /// when their realization strategy must be compatible with the environment;
+    /// it does not introduce another tier-selection source.
+    #[must_use]
+    pub fn sandbox_tier(&self) -> crate::SandboxTier {
+        self.deployment.sandbox_tier
+    }
+
     /// Install the exact durable dispatch transport owned by this host composition.
     ///
     /// An explicitly assembled queue is already the authority for ingress, so it
@@ -162,10 +171,7 @@ impl SharedHost {
         // and resource adapters (all survive a restart); unset → ephemeral adapters.
         let store_dir = deployment.storage_dir.clone();
         let local_workspace = resolve_local_workspace(store_dir.as_deref());
-        let sandbox_root = store_dir
-            .as_ref()
-            .map(|dir| dir.join("sandboxes"))
-            .unwrap_or_else(|| sub_base(""));
+        let sandbox_root = crate::acp_backend::session_sandbox_base(&deployment);
         // Product Resource content is injected atomically through ResourceComponent;
         // a Worker receives its remote adapter. Only test-support construction may
         // still use the local opener below.

@@ -12,7 +12,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
-import { sendAndListNewEvents, spawnServer, stopServer, waitForPort } from './harness.mjs';
+import {
+  cleanupFixtureTree,
+  onlyChildDirectory,
+  sendAndListNewEvents,
+  spawnServer,
+  stopServer,
+  waitForPort,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38172);
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
@@ -26,32 +33,6 @@ function bwrapAvailable() {
   return spawnSync('bwrap', ['--unshare-user', '--ro-bind', '/', '/', '--', 'true'], {
     stdio: 'ignore',
   }).status === 0;
-}
-
-function onlySandboxRoot() {
-  // Sandbox-identity decision table:
-  // R1 exactly one opaque provider root -> retain that concrete path as evidence.
-  // R2 zero or multiple roots -> fail (environment absent or ownership ambiguous).
-  // Effects: crash must preserve that same path; terminal delete must remove it.
-  // Constraint: provider directory names are deliberately not Session wire ids.
-  const parent = `${TMP}/sandboxes`;
-  const roots = fs.existsSync(parent)
-    ? fs.readdirSync(parent, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => path.join(parent, entry.name))
-    : [];
-  assert.equal(roots.length, 1, `one Session-owned sandbox exists: ${JSON.stringify(roots)}`);
-  return roots[0];
-}
-
-function emergencyUnmount(root) {
-  const mountPath = path.join(root, 'workspace', '.mnt', 'notes');
-  // Failure-path hygiene only: the success path must prove Runtime disposal
-  // removed the root before this fallback can run.
-  for (const command of ['fusermount3', 'fusermount']) {
-    const detached = spawnSync(command, ['-uz', mountPath], { stdio: 'ignore' });
-    if (detached.status === 0) return;
-  }
 }
 
 function git(args, cwd) {
@@ -183,7 +164,6 @@ async function main() {
   let running = spawnServer('acp-container', PORT, serverEnv);
   let server = running.server;
   let sandboxRoot;
-  let completed = false;
 
   try {
     await waitForPort(PORT, 180_000, server);
@@ -246,7 +226,10 @@ async function main() {
       new RegExp(`memory_writable",${TIER === 'local'}`),
       `${TIER} enforces its declared memory access capability`,
     );
-    sandboxRoot = onlySandboxRoot();
+    sandboxRoot = onlyChildDirectory(
+      `${TMP}/sandboxes`,
+      'one Session-owned sandbox exists',
+    );
 
     const uploaded = await client.beta.files.upload({
       file: await toFile(Buffer.from('NAMESPACE-FILE-OK'), 'live.txt'),
@@ -372,16 +355,9 @@ async function main() {
     );
 
     console.log(`E2E PASS: ${TIER} Session retained one sandbox across Skill/memory materialization, live resource changes${TIER === 'namespace' ? ', crash adoption' : ''}, and release.`);
-    completed = true;
   } finally {
     await stopServer(server);
-    try {
-      fs.rmSync(TMP, { recursive: true, force: true });
-    } catch (cleanupError) {
-      if (completed) throw cleanupError;
-      if (sandboxRoot) emergencyUnmount(sandboxRoot);
-      try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}
-    }
+    cleanupFixtureTree(TMP);
   }
 }
 

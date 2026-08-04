@@ -572,8 +572,8 @@ pub trait SessionRuntime: Send + Sync {
     /// The tool currently blocking `thread`, if any. Admission uses this
     /// read-only projection to reject events that cannot legally precede the
     /// matching result; resume remains the sole mutating authority.
-    async fn pending_tool(&self, _thread: &str) -> Option<Pending> {
-        None
+    async fn pending_tool(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
+        Ok(None)
     }
 
     /// Buffer a system message; it is prepended to the next turn's input.

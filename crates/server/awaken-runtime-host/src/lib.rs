@@ -12,6 +12,7 @@
 //! it exposes (config / files / memory-stores / durable-ops).
 
 mod acp_backend;
+mod acp_capability_probe;
 mod acp_provision;
 mod acp_serve;
 mod acp_tool_export;
@@ -86,6 +87,7 @@ use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
 mod worker_control_client;
 
 // The neutral session substrate and its resume vocabulary.
+pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
 pub use crate::acp_tool_export::{AcpToolExport, AcpToolExporter};
 pub use crate::application::{
     ApplicationSessionControlClient, ApplicationSessionControlReceipt, ApplicationSessionError,
@@ -124,7 +126,7 @@ pub use crate::skill_bundle_transport::{
     HttpSkillBundleSource, SkillBundleSource, SkillBundleSourceError, StoreSkillBundleSource,
     WorkerSkillBundleService, worker_skill_bundle_router,
 };
-pub use crate::worker_control_client::WorkerControlClient;
+pub use crate::worker_control_client::{WorkerControlClient, WorkerRegistrationError};
 use awaken_credential_materializer::PinnedCredentialMaterializer;
 // ACP launch projection consumes the Session environment selected by the host.
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
@@ -193,7 +195,7 @@ fn to_run_error(err: HostError) -> RunError {
         return RunError::classified("mcp_connection_failed", message);
     }
     match err.kind {
-        HostErrorKind::BadRequest => RunError::bad_request(message),
+        HostErrorKind::BadRequest | HostErrorKind::Conflict => RunError::bad_request(message),
         HostErrorKind::Internal => RunError::internal(message),
     }
 }
@@ -291,6 +293,9 @@ impl DispatchSessionRuntime {
     ) -> Result<(), RunError> {
         let managed = self.managed()?;
         let previous = managed.host.thread_resource_manifest(thread);
+        let is_replacement = previous
+            .as_ref()
+            .is_some_and(|previous| previous != manifest);
         if let Some(previous) = previous.as_ref().filter(|previous| *previous != manifest) {
             // A claimed Run may advance a live Session only to a strictly newer
             // durable Resource generation. Exact replay is handled above; an
@@ -303,6 +308,22 @@ impl DispatchSessionRuntime {
                     "a claimed Worker cannot replace the active Session Resource generation",
                 ));
             }
+        }
+        if is_replacement {
+            // Claimed-generation decision table: newer/different => reuse the
+            // canonical live Session transition with claim-fenced remote reads
+            // and without mutating the authority-side reference graph. Older,
+            // same-generation/different, and cross-Workspace were fenced above.
+            return managed
+                .apply_session_inputs_with_context(
+                    thread,
+                    &manifest.workspace_id,
+                    manifest.revision,
+                    &manifest.resources,
+                    claim,
+                    false,
+                )
+                .await;
         }
         // Re-stage even when the manifest is unchanged: immutable File bytes,
         // config-version integrity, and credential revocation are live-deny checks
@@ -540,6 +561,18 @@ impl ManagedHost {
                         }
                         _ => None,
                     });
+                if let Some(reference) = &materialization_reference {
+                    // Remote Memory claim decision table: active + exact config
+                    // => snapshot preflight succeeds; archived/config-changed/
+                    // stale claim => fail before a resident Environment or model
+                    // can reuse the prior projection. The mounter still owns the
+                    // actual copy/write-back lifecycle.
+                    self.host
+                        .memory_repository()
+                        .snapshot_heads(reference)
+                        .await
+                        .map_err(|error| RunError::bad_request(error.to_string()))?;
+                }
                 let handle = self.host.platform_memory_handle(
                     materialization_reference
                         .clone()
@@ -780,6 +813,194 @@ impl ManagedHost {
         self.mcp_realizer = Some(realizer);
         self.refresh_dispatch_session_runtime();
         self
+    }
+
+    async fn apply_session_inputs_with_context(
+        &self,
+        thread: &str,
+        workspace_id: &str,
+        resource_revision: u64,
+        inputs: &awaken_session_contract::ResolvedSessionResources,
+        claim: Option<&awaken_run_ingress::RunClaim>,
+        update_authority_references: bool,
+    ) -> Result<(), RunError> {
+        // Reuse the Session slot's canonical realization mutex. Cold active-active
+        // requests may concurrently replay the same durable generation; only one
+        // may compare, realize, and publish its process-local projection at a time.
+        let lifecycle = self
+            .host
+            .session_slots
+            .update(thread, |slot| slot.lifecycle.clone());
+        let _lifecycle = lifecycle.lock().await;
+        self.host.register_thread_workspace(thread, workspace_id);
+        let desired_manifest = awaken_session_contract::SessionResourceManifest::at_revision(
+            workspace_id,
+            resource_revision,
+            inputs.clone(),
+        );
+        // Exact local replays are already converged. Claimed replays are handled
+        // by `DispatchSessionRuntime::install`, which re-stages them to revalidate
+        // live Resource state before entering this replacement path.
+        if self.host.thread_resource_manifest(thread).as_ref() == Some(&desired_manifest) {
+            return Ok(());
+        }
+        let old = self.host.thread_resources_snapshot(thread);
+        let old_memory: Vec<_> = old
+            .mounts
+            .iter()
+            .filter_map(|mount| match &mount.source {
+                awaken_provisioning_contract::MountSource::MemoryStore { store_id, .. } => Some((
+                    mount.mount_id.clone(),
+                    store_id.clone(),
+                    mount.mount_path.clone(),
+                    mount.access,
+                )),
+                _ => None,
+            })
+            .collect();
+        let desired_memory: Vec<_> = inputs
+            .inputs
+            .iter()
+            .filter_map(|input| match &input.source {
+                awaken_session_contract::ResolvedInputSource::MemoryStore {
+                    memory_store_id,
+                    ..
+                } => Some((
+                    input.binding_id.to_string(),
+                    memory_store_id.to_string(),
+                    format!(".mnt/{}", input.mount_path.trim_start_matches('/')),
+                    match input.access {
+                        awaken_resource_contract::ResourceAccess::ReadOnly => {
+                            awaken_provisioning_contract::MountAccess::ReadOnly
+                        }
+                        awaken_resource_contract::ResourceAccess::ReadWrite => {
+                            awaken_provisioning_contract::MountAccess::ReadWrite
+                        }
+                    },
+                )),
+                _ => None,
+            })
+            .collect();
+        let live_environment = self.host.session_environment(thread).await;
+        // Another cold-rehydration request can install this exact manifest while
+        // the environment lookup above yields. Re-read the canonical manifest at
+        // the decision boundary: equal means the concurrent replay converged;
+        // unequal remains a forbidden live Memory mutation.
+        let installed_manifest = self.host.thread_resource_manifest(thread);
+        if live_environment.is_some() && installed_manifest.as_ref() == Some(&desired_manifest) {
+            return Ok(());
+        }
+        // A durable sandbox binding can be adopted before this process has any
+        // Resource projection. `None` therefore means cold recovery: install the
+        // authority's active generation. Only an already-installed, different
+        // manifest is evidence of a forbidden live Memory mutation.
+        if live_environment.is_some()
+            && installed_manifest.is_some()
+            && old_memory != desired_memory
+        {
+            tracing::warn!(
+                session_id = thread,
+                installed_manifest = ?installed_manifest,
+                old_memory = ?old_memory,
+                desired_memory = ?desired_memory,
+                "rejecting a live Session Memory projection change"
+            );
+            return Err(RunError::bad_request(
+                "memory_store inputs are create-time only for a live Session",
+            ));
+        }
+        let skill_versions = match &inputs.skills {
+            Some(bindings) => Some(
+                self.host
+                    .skills
+                    .load_pinned(workspace_id, bindings, claim)
+                    .await
+                    .map_err(|error| RunError::bad_request(error.to_string()))?,
+            ),
+            None => None,
+        };
+        let compiled = self
+            .compile_effective_inputs(thread, workspace_id, inputs, claim)
+            .await?;
+        let new = &compiled.staged;
+        if let Some(environment) = &live_environment {
+            environment
+                .validate_live_mount_replacement(&old.mounts, &new.mounts)
+                .map_err(|error| RunError::bad_request(error.to_string()))?;
+        }
+        self.host.harvest_thread_skills(thread).await;
+        self.host.publish_thread_repositories(thread).await;
+        if let Some(environment) = &live_environment {
+            // Realize the desired live projection before committing its logical
+            // manifest. Every operation is idempotent, so a failed attempt leaves
+            // the prior manifest authoritative and the persisted pending generation
+            // can safely retry without mistaking an unrealized mount for success.
+            environment
+                .remove_workspace_path(crate::skills::DELIVERED_SKILLS_SUBDIR)
+                .await
+                .map_err(|error| RunError::internal(error.to_string()))?;
+            for mount in &old.mounts {
+                if !new
+                    .mounts
+                    .iter()
+                    .any(|candidate| candidate.mount_path == mount.mount_path)
+                {
+                    environment
+                        .remove_workspace_path(&mount.mount_path)
+                        .await
+                        .map_err(|error| RunError::internal(error.to_string()))?;
+                }
+            }
+            for mount in &new.mounts {
+                if !old.mounts.iter().any(|candidate| candidate == mount) {
+                    environment
+                        .attach_mount(mount.clone())
+                        .await
+                        .map_err(|error| RunError::internal(error.to_string()))?;
+                }
+            }
+            for repository in &old.repositories {
+                if !new
+                    .repositories
+                    .iter()
+                    .any(|candidate| candidate.plan == repository.plan)
+                {
+                    environment
+                        .remove_workspace_path(&repository.plan.mount_path)
+                        .await
+                        .map_err(|error| RunError::internal(error.to_string()))?;
+                }
+            }
+            for repository in &new.repositories {
+                if !old
+                    .repositories
+                    .iter()
+                    .any(|candidate| candidate.plan == repository.plan)
+                {
+                    awaken_provisioning_contract::RepositoryRealizer::realize_repository(
+                        environment.as_ref(),
+                        &repository.plan,
+                        repository.credential.as_ref(),
+                    )
+                    .await
+                    .map_err(|error| RunError::internal(error.to_string()))?;
+                }
+            }
+        }
+        self.install_effective_inputs(
+            thread,
+            workspace_id,
+            resource_revision,
+            inputs,
+            compiled,
+            update_authority_references,
+        )
+        .await?;
+        self.host
+            .session_slots
+            .update(thread, |slot| slot.skills = skill_versions);
+        self.host.evict_session_for_rebuild(thread).await;
+        Ok(())
     }
 }
 
@@ -1024,8 +1245,12 @@ impl SessionRuntime for ManagedHost {
         )
     }
 
-    async fn pending_tool(&self, thread: &str) -> Option<Pending> {
-        to_pending(self.host.pending_tool(thread).await)
+    async fn pending_tool(&self, thread: &str) -> Result<Option<Pending>, RunError> {
+        self.host
+            .pending_tool(thread)
+            .await
+            .map(to_pending)
+            .map_err(to_run_error)
     }
 
     async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
@@ -1093,187 +1318,15 @@ impl SessionRuntime for ManagedHost {
         resource_revision: u64,
         inputs: &awaken_session_contract::ResolvedSessionResources,
     ) -> Result<(), RunError> {
-        // Reuse the Session slot's canonical realization mutex. Cold active-active
-        // requests may concurrently replay the same durable generation; only one
-        // may compare, realize, and publish its process-local projection at a time.
-        let lifecycle = self
-            .host
-            .session_slots
-            .update(thread, |slot| slot.lifecycle.clone());
-        let _lifecycle = lifecycle.lock().await;
-        self.host.register_thread_workspace(thread, workspace_id);
-        let desired_manifest = awaken_session_contract::SessionResourceManifest::at_revision(
-            workspace_id,
-            resource_revision,
-            inputs.clone(),
-        );
-        // Exact replays are the recovery/idempotency case, not a live mutation.
-        // Return before the create-time-only Memory guard so concurrent/cold
-        // Session rehydration cannot reject the already-installed generation.
-        if self.host.thread_resource_manifest(thread).as_ref() == Some(&desired_manifest) {
-            return Ok(());
-        }
-        let old = self.host.thread_resources_snapshot(thread);
-        let old_memory: Vec<_> = old
-            .mounts
-            .iter()
-            .filter_map(|mount| match &mount.source {
-                awaken_provisioning_contract::MountSource::MemoryStore { store_id, .. } => Some((
-                    mount.mount_id.clone(),
-                    store_id.clone(),
-                    mount.mount_path.clone(),
-                    mount.access,
-                )),
-                _ => None,
-            })
-            .collect();
-        let desired_memory: Vec<_> = inputs
-            .inputs
-            .iter()
-            .filter_map(|input| match &input.source {
-                awaken_session_contract::ResolvedInputSource::MemoryStore {
-                    memory_store_id,
-                    ..
-                } => Some((
-                    input.binding_id.to_string(),
-                    memory_store_id.to_string(),
-                    format!(".mnt/{}", input.mount_path.trim_start_matches('/')),
-                    match input.access {
-                        awaken_resource_contract::ResourceAccess::ReadOnly => {
-                            awaken_provisioning_contract::MountAccess::ReadOnly
-                        }
-                        awaken_resource_contract::ResourceAccess::ReadWrite => {
-                            awaken_provisioning_contract::MountAccess::ReadWrite
-                        }
-                    },
-                )),
-                _ => None,
-            })
-            .collect();
-        let live_environment = self.host.session_environment(thread).await;
-        // Another cold-rehydration request can install this exact manifest while
-        // the environment lookup above yields. Re-read the canonical manifest at
-        // the decision boundary: equal means the concurrent replay converged;
-        // unequal remains a forbidden live Memory mutation.
-        let installed_manifest = self.host.thread_resource_manifest(thread);
-        if live_environment.is_some() && installed_manifest.as_ref() == Some(&desired_manifest) {
-            return Ok(());
-        }
-        // A durable sandbox binding can be adopted before this process has any
-        // Resource projection. `None` therefore means cold recovery: install the
-        // authority's active generation. Only an already-installed, different
-        // manifest is evidence of a forbidden live Memory mutation.
-        if live_environment.is_some()
-            && installed_manifest.is_some()
-            && old_memory != desired_memory
-        {
-            tracing::warn!(
-                session_id = thread,
-                installed_manifest = ?installed_manifest,
-                old_memory = ?old_memory,
-                desired_memory = ?desired_memory,
-                "rejecting a live Session Memory projection change"
-            );
-            return Err(RunError::bad_request(
-                "memory_store inputs are create-time only for a live Session",
-            ));
-        }
-        let skill_versions = match &inputs.skills {
-            Some(bindings) => Some(
-                self.host
-                    .skills
-                    .load_pinned(workspace_id, bindings, None)
-                    .await
-                    .map_err(|error| RunError::bad_request(error.to_string()))?,
-            ),
-            None => None,
-        };
-        let compiled = self
-            .compile_effective_inputs(thread, workspace_id, inputs, None)
-            .await?;
-        let new = &compiled.staged;
-        if let Some(environment) = &live_environment {
-            environment
-                .validate_live_mount_replacement(&old.mounts, &new.mounts)
-                .map_err(|error| RunError::bad_request(error.to_string()))?;
-        }
-        self.host.harvest_thread_skills(thread).await;
-        self.host.publish_thread_repositories(thread).await;
-        if let Some(environment) = &live_environment {
-            // Realize the desired live projection before committing its logical
-            // manifest. Every operation is idempotent, so a failed attempt leaves
-            // the prior manifest authoritative and the persisted pending generation
-            // can safely retry without mistaking an unrealized mount for success.
-            // Delivered Skills are an exact, runtime-owned tree. Remove the old
-            // projection at the manifest transition itself; the rebuilt context
-            // materializes only the newly frozen versions. Authored `skills/`
-            // remains independently owned and is untouched.
-            environment
-                .remove_workspace_path(crate::skills::DELIVERED_SKILLS_SUBDIR)
-                .await
-                .map_err(|error| RunError::internal(error.to_string()))?;
-            for mount in &old.mounts {
-                if !new
-                    .mounts
-                    .iter()
-                    .any(|candidate| candidate.mount_path == mount.mount_path)
-                {
-                    environment
-                        .remove_workspace_path(&mount.mount_path)
-                        .await
-                        .map_err(|error| RunError::internal(error.to_string()))?;
-                }
-            }
-            for mount in &new.mounts {
-                if !old.mounts.iter().any(|candidate| candidate == mount) {
-                    environment
-                        .attach_mount(mount.clone())
-                        .await
-                        .map_err(|error| RunError::internal(error.to_string()))?;
-                }
-            }
-            for repository in &old.repositories {
-                if !new
-                    .repositories
-                    .iter()
-                    .any(|candidate| candidate.plan == repository.plan)
-                {
-                    environment
-                        .remove_workspace_path(&repository.plan.mount_path)
-                        .await
-                        .map_err(|error| RunError::internal(error.to_string()))?;
-                }
-            }
-            for repository in &new.repositories {
-                if !old
-                    .repositories
-                    .iter()
-                    .any(|candidate| candidate.plan == repository.plan)
-                {
-                    awaken_provisioning_contract::RepositoryRealizer::realize_repository(
-                        environment.as_ref(),
-                        &repository.plan,
-                        repository.credential.as_ref(),
-                    )
-                    .await
-                    .map_err(|error| RunError::internal(error.to_string()))?;
-                }
-            }
-        }
-        self.install_effective_inputs(
+        self.apply_session_inputs_with_context(
             thread,
             workspace_id,
             resource_revision,
             inputs,
-            compiled,
+            None,
             true,
         )
-        .await?;
-        self.host
-            .session_slots
-            .update(thread, |slot| slot.skills = skill_versions);
-        self.host.evict_session_for_rebuild(thread).await;
-        Ok(())
+        .await
     }
 
     async fn prepare_session(
@@ -1290,6 +1343,12 @@ impl SessionRuntime for ManagedHost {
             .session_slots
             .update(thread, |slot| slot.lifecycle.clone());
         let _lifecycle = lifecycle.lock().await;
+        // Workspace is a frozen Session-baseline coordinate, not a consequence
+        // of having at least one Resource. Register it even for an empty
+        // manifest so immutable Agent/backend lookup cannot fall back to this
+        // process's platform workspace.
+        self.host
+            .register_thread_workspace(thread, &init.workspace_id);
         // R1: retain the exact frozen Agent coordinate for internal cold-recovery
         // calls (`committed_messages`, durable operations) that intentionally do
         // not repeat a wire-level Agent argument.
@@ -1361,15 +1420,25 @@ impl SessionRuntime for ManagedHost {
         thread: &str,
         binding: &str,
     ) -> Result<(), RunError> {
+        // Managed Session restoration is a continuity contract: the durable
+        // binding must decode, belong to this Session/provider, and still name a
+        // ready physical environment. Run-dispatch recovery has its own explicit
+        // RebuildFromCommittedTruth policy; applying that fallback here would
+        // turn corrupt or deleted Session authority into a replacement sandbox.
+        let (_, _, publication) = self
+            .host
+            .resolve_session_publication(thread, Some(agent), None)
+            .map_err(to_run_error)?;
+        let provisioning = publication
+            .as_ref()
+            .map(|snapshot| &snapshot.resolved_spec.model_binding.provisioning)
+            .unwrap_or(&awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor);
         let (adopted, rebuild) = self
             .host
-            .adopt_bound_session_environment(thread, Some(binding), true)
+            .adopt_bound_session_environment(thread, Some(binding), provisioning, false)
             .await
             .map_err(to_run_error)?;
-        // A graceful process shutdown disposes its physical sandbox while the
-        // durable Session binding remains. Rebuild from committed Session truth;
-        // ctx_for_with_sandbox persists the replacement binding before use.
-        debug_assert!(adopted.is_none() || !rebuild);
+        debug_assert!(!rebuild);
         self.host
             .ctx_for_with_sandbox(thread, Some(agent), adopted)
             .await
@@ -1477,8 +1546,8 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
         }
         let request_fingerprint = request.fingerprint();
         if let Some(existing) = self.host.mcp_projection(&request.generation) {
-            if existing.realization_id == request.realization_id
-                && existing.stage_idempotency_key == request.stage_idempotency_key
+            if existing.request.realization_id == request.realization_id
+                && existing.request.stage_idempotency_key == request.stage_idempotency_key
                 && existing.receipt.receipt_fingerprint == request_fingerprint
                 && existing.state != crate::session_slot::McpProjectionState::Removed
             {
@@ -1652,7 +1721,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                 ));
             }
         };
-        let renewal_binding_fingerprint = request.renewal_binding_fingerprint();
+        let projection_request = request.clone();
         let server = crate::mcp::McpTransportMaterial {
             name: request.name,
             prompts_as_skills: request.prompts_as_skills,
@@ -1826,10 +1895,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
         if let Err(error) =
             self.host
                 .insert_mcp_projection(crate::session_slot::McpGenerationProjection {
-                    generation: request.generation.clone(),
-                    realization_id: request.realization_id,
-                    stage_idempotency_key: request.stage_idempotency_key,
-                    renewal_binding_fingerprint,
+                    request: projection_request,
                     receipt: receipt.clone(),
                     server: Some(server),
                     native_wiring,

@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
@@ -641,6 +641,20 @@ impl DockerRuntime {
         format!("{}/tcp", self.agent_port)
     }
 
+    async fn live_inputs_root(&self, container_id: &str) -> Result<PathBuf, RuntimeError> {
+        self.docker
+            .inspect_container(container_id, None)
+            .await
+            .map_err(backend)?
+            .mounts
+            .unwrap_or_default()
+            .into_iter()
+            .find(|mount| mount.destination.as_deref() == Some(crate::LIVE_INPUTS_ROOT))
+            .and_then(|mount| mount.source)
+            .map(PathBuf::from)
+            .ok_or_else(|| backend("Docker container has no managed live-input root bind"))
+    }
+
     fn host_config(&self, plan: &ContainerPlan) -> HostConfig {
         let binds: Vec<String> = plan
             .binds
@@ -706,6 +720,25 @@ impl ContainerRuntime for DockerRuntime {
 
     fn supports_package_provisioning(&self) -> bool {
         true
+    }
+
+    fn uses_host_live_input_bind(&self) -> bool {
+        true
+    }
+
+    async fn project_live_input(
+        &self,
+        container_id: &str,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<(), RuntimeError> {
+        let root = self.live_inputs_root(container_id).await?;
+        crate::live_inputs::project_host_input(&root, path, bytes)
+    }
+
+    async fn remove_live_input(&self, container_id: &str, path: &str) -> Result<(), RuntimeError> {
+        let root = self.live_inputs_root(container_id).await?;
+        crate::live_inputs::remove_host_input(&root, path)
     }
 
     async fn prepare_package_image(

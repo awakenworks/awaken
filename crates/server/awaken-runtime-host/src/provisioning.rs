@@ -134,16 +134,24 @@ struct DispatchedSessionRuntimeProjection {
     environment: awaken_session_contract::EnvironmentSnapshot,
     /// `None` retains publication inheritance; `Some([])` is an explicit clear.
     toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
+    /// `None` is reserved for legacy dispatches that predate MCP effect
+    /// projection. New dispatches always carry `Some`, including `Some([])` for
+    /// an exact removal-all. These are canonical generation-fenced effect
+    /// inputs, not a second desired-state registry.
+    #[serde(default)]
+    mcp_stages: Option<Vec<awaken_session_contract::StageMcpAttachment>>,
 }
 
 pub(crate) fn encode_session_runtime_envelope(
     environment: awaken_session_contract::EnvironmentSnapshot,
     toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
+    mcp_stages: Vec<awaken_session_contract::StageMcpAttachment>,
 ) -> Result<awaken_run_ingress::SessionRuntimeEnvelope, serde_json::Error> {
     Ok(awaken_run_ingress::SessionRuntimeEnvelope::new(
         serde_json::to_string(&DispatchedSessionRuntimeProjection {
             environment,
             toolsets,
+            mcp_stages: Some(mcp_stages),
         })?,
     ))
 }
@@ -154,12 +162,17 @@ pub(crate) fn decode_session_runtime_envelope(
     (
         awaken_session_contract::EnvironmentSnapshot,
         Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
+        Option<Vec<awaken_session_contract::StageMcpAttachment>>,
     ),
     serde_json::Error,
 > {
     let projection: DispatchedSessionRuntimeProjection =
         serde_json::from_str(&envelope.projection_json)?;
-    Ok((projection.environment, projection.toolsets))
+    Ok((
+        projection.environment,
+        projection.toolsets,
+        projection.mcp_stages,
+    ))
 }
 
 fn file_catalog_error(error: FileCatalogError) -> ResourcePurgeError {

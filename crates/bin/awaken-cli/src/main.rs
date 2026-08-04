@@ -296,32 +296,85 @@ async fn serve_resolved(
         }
     }
 
-    let server = std::future::IntoFuture::into_future(
-        axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()),
-    );
-    tokio::pin!(server);
     let Some(worker) = local_worker else {
-        return server
+        return axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
             .await
             .map_err(|error| format!("server stopped: {error}"));
     };
+
+    // AllInOne owns one shutdown sequence. Keep the Control HTTP endpoint alive
+    // until its co-located Worker has fenced admission and deregistered; only
+    // then stop accepting external traffic. Independent signal listeners race
+    // and can otherwise abort the Worker after the server has already made its
+    // required drain/deregister calls unreachable.
+    let (worker_shutdown_tx, worker_shutdown_rx) = tokio::sync::oneshot::channel();
+    let (server_shutdown_tx, server_shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = std::future::IntoFuture::into_future(
+        axum::serve(listener, app).with_graceful_shutdown(async move {
+            let _ = server_shutdown_rx.await;
+        }),
+    );
+    tokio::pin!(server);
     let worker = tokio::spawn(async move {
         worker
-            .run_until_shutdown()
+            .run_until(async move {
+                worker_shutdown_rx.await.map_err(|_| {
+                    Box::new(std::io::Error::other(
+                        "AllInOne Worker shutdown owner dropped",
+                    )) as Box<dyn std::error::Error + Send + Sync>
+                })
+            })
             .await
             .map_err(|error| error.to_string())
     });
     tokio::pin!(worker);
+    let mut worker_shutdown_tx = Some(worker_shutdown_tx);
+    let mut server_shutdown_tx = Some(server_shutdown_tx);
     tokio::select! {
-        result = &mut server => {
-            worker.abort();
-            result.map_err(|error| format!("server stopped: {error}"))
+        mode = shutdown_mode_signal() => {
+            if let Some(tx) = worker_shutdown_tx.take() {
+                let _ = tx.send(mode);
+            }
+            let worker_result = local_worker_result((&mut worker).await);
+            if let Some(tx) = server_shutdown_tx.take() {
+                let _ = tx.send(());
+            }
+            let server_result = (&mut server)
+                .await
+                .map_err(|error| format!("server stopped: {error}"));
+            worker_result?;
+            server_result
         }
-        result = &mut worker => match result {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(format!("local Worker stopped: {error}")),
-            Err(error) => Err(format!("local Worker task failed: {error}")),
-        },
+        result = &mut server => {
+            if let Some(tx) = worker_shutdown_tx.take() {
+                let _ = tx.send(awaken_worker::WorkerShutdown::Prompt);
+            }
+            let worker_result = local_worker_result((&mut worker).await);
+            result.map_err(|error| format!("server stopped: {error}"))?;
+            worker_result
+        }
+        result = &mut worker => {
+            let worker_result = local_worker_result(result);
+            if let Some(tx) = server_shutdown_tx.take() {
+                let _ = tx.send(());
+            }
+            let server_result = (&mut server)
+                .await
+                .map_err(|error| format!("server stopped: {error}"));
+            worker_result?;
+            server_result
+        }
+    }
+}
+
+fn local_worker_result(
+    result: Result<Result<(), String>, tokio::task::JoinError>,
+) -> Result<(), String> {
+    match result {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(format!("local Worker stopped: {error}")),
+        Err(error) => Err(format!("local Worker task failed: {error}")),
     }
 }
 
@@ -387,8 +440,9 @@ fn open_browser(url: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// Resolve on SIGINT (developer stop) or SIGTERM (orchestrator stop).
-async fn shutdown_signal() {
+/// Resolve the one process shutdown reason. AllInOne passes this same decision
+/// into its Worker before stopping the local Control/Coordinator HTTP endpoint.
+async fn shutdown_mode_signal() -> awaken_worker::WorkerShutdown {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -396,18 +450,23 @@ async fn shutdown_signal() {
             Ok(term) => term,
             Err(_) => {
                 let _ = tokio::signal::ctrl_c().await;
-                return;
+                return awaken_worker::WorkerShutdown::Prompt;
             }
         };
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = term.recv() => {}
+            _ = tokio::signal::ctrl_c() => awaken_worker::WorkerShutdown::Prompt,
+            _ = term.recv() => awaken_worker::WorkerShutdown::Graceful,
         }
     }
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+        awaken_worker::WorkerShutdown::Prompt
     }
+}
+
+async fn shutdown_signal() {
+    let _ = shutdown_mode_signal().await;
 }
 
 #[cfg(test)]

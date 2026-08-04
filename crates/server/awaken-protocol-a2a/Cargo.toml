@@ -8,6 +8,7 @@ license.workspace = true
 awaken-agent-contract.workspace = true
 awaken-credential.workspace = true
 awaken-session-contract.workspace = true
+awaken-outbound-http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
@@ -20,6 +21,7 @@ tokio-stream = "0.1"
 ureq = { version = "2", features = ["json"] }
 
 [dev-dependencies]
+awaken-outbound-http = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "net"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

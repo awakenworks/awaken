@@ -677,6 +677,67 @@ async fn build_secretless_worker(
     Ok(builder.build()?)
 }
 
+fn configured_container_acp_targets(
+    deployment: &awaken_runtime_host::DeploymentConfig,
+) -> Result<Vec<awaken_acp_application::ConfiguredAcpCapabilityTarget>, String> {
+    if !matches!(
+        deployment.sandbox_tier,
+        awaken_runtime_host::SandboxTier::Docker
+            | awaken_runtime_host::SandboxTier::Podman
+            | awaken_runtime_host::SandboxTier::K8s
+    ) {
+        return Ok(Vec::new());
+    }
+    let Some(profile) = deployment.acp.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let image = deployment
+        .container_image
+        .as_deref()
+        .filter(|image| !image.trim().is_empty())
+        .ok_or_else(|| {
+            "configured container ACP capability requires an image identity".to_string()
+        })?;
+    profile
+        .cli_ids()
+        .map(|id| {
+            let cli = awaken_run_executor_acp::acp_cli(id)
+                .ok_or_else(|| format!("configured ACP capability has unknown adapter `{id}`"))?;
+            awaken_acp_application::ConfiguredAcpCapabilityTarget::new(
+                id,
+                format!("container-image:{image}"),
+                cli.container_argv
+                    .iter()
+                    .map(|part| (*part).to_string())
+                    .collect(),
+                cli.auth_method_id.map(str::to_string),
+            )
+        })
+        .collect()
+}
+
+fn configured_container_acp_capability_source(
+    deployment: &awaken_runtime_host::DeploymentConfig,
+    host: Arc<SharedHost>,
+) -> Result<Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>, String> {
+    let targets = configured_container_acp_targets(deployment)?;
+    if targets.is_empty() {
+        return Ok(None);
+    }
+    let negotiator = Arc::new(awaken_runtime_host::SessionAcpCapabilityNegotiator::new(
+        host,
+        std::time::Duration::from_secs(10),
+        Arc::new(awaken_protocol_acp::ProtocolAcpCapabilityHandshake),
+    ));
+    Ok(Some(Arc::new(
+        awaken_acp_application::ConfiguredAcpCapabilityObservationSource::new(
+            targets,
+            negotiator,
+            std::path::PathBuf::from("/workspace"),
+        ),
+    )))
+}
+
 impl WorkerNode {
     #[must_use]
     pub fn manifest(&self) -> &WorkerManifest {
@@ -731,13 +792,35 @@ impl WorkerNode {
                 Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
             >,
     {
+        let deployment = self.deployment.clone();
         let upstream_url = self.upstream.base_url().to_string();
         let upstream = self.upstream;
         let bootstrap_control = WorkerControlClient::new(upstream.clone());
-        let registration = bootstrap_control
-            .register(new_incarnation_id()?, self.manifest)
-            .await
-            .map_err(std::io::Error::other)?;
+        let incarnation_id = new_incarnation_id()?;
+        let mut shutdown = std::pin::pin!(shutdown);
+        let mut occupied_attempts = 0_u64;
+        let registration = loop {
+            let attempt = bootstrap_control
+                .register_classified(incarnation_id.clone(), self.manifest.clone())
+                .await;
+            match attempt {
+                Ok(registration) => break registration,
+                Err(awaken_runtime_host::WorkerRegistrationError::SlotOccupied(error)) => {
+                    if occupied_attempts % 10 == 0 {
+                        eprintln!("worker registration waiting for the prior lease: {error}");
+                    }
+                    occupied_attempts = occupied_attempts.saturating_add(1);
+                    tokio::select! {
+                        () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+                        shutdown = &mut shutdown => {
+                            shutdown?;
+                            return Ok(());
+                        }
+                    }
+                }
+                Err(error) => return Err(std::io::Error::other(error.to_string()).into()),
+            }
+        };
         let upstream = upstream.with_worker_identity(registration.snapshot.identity.clone());
         let control = WorkerControlClient::new(upstream.clone());
         let registered_context =
@@ -848,6 +931,11 @@ impl WorkerNode {
             .await;
 
         let host = Arc::new(host);
+        let acp_capability_observation_source = match self.acp_capability_observation_source {
+            Some(source) => Some(source),
+            None => configured_container_acp_capability_source(&deployment, host.clone())
+                .map_err(std::io::Error::other)?,
+        };
         // Install one dispatch-facing Session adapter even when no Resource
         // validator is present: MCP hot attachment commands have an independent
         // lifecycle and must not be enabled accidentally by Resource wiring.
@@ -866,7 +954,7 @@ impl WorkerNode {
             control: control.clone(),
             identity: registration.snapshot.identity,
             credential_observation_resolver: self.credential_observation_resolver,
-            acp_capability_observation_source: self.acp_capability_observation_source,
+            acp_capability_observation_source,
             observations,
             observation_ttl: self.credential_observation_ttl,
         });
@@ -952,7 +1040,6 @@ impl WorkerNode {
         // process after the ordinary drain cleanup so Kubernetes/systemd can start
         // a newly registered incarnation. Reusing this process would make a stale
         // epoch capable of silently becoming authoritative again.
-        let mut shutdown = std::pin::pin!(shutdown);
         let (shutdown, authority_lost) = tokio::select! {
             shutdown = &mut shutdown => (shutdown, false),
             heartbeat = &mut heartbeat => {

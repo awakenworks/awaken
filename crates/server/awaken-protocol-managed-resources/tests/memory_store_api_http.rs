@@ -310,14 +310,25 @@ async fn memory_crud_with_precondition_and_version_log() {
     let mid = mem["id"].as_str().unwrap().to_string();
     let sha = mem["content_sha256"].as_str().unwrap().to_string();
     assert_eq!(mem["path"], "/a.md");
-    assert_eq!(mem["content"], "hello");
+    assert_eq!(
+        mem["content"],
+        Value::Null,
+        "Managed Agents create defaults to the basic projection"
+    );
     assert_eq!(mem["content_size_bytes"], 5);
     let created_version_id = mem["memory_version_id"].as_str().unwrap().to_string();
 
-    // Causes: list view is omitted/basic/full.
-    // Constraints: list defaults to basic; retrieve defaults to full.
-    // Effects: explicit full returns content while omitted/basic returns null.
-    // Decision rule: Memory-list ML2/ML4.
+    // Causes: operation is create/list/retrieve/update/version-list/version-retrieve;
+    // view is omitted/basic/full/invalid; stored content is present.
+    // Constraints: create/list/update default basic; retrieve defaults full; full
+    // list caps its page size at 20; invalid view is rejected before mutation.
+    // Effects: basic projects null content while preserving identity/hash/size;
+    // full projects content; invalid returns 400 and leaves the head unchanged.
+    // Decision table: R1 list full -> content; R2 list omitted/basic -> null;
+    // R3 retrieve omitted/full -> content; R4 retrieve basic -> null; R5 update
+    // omitted/basic -> mutation with null response; R6 update full -> mutation
+    // with content; R7 version list/retrieve follow their list/retrieve defaults;
+    // R8 any invalid view -> 400 without a write.
     let (status, full) = call(
         &router,
         "GET",
@@ -339,6 +350,14 @@ async fn memory_crud_with_precondition_and_version_log() {
         Value::Null,
         "basic view elides content"
     );
+    let (_, explicit_basic) = call(
+        &router,
+        "GET",
+        &format!("/v1/memory_stores/{store}/memories?view=basic"),
+        None,
+    )
+    .await;
+    assert_eq!(explicit_basic["data"][0]["content"], Value::Null, "R2");
 
     // Retrieve by id.
     let (status, got) = call(
@@ -350,6 +369,15 @@ async fn memory_crud_with_precondition_and_version_log() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(got["content"], "hello");
+    let (status, got_basic) = call(
+        &router,
+        "GET",
+        &format!("/v1/memory_stores/{store}/memories/{mid}?view=basic"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got_basic["content"], Value::Null, "R4");
 
     // A stale content_sha256 precondition is a 409 CAS failure.
     let (status, conflict) = call(
@@ -369,7 +397,7 @@ async fn memory_crud_with_precondition_and_version_log() {
     let (status, updated) = call(
         &router,
         "POST",
-        &format!("/v1/memory_stores/{store}/memories/{mid}"),
+        &format!("/v1/memory_stores/{store}/memories/{mid}?view=full"),
         Some(json!({ "content": "world", "precondition": { "content_sha256": sha } })),
     )
     .await;
@@ -377,6 +405,22 @@ async fn memory_crud_with_precondition_and_version_log() {
     assert_eq!(updated["content"], "world");
     let updated_version_id = updated["memory_version_id"].as_str().unwrap();
     assert_ne!(updated_version_id, created_version_id);
+
+    // An idempotent update exercises the default basic projection without
+    // appending a third version.
+    let (status, updated_basic) = call(
+        &router,
+        "POST",
+        &format!("/v1/memory_stores/{store}/memories/{mid}"),
+        Some(json!({
+            "content": "world",
+            "precondition": { "content_sha256": updated["content_sha256"] }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated_basic["content"], Value::Null, "R5");
+    assert_eq!(updated_basic["memory_version_id"], updated_version_id);
 
     // The version log now carries a `created` then a `modified` row.
     let (status, versions) = call(
@@ -398,6 +442,23 @@ async fn memory_crud_with_precondition_and_version_log() {
         vec!["created", "modified"],
         "version history: {versions}"
     );
+    assert!(
+        versions["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|version| version["content"] == Value::Null),
+        "R7 version list defaults to basic"
+    );
+    let (_, full_versions) = call(
+        &router,
+        "GET",
+        &format!("/v1/memory_stores/{store}/memory_versions?view=full"),
+        None,
+    )
+    .await;
+    assert_eq!(full_versions["data"][0]["content"], "hello", "R7");
+    assert_eq!(full_versions["data"][1]["content"], "world", "R7");
     let first_vid = versions["data"][0]["id"].as_str().unwrap().to_string();
     // Version-id cause/effect rules: V1 create atomically appends one real
     // version -> the Memory head projects that exact id; V2 CAS update appends
@@ -421,6 +482,74 @@ async fn memory_crud_with_precondition_and_version_log() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(ver["operation"], "created");
     assert_eq!(ver["content"], "hello");
+    let (_, basic_ver) = call(
+        &router,
+        "GET",
+        &format!("/v1/memory_stores/{store}/memory_versions/{first_vid}?view=basic"),
+        None,
+    )
+    .await;
+    assert_eq!(basic_ver["content"], Value::Null, "R7");
+
+    for route in [
+        format!("/v1/memory_stores/{store}/memories?view=invalid"),
+        format!("/v1/memory_stores/{store}/memories/{mid}?view=invalid"),
+        format!("/v1/memory_stores/{store}/memory_versions?view=invalid"),
+        format!("/v1/memory_stores/{store}/memory_versions/{first_vid}?view=invalid"),
+    ] {
+        assert_eq!(
+            call(&router, "GET", &route, None).await.0,
+            StatusCode::BAD_REQUEST,
+            "R8 {route}"
+        );
+    }
+    assert_eq!(
+        call(
+            &router,
+            "POST",
+            &format!("/v1/memory_stores/{store}/memories?view=invalid"),
+            Some(json!({ "path": "/must-not-exist.md", "content": "x" })),
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST,
+        "R8 invalid create view"
+    );
+    assert_eq!(
+        call(
+            &router,
+            "POST",
+            &format!("/v1/memory_stores/{store}/memories/{mid}?view=invalid"),
+            Some(json!({ "content": "must-not-persist" })),
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST,
+        "R8 invalid update view"
+    );
+    let (_, unchanged) = call(
+        &router,
+        "GET",
+        &format!("/v1/memory_stores/{store}/memories/{mid}"),
+        None,
+    )
+    .await;
+    assert_eq!(unchanged["content"], "world", "R8 rejects before mutation");
+    let (_, unchanged_list) = call(
+        &router,
+        "GET",
+        &format!("/v1/memory_stores/{store}/memories?view=full"),
+        None,
+    )
+    .await;
+    assert!(
+        unchanged_list["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|memory| memory["path"] != "/must-not-exist.md"),
+        "R8 invalid create view rejects before mutation"
+    );
 
     // Redact a version: stamp redacted_at + drop content.
     let (status, redacted) = call(

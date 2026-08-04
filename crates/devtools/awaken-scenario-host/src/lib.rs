@@ -37,9 +37,9 @@ pub use worker::run_echo_worker;
 mod scenario_shell;
 use composition::{
     fixed_host_backend_publication, fixed_host_backend_publication_with_acp_mcp,
-    fixed_host_backend_publication_with_mcp, mount, mount_with_environments,
-    mount_with_environments_and_agent_source, mount_with_host_backend_publication,
-    mount_with_memory_publication,
+    fixed_host_backend_publication_with_mcp, mount, mount_with_agent_source,
+    mount_with_environments, mount_with_environments_and_agent_source,
+    mount_with_host_backend_publication, mount_with_memory_publication,
 };
 use deployment::{resource_host, resource_host_with_deployment, scenario_storage_dir};
 use scenario_shell::{scenario_argv, scenario_host_acp_cli, scenario_shell_argv};
@@ -50,7 +50,6 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Role;
 use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
-use awaken_protocol_managed::ManagedState;
 use awaken_provider_genai::GenaiExecutor;
 use awaken_runtime_contract::StaticPublishedAgentSnapshots;
 use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
@@ -68,12 +67,10 @@ pub use awaken_protocol_managed_resources::{
     default_models, files_router, memory_stores_router, models_router, skills_router,
 };
 pub use awaken_runtime_host::{
-    ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost, RunApplicationHost,
-    SharedHost, ThreadEvent, ThreadEventHub, VaultRefresher, advertised_tools, durable_ops_router,
+    ExtMcpProbe, HostResume, InferenceExecutorMaterializer, RunApplicationHost, SharedHost,
+    ThreadEvent, ThreadEventHub, VaultRefresher, advertised_tools, durable_ops_router,
 };
 pub use awaken_sandbox_local::content_fingerprint;
-
-use awaken_coordinator::mount_with_managed;
 
 /// A minimal ACP agent (shell): read the prompt line, emit a message + turn_end —
 /// stands in for `claude --acp` so the ACP-runtime path runs without a real CLI.
@@ -1151,14 +1148,11 @@ pub async fn build_config_router() -> Router {
     // Workspace-path addressing (ADR-0048/0052 D2): `/v1/workspaces/{ws}/config/...`
     // is rewritten to the flat config route and stamped with `{ws}` as the scope, so
     // the reserved admin scope is reachable and the tenant/default scope is fenced.
-    // Build the managed state explicitly (as `mount` does) and use the same
-    // Coordinator catalog for Session configuration and runtime publication reads.
-    let host = Arc::new(host);
-    let managed_state = Arc::new(
-        ManagedState::new(ManagedHost::new(host.clone()))
-            .with_config_source(executable_agent_catalog),
-    );
-    let flat = mount_with_managed(host, managed_state)
+    // Composition decision table: storage_dir absent -> the canonical scenario
+    // mount supplies an ephemeral Session repository; storage_dir present -> it
+    // supplies sessions.db beside runtime truth. The Agent source is an added port,
+    // never a reason to rebuild ManagedState through a parallel in-memory path.
+    let flat = mount_with_agent_source(Arc::new(host), executable_agent_catalog)
         .merge(config_router(plane))
         .merge(agents);
     let flat =

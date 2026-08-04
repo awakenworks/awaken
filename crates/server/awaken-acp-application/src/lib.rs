@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+pub use awaken_acp_contract::AcpCapabilityNegotiator;
 use awaken_acp_contract::{
     AcpCapabilityObservation, AcpCapabilityObservationSource, AcpCapabilityObservationState,
 };
@@ -27,8 +28,8 @@ use awaken_runtime_contract::{
 mod capability_probe;
 mod host_discovery;
 pub use capability_probe::{
-    AcpCapabilityNegotiator, AcpCapabilityState, EffectiveAcpCapabilityProfile,
-    HostAcpCapabilityNegotiator,
+    AcpCapabilityState, ConfiguredAcpCapabilityObservationSource, ConfiguredAcpCapabilityTarget,
+    EffectiveAcpCapabilityProfile, HostAcpCapabilityNegotiator,
 };
 pub use host_discovery::{AcpDetectionState, AcpDiscovery, AcpHostDiscovery, AcpHostObservation};
 

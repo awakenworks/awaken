@@ -361,20 +361,11 @@ impl ManagedState {
         mut preview_ids: PreviewAllocations,
         terminal_cursor: Option<LifecycleCursor>,
     ) -> Result<(), StateError> {
-        let pending = outcome
-            .pending()
-            .map(|p| (p.tool_use_id.as_str(), p.client_executed));
+        let pending = outcome.pending();
         let delegated_runs = outcome.delegated_runs().to_vec();
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-        let prior_mcp_ids: Vec<String> = record
-            .events
-            .iter()
-            .filter_map(|event| match event.kind {
-                OutboundKind::AgentMcpToolUse { .. } => Some(event.id.clone()),
-                _ => None,
-            })
-            .collect();
+        let (projected_tool_ids, prior_mcp_ids) = record.projected_tool_ids();
         let project_terminal =
             terminal_cursor.is_none_or(|cursor| record.projected_terminal_cursors.insert(cursor));
         // A concurrent GET may already have observed this process's committed
@@ -388,9 +379,20 @@ impl ManagedState {
             .cloned()
             .collect::<Vec<_>>();
         let projected = if project_terminal {
-            project_step(&new_messages, outcome.state(), pending, prior_mcp_ids)
+            project_step(
+                &new_messages,
+                outcome.state(),
+                pending,
+                &projected_tool_ids,
+                prior_mcp_ids,
+            )
         } else {
-            project_messages_with_mcp_ids(&new_messages, pending, prior_mcp_ids)
+            project_messages_with_mcp_ids(
+                &new_messages,
+                pending,
+                &projected_tool_ids,
+                prior_mcp_ids,
+            )
         };
         // Everything appended from here is republished on the live broadcast at the end.
         let start = record.events.len();
@@ -751,7 +753,11 @@ impl ManagedState {
         session_id: &str,
         events: &[InboundEvent],
     ) -> Result<(), StateError> {
-        let pending = self.runtime.pending_tool(session_id).await;
+        let pending = self
+            .runtime
+            .pending_tool(session_id)
+            .await
+            .map_err(StateError::Run)?;
         let mut pending_resolved = pending.is_none();
         let mut resolution_seen = false;
         for event in events {
@@ -920,9 +926,16 @@ impl ManagedState {
                 record.session.status = "idle";
             }
             if let Some(activity_epoch) = activity_epoch {
-                let reason = if processing.is_ok()
-                    && self.runtime.pending_tool(session_id).await.is_some()
-                {
+                let still_pending = if processing.is_ok() {
+                    self.runtime
+                        .pending_tool(session_id)
+                        .await
+                        .map_err(StateError::Run)?
+                        .is_some()
+                } else {
+                    false
+                };
+                let reason = if still_pending {
                     awaken_session_contract::SessionIdleReason::AwaitingAction
                 } else {
                     awaken_session_contract::SessionIdleReason::EndTurn
@@ -1012,7 +1025,11 @@ impl ManagedState {
             }
             lifecycle_cursor = page.next_cursor;
         }
-        let pending = self.runtime.pending_tool(session_id).await;
+        let pending = self
+            .runtime
+            .pending_tool(session_id)
+            .await
+            .map_err(StateError::Run)?;
         let messages = self.runtime.committed_messages(session_id).await;
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
@@ -1020,17 +1037,8 @@ impl ManagedState {
             .into_iter()
             .filter(|message| record.projected_message_ids.insert(message.id.0.clone()))
             .collect::<Vec<_>>();
-        let prior_mcp_ids = record
-            .events
-            .iter()
-            .filter_map(|event| match &event.kind {
-                OutboundKind::AgentMcpToolUse { .. } => Some(event.id.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let pending = pending
-            .as_ref()
-            .map(|pending| (pending.tool_use_id.as_str(), pending.client_executed));
+        let (projected_tool_ids, prior_mcp_ids) = record.projected_tool_ids();
+        let pending = pending.as_ref();
         let start = record.events.len();
         let terminal = latest_lifecycle.as_ref().filter(|event| {
             matches!(
@@ -1069,8 +1077,12 @@ impl ManagedState {
                 processed_at: Some(PROCESSED_AT.to_string()),
             });
         }
-        let projected =
-            project_messages_with_mcp_ids(&new_messages, pending, prior_mcp_ids.iter().cloned());
+        let projected = project_messages_with_mcp_ids(
+            &new_messages,
+            pending,
+            &projected_tool_ids,
+            prior_mcp_ids.iter().cloned(),
+        );
         record
             .events
             .extend(projected.into_iter().map(|event| Event {
@@ -1079,6 +1091,7 @@ impl ManagedState {
                 processed_at: Some(PROCESSED_AT.to_string()),
             }));
         if let Some(terminal) = project_terminal {
+            let (projected_tool_ids, prior_mcp_ids) = record.projected_tool_ids();
             if let awaken_agent_contract::agent::run::RunState::Ended(
                 awaken_agent_contract::agent::run::EndCause::Error(failure),
             ) = &terminal.state
@@ -1092,13 +1105,19 @@ impl ManagedState {
                 });
             }
             record.events.extend(
-                project_step(&[], &terminal.state, pending, prior_mcp_ids)
-                    .into_iter()
-                    .map(|event| Event {
-                        id: event.id.unwrap_or_else(|| self.next_event_id()),
-                        kind: event.kind,
-                        processed_at: Some(PROCESSED_AT.to_string()),
-                    }),
+                project_step(
+                    &[],
+                    &terminal.state,
+                    pending,
+                    &projected_tool_ids,
+                    prior_mcp_ids,
+                )
+                .into_iter()
+                .map(|event| Event {
+                    id: event.id.unwrap_or_else(|| self.next_event_id()),
+                    kind: event.kind,
+                    processed_at: Some(PROCESSED_AT.to_string()),
+                }),
             );
         }
         self.broadcast_committed_from(session_id, record, start);
@@ -1265,8 +1284,8 @@ mod tests {
             })
         }
 
-        async fn pending_tool(&self, _thread: &str) -> Option<Pending> {
-            self.pending.lock().unwrap().clone()
+        async fn pending_tool(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
+            Ok(self.pending.lock().unwrap().clone())
         }
 
         async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {

@@ -61,7 +61,10 @@ function rewriteAsLegacySession(database) {
     delegate_ids: ['legacy-delegate'],
     runtime: null,
     deny_egress: false,
-    sandbox: { image: 'legacy-image', labels: { origin: 'retained-row' } },
+    // Environment-binding migration has its own continuity E2E. Keeping this
+    // row unmaterialized isolates the row-codec decision table from an
+    // unrelated local sandbox that a graceful process stop must dispose.
+    sandbox: null,
   };
   sqlite(database, `UPDATE managed_session SET
       agent_id = 'coder', model = 'management', title = 'Legacy title',
@@ -208,8 +211,9 @@ async function main() {
     );
     pass('L4 terminal ACP/OAuth legacy bindings decode but cannot resurrect');
 
-    // L2: the ordinary title and metadata root commands cross the one-way write boundary. They
-    // must not maintain a synchronized second copy in the legacy columns.
+    // L2: one ordinary root command atomically applies title + metadata across
+    // the one-way write boundary. It advances one canonical revision and must
+    // not maintain a synchronized second copy in the legacy columns.
     const updated = await c.beta.sessions.update(sessionId, {
       title: 'Canonical title',
       metadata: { normalized: 'yes' },
@@ -225,18 +229,25 @@ async function main() {
       `SELECT revision, aggregate_json, title, model FROM managed_session WHERE session_id = ${sqlQuote(sessionId)}`,
     );
     assert.equal(rows.length, 1);
-    assert.equal(rows[0].revision, 9, 'title and metadata each advance the canonical revision');
+    assert.equal(rows[0].revision, 8, 'one title + metadata command advances one canonical revision');
     assert.ok(rows[0].aggregate_json, 'root mutation persisted the canonical aggregate');
     assert.equal(rows[0].title, 'Legacy title', 'legacy title column is no longer synchronized');
     pass('L2 root mutations write aggregate_json without a parallel legacy write');
 
     // Simulate stale legacy storage after the migration. If a dual-read path
-    // survives, the next process would expose these poisoned values.
+    // survives, the next process would expose these poisoned values. The reader
+    // process legitimately realized its local environment; clear that orthogonal
+    // ephemeral binding while offline so L3 tests only aggregate-vs-column
+    // authority and does not ask strict Managed restoration to recreate a
+    // sandbox that graceful shutdown just disposed.
+    const canonicalAggregate = JSON.parse(rows[0].aggregate_json);
+    canonicalAggregate.environment = { phase: 'unmaterialized' };
     sqlite(
       database,
       `UPDATE managed_session
          SET title = 'POISONED LEGACY TITLE', model = 'poisoned-model',
-             metadata_json = '{"source":"poisoned"}'
+             metadata_json = '{"source":"poisoned"}',
+             aggregate_json = ${sqlQuote(JSON.stringify(canonicalAggregate))}
        WHERE session_id = ${sqlQuote(sessionId)};`,
     );
 

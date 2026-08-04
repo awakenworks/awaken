@@ -22,14 +22,6 @@ def package_name(manifest: dict) -> str:
     return str(manifest["package"]["name"])
 
 
-def normal_dependency_names(manifest: dict) -> set[str]:
-    """Return normal and build dependencies; test wiring is a composition root."""
-    dependencies: set[str] = set()
-    for section in ("dependencies", "build-dependencies"):
-        dependencies.update(manifest.get(section, {}).keys())
-    return dependencies
-
-
 def iter_crate_manifests() -> list[Path]:
     if not CRATES.exists():
         return []
@@ -54,7 +46,28 @@ def normal_dependency_names(manifest: dict) -> set[str]:
     return deps
 
 
-def check_bucket_direction(bucket_allowed_deps: dict[str, set[str]]) -> list[str]:
+BUCKET_ALLOWED_DEPS = {
+    "contract": {"contract"},
+    "runtime": {"contract", "runtime"},
+    "stores": {"contract", "runtime", "stores"},
+    "resources": {"contract", "runtime", "resources"},
+    # Resources are the shared foundation config defines and workers materialize.
+    # Worker must still never link the durable commit-log store tier.
+    "worker": {"contract", "runtime", "resources", "worker"},
+    # Control assembles Managed wire and runtime-host ports without depending on
+    # the coordinator binary; the bin composition root weaves both planes.
+    "control": {"contract", "runtime", "stores", "resources", "control", "server"},
+    "server": {"contract", "runtime", "stores", "resources", "worker", "control", "server"},
+    "bin": {"contract", "runtime", "stores", "resources", "server", "worker", "control", "bin"},
+    # Dev tooling is a test/example composition root and may name every plane.
+    "devtools": {
+        "contract", "runtime", "stores", "resources", "server", "worker",
+        "control", "bin", "devtools",
+    },
+}
+
+
+def check_bucket_direction() -> list[str]:
     """Check the product-bucket order over the discovered workspace graph."""
     errors: list[str] = []
     bucket: dict[str, str] = {}
@@ -64,7 +77,7 @@ def check_bucket_direction(bucket_allowed_deps: dict[str, set[str]]) -> list[str
     for manifest_path in iter_crate_manifests():
         manifest = load_manifest(manifest_path)
         name = package_name(manifest)
-        allowed = bucket_allowed_deps.get(bucket.get(name, ""), set())
+        allowed = BUCKET_ALLOWED_DEPS.get(bucket.get(name, ""), set())
         for dep in normal_dependency_names(manifest):
             dep_bucket = bucket.get(dep)
             if dep_bucket is None or dep_bucket in allowed:

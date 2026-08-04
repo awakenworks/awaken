@@ -43,24 +43,24 @@ self_test() {
   test "$(published_port '127.0.0.1:49152')" = "49152" || return 1
   ! published_port 'invalid-binding' >/dev/null || return 1
   ! published_port '127.0.0.1:0' >/dev/null || return 1
-  # P5: every feature-gated Postgres adapter is compiled as such. Merely
-  # setting a database URL must not turn an in-memory-only test into a green
-  # Postgres gate.
+  # P5: every feature-gated Postgres adapter is compiled as such. P6: test
+  # targets whose volatile fixtures are isolated behind `test-support` enable
+  # that feature explicitly; Cargo refusing to start a target is a red gate,
+  # never evidence that the Postgres behavior passed.
+  grep -Fq "cargo test -p awaken-run-ingress --features test-support" "$0" || {
+    echo "Postgres gate omits --features test-support for awaken-run-ingress" >&2
+    return 1
+  }
   local crate
-  for crate in awaken-admin-config-api awaken-model-catalog awaken-credential-vault \
-    awaken-data-subject awaken-memory-store awaken-skill-store; do
-    grep -Fq "cargo test -p $crate --features postgres" "$0" || {
-      echo "Postgres gate omits --features postgres for $crate" >&2
+  for crate in awaken-model-catalog awaken-credential-vault awaken-data-subject; do
+    grep -Fq "cargo test -p $crate --features postgres,test-support" "$0" || {
+      echo "Postgres gate omits postgres,test-support for $crate" >&2
       return 1
     }
   done
-  # P6: integration targets whose Cargo metadata requires `test-support` must
-  # receive it explicitly; a database URL cannot satisfy a missing feature gate.
-  grep -Fq 'cargo test -p awaken-run-ingress \' "$0" || return 1
-  grep -Fq -- '--features test-support' "$0" || return 1
-  for crate in awaken-model-catalog awaken-credential-vault awaken-data-subject; do
-    grep -Fq "cargo test -p $crate --features postgres,test-support" "$0" || {
-      echo "Postgres gate omits test-support for $crate" >&2
+  for crate in awaken-admin-config-api awaken-memory-store awaken-skill-store; do
+    grep -Fq "cargo test -p $crate --features postgres" "$0" || {
+      echo "Postgres gate omits --features postgres for $crate" >&2
       return 1
     }
   done

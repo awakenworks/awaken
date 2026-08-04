@@ -54,15 +54,18 @@ impl RunApplication for NoAwaitingRuntime {
     }
 }
 
-async fn frames(body: Value) -> Vec<Value> {
-    let app = awaken_protocol_ag_ui::router::router(Arc::new(NoAwaitingRuntime));
-    let response = app
+async fn post_frames(
+    runtime: Arc<dyn RunApplication>,
+    path: &str,
+    body: impl Into<String>,
+) -> Vec<Value> {
+    let response = awaken_protocol_ag_ui::router::router(runtime)
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/ag-ui")
+                .uri(path)
                 .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
+                .body(Body::from(body.into()))
                 .unwrap(),
         )
         .await
@@ -75,9 +78,23 @@ async fn frames(body: Value) -> Vec<Value> {
         .collect()
 }
 
+async fn frames(body: Value) -> Vec<Value> {
+    post_frames(Arc::new(NoAwaitingRuntime), "/v1/ag-ui", body.to_string()).await
+}
+
+fn frame_types(frames: &[Value]) -> Vec<String> {
+    frames
+        .iter()
+        .filter_map(|frame| frame["type"].as_str().map(str::to_string))
+        .collect()
+}
+
 #[tokio::test]
 async fn a_tool_result_with_no_awaiting_run_fails_closed_with_run_error() {
-    // A resume-only input (only a tool result, no new user turn) with nothing awaiting.
+    // Cause/effect graph: C1 resume-only input; C2 no run awaits; C3 neutral
+    // validation error is classified `invalid_request`. Effects: E1 runtime
+    // resume is not called; E2 RUN_ERROR, never RUN_FINISHED; E3 exact code and
+    // message survive projection. Decision rule R1 C1&&C2&&C3 => E1&&E2&&E3.
     let frames = frames(json!({
         "threadId": "t1",
         "runId": "r1",
@@ -96,6 +113,12 @@ async fn a_tool_result_with_no_awaiting_run_fails_closed_with_run_error() {
         !types.contains(&"RUN_FINISHED"),
         "a fail-closed resume must not report a finished run: {types:?}"
     );
+    let error = frames
+        .iter()
+        .find(|frame| frame["type"] == "RUN_ERROR")
+        .unwrap();
+    assert_eq!(error["code"], "invalid_request");
+    assert_eq!(error["message"], "no awaiting run to resume");
 }
 
 /// A runtime awaiting on the built-in tool `c1`; resume drives it to completion.
@@ -147,31 +170,13 @@ impl RunApplication for AwaitingRuntime {
 
 #[tokio::test]
 async fn a_matching_tool_result_resumes_an_awaiting_run_to_completion() {
-    let app = awaken_protocol_ag_ui::router::router(Arc::new(AwaitingRuntime));
     let body = json!({
         "threadId": "t1",
         "runId": "r1",
         "messages": [{ "role": "tool", "toolCallId": "c1", "content": "approved" }],
     });
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/ag-ui")
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let text = String::from_utf8(bytes.to_vec()).unwrap();
-    let types: Vec<String> = text
-        .lines()
-        .filter_map(|l| l.strip_prefix("data: "))
-        .filter_map(|d| serde_json::from_str::<Value>(d).ok())
-        .filter_map(|f| f["type"].as_str().map(str::to_string))
-        .collect();
+    let frames = post_frames(Arc::new(AwaitingRuntime), "/v1/ag-ui", body.to_string()).await;
+    let types = frame_types(&frames);
     assert!(types.contains(&"RUN_FINISHED".to_string()), "{types:?}");
     assert!(!types.contains(&"RUN_ERROR".to_string()), "{types:?}");
 }
@@ -242,34 +247,24 @@ impl RunApplication for ExactResumeRuntime {
 #[tokio::test]
 async fn a_non_matching_tool_result_cannot_resume_the_awaiting_tool() {
     let resumed = Arc::new(AtomicBool::new(false));
-    let app = awaken_protocol_ag_ui::router::router(Arc::new(ExactResumeRuntime {
-        resumed: resumed.clone(),
-    }));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/ag-ui")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "threadId": "t1",
-                        "runId": "r1",
-                        "messages": [
-                            { "role": "tool", "toolCallId": "c2", "content": "wrong result" }
-                        ]
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let text = String::from_utf8(bytes.to_vec()).unwrap();
-
-    assert!(text.contains("RUN_ERROR"), "{text}");
-    assert!(!text.contains("RUN_FINISHED"), "{text}");
+    let frames = post_frames(
+        Arc::new(ExactResumeRuntime {
+            resumed: resumed.clone(),
+        }),
+        "/v1/ag-ui",
+        json!({
+            "threadId": "t1",
+            "runId": "r1",
+            "messages": [
+                { "role": "tool", "toolCallId": "c2", "content": "wrong result" }
+            ]
+        })
+        .to_string(),
+    )
+    .await;
+    let types = frame_types(&frames);
+    assert!(types.contains(&"RUN_ERROR".to_string()), "{frames:?}");
+    assert!(!types.contains(&"RUN_FINISHED".to_string()), "{frames:?}");
     assert!(
         !resumed.load(Ordering::SeqCst),
         "a mismatched result must not invoke runtime.resume"
@@ -338,24 +333,15 @@ impl RunApplication for AdmissionRecordingRuntime {
 
 async fn assert_admission_rejected_without_run(body: Value) {
     let ran = Arc::new(AtomicBool::new(false));
-    let app = awaken_protocol_ag_ui::router::router(Arc::new(AdmissionRecordingRuntime {
-        ran: ran.clone(),
-    }));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/ag-ui")
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let text = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(text.contains("RUN_ERROR"), "{text}");
-    assert!(!text.contains("RUN_FINISHED"), "{text}");
+    let frames = post_frames(
+        Arc::new(AdmissionRecordingRuntime { ran: ran.clone() }),
+        "/v1/ag-ui",
+        body.to_string(),
+    )
+    .await;
+    let types = frame_types(&frames);
+    assert!(types.contains(&"RUN_ERROR".to_string()), "{frames:?}");
+    assert!(!types.contains(&"RUN_FINISHED".to_string()), "{frames:?}");
     assert!(
         !ran.load(Ordering::SeqCst),
         "rejected input must not invoke runtime.run"
@@ -406,27 +392,14 @@ async fn unimplemented_per_run_context_fails_before_runtime_execution() {
 
 #[tokio::test]
 async fn the_scoped_agent_route_streams_a_fresh_turn() {
-    let app = awaken_protocol_ag_ui::router::router(Arc::new(NoAwaitingRuntime));
     let body = json!({ "threadId": "t1", "runId": "r1", "messages": [{ "role": "user", "content": "go" }] });
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/ag-ui/agents/coder")
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let text = String::from_utf8(bytes.to_vec()).unwrap();
-    let types: Vec<String> = text
-        .lines()
-        .filter_map(|l| l.strip_prefix("data: "))
-        .filter_map(|d| serde_json::from_str::<Value>(d).ok())
-        .filter_map(|f| f["type"].as_str().map(str::to_string))
-        .collect();
+    let frames = post_frames(
+        Arc::new(NoAwaitingRuntime),
+        "/v1/ag-ui/agents/coder",
+        body.to_string(),
+    )
+    .await;
+    let types = frame_types(&frames);
     assert!(types.contains(&"RUN_FINISHED".to_string()), "{types:?}");
 }
 
@@ -480,30 +453,85 @@ impl RunApplication for DenyRecordingRuntime {
 #[tokio::test]
 async fn an_error_flagged_tool_result_denies_an_awaiting_builtin_tool() {
     let denied = Arc::new(AtomicBool::new(false));
-    let app = awaken_protocol_ag_ui::router::router(Arc::new(DenyRecordingRuntime {
-        denied: denied.clone(),
-    }));
     let body = json!({
         "threadId": "t1",
         "runId": "r1",
         "messages": [{ "role": "tool", "toolCallId": "c1", "content": "", "error": "not permitted" }],
     });
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/ag-ui")
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let _ = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let _ = post_frames(
+        Arc::new(DenyRecordingRuntime {
+            denied: denied.clone(),
+        }),
+        "/v1/ag-ui",
+        body.to_string(),
+    )
+    .await;
     assert!(
         denied.load(Ordering::SeqCst),
         "an error-flagged tool result must deny the awaiting built-in tool (allow:false)"
     );
+}
+
+struct ClassifiedFailureRuntime;
+
+#[async_trait::async_trait]
+impl RunApplication for ClassifiedFailureRuntime {
+    async fn run(
+        &self,
+        _thread: &str,
+        _agent: Option<String>,
+        _messages: Vec<Message>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        Err(RunApplicationError::classified(
+            "provider_overloaded",
+            "try later",
+        ))
+    }
+
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        unreachable!()
+    }
+
+    async fn pending(&self, _thread: &str) -> Option<Pending> {
+        None
+    }
+
+    async fn history(&self, _thread: &str) -> Vec<Message> {
+        Vec::new()
+    }
+
+    fn model(&self) -> String {
+        "test".into()
+    }
+}
+
+#[tokio::test]
+async fn classified_stream_failure_preserves_code_separately_from_message() {
+    // Cause/effect graph: C1 runtime failure has a stable code; C2 failure occurs
+    // before any live event. E1 RUN_STARTED brackets the attempt; E2 RUN_ERROR
+    // carries the exact code; E3 message is unchanged (not code-prefixed).
+    // Decision rule R1 C1&&C2 => E1&&E2&&E3. The complementary unclassified
+    // decode failure is covered by the wire-shape unit rule and omits `code`.
+    let frames = post_frames(
+        Arc::new(ClassifiedFailureRuntime),
+        "/v1/ag-ui",
+        json!({
+            "threadId": "t1",
+            "runId": "r1",
+            "messages": [{ "role": "user", "content": "go" }]
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(frame_types(&frames), vec!["RUN_STARTED", "RUN_ERROR"]);
+    let error = &frames[1];
+    assert_eq!(error["code"], "provider_overloaded");
+    assert_eq!(error["message"], "try later");
 }
 
 /// A runtime whose turn panics, so the spawned turn task dies (JoinError).
@@ -539,50 +567,22 @@ impl RunApplication for AgUiPanickingRuntime {
 }
 
 async fn ag_ui_frame_types(runtime: Arc<dyn RunApplication>, body: String) -> Vec<String> {
-    let response = awaken_protocol_ag_ui::router::router(runtime)
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/ag-ui")
-                .header("content-type", "application/json")
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    String::from_utf8(bytes.to_vec())
-        .unwrap()
-        .lines()
-        .filter_map(|l| l.strip_prefix("data: "))
-        .filter_map(|d| serde_json::from_str::<Value>(d).ok())
-        .filter_map(|f| f["type"].as_str().map(str::to_string))
-        .collect()
+    frame_types(&post_frames(runtime, "/v1/ag-ui", body).await)
 }
 
 #[tokio::test]
 async fn a_dead_turn_task_surfaces_a_run_error_not_a_hang() {
-    let app = awaken_protocol_ag_ui::router::router(Arc::new(AgUiPanickingRuntime));
     let body = json!({ "threadId": "t1", "runId": "r1", "messages": [{ "role": "user", "content": "go" }] });
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/ag-ui")
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let text = String::from_utf8(bytes.to_vec()).unwrap();
-    let has_error = text
-        .lines()
-        .filter_map(|l| l.strip_prefix("data: "))
-        .filter_map(|d| serde_json::from_str::<Value>(d).ok())
-        .any(|f| f["type"] == "RUN_ERROR");
-    assert!(has_error, "a dead turn task must surface RUN_ERROR: {text}");
+    let frames = post_frames(
+        Arc::new(AgUiPanickingRuntime),
+        "/v1/ag-ui",
+        body.to_string(),
+    )
+    .await;
+    assert!(
+        frame_types(&frames).contains(&"RUN_ERROR".to_string()),
+        "a dead turn task must surface RUN_ERROR: {frames:?}"
+    );
 }
 
 #[tokio::test]

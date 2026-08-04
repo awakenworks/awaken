@@ -606,6 +606,22 @@ impl crate::SharedHost {
                     "thread {thread} is already bound to a different frozen Session baseline"
                 )));
             }
+            // The baseline is immutable, but a remote Resource verification is
+            // authorized by the current dispatch claim. Re-stage the exact
+            // manifest on every claimed replay so Repository checks never retain
+            // a prior lease epoch. `install_dispatched_resources` owns generation
+            // equality/fencing and does not realize an existing environment.
+            if projection.resources != awaken_session_contract::ResolvedSessionResources::default()
+            {
+                let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
+                    projection.workspace_id.clone(),
+                    projection.resource_revision,
+                    projection.resources.clone(),
+                );
+                self.install_dispatched_resources(thread, &manifest, claim)
+                    .await
+                    .map_err(|error| crate::HostError::internal(error.to_string()))?;
+            }
             self.session_slots.update(thread, |slot| {
                 slot.has_mcp_projection = has_mcp_projection;
                 slot.agent_id = Some(baseline.agent_id.clone());

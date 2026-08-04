@@ -45,6 +45,8 @@ pub use coordinator_component::{
     CoordinatorBuildError, CoordinatorComponent, CoordinatorDependencies,
     build_coordinator_component, restore_deployment_state,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use coordinator_persistence::init_scenario_runtime;
 pub use coordinator_persistence::{
     migrate_postgres_schema as migrate_postgres_coordinator_schema,
     open as open_coordinator_persistence, open_existing as open_existing_coordinator_persistence,
@@ -112,18 +114,78 @@ pub async fn prepare_local_acp(
     .await
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlatformMemoryProjection {
+    FusePreferred,
+    CopyOnly,
+}
+
+fn platform_memory_projection(tier: awaken_runtime_host::SandboxTier) -> PlatformMemoryProjection {
+    use awaken_runtime_host::SandboxTier;
+
+    match tier {
+        // Both run in a host-visible mount namespace. Namespace binds the host
+        // projection into bwrap after realization, retaining live write-through.
+        SandboxTier::Local | SandboxTier::Namespace => PlatformMemoryProjection::FusePreferred,
+        // Docker and Podman cannot bind a host FUSE mount reliably. Kubernetes
+        // owns native memory sidecars, but the same host adapter can still serve
+        // housekeeping paths, so its portable fallback must remain bind-safe.
+        SandboxTier::Docker | SandboxTier::Podman | SandboxTier::K8s => {
+            PlatformMemoryProjection::CopyOnly
+        }
+    }
+}
+
 /// Assemble the governed MemoryRepository data plane with its worker-side mount adapter.
 /// Authorization has already selected workspace/store/access before this adapter
 /// sees an opaque store id; no IAM vocabulary crosses this seam.
 pub fn install_platform_memory_data_plane(host: &SharedHost) {
-    // Prefer the canonical write-through FUSE projection and retain the existing
-    // portable copy/harvest fallback for ordinary Session bindings. A mount that
-    // explicitly requires write-through (Dream output) observes
-    // the realized kind and fails closed before launch when only copy is possible.
     if !host.has_memory_mounter() {
-        host.install_memory_mounter(Arc::new(awaken_sandbox_memoryd::MemoryStoreMounter::new(
-            host.memory_repository(),
-        )));
+        let repository = host.memory_repository();
+        let mounter = match platform_memory_projection(host.sandbox_tier()) {
+            PlatformMemoryProjection::FusePreferred => {
+                awaken_sandbox_memoryd::MemoryStoreMounter::new(repository)
+            }
+            PlatformMemoryProjection::CopyOnly => {
+                awaken_sandbox_memoryd::MemoryStoreMounter::copy_only(repository)
+            }
+        };
+        host.install_memory_mounter(Arc::new(mounter));
+    }
+}
+
+#[cfg(test)]
+mod platform_memory_projection_tests {
+    use super::{PlatformMemoryProjection, platform_memory_projection};
+    use awaken_runtime_host::SandboxTier;
+
+    /// Cause/effect graph: C1 host-visible projection namespace (Local/Namespace)
+    /// produces E1 FUSE-preferred write-through; C2 OCI boundary (Docker/Podman)
+    /// produces E2 copy-bind safety; C3 native-sidecar Kubernetes produces E3 a
+    /// copy-safe host fallback while the runtime owns Session mounts.
+    ///
+    /// Decision table:
+    /// | Rule | tier                 | host can expose FUSE | native sidecar | effect         |
+    /// | P1   | Local, Namespace     | yes                  | no             | FusePreferred  |
+    /// | P2   | Docker, Podman       | no                   | no             | CopyOnly       |
+    /// | P3   | K8s                  | irrelevant           | yes            | CopyOnly host  |
+    ///
+    /// Enumerating every closed enum member also makes a newly added tier fail
+    /// compilation until its projection contract is classified.
+    #[test]
+    fn sandbox_tier_selects_one_bind_compatible_memory_projection() {
+        for tier in [SandboxTier::Local, SandboxTier::Namespace] {
+            assert_eq!(
+                platform_memory_projection(tier),
+                PlatformMemoryProjection::FusePreferred
+            );
+        }
+        for tier in [SandboxTier::Docker, SandboxTier::Podman, SandboxTier::K8s] {
+            assert_eq!(
+                platform_memory_projection(tier),
+                PlatformMemoryProjection::CopyOnly
+            );
+        }
     }
 }
 
@@ -585,6 +647,9 @@ fn mount_with_managed_over_and_models(
         worker_authenticator,
         worker_directory,
     } = routing;
+    // This is the sole Coordinator-owned installation point. It runs after the
+    // Session provider is selected, and `install_memory_mounter` updates every
+    // provider atomically while preserving an explicitly injected Worker adapter.
     install_platform_memory_data_plane(&host);
     // Spawn the process-level dispatch pool once when durable ingress is enabled
     // (O2): it is the sole claimer of the shared queue and drives every session's

@@ -14,8 +14,8 @@
 mod dispatch;
 mod event;
 mod signing;
-mod url_guard;
 
+pub use awaken_outbound_http::{UrlRejected, validate_endpoint_url};
 pub use dispatch::{
     DispatchError, DispatchReport, ReqwestSender, ResolvedSubscription, SubscriptionFailureState,
     SubscriptionSource, WebhookDispatcher, WebhookSender,
@@ -25,4 +25,3 @@ pub use signing::{
     DEFAULT_TOLERANCE_SECS, SECRET_PREFIX, SignError, generate_secret, generate_secret_reference,
     sign_bytes, signature_header, timestamp_within_tolerance, verify, verify_fresh,
 };
-pub use url_guard::{UrlRejected, validate_endpoint_url};

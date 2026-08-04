@@ -75,6 +75,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: property-based (formal) verification (ADR-0059).
         "proptest",
     },
+    # Shared lower-layer outbound callback guard: HTTPS admission, delivery-time
+    # resolve-and-pin, no redirects, and the sole HTTP retry-status partition.
+    "awaken-outbound-http": {"async-trait", "reqwest", "tokio"},
     # Webhooks (ADR-0048 / S10): signing, event shape, and HTTP delivery only. No dep on
     # the Managed wire crate (it takes event type / id / tenancy as data) and no
     # subscription store: subscriptions live in the config plane, reached through the
@@ -88,7 +91,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "subtle",
         "getrandom",
         "async-trait",
-        "reqwest",
+        "awaken-outbound-http",
         "tokio",
         # dev-only: the e2e stands up a real axum receiver on an ephemeral port.
         "axum",
@@ -291,6 +294,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # The neutral `Disposition` resilience taxonomy: the ops cooldown routes map
         # a credential-probe failure onto a retry/cool-down policy (E3-4).
         "awaken-runtime-contract",
+        # Canonical sync-port/async-store bridge used by the Postgres adapter;
+        # owns scheduling only, no repository or control-plane authority.
+        "awaken-store-runtime",
         # HTTP adapters consume the neutral trusted WorkspaceScope coordinate;
         # authorization remains at the composition PEP.
         "awaken-tenancy",
@@ -795,6 +801,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-tenancy",
         "awaken-scoped-migration",
         "awaken-scoped-migration-sqlite",
+        "awaken-store-runtime",
         "async-trait",
         "rusqlite",
         "sqlx",
@@ -1017,6 +1024,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-credential",
         "awaken-session-contract",
+        "awaken-outbound-http",
         "async-trait",
         "serde",
         "serde_json",
@@ -1294,6 +1302,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # dev-only: the real worker HTTP adapter runs the shared dispatch suite.
         "awaken-run-ingress-testkit",
         "awaken-run-executor-acp",
+        # Neutral capability negotiation values/ports; the concrete ACP wire
+        # handshake is injected by an outer composition root.
+        "awaken-acp-contract",
         "awaken-config-resolver",
         "awaken-credential-vault",
         "awaken-session-contract",
@@ -1329,7 +1340,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "reqwest", "serde", "serde_json", "sha2", "thiserror", "tokio",
     },
     "awaken-resource-reclaimer": {"awaken-resource-contract", "async-trait", "tokio"},
-"awaken-resource-store": {"awaken-resource-contract", "awaken-scoped-migration", "awaken-scoped-migration-sqlite", "async-trait", "parking_lot", "proptest", "rusqlite", "serde", "serde_json", "sqlx", "tempfile", "tokio"},
+"awaken-resource-store": {"awaken-resource-contract", "awaken-scoped-migration", "awaken-scoped-migration-sqlite", "awaken-store-runtime", "async-trait", "parking_lot", "proptest", "rusqlite", "serde", "serde_json", "sqlx", "tempfile", "tokio"},
+    # One infrastructure owner for driving async stores behind legacy
+    # synchronous repository ports. It contains no store/domain implementation.
+    "awaken-store-runtime": {"tokio"},
     # Single-machine assembly binary: the composition root. Since the service
     # layer moved to awaken-runtime-host; it composes host/protocol/management router modes.
     # Test-only scenario host (Stage A): the mock models + build_*_router scenario
@@ -1696,6 +1710,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     # Product store/server adapters are composed by awaken-cli.
     "awaken-worker": {
         "awaken-acp-contract",
+        "awaken-acp-application",
+        "awaken-protocol-acp",
+        "awaken-run-executor-acp",
         "awaken-runtime-host",
         "awaken-credential-materializer",
         "awaken-ext-builtin-tools",
@@ -1891,62 +1908,6 @@ def check_tests_are_not_arch_owners() -> list[str]:
     return errors
 
 
-# Plane-aligned bucket dependency rules. Edges point inward toward contract/kernel;
-# a bucket may depend only on the buckets in its set. The two load-bearing
-# invariants: the kernel is store-unaware (`runtime` ⊥ stores/resources, D1), and
-# the isolated execution tier links no durable store (`worker` ⊥ stores/resources,
-# A-G17 — it commits back through the coordinator port).
-#   contract   → shared vocabulary + ports; depends on nothing
-#   runtime    → the kernel (agent loop + ext plugins); contract only
-#   stores     → commit/event backends (impl contract ports; runtime-contract types)
-#   resources  → mountable agent-resource backends
-#   worker     → isolated execution; kernel + contract only, NEVER a store/resource
-#   control    → self-hosted config/vault/iam authoring plane
-#   server     → Coordinator application/host and protocol/ingress adapters
-#   bin        → composed deployables / harnesses
-BUCKET_ALLOWED_DEPS = {
-    "contract": {"contract"},
-    "runtime": {"contract", "runtime"},
-    "stores": {"contract", "runtime", "stores"},
-    "resources": {"contract", "runtime", "resources"},
-    # `resources` is the common foundation config DEFINES and worker/sandbox
-    # MATERIALIZES (files, memory stores, skills). Worker may depend on it — its DB
-    # backends are feature-gated (default = inmem/fs only), so the isolated exec tier
-    # links no heavy store. Worker still may NOT depend on `stores` (the commit-log
-    # tier, G13 authority) — that is the store A-G17 keeps out of the exec tier.
-    "worker": {"contract", "runtime", "resources", "worker"},
-    # The authoring plane's assembly crate (awaken-control, Stage B2) names the Managed
-    # wire (protocol-managed) + host ports (runtime-host) + the webhook bridge — all in
-    # the `server` bucket — because the management CRUD it assembles is expressed in
-    # those types. It stays a sibling of the awaken-coordinator data-plane bin: neither
-    # depends on the other (the composition root, awaken-cli, weaves them).
-    "control": {"contract", "runtime", "stores", "resources", "control", "server"},
-    "server": {"contract", "runtime", "stores", "resources", "worker", "control", "server"},
-    "bin": {
-        "contract",
-        "runtime",
-        "stores",
-        "resources",
-        "server",
-        "worker",
-        "control",
-        "bin",
-    },
-    # Dev tooling / harnesses / teaching examples (publish=false): composed like bin/,
-    # so they may name any plane (they are composition roots for tests/examples). Kept
-    # out of bin/ so the deployables bucket holds only awaken-cli + the worker daemon.
-    "devtools": {
-        "contract",
-        "runtime",
-        "stores",
-        "resources",
-        "server",
-        "worker",
-        "control",
-        "bin",
-        "devtools",
-    },
-}
 # The neutral-core / crate-layout fitness rules (contract purity, protocol-leaf, god-hub
 # ratchet — Phases 0.1 / 0.2 / 3) live in `_arch_fitness.py` (pure predicates + cause-
 # effect selftests), imported and driven by `main()` over the parsed crate specs. Split
@@ -1972,7 +1933,7 @@ def main() -> int:
         + check_neutral_code_boundaries()
         + check_builtin_tool_ownership()
         + check_tests_are_not_arch_owners()
-        + check_bucket_direction(BUCKET_ALLOWED_DEPS)
+        + check_bucket_direction()
         + _resource_plane_fitness.check_all(REPO_ROOT, CRATES)
         + _runtime_secret_boundary.check_all(REPO_ROOT, CRATES)
         + _provider_env_fitness.check_all(REPO_ROOT, CRATES)

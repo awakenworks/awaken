@@ -43,6 +43,11 @@ pub(super) async fn provision(
                 concat!(
                     "set -eu; bundle=$1; destination=$2; remote=$3; branch=$4; commit=$5; ",
                     "trap 'rm -f -- \"$bundle\"' EXIT; ",
+                    "if test -e \"$destination\"; then ",
+                    "test \"$(git -C \"$destination\" remote get-url origin)\" = \"$remote\"; ",
+                    "if test -n \"$branch\"; then test \"$(git -C \"$destination\" symbolic-ref --short HEAD)\" = \"$branch\"; fi; ",
+                    "if test -n \"$commit\"; then test \"$(git -C \"$destination\" rev-parse HEAD)\" = \"$(git -C \"$destination\" rev-parse \"$commit\")\"; fi; ",
+                    "exit 0; fi; ",
                     "test ! -e \"$destination\"; ",
                     "mkdir -p -- \"$(dirname -- \"$destination\")\"; ",
                     "git clone -- \"$bundle\" \"$destination\"; ",

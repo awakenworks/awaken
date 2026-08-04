@@ -18,6 +18,7 @@ pub(crate) fn respond(result: Result<Value, HostError>) -> (StatusCode, Json<Val
             let status = match error.kind {
                 HostErrorKind::BadRequest => StatusCode::BAD_REQUEST,
                 HostErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+                HostErrorKind::Conflict => StatusCode::CONFLICT,
             };
             (status, Json(json!({ "error": error.message })))
         }

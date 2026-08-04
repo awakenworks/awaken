@@ -35,7 +35,34 @@ fn timestamp(nanos: u128) -> String {
     )
 }
 
-fn project_version(version: &MemoryVersion, store_id: &str) -> Value {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MemoryView {
+    Basic,
+    Full,
+}
+
+impl MemoryView {
+    fn parse(
+        query: &std::collections::HashMap<String, String>,
+        default: Self,
+    ) -> Result<Self, axum::response::Response> {
+        match query.get("view").map(String::as_str) {
+            None => Ok(default),
+            Some("basic") => Ok(Self::Basic),
+            Some("full") => Ok(Self::Full),
+            Some(_) => Err(err(
+                StatusCode::BAD_REQUEST,
+                "view must be `basic` or `full`",
+            )),
+        }
+    }
+
+    fn includes_content(self) -> bool {
+        self == Self::Full
+    }
+}
+
+fn project_version(version: &MemoryVersion, store_id: &str, view: MemoryView) -> Value {
     let (sha, size) = match &version.content {
         Some(content) => (
             Some(awaken_memory_store::sha256_hex(content)),
@@ -55,7 +82,7 @@ fn project_version(version: &MemoryVersion, store_id: &str) -> Value {
         "memory_id": version.memory_id,
         "memory_store_id": store_id,
         "operation": operation,
-        "content": version.content,
+        "content": view.includes_content().then(|| version.content.clone()).flatten(),
         "content_sha256": sha,
         "content_size_bytes": size,
         "path": version.path,
@@ -69,8 +96,11 @@ fn project_memory(
     mem: &awaken_memory_store::Memory,
     store_id: &str,
     memory_version_id: &str,
+    view: MemoryView,
 ) -> Value {
-    let content = mem.content.clone().unwrap_or_default();
+    let content = view
+        .includes_content()
+        .then(|| mem.content.clone().unwrap_or_default());
     json!({
         "id": mem.id,
         "type": "memory",
@@ -97,6 +127,7 @@ async fn project_current_memory(
     state: &MemoryStoreApi,
     memory: &awaken_memory_store::Memory,
     store_id: &str,
+    view: MemoryView,
 ) -> Result<Value, MemErr> {
     let versions = state.memories.list_versions(store_id).await?;
     let version_id = current_version_id(&versions, &memory.id).ok_or_else(|| {
@@ -105,7 +136,7 @@ async fn project_current_memory(
             memory.id
         ))
     })?;
-    Ok(project_memory(memory, store_id, version_id))
+    Ok(project_memory(memory, store_id, version_id, view))
 }
 
 /// Project a durable [`MemoryStoreDefinition`] (the identity aggregate, source of truth for a
@@ -394,8 +425,13 @@ async fn create_memory(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
+    let view = match MemoryView::parse(&query, MemoryView::Basic) {
+        Ok(view) => view,
+        Err(response) => return response,
+    };
     let Some(path) = body.get("path").and_then(Value::as_str) else {
         return err(StatusCode::BAD_REQUEST, "memory needs a `path`");
     };
@@ -410,7 +446,7 @@ async fn create_memory(
     }
     // The durable path-addressed store is the source of truth for the head.
     match state.memories.create(&id, path, content).await {
-        Ok(mem) => match project_current_memory(&state, &mem, &id).await {
+        Ok(mem) => match project_current_memory(&state, &mem, &id, view).await {
             Ok(projected) => (StatusCode::OK, Json(projected)).into_response(),
             Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         },
@@ -445,10 +481,9 @@ async fn list_memories(
         Some("1") => 1,
         Some(_) => return err(StatusCode::BAD_REQUEST, "depth must be 0 or 1"),
     };
-    let basic = match q.get("view").map(String::as_str) {
-        None | Some("basic") => true,
-        Some("full") => false,
-        Some(_) => return err(StatusCode::BAD_REQUEST, "view must be `basic` or `full`"),
+    let view = match MemoryView::parse(&q, MemoryView::Basic) {
+        Ok(view) => view,
+        Err(response) => return response,
     };
     let requested_limit = match q.get("limit") {
         None => awaken_agent_contract::page::DEFAULT_PAGE_LIMIT,
@@ -457,7 +492,7 @@ async fn list_memories(
             Ok(value) => value.min(awaken_agent_contract::page::MAX_PAGE_LIMIT),
         },
     };
-    let limit = if basic {
+    let limit = if view == MemoryView::Basic {
         requested_limit
     } else {
         requested_limit.min(20)
@@ -488,7 +523,7 @@ async fn list_memories(
             continue;
         }
         // `basic` elides content (metadata only); `full` fetches the head content.
-        let content = if basic {
+        let content = if view == MemoryView::Basic {
             None
         } else {
             state
@@ -548,7 +583,12 @@ async fn get_memory(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, mid)): Path<(String, String)>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
+    let view = match MemoryView::parse(&query, MemoryView::Full) {
+        Ok(view) => view,
+        Err(response) => return response,
+    };
     match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
         Ok(false) => return not_found("memory_store"),
@@ -558,7 +598,7 @@ async fn get_memory(
         return not_found("memory");
     };
     match state.memories.get_by_path(&id, &path).await {
-        Ok(Some(mem)) => match project_current_memory(&state, &mem, &id).await {
+        Ok(Some(mem)) => match project_current_memory(&state, &mem, &id, view).await {
             Ok(projected) => (StatusCode::OK, Json(projected)).into_response(),
             Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         },
@@ -575,8 +615,13 @@ async fn update_memory(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, mid)): Path<(String, String)>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
+    let view = match MemoryView::parse(&query, MemoryView::Basic) {
+        Ok(view) => view,
+        Err(response) => return response,
+    };
     match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
         Ok(false) => return not_found("memory_store"),
@@ -607,7 +652,7 @@ async fn update_memory(
         .update_head(&id, &mid, &new_content, &base_sha, target_path)
         .await
     {
-        Ok(updated) => match project_current_memory(&state, &updated, &id).await {
+        Ok(updated) => match project_current_memory(&state, &updated, &id, view).await {
             Ok(projected) => (StatusCode::OK, Json(projected)).into_response(),
             Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         },
@@ -657,7 +702,12 @@ async fn list_versions(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
+    let view = match MemoryView::parse(&query, MemoryView::Basic) {
+        Ok(view) => view,
+        Err(response) => return response,
+    };
     match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
         Ok(false) => return not_found("memory_store"),
@@ -669,7 +719,7 @@ async fn list_versions(
     };
     let data: Vec<Value> = collect_versions(&log)
         .iter()
-        .map(|version| project_version(version, &id))
+        .map(|version| project_version(version, &id, view))
         .collect();
     (
         StatusCode::OK,
@@ -682,7 +732,12 @@ async fn get_version(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, vid)): Path<(String, String)>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
+    let view = match MemoryView::parse(&query, MemoryView::Full) {
+        Ok(view) => view,
+        Err(response) => return response,
+    };
     match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
         Ok(false) => return not_found("memory_store"),
@@ -693,7 +748,9 @@ async fn get_version(
         Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
     match collect_versions(&log).into_iter().find(|v| v.id == vid) {
-        Some(version) => (StatusCode::OK, Json(project_version(&version, &id))).into_response(),
+        Some(version) => {
+            (StatusCode::OK, Json(project_version(&version, &id, view))).into_response()
+        }
         None => not_found("memory_version"),
     }
 }
@@ -713,7 +770,11 @@ async fn redact_version(
     }
     match state.memories.redact_version(&id, &vid).await {
         Ok(Some(version)) => {
-            return (StatusCode::OK, Json(project_version(&version, &id))).into_response();
+            return (
+                StatusCode::OK,
+                Json(project_version(&version, &id, MemoryView::Full)),
+            )
+                .into_response();
         }
         Ok(None) => {}
         Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),

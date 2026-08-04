@@ -918,14 +918,25 @@ async fn register_worker(
                 "worker registration requires a bootstrap credential",
             ));
         }
-        let record = directory(&service)?
+        let record = match directory(&service)?
             .register(
                 request.registration,
                 service.clock.now_ms(),
                 service.registry_ttl_ms,
             )
             .await
-            .map_err(|error| HostError::bad_request(error.to_string()))?;
+        {
+            Ok(record) => record,
+            Err(awaken_run_ingress::RegistryError::SlotOccupied {
+                worker_id,
+                generation,
+            }) => {
+                return Err(HostError::conflict(format!(
+                    "worker slot {worker_id} is occupied by generation {generation}"
+                )));
+            }
+            Err(error) => return Err(HostError::bad_request(error.to_string())),
+        };
         Ok(json!({ "worker": record }))
     }
     .await;

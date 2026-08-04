@@ -19,12 +19,49 @@ fn project_delegated_runs(
         .collect()
 }
 
+fn delegation_registry_from_snapshot(
+    snapshot: &RunRecoverySnapshot,
+    run_id: &RunId,
+) -> Result<Option<awaken_agent_contract::agent::delegation::DelegationRegistry>, HostError> {
+    let mut store = Store::new();
+    for command in &snapshot.state {
+        if command.scope == Scope::Run && command.run_id.as_ref() == Some(run_id) {
+            store.apply(command);
+        }
+    }
+    RunDelegations::load(&store).map_err(|error| HostError::internal(error.to_string()))
+}
+
+fn client_result_for_ticket(
+    ticket: &ResumeTicket,
+    tool_use_id: &str,
+    content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+    is_error: bool,
+) -> ResumeResult {
+    if ticket.pending_tool.is_none()
+        && matches!(
+            ticket.reason,
+            AwaitReason::UserInput | AwaitReason::ExternalEvent
+        )
+    {
+        ResumeResult::Input(awaken_agent_contract::agent::content::extract_text(
+            &content,
+        ))
+    } else {
+        let output = if is_error {
+            ToolOutput::error_blocks(tool_use_id, content)
+        } else {
+            ToolOutput::ok_blocks(tool_use_id, content)
+        };
+        ResumeResult::ToolResult(output)
+    }
+}
+
 impl SharedHost {
     /// All messages committed on `thread` so far (the source of history). Empty
-    /// when the thread has not run yet. Resolves through `ctx_for`, so a durable
-    /// thread is hydrated from its store on demand — a fresh process reads a
-    /// awaiting thread's committed transcript even before any session touches it
-    /// (ADR-0039), enabling post-restart session rehydration.
+    /// when the thread has not run yet. Opens only the configured commit adapter,
+    /// so a fresh process can read durable history without provisioning the
+    /// Session execution environment (ADR-0039).
     /// True when the durable store already holds `thread` — WITHOUT building a
     /// session context (the layout probe lives with the commit boundary in
     /// [`crate::store`]).
@@ -37,10 +74,9 @@ impl SharedHost {
     }
 
     pub async fn committed_messages(&self, thread: &str) -> Vec<Message> {
-        match self.ctx_for(thread, None).await {
-            Ok(ctx) => match ctx
-                .commit
-                .authoritative_committed_messages(&ctx.thread_id)
+        match self.commit_for_read(thread).await {
+            Ok(commit) => match commit
+                .authoritative_committed_messages(&ThreadId(thread.to_string()))
                 .await
             {
                 Ok(messages) => messages,
@@ -59,8 +95,8 @@ impl SharedHost {
     /// Rebuild the neutral child-Run projection from the one durable owner:
     /// `RunDelegations` entries committed in each parent Run's ordinary state log.
     pub async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, HostError> {
-        let ctx = self.ctx_for(thread, None).await?;
-        let commands = ctx.commit.committed_state(&ctx.thread_id);
+        let commit = self.commit_for_read(thread).await?;
+        let commands = commit.committed_state(&ThreadId(thread.to_string()));
         let mut stores: HashMap<RunId, Store> = HashMap::new();
         for command in commands {
             let Some(run_id) = command
@@ -90,9 +126,8 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Result<awaken_agent_contract::CheckpointRunLifecycleFeed, HostError> {
-        self.ctx_for(thread, None)
+        self.commit_for_read(thread)
             .await?
-            .commit
             .lifecycle_feed()
             .ok_or_else(|| {
                 HostError::bad_request(
@@ -108,19 +143,22 @@ impl SharedHost {
     /// deterministic models). Callers use `.total()` for the session-level sum.
     pub async fn thread_usage(&self, thread: &str) -> awaken_runtime_contract::llm::ThreadUsage {
         use awaken_runtime_contract::llm::ThreadUsage;
-        let Ok(ctx) = self.ctx_for(thread, None).await else {
+        let Ok(commit) = self.commit_for_read(thread).await else {
             return ThreadUsage::default();
         };
-        ThreadUsage::from_committed_state(&ctx.commit.committed_state(&ctx.thread_id))
+        ThreadUsage::from_committed_state(&commit.committed_state(&ThreadId(thread.to_string())))
     }
 
     /// True when `thread` has a run awaiting a decision.
     pub async fn is_awaiting(&self, thread: &str) -> bool {
-        let ctx = match self.ctx_for(thread, None).await {
-            Ok(ctx) => ctx,
+        let commit = match self.commit_for_read(thread).await {
+            Ok(commit) => commit,
             Err(_) => return false,
         };
-        match ctx.commit.open_wait_for_thread(&ctx.thread_id).await {
+        match commit
+            .open_wait_for_thread(&ThreadId(thread.to_string()))
+            .await
+        {
             Ok(waiting) => waiting.is_some(),
             Err(error) => {
                 tracing::warn!(thread, %error, "failed to read authoritative awaiting position");
@@ -130,22 +168,66 @@ impl SharedHost {
     }
 
     /// The tool an awaiting run on `thread` is awaiting on, if any.
-    pub async fn pending_tool(&self, thread: &str) -> Option<PendingTool> {
-        let ctx = self.ctx_for(thread, None).await.ok()?;
+    pub async fn pending_tool(&self, thread: &str) -> Result<Option<PendingTool>, HostError> {
         // The committed ticket is the lifecycle authority. In particular, an
         // observer on another protocol can see the committed tool-call message
         // before the foreground caller reaches `finish_step` and updates its
         // disposable `SessionState`; consulting that cache here would briefly
-        // misclassify a client-executed call as an ordinary executed tool.
-        let (_, ticket) = match ctx.commit.open_wait_for_thread(&ctx.thread_id).await {
-            Ok(waiting) => waiting?,
+        // misclassify a client-executed call as an ordinary executed tool. Open
+        // committed truth before rebuilding derived context: a malformed A2A
+        // continuation must not hide its still-authoritative input/auth wait and
+        // turn a legitimate resume into a client-id error.
+        let commit = self.commit_for_read(thread).await?;
+        let (run_id, ticket) = match commit
+            .open_wait_for_thread(&ThreadId(thread.to_string()))
+            .await
+        {
+            Ok(Some(waiting)) => waiting,
+            Ok(None) => return Ok(None),
             Err(error) => {
-                tracing::warn!(thread, %error, "failed to read authoritative pending tool");
-                return None;
+                return Err(HostError::internal(format!(
+                    "failed to read authoritative pending tool: {error}"
+                )));
             }
         };
+        if ticket.pending_tool.is_none()
+            && matches!(
+                ticket.reason,
+                AwaitReason::UserInput | AwaitReason::ExternalEvent
+            )
+        {
+            return Ok(pending_from_ticket(&ticket, &HashSet::new()));
+        }
+        if ticket.reason == AwaitReason::Delegation {
+            let snapshot = match commit
+                .recovery_snapshot(&ThreadId(thread.to_string()), &run_id)
+                .await
+            {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    tracing::warn!(thread, %error, "failed to read pending delegation snapshot");
+                    return Err(HostError::internal(format!(
+                        "failed to read pending delegation snapshot: {error}"
+                    )));
+                }
+            };
+            let registry = match delegation_registry_from_snapshot(&snapshot, &run_id) {
+                Ok(registry) => registry,
+                Err(error) => {
+                    tracing::warn!(thread, %error, "failed to rebuild pending delegation registry");
+                    return Err(HostError::internal(format!(
+                        "failed to rebuild pending delegation registry: {error}"
+                    )));
+                }
+            };
+            return self
+                .visible_pending_tool(commit.as_ref(), &ticket, registry.as_ref(), &HashSet::new())
+                .await;
+        }
+        let ctx = self.ctx_for(thread, None).await?;
         let client_tools = self.client_tools_for(&ctx);
-        pending_from_ticket(&ticket, &client_tools)
+        self.visible_pending_tool(ctx.commit.as_ref(), &ticket, None, &client_tools)
+            .await
     }
 
     /// Buffer a system message; it is prepended to the next turn's input.
@@ -567,9 +649,7 @@ impl SharedHost {
                 .len();
             let command = ResumeCommand::from_ticket(
                 &ticket,
-                ResumeResult::Input(awaken_agent_contract::agent::content::extract_text(
-                    &content,
-                )),
+                client_result_for_ticket(&ticket, tool_use_id, content, false),
                 0,
             );
             let state = self.drive_resume(&ctx, activation, command).await?;
@@ -584,16 +664,13 @@ impl SharedHost {
         // typed answer; the kernel routes it through the parent relationship to the
         // child's own Run service. The user never resumes the child directly.
         if ticket.reason == AwaitReason::Delegation {
-            let mut parent_store = Store::new();
-            for command in &awaiting_snapshot.state {
-                if command.scope == Scope::Run && command.run_id.as_ref() == Some(&run_id) {
-                    parent_store.apply(command);
-                }
-            }
-            let registry = RunDelegations::load(&parent_store)
-                .map_err(|error| HostError::internal(error.to_string()))?;
+            let registry = delegation_registry_from_snapshot(&awaiting_snapshot, &run_id)?;
             let child = self
-                .authoritative_child_ticket(&ctx, registry.as_ref(), ticket.call_id.as_deref())
+                .authoritative_child_ticket(
+                    ctx.commit.as_ref(),
+                    registry.as_ref(),
+                    ticket.call_id.as_deref(),
+                )
                 .await?;
             let result = if let Some(child_ticket) = child {
                 self.check_pending(&ctx, &child_ticket, tool_use_id, resume.wants_client())?;
@@ -606,12 +683,7 @@ impl SharedHost {
                         }
                     }
                     HostResume::ClientResult { content, is_error } => {
-                        let output = if is_error {
-                            ToolOutput::error_blocks(tool_use_id, content)
-                        } else {
-                            ToolOutput::ok_blocks(tool_use_id, content)
-                        };
-                        ResumeResult::ToolResult(output)
+                        client_result_for_ticket(&child_ticket, tool_use_id, content, is_error)
                     }
                 }
             } else {
@@ -700,7 +772,7 @@ impl SharedHost {
     /// thread, so the parent's consistent snapshot cannot contain their ticket.
     async fn authoritative_child_ticket(
         &self,
-        ctx: &SessionCtx,
+        commit: &HostCommit,
         registry: Option<&awaken_agent_contract::agent::delegation::DelegationRegistry>,
         parent_call_id: Option<&str>,
     ) -> Result<Option<ResumeTicket>, HostError> {
@@ -713,12 +785,42 @@ impl SharedHost {
             return Ok(None);
         };
         let child_thread_id = ThreadId(child_run_id.0.clone());
-        let committed = ctx
-            .commit
+        let committed = commit
             .recovery_snapshot(&child_thread_id, &child_run_id)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(recovery_ticket(&committed, &child_run_id))
+    }
+
+    /// Project the one externally answerable tool from a committed ticket. A
+    /// delegation owns a child ticket when the child is local; remote A2A may
+    /// instead expose opaque input through the parent ticket. Both foreground
+    /// completion and later protocol reads must use this same classification.
+    async fn visible_pending_tool(
+        &self,
+        commit: &HostCommit,
+        ticket: &ResumeTicket,
+        registry: Option<&awaken_agent_contract::agent::delegation::DelegationRegistry>,
+        client_tools: &HashSet<String>,
+    ) -> Result<Option<PendingTool>, HostError> {
+        if ticket.reason != AwaitReason::Delegation {
+            if ticket.reason == AwaitReason::ToolPermission && ticket.pending_tool.is_none() {
+                return Err(HostError::internal(
+                    "awaiting tool-permission run has no pending tool",
+                ));
+            }
+            return Ok(pending_from_ticket(ticket, client_tools));
+        }
+        let visible_child = self
+            .authoritative_child_ticket(commit, registry, ticket.call_id.as_deref())
+            .await?;
+        Ok(match visible_child {
+            Some(child) => pending_from_ticket(&child, client_tools),
+            None => pending_from_ticket(ticket, client_tools).map(|mut pending| {
+                pending.client_executed = true;
+                pending
+            }),
+        })
     }
 
     /// Project the step's delta, update the awaiting position, and publish the
@@ -738,14 +840,7 @@ impl SharedHost {
         // never return an idle response with an empty/old assistant delta.
         let committed = self.authoritative_step_snapshot(ctx, &run_id).await?;
         let new_messages = committed.messages[before.min(committed.messages.len())..].to_vec();
-        let mut run_store = Store::new();
-        for command in &committed.state {
-            if command.scope == Scope::Run && command.run_id.as_ref() == Some(&run_id) {
-                run_store.apply(command);
-            }
-        }
-        let delegation_registry = RunDelegations::load(&run_store)
-            .map_err(|error| HostError::internal(error.to_string()))?;
+        let delegation_registry = delegation_registry_from_snapshot(&committed, &run_id)?;
         let client_tools = self.client_tools_for(ctx);
         let (pending, awaiting) = match &state {
             RunState::Awaiting => {
@@ -755,31 +850,13 @@ impl SharedHost {
                     // interaction request. The protocol still addresses the
                     // parent session; it never obtains a bypass around the
                     // parent-child relationship.
-                    let visible_child = if ticket.reason == AwaitReason::Delegation {
-                        self.authoritative_child_ticket(
-                            ctx,
-                            delegation_registry.as_ref(),
-                            ticket.call_id.as_deref(),
-                        )
-                        .await?
-                    } else {
-                        None
-                    };
-                    match visible_child {
-                        Some(child) => pending_from_ticket(&child, &client_tools),
-                        None if ticket.reason == AwaitReason::Delegation => {
-                            // A remote Agent may return an opaque InputRequired
-                            // continuation without a local child ticket. The parent
-                            // session mediates that user interaction, so it is
-                            // client-executed even though the initiating agent_run
-                            // tool itself is host-executed.
-                            pending_from_ticket(&ticket, &client_tools).map(|mut pending| {
-                                pending.client_executed = true;
-                                pending
-                            })
-                        }
-                        None => pending_from_ticket(&ticket, &client_tools),
-                    }
+                    self.visible_pending_tool(
+                        ctx.commit.as_ref(),
+                        &ticket,
+                        delegation_registry.as_ref(),
+                        &client_tools,
+                    )
+                    .await?
                 } else {
                     None
                 };
@@ -834,18 +911,14 @@ impl SharedHost {
         tool_use_id: &str,
         want_client: bool,
     ) -> Result<(), HostError> {
-        if ticket.call_id.as_deref() != Some(tool_use_id) {
+        let pending = pending_from_ticket(ticket, &self.client_tools_for(ctx))
+            .ok_or_else(|| HostError::internal("awaiting run has no pending tool"))?;
+        if pending.tool_use_id != tool_use_id {
             return Err(HostError::bad_request(format!(
                 "tool_use_id {tool_use_id:?} does not match the pending tool"
             )));
         }
-        let pending_tool_id = ticket
-            .pending_tool
-            .as_ref()
-            .map(|t| t.tool_id.as_str())
-            .ok_or_else(|| HostError::internal("awaiting run has no pending tool"))?;
-        let is_client = self.client_tools_for(ctx).contains(pending_tool_id);
-        if is_client != want_client {
+        if pending.client_executed != want_client {
             let (got, expected) = if want_client {
                 ("built-in", "a confirmation")
             } else {
@@ -918,6 +991,10 @@ mod ticket_projection_tests {
 
     #[test]
     fn remote_input_wait_projects_as_a_client_executed_agent_input() {
+        // Cause/effect decision table: no pending_tool + UserInput/ExternalEvent
+        // -> synthetic client-executed agent_input + ResumeResult::Input;
+        // concrete pending_tool -> preserve ordinary client/built-in binding and
+        // a client result becomes ToolResult. This test owns the remote row.
         let ticket = ResumeTicket {
             correlation_id: "a2a:remote-7:InputRequired".into(),
             run_id: RunId("run-7".into()),
@@ -937,5 +1014,16 @@ mod ticket_projection_tests {
         assert_eq!(pending.name, "agent_input");
         assert!(pending.client_executed);
         assert_eq!(pending.input["reason"], "user_input");
+        assert_eq!(
+            client_result_for_ticket(
+                &ticket,
+                "remote-7",
+                vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "src/lib.rs",
+                )],
+                false,
+            ),
+            ResumeResult::Input("src/lib.rs".into())
+        );
     }
 }

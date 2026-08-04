@@ -38,6 +38,63 @@ fn merge_acp_mcp_servers(
 }
 
 impl SharedHost {
+    /// Resolve the one immutable publication selected for a Session and enforce
+    /// its projected Agent/backend fences. Context construction and cold
+    /// environment adoption share this boundary so provider selection cannot
+    /// drift from execution selection.
+    pub(crate) fn resolve_session_publication(
+        &self,
+        thread: &str,
+        agent: Option<&str>,
+        published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
+    ) -> Result<
+        (
+            String,
+            String,
+            Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
+        ),
+        HostError,
+    > {
+        let workspace = self.thread_workspace(thread);
+        let projected_agent = self.thread_agent_projection(thread);
+        if let (Some(asserted), Some(projected)) = (agent, projected_agent.as_deref())
+            && asserted != projected
+        {
+            return Err(HostError::internal(format!(
+                "session Agent projection `{projected}` does not match requested Agent `{asserted}`"
+            )));
+        }
+        let selected_agent = agent.or(projected_agent.as_deref()).unwrap_or("assistant");
+        let installed = published_snapshot.or_else(|| {
+            self.agent_publications.as_ref().and_then(|source| {
+                source.current(
+                    &workspace,
+                    &awaken_runtime_contract::snapshot::AgentId(selected_agent.to_string()),
+                )
+            })
+        });
+        let published_backend_ref = installed
+            .as_ref()
+            .map(|snapshot| snapshot.resolved_spec.model_binding.backend_ref.clone());
+        let projected_backend_ref = self
+            .session_slots
+            .read(thread, |slot| slot.backend_ref.clone())
+            .flatten();
+        if let (Some(published), Some(projected)) = (&published_backend_ref, &projected_backend_ref)
+            && published != projected
+        {
+            return Err(HostError::internal(format!(
+                "session backend projection `{projected}` does not match publication `{published}`"
+            )));
+        }
+        if installed.is_none() && projected_backend_ref.is_some() {
+            return Err(HostError::internal(
+                "session backend projection has no immutable Agent publication",
+            ));
+        }
+        Ok((workspace, selected_agent.to_string(), installed))
+    }
+
     fn session_has_local_environment_inputs(&self, thread: &str) -> bool {
         let slot_requires = self
             .session_slots
@@ -315,6 +372,27 @@ impl SharedHost {
         }
     }
 
+    /// Open only the authoritative commit/read boundary for a query. A resident
+    /// context already owns the exact adapter (including a Worker's recovery
+    /// projection); otherwise reconstruct the configured durable adapter without
+    /// selecting, creating, or adopting a Session environment.
+    pub(crate) async fn commit_for_read(&self, thread: &str) -> Result<Arc<HostCommit>, HostError> {
+        let lifecycle = self
+            .session_slots
+            .update(thread, |slot| slot.lifecycle.clone());
+        let _lifecycle = lifecycle.lock().await;
+        if let Some(commit) = self
+            .session_slots
+            .read(thread, |slot| {
+                slot.runtime.as_ref().map(|context| context.commit.clone())
+            })
+            .flatten()
+        {
+            return Ok(commit);
+        }
+        self.build_commit(thread).await.map(Arc::new)
+    }
+
     /// Build a thread's interrupted-stream checkpoint store, mirroring
     /// `build_commit`'s durability choice: a filesystem store under the configured
     /// directory (so a partial survives a process crash and resumes), or the
@@ -522,43 +600,11 @@ impl SharedHost {
         // Resolve the immutable publication before selecting an environment.
         // Environment identity is a consequence of provisioning, not of the ACP
         // executor or a process-wide sandbox default.
-        let workspace = self.thread_workspace(thread);
-        let projected_agent = self.thread_agent_projection(thread);
-        if let (Some(asserted), Some(projected)) = (agent, projected_agent.as_deref())
-            && asserted != projected
-        {
-            return Err(HostError::internal(format!(
-                "session Agent projection `{projected}` does not match requested Agent `{asserted}`"
-            )));
-        }
-        let selected_agent = agent.or(projected_agent.as_deref()).unwrap_or("assistant");
-        let installed = published_snapshot.or_else(|| {
-            self.agent_publications.as_ref().and_then(|source| {
-                source.current(
-                    &workspace,
-                    &awaken_runtime_contract::snapshot::AgentId(selected_agent.to_string()),
-                )
-            })
-        });
+        let (workspace, selected_agent, installed) =
+            self.resolve_session_publication(thread, agent, published_snapshot)?;
         let published_backend_ref = installed
             .as_ref()
             .map(|snapshot| snapshot.resolved_spec.model_binding.backend_ref.clone());
-        let projected_backend_ref = self
-            .session_slots
-            .read(thread, |slot| slot.backend_ref.clone())
-            .flatten();
-        if let (Some(published), Some(projected)) = (&published_backend_ref, &projected_backend_ref)
-            && published != projected
-        {
-            return Err(HostError::internal(format!(
-                "session backend projection `{projected}` does not match publication `{published}`"
-            )));
-        }
-        if installed.is_none() && projected_backend_ref.is_some() {
-            return Err(HostError::internal(
-                "session backend projection has no immutable Agent publication",
-            ));
-        }
         let provisioning = installed
             .as_ref()
             .map(|snapshot| &snapshot.resolved_spec.model_binding.provisioning)
@@ -587,7 +633,11 @@ impl SharedHost {
         }
         let deferred = retained.is_none()
             && adopted.is_none()
-            && self.can_defer_session_environment(thread, Some(selected_agent), installed.as_ref());
+            && self.can_defer_session_environment(
+                thread,
+                Some(selected_agent.as_str()),
+                installed.as_ref(),
+            );
         let (env, needs_provision, needs_registration) = match (retained, adopted) {
             (Some(existing), Some(adopted)) => {
                 if existing.handle() != adopted.handle() {
@@ -665,7 +715,8 @@ impl SharedHost {
                 let wiring = projection.native_wiring.as_ref().ok_or_else(|| {
                     HostError::internal(format!(
                         "native MCP generation {}:{} has no staged connection",
-                        projection.generation.attachment_id.0, projection.generation.generation.0
+                        projection.request.generation.attachment_id.0,
+                        projection.request.generation.generation.0
                     ))
                 })?;
                 combined.plugins.extend(wiring.plugins.clone());
@@ -1091,7 +1142,7 @@ impl SharedHost {
                         .map(|server| (projection, server))
                 })
                 .map(|(projection, server)| {
-                    crate::mcp::project_mcp_transport(server, &projection.generation, relay)
+                    crate::mcp::project_mcp_transport(server, &projection.request.generation, relay)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             merge_acp_mcp_servers(publication, staged)?
@@ -1321,6 +1372,7 @@ impl SharedHost {
         &self,
         thread: &str,
         encoded: Option<&str>,
+        provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
         rebuild_unavailable: bool,
     ) -> Result<(Option<crate::session_environment::SessionEnvironment>, bool), HostError> {
         let Some(encoded) = encoded else {
@@ -1370,9 +1422,9 @@ impl SharedHost {
                 }
             }
         }
+        let provider = self.session_environment_provider(provisioning)?;
         let adoption = async {
-            let sandbox = self
-                .session_provider
+            let sandbox = provider
                 .adopt(&handle)
                 .await
                 .map_err(|error| HostError::internal(error.to_string()))?;

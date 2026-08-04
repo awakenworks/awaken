@@ -124,6 +124,7 @@ def _selftest_package_classification() -> None:
 PROTOCOL_LEAF_CONSUMERS: frozenset[str] = frozenset(
     {
         "awaken-cli", "awaken-coordinator", "awaken-scenario-host",  # composition roots
+        "awaken-worker",  # remote execution composition root
         "awaken-control",  # mounts the managed routes + reuses its wire ErrorResponse
     }
 )
@@ -206,13 +207,17 @@ def _selftest_resource_authz_separation() -> None:
 
 
 # ── Phase 3: the runtime-host god-hub dependency ratchet ─────────────────────────
-# `awaken-runtime-host` is the historical god-hub. Extracted domain implementations remain
-# injected collaborators, so their dependency edges do not mean the host still owns their
-# implementation. The ratchet counts non-extracted first-party responsibilities, while a
-# separate facade rule forbids laundering any dependency's public API through the host.
+# `awaken-runtime-host` is the historical god-hub. Neutral port leaves and extracted
+# domain implementations remain injected collaborators, so those dependency edges do
+# not mean the host owns another implementation. The ratchet counts retained first-party
+# responsibilities, while a separate facade rule forbids laundering dependency APIs.
 GOD_HUB_CRATE = "awaken-runtime-host"
-GOD_HUB_EXTRACTED_OWNER_DEPS: frozenset[str] = frozenset(
-    {"awaken-credential-materializer", "awaken-worker-transport-security"}
+GOD_HUB_NON_RESPONSIBILITY_DEPS: frozenset[str] = frozenset(
+    {
+        "awaken-acp-contract",
+        "awaken-credential-materializer",
+        "awaken-worker-transport-security",
+    }
 )
 GOD_HUB_FIRST_PARTY_DEP_CEILING = 32
 
@@ -343,7 +348,7 @@ def check_all(specs: list[CrateSpec]) -> list[str]:
     hub = next((s for s in specs if s.name == GOD_HUB_CRATE), None)
     if hub is not None:
         first_party = frozenset(d for d in hub.normal_deps if d.startswith("awaken-"))
-        retained_responsibilities = first_party - GOD_HUB_EXTRACTED_OWNER_DEPS
+        retained_responsibilities = first_party - GOD_HUB_NON_RESPONSIBILITY_DEPS
         errors.extend(
             god_hub_ratchet_violation(
                 len(retained_responsibilities), GOD_HUB_FIRST_PARTY_DEP_CEILING

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 awaken-resource-contract.workspace = true
+awaken-store-runtime = { workspace = true, optional = true }
 async-trait.workspace = true
 parking_lot = "0.12"
 rusqlite = { workspace = true, optional = true }
@@ -26,7 +27,7 @@ default = ["sqlite"]
 # Private in-memory SQLite authority used only by tests and scenario fixtures.
 test-support = []
 sqlite = ["dep:rusqlite", "dep:awaken-scoped-migration", "dep:awaken-scoped-migration-sqlite"]
-postgres = ["dep:sqlx", "dep:tokio", "dep:awaken-scoped-migration"]
+postgres = ["dep:sqlx", "dep:tokio", "dep:awaken-scoped-migration", "dep:awaken-store-runtime"]
 
 [lints]
 workspace = true
