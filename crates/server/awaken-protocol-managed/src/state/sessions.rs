@@ -823,8 +823,10 @@ impl ManagedState {
             // either effect. Dispatch preparation deliberately acquires no
             // realization lease and performs no physical Runtime I/O.
             let realization = if self.application.requires_external_realization(&persisted) {
-                self.install_dispatch_projection(&owner_scope, &persisted)
+                self.application
+                    .install_dispatch_projection(&owner_scope, &persisted)
                     .await
+                    .map_err(Self::map_realization_application_error)
                     .map(|()| persisted.clone())
             } else {
                 self.realize_session_locally(&id).await

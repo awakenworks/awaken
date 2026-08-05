@@ -56,8 +56,10 @@ impl ManagedState {
                 // bypass a still-live predecessor merely because MCP is settled.
                 self.realize_session_locally(id).await?
             } else {
-                self.install_dispatch_projection(&owner_scope, &session)
-                    .await?;
+                self.application
+                    .install_dispatch_projection(&owner_scope, &session)
+                    .await
+                    .map_err(Self::map_realization_application_error)?;
                 session
             };
             persisted = Some(recovered.clone());

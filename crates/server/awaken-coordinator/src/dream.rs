@@ -264,7 +264,8 @@ impl BuiltInDreamAgent {
             .await
             .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         self.managed
-            .realize_application_session(&session_id)
+            .session_application()
+            .realize_session(&session_id)
             .await
             .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         Ok(session_id)

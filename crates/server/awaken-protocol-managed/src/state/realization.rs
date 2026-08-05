@@ -1,71 +1,13 @@
 //! Managed wire-cache coordination around the Session application realization owner.
 
 use super::*;
-use awaken_session_contract::{
-    BeginSessionRealization, McpAttachmentState, PersistedSession, RunError,
-    SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationLease,
-    SessionRuntime,
-};
+use awaken_session_contract::{PersistedSession, RunError, SessionRealizationControlFailure};
 
 fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or_default()
-}
-
-struct LocalProjectionSynchronizer<'a> {
-    runtime: &'a dyn SessionRuntime,
-    environment_binding: Option<&'a str>,
-}
-
-#[async_trait::async_trait]
-impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionSynchronizer<'_> {
-    async fn synchronize_session_projection(
-        &self,
-        session_id: &str,
-        projection: &awaken_session_contract::FrozenSessionProjection,
-        lease: &SessionRealizationLease,
-        prepare_session: bool,
-    ) -> Result<(), RunError> {
-        if !prepare_session {
-            return Ok(());
-        }
-        self.runtime
-            .install_session_realization_lease(session_id, lease.clone());
-        self.runtime
-            .prepare_session(session_id, projection.session_init())
-            .await?;
-        if let Some(binding) = self.environment_binding {
-            self.runtime
-                .restore_session_environment(&projection.baseline.agent_id, session_id, binding)
-                .await?;
-        }
-        Ok(())
-    }
-}
-
-impl ManagedState {
-    /// Install the frozen facts required to construct a durable Run dispatch,
-    /// without acquiring the Session realization lease. In a Worker-only
-    /// placement the physical projection is owned exclusively by the claim-time
-    /// realization driver.
-    pub(super) async fn install_dispatch_projection(
-        &self,
-        owner_scope: &str,
-        session: &PersistedSession,
-    ) -> Result<(), StateError> {
-        let projection = awaken_session_application::SessionApplication::frozen_session_projection(
-            owner_scope.to_string(),
-            session,
-        )
-        .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
-        self.application
-            .runtime()
-            .prepare_session(&session.session_id, projection.session_init())
-            .await
-            .map_err(StateError::Run)
-    }
 }
 
 impl ManagedState {
@@ -80,134 +22,33 @@ impl ManagedState {
         }
     }
 
-    /// Sole in-process topology adapter for the Control-owned realization
-    /// protocol. Create, hot replacement, and recovery all call this driver;
-    /// it owns Runtime I/O but never mutates Session desired state directly.
-    pub async fn realize_application_session(
-        &self,
-        session_id: &str,
-    ) -> Result<PersistedSession, StateError> {
-        let lease_expires_at_unix_ms = now_unix_ms()
-            .checked_add(300_000)
-            .ok_or_else(|| StateError::Run(RunError::internal("lease expiry overflow")))?;
-        let directive = self
-            .application
-            .begin_session_realization(BeginSessionRealization {
-                session_id: session_id.to_string(),
-                target: awaken_session_contract::SessionRealizationTarget {
-                    // A process incarnation is the physical local owner. A
-                    // deployment-wide constant would let two active replicas
-                    // immediately fence each other while both sandboxes live.
-                    owner: self.application.runtime_incarnation().to_string(),
-                    runtime_incarnation: self.application.runtime_incarnation().to_string(),
-                    lease_expires_at_unix_ms,
-                    renew_existing_lease: false,
-                },
-            })
-            .await
-            .map_err(Self::map_realization_failure)?;
-        self.drive_local_realization(session_id, directive).await?;
-        self.application
-            .session_repository()
-            .get(session_id)
-            .await
-            .ok_or(StateError::NotFound)
+    pub(super) fn map_realization_application_error(
+        error: awaken_session_application::SessionRealizationError,
+    ) -> StateError {
+        match error {
+            awaken_session_application::SessionRealizationError::Control(error) => {
+                Self::map_realization_failure(error)
+            }
+            awaken_session_application::SessionRealizationError::Effect(error) => {
+                StateError::Run(error)
+            }
+            awaken_session_application::SessionRealizationError::DidNotConverge => {
+                StateError::Run(RunError::internal("Session realization did not converge"))
+            }
+        }
     }
 
     pub(super) async fn realize_session_locally(
         &self,
         session_id: &str,
     ) -> Result<PersistedSession, StateError> {
-        self.realize_application_session(session_id).await
-    }
-
-    async fn drive_local_realization(
-        &self,
-        session_id: &str,
-        directive: awaken_session_contract::SessionRealizationDirective,
-    ) -> Result<(), StateError> {
-        let environment_binding = self
+        let session = self
             .application
-            .session_repository()
-            .get(session_id)
+            .realize_session(session_id)
             .await
-            .and_then(|session| session.environment.binding().map(str::to_string));
-        awaken_session_contract::drive_session_realization(
-            session_id,
-            self.application.as_ref(),
-            &LocalProjectionSynchronizer {
-                runtime: self.application.runtime(),
-                environment_binding: environment_binding.as_deref(),
-            },
-            self.application.mcp_realizer(),
-            directive,
-        )
-        .await
-        .map_err(|error| match error {
-            awaken_session_contract::SessionRealizationDriveError::Effect(error) => {
-                StateError::Run(error)
-            }
-            awaken_session_contract::SessionRealizationDriveError::Control(error) => {
-                Self::map_realization_failure(error)
-            }
-            awaken_session_contract::SessionRealizationDriveError::DidNotConverge => {
-                StateError::Run(RunError::internal(error.to_string()))
-            }
-        })
-    }
-
-    /// Renew due local projections through the same root-CAS phase protocol.
-    /// Composition roots call this periodically; it owns no second registry or
-    /// relay-specific timer.
-    pub async fn renew_due_session_realizations(
-        &self,
-        now_unix_ms: u64,
-    ) -> Result<usize, StateError> {
-        const RENEW_BEFORE_MS: u64 = 150_000;
-        const LEASE_MS: u64 = 300_000;
-        let renew_before = now_unix_ms.saturating_add(RENEW_BEFORE_MS);
-        let requested_expiry = now_unix_ms.saturating_add(LEASE_MS);
-        let sessions = self
-            .application
-            .session_repository()
-            .reconcilable_sessions()
-            .await;
-        let mut renewed = 0;
-        for scoped in sessions {
-            let Some(lease) = scoped.session.realization.clone() else {
-                continue;
-            };
-            if scoped.session.status == "deleted"
-                || lease.owner != self.application.runtime_incarnation()
-                || lease.runtime_incarnation != self.application.runtime_incarnation()
-                || lease.expires_at_unix_ms > renew_before
-                || !scoped
-                    .session
-                    .mcp
-                    .attachments
-                    .iter()
-                    .any(|attachment| attachment.state == McpAttachmentState::Active)
-            {
-                continue;
-            }
-            let directive = self
-                .application
-                .begin_session_realization(BeginSessionRealization {
-                    session_id: scoped.session.session_id.clone(),
-                    target: awaken_session_contract::SessionRealizationTarget {
-                        owner: lease.owner,
-                        runtime_incarnation: lease.runtime_incarnation,
-                        lease_expires_at_unix_ms: requested_expiry,
-                        renew_existing_lease: true,
-                    },
-                })
-                .await
-                .map_err(Self::map_realization_failure)?;
-            self.drive_local_realization(&scoped.session.session_id, directive)
-                .await?;
-            renewed += 1;
-        }
-        Ok(renewed)
+            .map_err(Self::map_realization_application_error)?;
+        self.refresh_cached_projection(&session)?;
+        Ok(session)
     }
 
     async fn reconcile_pending_session_state(&self) {
@@ -261,7 +102,7 @@ impl ManagedState {
                     });
                 }
                 let now = now_unix_ms();
-                if let Err(error) = state.renew_due_session_realizations(now).await {
+                if let Err(error) = state.application.renew_due_session_realizations(now).await {
                     tracing::warn!(
                         error = ?error,
                         "Session realization lease renewal remains pending"
@@ -282,10 +123,11 @@ mod tests {
     };
     use awaken_session_contract::{
         AcknowledgeSessionRealization, ActivateSessionRealization, ApplicationContributionReceipt,
-        EnvironmentFingerprint, EnvironmentSnapshot, FailSessionRealization, IdempotencyRecord,
-        McpAttachmentDraft, McpAttachmentOrigin, McpGenerationRef, McpRealizationReceipt,
-        McpTarget, OutcomeReport, SessionBaseline, SessionBaselineInputs, SessionBaselineState,
-        SessionMcpAttachmentSet, SessionNetworkPolicy, SessionRealizationAction,
+        BeginSessionRealization, EnvironmentFingerprint, EnvironmentSnapshot,
+        FailSessionRealization, IdempotencyRecord, McpAttachmentDraft, McpAttachmentOrigin,
+        McpAttachmentState, McpGenerationRef, McpRealizationReceipt, McpTarget, OutcomeReport,
+        SessionBaseline, SessionBaselineInputs, SessionBaselineState, SessionMcpAttachmentSet,
+        SessionNetworkPolicy, SessionRealizationAction, SessionRealizationControl,
         SessionResourceState, SessionRevision, SessionRuntime, StageMcpAttachment, StepOutcome,
         ToolPermissionDecision,
     };
@@ -819,6 +661,7 @@ mod tests {
         let supervision_now = lease.expires_at_unix_ms.saturating_sub(100_000);
         assert_eq!(
             state
+                .application
                 .renew_due_session_realizations(supervision_now)
                 .await
                 .expect("S1"),
@@ -840,6 +683,7 @@ mod tests {
         let revision = renewed.revision;
         assert_eq!(
             state
+                .application
                 .renew_due_session_realizations(supervision_now)
                 .await
                 .expect("S2"),

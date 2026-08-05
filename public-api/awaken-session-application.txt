@@ -18,6 +18,10 @@ pub awaken_session_application::SessionPreparationError::Conflict
 pub awaken_session_application::SessionPreparationError::NotFound
 pub awaken_session_application::SessionPreparationError::Rejected(awaken_session_contract::session::RunError)
 pub awaken_session_application::SessionPreparationError::Unavailable(alloc::string::String)
+pub enum awaken_session_application::SessionRealizationError
+pub awaken_session_application::SessionRealizationError::Control(awaken_session_contract::session_realization::SessionRealizationControlFailure)
+pub awaken_session_application::SessionRealizationError::DidNotConverge
+pub awaken_session_application::SessionRealizationError::Effect(awaken_session_contract::session::RunError)
 pub struct awaken_session_application::McpAttachmentCandidate
 pub awaken_session_application::McpAttachmentCandidate::name: alloc::string::String
 pub awaken_session_application::McpAttachmentCandidate::origin: awaken_session_contract::mcp_attachment::McpAttachmentOrigin
@@ -78,6 +82,10 @@ pub async fn awaken_session_application::SessionApplication::pin_repository_cred
 pub fn awaken_session_application::SessionApplication::resource_plaintext_holder(&self, &awaken_session_contract::session_repo::PersistedSession) -> core::result::Result<awaken_credential_contract::PlaintextHolder, awaken_session_application::SessionPreparationError>
 impl awaken_session_application::SessionApplication
 pub fn awaken_session_application::SessionApplication::frozen_session_projection(alloc::string::String, &awaken_session_contract::session_repo::PersistedSession) -> core::result::Result<awaken_session_contract::application_contribution::FrozenSessionProjection, awaken_session_contract::application_contribution::ApplicationSessionContributionFailure>
+impl awaken_session_application::SessionApplication
+pub async fn awaken_session_application::SessionApplication::install_dispatch_projection(&self, &str, &awaken_session_contract::session_repo::PersistedSession) -> core::result::Result<(), awaken_session_application::SessionRealizationError>
+pub async fn awaken_session_application::SessionApplication::realize_session(&self, &str) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_application::SessionRealizationError>
+pub async fn awaken_session_application::SessionApplication::renew_due_session_realizations(&self, u64) -> core::result::Result<usize, awaken_session_application::SessionRealizationError>
 impl awaken_session_application::SessionApplication
 pub async fn awaken_session_application::SessionApplication::normalize_mcp_drafts(&self, alloc::vec::Vec<awaken_session_application::McpAttachmentCandidate>, &[alloc::string::String]) -> core::result::Result<alloc::vec::Vec<awaken_session_contract::mcp_attachment::McpAttachmentDraft>, awaken_session_contract::session::RunError>
 impl awaken_session_contract::application_contribution::ApplicationSessionContributionApi for awaken_session_application::SessionApplication

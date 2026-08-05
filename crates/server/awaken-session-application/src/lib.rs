@@ -29,6 +29,7 @@ pub use credentials::SessionPreparationError;
 mod mcp;
 mod realization;
 pub use mcp::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
+pub use realization::SessionRealizationError;
 
 /// Secret-free credential selection used while compiling a Session.
 #[async_trait::async_trait]
