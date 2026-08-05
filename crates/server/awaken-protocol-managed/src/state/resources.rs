@@ -17,36 +17,24 @@ impl ManagedState {
     /// stores and the Runtime Host are wired. It scans only Session application
     /// state; authorization principals and policy objects never cross this seam.
     pub async fn reconcile_resource_activations(&self) -> usize {
-        let pending = self
-            .application
-            .session_repository()
-            .reconcilable_sessions()
-            .await;
-        let mut settled = 0;
-        for record in pending {
-            let owner_scope = record.workspace_id;
-            let session = record.session;
-            // Frozen WorkQueue/application facts fence Worker custody. This
-            // Coordinator scanner owns only
-            // local Session effects and must preserve those durable intents.
-            if self.application.requires_external_realization(&session)
-                || !session.needs_resource_reconciliation()
-            {
-                continue;
-            }
-            match self
-                .reconcile_persisted_resources(&owner_scope, session.clone())
-                .await
-            {
-                Ok(_) => settled += 1,
-                Err(error) => tracing::warn!(
+        let report = self.application.reconcile_resource_activations().await;
+        for session in &report.settled {
+            if let Err(error) = self.refresh_cached_projection(session) {
+                tracing::warn!(
                     session = %session.session_id,
                     error = ?error,
-                    "Session resource reconciliation remains pending"
-                ),
+                    "Session Resource wire projection refresh remains pending"
+                );
             }
         }
-        settled
+        for failure in report.failures {
+            tracing::warn!(
+                session = %failure.session_id,
+                error = %failure.message,
+                "Session resource reconciliation remains pending"
+            );
+        }
+        report.settled.len()
     }
 
     pub(super) fn map_preparation_error(

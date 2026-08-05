@@ -28,6 +28,7 @@ mod projection;
 pub use credentials::SessionPreparationError;
 mod mcp;
 mod realization;
+mod resource_reconciliation;
 pub use mcp::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
 pub use realization::{
     SessionRealizationError, SessionReconciliation, SessionReconciliationFailure,

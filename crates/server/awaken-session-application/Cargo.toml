@@ -22,10 +22,12 @@ async-trait.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "time"] }
+tracing = "0.1"
 
 [dev-dependencies]
 awaken-session-store = { workspace = true, features = ["test-support"] }
-tokio = { workspace = true, features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["macros"] }
 
 [lints]
 workspace = true

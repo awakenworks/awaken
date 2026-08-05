@@ -117,6 +117,98 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
 }
 
 impl SessionApplication {
+    async fn reconcile_pending_session_state(&self) {
+        let resources = self.reconcile_resource_activations().await;
+        for failure in resources.failures {
+            tracing::warn!(
+                session = %failure.session_id,
+                error = %failure.message,
+                "Session Resource reconciliation remains pending"
+            );
+        }
+        if !resources.settled.is_empty() {
+            tracing::info!(
+                reconciled_resources = resources.settled.len(),
+                "reconciled durable Session Resource activations"
+            );
+        }
+        let mcp = self.reconcile_mcp_attachments().await;
+        for failure in mcp.failures {
+            tracing::warn!(
+                session = %failure.session_id,
+                error = %failure.message,
+                "Session MCP reconciliation remains pending"
+            );
+        }
+        if !mcp.settled.is_empty() {
+            tracing::info!(
+                reconciled_mcp = mcp.settled.len(),
+                "reconciled durable Session MCP projections"
+            );
+        }
+    }
+
+    /// Start the sole Session lifecycle supervisor for this application
+    /// instance. Recovery runs off the composition/readiness path and the same
+    /// timer owns Resource, MCP, WorkQueue, and realization-lease convergence.
+    #[must_use]
+    pub fn spawn_lifecycle_supervisor(
+        self: &std::sync::Arc<Self>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let runtime = tokio::runtime::Handle::try_current().ok()?;
+        if !self.claim_lifecycle_supervisor() {
+            return None;
+        }
+        let application = self.clone();
+        Some(runtime.spawn(async move {
+            let recovery_application = application.clone();
+            let mut recovery = tokio::spawn(async move {
+                recovery_application.reconcile_pending_session_state().await;
+            });
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            interval.tick().await;
+            let initial_dispatch = application.reconcile_work_dispatches().await;
+            for failure in initial_dispatch.failures {
+                tracing::warn!(
+                    session = %failure.session_id,
+                    environment = %failure.environment_id,
+                    error = %failure.message,
+                    "Session WorkQueue dispatch remains pending"
+                );
+            }
+            loop {
+                interval.tick().await;
+                if recovery.is_finished() {
+                    if let Err(error) = recovery.await {
+                        tracing::warn!(error = ?error, "Session state reconciliation task failed");
+                    }
+                    let recovery_application = application.clone();
+                    recovery = tokio::spawn(async move {
+                        recovery_application.reconcile_pending_session_state().await;
+                    });
+                }
+                if let Err(error) = application
+                    .renew_due_session_realizations(now_unix_ms())
+                    .await
+                {
+                    tracing::warn!(
+                        error = ?error,
+                        "Session realization lease renewal remains pending"
+                    );
+                }
+                let dispatch = application.reconcile_work_dispatches().await;
+                for failure in dispatch.failures {
+                    tracing::warn!(
+                        session = %failure.session_id,
+                        environment = %failure.environment_id,
+                        error = %failure.message,
+                        "Session WorkQueue dispatch remains pending"
+                    );
+                }
+            }
+        }))
+    }
+
     /// Install frozen dispatch facts without acquiring a local realization
     /// lease. Worker-owned placement crosses this seam before enqueue only; the
     /// claimed Worker remains the sole owner of physical realization effects.

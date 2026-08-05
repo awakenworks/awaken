@@ -3,13 +3,6 @@
 use super::*;
 use awaken_session_contract::{PersistedSession, RunError, SessionRealizationControlFailure};
 
-fn now_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or_default()
-}
-
 impl ManagedState {
     fn map_realization_failure(error: SessionRealizationControlFailure) -> StateError {
         match error {
@@ -49,68 +42,6 @@ impl ManagedState {
             .map_err(Self::map_realization_application_error)?;
         self.refresh_cached_projection(&session)?;
         Ok(session)
-    }
-
-    async fn reconcile_pending_session_state(&self) {
-        let reconciled_resources = self.reconcile_resource_activations().await;
-        if reconciled_resources > 0 {
-            tracing::info!(
-                reconciled_resources,
-                "reconciled durable Session resource activations"
-            );
-        }
-        let reconciled_mcp = self.reconcile_mcp_attachments().await;
-        if reconciled_mcp > 0 {
-            tracing::info!(reconciled_mcp, "reconciled durable Session MCP projections");
-        }
-    }
-
-    /// Start the one local Session lifecycle supervisor when a Tokio runtime is
-    /// available. Recovery runs immediately in a non-overlapping background task,
-    /// so a slow external sandbox cannot hold the HTTP readiness boundary. The
-    /// same timer retries completed recovery passes and drives lease/residency;
-    /// repeated MCP- or resource-specific supervisors are forbidden.
-    #[must_use]
-    pub fn spawn_realization_lease_supervisor(
-        self: &Arc<Self>,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        let runtime = tokio::runtime::Handle::try_current().ok()?;
-        if !self.application.claim_lifecycle_supervisor() {
-            return None;
-        }
-        let state = self.clone();
-        Some(runtime.spawn(async move {
-            let recovery_state = state.clone();
-            let mut recovery = tokio::spawn(async move {
-                recovery_state.reconcile_pending_session_state().await;
-            });
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-            interval.tick().await;
-            state.reconcile_work_dispatches().await;
-            loop {
-                interval.tick().await;
-                if recovery.is_finished() {
-                    if let Err(error) = recovery.await {
-                        tracing::warn!(
-                            error = ?error,
-                            "Session state reconciliation task failed"
-                        );
-                    }
-                    let recovery_state = state.clone();
-                    recovery = tokio::spawn(async move {
-                        recovery_state.reconcile_pending_session_state().await;
-                    });
-                }
-                let now = now_unix_ms();
-                if let Err(error) = state.application.renew_due_session_realizations(now).await {
-                    tracing::warn!(
-                        error = ?error,
-                        "Session realization lease renewal remains pending"
-                    );
-                }
-                state.reconcile_work_dispatches().await;
-            }
-        }))
     }
 }
 
@@ -316,16 +247,17 @@ mod tests {
     #[tokio::test]
     async fn lifecycle_supervisor_is_single_owner_and_starts_recovery_off_path() {
         // Cause/effect decision table: R1 Tokio runtime + first start -> return
-        // one background supervisor immediately; R2 the same ManagedState starts
+        // one background supervisor immediately; R2 the same application starts
         // again -> return None and create no overlapping recovery/timer; R3 no
         // runtime -> existing contract returns None. Slow recovery is owned by the
         // spawned child, so component construction never awaits sandbox I/O.
         let state = Arc::new(ManagedState::new_with_mcp(NoopRuntime));
         let supervisor = state
-            .spawn_realization_lease_supervisor()
+            .application
+            .spawn_lifecycle_supervisor()
             .expect("R1 starts the sole supervisor");
         assert!(
-            state.spawn_realization_lease_supervisor().is_none(),
+            state.application.spawn_lifecycle_supervisor().is_none(),
             "R2 rejects a parallel supervisor"
         );
         tokio::task::yield_now().await;

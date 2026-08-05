@@ -480,7 +480,7 @@ fn local_managed_state_over(
         None => managed,
     };
     let managed = Arc::new(managed);
-    let _ = managed.spawn_realization_lease_supervisor();
+    let _ = managed.session_application().spawn_lifecycle_supervisor();
     managed
 }
 

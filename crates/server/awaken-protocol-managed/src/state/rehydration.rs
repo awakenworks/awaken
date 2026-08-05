@@ -25,8 +25,10 @@ impl ManagedState {
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
         let mut persisted = match persisted {
             Some(session) => Some(
-                self.reconcile_persisted_resources(&owner_scope, session)
-                    .await?,
+                self.application
+                    .reconcile_persisted_resources(&owner_scope, session)
+                    .await
+                    .map_err(Self::map_preparation_error)?,
             ),
             None => None,
         };

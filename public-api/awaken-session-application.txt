@@ -87,8 +87,15 @@ pub async fn awaken_session_application::SessionApplication::install_dispatch_pr
 pub async fn awaken_session_application::SessionApplication::realize_session(&self, &str) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_application::SessionRealizationError>
 pub async fn awaken_session_application::SessionApplication::reconcile_mcp_attachments(&self) -> awaken_session_application::SessionReconciliation
 pub async fn awaken_session_application::SessionApplication::renew_due_session_realizations(&self, u64) -> core::result::Result<usize, awaken_session_application::SessionRealizationError>
+pub fn awaken_session_application::SessionApplication::spawn_lifecycle_supervisor(&alloc::sync::Arc<Self>) -> core::option::Option<tokio::runtime::task::join::JoinHandle<()>>
 impl awaken_session_application::SessionApplication
 pub async fn awaken_session_application::SessionApplication::normalize_mcp_drafts(&self, alloc::vec::Vec<awaken_session_application::McpAttachmentCandidate>, &[alloc::string::String]) -> core::result::Result<alloc::vec::Vec<awaken_session_contract::mcp_attachment::McpAttachmentDraft>, awaken_session_contract::session::RunError>
+impl awaken_session_application::SessionApplication
+pub async fn awaken_session_application::SessionApplication::reconcile_persisted_resources(&self, &str, awaken_session_contract::session_repo::PersistedSession) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_application::SessionPreparationError>
+pub async fn awaken_session_application::SessionApplication::reconcile_resource_activations(&self) -> awaken_session_application::SessionReconciliation
+pub async fn awaken_session_application::SessionApplication::retire_repository(&self, &str, &str) -> bool
+pub async fn awaken_session_application::SessionApplication::retire_session_repositories(&self, &str, &str, &awaken_session_contract::resource_activation::SessionResourceState) -> bool
+pub async fn awaken_session_application::SessionApplication::tombstone_session_snapshot(&self, &str, &awaken_session_contract::session_repo::PersistedSession, awaken_session_contract::lifecycle::ManagedLifecycleFact) -> core::result::Result<(), awaken_session_application::SessionMutationError>
 impl awaken_session_contract::application_contribution::ApplicationSessionContributionApi for awaken_session_application::SessionApplication
 pub fn awaken_session_application::SessionApplication::contribute_application<'life0, 'async_trait>(&'life0 self, awaken_session_contract::application_contribution::ApplicationSessionContribution) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::application_contribution::ApplicationSessionContributionReceipt, awaken_session_contract::application_contribution::ApplicationSessionContributionFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl awaken_session_contract::session_realization::SessionRealizationControl for awaken_session_application::SessionApplication

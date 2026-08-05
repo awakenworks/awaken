@@ -109,7 +109,9 @@ pub async fn build_coordinator_component(
     // The canonical supervisor owns durable resource, MCP, and WorkQueue
     // recovery as background work. Component construction must expose readiness
     // without awaiting an external sandbox timeout for every persisted Session.
-    let _ = managed_state.spawn_realization_lease_supervisor();
+    let _ = managed_state
+        .session_application()
+        .spawn_lifecycle_supervisor();
     deployment_state.bind_launcher(Arc::new(
         awaken_protocol_managed::LocalDeploymentSessionLauncher::new(managed_state.clone()),
     ));

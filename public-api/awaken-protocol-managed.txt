@@ -1599,8 +1599,6 @@ impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::reconcile_mcp_attachments(&self) -> usize
 impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::reconcile_work_dispatches(&self) -> usize
-impl awaken_protocol_managed::ManagedState
-pub fn awaken_protocol_managed::ManagedState::spawn_realization_lease_supervisor(&alloc::sync::Arc<Self>) -> core::option::Option<tokio::runtime::task::join::JoinHandle<()>>
 impl awaken_dream_application::DreamSessionSource for awaken_protocol_managed::ManagedState
 pub fn awaken_protocol_managed::ManagedState::eligible_sessions<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_protocol_managed::ManagedState::session_usage(&self, &str, &str) -> core::option::Option<awaken_session_contract::dream::DreamUsage>
