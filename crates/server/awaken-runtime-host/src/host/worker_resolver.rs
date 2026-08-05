@@ -4,7 +4,9 @@
 use super::*;
 mod application;
 mod claimed_dispatch;
-use application::install_application_projection;
+#[cfg(test)]
+mod test_support;
+use application::install_claimed_session_projection;
 use claimed_dispatch::{WorkerMcpEffects, WorkerProjectionSynchronizer};
 
 /// Routes a claimed run to the worker that owns its thread, opening (or reusing)
@@ -72,143 +74,14 @@ impl HostWorkerResolver {
 #[cfg(test)]
 mod tests {
     use super::claimed_dispatch::adopt_bound_sandbox;
+    use super::test_support::{
+        AdoptionModel, ToggleBindingSink, claim, deferred_environment, prepare_deferred_session,
+        test_activation,
+    };
     use super::*;
-    use awaken_runtime_contract::llm::{
-        AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
-    };
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
-    use awaken_runtime_contract::snapshot::{
-        AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
-    };
+    use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-    struct AdoptionModel;
-
-    #[async_trait::async_trait]
-    impl LlmExecutor for AdoptionModel {
-        async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
-            Ok(ChatResponse {
-                output: AssistantOutput::text("ok"),
-                usage: None,
-                stop_reason: None,
-            })
-        }
-    }
-
-    fn test_activation(thread: &str, run: &str) -> RunActivation {
-        let fingerprint = CatalogFingerprint(format!("catalog-{run}"));
-        RunActivation::new(
-            RunId(run.to_string()),
-            ThreadId(thread.to_string()),
-            ExecutableAgentSnapshot {
-                id: ExecutableAgentSnapshotId(format!("snapshot-{run}")),
-                metadata: Default::default(),
-                root_agent_id: AgentId("agent-a".to_string()),
-                resolved_spec: ResolvedSpec {
-                    model_candidates: Vec::new(),
-                    catalog_fingerprint: fingerprint.clone(),
-                    instructions: "test".to_string(),
-                    max_steps: 1,
-                    delegation_limits: Default::default(),
-                    model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                        ModelBinding::new("provider", "model", "backend"),
-                    ),
-                    tool_descriptors: Vec::new(),
-                    plugin_ids: Vec::new(),
-                    plugin_config: Default::default(),
-                    context_policy: Default::default(),
-                    tool_presentation: Default::default(),
-                },
-                fingerprint,
-            },
-            Vec::new(),
-        )
-    }
-
-    fn deferred_environment() -> awaken_session_contract::EnvironmentSnapshot {
-        awaken_session_contract::EnvironmentSnapshot {
-            environment_id: "lazy-env".into(),
-            revision: awaken_session_contract::EnvironmentRevision(1),
-            self_hosted: false,
-            config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
-                "lazy-env-v1".into(),
-            ),
-            sandbox: serde_json::json!({}),
-            sandbox_provisioning: awaken_session_contract::SandboxProvisioning::OnToolUse,
-            packages: Default::default(),
-            prepared_image: None,
-            network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
-            credential_realization:
-                awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
-        }
-    }
-
-    async fn prepare_deferred_session(host: Arc<SharedHost>, thread: &str) -> crate::ManagedHost {
-        use awaken_session_contract::SessionRuntime;
-        let managed = crate::ManagedHost::new(host.clone());
-        managed
-            .prepare_session(
-                thread,
-                awaken_session_contract::SessionInit {
-                    workspace_id: host.local_workspace().into(),
-                    agent_id: "agent-a".into(),
-                    delegate_ids: Vec::new(),
-                    toolsets: None,
-                    resource_revision: 0,
-                    resources: Default::default(),
-                    model: None,
-                    runtime: None,
-                    environment: deferred_environment(),
-                },
-            )
-            .await
-            .expect("prepare deferred Session");
-        managed
-    }
-
-    struct ToggleBindingSink {
-        fail: std::sync::atomic::AtomicBool,
-        calls: AtomicUsize,
-    }
-
-    #[async_trait::async_trait]
-    impl awaken_session_contract::SessionEnvironmentBindingSink for ToggleBindingSink {
-        async fn persist(
-            &self,
-            _session_id: &str,
-            _binding: &str,
-        ) -> Result<(), awaken_session_contract::RunError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            if self.fail.load(Ordering::SeqCst) {
-                Err(awaken_session_contract::RunError::internal(
-                    "injected Session binding failure",
-                ))
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    async fn claim(
-        store: &awaken_run_ingress::AnyDispatchStore,
-        thread: &str,
-        run: &str,
-        owner: &str,
-        now: u64,
-    ) -> awaken_run_ingress::Claimed {
-        use awaken_run_ingress::DispatchQueue;
-        store
-            .enqueue(awaken_run_ingress::RunDispatch::new(test_activation(
-                thread, run,
-            )))
-            .await
-            .expect("enqueue deferred run");
-        store
-            .claim(owner, 1_000, now, &Default::default())
-            .await
-            .expect("claim deferred run")
-            .expect("deferred run available")
-    }
 
     /// Cause/effect decision table for Host-wide legacy reconciliation:
     ///
@@ -759,6 +632,7 @@ mod tests {
                                 resource_holder: holder,
                             },
                     },
+                    runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                     mcp_authoring: Default::default(),
                     // The Control projection and the claimed publication name
                     // the same immutable Agent. A different id is a projection
@@ -970,6 +844,131 @@ mod tests {
             self.refreshes.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
+    }
+
+    fn ordinary_frozen_projection() -> awaken_session_contract::FrozenSessionProjection {
+        let holder = awaken_runtime_contract::PlaintextHolder::new(
+            awaken_runtime_contract::PlaintextBoundary::Worker,
+            "test.worker",
+        );
+        let baseline = awaken_session_contract::SessionBaseline::compile(
+            awaken_session_contract::SessionBaselineInputs {
+                environment: awaken_session_contract::EnvironmentSnapshot {
+                    environment_id: "env".into(),
+                    revision: awaken_session_contract::EnvironmentRevision(1),
+                    self_hosted: true,
+                    config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+                        "env-fingerprint".into(),
+                    ),
+                    sandbox: serde_json::json!({}),
+                    sandbox_provisioning: Default::default(),
+                    packages: Default::default(),
+                    prepared_image: None,
+                    network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                    credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
+                        inference_holder: holder.clone(),
+                        mcp_holder: holder.clone(),
+                        resource_holder: holder,
+                    },
+                },
+                runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
+                mcp_authoring: Default::default(),
+                agent_id: "agent-a".into(),
+                model: "model".into(),
+                runtime: None,
+                application: None,
+                delegate_ids: Vec::new(),
+                toolsets: Vec::new(),
+                mounts: Vec::new(),
+                env: Vec::new(),
+                prompts: Vec::new(),
+            },
+        );
+        awaken_session_contract::FrozenSessionProjection {
+            workspace_id: "workspace".into(),
+            revision: awaken_session_contract::SessionRevision(2),
+            baseline,
+            resource_revision: 0,
+            resources: Default::default(),
+            toolsets: Vec::new(),
+            mcp: Vec::new(),
+        }
+    }
+
+    /// Cause/effect graph: C1 an authenticated remote Run claim is current; C2
+    /// its Session is already frozen; C3 no application provisioner is installed;
+    /// C4 the ordinary Worker has the claimed Session-control client. C1+C2+C4
+    /// cause E1 resume the canonical realization, E2 install the exact baseline
+    /// and lease, and E3 create the Worker environment without contribution.
+    /// C4 absent is the co-located local-pool row, covered by the cold legacy test.
+    ///
+    /// | Rule | Claim | Frozen | Provisioner | Control | Effect |
+    /// |---|---|---|---|---|---|
+    /// | O1 | live | ordinary | absent | present | resume/realize, no contribution |
+    /// | O2 | stale | any | any | present | reject before realization |
+    /// | O3 | live | preparing application | absent | present | fail closed |
+    /// | O4 | live | local pre-realized | absent | absent | local-pool replay |
+    #[tokio::test]
+    async fn ordinary_remote_worker_uses_claimed_session_realization_without_an_application() {
+        use awaken_run_ingress::{Clock, DispatchQueue};
+
+        let dispatch = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+                .expect("in-memory dispatch"),
+        );
+        let contribution_calls = Arc::new(AtomicUsize::new(0));
+        let projection = Arc::new(std::sync::Mutex::new(Some(ordinary_frozen_projection())));
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .with_dispatch_store(dispatch.clone())
+                .with_application_session_control(Arc::new(RecordingContributor {
+                    calls: contribution_calls.clone(),
+                    phases: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    projection,
+                    mcp_stage: None,
+                    fail_begin: Arc::new(AtomicBool::new(false)),
+                })),
+        );
+        dispatch
+            .enqueue(awaken_run_ingress::RunDispatch::new(test_activation(
+                "ordinary-remote",
+                "run-ordinary-remote",
+            )))
+            .await
+            .expect("O1 enqueue");
+        let claimed = dispatch
+            .claim(
+                "worker-a",
+                30_000,
+                awaken_run_ingress::SystemClock.now_ms(),
+                &Default::default(),
+            )
+            .await
+            .expect("O1 claim")
+            .expect("O1 claimed Run");
+        HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        }
+        .worker_for_claimed(&claimed)
+        .await
+        .expect("O1 canonical realization");
+
+        assert_eq!(contribution_calls.load(Ordering::SeqCst), 0, "O1/E3");
+        assert!(
+            host.session_environment("ordinary-remote").await.is_some(),
+            "O1/E3"
+        );
+        assert!(
+            host.session_slots
+                .read("ordinary-remote", |slot| {
+                    slot.baseline.is_some()
+                        && slot.realization_lease.as_ref().is_some_and(|lease| {
+                            lease.owner == claimed.lease.owner && lease.epoch == claimed.lease.epoch
+                        })
+                })
+                .unwrap_or(false),
+            "O1/E1-E2"
+        );
     }
 
     #[tokio::test]

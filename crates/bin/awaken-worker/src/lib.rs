@@ -903,15 +903,18 @@ impl WorkerNode {
         if let Some(decorator) = application_decorator {
             host = host.with_application_attempt_decorator(decorator);
         }
+        // Every registered Worker realizes the frozen Session projection through
+        // Control. Application contribution is optional; realization ownership
+        // is not. Wiring the client only with a provisioner created a second,
+        // unfenced ordinary-Worker path.
+        host = host.with_application_session_control(Arc::new(
+            awaken_worker_runtime::WorkerControlApplicationSessionClient::new(
+                control.clone(),
+                registration.snapshot.identity.clone(),
+            ),
+        ));
         if let Some(provisioner) = application_provisioner {
-            host = host
-                .with_application_session_provisioner(provisioner)
-                .with_application_session_control(Arc::new(
-                    awaken_worker_runtime::WorkerControlApplicationSessionClient::new(
-                        control.clone(),
-                        registration.snapshot.identity.clone(),
-                    ),
-                ));
+            host = host.with_application_session_provisioner(provisioner);
         }
         if let Some(gate) = self.application_gate {
             host = host.with_gate_override(gate);

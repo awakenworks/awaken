@@ -280,7 +280,9 @@ async function verifyDurable(
 ) {
   // Cause/effect decision table:
   // R1 authority replacement/failover + stable edge route -> durable Deployment
-  // and Session remain readable;
+  // and Session remain readable; a cold Coordinator projection must never have
+  // a process-local sandbox binding to adopt because Worker placement was frozen
+  // before realization;
   // R2 EndpointSlice convergence is uncertain -> use repeatable GET probes until
   // stable, then issue the non-idempotent Event command once; an ambiguous write
   // response is never blindly replayed because this route has no idempotency key;

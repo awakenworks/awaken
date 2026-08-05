@@ -38,11 +38,12 @@ impl ManagedState {
             // Root lifecycle is the outer fence. A terminal Session may retain
             // nonterminal attachment facts solely as cleanup evidence; startup
             // must not resolve credentials or recreate routes for them.
-            // Application-contributed Sessions are realized by the claim-owning
-            // Worker. Their immutable contribution receipt outlives a transient
-            // lease and fences this Coordinator-local recovery driver.
+            // Immutable WorkQueue/application facts, including topology-selected
+            // placement frozen at creation, fence this Coordinator-local driver.
             if record.session.is_terminal()
-                || record.session.has_application_contribution()
+                || self
+                    .application
+                    .requires_external_realization(&record.session)
                 || !record.session.mcp.needs_reconciliation()
             {
                 continue;

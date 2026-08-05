@@ -119,53 +119,67 @@ impl RunLifecycleFeed for CheckpointRunLifecycleFeed {
         cursor: LifecycleCursor,
         limit: usize,
     ) -> Result<LifecyclePage, RunLifecycleFeedError> {
-        if limit == 0 {
-            return Ok(LifecyclePage {
-                events: Vec::new(),
-                next_cursor: cursor,
-            });
+        checkpoint_lifecycle_events_after(self.reader.as_ref(), cursor, limit)
+    }
+}
+
+/// Canonical lifecycle projection for a single-process checkpoint reader.
+/// Store adapters with a native cross-process feed override this at their
+/// application boundary; all other backends reuse this exact classifier and
+/// cursor algorithm without growing another projection path.
+pub fn checkpoint_lifecycle_events_after<R>(
+    reader: &R,
+    cursor: LifecycleCursor,
+    limit: usize,
+) -> Result<LifecyclePage, RunLifecycleFeedError>
+where
+    R: CheckpointReader + ?Sized,
+{
+    if limit == 0 {
+        return Ok(LifecyclePage {
+            events: Vec::new(),
+            next_cursor: cursor,
+        });
+    }
+    let records = reader.list_events(&EventScope::All, None, usize::MAX);
+    let mut previous = HashMap::<RunId, RunState>::new();
+    let mut events = Vec::with_capacity(limit.min(records.len()));
+    for record in records {
+        if record.kind != AuditKind::RunStateChanged {
+            continue;
         }
-        let records = self.reader.list_events(&EventScope::All, None, usize::MAX);
-        let mut previous = HashMap::<RunId, RunState>::new();
-        let mut events = Vec::with_capacity(limit.min(records.len()));
-        for record in records {
-            if record.kind != AuditKind::RunStateChanged {
-                continue;
-            }
-            let state = serde_json::from_value::<RunState>(
-                record.payload.get("state").cloned().unwrap_or_default(),
-            )
-            .map_err(|_| RunLifecycleFeedError::InvalidState {
+        let state = serde_json::from_value::<RunState>(
+            record.payload.get("state").cloned().unwrap_or_default(),
+        )
+        .map_err(|_| RunLifecycleFeedError::InvalidState {
+            sequence: record.sequence,
+        })?;
+        let kind = classify_run_lifecycle(&state, previous.get(&record.run_id));
+        previous.insert(record.run_id.clone(), state.clone());
+        if record.sequence <= cursor.0 {
+            continue;
+        }
+        let run = reader
+            .run(&record.run_id)
+            .ok_or(RunLifecycleFeedError::UnknownRun {
                 sequence: record.sequence,
             })?;
-            let kind = classify_run_lifecycle(&state, previous.get(&record.run_id));
-            previous.insert(record.run_id.clone(), state.clone());
-            if record.sequence <= cursor.0 {
-                continue;
-            }
-            let run = self
-                .reader
-                .run(&record.run_id)
-                .ok_or(RunLifecycleFeedError::UnknownRun {
-                    sequence: record.sequence,
-                })?;
-            events.push(RunLifecycleEvent {
-                cursor: LifecycleCursor(record.sequence),
-                thread_id: run.thread_id,
-                run_id: record.run_id,
-                kind,
-                state,
-            });
-            if events.len() == limit {
-                break;
-            }
+        events.push(RunLifecycleEvent {
+            cursor: LifecycleCursor(record.sequence),
+            thread_id: run.thread_id,
+            run_id: record.run_id,
+            kind,
+            state,
+        });
+        if events.len() == limit {
+            break;
         }
-        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
-        Ok(LifecyclePage {
-            events,
-            next_cursor,
-        })
     }
+    let next_cursor = events.last().map_or(cursor, |event| event.cursor);
+    Ok(LifecyclePage {
+        events,
+        next_cursor,
+    })
 }
 
 #[cfg(test)]

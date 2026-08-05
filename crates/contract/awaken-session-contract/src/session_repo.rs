@@ -460,6 +460,7 @@ mod mutation_tests {
                             ),
                         },
                     },
+                    runtime_placement: crate::SessionRuntimePlacement::Local,
                     agent_id: "assistant".into(),
                     model: "model".into(),
                     execution_model_ref: "model".into(),

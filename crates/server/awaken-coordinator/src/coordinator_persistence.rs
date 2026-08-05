@@ -53,7 +53,8 @@ pub async fn migrate_postgres_schema(deployment: &DeploymentConfig) -> Result<()
             deployment.postgres_max_connections.get(),
         )
         .await?;
-        super::worker_registry::migrate_postgres(url).await?;
+        super::worker_registry::migrate_postgres(url, deployment.postgres_max_connections.get())
+            .await?;
     }
     if components.commit {
         awaken_runtime_host::migrate_postgres_commit_schema(
@@ -101,8 +102,20 @@ async fn open_with(
     let worker_directory = if components.dispatch {
         let url = database_url.expect("Postgres dispatch requires database URL");
         match schema {
-            SchemaAccess::Migrate => super::worker_registry::open_postgres(url).await?,
-            SchemaAccess::Verify => super::worker_registry::open_existing_postgres(url).await?,
+            SchemaAccess::Migrate => {
+                super::worker_registry::open_postgres(
+                    url,
+                    deployment.postgres_max_connections.get(),
+                )
+                .await?
+            }
+            SchemaAccess::Verify => {
+                super::worker_registry::open_existing_postgres(
+                    url,
+                    deployment.postgres_max_connections.get(),
+                )
+                .await?
+            }
         }
     } else {
         let storage_dir = deployment.storage_dir.as_deref().ok_or_else(|| {

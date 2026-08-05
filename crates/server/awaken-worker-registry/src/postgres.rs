@@ -4,7 +4,7 @@ use awaken_worker_contract::{
     WorkerIdentity, WorkerObservationSource, WorkerRegistration,
 };
 use sqlx::PgConnection;
-use sqlx::postgres::PgPool;
+use sqlx::postgres::{PgPool, PgPoolOptions};
 
 use crate::schema::{NS, registry_bundle};
 use crate::transition;
@@ -27,15 +27,25 @@ enum Mutation {
 }
 
 impl PostgresWorkerDirectory {
-    pub async fn connect(url: &str) -> Result<Self, RegistryError> {
-        let pool = PgPool::connect(url).await.map_err(persist)?;
+    fn pool_options(max_connections: u32) -> PgPoolOptions {
+        PgPoolOptions::new().max_connections(max_connections)
+    }
+
+    pub async fn connect(url: &str, max_connections: u32) -> Result<Self, RegistryError> {
+        let pool = Self::pool_options(max_connections)
+            .connect(url)
+            .await
+            .map_err(persist)?;
         Self::with_pool(pool).await
     }
 
     /// Connect to a registry schema already applied by the deployment migration
     /// phase. This path verifies the ledger and never executes DDL.
-    pub async fn connect_existing(url: &str) -> Result<Self, RegistryError> {
-        let pool = PgPool::connect(url).await.map_err(persist)?;
+    pub async fn connect_existing(url: &str, max_connections: u32) -> Result<Self, RegistryError> {
+        let pool = Self::pool_options(max_connections)
+            .connect(url)
+            .await
+            .map_err(persist)?;
         Self::with_existing_pool(pool).await
     }
 
@@ -258,5 +268,29 @@ impl WorkerDirectory for PostgresWorkerDirectory {
         }
         tx.commit().await.map_err(persist)?;
         Ok(expired)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_budget_is_the_explicit_composition_input() {
+        // Cause/effect graph: C1=composition-resolved connection budget;
+        // E1=the registry pool uses exactly C1. Decision table: R1 budget 1 ->
+        // one connection; R2 production pressure budget 32 -> 32 connections.
+        // There is deliberately no omitted/default rule: every production caller
+        // must pass the same deployment policy used by sibling runtime stores.
+        assert_eq!(
+            PostgresWorkerDirectory::pool_options(1).get_max_connections(),
+            1,
+            "R1"
+        );
+        assert_eq!(
+            PostgresWorkerDirectory::pool_options(32).get_max_connections(),
+            32,
+            "R2"
+        );
     }
 }

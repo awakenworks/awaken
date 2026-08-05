@@ -1001,6 +1001,15 @@ impl SessionRuntime for ManagedHost {
             .expect("environment binding sink lock poisoned") = Some(sink);
     }
 
+    fn install_session_realization_lease(
+        &self,
+        session_id: &str,
+        lease: awaken_session_contract::SessionRealizationLease,
+    ) {
+        self.host
+            .install_session_realization_lease(session_id, lease);
+    }
+
     async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
         self.host.delegated_runs(thread).await.map_err(to_run_error)
     }
@@ -1327,29 +1336,38 @@ impl SessionRuntime for ManagedHost {
             .session_slots
             .update(thread, |slot| slot.lifecycle.clone());
         let _lifecycle = lifecycle.lock().await;
-        // Workspace is a frozen Session-baseline coordinate, not a consequence
-        // of having at least one Resource. Register it even for an empty
-        // manifest so immutable Agent/backend lookup cannot fall back to this
-        // process's platform workspace.
-        self.host
-            .register_thread_workspace(thread, &init.workspace_id);
-        // R1: retain the exact frozen Agent coordinate for internal cold-recovery
-        // calls (`committed_messages`, durable operations) that intentionally do
-        // not repeat a wire-level Agent argument.
-        self.host
-            .register_thread_agent_projection(thread, &init.agent_id);
-        // R2: bind the session's requested model to the thread (independent of MCP),
-        // consumed at the thread's first turn to resolve its executor + model name.
-        if let Some(model) = &init.model {
-            self.host.register_thread_model(thread, model);
+        // A process may have opened this durable thread before its Control-frozen
+        // projection arrived (for example a peer/recovery read racing Session
+        // rehydration). That context was necessarily built from host defaults.
+        // Projection installation is the authority transition: discard only the
+        // rebuildable context while retaining any independently-owned Environment.
+        // A live run cannot be rebound underneath its already-created activation.
+        let active_run = self
+            .host
+            .session_slots
+            .read(thread, |slot| {
+                slot.runtime.as_ref().and_then(|context| {
+                    context
+                        .active_run
+                        .lock()
+                        .expect("active run mutex poisoned")
+                        .clone()
+                })
+            })
+            .flatten();
+        if active_run.is_some() {
+            return Err(RunError::internal(
+                "cannot install a frozen Session projection while its Runtime is active",
+            ));
         }
-        // R3: cache the publication-derived backend carried by the frozen baseline.
-        if let Some(backend_ref) = &init.runtime {
-            self.host
-                .register_thread_backend_projection(thread, backend_ref);
-        }
         self.host
-            .install_environment_projection(thread, &init.environment)
+            .session_slots
+            .update(thread, |slot| slot.runtime = None);
+        // This is the one projection lowering path shared with claimed Worker
+        // replay. In particular, workspace/Agent/backend cannot drift between
+        // Coordinator dispatch construction and Worker execution.
+        self.host
+            .project_session_init(thread, &init)
             .map_err(to_run_error)?;
         if init.environment.sandbox_provisioning
             == awaken_session_contract::SandboxProvisioning::OnToolUse
@@ -1361,17 +1379,8 @@ impl SessionRuntime for ManagedHost {
                 ));
             self.host.session_slots.update(thread, |slot| {
                 slot.deferred_executor = Some(executor);
-                // Session creation may have opened a durable ingress context
-                // before its frozen Environment projection was prepared.
-                slot.runtime = None;
             });
         }
-        self.host
-            .register_thread_delegates(thread, init.delegate_ids.clone());
-        self.host.session_slots.update(thread, |slot| {
-            slot.agent_id = Some(init.agent_id.clone());
-            slot.toolsets = init.toolsets.clone();
-        });
         // Stage only the already-resolved manifest. Runtime never reads the Agent
         // binding repository or composes defaults again.
         self.stage_resource_manifest(
@@ -1447,7 +1456,7 @@ impl SessionRuntime for ManagedHost {
             .run_lifecycle_feed(thread)
             .await
             .map_err(to_run_error)?;
-        awaken_agent_contract::RunLifecycleFeed::events_after(&feed, cursor, limit)
+        awaken_agent_contract::RunLifecycleFeed::events_after(feed.as_ref(), cursor, limit)
             .await
             .map_err(|error| RunError::internal(error.to_string()))
     }

@@ -858,6 +858,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
                         resource_holder: holder,
                     },
                 },
+                runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                 mcp_authoring: Default::default(),
                 agent_id: "agent".into(),
                 model: "model".into(),
@@ -2592,7 +2593,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
         .await
         .expect("committed query must not retry Sandbox provisioning");
     let page = awaken_agent_contract::RunLifecycleFeed::events_after(
-        &feed,
+        feed.as_ref(),
         awaken_agent_contract::LifecycleCursor(0),
         100,
     )
@@ -2819,6 +2820,63 @@ async fn prepare_session_is_lazy_and_first_turn_materializes_the_environment() {
     assert!(host.session_environment("lazy-environment").await.is_some());
 }
 
+/// Cause/effect graph: C1 the Host is Coordinator-only; C2 the frozen
+/// Environment is eager; C3 context construction is needed to serialize a Run.
+/// C1 dominates C2: E1 construct the dispatch context, E2 retain the frozen
+/// Environment snapshot, E3 allocate no physical sandbox. The local-pool row is
+/// covered by `prepare_session_is_lazy_and_first_turn_materializes_the_environment`.
+///
+/// | Rule | Coordinator-only | Provisioning | Context | Physical environment |
+/// |---|---|---|---|---|
+/// | D1 | yes | eager | build | absent |
+/// | D2 | no | eager | build/turn | resident |
+/// | D3 | any | on_tool_use | inference only | absent |
+#[tokio::test]
+async fn coordinator_dispatch_context_never_materializes_an_eager_environment() {
+    use awaken_session_contract::{SessionInit, SessionRuntime};
+    let mut host = SharedHost::new(Arc::new(OkModel), "stub");
+    host.deployment.disable_local_pool = true;
+    let host = Arc::new(host);
+    crate::ManagedHost::new(host.clone())
+        .prepare_session(
+            "coordinator-dispatch-only",
+            SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "assistant".into(),
+                delegate_ids: Vec::new(),
+                toolsets: None,
+                resource_revision: 0,
+                resources: Default::default(),
+                model: None,
+                runtime: None,
+                environment: session_environment(
+                    awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                    serde_json::json!({}),
+                ),
+            },
+        )
+        .await
+        .expect("D1 installs frozen dispatch facts");
+
+    host.ctx_for("coordinator-dispatch-only", Some("assistant"))
+        .await
+        .expect("D1 builds a sandbox-free dispatch context");
+    assert!(
+        host.session_environment("coordinator-dispatch-only")
+            .await
+            .is_none(),
+        "D1/E3"
+    );
+    assert!(
+        host.session_slots
+            .read("coordinator-dispatch-only", |slot| slot
+                .environment_snapshot
+                .is_some())
+            .unwrap_or(false),
+        "D1/E2"
+    );
+}
+
 /// L1: `on_tool_use` means inference alone must not allocate a Sandbox.
 #[tokio::test]
 async fn on_tool_use_text_only_turn_keeps_the_environment_absent() {
@@ -3041,6 +3099,7 @@ impl awaken_session_contract::SessionEnvironmentBindingSink for BindingOrderSink
         &self,
         session_id: &str,
         _binding: &str,
+        _realization: Option<&awaken_session_contract::SessionRealizationLease>,
     ) -> Result<(), awaken_session_contract::RunError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let host = self.host.upgrade().expect("host remains live");
@@ -6853,4 +6912,108 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
         Err(error) => error,
     };
     assert!(error.to_string().contains("projection"), "R3");
+}
+
+#[tokio::test]
+async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
+    // Cause/effect graph: C1 a durable-thread operation may open a context before
+    // the frozen projection is installed; C2 that context is inactive or active;
+    // C3 the later projection selects the default or a published non-default
+    // Agent. Effects: E1 inactive cached defaults are discarded and rebuilt from
+    // the frozen Agent; E2 an active activation is never rebound; E3 an already
+    // prepared context remains rebuildable from the same immutable facts.
+    //
+    // | Rule | resident context | active run | frozen Agent | effect |
+    // |---|---|---|---|---|
+    // | P1 | default | no | published agent-a | evict; rebuild agent-a |
+    // | P2 | default | yes | agent-a | reject projection install |
+    // | P3 | absent/matching | no | same baseline | install/rebuild safely |
+    //
+    // P1 and P2 are the distributed authority-transition regressions exercised
+    // here. P3 is covered by
+    // `cold_session_uses_its_frozen_agent_projection_for_internal_history_reads`
+    // and the idempotent projection tests above.
+    let snapshot = crate::config::server_config(
+        "agent-a",
+        "stub",
+        &HashSet::new(),
+        &HashSet::new(),
+        &[],
+        &Default::default(),
+        &[],
+        awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+    );
+    let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
+        .expect("valid publication");
+    let mut host =
+        SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications));
+    host.deployment.disable_local_pool = true;
+    let host = Arc::new(host);
+
+    let stale = host
+        .ctx_for("late-projection", None)
+        .await
+        .expect("pre-projection durable operation can open a default context");
+    assert_eq!(stale.config.root_agent_id.0, "assistant", "P1 precondition");
+
+    crate::ManagedHost::new(host.clone())
+        .prepare_session(
+            "late-projection",
+            awaken_session_contract::SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "agent-a".into(),
+                delegate_ids: Vec::new(),
+                toolsets: None,
+                resource_revision: 0,
+                resources: Default::default(),
+                model: Some("stub".into()),
+                runtime: Some("default".into()),
+                environment: on_tool_use_environment(),
+            },
+        )
+        .await
+        .expect("P1 installs the frozen projection");
+    assert!(
+        host.session_slots
+            .read("late-projection", |slot| slot.runtime.is_none())
+            .unwrap_or(false),
+        "P1 stale context must not survive the authority transition"
+    );
+
+    let rebuilt = host
+        .ctx_for("late-projection", None)
+        .await
+        .expect("P1 rebuilds from the frozen publication");
+    assert_eq!(rebuilt.config.root_agent_id.0, "agent-a", "P1/E1");
+
+    let active = host
+        .ctx_for("active-projection", None)
+        .await
+        .expect("P2 pre-projection context");
+    *active.active_run.lock().expect("active run mutex") = Some(RunId("active-run".into()));
+    let error = crate::ManagedHost::new(host.clone())
+        .prepare_session(
+            "active-projection",
+            awaken_session_contract::SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "agent-a".into(),
+                delegate_ids: Vec::new(),
+                toolsets: None,
+                resource_revision: 0,
+                resources: Default::default(),
+                model: Some("stub".into()),
+                runtime: Some("default".into()),
+                environment: on_tool_use_environment(),
+            },
+        )
+        .await
+        .expect_err("P2 must not rebind an active Runtime");
+    assert!(
+        error.to_string().contains("while its Runtime is active"),
+        "P2/E2"
+    );
+    assert!(
+        host.thread_agent_projection("active-projection").is_none(),
+        "P2 rejection precedes every projection mutation"
+    );
 }

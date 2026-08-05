@@ -112,7 +112,7 @@ impl ManagedState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::tests::RehydrateFake;
+    use crate::state::test_support::RehydrateFake;
     use async_trait::async_trait;
     use std::collections::BTreeMap;
 

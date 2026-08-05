@@ -38,7 +38,7 @@ impl ManagedState {
             return Err(StateError::NotFound);
         }
         if let Some(session) = persisted.clone() {
-            let baseline = session.frozen_baseline().cloned().ok_or_else(|| {
+            session.frozen_baseline().ok_or_else(|| {
                 StateError::Run(RunError::internal(
                     "cannot realize a Session whose baseline is still preparing",
                 ))
@@ -49,41 +49,15 @@ impl ManagedState {
             // resources or adopt the sandbox twice after cache loss. A settled
             // Session has no reconciliation phase, so it performs that same order
             // directly through the Runtime port.
-            let application_contributed = session.has_application_contribution();
-            let recovered = if !application_contributed && session.mcp.needs_reconciliation() {
-                self.recover_mcp_projections(id).await?
+            let worker_owned_realization = self.application.requires_external_realization(&session);
+            let recovered = if !worker_owned_realization {
+                // Cold local recovery always crosses ownership assignment before
+                // adopting or rebuilding physical state. A new process must not
+                // bypass a still-live predecessor merely because MCP is settled.
+                self.realize_session_locally(id).await?
             } else {
-                self.application
-                    .runtime()
-                    .prepare_session(
-                        id,
-                        SessionInit {
-                            workspace_id: owner_scope.clone(),
-                            agent_id: baseline.agent_id.clone(),
-                            delegate_ids: baseline.delegate_ids.clone(),
-                            toolsets: Some(session.tools.toolsets.clone()),
-                            resource_revision: session.resources.revision,
-                            resources: session.resources.active.clone(),
-                            model: Some(baseline.execution_model_ref.clone()),
-                            runtime: baseline.runtime.clone(),
-                            environment: baseline.environment.clone(),
-                        },
-                    )
-                    .await
-                    .map_err(StateError::Run)?;
-                // An application contribution is the immutable proof that a
-                // registered Worker owns realization. Its transient lease can be
-                // cleared after an attempt, so lease absence is not local
-                // ownership. Coordinator rehydration restores only the frozen
-                // projection; claimed-dispatch recovery alone adopts/rebuilds the
-                // Worker's opaque sandbox binding.
-                if !application_contributed && let Some(binding) = session.environment.binding() {
-                    self.application
-                        .runtime()
-                        .restore_session_environment(&baseline.agent_id, id, binding)
-                        .await
-                        .map_err(StateError::Run)?;
-                }
+                self.install_dispatch_projection(&owner_scope, &session)
+                    .await?;
                 session
             };
             persisted = Some(recovered.clone());
@@ -151,84 +125,124 @@ impl ManagedState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::tests::{
-        RehydrateFake, create_session_fixture, ephemeral_session_repo, sample_inputs,
-        sample_persisted,
+    use crate::state::test_support::{
+        RehydrateFake, create_session_fixture, ephemeral_session_repo,
     };
+    use crate::state::tests::{sample_inputs, sample_persisted};
     use awaken_session_contract::ManagedSessionRepository;
 
     #[tokio::test]
     async fn coordinator_rehydrate_does_not_adopt_a_worker_owned_environment() {
         // Cause/effect graph: C1 durable Session cache is cold; C2 an opaque
-        // Environment binding exists; C3 immutable application contribution is
-        // absent or present; C4 a Worker lease is live or already cleared; C5 MCP
-        // projection is settled or requires recovery; C6 Resource projection is
-        // stable or pending recovery.
+        // Environment binding exists; C3 an immutable Runtime/application fact
+        // may require a Worker; C4 a legacy row may omit that fact and is resolved
+        // by the Session application's registered-Worker configuration; C5,
+        // independently, the durable lease owner is absent, local, Worker-live,
+        // or Worker-expired and cannot change placement; C6 MCP projection is
+        // settled or requires recovery; C7 Resource projection is stable or pending.
         // Effects: E1 frozen projection/history become readable; E2 only an
-        // application-absent Session may call local physical adoption; E3 a
-        // contributed Session leaves adoption, MCP staging, and Resource projection
+        // locally realized Session may call local physical adoption; E3 either
+        // Worker-owned path leaves adoption, MCP staging, and Resource projection
         // to claimed-dispatch recovery; E4 both background Coordinator reconcilers
         // skip it.
         //
-        // | Rule | contribution | lease | MCP recovery | Resource recovery | local effects | read |
-        // | R1   | absent       | n/a   | settled      | stable            | adopt local   | yes  |
-        // | R2   | present      | live  | settled      | stable            | none          | yes  |
-        // | R3   | present      | clear | settled      | stable            | none          | yes  |
-        // | R4   | present      | live  | required     | stable            | none          | yes  |
-        // | R5   | present      | clear | required     | stable            | none          | yes  |
-        // | R6   | present      | live  | settled      | pending           | none          | yes  |
-        // | R7   | present      | clear | settled      | pending           | none          | yes  |
-        // | R8   | present      | live  | required     | pending           | none          | yes  |
-        // | R9   | present      | clear | required     | pending           | none          | yes  |
-        // | R10  | any          | any   | any          | any               | no adopt if no binding |
+        // | Rule | ownership | lease | MCP | Resource | local effects | read |
+        // | R1 | local | absent/local | settled/required | stable/pending | canonical local effects | yes |
+        // | R2 | application | any | settled/required | stable/pending | none | yes |
+        // | R3 | Environment WorkQueue only | any | settled/required | stable/pending | canonical local effects | yes |
+        // | R4 | deployment-frozen Worker Runtime | any | settled/required | stable/pending | none | yes |
+        // | R5 | any | any | any | any | no adopt if no binding | yes |
+        // | R6 | legacy + registered process | any | settled/required | stable/pending | none | yes |
         //
         // R1 is covered by `ensure_session_rehydrates_from_repo_after_cache_loss`;
-        // R10 follows the same guarded branch and existing binding-absent cases.
-        // This test proves R2-R9 with an adapter that fails if adoption is called.
+        // R5 follows the same guarded branch and existing binding-absent cases.
+        // This test generates the complete external R2/R4/R6 cross-product with an adapter
+        // that fails if any Coordinator-local physical effect is attempted. An
+        // Lease owner/liveness never overrides the frozen custody fact. R3 is
+        // covered by local Session creation and Resource activation tests.
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let mut cases = Vec::new();
-        for (lease_name, realization) in [
+        for (owner_name, placement, application_contributed) in [
             (
-                "live",
-                Some(awaken_session_contract::SessionRealizationLease {
-                    owner: "worker-a".into(),
-                    runtime_incarnation: "worker-a/boot-1".into(),
-                    epoch: 4,
-                    expires_at_unix_ms: u64::MAX,
-                }),
+                "application",
+                awaken_session_contract::SessionRuntimePlacement::Local,
+                true,
             ),
-            ("cleared", None),
+            (
+                "topology",
+                awaken_session_contract::SessionRuntimePlacement::Worker,
+                false,
+            ),
+            (
+                "legacy",
+                awaken_session_contract::SessionRuntimePlacement::LegacyUnspecified,
+                false,
+            ),
         ] {
-            for (mcp_name, mcp_recovery) in [("settled", false), ("pending", true)] {
-                for (resource_name, resource_recovery) in [("stable", false), ("pending", true)] {
-                    let id = format!("sesn_worker_{lease_name}_{mcp_name}_{resource_name}");
-                    let mut persisted = sample_persisted(&id);
-                    if !mcp_recovery {
-                        persisted.mcp = Default::default();
+            for (lease_name, realization) in [
+                ("absent", None),
+                (
+                    "local_live",
+                    Some(awaken_session_contract::SessionRealizationLease {
+                        owner: "managed-runtime/boot-1".into(),
+                        runtime_incarnation: "managed-runtime/boot-1".into(),
+                        epoch: 4,
+                        expires_at_unix_ms: u64::MAX,
+                    }),
+                ),
+                (
+                    "worker_live",
+                    Some(awaken_session_contract::SessionRealizationLease {
+                        owner: "worker-a".into(),
+                        runtime_incarnation: "worker-a/boot-1".into(),
+                        epoch: 4,
+                        expires_at_unix_ms: u64::MAX,
+                    }),
+                ),
+                (
+                    "worker_expired",
+                    Some(awaken_session_contract::SessionRealizationLease {
+                        owner: "worker-a".into(),
+                        runtime_incarnation: "worker-a/boot-1".into(),
+                        epoch: 4,
+                        expires_at_unix_ms: 0,
+                    }),
+                ),
+            ] {
+                for (mcp_name, mcp_recovery) in [("settled", false), ("pending", true)] {
+                    for (resource_name, resource_recovery) in [("stable", false), ("pending", true)]
+                    {
+                        let id =
+                            format!("sesn_{owner_name}_{lease_name}_{mcp_name}_{resource_name}");
+                        let mut persisted = sample_persisted(&id);
+                        if !mcp_recovery {
+                            persisted.mcp = Default::default();
+                        }
+                        if resource_recovery {
+                            persisted.resources = Default::default();
+                            persisted
+                                .resources
+                                .prepare(&id, sample_inputs())
+                                .expect("pending Worker Resource projection");
+                        }
+                        persisted.environment.set_resident("worker-opaque-binding");
+                        let awaken_session_contract::SessionBaselineState::Frozen(baseline) =
+                            &mut persisted.baseline
+                        else {
+                            unreachable!("sample baseline is frozen")
+                        };
+                        baseline.environment.self_hosted = false;
+                        baseline.runtime_placement = placement;
+                        baseline.application = application_contributed.then(|| {
+                            awaken_session_contract::ApplicationContributionReceipt::from_input(
+                                "worker-plan".into(),
+                                &Default::default(),
+                            )
+                        });
+                        persisted.realization = realization.clone();
+                        create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, persisted).await;
+                        cases.push((id, mcp_recovery, resource_recovery));
                     }
-                    if resource_recovery {
-                        persisted.resources = Default::default();
-                        persisted
-                            .resources
-                            .prepare(&id, sample_inputs())
-                            .expect("pending Worker Resource projection");
-                    }
-                    persisted.environment.set_resident("worker-opaque-binding");
-                    let awaken_session_contract::SessionBaselineState::Frozen(baseline) =
-                        &mut persisted.baseline
-                    else {
-                        unreachable!("sample baseline is frozen")
-                    };
-                    baseline.application = Some(
-                        awaken_session_contract::ApplicationContributionReceipt::from_input(
-                            "worker-plan".into(),
-                            &Default::default(),
-                        ),
-                    );
-                    persisted.realization = realization.clone();
-                    assert!(persisted.has_application_contribution(), "{id}/C3");
-                    create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, persisted).await;
-                    cases.push((id, mcp_recovery, resource_recovery));
                 }
             }
         }
@@ -240,17 +254,24 @@ mod tests {
         let restored_environments = runtime.restored_environments.clone();
         let restored_runtimes = runtime.restored_runtimes.clone();
         let restored_inputs = runtime.restored.clone();
-        let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo);
-
-        assert_eq!(
-            restarted.reconcile_mcp_attachments().await,
-            0,
-            "R4/R5/R8/R9/E4"
+        let runtime = Arc::new(runtime);
+        let application = awaken_session_application::SessionApplication::new_with_configuration(
+            runtime.clone(),
+            runtime,
+            repo,
+            Arc::new(crate::routes::environments::EnvironmentExecutionState::default()),
+            awaken_session_application::SessionApplicationConfiguration {
+                execution_placement:
+                    awaken_session_application::SessionExecutionPlacement::RegisteredWorker,
+            },
         );
+        let restarted = ManagedState::from_application(application);
+
+        assert_eq!(restarted.reconcile_mcp_attachments().await, 0, "R2-R6/E4");
         assert_eq!(
             restarted.reconcile_resource_activations().await,
             0,
-            "R6-R9/E4"
+            "R2-R6/E4"
         );
         for (id, mcp_recovery, resource_recovery) in &cases {
             restarted
@@ -284,8 +305,8 @@ mod tests {
                 "{id}/E3: Coordinator must not mutate Worker Resource state"
             );
         }
-        assert!(restored_environments.lock().unwrap().is_empty(), "R2-R9/E3");
-        assert!(restored_inputs.lock().unwrap().is_empty(), "R2-R9/E3");
-        assert_eq!(restored_runtimes.lock().unwrap().len(), 8, "R2-R9/E1");
+        assert!(restored_environments.lock().unwrap().is_empty(), "R2-R6/E3");
+        assert!(restored_inputs.lock().unwrap().is_empty(), "R2-R6/E3");
+        assert_eq!(restored_runtimes.lock().unwrap().len(), 48, "R2-R6/E1");
     }
 }

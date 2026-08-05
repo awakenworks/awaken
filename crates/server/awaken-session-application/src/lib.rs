@@ -17,6 +17,7 @@ use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationErr
 use awaken_session_contract::{
     ManagedSessionRepository, McpAttachmentRealizer, McpTarget, PersistedSession, RunError,
     SandboxProvisioning, SessionEnvironmentBindingSink, SessionLifecycleSink, SessionRuntime,
+    SessionRuntimePlacement,
 };
 
 mod mutation;
@@ -119,8 +120,24 @@ pub struct WorkDispatchReconciliation {
     pub failures: Vec<WorkDispatchFailure>,
 }
 
+/// Process-level execution topology interpreted by the Session application.
+/// The selected value is frozen into every newly admitted Session; protocol
+/// adapters never inspect or override it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SessionExecutionPlacement {
+    #[default]
+    LocalWorker,
+    RegisteredWorker,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SessionApplicationConfiguration {
+    pub execution_placement: SessionExecutionPlacement,
+}
+
 /// Canonical application object shared by wire adapters.
 pub struct SessionApplication {
+    configuration: SessionApplicationConfiguration,
     runtime: Arc<dyn SessionRuntime>,
     mcp_realizer: Arc<dyn McpAttachmentRealizer>,
     credential_source: Option<Arc<dyn SessionCredentialSource>>,
@@ -145,6 +162,23 @@ impl SessionApplication {
         sessions_repo: Arc<dyn ManagedSessionRepository>,
         environments: Arc<dyn SessionEnvironmentSource>,
     ) -> Self {
+        Self::new_with_configuration(
+            runtime,
+            mcp_realizer,
+            sessions_repo,
+            environments,
+            SessionApplicationConfiguration::default(),
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_configuration(
+        runtime: Arc<dyn SessionRuntime>,
+        mcp_realizer: Arc<dyn McpAttachmentRealizer>,
+        sessions_repo: Arc<dyn ManagedSessionRepository>,
+        environments: Arc<dyn SessionEnvironmentSource>,
+        configuration: SessionApplicationConfiguration,
+    ) -> Self {
         runtime.install_environment_binding_sink(Arc::new(RepositoryEnvironmentBindingSink::new(
             sessions_repo.clone(),
         )));
@@ -153,6 +187,7 @@ impl SessionApplication {
             .map(|duration| duration.as_nanos())
             .unwrap_or_default();
         Self {
+            configuration,
             runtime,
             mcp_realizer,
             credential_source: None,
@@ -170,6 +205,33 @@ impl SessionApplication {
             ),
             lifecycle_supervisor_started: AtomicBool::new(false),
         }
+    }
+
+    /// Exact immutable fact written into a newly compiled Session baseline.
+    #[must_use]
+    pub fn runtime_placement(&self) -> SessionRuntimePlacement {
+        match self.configuration.execution_placement {
+            SessionExecutionPlacement::LocalWorker => SessionRuntimePlacement::Local,
+            SessionExecutionPlacement::RegisteredWorker => SessionRuntimePlacement::Worker,
+        }
+    }
+
+    /// Resolve the sole physical-realization owner. `LegacyUnspecified` is an
+    /// explicit upgrade state and is the only case allowed to consult current
+    /// process topology; explicit frozen facts remain immutable across restarts.
+    #[must_use]
+    pub fn requires_external_realization(&self, session: &PersistedSession) -> bool {
+        session.frozen_baseline().is_some_and(|baseline| {
+            baseline.application.is_some()
+                || match baseline.runtime_placement {
+                    SessionRuntimePlacement::LegacyUnspecified => {
+                        self.configuration.execution_placement
+                            == SessionExecutionPlacement::RegisteredWorker
+                    }
+                    SessionRuntimePlacement::Local => false,
+                    SessionRuntimePlacement::Worker => true,
+                }
+        })
     }
 
     /// Claim the one lifecycle supervisor for this application instance.
@@ -439,7 +501,12 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
         self.repo.owner(session_id).await.is_some()
     }
 
-    async fn persist(&self, session_id: &str, binding: &str) -> Result<(), RunError> {
+    async fn persist(
+        &self,
+        session_id: &str,
+        binding: &str,
+        realization: Option<&awaken_session_contract::SessionRealizationLease>,
+    ) -> Result<(), RunError> {
         const CAS_ATTEMPTS: usize = 3;
         for attempt in 0..CAS_ATTEMPTS {
             let owner = self.repo.owner(session_id).await.ok_or_else(|| {
@@ -448,6 +515,27 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
             let mut session = self.repo.get(session_id).await.ok_or_else(|| {
                 RunError::internal(format!("Session `{session_id}` is not durable"))
             })?;
+            let now_unix_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+                .unwrap_or_default();
+            let realization_is_current = match (session.realization.as_ref(), realization) {
+                (Some(current), Some(asserted)) => {
+                    current == asserted
+                        && awaken_session_contract::realization_lease_is_live_at(
+                            current.expires_at_unix_ms,
+                            now_unix_ms,
+                        )
+                }
+                (None, None) => true,
+                _ => false,
+            };
+            if !realization_is_current {
+                return Err(RunError::classified(
+                    "session_realization_stale",
+                    "Session environment binding was fenced by another realization owner",
+                ));
+            }
             if session.environment.binding() == Some(binding) {
                 return Ok(());
             }
@@ -639,6 +727,7 @@ mod tests {
                 awaken_session_contract::SessionBaseline::compile(
                     awaken_session_contract::SessionBaselineInputs {
                         environment,
+                        runtime_placement: SessionRuntimePlacement::Local,
                         mcp_authoring: Default::default(),
                         agent_id: "agent".into(),
                         model: "model".into(),
@@ -689,12 +778,160 @@ mod tests {
         repo: Arc<dyn ManagedSessionRepository>,
         environments: Arc<dyn SessionEnvironmentSource>,
     ) -> SessionApplication {
-        SessionApplication::new(
+        application_with_configuration(
+            repo,
+            environments,
+            SessionApplicationConfiguration::default(),
+        )
+    }
+
+    fn application_with_configuration(
+        repo: Arc<dyn ManagedSessionRepository>,
+        environments: Arc<dyn SessionEnvironmentSource>,
+        configuration: SessionApplicationConfiguration,
+    ) -> SessionApplication {
+        SessionApplication::new_with_configuration(
             Arc::new(NoopRuntime),
             Arc::new(NoopMcpRealizer),
             repo,
             environments,
+            configuration,
         )
+    }
+
+    /// Cause/effect graph: C1 a baseline is frozen; C2 its explicit Runtime
+    /// placement is Local or Worker; C3 a retained pre-placement row is marked
+    /// LegacyUnspecified; C4 the process composition is local or registered;
+    /// C5 an application contribution independently requires Worker custody.
+    /// The realization lease is intentionally absent from the causes: it is an
+    /// assignment fence, never placement policy. Effects are E1 local physical
+    /// realization or E2 dispatch-only Coordinator projection.
+    ///
+    /// | Rule | Frozen placement | Process placement | Application | Effect |
+    /// |---|---|---|---|---|
+    /// | P1 | preparing | any | n/a | E1 (not yet realizable) |
+    /// | P2 | local | local/registered | absent | E1 |
+    /// | P3 | worker | local/registered | absent | E2 |
+    /// | P4 | local/worker | any | present | E2 |
+    /// | P5 | legacy | local | absent | E1 |
+    /// | P6 | legacy | registered | absent | E2 |
+    ///
+    /// P5/P6 are the one-way upgrade interpretation for rows serialized before
+    /// placement existed. New creation is separately asserted never to emit the
+    /// legacy value.
+    #[test]
+    fn realization_owner_follows_the_application_placement_decision_table() {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        let environments = Arc::new(RecordingEnvironmentSource::default());
+        let local = application_with_configuration(
+            repo.clone(),
+            environments.clone(),
+            SessionApplicationConfiguration {
+                execution_placement: SessionExecutionPlacement::LocalWorker,
+            },
+        );
+        let registered = application_with_configuration(
+            repo,
+            environments,
+            SessionApplicationConfiguration {
+                execution_placement: SessionExecutionPlacement::RegisteredWorker,
+            },
+        );
+
+        let frozen = |placement: SessionRuntimePlacement, application: bool| {
+            let mut value = persisted("placement", false, false, "idle");
+            let awaken_session_contract::SessionBaselineState::Frozen(baseline) =
+                &mut value.baseline
+            else {
+                unreachable!("fixture is frozen")
+            };
+            baseline.runtime_placement = placement;
+            baseline.application =
+                application.then(|| awaken_session_contract::ApplicationContributionReceipt {
+                    plan_fingerprint: "plan".into(),
+                    input_fingerprint: "input".into(),
+                });
+            value
+        };
+        let preparing = {
+            let mut value = frozen(SessionRuntimePlacement::Local, false);
+            let baseline = value.frozen_baseline().expect("frozen").clone();
+            value.baseline = awaken_session_contract::SessionBaselineState::Preparing(
+                awaken_session_contract::SessionCreationIntent {
+                    control: awaken_session_contract::ControlSessionCreationInputs {
+                        environment: baseline.environment,
+                        runtime_placement: SessionRuntimePlacement::Local,
+                        agent_id: baseline.agent_id,
+                        model: baseline.model,
+                        execution_model_ref: baseline.execution_model_ref,
+                        runtime: baseline.runtime,
+                        mcp_authoring: baseline.mcp_authoring,
+                        delegate_ids: baseline.delegate_ids,
+                        toolsets: baseline.toolsets,
+                        mounts: baseline.mounts,
+                        env: baseline.env,
+                        prompts: baseline.prompts,
+                        resources: Default::default(),
+                        initial_mcp: Vec::new(),
+                    },
+                    application: awaken_session_contract::ApplicationContributionState::Absent,
+                },
+            );
+            value
+        };
+
+        for (rule, value, local_expected, registered_expected) in [
+            ("P1", preparing, false, false),
+            (
+                "P2",
+                frozen(SessionRuntimePlacement::Local, false),
+                false,
+                false,
+            ),
+            (
+                "P3",
+                frozen(SessionRuntimePlacement::Worker, false),
+                true,
+                true,
+            ),
+            (
+                "P4a",
+                frozen(SessionRuntimePlacement::Local, true),
+                true,
+                true,
+            ),
+            (
+                "P4b",
+                frozen(SessionRuntimePlacement::Worker, true),
+                true,
+                true,
+            ),
+            (
+                "P5/P6",
+                frozen(SessionRuntimePlacement::LegacyUnspecified, false),
+                false,
+                true,
+            ),
+        ] {
+            assert_eq!(
+                local.requires_external_realization(&value),
+                local_expected,
+                "{rule}/local"
+            );
+            assert_eq!(
+                registered.requires_external_realization(&value),
+                registered_expected,
+                "{rule}/registered"
+            );
+        }
+        assert_eq!(local.runtime_placement(), SessionRuntimePlacement::Local);
+        assert_eq!(
+            registered.runtime_placement(),
+            SessionRuntimePlacement::Worker
+        );
     }
 
     #[tokio::test]
@@ -774,6 +1011,105 @@ mod tests {
             mismatch,
             Err(SessionMutationError::IdempotencyMismatch),
             "M4"
+        );
+    }
+
+    /// Cause/effect graph: C1 the Runtime presents the exact durable realization
+    /// lease; C2 the binding is new or an idempotent replay; C3 a replacement
+    /// owner/epoch has fenced the Runtime. C1 permits the ordinary root CAS; C3
+    /// rejects before even an equal binding can be treated as a replay. This
+    /// prevents a stale sandbox owner from publishing after lease replacement.
+    ///
+    /// | Rule | Asserted lease | Binding | Effect |
+    /// |---|---|---|---|
+    /// | B1 | exact | new | persist once |
+    /// | B2 | exact | equal | idempotent success |
+    /// | B3 | stale owner/epoch | new/equal | fenced, no mutation |
+    /// | B4 | aggregate/assertion both absent | new/equal | legacy CAS path |
+    /// | B5 | exact but expired | new/equal | fenced, no mutation |
+    #[tokio::test]
+    async fn environment_binding_persistence_is_fenced_by_exact_realization() {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        let mut session = persisted("binding-fence", false, false, "idle");
+        let current = awaken_session_contract::SessionRealizationLease {
+            owner: "runtime-a".into(),
+            runtime_incarnation: "runtime-a/boot-1".into(),
+            epoch: 3,
+            expires_at_unix_ms: u64::MAX,
+        };
+        session.realization = Some(current.clone());
+        create(repo.as_ref(), session).await;
+        let sink = RepositoryEnvironmentBindingSink::new(repo.clone());
+
+        sink.persist("binding-fence", "sandbox-a", Some(&current))
+            .await
+            .expect("B1");
+        sink.persist("binding-fence", "sandbox-a", Some(&current))
+            .await
+            .expect("B2");
+        create(
+            repo.as_ref(),
+            persisted("binding-unassigned", false, false, "idle"),
+        )
+        .await;
+        sink.persist("binding-unassigned", "sandbox-legacy", None)
+            .await
+            .expect("B4");
+        let stale = awaken_session_contract::SessionRealizationLease {
+            owner: "runtime-b".into(),
+            runtime_incarnation: "runtime-b/boot-1".into(),
+            epoch: 4,
+            expires_at_unix_ms: u64::MAX,
+        };
+        let error = sink
+            .persist("binding-fence", "sandbox-a", Some(&stale))
+            .await
+            .expect_err("B3 stale replay is fenced");
+        assert_eq!(error.code, "session_realization_stale", "B3");
+        let expired = awaken_session_contract::SessionRealizationLease {
+            expires_at_unix_ms: 0,
+            ..current.clone()
+        };
+        let mut expired_session = repo.get("binding-fence").await.expect("B5 fixture");
+        expired_session.realization = Some(expired.clone());
+        let expected_revision = expired_session.revision;
+        let payload = awaken_session_contract::SessionMutationPayload::Replace(expired_session);
+        let payload_hash = payload.stable_hash();
+        assert!(matches!(
+            repo.commit_mutation(
+                "workspace",
+                awaken_session_contract::SessionMutation {
+                    expected_revision,
+                    idempotency: awaken_session_contract::IdempotencyRecord {
+                        key: "binding-fence:expire".into(),
+                        payload_hash,
+                    },
+                    payload,
+                    lifecycle_facts: Vec::new(),
+                },
+            )
+            .await
+            .expect("B5 fixture mutation"),
+            awaken_session_contract::SessionMutationResult::Applied { .. }
+        ));
+        assert_eq!(
+            sink.persist("binding-fence", "sandbox-a", Some(&expired))
+                .await
+                .expect_err("B5")
+                .code,
+            "session_realization_stale",
+            "B5"
+        );
+        assert_eq!(
+            repo.get("binding-fence")
+                .await
+                .and_then(|session| session.environment.binding().map(str::to_owned))
+                .as_deref(),
+            Some("sandbox-a"),
+            "B3"
         );
     }
 

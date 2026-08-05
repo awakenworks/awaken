@@ -841,6 +841,7 @@ impl ManagedState {
         let creation_intent = awaken_session_contract::SessionCreationIntent {
             control: awaken_session_contract::ControlSessionCreationInputs {
                 environment,
+                runtime_placement: self.application.runtime_placement(),
                 mcp_authoring: awaken_session_contract::SessionMcpAuthoringContext {
                     ordered_vault_ids: req.vault_ids.clone(),
                 },
@@ -895,12 +896,29 @@ impl ManagedState {
             .create_session_snapshot(&owner_scope, persisted)
             .await?;
         if let Some(compiled) = compiled {
-            self.commit_compiled_session_creation(&owner_scope, persisted, compiled)
+            persisted = self
+                .commit_compiled_session_creation(&owner_scope, persisted, compiled)
                 .await?;
-            // One phase driver now owns create, update, and recovery realization.
-            // The frozen baseline and Requested generations are durable before the
-            // driver performs any Runtime effect.
-            persisted = match self.realize_session_locally(&id).await {
+            // Cause/effect decision table (the cross-product is exercised by the
+            // placement test below):
+            //
+            // | Frozen placement | Application | Coordinator effect | Realization owner |
+            // |---|---|---|---|
+            // | local | absent | canonical local phase driver | local Runtime |
+            // | WorkQueue | absent | install dispatch projection only | claiming Worker |
+            // | any | required | wait for claimed contribution | claiming Worker |
+            //
+            // The frozen baseline and Requested generations are durable before
+            // either effect. Dispatch preparation deliberately acquires no
+            // realization lease and performs no physical Runtime I/O.
+            let realization = if self.application.requires_external_realization(&persisted) {
+                self.install_dispatch_projection(&owner_scope, &persisted)
+                    .await
+                    .map(|()| persisted.clone())
+            } else {
+                self.realize_session_locally(&id).await
+            };
+            persisted = match realization {
                 Ok(persisted) => persisted,
                 Err(error) => {
                     let _ = self
@@ -1084,10 +1102,9 @@ impl ManagedState {
             .ensure_repository_credentials_pinned(owner_scope, session)
             .await?;
         // Exact credential pins are Control-owned durable facts, but physical
-        // input projection for an application-contributed Session belongs to the
-        // claim-owning Worker. The immutable receipt remains the fence after its
-        // transient realization lease is cleared.
-        if session.has_application_contribution() {
+        // input projection for frozen WorkQueue/application Sessions belongs to
+        // the claim-owning Worker.
+        if self.application.requires_external_realization(&session) {
             return Ok(session);
         }
         let session_id = session.session_id.clone();

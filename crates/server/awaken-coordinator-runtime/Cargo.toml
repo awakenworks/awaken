@@ -19,6 +19,7 @@ awaken-runtime.workspace = true
 awaken-runtime-host.workspace = true
 awaken-session-contract.workspace = true
 awaken-store-fs.workspace = true
+awaken-store-inmem = { workspace = true, optional = true }
 awaken-worker-transport-security.workspace = true
 async-trait.workspace = true
 axum.workspace = true
@@ -27,7 +28,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [features]
-test-support = ["awaken-runtime-host/test-support"]
+test-support = ["awaken-runtime-host/test-support", "dep:awaken-store-inmem"]
 
 [dev-dependencies]
 awaken-file-application.workspace = true

@@ -127,6 +127,7 @@ tower-http = { version = "0.6", features = ["fs"] }
 # Volatile embedded/scenario assembly is excluded from product builds.
 test-support = [
     "awaken-captured-content-store/test-support",
+    "awaken-coordinator-runtime/test-support",
     "awaken-config-resolver/test-support",
     "awaken-config-store/test-support",
     "awaken-credential-vault/test-support",
