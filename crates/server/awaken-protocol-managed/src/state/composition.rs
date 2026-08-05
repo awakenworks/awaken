@@ -55,13 +55,25 @@ impl ManagedState {
     /// Session application assembled by the process composition root.
     pub fn from_application(application: SessionApplication) -> Self {
         Self {
-            application,
+            application: Arc::new(application),
             sessions: Mutex::new(HashMap::new()),
             owners: Mutex::new(HashMap::new()),
             session_seq: AtomicU64::new(0),
             event_seq: Arc::new(AtomicU64::new(0)),
             live: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Canonical protocol-independent Session application used by private
+    /// Worker transports and other composition roots.
+    #[must_use]
+    pub fn session_application(&self) -> Arc<SessionApplication> {
+        self.application.clone()
+    }
+
+    fn application_mut(&mut self) -> &mut SessionApplication {
+        Arc::get_mut(&mut self.application)
+            .expect("ManagedState builders must finish before the application is shared")
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -83,7 +95,7 @@ impl ManagedState {
     /// facts fan out to workspace-scoped subscribers (ADR-0048). Default: none.
     #[must_use]
     pub fn with_lifecycle_sink(mut self, sink: Arc<dyn SessionLifecycleSink>) -> Self {
-        self.application.set_lifecycle_sink(sink);
+        self.application_mut().set_lifecycle_sink(sink);
         self
     }
 
@@ -96,7 +108,8 @@ impl ManagedState {
         mut self,
         environments: Arc<crate::routes::environments::EnvironmentExecutionState>,
     ) -> Self {
-        self.application.replace_environment_source(environments);
+        self.application_mut()
+            .replace_environment_source(environments);
         self
     }
 
@@ -105,7 +118,7 @@ impl ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_session_repo(mut self, repo: Arc<dyn ManagedSessionRepository>) -> Self {
-        self.application.replace_repository(repo);
+        self.application_mut().replace_repository(repo);
         self
     }
 
@@ -116,7 +129,8 @@ impl ManagedState {
         mut self,
         scheduler: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
     ) -> Self {
-        self.application.set_resource_purge_scheduler(scheduler);
+        self.application_mut()
+            .set_resource_purge_scheduler(scheduler);
         self
     }
 
@@ -126,8 +140,9 @@ impl ManagedState {
     /// routes see different credentials.
     #[must_use]
     pub fn with_vaults(mut self, vaults: Arc<VaultState>) -> Self {
-        self.application.set_credential_source(vaults.clone());
-        self.application.set_repository_credential_ingress(vaults);
+        self.application_mut().set_credential_source(vaults.clone());
+        self.application_mut()
+            .set_repository_credential_ingress(vaults);
         self
     }
 
@@ -138,7 +153,8 @@ impl ManagedState {
         mut self,
         ingress: Arc<dyn RepositoryCredentialIngress>,
     ) -> Self {
-        self.application.set_repository_credential_ingress(ingress);
+        self.application_mut()
+            .set_repository_credential_ingress(ingress);
         self
     }
 
@@ -146,7 +162,7 @@ impl ManagedState {
     /// local VaultState adapter or the authenticated split-service adapter.
     #[must_use]
     pub fn with_credential_source(mut self, source: Arc<dyn SessionCredentialSource>) -> Self {
-        self.application.set_credential_source(source);
+        self.application_mut().set_credential_source(source);
         self
     }
 
@@ -159,7 +175,7 @@ impl ManagedState {
         mut self,
         source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     ) -> Self {
-        self.application.set_config_source(source);
+        self.application_mut().set_config_source(source);
         self
     }
 
@@ -170,7 +186,7 @@ impl ManagedState {
         mut self,
         catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     ) -> Self {
-        self.application.set_resource_catalog(catalog);
+        self.application_mut().set_resource_catalog(catalog);
         self
     }
 }

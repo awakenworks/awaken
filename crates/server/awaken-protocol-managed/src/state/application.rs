@@ -1,90 +1,33 @@
-//! Session creation composition owned by the Managed application layer.
+//! Managed wire mapping for Session creation composition.
 //!
-//! Raw Session and published Agent MCP authoring enters here once. The Session
-//! aggregate owns precedence/finalization; this module only preserves source
-//! identity and commits the resulting frozen aggregate through the root CAS.
+//! Raw Session and published Agent MCP DTOs enter here once. This module only
+//! preserves source identity and translates them into protocol-neutral MCP
+//! candidates. Session finalization and root CAS belong exclusively to
+//! [`awaken_session_application::SessionApplication`].
 
+#[cfg(test)]
 use super::*;
 use crate::types::McpServer;
 use crate::types::agent::AgentMcpServer;
+use awaken_session_application::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
+#[cfg(test)]
 use awaken_session_contract::{
-    ApplicationContributionError, ApplicationSessionContribution,
-    ApplicationSessionContributionApi, ApplicationSessionContributionFailure,
-    ApplicationSessionContributionReceipt, FrozenSessionProjection,
+    ApplicationSessionContribution, ApplicationSessionContributionApi,
+    ApplicationSessionContributionFailure,
 };
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApplicationMcpInput {
-    name: String,
-    url: String,
-    #[serde(default, rename = "type")]
-    kind: Option<String>,
-    #[serde(default)]
-    credential_source_id: Option<String>,
-    #[serde(default)]
-    credential_revision: Option<u64>,
-    #[serde(default)]
-    prompts_as_skills: bool,
-}
-
-impl ApplicationMcpInput {
-    fn into_candidate(self) -> Result<ManagedMcpCandidate, ApplicationSessionContributionFailure> {
-        if self.kind.as_deref().is_some_and(|kind| kind != "url") {
-            return Err(ApplicationSessionContributionFailure::Invalid(
-                "application MCP input type must be `url`".into(),
-            ));
-        }
-        let published_credential = match (self.credential_source_id, self.credential_revision) {
-            (None, None) => None,
-            (Some(id), Some(revision)) if !id.trim().is_empty() && revision > 0 => {
-                Some((id, revision))
-            }
-            _ => {
-                return Err(ApplicationSessionContributionFailure::Invalid(
-                    "application MCP credential requires a non-empty source id and positive exact revision"
-                        .into(),
-                ));
-            }
-        };
-        Ok(ManagedMcpCandidate {
-            name: self.name,
-            target: ManagedMcpCandidateTarget::WireUrl(self.url),
-            prompts_as_skills: self.prompts_as_skills,
-            published_credential,
-            origin: awaken_session_contract::McpAttachmentOrigin::Application,
-        })
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct ManagedMcpCandidate {
-    pub(super) name: String,
-    pub(super) target: ManagedMcpCandidateTarget,
-    pub(super) prompts_as_skills: bool,
-    pub(super) published_credential: Option<(String, u64)>,
-    pub(super) origin: awaken_session_contract::McpAttachmentOrigin,
-}
-
-#[derive(Clone, Debug)]
-pub(super) enum ManagedMcpCandidateTarget {
-    WireUrl(String),
-    WireSandboxStdio { command: String, args: Vec<String> },
-    Normalized(awaken_session_contract::McpTarget),
-}
 
 pub(super) fn agent_mcp_candidate(
     server: AgentMcpServer,
     origin: awaken_session_contract::McpAttachmentOrigin,
-) -> ManagedMcpCandidate {
+) -> McpAttachmentCandidate {
     match server {
         AgentMcpServer::Url {
             name,
             url,
             prompts_as_skills,
-        } => ManagedMcpCandidate {
+        } => McpAttachmentCandidate {
             name,
-            target: ManagedMcpCandidateTarget::WireUrl(url),
+            target: McpAttachmentCandidateTarget::HttpUrl(url),
             prompts_as_skills,
             published_credential: None,
             origin,
@@ -94,9 +37,9 @@ pub(super) fn agent_mcp_candidate(
             command,
             args,
             prompts_as_skills,
-        } => ManagedMcpCandidate {
+        } => McpAttachmentCandidate {
             name,
-            target: ManagedMcpCandidateTarget::WireSandboxStdio { command, args },
+            target: McpAttachmentCandidateTarget::SandboxStdio { command, args },
             prompts_as_skills,
             published_credential: None,
             origin,
@@ -111,28 +54,33 @@ pub(super) fn initial_mcp_candidates(
     session: &[McpServer],
     agent: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
     agent_override: Option<&[AgentMcpServer]>,
-) -> Vec<ManagedMcpCandidate> {
+) -> Vec<McpAttachmentCandidate> {
     let agent_len = agent_override.map_or_else(
         || agent.map_or(0, |view| view.mcp_servers.len()),
         <[AgentMcpServer]>::len,
     );
     let mut candidates = Vec::with_capacity(session.len() + agent_len);
-    candidates.extend(session.iter().cloned().map(|server| ManagedMcpCandidate {
-        name: server.name,
-        target: ManagedMcpCandidateTarget::WireUrl(server.url),
-        prompts_as_skills: server.prompts_as_skills,
-        published_credential: None,
-        origin: awaken_session_contract::McpAttachmentOrigin::Session,
-    }));
+    candidates.extend(
+        session
+            .iter()
+            .cloned()
+            .map(|server| McpAttachmentCandidate {
+                name: server.name,
+                target: McpAttachmentCandidateTarget::HttpUrl(server.url),
+                prompts_as_skills: server.prompts_as_skills,
+                published_credential: None,
+                origin: awaken_session_contract::McpAttachmentOrigin::Session,
+            }),
+    );
     if let Some(agent_override) = agent_override {
         candidates.extend(agent_override.iter().cloned().map(|server| {
             agent_mcp_candidate(server, awaken_session_contract::McpAttachmentOrigin::Agent)
         }));
     } else if let Some(agent) = agent {
         candidates.extend(agent.mcp_servers.iter().map(|server| {
-            ManagedMcpCandidate {
+            McpAttachmentCandidate {
                 name: server.name.clone(),
-                target: ManagedMcpCandidateTarget::Normalized(server.target.clone()),
+                target: McpAttachmentCandidateTarget::Normalized(server.target.clone()),
                 prompts_as_skills: server.prompts_as_skills,
                 published_credential: server
                     .credential_source_id
@@ -143,217 +91,6 @@ pub(super) fn initial_mcp_candidates(
         }));
     }
     candidates
-}
-
-impl ManagedState {
-    pub(super) fn frozen_session_projection(
-        owner_scope: String,
-        session: &PersistedSession,
-    ) -> Result<FrozenSessionProjection, ApplicationSessionContributionFailure> {
-        let baseline = session.frozen_baseline().cloned().ok_or_else(|| {
-            ApplicationSessionContributionFailure::Unavailable(
-                "Session creation intent was not consumed".into(),
-            )
-        })?;
-        let resources = session
-            .resources
-            .pending
-            .clone()
-            .unwrap_or_else(|| session.resources.active.clone());
-        Ok(FrozenSessionProjection {
-            workspace_id: owner_scope,
-            revision: session.revision,
-            baseline,
-            resource_revision: session.resources.revision,
-            resources,
-            toolsets: session.tools.toolsets.clone(),
-            mcp: session.mcp.attachments.clone(),
-        })
-    }
-
-    fn map_contribution_error(
-        error: ApplicationContributionError,
-    ) -> ApplicationSessionContributionFailure {
-        match error {
-            ApplicationContributionError::NotRequired => {
-                ApplicationSessionContributionFailure::NotRequired
-            }
-            ApplicationContributionError::Conflict => {
-                ApplicationSessionContributionFailure::Conflict
-            }
-            ApplicationContributionError::EmptyFingerprint => {
-                ApplicationSessionContributionFailure::Invalid(error.to_string())
-            }
-        }
-    }
-
-    fn application_mcp_candidates(
-        input: &awaken_session_contract::ApplicationSessionInput,
-    ) -> Result<Vec<ManagedMcpCandidate>, ApplicationSessionContributionFailure> {
-        input
-            .mcp_inputs
-            .iter()
-            .cloned()
-            .map(|value| {
-                serde_json::from_value::<ApplicationMcpInput>(value)
-                    .map_err(|error| {
-                        ApplicationSessionContributionFailure::Invalid(format!(
-                            "application MCP input is malformed: {error}"
-                        ))
-                    })?
-                    .into_candidate()
-            })
-            .collect()
-    }
-
-    /// Consume exactly one durable preparation intent. Baseline freezing,
-    /// Resource generation 1 and MCP generation 1 cross the same root revision;
-    /// no external Runtime effect is allowed before this method commits.
-    pub(super) async fn commit_compiled_session_creation(
-        &self,
-        owner_scope: &str,
-        mut session: PersistedSession,
-        mut compiled: awaken_session_contract::CompiledSessionCreation,
-    ) -> Result<PersistedSession, StateError> {
-        match &session.baseline {
-            awaken_session_contract::SessionBaselineState::Preparing(_) => {}
-            awaken_session_contract::SessionBaselineState::Frozen(_) => {
-                return Err(StateError::Run(RunError::internal(
-                    "Session creation intent was already consumed",
-                )));
-            }
-        }
-        let holder = compiled
-            .baseline
-            .environment
-            .credential_realization
-            .mcp_holder
-            .clone();
-        // A required application contribution can arrive after canonical File
-        // or other live inputs were attached to the still-preparing Session.
-        // Finalization adds creation-time inputs to that durable truth; replacing
-        // the state here would silently detach every pre-run upload.
-        for input in session.resources.active.inputs.iter().cloned() {
-            if compiled
-                .initial_resources
-                .inputs
-                .iter()
-                .any(|candidate| candidate == &input)
-            {
-                continue;
-            }
-            compiled.initial_resources = compiled
-                .initial_resources
-                .attach(input)
-                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        }
-        if compiled.initial_resources.skills.is_none() {
-            compiled.initial_resources.skills = session.resources.active.skills.clone();
-        }
-        let mut resources = session.resources.clone();
-        resources
-            .prepare(&session.session_id, compiled.initial_resources)
-            .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
-        let mcp = awaken_session_contract::SessionMcpAttachmentSet::from_initial(
-            compiled.initial_mcp,
-            Some(holder),
-        )
-        .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        session.baseline = awaken_session_contract::SessionBaselineState::Frozen(compiled.baseline);
-        session.resources = resources;
-        session.mcp = mcp;
-        self.commit_session_snapshot(owner_scope, session, "finalize-creation", Vec::new())
-            .await
-    }
-}
-
-#[async_trait::async_trait]
-impl ApplicationSessionContributionApi for ManagedState {
-    async fn contribute_application(
-        &self,
-        contribution: ApplicationSessionContribution,
-    ) -> Result<ApplicationSessionContributionReceipt, ApplicationSessionContributionFailure> {
-        if contribution.session_id.trim().is_empty() {
-            return Err(ApplicationSessionContributionFailure::Invalid(
-                "Session id is empty".into(),
-            ));
-        }
-        let owner_scope = self
-            .resolve_owner(&contribution.session_id)
-            .await
-            .ok_or(ApplicationSessionContributionFailure::NotFound)?;
-
-        for attempt in 0..awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS {
-            let mut session = self
-                .application
-                .session_repository()
-                .get(&contribution.session_id)
-                .await
-                .ok_or(ApplicationSessionContributionFailure::NotFound)?;
-            let intent = match &mut session.baseline {
-                awaken_session_contract::SessionBaselineState::Frozen(baseline) => {
-                    let receipt = baseline
-                        .application
-                        .as_ref()
-                        .ok_or(ApplicationSessionContributionFailure::NotRequired)?;
-                    let outcome = receipt
-                        .verify_replay(&contribution.application_fingerprint, &contribution.input)
-                        .map_err(Self::map_contribution_error)?;
-                    return Ok(ApplicationSessionContributionReceipt {
-                        outcome,
-                        projection: Self::frozen_session_projection(owner_scope.clone(), &session)?,
-                    });
-                }
-                awaken_session_contract::SessionBaselineState::Preparing(intent) => intent,
-            };
-
-            let outcome = intent
-                .application
-                .accept(
-                    contribution.application_fingerprint.clone(),
-                    contribution.input.clone(),
-                )
-                .map_err(Self::map_contribution_error)?;
-            let ordered_vault_ids = intent.control.mcp_authoring.ordered_vault_ids.clone();
-            let candidates = Self::application_mcp_candidates(&contribution.input)?;
-            let application_mcp = self
-                .normalize_mcp_drafts(candidates, &ordered_vault_ids)
-                .await
-                .map_err(|error| {
-                    ApplicationSessionContributionFailure::Invalid(error.to_string())
-                })?;
-            let compiled = intent.clone().finalize(application_mcp).map_err(|error| {
-                ApplicationSessionContributionFailure::Invalid(error.to_string())
-            })?;
-
-            match self
-                .commit_compiled_session_creation(&owner_scope, session, compiled)
-                .await
-            {
-                Ok(session) => {
-                    return Ok(ApplicationSessionContributionReceipt {
-                        outcome,
-                        projection: Self::frozen_session_projection(owner_scope.clone(), &session)?,
-                    });
-                }
-                Err(StateError::Conflict)
-                    if attempt + 1
-                        < awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS =>
-                {
-                    continue;
-                }
-                Err(StateError::Conflict) => {
-                    return Err(ApplicationSessionContributionFailure::Conflict);
-                }
-                Err(error) => {
-                    return Err(ApplicationSessionContributionFailure::Unavailable(
-                        error.to_string(),
-                    ));
-                }
-            }
-        }
-        Err(ApplicationSessionContributionFailure::Conflict)
-    }
 }
 
 #[cfg(test)]
@@ -601,6 +338,7 @@ mod tests {
                     | ContributionRule::DifferentPlan
             ) {
                 state
+                    .application
                     .contribute_application(contribution.clone())
                     .await
                     .expect("table setup commits S1");
@@ -612,7 +350,7 @@ mod tests {
             if matches!(rule, ContributionRule::DifferentPlan) {
                 attempted.application_fingerprint = "plan-b".into();
             }
-            let result = state.contribute_application(attempted).await;
+            let result = state.application.contribute_application(attempted).await;
 
             match rule {
                 ContributionRule::Commit => {
@@ -731,6 +469,7 @@ mod tests {
             .expect("attach before first Run");
 
         let receipt = state
+            .application
             .contribute_application(ApplicationSessionContribution {
                 session_id: id,
                 application_fingerprint: "flow-plan".into(),
@@ -844,9 +583,9 @@ mod tests {
                 .iter()
                 .filter(|candidate| {
                     match &candidate.target {
-                        ManagedMcpCandidateTarget::WireUrl(url) => url == "https://same.example",
-                        ManagedMcpCandidateTarget::WireSandboxStdio { .. } => false,
-                        ManagedMcpCandidateTarget::Normalized(target) => {
+                        McpAttachmentCandidateTarget::HttpUrl(url) => url == "https://same.example",
+                        McpAttachmentCandidateTarget::SandboxStdio { .. } => false,
+                        McpAttachmentCandidateTarget::Normalized(target) => {
                             target.http_url() == Some("https://same.example")
                         }
                     }
@@ -892,88 +631,5 @@ mod tests {
         );
         assert_eq!(cleared.len(), 1, "C7");
         assert_eq!(cleared[0].name, "inline", "C7");
-    }
-
-    #[test]
-    fn application_mcp_credential_pair_follows_the_causal_decision_table() {
-        // Cause graph: source-id present XOR revision present -> malformed;
-        // neither -> anonymous; both valid -> the existing exact credential pin.
-        //
-        // | Rule | source id | revision | Effect |
-        // |---|---|---|---|
-        // | A1 | absent | absent | anonymous Application candidate |
-        // | A2 | present | present positive | exact credential candidate |
-        // | A3 | present | absent | reject |
-        // | A4 | absent | present | reject |
-        // | A5 | blank | present | reject |
-        // | A6 | present | zero | reject |
-        // | A7 | valid pair | non-URL type | reject |
-        // | A8 | valid pair | unknown field | reject |
-        let rows = [
-            (
-                "A1",
-                serde_json::json!({"name":"m","type":"url","url":"https://m.example"}),
-                true,
-                None,
-            ),
-            (
-                "A2",
-                serde_json::json!({"name":"m","type":"url","url":"https://m.example","credential_source_id":"cred-1","credential_revision":7}),
-                true,
-                Some(("cred-1", 7)),
-            ),
-            (
-                "A3",
-                serde_json::json!({"name":"m","url":"https://m.example","credential_source_id":"cred-1"}),
-                false,
-                None,
-            ),
-            (
-                "A4",
-                serde_json::json!({"name":"m","url":"https://m.example","credential_revision":7}),
-                false,
-                None,
-            ),
-            (
-                "A5",
-                serde_json::json!({"name":"m","url":"https://m.example","credential_source_id":" ","credential_revision":7}),
-                false,
-                None,
-            ),
-            (
-                "A6",
-                serde_json::json!({"name":"m","url":"https://m.example","credential_source_id":"cred-1","credential_revision":0}),
-                false,
-                None,
-            ),
-            (
-                "A7",
-                serde_json::json!({"name":"m","type":"stdio","url":"https://m.example","credential_source_id":"cred-1","credential_revision":7}),
-                false,
-                None,
-            ),
-            (
-                "A8",
-                serde_json::json!({"name":"m","url":"https://m.example","credential_source_id":"cred-1","credential_revision":7,"bearer":"must-not-pass"}),
-                false,
-                None,
-            ),
-        ];
-        for (rule, input, expected_ok, expected_pin) in rows {
-            let result = ManagedState::application_mcp_candidates(
-                &awaken_session_contract::ApplicationSessionInput {
-                    mcp_inputs: vec![input],
-                    ..Default::default()
-                },
-            );
-            assert_eq!(result.is_ok(), expected_ok, "{rule}");
-            if let (Ok(candidates), Some((id, revision))) = (result, expected_pin) {
-                assert_eq!(
-                    candidates[0].published_credential,
-                    Some((id.to_string(), revision)),
-                    "{rule}"
-                );
-            }
-        }
     }
 }

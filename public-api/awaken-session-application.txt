@@ -1,4 +1,10 @@
 pub mod awaken_session_application
+pub enum awaken_session_application::McpAttachmentCandidateTarget
+pub awaken_session_application::McpAttachmentCandidateTarget::HttpUrl(alloc::string::String)
+pub awaken_session_application::McpAttachmentCandidateTarget::Normalized(awaken_agent_contract::mcp_target::McpTarget)
+pub awaken_session_application::McpAttachmentCandidateTarget::SandboxStdio
+pub awaken_session_application::McpAttachmentCandidateTarget::SandboxStdio::args: alloc::vec::Vec<alloc::string::String>
+pub awaken_session_application::McpAttachmentCandidateTarget::SandboxStdio::command: alloc::string::String
 pub enum awaken_session_application::SessionExecutionPlacement
 pub awaken_session_application::SessionExecutionPlacement::LocalWorker
 pub awaken_session_application::SessionExecutionPlacement::RegisteredWorker
@@ -7,6 +13,17 @@ pub awaken_session_application::SessionMutationError::Conflict
 pub awaken_session_application::SessionMutationError::IdempotencyMismatch
 pub awaken_session_application::SessionMutationError::NotFound
 pub awaken_session_application::SessionMutationError::Unavailable(alloc::string::String)
+pub enum awaken_session_application::SessionPreparationError
+pub awaken_session_application::SessionPreparationError::Conflict
+pub awaken_session_application::SessionPreparationError::NotFound
+pub awaken_session_application::SessionPreparationError::Rejected(awaken_session_contract::session::RunError)
+pub awaken_session_application::SessionPreparationError::Unavailable(alloc::string::String)
+pub struct awaken_session_application::McpAttachmentCandidate
+pub awaken_session_application::McpAttachmentCandidate::name: alloc::string::String
+pub awaken_session_application::McpAttachmentCandidate::origin: awaken_session_contract::mcp_attachment::McpAttachmentOrigin
+pub awaken_session_application::McpAttachmentCandidate::prompts_as_skills: bool
+pub awaken_session_application::McpAttachmentCandidate::published_credential: core::option::Option<(alloc::string::String, u64)>
+pub awaken_session_application::McpAttachmentCandidate::target: awaken_session_application::McpAttachmentCandidateTarget
 pub struct awaken_session_application::RepositoryEnvironmentBindingSink
 impl awaken_session_application::RepositoryEnvironmentBindingSink
 pub fn awaken_session_application::RepositoryEnvironmentBindingSink::new(alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>) -> Self
@@ -52,6 +69,24 @@ pub fn awaken_session_application::SessionApplication::set_lifecycle_sink(&mut s
 pub fn awaken_session_application::SessionApplication::set_repository_credential_ingress(&mut self, alloc::sync::Arc<dyn awaken_session_application::RepositoryCredentialIngress>)
 pub fn awaken_session_application::SessionApplication::set_resource_catalog(&mut self, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>)
 pub fn awaken_session_application::SessionApplication::set_resource_purge_scheduler(&mut self, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>)
+impl awaken_session_application::SessionApplication
+pub async fn awaken_session_application::SessionApplication::commit_compiled_session_creation(&self, &str, awaken_session_contract::session_repo::PersistedSession, awaken_session_contract::baseline::CompiledSessionCreation) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_contract::application_contribution::ApplicationSessionContributionFailure>
+impl awaken_session_application::SessionApplication
+pub async fn awaken_session_application::SessionApplication::ensure_repository_credentials_pinned(&self, &str, awaken_session_contract::session_repo::PersistedSession) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_application::SessionPreparationError>
+pub async fn awaken_session_application::SessionApplication::pin_repository_credential(&self, &str, &awaken_credential_contract::PlaintextHolder, &mut awaken_session_contract::resource::ResolvedInput) -> core::result::Result<(), awaken_session_application::SessionPreparationError>
+pub async fn awaken_session_application::SessionApplication::pin_repository_credentials(&self, &str, &awaken_credential_contract::PlaintextHolder, &mut awaken_session_contract::resource::ResolvedSessionResources) -> core::result::Result<bool, awaken_session_application::SessionPreparationError>
+pub fn awaken_session_application::SessionApplication::resource_plaintext_holder(&self, &awaken_session_contract::session_repo::PersistedSession) -> core::result::Result<awaken_credential_contract::PlaintextHolder, awaken_session_application::SessionPreparationError>
+impl awaken_session_application::SessionApplication
+pub fn awaken_session_application::SessionApplication::frozen_session_projection(alloc::string::String, &awaken_session_contract::session_repo::PersistedSession) -> core::result::Result<awaken_session_contract::application_contribution::FrozenSessionProjection, awaken_session_contract::application_contribution::ApplicationSessionContributionFailure>
+impl awaken_session_application::SessionApplication
+pub async fn awaken_session_application::SessionApplication::normalize_mcp_drafts(&self, alloc::vec::Vec<awaken_session_application::McpAttachmentCandidate>, &[alloc::string::String]) -> core::result::Result<alloc::vec::Vec<awaken_session_contract::mcp_attachment::McpAttachmentDraft>, awaken_session_contract::session::RunError>
+impl awaken_session_contract::application_contribution::ApplicationSessionContributionApi for awaken_session_application::SessionApplication
+pub fn awaken_session_application::SessionApplication::contribute_application<'life0, 'async_trait>(&'life0 self, awaken_session_contract::application_contribution::ApplicationSessionContribution) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::application_contribution::ApplicationSessionContributionReceipt, awaken_session_contract::application_contribution::ApplicationSessionContributionFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_session_contract::session_realization::SessionRealizationControl for awaken_session_application::SessionApplication
+pub fn awaken_session_application::SessionApplication::acknowledge_session_realization<'life0, 'async_trait>(&'life0 self, awaken_session_contract::session_realization::AcknowledgeSessionRealization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session_realization::SessionRealizationDirective, awaken_session_contract::session_realization::SessionRealizationControlFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_session_application::SessionApplication::activate_session_realization<'life0, 'async_trait>(&'life0 self, awaken_session_contract::session_realization::ActivateSessionRealization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session_realization::SessionRealizationDirective, awaken_session_contract::session_realization::SessionRealizationControlFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_session_application::SessionApplication::begin_session_realization<'life0, 'async_trait>(&'life0 self, awaken_session_contract::session_realization::BeginSessionRealization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session_realization::SessionRealizationDirective, awaken_session_contract::session_realization::SessionRealizationControlFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_session_application::SessionApplication::fail_session_realization<'life0, 'async_trait>(&'life0 self, awaken_session_contract::session_realization::FailSessionRealization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::session_realization::SessionRealizationControlFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_session_application::SessionApplicationConfiguration
 pub awaken_session_application::SessionApplicationConfiguration::execution_placement: awaken_session_application::SessionExecutionPlacement
 pub struct awaken_session_application::WorkDispatchFailure

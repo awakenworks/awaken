@@ -255,6 +255,7 @@ impl BuiltInDreamAgent {
             ..Default::default()
         };
         self.managed
+            .session_application()
             .contribute_application(ApplicationSessionContribution {
                 session_id: session_id.clone(),
                 application_fingerprint: input.fingerprint(),

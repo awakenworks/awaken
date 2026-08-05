@@ -1938,7 +1938,7 @@ async fn application_required_creation_is_generated_from_the_decision_table() {
         };
         let outcome =
             awaken_session_contract::ApplicationSessionContributionApi::contribute_application(
-                &state,
+                state.session_application().as_ref(),
                 contribution,
             )
             .await;
@@ -2010,7 +2010,7 @@ async fn preparing_session_can_be_cancelled_without_runtime_realization() {
         Err(awaken_protocol_managed::StateError::NotFound)
     ));
     let late = awaken_session_contract::ApplicationSessionContributionApi::contribute_application(
-        &state,
+        state.session_application().as_ref(),
         awaken_session_contract::ApplicationSessionContribution {
             session_id: session.id,
             application_fingerprint: "late-plan".into(),

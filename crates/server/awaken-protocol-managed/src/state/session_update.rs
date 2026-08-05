@@ -165,6 +165,7 @@ impl ManagedState {
                 })?
                 .clone();
             let drafts = self
+                .application
                 .normalize_mcp_drafts(
                     wire_servers
                         .into_iter()

@@ -130,12 +130,13 @@ impl AnyDispatchStore {
         Ok((Self::from_postgres_store(store), wake))
     }
 
-    /// Connect the Postgres durable backend but pair it with a [`NatsWakeSignal`]
+    /// Connect the Postgres durable backend but pair it with a
+    /// [`NatsWakeSignal`](crate::wake::NatsWakeSignal)
     /// (feature `nats`) instead of `pg_notify` for the cross-node wake hint. The
     /// durable STORE stays Postgres (the queue authority); only the best-effort wake
     /// fan-out moves to a NATS `subject`, for a fleet that already runs a NATS broker
     /// (ADR-0019/0028). Returns the store plus the ready wake signal. Like every
-    /// [`WakeSignal`] the hint is non-authoritative — a lost NATS message only defers
+    /// [`WakeSignal`](crate::wake::WakeSignal) the hint is non-authoritative — a lost NATS message only defers
     /// a drain to the poll fallback, so correctness never depends on it.
     #[cfg(feature = "nats")]
     pub async fn connect_postgres_with_nats_wake(

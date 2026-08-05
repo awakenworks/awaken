@@ -14,7 +14,7 @@ use super::SessionRecord;
 
 /// Disposable Managed wire projections over the canonical Session application.
 pub struct ManagedState {
-    pub(super) application: SessionApplication,
+    pub(super) application: Arc<SessionApplication>,
     /// Disposable record→wire projection; durable truth lives in the application repository.
     pub(super) sessions: Mutex<HashMap<String, SessionRecord>>,
     /// Edge-owned Session-to-Workspace wire projection.

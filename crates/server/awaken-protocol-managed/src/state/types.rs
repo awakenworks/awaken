@@ -2,8 +2,9 @@
 //! Public consumers import these types from `awaken-session-contract`; the
 //! protocol crate publishes no compatibility path.
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use awaken_session_contract::SessionRuntime;
 pub(crate) use awaken_session_contract::{
     AgentCapabilities, CustomTool, DelegatedRun, LiveInboxSnapshot, OutcomeIteration,
-    OutcomeReport, RunError, RunErrorKind, SessionRuntime, SessionUsage, StepOutcome,
-    ToolPermissionDecision,
+    OutcomeReport, RunError, RunErrorKind, SessionUsage, StepOutcome, ToolPermissionDecision,
 };

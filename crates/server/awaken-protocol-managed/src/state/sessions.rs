@@ -1,11 +1,12 @@
 //! Session lifecycle for [`ManagedState`]: create, rehydrate, get/list,
 //! update, delete, and archive.
 
-use super::application::{ManagedMcpCandidate, ManagedMcpCandidateTarget, initial_mcp_candidates};
+use super::application::initial_mcp_candidates;
 use super::*;
 
 use super::session_mcp_projection::typed_mcp_servers;
 use crate::types::AgentRef;
+use awaken_session_contract::ApplicationSessionContributionFailure;
 
 fn validate_session_skill_total(
     source: Option<&dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
@@ -158,7 +159,10 @@ impl ManagedState {
     /// Refresh the disposable HTTP projection after the one durable root CAS.
     /// Every mutation crosses this seam, so realization, update, archive, and
     /// recovery cannot each invent a second cache-synchronization path.
-    fn refresh_cached_projection(&self, persisted: &PersistedSession) -> Result<(), StateError> {
+    pub(super) fn refresh_cached_projection(
+        &self,
+        persisted: &PersistedSession,
+    ) -> Result<(), StateError> {
         let mcp_servers = typed_mcp_servers(persisted.visible_mcp_servers());
         let mut sessions = self.sessions.lock().unwrap();
         let Some(record) = sessions.get_mut(&persisted.session_id) else {
@@ -172,108 +176,6 @@ impl ManagedState {
         record.session.agent.mcp_servers = mcp_servers;
         record.resource_state = persisted.resources.clone();
         Ok(())
-    }
-
-    /// Sole Managed anti-corruption compiler for create-time and hot MCP input.
-    /// URL identity, Vault ordering and exact credential pinning cannot be
-    /// repeated by either caller after this function returns.
-    pub(super) async fn normalize_mcp_drafts(
-        &self,
-        candidates: Vec<ManagedMcpCandidate>,
-        ordered_vault_ids: &[String],
-    ) -> Result<Vec<awaken_session_contract::McpAttachmentDraft>, StateError> {
-        let mut drafts = Vec::with_capacity(candidates.len());
-        for candidate in candidates {
-            let name = candidate.name;
-            let target = match candidate.target {
-                ManagedMcpCandidateTarget::WireUrl(url) => {
-                    awaken_session_contract::McpTarget::parse_http(&url).map_err(|_| {
-                        StateError::Run(RunError::bad_request(format!(
-                            "invalid MCP server URL for `{name}`"
-                        )))
-                    })?
-                }
-                ManagedMcpCandidateTarget::WireSandboxStdio { command, args } => {
-                    awaken_session_contract::McpTarget::sandbox_stdio(&command, args).map_err(
-                        |_| {
-                            StateError::Run(RunError::bad_request(format!(
-                                "invalid sandbox stdio MCP command for `{name}`"
-                            )))
-                        },
-                    )?
-                }
-                ManagedMcpCandidateTarget::Normalized(target) => target,
-            };
-            let credential = match candidate.published_credential {
-                Some((id, revision)) => {
-                    let source_id = awaken_credential_contract::CredentialSourceId(id.clone());
-                    let access = if let Some(vaults) = &self.application.credential_source() {
-                        let access =
-                            vaults
-                                .mcp_access_for_source(&source_id)
-                                .await
-                                .map_err(|error| {
-                                    StateError::Run(RunError::bad_request(format!(
-                                        "MCP credential could not be pinned exactly: {error}"
-                                    )))
-                                })?;
-                        if access.credential.revision != revision {
-                            return Err(StateError::Run(RunError::bad_request(
-                                "published MCP credential revision no longer matches",
-                            )));
-                        }
-                        access
-                    } else {
-                        awaken_credential_contract::CredentialAccess::new(
-                            awaken_credential_contract::CredentialRef { id, revision },
-                            awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
-                            awaken_credential_contract::CredentialUsage::HttpHeader {
-                                name: "authorization".into(),
-                                scheme: Some("Bearer".into()),
-                            },
-                            awaken_credential_contract::CredentialExecutionPolicy::self_hosted_provider(),
-                        )
-                    };
-                    Some(access)
-                }
-                None => match &self.application.credential_source() {
-                    Some(vaults) => {
-                        let source_id = match target.http_url() {
-                            Some(url) => vaults
-                                .mcp_credential_source_for_url(ordered_vault_ids, url)
-                                .await
-                                .map_err(|error| {
-                                    StateError::Run(RunError::bad_request(format!(
-                                        "MCP credential selection failed: {error}"
-                                    )))
-                                })?,
-                            None => None,
-                        };
-                        match source_id {
-                            Some(source_id) => {
-                                Some(vaults.mcp_access_for_source(&source_id).await.map_err(
-                                    |error| {
-                                        StateError::Run(RunError::bad_request(format!(
-                                            "MCP credential could not be pinned exactly: {error}"
-                                        )))
-                                    },
-                                )?)
-                            }
-                            None => None,
-                        }
-                    }
-                    None => None,
-                },
-            };
-            drafts.push(awaken_session_contract::McpAttachmentDraft {
-                name,
-                target,
-                prompts_as_skills: candidate.prompts_as_skills,
-                credential,
-                origin: candidate.origin,
-            });
-        }
-        Ok(drafts)
     }
 
     /// Rebuild the process-local projection through the same phase driver used
@@ -432,11 +334,12 @@ impl ManagedState {
     /// MCP binding (ADR-0043 Phase 3): each requested server is bound to a vault
     /// credential by exact `mcp_server_url` match across the request's
     /// `vault_ids`. The preparation intent, frozen generation-1 state, and exact
-    /// realization claim all commit before [`SessionRuntime::prepare_session`]
+    /// realization claim all commit before
+    /// [`SessionRuntime::prepare_session`](awaken_session_contract::SessionRuntime::prepare_session)
     /// performs external I/O. A failed realization leaves recoverable failed
     /// state and fails the create (the router maps the `RunError` to the error
     /// envelope). A `vault_ids` entry that names no
-    /// existing vault fails the create closed too ([`VaultState::has_vault`]):
+    /// existing vault fails the create closed too:
     /// a 404 naming the vault id, BEFORE anything is provisioned — never a
     /// silent no-binding whose 401 only surfaces at the first turn. (Without a
     /// wired vault surface there is nothing to validate against and every
@@ -667,6 +570,7 @@ impl ManagedState {
             AgentRef::Id(_) => None,
         };
         let mcp_drafts = self
+            .application
             .normalize_mcp_drafts(
                 initial_mcp_candidates(
                     &req.mcp_servers,
@@ -795,12 +699,14 @@ impl ManagedState {
                     .map_err(StateError::Run)?,
             );
         }
-        self.pin_repository_credentials(
-            &owner_scope,
-            &environment.credential_realization.resource_holder,
-            &mut resolved_resources,
-        )
-        .await?;
+        self.application
+            .pin_repository_credentials(
+                &owner_scope,
+                &environment.credential_realization.resource_holder,
+                &mut resolved_resources,
+            )
+            .await
+            .map_err(Self::map_preparation_error)?;
         // Validate the advertised tool surface before persisting an activation or
         // touching a Host. A definition error cannot strand Prepared resources.
         let caps = self.application.runtime().capabilities_for(&id);
@@ -897,8 +803,13 @@ impl ManagedState {
             .await?;
         if let Some(compiled) = compiled {
             persisted = self
+                .application
                 .commit_compiled_session_creation(&owner_scope, persisted, compiled)
-                .await?;
+                .await
+                .map_err(|error| match error {
+                    ApplicationSessionContributionFailure::Conflict => StateError::Conflict,
+                    error => StateError::Run(RunError::internal(error.to_string())),
+                })?;
             // Cause/effect decision table (the cross-product is exercised by the
             // placement test below):
             //
@@ -1099,8 +1010,10 @@ impl ManagedState {
         mut session: PersistedSession,
     ) -> Result<PersistedSession, StateError> {
         session = self
+            .application
             .ensure_repository_credentials_pinned(owner_scope, session)
-            .await?;
+            .await
+            .map_err(Self::map_preparation_error)?;
         // Exact credential pins are Control-owned durable facts, but physical
         // input projection for frozen WorkQueue/application Sessions belongs to
         // the claim-owning Worker.

@@ -71,10 +71,11 @@ pub(crate) use resource::{
     resource_binding_id,
 };
 use session_record::SessionRecord;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use types::SessionRuntime;
 pub(crate) use types::{
     AgentCapabilities, CustomTool, DelegatedRun, LiveInboxSnapshot, OutcomeIteration,
-    OutcomeReport, RunError, RunErrorKind, SessionRuntime, SessionUsage, StepOutcome,
-    ToolPermissionDecision,
+    OutcomeReport, RunError, RunErrorKind, SessionUsage, StepOutcome, ToolPermissionDecision,
 };
 
 #[cfg(test)]

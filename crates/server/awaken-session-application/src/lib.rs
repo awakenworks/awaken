@@ -22,6 +22,13 @@ use awaken_session_contract::{
 
 mod mutation;
 pub use mutation::SessionMutationError;
+mod contribution;
+mod credentials;
+mod projection;
+pub use credentials::SessionPreparationError;
+mod mcp;
+mod realization;
+pub use mcp::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
 
 /// Secret-free credential selection used while compiling a Session.
 #[async_trait::async_trait]

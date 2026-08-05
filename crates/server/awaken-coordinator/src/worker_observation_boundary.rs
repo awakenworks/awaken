@@ -1,7 +1,7 @@
 //! Authenticated, read-only Control-to-Coordinator Worker observation boundary.
 //!
 //! Worker registration and heartbeat authority remains the Coordinator-owned
-//! [`WorkerDirectory`]. Split Control receives only this secret-free projection;
+//! [`WorkerDirectory`](awaken_worker_registry::WorkerDirectory). Split Control receives only this secret-free projection;
 //! it never opens the registry database or gains mutation capability.
 
 use std::sync::Arc;
