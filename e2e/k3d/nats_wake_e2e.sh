@@ -67,6 +67,20 @@ k3d_import_images "$CLUSTER" "$IMAGE" postgres:16 nats:2
 kubectl create namespace "$NS" >/dev/null 2>&1 || true
 
 log "5/5 apply the fleet and drive the nats-wake + consistency scenario (M=$M)"
+# S6 wake-path FMECA cause/effect graph:
+# C1 Postgres authority is reachable; C2 NATS is reachable at process startup;
+# C3 NATS remains reachable after enqueue; C4 each accepted run has a unique
+# thread. Effects: E1 startup binds the selected adapter; E2 every accepted run
+# reaches exactly one committed reply; E3 loss of the hint only delays drain to
+# the bounded Postgres poll fallback; E4 no duplicate/lost durable rows.
+#
+# | Rule | C1 | C2 | C3 | C4 | Expected effect |
+# | S6-1 | T  | T  | T  | T  | E1+E2+E4 through live NATS |
+# | S6-2 | T  | T  | F  | T  | E2+E3+E4 after broker loss |
+# | S6-3 | T  | F  | -  | -  | fail startup; no silent local selector |
+# | S6-4 | F  | *  | *  | -  | durable authority unavailable; no success |
+# S6-1/S6-2 execute below. Config/startup tests own S6-3; Postgres strict suites
+# own S6-4 so this scenario never creates a second database-failure oracle.
 kubectl -n "$NS" apply -k "$DEPLOY_DIR/nats-wake" >/dev/null
 echo "waiting for nats + postgres..."
 kubectl -n "$NS" rollout status deploy/nats --timeout=120s
@@ -106,11 +120,32 @@ DISTINCT=$(psql_scalar "SELECT count(DISTINCT thread_id) FROM runtime_message")
 BADROWS=$(psql_scalar "SELECT count(*) FROM (SELECT thread_id FROM runtime_message GROUP BY thread_id HAVING count(*) <> 2) t")
 echo "postgres: total_messages=$GOT (want $WANT)  distinct_threads=$DISTINCT (want $M)  threads_with_wrong_count=$BADROWS (want 0)"
 
-if [ "${GOT:-0}" = "$WANT" ] && [ "${DISTINCT:-0}" = "$M" ] && [ "${BADROWS:-1}" = "0" ]; then
-  ok "\nK3D NATS-WAKE E2E PASS: a 3-pod fleet drained $M concurrent durable runs from one shared Postgres queue, waking each other over NATS (pg-notify disabled) — every thread committed exactly once (no loss, no double-drive)."
-  exit 0
-else
+if [ "${GOT:-0}" != "$WANT" ] || [ "${DISTINCT:-0}" != "$M" ] || [ "${BADROWS:-1}" != "0" ]; then
   err "\nK3D NATS-WAKE E2E FAIL: total=$GOT/$WANT distinct=$DISTINCT/$M bad=$BADROWS/0"
   kubectl -n "$NS" logs deploy/brain --tail=30 || true
   exit 1
 fi
+
+log "remove NATS after startup; durable polling must still drain a second batch"
+kubectl -n "$NS" scale deployment/nats --replicas=0 >/dev/null
+kubectl -n "$NS" wait --for=delete pod -l app=nats --timeout=60s
+R2=$(THREAD_PREFIX=natspoll node "$DRIVER" submit "http://127.0.0.1:$LOCAL_PORT" "$M" 2>&1 | tail -1) || true
+[ "${R2%% *}" = "OK" ] || { err "broker-loss submit failed: $R2"; exit 1; }
+
+TOTAL_THREADS=$((M * 2))
+TOTAL_MESSAGES=$((TOTAL_THREADS * 2))
+GOT=0
+for _ in $(seq 1 60); do
+  GOT=$(psql_scalar "SELECT count(*) FROM runtime_message" || echo 0)
+  [ "${GOT:-0}" -ge "$TOTAL_MESSAGES" ] && break
+  sleep 2
+done
+DISTINCT=$(psql_scalar "SELECT count(DISTINCT thread_id) FROM runtime_message")
+BADROWS=$(psql_scalar "SELECT count(*) FROM (SELECT thread_id FROM runtime_message GROUP BY thread_id HAVING count(*) <> 2) t")
+if [ "${GOT:-0}" = "$TOTAL_MESSAGES" ] && [ "${DISTINCT:-0}" = "$TOTAL_THREADS" ] && [ "${BADROWS:-1}" = "0" ]; then
+  ok "\nK3D NATS-WAKE E2E PASS: live hints and broker-loss polling each drained $M runs exactly once from Postgres."
+  exit 0
+fi
+err "\nK3D NATS-WAKE BROKER-LOSS FAIL: total=$GOT/$TOTAL_MESSAGES distinct=$DISTINCT/$TOTAL_THREADS bad=$BADROWS/0"
+kubectl -n "$NS" logs deploy/brain --tail=60 || true
+exit 1
