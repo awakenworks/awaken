@@ -1,4 +1,4 @@
-//! The Models API (`/v1/models`) the official `@anthropic-ai/sdk` drives via
+//! The Managed Models API (`/v1/models`) the official `@anthropic-ai/sdk` drives via
 //! `client.beta.models.list` / `.retrieve`. It reports the models this
 //! deployment can route to as `BetaModelInfo`. The list is a plain
 //! [`Page`](https://docs.anthropic.com/en/api/models-list) (`data` + `has_more` +

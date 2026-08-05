@@ -89,7 +89,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
     let dispatch = Arc::new(MemoryDispatchStore::new());
     let claim = claimed_dispatch(&dispatch, "file-public", &identity.lease_owner()).await;
     let lifecycle = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
-    let application = Arc::new(awaken_file_application::FileApplication::new(
+    let application = Arc::new(awaken_resource_application::FileApplication::new(
         store.clone(),
         store.clone(),
         lifecycle,

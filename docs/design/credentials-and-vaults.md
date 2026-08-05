@@ -193,7 +193,7 @@ Wire facts to match exactly:
   immutable, secret fields write-only, max 20 credentials per vault.
 - Beta header `managed-agents-2026-04-01`; sessions attach vaults via `vault_ids`.
 
-The ACL (`awaken-managed-bridge`) maps this wire ⇄ the neutral domain below; the
+The vault ACL inside `awaken-protocol-managed` maps this wire ⇄ the neutral domain below; the
 domain's `CredentialAuth` variants stay neutral (`Bearer`/`OAuth`/`EnvVar`/`ApiKey`),
 the wire keeps the Managed tags.
 

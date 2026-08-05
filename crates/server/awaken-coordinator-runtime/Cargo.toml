@@ -31,7 +31,7 @@ thiserror.workspace = true
 test-support = ["awaken-runtime-host/test-support", "dep:awaken-store-inmem"]
 
 [dev-dependencies]
-awaken-file-application.workspace = true
+awaken-resource-application.workspace = true
 awaken-file-store = { workspace = true, features = ["test-support"] }
 awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }

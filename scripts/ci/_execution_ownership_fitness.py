@@ -38,10 +38,10 @@ ROUTE_OWNER_FILES = (
     "crates/control/awaken-control/src/admin_assistant.rs",
     "crates/control/awaken-control/src/data_subject.rs",
     "crates/control/awaken-control/src/lib.rs",
-    "crates/server/awaken-protocol-managed-resources/src/files.rs",
-    "crates/server/awaken-protocol-managed-resources/src/memory_stores.rs",
-    "crates/server/awaken-protocol-managed-resources/src/models.rs",
-    "crates/server/awaken-protocol-managed-resources/src/skills.rs",
+    "crates/server/awaken-protocol-managed/src/resources/files.rs",
+    "crates/server/awaken-protocol-managed/src/resources/memory_stores.rs",
+    "crates/server/awaken-protocol-managed/src/control/models.rs",
+    "crates/server/awaken-protocol-managed/src/resources/skills.rs",
     "crates/server/awaken-protocol-a2a/src/router.rs",
     "crates/server/awaken-protocol-ag-ui/src/router.rs",
     "crates/server/awaken-protocol-ai-sdk/src/router.rs",
@@ -64,7 +64,6 @@ ROUTE_OWNER_FILES = (
 # prevents a new router source from silently escaping the ownership inventory.
 PUBLIC_ROUTE_ROOTS = (
     "crates/control",
-    "crates/server/awaken-protocol-managed-resources/src",
     "crates/server/awaken-protocol-a2a/src",
     "crates/server/awaken-protocol-ag-ui/src",
     "crates/server/awaken-protocol-ai-sdk/src",

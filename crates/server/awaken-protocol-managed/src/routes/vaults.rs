@@ -9,7 +9,7 @@
 //!
 //! Storage is neutral: a credential's secret is sealed into the credential
 //! domain's [`SecretStore`](awaken_credential_vault::SecretStore) via the
-//! [`awaken_managed_bridge`] ACL (secret-in), and every response is secret-free
+//! this adapter's vault ACL (secret-in), and every response is secret-free
 //! (secret-out never happens). The credential rows land in a
 //! [`CredentialRepo`](awaken_credential_vault::repo::CredentialRepo), so a vault
 //! credential entered here is the same row the resolver binds a run to.
@@ -33,6 +33,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::control::vault_acl::{
+    WireEnvVarCreate, WireMcpOauthCreate, WireStaticBearerCreate, env_var_to_create_params,
+    mcp_oauth_to_create_params, static_bearer_to_create_params,
+};
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{
@@ -43,10 +47,6 @@ use awaken_credential_vault::repo::{
 use awaken_credential_vault::{
     CredentialCreateParams as DomainCredentialCreateParams, CredentialKind,
     OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretStore, StructuredCredentialMaterial,
-};
-use awaken_managed_bridge::{
-    WireEnvVarCreate, WireMcpOauthCreate, WireStaticBearerCreate, env_var_to_create_params,
-    mcp_oauth_to_create_params, static_bearer_to_create_params,
 };
 use awaken_session_application::{RepositoryCredentialIngress, SessionCredentialSource};
 use axum::extract::{Extension, Path, Query, State};
@@ -861,10 +861,7 @@ async fn create_credential(
         } => {
             let create = static_bearer_to_create_params(
                 resource_workspace.clone(),
-                WireStaticBearerCreate {
-                    mcp_server_url: mcp_server_url.clone(),
-                    token,
-                },
+                WireStaticBearerCreate { token },
             );
             let source = enter(create)
                 .await
@@ -916,7 +913,6 @@ async fn create_credential(
             let bridged = mcp_oauth_to_create_params(
                 resource_workspace,
                 WireMcpOauthCreate {
-                    mcp_server_url: mcp_server_url.clone(),
                     access_token,
                     refresh_token,
                 },

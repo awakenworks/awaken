@@ -28,25 +28,25 @@ RESOURCE_PLANE_CRATES = {
 RESOURCE_APPLICATION_SOURCES = (
     "crates/stores/awaken-resource-store/src/postgres_catalog.rs",
     "crates/stores/awaken-resource-store/src/sqlite_catalog.rs",
-    "crates/server/awaken-protocol-managed-resources/src/files.rs",
+    "crates/server/awaken-protocol-managed/src/resources/files.rs",
     "crates/server/awaken-protocol-managed/src/state/resource.rs",
     "crates/server/awaken-protocol-managed/src/state/resources.rs",
-    "crates/server/awaken-protocol-managed-resources/src/memory_stores.rs",
+    "crates/server/awaken-protocol-managed/src/resources/memory_stores.rs",
     "crates/server/awaken-runtime-host/src/memory_stores.rs",
     "crates/server/awaken-runtime-host/src/provisioning.rs",
     "crates/server/awaken-runtime-host/src/resource_reclamation.rs",
-    "crates/server/awaken-protocol-managed-resources/src/resource_scope.rs",
+    "crates/server/awaken-protocol-managed/src/common/scope.rs",
     "crates/server/awaken-runtime-host/src/skill_catalog.rs",
-    "crates/server/awaken-protocol-managed-resources/src/skills.rs",
+    "crates/server/awaken-protocol-managed/src/resources/skills.rs",
 )
 
 # HTTP adapters are PEP consumers, not Workspace selectors. Every handler must
 # extract the Workspace stamp installed by the outer composition edge; none may
 # fall back to a Host-local tenant.
 RESOURCE_HTTP_SOURCES = (
-    "crates/server/awaken-protocol-managed-resources/src/files.rs",
-    "crates/server/awaken-protocol-managed-resources/src/memory_stores.rs",
-    "crates/server/awaken-protocol-managed-resources/src/skills.rs",
+    "crates/server/awaken-protocol-managed/src/resources/files.rs",
+    "crates/server/awaken-protocol-managed/src/resources/memory_stores.rs",
+    "crates/server/awaken-protocol-managed/src/resources/skills.rs",
 )
 
 # Recovery already reads a durably persisted Workspace envelope. Re-selecting a
@@ -60,7 +60,7 @@ RESOURCE_RECOVERY_SOURCES = (
 # but cannot recreate Catalog mutation coordination. The Resources application
 # is the single owner of these calls.
 MEMORY_STORE_DRIVING_ADAPTERS = (
-    "crates/server/awaken-protocol-managed-resources/src/memory_stores.rs",
+    "crates/server/awaken-protocol-managed/src/resources/memory_stores.rs",
     "crates/server/awaken-coordinator/src/dream.rs",
 )
 

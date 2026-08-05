@@ -5,7 +5,7 @@ use std::sync::Arc;
 use awaken_resource_application::ResourcesApplication;
 use awaken_resource_contract::{ResourceDependencies, SkillStore};
 
-/// Build the same Resources application component consumed by process composition,
+/// Build the canonical Resources application component consumed by process composition,
 /// with an injectable Skill repository for durability-specific protocol cases.
 pub fn resources(skill_store: Arc<dyn SkillStore>) -> ResourcesApplication {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());

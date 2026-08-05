@@ -129,10 +129,7 @@ def managed_route_inventory_violations(
 
 
 def check_managed_route_inventory(repo_root: Path) -> list[str]:
-    compatible_roots = (
-        repo_root / "crates/server/awaken-protocol-managed/src",
-        repo_root / "crates/server/awaken-protocol-managed-resources/src",
-    )
+    compatible_roots = (repo_root / "crates/server/awaken-protocol-managed/src",)
     extension_root = repo_root / "crates/server/awaken-protocol-awaken/src"
     core: set[tuple[str, str]] = set()
     for root in compatible_roots:

@@ -3582,7 +3582,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
     let corrupt_store = Arc::new(CorruptFileStore);
     raw_host.file_store = corrupt_store.clone();
-    let application = Arc::new(awaken_file_application::FileApplication::new(
+    let application = Arc::new(awaken_resource_application::FileApplication::new(
         corrupt_store,
         raw_host.file_catalog.clone(),
         raw_host

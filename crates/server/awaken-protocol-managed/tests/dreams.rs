@@ -5,7 +5,7 @@ use awaken_dream_application::{
     DreamModelReadiness, DreamPolicyConfig, DreamPreparation, DreamRequest, DreamSessionSource,
     InMemoryDreamProcessStore,
 };
-use awaken_protocol_managed::{DREAMING_BETA, dreams_router, enforce_managed_beta};
+use awaken_protocol_managed::{DREAMING_BETA, MANAGED_BETA, dreams_router, enforce_managed_beta};
 use awaken_session_contract::DreamProcessStore;
 use awaken_session_contract::{DreamModelConfig, DreamUsage};
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -565,11 +565,7 @@ async fn dream_routes_require_managed_and_dreaming_betas() {
     let (state, _, _) = state(Outcome::Complete);
     let app = dreams_router(state).layer(axum::middleware::from_fn(enforce_managed_beta));
     for path in ["/v1/dreams?beta=true"] {
-        for header in [
-            None,
-            Some(awaken_managed_bridge::MANAGED_BETA),
-            Some(DREAMING_BETA),
-        ] {
+        for header in [None, Some(MANAGED_BETA), Some(DREAMING_BETA)] {
             let mut builder = Request::builder().method("GET").uri(path);
             if let Some(header) = header {
                 builder = builder.header("anthropic-beta", header);
@@ -589,10 +585,7 @@ async fn dream_routes_require_managed_and_dreaming_betas() {
                 Request::builder()
                     .method("GET")
                     .uri(path)
-                    .header(
-                        "anthropic-beta",
-                        format!("{},{}", awaken_managed_bridge::MANAGED_BETA, DREAMING_BETA),
-                    )
+                    .header("anthropic-beta", format!("{MANAGED_BETA},{DREAMING_BETA}"))
                     .body(Body::empty())
                     .unwrap(),
             )

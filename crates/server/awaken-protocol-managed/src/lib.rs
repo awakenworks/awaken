@@ -1,4 +1,4 @@
-//! `awaken-protocol-managed` — the Managed Agents runtime-protocol adapter.
+//! `awaken-protocol-managed` — the complete Managed Public API protocol adapter.
 //!
 //! This is the anti-corruption boundary between the public Anthropic Managed
 //! Agents wire and the neutral runtime. It owns the public DTOs, the projection
@@ -20,6 +20,8 @@
 //               bundling the in-memory store it drives.
 // `state` holds the `SessionRuntime` port and the session record store the routes
 // drive and the projection writes into; `session_repo` is its persistence port.
+mod common;
+mod control;
 /// Conversion/projection: committed `Message`s and engine events → public wire events.
 pub mod project;
 mod rate_limit;
@@ -30,6 +32,16 @@ mod routes;
 /// beta `managed-agents` types. Pure serde shapes; the logic that *assembles* them
 /// from neutral domain state lives in [`project`] and [`state`].
 pub mod types;
+
+pub use common::headers::MANAGED_BETA;
+pub use control::{
+    ModelDirectory, ModelDirectoryFuture, ModelEntry, default_models, models_router,
+    models_router_with_directory,
+};
+mod resources;
+pub use resources::{
+    ResourcesRouterInput, files_router, memory_stores_router, resources_router, skills_router,
+};
 
 /// Managed Environment wire projection over the Control-owned
 /// [`env_registry::EnvRegistry`] contract and its durable adapters.

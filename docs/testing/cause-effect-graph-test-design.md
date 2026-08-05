@@ -1131,7 +1131,7 @@ M1–M15 判定表为唯一测试设计来源。
 | `awaken-runtime` | panic/取消/预算/commit 竞态、resume ID 冲突或 Sandbox 工具回退 Brain → 卡死、错误终态、后续事实丢失或绕隔离 | catch、cancel select、有限预算、单 EndCause；从 committed full assistant steps 派生 resume 起点；target routing 缺 executor fail-closed；直接，M1/M15/M31 | 5/1/1/5 |
 | `awaken-store-inmem` | 参考实现与 durable backend 不同 → 错误规格 | 共享 14 项 conformance；直接/共享，M11 | 5/1/1/5 |
 | `awaken-tool-pattern` | glob/regex 边界错误 → 工具过授权 | compiled matcher、invalid pattern reject；直接，M4/M13 | 5/1/1/5 |
-| `awaken-file-application` | HTTP/Runtime 文件写形成双路径 → 权限/CAS 分叉 | 单 Resources application port；直接，M13 | 5/1/1/5 |
+| `awaken-resource-application::files` | HTTP/Runtime 文件写形成双路径 → 权限/CAS 分叉 | 单 Resources application port；直接，M13 | 5/1/1/5 |
 | `awaken-file-store` | path traversal/非原子 publish → 越界或损坏 | safe id、content address、temp+rename；直接，M13 | 5/1/1/5 |
 | `awaken-memory-store` | stale CAS/delete 覆盖新 head → 数据丢失 | base sha、conditional delete、idempotent update；直接，M13 | 5/1/1/5 |
 | `awaken-resource-application` | activate/release 半成功 → 假 Active 或泄漏 | durable phase、rollback/reconcile；直接，M14 | 5/1/2/10 |
@@ -1158,7 +1158,7 @@ M1–M15 判定表为唯一测试设计来源。
 | `awaken-executable-agent-catalog` | 注册替换/重放错序 → 旧 Agent 执行 | monotonic sequence、fingerprint/idempotency；直接，F1 E2E | 4/1/1/4 |
 | `awaken-executable-agent-contract` | publication command 漂移 → Control/Coordinator 不兼容 | versioned command/serde；直接，F1 | 4/1/1/4 |
 | `awaken-executable-environment-catalog` | delete/update 投影不一致 → 旧环境可选 | sequence/revision/tombstone；直接，F1/F6 | 4/1/1/4 |
-| `awaken-managed-bridge` | Managed model/id 转换另建选择逻辑 → 执行候选分叉 | sole ACL/selector bridge；直接，M12/M13 | 4/1/1/4 |
+| `awaken-protocol-managed::control::vault_acl` | Managed wire 转换另建选择逻辑 → credential 行为分叉 | sole wire ACL；直接，M12/M13 | 4/1/1/4 |
 | `awaken-mcp-server-core` | JSON-RPC/transport/HITL 错配 → 请求丢失或误授权 | shared core dispatcher、typed outcomes；直接，M12 | 4/1/1/4 |
 | `awaken-mcp-server-testkit` | adapter 未遵守 MCP core 契约 → wire 漂移 | shared adapter suite；直接，protocol MCP tests | 4/1/1/4 |
 | `awaken-protocol-a2a` | stop/error/stream 映射不完整 → 客户端误判 | stable mapping；不支持单元明确拒绝；直接，M12 | 4/2/2/16 |
@@ -1166,7 +1166,7 @@ M1–M15 判定表为唯一测试设计来源。
 | `awaken-protocol-ag-ui` | 结构化错误退化为字符串 → 客户端不可判别 | typed domain source、当前兼容映射测试；直接，M12 | 3/2/2/12 |
 | `awaken-protocol-ai-sdk` | abort/rate-limit/reconnect 映射错 → 错重试 | explicit stop/error/cursor mapping；直接，M12 | 4/1/1/4 |
 | `awaken-protocol-awaken` | 原生协议事件序列/游标错 → 重复或漏事件 | canonical event/cursor projection；直接，M12 | 4/1/1/4 |
-| `awaken-protocol-managed-resources` | Files/Resource DTO 写错 owner/generation → 越权或泄漏 | auth scope + application port + read-only Files GET；直接，M14 | 5/1/1/5 |
+| `awaken-protocol-managed::resources` | Files/Resource DTO 写错 owner/generation → 越权或泄漏 | auth scope + application port + read-only Files GET；直接，M14 | 5/1/1/5 |
 | `awaken-protocol-managed` | archived/write/recovery 语义错 → 复活或错误 2xx | archive fence、typed status、restart tests；直接，M12 | 5/1/1/5 |
 | `awaken-protocol-mcp` | adapter 绕 core permission/HITL → 未授权调用 | shared core/testkit、stable reject；直接，M4/M12 | 5/1/1/5 |
 | `awaken-run-executor-a2a` | 子进程断线/退出码误映射 → 错 settle | supervised process、typed exit/recovery；直接，M12 | 4/1/2/8 |
