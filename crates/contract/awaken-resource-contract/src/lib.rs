@@ -54,6 +54,37 @@ pub use memory_application::{
 // File store (ADR-0041): content-addressed, immutable blob port.
 // ---------------------------------------------------------------------------
 
+/// The canonical content-addressed identity for immutable Resource bytes.
+///
+/// File stores, Worker transport verification, and Sandbox mount verification
+/// must all call this function so a byte sequence has one identity on every
+/// node and through every adapter.
+#[must_use]
+pub fn content_id(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
+}
+
+#[cfg(test)]
+mod content_id_tests {
+    use super::content_id;
+
+    #[test]
+    fn canonical_content_id_is_stable_and_content_sensitive() {
+        // Cause/effect decision table:
+        // | Rule | same bytes | different bytes | Effect |
+        // | H1 | yes | no | identical cross-adapter identity |
+        // | H2 | no | yes | distinct identity |
+        // | H3 | empty input | no | fixed BLAKE3 compatibility vector |
+        let empty = content_id(b"");
+        assert_eq!(
+            empty, "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+            "H3"
+        );
+        assert_eq!(content_id(b"same"), content_id(b"same"), "H1");
+        assert_ne!(content_id(b"same"), content_id(b"different"), "H2");
+    }
+}
+
 /// A blob store failure.
 #[derive(Debug, thiserror::Error)]
 #[error("file store error: {0}")]

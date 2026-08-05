@@ -17,6 +17,7 @@
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
 use awaken_provisioning_contract as pc;
+use awaken_resource_contract::content_id as content_fingerprint;
 use std::sync::Arc;
 
 mod environment_owned;
@@ -579,13 +580,6 @@ fn stage_name(mount_path: &str) -> String {
             }
         })
         .collect()
-}
-
-/// A stable BLAKE3 content id over mount bytes — the id a `File`/`Resource` pin declares
-/// and this provider verifies, identical to what the content-addressed store assigns
-/// (parity with `awaken-sandbox-local::content_fingerprint`, ADR-0038 D6).
-fn content_fingerprint(bytes: &[u8]) -> String {
-    blake3::hash(bytes).to_hex().to_string()
 }
 
 /// The declared content hash of a mount source, if any (verified fail-closed).

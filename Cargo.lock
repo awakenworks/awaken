@@ -1598,6 +1598,7 @@ name = "awaken-resource-contract"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "blake3",
  "proptest",
  "serde",
  "serde_json",
@@ -1873,6 +1874,7 @@ dependencies = [
  "awaken-agent-channel",
  "awaken-connection",
  "awaken-provisioning-contract",
+ "awaken-resource-contract",
  "awaken-runtime-contract",
  "awaken-tool-relay",
  "base64",
@@ -1901,6 +1903,7 @@ dependencies = [
  "awaken-local-process",
  "awaken-memory-store",
  "awaken-provisioning-contract",
+ "awaken-resource-contract",
  "awaken-runtime-contract",
  "awaken-sandbox-memoryd",
  "blake3",

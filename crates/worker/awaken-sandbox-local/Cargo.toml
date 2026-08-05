@@ -12,6 +12,7 @@ authority = "sandbox-local"
 [dependencies]
 awaken-runtime-contract.workspace = true
 awaken-provisioning-contract.workspace = true
+awaken-resource-contract.workspace = true
 awaken-local-process.workspace = true
 awaken-agent-channel.workspace = true
 # BLAKE3 content id for the mount pin (was awaken_file_store::content_id) — kept a
