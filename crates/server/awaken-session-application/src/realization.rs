@@ -71,6 +71,20 @@ pub enum SessionRealizationError {
     DidNotConverge,
 }
 
+/// One Session recovery failure retained for a later reconciliation pass.
+#[derive(Debug)]
+pub struct SessionReconciliationFailure {
+    pub session_id: String,
+    pub message: String,
+}
+
+/// Protocol-neutral result of one durable Session recovery scan.
+#[derive(Debug, Default)]
+pub struct SessionReconciliation {
+    pub settled: Vec<PersistedSession>,
+    pub failures: Vec<SessionReconciliationFailure>,
+}
+
 struct LocalProjectionSynchronizer<'a> {
     runtime: &'a dyn SessionRuntime,
     environment_binding: Option<&'a str>,
@@ -231,6 +245,30 @@ impl SessionApplication {
             renewed += 1;
         }
         Ok(renewed)
+    }
+
+    /// Recover every local MCP projection requiring convergence. Terminal and
+    /// Worker-owned Sessions remain untouched by this Coordinator application.
+    pub async fn reconcile_mcp_attachments(&self) -> SessionReconciliation {
+        let mut report = SessionReconciliation::default();
+        for scoped in self.session_repository().reconcilable_sessions().await {
+            let session = scoped.session;
+            if session.is_terminal()
+                || self.requires_external_realization(&session)
+                || !session.mcp.needs_reconciliation()
+            {
+                continue;
+            }
+            let session_id = session.session_id.clone();
+            match self.realize_session(&session_id).await {
+                Ok(session) => report.settled.push(session),
+                Err(error) => report.failures.push(SessionReconciliationFailure {
+                    session_id,
+                    message: error.to_string(),
+                }),
+            }
+        }
+        report
     }
 
     fn realization_stage_requests(

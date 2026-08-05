@@ -178,25 +178,6 @@ impl ManagedState {
         Ok(())
     }
 
-    /// Rebuild the process-local projection through the same phase driver used
-    /// by creation and hot replacement. Recovery is a trigger, not a second
-    /// realization algorithm.
-    pub(super) async fn recover_mcp_projections(
-        &self,
-        session_id: &str,
-    ) -> Result<PersistedSession, StateError> {
-        let session = self
-            .application
-            .session_repository()
-            .get(session_id)
-            .await
-            .ok_or(StateError::NotFound)?;
-        if !session.mcp.needs_reconciliation() {
-            return Ok(session);
-        }
-        self.realize_session_locally(session_id).await
-    }
-
     /// Wire-cache adapter around the Session application's sole root CAS. Every
     /// specialized command crosses the application boundary first; only its
     /// committed result is projected into the disposable Managed cache.

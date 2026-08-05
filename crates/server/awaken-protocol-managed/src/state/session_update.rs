@@ -28,37 +28,24 @@ impl ManagedState {
     /// repository recovery index as Resource activation, then drives only the
     /// MCP aggregate state machine through the sole stage/publish/drain paths.
     pub async fn reconcile_mcp_attachments(&self) -> usize {
-        let pending = self
-            .application
-            .session_repository()
-            .reconcilable_sessions()
-            .await;
-        let mut settled = 0;
-        for record in pending {
-            // Root lifecycle is the outer fence. A terminal Session may retain
-            // nonterminal attachment facts solely as cleanup evidence; startup
-            // must not resolve credentials or recreate routes for them.
-            // Immutable WorkQueue/application facts, including topology-selected
-            // placement frozen at creation, fence this Coordinator-local driver.
-            if record.session.is_terminal()
-                || self
-                    .application
-                    .requires_external_realization(&record.session)
-                || !record.session.mcp.needs_reconciliation()
-            {
-                continue;
-            }
-            let session_id = record.session.session_id.clone();
-            match self.recover_mcp_projections(&session_id).await {
-                Ok(_) => settled += 1,
-                Err(error) => tracing::warn!(
-                    session = %session_id,
+        let report = self.application.reconcile_mcp_attachments().await;
+        for session in &report.settled {
+            if let Err(error) = self.refresh_cached_projection(session) {
+                tracing::warn!(
+                    session = %session.session_id,
                     error = ?error,
-                    "Session MCP reconciliation remains pending"
-                ),
+                    "Session MCP wire projection refresh remains pending"
+                );
             }
         }
-        settled
+        for failure in report.failures {
+            tracing::warn!(
+                session = %failure.session_id,
+                error = %failure.message,
+                "Session MCP reconciliation remains pending"
+            );
+        }
+        report.settled.len()
     }
 
     /// Apply mutable Managed Session fields. MCP arrays are canonical full
@@ -209,7 +196,7 @@ impl ManagedState {
                     attachment.state == awaken_session_contract::McpAttachmentState::Active
                 });
             if projection_requires_completion || active_requires_new_owner {
-                persisted = self.recover_mcp_projections(id).await?;
+                persisted = self.realize_session_locally(id).await?;
                 mcp_changed = true;
             }
 
