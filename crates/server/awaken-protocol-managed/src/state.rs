@@ -43,6 +43,7 @@ pub mod lifecycle_event;
 mod managed_state;
 mod mcp_attachment;
 mod realization;
+mod rehydration;
 mod resource;
 mod resources;
 mod session_create_idempotency;
@@ -78,100 +79,12 @@ mod tests {
     use awaken_agent_contract::agent::message::Message;
     use std::collections::BTreeMap;
 
-    struct UnavailableEnvironmentSource;
-
-    #[async_trait]
-    impl awaken_executable_environment_contract::ExecutableEnvironmentRegistrationSource
-        for UnavailableEnvironmentSource
-    {
-        async fn current_registration(
-            &self,
-            _environment_id: &str,
-        ) -> Result<
-            Option<awaken_executable_environment_contract::ExecutableEnvironmentRegistration>,
-            awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError,
-        > {
-            Err(
-                awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError::Unavailable(
-                    "catalog offline".into(),
-                ),
-            )
-        }
-
-        async fn registration_at_revision(
-            &self,
-            _environment_id: &str,
-            _revision: awaken_environment_contract::EnvironmentRevision,
-        ) -> Result<
-            Option<awaken_executable_environment_contract::ExecutableEnvironmentRegistration>,
-            awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError,
-        > {
-            Err(
-                awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError::Unavailable(
-                    "catalog offline".into(),
-                ),
-            )
-        }
-    }
-
-    #[tokio::test]
-    async fn deployment_launch_preserves_missing_and_unavailable_environment_outcomes() {
-        // Cause/effect graph: C1=registration present, C2=registration absent,
-        // C3=catalog read fails (mutually exclusive). Effects are E1=Some,
-        // E2=None, E3=typed error. Decision rules exercised here are R2 C2→E2
-        // and R3 C3→E3; R1 is covered by Environment execution conformance.
-        // This distinction lets Deployment make absence terminal while retaining
-        // a pending run for an indeterminate catalog outage.
-        let request = |environment_id: &str| crate::DeploymentLaunch {
-            deployment_id: "depl_a".into(),
-            deployment_run_id: "deprun_a".into(),
-            workspace_id: "workspace_a".into(),
-            agent: crate::types::agent::AgentReference::new("agent_a", 1),
-            environment_id: environment_id.into(),
-            metadata: BTreeMap::new(),
-            initial_events: Vec::new(),
-            resources: Vec::new(),
-            vault_ids: Vec::new(),
-        };
-        let missing = Arc::new(ManagedState::new(RehydrateFake::default()));
-        let missing_launcher = crate::LocalDeploymentSessionLauncher::new(missing);
-        assert!(
-            matches!(
-                crate::DeploymentSessionLauncher::launch(&missing_launcher, request("env_missing"))
-                    .await,
-                crate::DeploymentLaunchOutcome::Failed {
-                    error: crate::types::deployment::RunError::EnvironmentNotFoundError { .. }
-                }
-            ),
-            "R2"
-        );
-
-        let unavailable = Arc::new(
-            ManagedState::new(RehydrateFake::default()).with_environments(Arc::new(
-                crate::routes::environments::EnvironmentExecutionState::new(
-                    Arc::new(awaken_work_store::InMemoryWorkQueue::new()),
-                    Arc::new(UnavailableEnvironmentSource),
-                ),
-            )),
-        );
-        let unavailable_launcher = crate::LocalDeploymentSessionLauncher::new(unavailable);
-        assert!(
-            matches!(
-                crate::DeploymentSessionLauncher::launch(&unavailable_launcher, request("env_a"))
-                    .await,
-                crate::DeploymentLaunchOutcome::Unavailable { message }
-                    if message.contains("catalog offline")
-            ),
-            "R3"
-        );
-    }
-
-    fn ephemeral_session_repo() -> SqliteManagedSessionRepository {
+    pub(super) fn ephemeral_session_repo() -> SqliteManagedSessionRepository {
         SqliteManagedSessionRepository::open_in_memory()
             .expect("open ephemeral managed Session repository")
     }
 
-    async fn create_session_fixture(
+    pub(super) async fn create_session_fixture(
         repo: &dyn ManagedSessionRepository,
         owner: &str,
         mut session: PersistedSession,
@@ -197,7 +110,7 @@ mod tests {
             .expect("open ephemeral Resource Catalog")
     }
 
-    type RestoredRuntime = (
+    pub(super) type RestoredRuntime = (
         String,
         Option<String>,
         usize,
@@ -209,7 +122,7 @@ mod tests {
     /// rehydrate. Every operational method is unused by these tests.
     #[derive(Clone, Default)]
     pub(super) struct RehydrateFake {
-        restored: Arc<
+        pub(super) restored: Arc<
             std::sync::Mutex<
                 Vec<(
                     String,
@@ -218,13 +131,14 @@ mod tests {
                 )>,
             >,
         >,
-        restored_environments: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
-        restored_runtimes: Arc<std::sync::Mutex<Vec<RestoredRuntime>>>,
+        pub(super) restored_environments: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
+        pub(super) restored_runtimes: Arc<std::sync::Mutex<Vec<RestoredRuntime>>>,
         delegated: Arc<std::sync::Mutex<Vec<DelegatedRun>>>,
         order: Arc<std::sync::Mutex<Vec<&'static str>>>,
         committed: Arc<std::sync::Mutex<Option<Vec<Message>>>>,
         pending: Arc<std::sync::Mutex<Option<awaken_session_contract::Pending>>>,
         ended: Arc<std::sync::Mutex<Vec<String>>>,
+        pub(super) reject_environment_adoption: Arc<std::sync::atomic::AtomicBool>,
     }
 
     #[async_trait]
@@ -309,6 +223,12 @@ mod tests {
             thread: &str,
             binding: &str,
         ) -> Result<(), RunError> {
+            if self
+                .reject_environment_adoption
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(RunError::internal("sandbox is owned by another runtime"));
+            }
             self.order.lock().unwrap().push("environment");
             self.restored_environments.lock().unwrap().push((
                 agent.to_string(),
@@ -916,7 +836,7 @@ mod tests {
         );
     }
 
-    fn sample_persisted(id: &str) -> PersistedSession {
+    pub(super) fn sample_persisted(id: &str) -> PersistedSession {
         let mut metadata = BTreeMap::new();
         metadata.insert("team".to_string(), "research".to_string());
         let holder = awaken_credential_contract::PlaintextHolder::new(
@@ -1129,7 +1049,7 @@ mod tests {
         }
     }
 
-    fn sample_inputs() -> awaken_session_contract::ResolvedSessionResources {
+    pub(super) fn sample_inputs() -> awaken_session_contract::ResolvedSessionResources {
         awaken_session_contract::ResolvedSessionResources {
             inputs: vec![awaken_session_contract::ResolvedInput {
                 binding_id: awaken_resource_contract::BindingId::from("input-file"),

@@ -26,7 +26,10 @@ impl ManagedState {
         for record in pending {
             let owner_scope = record.workspace_id;
             let session = record.session;
-            if !session.needs_resource_reconciliation() {
+            // A contributed Session's pending/active generations are projected
+            // by its claim-owning Worker. This Coordinator scanner owns only
+            // local Session effects and must preserve those durable intents.
+            if session.has_application_contribution() || !session.needs_resource_reconciliation() {
                 continue;
             }
             match self

@@ -1,0 +1,234 @@
+//! Agent-to-client permission request handling for the ACP JSON-RPC driver.
+
+use super::*;
+
+/// Answer an agent→client request: a permission request is decided by `resolver`
+/// (the neutral `ToolPermissionPolicy`) and projected back onto the agent's own
+/// offered option — allow or reject, once-preferred over always; `cancelled` when
+/// no matching option is offered. Every other method — the `fs`/`terminal`
+/// capabilities we never advertised — gets `method_not_found`, because tool
+/// execution is the hand's job and is never proxied back over ACP.
+pub(super) async fn answer_request(
+    wire: &mut Wire<'_>,
+    id: serde_json::Value,
+    method: &str,
+    params: Option<serde_json::Value>,
+    resolver: &dyn PermissionResolver,
+) -> Result<(), AcpError> {
+    if method == CLIENT_METHOD_NAMES.session_request_permission {
+        let outcome = match params.and_then(|p| {
+            parse::<RequestPermissionRequest>(p.clone())
+                .ok()
+                .map(|r| (p, r))
+        }) {
+            Some((raw, req)) => {
+                let ask = permission_ask(&raw);
+                match resolver.resolve(&ask).await {
+                    PermissionVerdict::Await { correlation_id } => {
+                        wire.send(&OutResult {
+                            jsonrpc: JSONRPC,
+                            id,
+                            result: RequestPermissionResponse::new(
+                                RequestPermissionOutcome::Cancelled,
+                            ),
+                        })
+                        .await?;
+                        return Err(AcpError::PermissionAwait {
+                            correlation_id,
+                            ask,
+                        });
+                    }
+                    verdict => select_outcome(&req, verdict),
+                }
+            }
+            None => RequestPermissionOutcome::Cancelled,
+        };
+        return wire
+            .send(&OutResult {
+                jsonrpc: JSONRPC,
+                id,
+                result: RequestPermissionResponse::new(outcome),
+            })
+            .await;
+    }
+    wire.send(&OutError {
+        jsonrpc: JSONRPC,
+        id,
+        error: RpcErrorBody {
+            code: METHOD_NOT_FOUND,
+            message: "capability not supported by this client",
+        },
+    })
+    .await
+}
+
+/// Project a raw `session/request_permission` params object into a neutral
+/// [`PermissionAsk`] — the tool's title/kind, its `toolCallId`, and its `rawInput`
+/// — read loosely so the ask survives adapter-to-adapter shape differences.
+fn permission_ask(raw: &serde_json::Value) -> PermissionAsk {
+    let tool_call = raw.get("toolCall");
+    let tool = tool_call
+        .and_then(|tc| tc.get("title").or_else(|| tc.get("kind")))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let call_id = tool_call
+        .and_then(|tc| tc.get("toolCallId"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let arguments = tool_call
+        .and_then(|tc| tc.get("rawInput"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    PermissionAsk {
+        tool,
+        call_id,
+        arguments,
+    }
+}
+
+/// Project a [`PermissionVerdict`] onto the agent's own offered option: an
+/// `Allow` picks `allow_once` (else `allow_always`); a `Deny` picks `reject_once`
+/// (else `reject_always`). When the agent offered no option of the decided kind
+/// the turn is cancelled (a well-behaved agent always offers both).
+fn select_outcome(
+    req: &RequestPermissionRequest,
+    verdict: PermissionVerdict,
+) -> RequestPermissionOutcome {
+    let (once, always) = match verdict {
+        PermissionVerdict::Allow => (
+            PermissionOptionKind::AllowOnce,
+            PermissionOptionKind::AllowAlways,
+        ),
+        PermissionVerdict::Deny => (
+            PermissionOptionKind::RejectOnce,
+            PermissionOptionKind::RejectAlways,
+        ),
+        PermissionVerdict::Await { .. } => {
+            unreachable!("await is handled before immediate outcome selection")
+        }
+    };
+    let chosen = req
+        .options
+        .iter()
+        .find(|o| o.kind == once)
+        .or_else(|| req.options.iter().find(|o| o.kind == always));
+    match chosen {
+        Some(option) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+            option.option_id.clone(),
+        )),
+        None => RequestPermissionOutcome::Cancelled,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn perm_req(options: serde_json::Value) -> RequestPermissionRequest {
+        serde_json::from_value(serde_json::json!({
+            "sessionId": "sess-1",
+            "toolCall": { "toolCallId": "t1" },
+            "options": options,
+        }))
+        .expect("a valid permission request")
+    }
+
+    fn outcome_json(outcome: &RequestPermissionOutcome) -> String {
+        serde_json::to_value(outcome).unwrap().to_string()
+    }
+
+    #[test]
+    fn permission_outcome_selection_is_complete_and_fail_closed() {
+        // FMECA cause/effect graph: C1=neutral verdict {allow,deny}; C2=the ACP
+        // request offers the matching once option; C3=it offers only the matching
+        // always option; C4=it offers no matching option. Effects: E1=select the
+        // matching once id (least persistent grant); E2=fall back to the matching
+        // always id; E3=cancel rather than select an opposite-kind option.
+        //
+        // | Rule | C1    | C2 | C3 | C4 | Effect |
+        // |---|---|---|---|---|---|
+        // | PS1 | allow | T | * | F | E1 `allow-once` |
+        // | PS2 | allow | F | T | F | E2 `allow-always` |
+        // | PS3 | allow | F | F | T | E3 cancelled |
+        // | PS4 | deny  | T | * | F | E1 `reject-once` |
+        // | PS5 | deny  | F | T | F | E2 `reject-always` |
+        // | PS6 | deny  | F | F | T | E3 cancelled |
+        // `Await` is constrained out of this selector: `answer_request` owns that
+        // branch and its wire-cancel + durable-ticket behavior is covered by
+        // `an_awaiting_policy_cancels_the_wire_request_and_surfaces_the_neutral_ask`
+        // and the executor-replacement FMECA test.
+        let all_options = serde_json::json!([
+            {"optionId":"allow-once","name":"Allow once","kind":"allow_once"},
+            {"optionId":"allow-always","name":"Allow always","kind":"allow_always"},
+            {"optionId":"reject-once","name":"Reject once","kind":"reject_once"},
+            {"optionId":"reject-always","name":"Reject always","kind":"reject_always"},
+        ]);
+        let cases = [
+            (
+                "PS1",
+                PermissionVerdict::Allow,
+                all_options.clone(),
+                Some("allow-once"),
+            ),
+            (
+                "PS2",
+                PermissionVerdict::Allow,
+                serde_json::json!([
+                    {"optionId":"allow-always","name":"Allow always","kind":"allow_always"},
+                    {"optionId":"reject-once","name":"Reject once","kind":"reject_once"},
+                ]),
+                Some("allow-always"),
+            ),
+            (
+                "PS3",
+                PermissionVerdict::Allow,
+                serde_json::json!([
+                    {"optionId":"reject-once","name":"Reject once","kind":"reject_once"},
+                ]),
+                None,
+            ),
+            (
+                "PS4",
+                PermissionVerdict::Deny,
+                all_options,
+                Some("reject-once"),
+            ),
+            (
+                "PS5",
+                PermissionVerdict::Deny,
+                serde_json::json!([
+                    {"optionId":"allow-once","name":"Allow once","kind":"allow_once"},
+                    {"optionId":"reject-always","name":"Reject always","kind":"reject_always"},
+                ]),
+                Some("reject-always"),
+            ),
+            (
+                "PS6",
+                PermissionVerdict::Deny,
+                serde_json::json!([
+                    {"optionId":"allow-once","name":"Allow once","kind":"allow_once"},
+                ]),
+                None,
+            ),
+        ];
+
+        for (rule, verdict, options, expected_id) in cases {
+            let outcome = select_outcome(&perm_req(options), verdict);
+            match expected_id {
+                Some(expected_id) => {
+                    assert!(
+                        matches!(outcome, RequestPermissionOutcome::Selected(_)),
+                        "{rule}: {outcome:?}"
+                    );
+                    assert!(outcome_json(&outcome).contains(expected_id), "{rule}");
+                }
+                None => assert!(
+                    matches!(outcome, RequestPermissionOutcome::Cancelled),
+                    "{rule}: {outcome:?}"
+                ),
+            }
+        }
+    }
+}

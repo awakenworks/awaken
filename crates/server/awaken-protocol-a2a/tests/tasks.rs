@@ -177,6 +177,62 @@ async fn message_send_can_explicitly_deny_an_awaiting_builtin_tool() {
     );
 }
 
+#[tokio::test]
+async fn message_stream_can_explicitly_deny_an_awaiting_builtin_tool() {
+    // A2A in-band denial cause/effect table: C1 context awaits a built-in tool;
+    // C2 transport is send or stream; C3 exactly one valid structured approval
+    // carries allow=false. Effects: E1 the shared driver resumes the bound call
+    // with Confirm{allow:false}; E2 no fresh Run starts; E3 send returns a
+    // completed Task and stream emits one final completed status. R1=C1+send+C3
+    // is covered above; this is R2=C1+stream+C3 -> E1+E2+E3. Missing, duplicate,
+    // malformed, or text-only decisions are the fail-closed request-table rules.
+    let denied = Arc::new(AtomicBool::new(false));
+    let app = router(Arc::new(AwaitingRuntime {
+        denied: denied.clone(),
+        started: Arc::new(AtomicBool::new(true)),
+    }));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 32,
+                        "method": "message/stream",
+                        "params": { "message": { "kind": "message", "messageId": "m-stream-deny", "contextId": "ctx", "role": "user", "parts": [{ "kind": "data", "data": { "type": "tool-approval", "allow": false, "note": "unsafe" } }] } }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let frames = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    let terminal = frames
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+        .next_back()
+        .expect("R2 stream has a terminal frame");
+    assert_eq!(
+        terminal["result"]["status"]["state"], "completed",
+        "R2/E3: {frames}"
+    );
+    assert!(denied.load(Ordering::SeqCst), "R2/E1");
+}
+
 /// A runtime awaiting on a *client-executed* tool `c2`, recording the content of the
 /// `ClientResult` it is resumed with (the router's non-approval resume path).
 struct ClientToolRuntime {

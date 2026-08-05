@@ -48,6 +48,8 @@ psql_scalar() { kubectl -n "$NS" exec deploy/postgres -- env PGPASSWORD=test psq
 
 export CARGO_CACHE_AUTOCLEAN=0
 
+k3d_admit_or_exit "NATS wake E2E"
+
 log "1/5 build the server binary on the host (rustc 1.96, --features nats)"
 BIN=$(resolve_cargo_executable awaken-scenario-host awaken-scenario-host --features nats)
 [ -n "$BIN" ] || { echo 'could not resolve binary'; exit 1; }

@@ -10,6 +10,8 @@ use awaken_session_contract::{
     SessionRealizationLease, StageMcpAttachment,
 };
 
+pub(super) const LOCAL_REALIZATION_OWNER: &str = "managed-runtime";
+
 fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -685,7 +687,7 @@ impl ManagedState {
             .begin_session_realization(BeginSessionRealization {
                 session_id: session_id.to_string(),
                 target: awaken_session_contract::SessionRealizationTarget {
-                    owner: "managed-runtime".into(),
+                    owner: LOCAL_REALIZATION_OWNER.into(),
                     runtime_incarnation: self.application.runtime_incarnation().to_string(),
                     lease_expires_at_unix_ms,
                     renew_existing_lease: false,
@@ -765,7 +767,7 @@ impl ManagedState {
                 continue;
             };
             if scoped.session.status == "deleted"
-                || lease.owner != "managed-runtime"
+                || lease.owner != LOCAL_REALIZATION_OWNER
                 || lease.runtime_incarnation != self.application.runtime_incarnation()
                 || lease.expires_at_unix_ms > renew_before
                 || !scoped

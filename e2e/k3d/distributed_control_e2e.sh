@@ -36,10 +36,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! k3d_require_tools; then
-  echo "k3d/kubectl/docker unavailable; skipping ADR-0071 distributed E2E"
-  exit 0
-fi
+k3d_admit_or_exit "ADR-0071 distributed E2E"
 
 start_public_endpoint() {
   if [ -n "$API_PF" ]; then

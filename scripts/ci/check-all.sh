@@ -44,6 +44,8 @@ run "formal" scripts/ci/check_formal.sh --require-tools
 # invoking their scripts without the required flags.
 run "postgres" scripts/ci/pg_tests.sh --require-docker
 run "kubernetes-container" scripts/e2e/k8s_container_e2e.sh
+run "distributed-k3d" env AWAKEN_K3D_REQUIRED=1 e2e/k3d/distributed_control_e2e.sh
+run "nats-wake-k3d" env AWAKEN_K3D_REQUIRED=1 e2e/k3d/nats_wake_e2e.sh 12
 run "frontend" scripts/ci/check-frontend.sh --full
 run "deterministic-e2e" npm --prefix e2e run test:deterministic
 run "sandbox-capabilities" scripts/e2e/sandbox_capability_suite.sh --require-substrates

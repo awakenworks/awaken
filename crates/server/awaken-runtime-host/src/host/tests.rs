@@ -3615,6 +3615,7 @@ async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic()
 
 #[tokio::test]
 async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_revision() {
+    use awaken_ext_mcp::McpToolTransport;
     use awaken_runtime_contract::{
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
         CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
@@ -3643,7 +3644,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let managed = crate::ManagedHost::new(host.clone())
         .with_credentials(credentials.clone(), secrets.clone());
     let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
-    let (mcp_url, _seen) = crate::test_mcp::start(Some("Bearer published-mcp-token")).await;
+    let (mcp_url, seen) = crate::test_mcp::start(Some("Bearer published-mcp-token")).await;
     let generation = |session: &str| awaken_session_contract::McpGenerationRef {
         session_id: session.into(),
         attachment_id: awaken_session_contract::McpAttachmentId("mcp-docs".into()),
@@ -3702,6 +3703,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // | H16 | exact binding | same lease/new key | renew | - | reject/no mutation |
     // | H17 | non-bearer usage | exact holder/revision | stage | - | reject before materialization |
     // | H18 | authenticated ACP/Forbidden exposure | exact | stage | - | reject before relay/no lookup |
+    // | H20 | authenticated ACP/complete provider evidence | exact | stage+publish+call | generation route injects; no inline secret |
     let exact_request = request("mcp-exact", "workspace-a", 1);
     let receipt = managed
         .stage_mcp_attachment(exact_request.clone())
@@ -3876,7 +3878,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         launch,
     ));
     let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-    let acp_host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_acp(executor));
+    let acp_host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_acp(executor.clone()));
     acp_host.register_thread_backend_projection("mcp-acp-forbidden", "acp:test");
     acp_host.register_thread_backend_projection("mcp-acp-protected", "acp:test");
     acp_host.register_thread_backend_projection("mcp-acp-anonymous", "acp:test");
@@ -3946,6 +3948,139 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             .and_then(|projection| projection.server)
             .is_some_and(|server| server.bearer().is_none()),
         "H13"
+    );
+
+    // H20 is the Host-side positive half of EF11. The provider's own
+    // substitution/no-bypass implementation remains an independently testable
+    // production-adapter responsibility; this fixture supplies its exact
+    // capability evidence and proves the Host consumes that single public seam
+    // without a second MCP credential/provider contract.
+    struct SecureExternalProvider;
+
+    #[async_trait::async_trait]
+    impl awaken_sandbox_container::ContainerEnvironmentProvider for SecureExternalProvider {
+        fn sandbox_capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
+            awaken_provisioning_contract::SandboxCapabilities {
+                isolation: awaken_provisioning_contract::IsolationClass::Container,
+                tool_transparent: true,
+                path_fidelity: true,
+                enforced_readonly: true,
+                network_isolation: true,
+                enforced_network_allowlist: true,
+                secret_egress_substitution: true,
+                resource_limits: true,
+                custom_rootfs: true,
+                package_provisioning: false,
+            }
+        }
+
+        async fn create_environment(
+            &self,
+            _spec: &awaken_provisioning_contract::SandboxSpec,
+        ) -> Result<
+            Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            Err(awaken_provisioning_contract::SandboxError::new(
+                "H20 exercises pre-environment MCP staging only",
+            ))
+        }
+
+        async fn adopt_environment(
+            &self,
+            _handle: &awaken_provisioning_contract::SandboxHandle,
+        ) -> Result<
+            Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            Err(awaken_provisioning_contract::SandboxError::new(
+                "H20 exercises pre-environment MCP staging only",
+            ))
+        }
+    }
+
+    struct UnusedHandFactory;
+
+    impl crate::HandExecutorFactory for UnusedHandFactory {
+        fn bind(
+            &self,
+            _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
+            _operation_scope: &str,
+        ) -> Arc<dyn awaken_runtime_contract::tool::ToolExecutor> {
+            panic!("H20 does not launch an Agent process")
+        }
+    }
+
+    let secure_acp_host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .with_acp(executor)
+            .with_session_container_provider(
+                Arc::new(SecureExternalProvider),
+                Arc::new(UnusedHandFactory),
+            ),
+    );
+    secure_acp_host.register_thread_backend_projection("mcp-acp-secure", "acp:test");
+    let secure_managed =
+        crate::ManagedHost::new(secure_acp_host.clone()).with_credentials(credentials, secrets);
+    let secure_generation = generation("mcp-acp-secure");
+    let secure_receipt = secure_managed
+        .stage_mcp_attachment(request("mcp-acp-secure", "workspace-a", 1))
+        .await
+        .expect("H20 complete provider evidence admits exact Worker relay staging");
+    assert_eq!(
+        secure_receipt.actual_realization_kind,
+        Some(awaken_runtime_contract::CredentialRealizationKind::WorkerRelay),
+        "H20"
+    );
+    secure_managed
+        .publish_mcp_generation(secure_generation.clone())
+        .await
+        .expect("H20 publish exact staged route");
+    let projection = secure_acp_host
+        .mcp_projection(&secure_generation)
+        .expect("H20 exact projection");
+    let projected = crate::mcp::project_mcp_transport(
+        projection.server.as_ref().expect("H20 private material"),
+        &secure_generation,
+        secure_acp_host.mcp_relay.get(),
+    )
+    .expect("H20 project opaque route");
+    let route = match projected.transport {
+        awaken_run_executor_acp::McpTransport::Http { url } => url,
+        other => panic!("H20 expected HTTP relay route, got {other:?}"),
+    };
+    assert!(
+        !route.contains("published-mcp-token"),
+        "H20 secret-free route"
+    );
+    assert!(
+        !route.contains(&mcp_url),
+        "H20 original target is not exposed"
+    );
+    let seen_before = seen.lock().unwrap().len();
+    let transport = awaken_ext_mcp::HttpTransportBuilder::new(route)
+        .credential(awaken_ext_mcp::Credential::None)
+        .connect()
+        .await
+        .expect("H20 initialize through Worker relay");
+    let tools = transport.list_tools().await.expect("H20 tools/list");
+    assert_eq!(tools.len(), 1, "H20");
+    let result = transport
+        .call_tool("echo", serde_json::json!({"value": "worker-held"}))
+        .await
+        .expect("H20 tools/call");
+    assert_eq!(
+        serde_json::to_value(result).unwrap()["content"][0]["text"],
+        "worker-held",
+        "H20"
+    );
+    let seen = seen.lock().unwrap();
+    assert!(seen.len() > seen_before, "H20 route reached upstream");
+    assert!(
+        seen[seen_before..]
+            .iter()
+            .all(|(_, bearer)| bearer == "Bearer published-mcp-token"),
+        "H20 every relay request uses only Worker-held material: {seen:?}"
     );
 }
 

@@ -1083,6 +1083,13 @@ impl ManagedState {
         session = self
             .ensure_repository_credentials_pinned(owner_scope, session)
             .await?;
+        // Exact credential pins are Control-owned durable facts, but physical
+        // input projection for an application-contributed Session belongs to the
+        // claim-owning Worker. The immutable receipt remains the fence after its
+        // transient realization lease is cleared.
+        if session.has_application_contribution() {
+            return Ok(session);
+        }
         let session_id = session.session_id.clone();
         // Running/rescheduling are live aggregate states, not terminal Resource
         // cleanup. A broad repository recovery scan can legitimately include them
@@ -1422,143 +1429,6 @@ impl ManagedState {
             vault_ids: Vec::new(),
             deployment_id,
         })
-    }
-
-    /// Recover a session whose in-memory record was lost from durable truth (a
-    /// process restart, ADR-0039). If the store holds a committed transcript for
-    /// `id`, rebuild the record — the projected history plus a reconstructed
-    /// session object — so a resume can continue the awaiting run. A thread with no
-    /// committed truth stays `NotFound` (fail closed): the store is authoritative.
-    pub(crate) async fn ensure_session(&self, id: &str) -> Result<(), StateError> {
-        if self.sessions.lock().unwrap().contains_key(id) {
-            return Ok(());
-        }
-        // Install the persisted, already-resolved resource snapshot BEFORE opening
-        // runtime history. Opening a thread constructs its context; doing that first
-        // would transiently resolve today's Agent/Skill configuration and could both
-        // drift from the Session pin and mutate its sandbox before the pin is known.
-        let persisted = self.application.session_repository().get(id).await;
-        let owner_scope = self
-            .application
-            .session_repository()
-            .owner(id)
-            .await
-            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
-        let mut persisted = match persisted {
-            Some(session) => Some(
-                self.reconcile_persisted_resources(&owner_scope, session)
-                    .await?,
-            ),
-            None => None,
-        };
-        // Terminated Sessions remain readable tombstones; deleted and failed
-        // activation rows are hidden from the public read model.
-        if persisted.as_ref().is_some_and(|session| {
-            matches!(session.status.as_str(), "deleted" | "activation_failed")
-        }) {
-            return Err(StateError::NotFound);
-        }
-        if let Some(session) = persisted.clone() {
-            let baseline = session.frozen_baseline().cloned().ok_or_else(|| {
-                StateError::Run(RunError::internal(
-                    "cannot realize a Session whose baseline is still preparing",
-                ))
-            })?;
-            // Reconciliation already crosses the canonical projection synchronizer,
-            // which prepares the frozen facts and restores the durable Environment
-            // before staging MCP. Calling either operation here as well would stage
-            // resources or adopt the sandbox twice after cache loss. A settled
-            // Session has no reconciliation phase, so it performs that same order
-            // directly through the Runtime port.
-            let recovered = if session.mcp.needs_reconciliation() {
-                self.recover_mcp_projections(id).await?
-            } else {
-                self.application
-                    .runtime()
-                    .prepare_session(
-                        id,
-                        SessionInit {
-                            workspace_id: owner_scope.clone(),
-                            agent_id: baseline.agent_id.clone(),
-                            delegate_ids: baseline.delegate_ids.clone(),
-                            toolsets: Some(session.tools.toolsets.clone()),
-                            resource_revision: session.resources.revision,
-                            resources: session.resources.active.clone(),
-                            model: Some(baseline.execution_model_ref.clone()),
-                            runtime: baseline.runtime.clone(),
-                            environment: baseline.environment.clone(),
-                        },
-                    )
-                    .await
-                    .map_err(StateError::Run)?;
-                if let Some(binding) = session.environment.binding() {
-                    self.application
-                        .runtime()
-                        .restore_session_environment(&baseline.agent_id, id, binding)
-                        .await
-                        .map_err(StateError::Run)?;
-                }
-                session
-            };
-            persisted = Some(recovered.clone());
-        }
-        let pending = self
-            .application
-            .runtime()
-            .pending_tool(id)
-            .await
-            .map_err(StateError::Run)?;
-        let messages = self.application.runtime().committed_messages(id).await;
-        if messages.is_empty() && persisted.is_none() {
-            return Err(StateError::NotFound);
-        }
-        let projected_message_ids = messages
-            .iter()
-            .map(|message| message.id.0.clone())
-            .collect();
-        let pending = pending.as_ref();
-        let events: Vec<Event> = project_messages(&messages, pending)
-            .into_iter()
-            .map(|event| Event {
-                id: event.id.unwrap_or_else(|| self.next_event_id()),
-                kind: event.kind,
-                processed_at: Some(PROCESSED_AT.to_string()),
-            })
-            .collect();
-        let agent_id = persisted
-            .as_ref()
-            .and_then(PersistedSession::agent_id)
-            .map_or_else(|| "assistant".to_string(), str::to_string);
-        let resource_state = persisted
-            .as_ref()
-            .map(|session| session.resources.clone())
-            .unwrap_or_default();
-        let session = self.rehydrated_session(id, persisted)?;
-        let delegated_runs = self
-            .application
-            .runtime()
-            .delegated_runs(id)
-            .await
-            .map_err(StateError::Run)?;
-        let mut record = SessionRecord::new(
-            agent_id,
-            session,
-            resource_state,
-            events,
-            projected_message_ids,
-        );
-        self.append_delegation_projections(&mut record, &delegated_runs);
-        self.sessions
-            .lock()
-            .unwrap()
-            .entry(id.to_string())
-            .or_insert(record);
-        self.owners
-            .lock()
-            .unwrap()
-            .entry(id.to_string())
-            .or_insert(owner_scope);
-        Ok(())
     }
 
     /// Rebuild only the disposable projection needed by a terminal command.
