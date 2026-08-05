@@ -97,11 +97,14 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
     rt.remove(&id).await.expect("delete the Pod");
 }
 
-/// C6: a `pids`-limited spec must FAIL CLOSED on the k8s tier (k8s has no per-Pod pids
-/// field), rather than be placed with the cap silently dropped. Verified against the
-/// real apiserver: create returns an error and creates no Pod.
 #[tokio::test]
 async fn create_fails_closed_on_a_pids_limit_k8s_cannot_enforce() {
+    /* Resource-enforcement FMECA decision rule KP1. Causes: C1 the caller
+     * requires a finite pids cap; C2 Kubernetes exposes no per-Pod pids field.
+     * C1+C2 => E1 reject before create, E2 name the unsupported limit, E3 leave
+     * no Pod. The complementary enforceable-resource projection is owned by the
+     * pure K8s plan tests; this live rule proves the apiserver sees no residue.
+     */
     let Some(rt) = live_runtime().await else {
         return;
     };

@@ -10,49 +10,45 @@
 # the cluster on exit unless AWAKEN_K8S_KEEP=1.
 set -euo pipefail
 
+cd "$(dirname "$0")/../.."
+. e2e/k3d/harness.sh
+
 CLUSTER="${AWAKEN_K8S_CLUSTER:-awaken-k8s-e2e}"
 FIXTURE_IMAGE="${AWAKEN_K8S_FIXTURE_IMAGE:-awaken-bb:1}"
 export AWAKEN_K8S_FIXTURE_IMAGE="$FIXTURE_IMAGE"
 SESSION_IMAGE="${AWAKEN_K8S_SESSION_IMAGE:-awaken-sandbox:local}"
 export AWAKEN_K8S_SESSION_IMAGE="$SESSION_IMAGE"
-NODE="k3d-${CLUSTER}-server-0"
 KUBECONFIG_FILE="$(mktemp)"
+FIXTURE_CONTAINER="awaken-bb-tmp-$$"
 
 log() { printf '\n=== %s ===\n' "$*"; }
 
 cleanup() {
+  docker rm -f "$FIXTURE_CONTAINER" >/dev/null 2>&1 || true
   rm -f "$KUBECONFIG_FILE"
   if [ "${AWAKEN_K8S_KEEP:-0}" != "1" ]; then
     log "deleting cluster ${CLUSTER}"
-    k3d cluster delete "${CLUSTER}" >/dev/null 2>&1 || true
+    k3d_delete_cluster "$CLUSTER"
   fi
 }
 trap cleanup EXIT
 
-log "creating k3d cluster ${CLUSTER}"
-cluster_row="$(k3d cluster list --no-headers 2>/dev/null | awk -v name="$CLUSTER" '$1 == name { print; exit }')"
-if [ -z "$cluster_row" ]; then
-  # Keep the disposable test node usable on large developer disks: k3s defaults to
-  # a percentage threshold that can taint the node while hundreds of GiB remain.
-  # Other repository k3d gates use the same 2% floor.
-  EVICT="eviction-hard=imagefs.available<2%,nodefs.available<2%"
-  k3d cluster create "${CLUSTER}" --wait --timeout 150s \
-    --runtime-ulimit "nofile=65536:65536" \
-    --k3s-arg "--kubelet-arg=$EVICT@server:*"
-else
-  read -r _ servers _ load_balancer <<<"$cluster_row"
-  ready_servers="${servers%/*}"
-  desired_servers="${servers#*/}"
-  # Reuse is safe only for a complete cluster. An interrupted earlier setup can
-  # leave a row behind with no load balancer; waiting for Nodes in that topology
-  # only converts the original failure into a two-minute timeout.
-  if [ "$ready_servers" != "$desired_servers" ] \
-    || [ "$desired_servers" = "0" ] \
-    || [ "$load_balancer" != "true" ]; then
-    echo "existing k3d cluster is incomplete: $cluster_row" >&2
-    exit 1
-  fi
+if ! k3d_require_tools; then
+  echo "k8s container e2e requires k3d, kubectl, and a reachable Docker daemon" >&2
+  exit 1
 fi
+
+# Prepare the exact offline fixtures before starting the disposable cluster. The
+# shared harness remains the sole owner of cluster policy and image import.
+log "building offline fixture images"
+docker pull --platform "$K3D_PLATFORM" busybox:1.36 >/dev/null
+docker run --name "$FIXTURE_CONTAINER" --platform "$K3D_PLATFORM" busybox:1.36 true >/dev/null
+docker commit "$FIXTURE_CONTAINER" "$FIXTURE_IMAGE" >/dev/null
+docker rm -f "$FIXTURE_CONTAINER" >/dev/null
+"$(dirname "$0")/../../deploy/images/sandbox/build.sh" --ensure-hand "$SESSION_IMAGE" ""
+
+log "creating k3d cluster ${CLUSTER}"
+k3d_create_cluster "$CLUSTER" 0 2
 k3d kubeconfig merge "${CLUSTER}" --output "$KUBECONFIG_FILE" --overwrite >/dev/null
 export KUBECONFIG="$KUBECONFIG_FILE"
 if [ "$(uname -s)" = "Darwin" ]; then
@@ -78,27 +74,10 @@ done
 [ "$node_registered" = 1 ] || { echo "k3d node never registered" >&2; exit 1; }
 kubectl --request-timeout=10s wait --for=condition=Ready nodes --all --timeout=120s
 
-# Load the pause image + a flattened busybox as the fixture. The node has no registry
-# egress here, and a multi-arch `docker save` can miss a blob for containerd — flatten
-# via `docker commit` so the archive imports cleanly.
-log "loading images into the node's containerd"
-docker pull rancher/mirrored-pause:3.6 >/dev/null 2>&1 || true
-docker save rancher/mirrored-pause:3.6 | docker exec -i "${NODE}" ctr -n k8s.io images import - >/dev/null
-
-docker pull --platform linux/amd64 busybox:1.36 >/dev/null
-docker rm -f awaken-bb-tmp >/dev/null 2>&1 || true
-docker run --name awaken-bb-tmp --platform linux/amd64 busybox:1.36 true >/dev/null 2>&1 || true
-docker commit awaken-bb-tmp "${FIXTURE_IMAGE}" >/dev/null
-docker rm -f awaken-bb-tmp >/dev/null 2>&1 || true
-docker save "${FIXTURE_IMAGE}" | docker exec -i "${NODE}" ctr -n k8s.io images import - >/dev/null
-
-# The Hand-expiry rule executes the production binary inside the Session Pod;
-# busybox cannot prove that path. Build the canonical sandbox image with an
-# explicitly empty ACP package set (the test needs only `hand --stdio`) and load
-# the exact selected tag into the same isolated node.
-"$(dirname "$0")/../../deploy/images/sandbox/build.sh" --ensure-hand "$SESSION_IMAGE" ""
-docker save "$SESSION_IMAGE" | docker exec -i "${NODE}" ctr -n k8s.io images import - >/dev/null
-docker exec "${NODE}" crictl images 2>/dev/null | grep -E "pause|awaken-bb|awaken-sandbox" || true
+# The Hand-expiry rule needs the production binary; the canonical importer also
+# loads the cluster's exact Pause/CoreDNS prerequisites into every node.
+log "loading images through the shared k3d harness"
+k3d_import_images "$CLUSTER" "$FIXTURE_IMAGE" "$SESSION_IMAGE"
 
 log "running the k8s e2e test"
 AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s --test k8s_it -- --nocapture
