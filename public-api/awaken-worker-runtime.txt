@@ -49,6 +49,16 @@ pub fn awaken_worker_runtime::HttpDispatchQueue::retract<'life0, 'life1, 'async_
 impl awaken_run_ingress_contract::dispatch::Outbox for awaken_worker_runtime::HttpDispatchQueue
 pub fn awaken_worker_runtime::HttpDispatchQueue::relay<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_worker_runtime::HttpDispatchQueue::stage<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_worker_runtime::HttpFileContentSource
+impl awaken_worker_runtime::HttpFileContentSource
+pub fn awaken_worker_runtime::HttpFileContentSource::new(awaken_worker_transport_security::WorkerUpstream) -> Self
+impl awaken_run_ingress_contract::file_content::FileContentSource for awaken_worker_runtime::HttpFileContentSource
+pub fn awaken_worker_runtime::HttpFileContentSource::read<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<&'life3 awaken_run_ingress_contract::dispatch::RunClaim>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<(alloc::string::String, alloc::vec::Vec<u8>)>, awaken_run_ingress_contract::file_content::FileContentSourceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub struct awaken_worker_runtime::HttpRepositoryBindingVerifier
+impl awaken_worker_runtime::HttpRepositoryBindingVerifier
+pub fn awaken_worker_runtime::HttpRepositoryBindingVerifier::new(awaken_worker_transport_security::WorkerUpstream) -> Self
+impl awaken_run_ingress_contract::repository_binding::RepositoryBindingVerifier for awaken_worker_runtime::HttpRepositoryBindingVerifier
+pub fn awaken_worker_runtime::HttpRepositoryBindingVerifier::verify<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_resource_contract::catalog::ConfigVersion, core::option::Option<&'life3 awaken_run_ingress_contract::dispatch::RunClaim>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress_contract::repository_binding::RepositoryBindingVerifierError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub struct awaken_worker_runtime::RemoteClaimedRunCommit
 impl awaken_worker_runtime::RemoteClaimedRunCommit
 pub fn awaken_worker_runtime::RemoteClaimedRunCommit::new(impl core::convert::Into<alloc::string::String>, awaken_worker_contract::WorkerIdentity) -> Self

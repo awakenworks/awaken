@@ -11,6 +11,7 @@ mod claimed_commit;
 mod claimed_session;
 mod claimed_stream;
 pub mod dispatch;
+mod file_content;
 pub mod operational;
 mod repository_binding;
 pub mod run_dispatch;
@@ -41,6 +42,10 @@ pub use dispatch::{
     Dispatch, DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
     DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome,
     SubmitOptions, compile_attempt_credential_bindings, worker_credential_realization_capabilities,
+};
+pub use file_content::{
+    FILE_CONTENT_DIGEST_HEADER, FILE_CONTENT_PATH, FileContentRequest, FileContentSource,
+    FileContentSourceError,
 };
 pub use operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,

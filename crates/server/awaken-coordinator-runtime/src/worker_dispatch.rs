@@ -312,8 +312,8 @@ pub fn registered_worker_transport_router(
         application_session_control,
         authenticator.clone(),
     );
-    let file_content = awaken_runtime_host::worker_file_content_router(Arc::new(
-        awaken_runtime_host::WorkerFileContentService::new(
+    let file_content = crate::worker_file_content_router(Arc::new(
+        crate::WorkerFileContentService::new(
             host.worker_file_content_source(),
             dispatch.clone() as Arc<dyn DispatchQueue>,
             authenticator.clone(),

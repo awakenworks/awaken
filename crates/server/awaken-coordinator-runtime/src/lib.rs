@@ -6,11 +6,13 @@
 
 mod claimed_commit_http;
 mod durable_ops;
+mod file_content_http;
 mod repository_binding_http;
 mod worker_dispatch;
 
 pub use claimed_commit_http::claimed_commit_router;
 pub use durable_ops::durable_ops_router;
+pub use file_content_http::{WorkerFileContentService, worker_file_content_router};
 pub use repository_binding_http::{
     WorkerRepositoryBindingService, worker_repository_binding_router,
 };
