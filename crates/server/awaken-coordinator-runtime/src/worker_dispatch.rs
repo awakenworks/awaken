@@ -329,8 +329,8 @@ pub fn registered_worker_transport_router(
             directory.clone(),
         ),
     ));
-    let repositories = awaken_runtime_host::worker_repository_binding_router(Arc::new(
-        awaken_runtime_host::WorkerRepositoryBindingService::new(
+    let repositories = crate::worker_repository_binding_router(Arc::new(
+        crate::WorkerRepositoryBindingService::new(
             resource_validator,
             dispatch.clone() as Arc<dyn DispatchQueue>,
             authenticator.clone(),

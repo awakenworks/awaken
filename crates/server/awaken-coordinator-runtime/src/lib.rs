@@ -6,10 +6,14 @@
 
 mod claimed_commit_http;
 mod durable_ops;
+mod repository_binding_http;
 mod worker_dispatch;
 
 pub use claimed_commit_http::claimed_commit_router;
 pub use durable_ops::durable_ops_router;
+pub use repository_binding_http::{
+    WorkerRepositoryBindingService, worker_repository_binding_router,
+};
 pub use worker_dispatch::{
     RegisteredWorkerTransportBuildError, WorkerDispatchService,
     dispatch_transport_router_with_service, registered_worker_transport_router,

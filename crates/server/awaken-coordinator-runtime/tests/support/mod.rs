@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code)] // shared only by Coordinator-owned Resource HTTP tests
 
 use awaken_run_ingress::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,

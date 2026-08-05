@@ -13,6 +13,7 @@ authority = "coordinator-runtime-http"
 awaken-agent-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-run-ingress.workspace = true
+awaken-run-ingress-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-runtime.workspace = true
 awaken-runtime-host.workspace = true
@@ -29,11 +30,16 @@ thiserror.workspace = true
 test-support = ["awaken-runtime-host/test-support"]
 
 [dev-dependencies]
+awaken-file-store = { workspace = true, features = ["test-support"] }
+awaken-memory-store = { workspace = true, features = ["test-support"] }
+awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
 awaken-run-ingress = { workspace = true, features = ["test-support"] }
 awaken-runtime-contract.workspace = true
 awaken-runtime-host = { workspace = true, features = ["test-support"] }
+awaken-skill-store = { workspace = true, features = ["test-support"] }
 awaken-store-inmem.workspace = true
 awaken-store-postgres.workspace = true
+awaken-tenancy.workspace = true
 awaken-worker-runtime.workspace = true
 async-trait.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

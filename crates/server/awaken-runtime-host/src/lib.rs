@@ -109,11 +109,7 @@ pub use crate::memory_transport::{
     memory_materialization_reference, worker_memory_router,
 };
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
-pub use crate::repository_transport::{
-    CatalogRepositoryBindingVerifier, HttpRepositoryBindingVerifier, RepositoryBindingVerifier,
-    RepositoryBindingVerifierError, WorkerRepositoryBindingService,
-    worker_repository_binding_router,
-};
+pub use crate::repository_transport::CatalogRepositoryBindingVerifier;
 pub use crate::run_application_host::{
     RunApplicationHost, SessionDefaultsPreparationError, SessionDefaultsPreparer,
 };
@@ -122,6 +118,9 @@ pub use crate::skill_bundle_transport::{
     WorkerSkillBundleService, worker_skill_bundle_router,
 };
 use awaken_credential_materializer::PinnedCredentialMaterializer;
+use awaken_run_ingress_contract::RepositoryBindingVerifier;
+#[cfg(test)]
+use awaken_run_ingress_contract::RepositoryBindingVerifierError;
 // ACP launch projection consumes the Session environment selected by the host.
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::redact::PiiRedactor;

@@ -1,4 +1,4 @@
-//! File Resource boundary tests over real HTTP.
+//! File Resource Coordinator boundary tests over real HTTP.
 
 mod support;
 

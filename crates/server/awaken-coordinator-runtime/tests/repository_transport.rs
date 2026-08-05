@@ -5,14 +5,15 @@ mod support;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_coordinator_runtime::{
+    WorkerRepositoryBindingService, worker_repository_binding_router,
+};
 use awaken_resource_contract::{ConfigVersion, ResourceBindingValidator, ResourceCatalogError};
 use awaken_run_ingress::{
     DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };
-use awaken_runtime_host::{
-    HttpRepositoryBindingVerifier, RepositoryBindingVerifier as _, WorkerRepositoryBindingService,
-    worker_repository_binding_router,
-};
+use awaken_run_ingress_contract::RepositoryBindingVerifier as _;
+use awaken_worker_runtime::HttpRepositoryBindingVerifier;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 struct ExactRepositoryCatalog {

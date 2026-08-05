@@ -12,6 +12,7 @@ mod claimed_session;
 mod claimed_stream;
 pub mod dispatch;
 pub mod operational;
+mod repository_binding;
 pub mod run_dispatch;
 mod worker_transport;
 
@@ -44,6 +45,10 @@ pub use dispatch::{
 pub use operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, LeaseLossReason,
+};
+pub use repository_binding::{
+    REPOSITORY_BINDING_PATH, RepositoryBindingRequest, RepositoryBindingVerifier,
+    RepositoryBindingVerifierError,
 };
 pub use run_dispatch::{
     ExecutionScopeRef, PlacementRequirements, RunDispatch, SessionResourceEnvelope,

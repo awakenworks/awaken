@@ -877,7 +877,7 @@ impl WorkerNode {
             upstream.clone(),
         ));
         let remote_repositories = Arc::new(
-            awaken_runtime_host::HttpRepositoryBindingVerifier::new(upstream.clone()),
+            awaken_worker_runtime::HttpRepositoryBindingVerifier::new(upstream.clone()),
         );
         let mut host = SharedHost::new_worker_with_deployment(
             Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
