@@ -250,8 +250,8 @@ fn child_dispatch_request(
         .with_traceparent(awaken_observability::current_traceparent())
         .with_placement(placement);
     if let Some(resources) = session_resources {
-        let envelope =
-            crate::provisioning::encode_session_resource_envelope(&resources).map_err(|error| {
+        let envelope = awaken_run_ingress::SessionResourceEnvelope::from_manifest(&resources)
+            .map_err(|error| {
                 AgentRunError::Configuration(format!(
                     "serialize child Session resource manifest: {error}"
                 ))
@@ -1206,13 +1206,12 @@ mod tests {
             vec![fallback]
         );
         assert_eq!(request.session_thread_id.unwrap().0, "parent-thread");
-        let carried = crate::provisioning::decode_session_resource_envelope(
-            request
-                .session_resources
-                .as_ref()
-                .expect("resource envelope"),
-        )
-        .expect("decode resource envelope");
+        let carried = request
+            .session_resources
+            .as_ref()
+            .expect("resource envelope")
+            .decode_manifest()
+            .expect("decode resource envelope");
         assert_eq!(carried, manifest);
         assert!(
             request

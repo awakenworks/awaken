@@ -313,10 +313,10 @@ impl SharedHost {
             request = request.with_inference_plaintext_holder(holder);
         }
         if let Some(resources) = resources {
-            let envelope = crate::provisioning::encode_session_resource_envelope(&resources)
+            let envelope = awaken_run_ingress::SessionResourceEnvelope::from_manifest(&resources)
                 .map_err(|error| {
-                    HostError::internal(format!("serialize Session resource manifest: {error}"))
-                })?;
+                HostError::internal(format!("serialize Session resource manifest: {error}"))
+            })?;
             request = request
                 .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
                     awaken_tenancy::ScopeId::from(resources.workspace_id.clone()),

@@ -17,11 +17,10 @@ awaken-tenancy.workspace = true
 awaken-worker-contract.workspace = true
 async-trait.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-# Round-trip the durable-persistence contract types through JSON in unit tests.
-serde_json.workspace = true
 # Drive the async port default methods (enqueue → enqueue_with, bind_sandbox) in unit tests.
 tokio = { workspace = true, features = ["rt", "macros"] }
 
