@@ -261,6 +261,7 @@ pub struct awaken_coordinator::VaultRefreshFactory
 impl awaken_coordinator::VaultRefreshFactory
 pub fn awaken_coordinator::VaultRefreshFactory::new(alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>, alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>) -> Self
 impl awaken_runtime_host::authority::CredentialRefreshFactory for awaken_coordinator::VaultRefreshFactory
+pub fn awaken_coordinator::VaultRefreshFactory::bearer_reloader(&self, awaken_credential_contract::CredentialSourceId, u64) -> alloc::sync::Arc<dyn awaken_credential::CredentialRefresher>
 pub fn awaken_coordinator::VaultRefreshFactory::refresher(&self, awaken_credential_contract::CredentialSourceId, awaken_credential_contract::CredentialRefreshAccess) -> alloc::sync::Arc<dyn awaken_credential::CredentialRefresher>
 pub struct awaken_coordinator::VaultRefresher
 impl awaken_coordinator::VaultRefresher
