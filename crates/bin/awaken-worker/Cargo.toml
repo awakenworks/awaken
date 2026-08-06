@@ -34,6 +34,7 @@ container-k8s = ["awaken-runtime-host/container-k8s"]
 # The neutral host substrate: SharedHost, the dispatch pool, and the worker dispatch
 # store that routes the drain over HTTP to the cell server.
 awaken-runtime-host = { workspace = true }
+awaken-resource-worker-http.workspace = true
 awaken-worker-runtime.workspace = true
 awaken-runtime-contract = { workspace = true }
 awaken-credential-materializer.workspace = true

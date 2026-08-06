@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use awaken_memory_store::{MemErr, Memory, MemoryRepository};
 use awaken_resource_contract::{ConfigVersion, ResourceAccess, ResourceBindingValidator};
-use awaken_run_ingress::{DispatchQueue, RunClaim, WorkerDirectory, WorkerIdentity};
+use awaken_run_ingress_contract::{DispatchQueue, RunClaim, WorkerDirectory, WorkerIdentity};
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -250,7 +250,7 @@ fn unix_now_ms() -> u64 {
 }
 
 fn manifest_allows(
-    dispatch: &awaken_run_ingress::RunDispatch,
+    dispatch: &awaken_run_ingress_contract::RunDispatch,
     reference: &MemoryMaterializationReference,
     writes: bool,
 ) -> bool {

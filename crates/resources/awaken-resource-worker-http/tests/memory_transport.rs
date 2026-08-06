@@ -1,6 +1,6 @@
 //! Claim-fenced Memory Coordinator tests over real HTTP.
 
-mod support;
+use awaken_run_ingress_testkit::worker_http as support;
 
 use std::sync::Arc;
 
@@ -9,11 +9,11 @@ use awaken_resource_contract::{
     ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceAccess,
     ResourceCatalog as _, ResourceState,
 };
-use awaken_run_ingress::{DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch};
-use awaken_runtime_host::{
+use awaken_resource_worker_http::{
     HttpMemoryRepository, WorkerMemoryService, memory_materialization_reference,
     worker_memory_router,
 };
+use awaken_run_ingress::{DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch};
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 fn memory_input(

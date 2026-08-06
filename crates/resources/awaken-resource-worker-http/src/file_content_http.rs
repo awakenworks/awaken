@@ -1,36 +1,38 @@
-//! Coordinator HTTP adapter for claim-fenced Repository binding validation.
+//! Coordinator HTTP adapter for claim-fenced immutable File reads.
 
 use std::sync::Arc;
 
-use awaken_resource_contract::ResourceBindingValidator;
-use awaken_run_ingress::{DispatchQueue, WorkerDirectory};
-use awaken_run_ingress_contract::{REPOSITORY_BINDING_PATH, RepositoryBindingRequest};
+use awaken_run_ingress_contract::{DispatchQueue, WorkerDirectory};
+use awaken_run_ingress_contract::{
+    FILE_CONTENT_DIGEST_HEADER, FILE_CONTENT_PATH, FileContentRequest, FileContentSource,
+};
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, authenticate_worker_request,
     verify_claim_owner,
 };
+use axum::body::Body;
 use axum::extract::{Extension, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::http::{Response, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
 
-pub struct WorkerRepositoryBindingService {
-    validator: Arc<dyn ResourceBindingValidator>,
+pub struct WorkerFileContentService {
+    source: Arc<dyn FileContentSource>,
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
 }
 
-impl WorkerRepositoryBindingService {
+impl WorkerFileContentService {
     #[must_use]
     pub fn new(
-        validator: Arc<dyn ResourceBindingValidator>,
+        source: Arc<dyn FileContentSource>,
         dispatch: Arc<dyn DispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
     ) -> Self {
         Self {
-            validator,
+            source,
             dispatch,
             authenticator,
             directory: None,
@@ -44,9 +46,9 @@ impl WorkerRepositoryBindingService {
     }
 }
 
-pub fn worker_repository_binding_router(service: Arc<WorkerRepositoryBindingService>) -> Router {
+pub fn worker_file_content_router(service: Arc<WorkerFileContentService>) -> Router {
     Router::new()
-        .route(REPOSITORY_BINDING_PATH, post(verify_repository_binding))
+        .route(FILE_CONTENT_PATH, post(read_file_content))
         .route_layer(axum::middleware::from_fn_with_state(
             service.authenticator.clone(),
             authenticate_worker_request,
@@ -54,13 +56,13 @@ pub fn worker_repository_binding_router(service: Arc<WorkerRepositoryBindingServ
         .with_state(service)
 }
 
-async fn verify_repository_binding(
-    State(service): State<Arc<WorkerRepositoryBindingService>>,
+async fn read_file_content(
+    State(service): State<Arc<WorkerFileContentService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
-    Json(request): Json<RepositoryBindingRequest>,
-) -> Response {
+    Json(request): Json<FileContentRequest>,
+) -> Response<Body> {
     if request.workspace_id.trim().is_empty()
-        || request.repository_id.trim().is_empty()
+        || request.file_id.trim().is_empty()
         || verify_claim_owner(
             service.directory.as_deref(),
             &worker,
@@ -88,29 +90,31 @@ async fn verify_repository_binding(
         .as_ref()
         .filter(|envelope| envelope.workspace_id == request.workspace_id)
         .and_then(|envelope| envelope.decode_manifest().ok());
-    let binding_is_frozen = manifest.as_ref().is_some_and(|manifest| {
+    let file_is_frozen = manifest.as_ref().is_some_and(|manifest| {
         manifest.resources.inputs.iter().any(|input| {
             matches!(
                 &input.source,
-                awaken_session_contract::ResolvedInputSource::Repository {
-                    repository_id,
-                    config,
-                    ..
-                } if repository_id.as_str() == request.repository_id
-                    && config.version == request.config_version
+                awaken_session_contract::ResolvedInputSource::File { file_id }
+                    if file_id.as_str() == request.file_id
             )
         })
     });
-    if !scope_matches || !binding_is_frozen {
+    if !scope_matches || !file_is_frozen {
         return StatusCode::FORBIDDEN.into_response();
     }
-    match service.validator.validate_repository_binding(
-        &request.workspace_id,
-        &request.repository_id,
-        request.config_version,
-    ) {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(_) => StatusCode::FORBIDDEN.into_response(),
+    match service
+        .source
+        .read(&request.workspace_id, &request.file_id, None)
+        .await
+    {
+        Ok(Some((digest, bytes))) => Response::builder()
+            .status(StatusCode::OK)
+            .header(axum::http::header::CONTENT_TYPE, "application/octet-stream")
+            .header(FILE_CONTENT_DIGEST_HEADER, digest)
+            .body(Body::from(bytes))
+            .expect("static File content response is valid"),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
 }
 

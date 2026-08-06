@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use awaken_resource_contract::{ConfigVersion, ResourceBindingValidator};
-use awaken_run_ingress::RunClaim;
+use awaken_run_ingress_contract::RunClaim;
 use awaken_run_ingress_contract::{RepositoryBindingVerifier, RepositoryBindingVerifierError};
 
 pub struct CatalogRepositoryBindingVerifier {

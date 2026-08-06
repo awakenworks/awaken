@@ -5,7 +5,6 @@
 //! `DispatchQueue` is called.
 
 use std::sync::Arc;
-use std::{path::Path, path::PathBuf};
 
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
@@ -19,7 +18,7 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_run_ingress::{
-    AnyDispatchStore, BindSandboxRequest as BindSandboxReq, CheckpointRequest as CheckpointReq,
+    BindSandboxRequest as BindSandboxReq, CheckpointRequest as CheckpointReq,
     ClaimNewRunRequest as ClaimNewRunReq, ClaimRunRequest as ClaimRunReq,
     ClaimWorkerRequest as ClaimWorkerReq, CompletionSink,
     CredentialRealizationRequest as CredentialRealizationReq,
@@ -30,28 +29,12 @@ use awaken_run_ingress::{
     WorkerIdentity, WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot,
 };
 
-use awaken_runtime_host::{HostError, SharedHost, respond_host_http as respond};
+use awaken_run_ingress::{ApplicationError as HostError, ApplicationErrorKind};
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, SystemWorkerClock, VerifiedWorkerContext,
     WorkerClock, WorkerLeasePolicy, WorkerRequestAuthenticator, authenticate_worker_request,
     verify_current_worker_identity, verify_worker_identity,
 };
-
-/// Startup failure while assembling the one registered-Worker transport.
-///
-/// These are configuration/authority acquisition failures, not request errors:
-/// the Coordinator must propagate them and refuse to publish a partial Router.
-#[derive(Debug, thiserror::Error)]
-pub enum RegisteredWorkerTransportBuildError {
-    #[error("resolve durable Worker dispatch authority: {0}")]
-    Dispatch(String),
-    #[error("open durable Worker checkpoint authority at {path}: {error}")]
-    CheckpointOpen { path: PathBuf, error: String },
-    #[error(
-        "registered Worker transport requires durable stream checkpoints from Postgres or storage_dir"
-    )]
-    MissingCheckpointAuthority,
-}
 
 /// Explicit application service mounted by the worker HTTP adapter.
 pub struct WorkerDispatchService {
@@ -226,40 +209,30 @@ async fn claim_authority(
     })
 }
 
-fn registered_checkpoint_store(
-    dispatch: &AnyDispatchStore,
-    store_dir: Option<&Path>,
-    volatile_test_fallback: Option<Arc<dyn StreamCheckpointStore>>,
-) -> Result<Arc<dyn StreamCheckpointStore>, RegisteredWorkerTransportBuildError> {
-    if let Some(checkpoint) = dispatch.stream_checkpoint_store() {
-        return Ok(checkpoint);
-    }
-    if let Some(root) = store_dir {
-        let path = root.join("worker-stream-checkpoints");
-        return awaken_store_fs::FsStreamCheckpointStore::open(&path)
-            .map(|store| Arc::new(store) as Arc<dyn StreamCheckpointStore>)
-            .map_err(
-                |error| RegisteredWorkerTransportBuildError::CheckpointOpen {
-                    path,
-                    error: error.to_string(),
-                },
-            );
-    }
-    volatile_test_fallback.ok_or(RegisteredWorkerTransportBuildError::MissingCheckpointAuthority)
+pub struct RegisteredDispatchDependencies {
+    pub dispatch: Arc<dyn DispatchQueue>,
+    pub checkpoint: Arc<dyn StreamCheckpointStore>,
+    pub directory: Arc<dyn WorkerDirectory>,
+    pub policy: Arc<dyn PlacementPolicy>,
+    pub sessions: Arc<dyn awaken_session_contract::ApplicationSessionControl>,
+    pub authenticator: Arc<dyn WorkerRequestAuthenticator>,
+    pub recovery: Arc<dyn RunRecoverySource>,
+    pub completion: Arc<dyn CompletionSink>,
+    pub stream_sink: Arc<dyn StreamSink>,
 }
 
-fn registered_dispatch_router(
-    host: Arc<SharedHost>,
-    dispatch: Arc<AnyDispatchStore>,
-    checkpoint: Arc<dyn StreamCheckpointStore>,
-    directory: Arc<dyn WorkerDirectory>,
-    policy: Arc<dyn PlacementPolicy>,
-    application_session_control: Arc<dyn awaken_session_contract::ApplicationSessionControl>,
-    authenticator: Arc<dyn WorkerRequestAuthenticator>,
-) -> Router {
-    let completion = host.worker_completion_sink();
-    let stream_sink = host.worker_stream_sink();
-    let recovery = host.worker_recovery_source();
+pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) -> Router {
+    let RegisteredDispatchDependencies {
+        dispatch,
+        checkpoint,
+        directory,
+        policy,
+        sessions,
+        authenticator,
+        recovery,
+        completion,
+        stream_sink,
+    } = dependencies;
     dispatch_transport_router_with_service(Arc::new(
         WorkerDispatchService::new(
             dispatch,
@@ -273,97 +246,7 @@ fn registered_dispatch_router(
         .with_recovery_source(recovery)
         .with_completion_sink(completion)
         .with_stream_sink(stream_sink)
-        .with_application_session_control(application_session_control),
-    ))
-}
-
-/// Production worker transport: lifecycle/dispatch and atomic claimed commit are
-/// mounted over the same durable queue, authenticator, and incarnation directory.
-/// This single composition entry prevents a server from mounting claims without
-/// their matching claim-fenced commit authority.
-pub fn registered_worker_transport_router(
-    host: Arc<SharedHost>,
-    directory: Arc<dyn WorkerDirectory>,
-    policy: Arc<dyn PlacementPolicy>,
-    application_session_control: Arc<dyn awaken_session_contract::ApplicationSessionControl>,
-    resource_validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
-    authenticator: Arc<dyn WorkerRequestAuthenticator>,
-) -> Result<Router, RegisteredWorkerTransportBuildError> {
-    let dispatch = host
-        .dispatch_store()
-        .map_err(|error| RegisteredWorkerTransportBuildError::Dispatch(error.to_string()))?;
-    #[cfg(feature = "test-support")]
-    let volatile_test_fallback = Some(Arc::new(
-        awaken_store_inmem::MemoryStreamCheckpointStore::new(),
-    ) as Arc<dyn StreamCheckpointStore>);
-    #[cfg(not(feature = "test-support"))]
-    let volatile_test_fallback = None;
-    let checkpoint = registered_checkpoint_store(
-        dispatch.as_ref(),
-        host.storage_dir(),
-        volatile_test_fallback,
-    )?;
-    let dispatch_router = registered_dispatch_router(
-        host.clone(),
-        dispatch.clone(),
-        checkpoint,
-        directory.clone(),
-        policy,
-        application_session_control,
-        authenticator.clone(),
-    );
-    let file_content = crate::worker_file_content_router(Arc::new(
-        crate::WorkerFileContentService::new(
-            host.worker_file_content_source(),
-            dispatch.clone() as Arc<dyn DispatchQueue>,
-            authenticator.clone(),
-        )
-        .with_worker_directory(directory.clone()),
-    ));
-    let memory = awaken_runtime_host::worker_memory_router(Arc::new(
-        awaken_runtime_host::WorkerMemoryService::new(
-            host.memory_repository(),
-            resource_validator.clone(),
-            dispatch.clone() as Arc<dyn DispatchQueue>,
-            authenticator.clone(),
-            directory.clone(),
-        ),
-    ));
-    let repositories = crate::worker_repository_binding_router(Arc::new(
-        crate::WorkerRepositoryBindingService::new(
-            resource_validator,
-            dispatch.clone() as Arc<dyn DispatchQueue>,
-            authenticator.clone(),
-        )
-        .with_worker_directory(directory.clone()),
-    ));
-    let skills = host.skill_store().map(|store| {
-        awaken_runtime_host::worker_skill_bundle_router(Arc::new(
-            awaken_runtime_host::WorkerSkillBundleService::new(
-                Arc::new(awaken_runtime_host::StoreSkillBundleSource::new(store)),
-                dispatch.clone() as Arc<dyn DispatchQueue>,
-                authenticator.clone(),
-            )
-            .with_worker_directory(directory.clone()),
-        ))
-    });
-    let commit_service = Arc::new(awaken_runtime_host::ClaimedCommitService::for_host(
-        dispatch as Arc<dyn DispatchQueue>,
-        host,
-        directory,
-        authenticator,
-    ));
-    let worker_resources = dispatch_router
-        .merge(file_content)
-        .merge(memory)
-        .merge(repositories);
-    let worker_resources = match skills {
-        Some(skills) => worker_resources.merge(skills),
-        None => worker_resources,
-    };
-    Ok(registered_worker_transport_router_with_services(
-        worker_resources,
-        commit_service,
+        .with_application_session_control(sessions),
     ))
 }
 
@@ -376,9 +259,12 @@ pub fn registered_worker_transport_router(
 /// claims without the matching claim-fenced commit surface.
 pub fn registered_worker_transport_router_with_services(
     dispatch_router: Router,
-    commit_service: Arc<awaken_runtime_host::ClaimedCommitService>,
+    resource_router: Router,
+    commit_service: Arc<crate::ClaimedCommitHttpService>,
 ) -> Router {
-    dispatch_router.merge(crate::claimed_commit_router(commit_service))
+    dispatch_router
+        .merge(resource_router)
+        .merge(crate::claimed_commit_router(commit_service))
 }
 
 pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService>) -> Router {
@@ -442,6 +328,20 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
             authenticate_worker_request,
         ))
         .with_state(service)
+}
+
+fn respond(result: Result<Value, HostError>) -> (StatusCode, Json<Value>) {
+    match result {
+        Ok(value) => (StatusCode::OK, Json(value)),
+        Err(error) => {
+            let status = match error.kind {
+                ApplicationErrorKind::InvalidRequest => StatusCode::BAD_REQUEST,
+                ApplicationErrorKind::Conflict => StatusCode::CONFLICT,
+                ApplicationErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (status, Json(json!({ "error": error.message })))
+        }
+    }
 }
 
 fn checkpoint_store(
@@ -1401,71 +1301,4 @@ async fn stream_event(
     }
     .await;
     respond(result)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use awaken_run_ingress::{Dispatch, MemoryDispatchStore};
-    use awaken_store_inmem::MemoryStreamCheckpointStore;
-
-    #[test]
-    fn registered_checkpoint_authority_selection_is_fail_closed() {
-        // Cause/effect graph:
-        // C1 dispatch owns a paired checkpoint -> E1 reuse that exact authority;
-        // otherwise C2 storage_dir exists -> C3 FS store opens -> E2 use durable FS,
-        // while C3 false -> E3 return a startup error. If C1/C2 are false, C4 an
-        // explicitly injected test fallback -> E4 use it; otherwise E5 return the
-        // missing-authority startup error. Product code cannot inject C4.
-        //
-        // Decision table:
-        // | Rule | C1 paired | C2 dir | C3 opens | C4 test fallback | Effect |
-        // | R1   | T         | -      | -        | -                | E1     |
-        // | R2   | F         | T      | T        | -                | E2     |
-        // | R3   | F         | T      | F        | -                | E3     |
-        // | R4   | F         | F      | -        | T                | E4     |
-        // | R5   | F         | F      | -        | F                | E5     |
-        // R1 is exercised with a real paired Postgres store by
-        // `any_postgres_connect_and_claim`; this pure selector covers R2-R5.
-        let dispatch = AnyDispatchStore::from_dispatch(
-            Arc::new(MemoryDispatchStore::new()) as Arc<dyn Dispatch>
-        );
-
-        let durable_root = tempfile::tempdir().expect("R2 durable root");
-        assert!(
-            registered_checkpoint_store(&dispatch, Some(durable_root.path()), None).is_ok(),
-            "R2 opens the durable filesystem authority"
-        );
-
-        let invalid_root = tempfile::NamedTempFile::new().expect("R3 invalid root");
-        let error = registered_checkpoint_store(&dispatch, Some(invalid_root.path()), None)
-            .err()
-            .expect("R3 must return the filesystem acquisition error");
-        assert!(
-            matches!(
-                error,
-                RegisteredWorkerTransportBuildError::CheckpointOpen { .. }
-            ),
-            "R3"
-        );
-
-        let fallback: Arc<dyn StreamCheckpointStore> = Arc::new(MemoryStreamCheckpointStore::new());
-        let selected = registered_checkpoint_store(&dispatch, None, Some(fallback.clone()))
-            .expect("R4 explicit test fallback");
-        assert!(
-            Arc::ptr_eq(&selected, &fallback),
-            "R4 exact injected fallback"
-        );
-
-        let error = registered_checkpoint_store(&dispatch, None, None)
-            .err()
-            .expect("R5 product selection must fail closed");
-        assert!(
-            matches!(
-                error,
-                RegisteredWorkerTransportBuildError::MissingCheckpointAuthority
-            ),
-            "R5"
-        );
-    }
 }

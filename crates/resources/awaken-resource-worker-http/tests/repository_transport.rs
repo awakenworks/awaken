@@ -1,14 +1,14 @@
 //! Repository binding boundary tests over real HTTP.
 
-mod support;
+use awaken_run_ingress_testkit::worker_http as support;
 
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_coordinator_runtime::{
+use awaken_resource_contract::{ConfigVersion, ResourceBindingValidator, ResourceCatalogError};
+use awaken_resource_worker_http::{
     WorkerRepositoryBindingService, worker_repository_binding_router,
 };
-use awaken_resource_contract::{ConfigVersion, ResourceBindingValidator, ResourceCatalogError};
 use awaken_run_ingress::{
     DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };

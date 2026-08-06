@@ -1,17 +1,17 @@
 //! File Resource Coordinator boundary tests over real HTTP.
 
-mod support;
+use awaken_run_ingress_testkit::worker_http as support;
 
 use std::sync::Arc;
 
-use awaken_coordinator_runtime::{WorkerFileContentService, worker_file_content_router};
 use awaken_file_store::FileStore as _;
 use awaken_resource_contract::FileCatalog as _;
+use awaken_resource_worker_http::ApplicationFileContentSource;
+use awaken_resource_worker_http::{WorkerFileContentService, worker_file_content_router};
 use awaken_run_ingress::{
     DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };
 use awaken_run_ingress_contract::FileContentSource as _;
-use awaken_runtime_host::ApplicationFileContentSource;
 use awaken_worker_runtime::HttpFileContentSource;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 

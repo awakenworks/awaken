@@ -867,13 +867,13 @@ impl WorkerNode {
         );
 
         let managed_credential_materializer = self.credential_materializer.clone();
-        let remote_memory = Arc::new(awaken_runtime_host::HttpMemoryRepository::new(
+        let remote_memory = Arc::new(awaken_resource_worker_http::HttpMemoryRepository::new(
             upstream.clone(),
         ));
         let remote_files = Arc::new(awaken_worker_runtime::HttpFileContentSource::new(
             upstream.clone(),
         ));
-        let remote_skills = Arc::new(awaken_runtime_host::HttpSkillBundleSource::new(
+        let remote_skills = Arc::new(awaken_resource_worker_http::HttpSkillBundleSource::new(
             upstream.clone(),
         ));
         let remote_repositories = Arc::new(

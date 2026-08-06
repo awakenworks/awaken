@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::AgentSkillKind;
-use awaken_run_ingress::{DispatchQueue, RunClaim, WorkerDirectory, WorkerIdentity};
+use awaken_run_ingress_contract::{DispatchQueue, RunClaim, WorkerDirectory, WorkerIdentity};
 use awaken_session_contract::ResolvedSkillBinding;
 use awaken_skill_store::{SkillStore, SkillVersion};
 use axum::extract::{Extension, State};

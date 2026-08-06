@@ -19,7 +19,7 @@ use awaken_session_contract::ManagedSessionRepository;
 use awaken_worker_transport_security::WorkerRequestAuthenticator;
 use axum::Router;
 
-use crate::SharedHost;
+use crate::{SharedHost, WorkerTransportBuildError};
 
 /// Coordinator-owned ports and already-built sibling components.
 ///
@@ -68,7 +68,7 @@ pub enum CoordinatorBuildError {
     #[error("restore Deployment state: {0}")]
     DeploymentRestore(String),
     #[error("build registered Worker transport: {0}")]
-    WorkerTransport(#[from] awaken_coordinator_runtime::RegisteredWorkerTransportBuildError),
+    WorkerTransport(#[from] WorkerTransportBuildError),
 }
 
 pub async fn restore_deployment_application(

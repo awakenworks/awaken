@@ -35,6 +35,163 @@ use awaken_runtime_contract::{
 
 const LEASE_MS: u64 = 1_000;
 
+/// Shared fixtures for real-HTTP Worker boundary tests. Keeping these here
+/// prevents the Run Ingress and Resource HTTP crates from maintaining parallel
+/// worker-directory and activation implementations.
+pub mod worker_http {
+    use std::sync::Arc;
+
+    use awaken_run_ingress_contract::{
+        RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
+        WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRegistration,
+        WorkerSnapshot, WorkerState,
+    };
+    use awaken_runtime_contract::activation::RunActivation;
+    use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+    use awaken_runtime_contract::snapshot::{
+        AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+    };
+
+    pub async fn serve(app: axum::Router) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind Worker HTTP fixture");
+        let address = listener.local_addr().expect("Worker HTTP fixture address");
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve Worker HTTP fixture");
+        });
+        address
+    }
+
+    #[must_use]
+    pub fn unix_now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is after the Unix epoch")
+            .as_millis() as u64
+    }
+
+    #[must_use]
+    pub fn activation(tag: &str) -> RunActivation {
+        RunActivation::new(
+            awaken_agent_contract::agent::run::Id(format!("run-{tag}")),
+            awaken_agent_contract::agent::thread::Id(format!("thread-{tag}")),
+            ExecutableAgentSnapshot {
+                id: ExecutableAgentSnapshotId(format!("snapshot-{tag}")),
+                metadata: Default::default(),
+                root_agent_id: AgentId(format!("agent-{tag}")),
+                resolved_spec: ResolvedSpec {
+                    model_candidates: Vec::new(),
+                    catalog_fingerprint: CatalogFingerprint(format!("catalog-{tag}")),
+                    instructions: "test Worker boundary".into(),
+                    max_steps: 1,
+                    delegation_limits: Default::default(),
+                    model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                        ModelBinding::new("test", "model", "native"),
+                    ),
+                    tool_descriptors: Vec::new(),
+                    plugin_ids: Vec::new(),
+                    plugin_config: Default::default(),
+                    context_policy: Default::default(),
+                    tool_presentation: Default::default(),
+                },
+                fingerprint: CatalogFingerprint(format!("snapshot-{tag}-fingerprint")),
+            },
+            Vec::new(),
+        )
+    }
+
+    pub async fn ready_worker(worker_id: &str) -> (Arc<dyn WorkerDirectory>, WorkerIdentity) {
+        let manifest = WorkerManifest::default();
+        let identity = WorkerIdentity::new(worker_id, format!("{worker_id}-boot"), 1);
+        let registered = RegisteredWorker {
+            snapshot: WorkerSnapshot {
+                identity: identity.clone(),
+                state: WorkerState::Ready,
+                capability_fingerprint: manifest
+                    .fingerprint()
+                    .expect("fixture manifest fingerprints"),
+                manifest,
+                in_flight: 0,
+                credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
+                expires_at_ms: u64::MAX,
+            },
+            heartbeat_sequence: 1,
+            registered_at_ms: 0,
+            heartbeat_at_ms: 0,
+            drain_deadline_ms: None,
+        };
+        (Arc::new(CurrentWorkerDirectory(registered)), identity)
+    }
+
+    struct CurrentWorkerDirectory(RegisteredWorker);
+
+    #[async_trait::async_trait]
+    impl WorkerObservationSource for CurrentWorkerDirectory {
+        async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
+            Ok(vec![self.0.clone()])
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkerDirectory for CurrentWorkerDirectory {
+        async fn register(
+            &self,
+            _registration: WorkerRegistration,
+            _now_ms: u64,
+            _ttl_ms: u64,
+        ) -> Result<RegisteredWorker, RegistryError> {
+            Ok(self.0.clone())
+        }
+
+        async fn heartbeat(
+            &self,
+            _identity: &WorkerIdentity,
+            _heartbeat: WorkerHeartbeat,
+            _now_ms: u64,
+            _ttl_ms: u64,
+        ) -> Result<RegistryMutation, RegistryError> {
+            Ok(RegistryMutation::NotFound)
+        }
+
+        async fn begin_drain(
+            &self,
+            _identity: &WorkerIdentity,
+            _deadline_ms: u64,
+        ) -> Result<RegistryMutation, RegistryError> {
+            Ok(RegistryMutation::NotFound)
+        }
+
+        async fn mark_quiesced(
+            &self,
+            _identity: &WorkerIdentity,
+        ) -> Result<RegistryMutation, RegistryError> {
+            Ok(RegistryMutation::NotFound)
+        }
+
+        async fn deregister(
+            &self,
+            _identity: &WorkerIdentity,
+        ) -> Result<RegistryMutation, RegistryError> {
+            Ok(RegistryMutation::NotFound)
+        }
+
+        async fn current(
+            &self,
+            worker_id: &str,
+        ) -> Result<Option<RegisteredWorker>, RegistryError> {
+            Ok((worker_id == self.0.snapshot.identity.worker_id).then(|| self.0.clone()))
+        }
+
+        async fn expire(&self, _now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {
+            Ok(Vec::new())
+        }
+    }
+}
+
 /// Capabilities which are deliberately absent from a database-less worker transport.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConformanceCapabilities {

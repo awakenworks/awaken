@@ -83,7 +83,7 @@ pub fn memory_store_application(
         catalog, purge,
     ))
 }
-pub use awaken_coordinator_runtime::durable_ops_router;
+pub use awaken_run_ingress_http::durable_ops_router;
 pub use awaken_runtime_host::{
     ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost, NoModelConfiguredExecutor,
     RunApplicationHost, SharedHost, ThreadEvent, ThreadEventHub, UNCONFIGURED_MODEL_REF,
@@ -607,6 +607,106 @@ pub struct ManagedRoutingExtensions {
     pub worker_directory: Arc<dyn awaken_worker_registry::WorkerDirectory>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum WorkerTransportBuildError {
+    #[error("resolve durable Worker dispatch authority: {0}")]
+    Dispatch(String),
+    #[error("open durable Worker checkpoint authority at {path}: {error}")]
+    CheckpointOpen {
+        path: std::path::PathBuf,
+        error: String,
+    },
+    #[error(
+        "registered Worker transport requires durable stream checkpoints from Postgres or storage_dir"
+    )]
+    MissingCheckpointAuthority,
+}
+
+fn worker_checkpoint_authority(
+    dispatch: &awaken_run_ingress::AnyDispatchStore,
+    store_dir: Option<&std::path::Path>,
+) -> Result<
+    Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>,
+    WorkerTransportBuildError,
+> {
+    if let Some(checkpoint) = dispatch.stream_checkpoint_store() {
+        return Ok(checkpoint);
+    }
+    if let Some(root) = store_dir {
+        let path = root.join("worker-stream-checkpoints");
+        return awaken_store_fs::FsStreamCheckpointStore::open(&path)
+            .map(|store| {
+                Arc::new(store)
+                    as Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>
+            })
+            .map_err(|error| WorkerTransportBuildError::CheckpointOpen {
+                path,
+                error: error.to_string(),
+            });
+    }
+    #[cfg(feature = "test-support")]
+    {
+        Ok(Arc::new(
+            awaken_store_inmem::MemoryStreamCheckpointStore::new(),
+        ))
+    }
+    #[cfg(not(feature = "test-support"))]
+    {
+        Err(WorkerTransportBuildError::MissingCheckpointAuthority)
+    }
+}
+
+#[cfg(test)]
+mod worker_checkpoint_authority_tests {
+    use super::*;
+    use awaken_run_ingress::{AnyDispatchStore, Dispatch, MemoryDispatchStore};
+
+    #[test]
+    fn checkpoint_authority_selection_is_fail_closed() {
+        // Cause/effect graph: C1 the dispatch store owns a paired checkpoint ->
+        // E1 reuse it; otherwise C2 storage_dir exists and opens -> E2 durable FS;
+        // C2 exists but cannot open -> E3 startup error; with neither, C3 explicit
+        // test-support build -> E4 volatile test authority, otherwise E5 startup
+        // refusal. Product composition cannot reach E4.
+        //
+        // | Rule | C1 paired | C2 dir/open | C3 test build | Effect |
+        // | R1   | yes       | -           | -             | E1     |
+        // | R2   | no        | yes/yes     | -             | E2     |
+        // | R3   | no        | yes/no      | -             | E3     |
+        // | R4   | no        | no          | yes           | E4     |
+        // | R5   | no        | no          | no            | E5     |
+        // R1 is covered by the PostgreSQL active/active acceptance test.
+        let dispatch = AnyDispatchStore::from_dispatch(
+            Arc::new(MemoryDispatchStore::new()) as Arc<dyn Dispatch>
+        );
+        let root = tempfile::tempdir().expect("R2 root");
+        assert!(
+            worker_checkpoint_authority(&dispatch, Some(root.path())).is_ok(),
+            "R2"
+        );
+
+        let invalid = tempfile::NamedTempFile::new().expect("R3 invalid root");
+        assert!(
+            matches!(
+                worker_checkpoint_authority(&dispatch, Some(invalid.path())),
+                Err(WorkerTransportBuildError::CheckpointOpen { .. })
+            ),
+            "R3"
+        );
+
+        #[cfg(feature = "test-support")]
+        assert!(worker_checkpoint_authority(&dispatch, None).is_ok(), "R4");
+        #[cfg(not(feature = "test-support"))]
+        assert!(
+            matches!(
+                worker_checkpoint_authority(&dispatch, None),
+                Err(WorkerTransportBuildError::MissingCheckpointAuthority)
+            ),
+            "R5"
+        );
+    }
+}
+
 /// Production data plane with the live model directory and the exact Dream state
 /// mounted in that same Router. The composition root uses the returned state for
 /// periodic policies instead of constructing a second scheduler.
@@ -618,10 +718,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
     model_directory: Arc<dyn awaken_protocol_managed::ModelDirectory>,
     dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
     routing: ManagedRoutingExtensions,
-) -> Result<
-    (Router, Arc<awaken_dream_application::DreamApplication>),
-    awaken_coordinator_runtime::RegisteredWorkerTransportBuildError,
-> {
+) -> Result<(Router, Arc<awaken_dream_application::DreamApplication>), WorkerTransportBuildError> {
     mount_with_managed_over_and_models(
         host,
         managed_state,
@@ -667,10 +764,7 @@ fn mount_with_managed_over_and_models(
     model_directory: Option<Arc<dyn awaken_protocol_managed::ModelDirectory>>,
     dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
     routing: ManagedRoutingExtensions,
-) -> Result<
-    (Router, Arc<awaken_dream_application::DreamApplication>),
-    awaken_coordinator_runtime::RegisteredWorkerTransportBuildError,
-> {
+) -> Result<(Router, Arc<awaken_dream_application::DreamApplication>), WorkerTransportBuildError> {
     let ManagedRoutingExtensions {
         resource_management_router,
         worker_authenticator,
@@ -777,14 +871,77 @@ fn mount_with_managed_over_and_models(
     let durable_ops = durable_ops_router(host.clone());
     // The Worker-facing cross-node seam: a dispatch-store-isolated Worker claims/settles runs
     // over the dispatch transport and pushes committed facts to the commit ingest.
-    let worker_transport = awaken_coordinator_runtime::registered_worker_transport_router(
-        host.clone(),
+    let dispatch = host
+        .dispatch_store()
+        .map_err(|error| WorkerTransportBuildError::Dispatch(error.to_string()))?;
+    let checkpoint = worker_checkpoint_authority(dispatch.as_ref(), host.storage_dir())?;
+    let dispatch_router = awaken_run_ingress_http::registered_dispatch_router(
+        awaken_run_ingress_http::RegisteredDispatchDependencies {
+            dispatch: dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
+            checkpoint,
+            directory: worker_directory.clone(),
+            policy: worker_placement::shared_worker_placement_policy(),
+            sessions: managed_state.session_application(),
+            authenticator: worker_authenticator.clone(),
+            recovery: host.worker_recovery_source(),
+            completion: host.worker_completion_sink(),
+            stream_sink: host.worker_stream_sink(),
+        },
+    );
+    let file_content = awaken_resource_worker_http::worker_file_content_router(Arc::new(
+        awaken_resource_worker_http::WorkerFileContentService::new(
+            host.worker_file_content_source(),
+            dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
+            worker_authenticator.clone(),
+        )
+        .with_worker_directory(worker_directory.clone()),
+    ));
+    let memory = awaken_resource_worker_http::worker_memory_router(Arc::new(
+        awaken_resource_worker_http::WorkerMemoryService::new(
+            host.memory_repository(),
+            resource_catalog.clone(),
+            dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
+            worker_authenticator.clone(),
+            worker_directory.clone(),
+        ),
+    ));
+    let repositories = awaken_resource_worker_http::worker_repository_binding_router(Arc::new(
+        awaken_resource_worker_http::WorkerRepositoryBindingService::new(
+            resource_catalog,
+            dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
+            worker_authenticator.clone(),
+        )
+        .with_worker_directory(worker_directory.clone()),
+    ));
+    let mut resource_worker = file_content.merge(memory).merge(repositories);
+    if let Some(store) = host.skill_store() {
+        resource_worker = resource_worker.merge(
+            awaken_resource_worker_http::worker_skill_bundle_router(Arc::new(
+                awaken_resource_worker_http::WorkerSkillBundleService::new(
+                    Arc::new(awaken_resource_worker_http::StoreSkillBundleSource::new(
+                        store,
+                    )),
+                    dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
+                    worker_authenticator.clone(),
+                )
+                .with_worker_directory(worker_directory.clone()),
+            )),
+        );
+    }
+    let commit = Arc::new(awaken_run_ingress_http::ClaimedCommitHttpService::new(
+        Arc::new(awaken_runtime_host::claimed_commit_service(
+            dispatch as Arc<dyn awaken_run_ingress::DispatchQueue>,
+            host.clone(),
+        )),
         worker_directory,
-        worker_placement::shared_worker_placement_policy(),
-        managed_state.session_application(),
-        resource_catalog.clone(),
         worker_authenticator,
-    )?;
+    ));
+    let worker_transport =
+        awaken_run_ingress_http::registered_worker_transport_router_with_services(
+            dispatch_router,
+            resource_worker,
+            commit,
+        );
     // The Models API (`/v1/models`) over the deployment's model directory.
     let models = model_directory.map_or_else(
         || models_router(std::sync::Arc::new(default_models())),

@@ -285,13 +285,15 @@ impl SharedHost {
             .unwrap_or_else(|| {
                 file_application.as_ref().map_or_else(
                     || {
-                        Arc::new(crate::file_content_transport::UnavailableFileContentSource)
+                        Arc::new(awaken_resource_worker_http::UnavailableFileContentSource)
                             as Arc<dyn crate::FileContentSource>
                     },
                     |application| {
-                        Arc::new(crate::ApplicationFileContentSource::new(
-                            application.clone(),
-                        ))
+                        Arc::new(
+                            awaken_resource_worker_http::ApplicationFileContentSource::new(
+                                application.clone(),
+                            ),
+                        )
                     },
                 )
             });
@@ -517,9 +519,9 @@ impl SharedHost {
                 repository.clone(),
             ))
                 as Arc<dyn awaken_resource_contract::FileApplicationService>;
-            self.file_content_source = Arc::new(crate::ApplicationFileContentSource::new(
-                application.clone(),
-            ));
+            self.file_content_source = Arc::new(
+                awaken_resource_worker_http::ApplicationFileContentSource::new(application.clone()),
+            );
             self.file_application = Some(application);
         }
         self.resource_lifecycle = Some(repository);
@@ -533,9 +535,9 @@ impl SharedHost {
         mut self,
         application: Arc<dyn awaken_resource_contract::FileApplicationService>,
     ) -> Self {
-        self.file_content_source = Arc::new(crate::ApplicationFileContentSource::new(
-            application.clone(),
-        ));
+        self.file_content_source = Arc::new(
+            awaken_resource_worker_http::ApplicationFileContentSource::new(application.clone()),
+        );
         self.file_application = Some(application);
         self
     }
@@ -814,7 +816,10 @@ impl SharedHost {
 
     /// Install only the exact immutable custom-Skill read port used by an
     /// execution Worker. This does not grant authoring or catalog access.
-    pub fn with_skill_bundle_source(mut self, source: Arc<dyn crate::SkillBundleSource>) -> Self {
+    pub fn with_skill_bundle_source(
+        mut self,
+        source: Arc<dyn awaken_resource_worker_http::SkillBundleSource>,
+    ) -> Self {
         self.skills.set_bundle_source(source);
         self
     }

@@ -1,17 +1,17 @@
 //! Custom-Skill Resource Coordinator boundary tests over real HTTP.
 
-mod support;
+use awaken_run_ingress_testkit::worker_http as support;
 
 use std::sync::Arc;
 
 use awaken_agent_contract::AgentSkillKind;
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_run_ingress::{
-    DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
-};
-use awaken_runtime_host::{
+use awaken_resource_worker_http::{
     HttpSkillBundleSource, SkillBundleSource as _, StoreSkillBundleSource,
     WorkerSkillBundleService, worker_skill_bundle_router,
+};
+use awaken_run_ingress::{
+    DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };
 use awaken_session_contract::{ResolvedSessionResources, ResolvedSkillBinding};
 use awaken_skill_store::{

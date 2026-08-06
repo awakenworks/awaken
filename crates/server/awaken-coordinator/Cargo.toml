@@ -14,7 +14,8 @@ authority = "coordinator"
 # The extracted service layer: SharedHost / ManagedHost / RunApplicationHost and all
 # host modules live here; this bin only composes them into router modes.
 awaken-runtime-host = { workspace = true }
-awaken-coordinator-runtime.workspace = true
+awaken-run-ingress-http.workspace = true
+awaken-resource-worker-http.workspace = true
 awaken-worker-runtime.workspace = true
 awaken-config-service.workspace = true
 awaken-credential-materializer.workspace = true
@@ -105,6 +106,8 @@ awaken-session-application.workspace = true
 awaken-ext-memory.workspace = true
 awaken-resource-contract.workspace = true
 awaken-resource-application.workspace = true
+awaken-store-fs.workspace = true
+awaken-store-inmem = { workspace = true, optional = true }
 awaken-tool-relay.workspace = true
 awaken-connection-plan.workspace = true
 # Webhook plane (ADR-0048 / S10): the WebhookLifecycleSink bridges the managed
@@ -127,9 +130,11 @@ tower-http = { version = "0.6", features = ["fs"] }
 [features]
 # Volatile embedded/scenario assembly is excluded from product builds.
 test-support = [
+    "dep:awaken-store-inmem",
     "awaken-deployment-application/test-support",
     "awaken-captured-content-store/test-support",
-    "awaken-coordinator-runtime/test-support",
+    "awaken-run-ingress-http/test-support",
+    "awaken-resource-worker-http/test-support",
     "awaken-config-resolver/test-support",
     "awaken-config-store/test-support",
     "awaken-credential-vault/test-support",

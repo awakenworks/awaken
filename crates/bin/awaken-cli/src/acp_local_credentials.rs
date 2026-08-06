@@ -101,7 +101,7 @@ pub async fn prepare_local_acp(
 /// The Worker crate receives only the neutral factory and mounter ports.
 pub fn registered_memory_mounter_factory() -> awaken_worker::RegisteredMemoryMounterFactory {
     Arc::new(|context| {
-        let repository = Arc::new(awaken_runtime_host::HttpMemoryRepository::new(
+        let repository = Arc::new(awaken_resource_worker_http::HttpMemoryRepository::new(
             context.upstream().clone(),
         ));
         Ok(Arc::new(

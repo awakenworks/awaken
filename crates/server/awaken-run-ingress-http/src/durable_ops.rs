@@ -1,7 +1,8 @@
 //! Coordinator-owned HTTP interface for durable Session operations.
 
+use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_runtime_host::{HostError, SharedHost, block_text, respond_host_http};
+use awaken_run_ingress::{ApplicationError, ApplicationErrorKind, DurableRunOperations};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -12,7 +13,7 @@ use std::sync::Arc;
 
 /// The durable operations router. Mounted on every server; each route fails
 /// closed with 400 when the server is not in durable mode.
-pub fn durable_ops_router(host: Arc<SharedHost>) -> Router {
+pub fn durable_ops_router(application: Arc<dyn DurableRunOperations>) -> Router {
     Router::new()
         .route(
             "/v1/durable/threads/{thread}/submit_background",
@@ -37,20 +38,20 @@ pub fn durable_ops_router(host: Arc<SharedHost>) -> Router {
             "/v1/durable/threads/{thread}/dead-letters/purge",
             post(purge),
         )
-        .with_state(host)
+        .with_state(application)
 }
 
 async fn submit_background(
-    State(host): State<Arc<SharedHost>>,
+    State(application): State<Arc<dyn DurableRunOperations>>,
     Path(thread): Path<String>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
-    respond_host_http(
+    respond(
         async {
             let text = body
                 .get("text")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| HostError::bad_request("`text` is required"))?
+                .ok_or_else(|| ApplicationError::invalid("`text` is required"))?
                 .to_string();
             let agent = body.get("agent").and_then(|v| v.as_str());
             let message = Message::text(
@@ -58,8 +59,8 @@ async fn submit_background(
                 Role::User,
                 text,
             );
-            let run_id = host
-                .submit_background_async(agent, &thread, vec![message])
+            let run_id = application
+                .submit_background(agent, &thread, vec![message])
                 .await?;
             Ok(json!({ "run_id": run_id, "queued": true }))
         }
@@ -70,17 +71,17 @@ async fn submit_background(
 /// Cancel a run by id via the durable live-control seam (ADR-0018): live channel
 /// first, then a durable cancel of a queued/awaiting dispatch. `{ run_id }`.
 async fn cancel(
-    State(host): State<Arc<SharedHost>>,
+    State(application): State<Arc<dyn DurableRunOperations>>,
     Path(thread): Path<String>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
-    respond_host_http(
+    respond(
         async {
             let run_id = body
                 .get("run_id")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| HostError::bad_request("`run_id` is required"))?;
-            host.cancel_durable(&thread, run_id).await?;
+                .ok_or_else(|| ApplicationError::invalid("`run_id` is required"))?;
+            application.cancel(&thread, run_id).await?;
             Ok(json!({ "cancelled": true, "run_id": run_id }))
         }
         .await,
@@ -90,14 +91,14 @@ async fn cancel(
 /// Cooperatively pause an active run by id. The request fails closed when the
 /// run has no live owner; an accepted pause becomes a durable awaiting ticket.
 async fn pause(
-    State(host): State<Arc<SharedHost>>,
+    State(application): State<Arc<dyn DurableRunOperations>>,
     Path(thread): Path<String>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
-    respond_host_http(
+    respond(
         async {
-            let run_id = host
-                .pause_durable(&thread, body.get("run_id").and_then(|v| v.as_str()))
+            let run_id = application
+                .pause(&thread, body.get("run_id").and_then(|v| v.as_str()))
                 .await?;
             Ok(json!({ "paused": true, "run_id": run_id }))
         }
@@ -107,19 +108,19 @@ async fn pause(
 
 /// RunResume exactly a committed `ManualPause` ticket with `{ text }`.
 async fn resume(
-    State(host): State<Arc<SharedHost>>,
+    State(application): State<Arc<dyn DurableRunOperations>>,
     Path(thread): Path<String>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
-    respond_host_http(
+    respond(
         async {
             let text = body
                 .get("text")
                 .and_then(|value| value.as_str())
                 .filter(|value| !value.is_empty())
-                .ok_or_else(|| HostError::bad_request("`text` is required"))?
+                .ok_or_else(|| ApplicationError::invalid("`text` is required"))?
                 .to_string();
-            let run_id = host.stage_manual_resume(&thread, text).await?;
+            let run_id = application.resume(&thread, text).await?;
             Ok(json!({ "resumed": true, "run_id": run_id }))
         }
         .await,
@@ -129,17 +130,17 @@ async fn resume(
 /// Wake a live run by id via the durable live-control seam (ADR-0018). Live-only
 /// and fail-closed: no live subscriber → 400. `{ run_id }`.
 async fn wake(
-    State(host): State<Arc<SharedHost>>,
+    State(application): State<Arc<dyn DurableRunOperations>>,
     Path(thread): Path<String>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
-    respond_host_http(
+    respond(
         async {
             let run_id = body
                 .get("run_id")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| HostError::bad_request("`run_id` is required"))?;
-            host.wake_durable(&thread, run_id).await?;
+                .ok_or_else(|| ApplicationError::invalid("`run_id` is required"))?;
+            application.wake(&thread, run_id).await?;
             Ok(json!({ "woken": true, "run_id": run_id }))
         }
         .await,
@@ -149,14 +150,14 @@ async fn wake(
 /// Stage a durable cross-thread decision for the thread's awaiting run; the daemon
 /// relays it from the outbox and wakes the run (ADR-0017). `{ allow: bool }`.
 async fn deliver(
-    State(host): State<Arc<SharedHost>>,
+    State(application): State<Arc<dyn DurableRunOperations>>,
     Path(thread): Path<String>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
-    respond_host_http(
+    respond(
         async {
             let allow = body.get("allow").and_then(|v| v.as_bool()).unwrap_or(true);
-            let run_id = host.stage_decision(&thread, allow).await?;
+            let run_id = application.deliver(&thread, allow).await?;
             Ok(json!({ "run_id": run_id, "staged": true }))
         }
         .await,
@@ -164,16 +165,16 @@ async fn deliver(
 }
 
 async fn supersede(
-    State(host): State<Arc<SharedHost>>,
+    State(application): State<Arc<dyn DurableRunOperations>>,
     Path(thread): Path<String>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
-    respond_host_http(
+    respond(
         async {
             let text = body
                 .get("text")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| HostError::bad_request("`text` is required"))?
+                .ok_or_else(|| ApplicationError::invalid("`text` is required"))?
                 .to_string();
             let agent = body.get("agent").and_then(|v| v.as_str());
             let message = Message::text(
@@ -181,11 +182,10 @@ async fn supersede(
                 Role::User,
                 text,
             );
-            let turn = host.supersede_run(agent, &thread, vec![message]).await?;
-            let superseded = host.superseded(&thread).await?;
+            let outcome = application.supersede(agent, &thread, vec![message]).await?;
             Ok(json!({
-                "state": format!("{:?}", turn.state),
-                "superseded": superseded,
+                "state": outcome.state,
+                "superseded": outcome.superseded,
             }))
         }
         .await,
@@ -196,23 +196,25 @@ async fn supersede(
 /// (e.g. a daemon-drained run), which never flows through a session's in-memory
 /// event log. Returns each committed message's role and text.
 async fn messages(
-    State(host): State<Arc<SharedHost>>,
+    State(application): State<Arc<dyn DurableRunOperations>>,
     Path(thread): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    let committed = host.committed_messages(&thread).await;
-    let out: Vec<Value> = committed
-        .iter()
-        .map(|m| json!({ "role": format!("{:?}", m.role), "text": block_text(&m.content) }))
-        .collect();
-    (StatusCode::OK, Json(json!({ "messages": out })))
+    respond(application.messages(&thread).await.map(|committed| {
+        let out: Vec<Value> = committed
+            .iter()
+            .map(|m| json!({ "role": format!("{:?}", m.role), "text": extract_text(&m.content) }))
+            .collect();
+        json!({ "messages": out })
+    }))
 }
 
 async fn superseded(
-    State(host): State<Arc<SharedHost>>,
+    State(application): State<Arc<dyn DurableRunOperations>>,
     Path(thread): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    respond_host_http(
-        host.superseded(&thread)
+    respond(
+        application
+            .superseded(&thread)
             .await
             .map(|ids| json!({ "superseded": ids })),
     )
@@ -221,18 +223,18 @@ async fn superseded(
 /// An operational snapshot of the thread's dispatch queue (ADR-0025): every row in
 /// enqueue order with its status and attempt count.
 async fn dispatches(
-    State(host): State<Arc<SharedHost>>,
+    State(application): State<Arc<dyn DurableRunOperations>>,
     Path(thread): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    respond_host_http(host.list_dispatches(&thread).await.map(|rows| {
+    respond(application.dispatches(&thread).await.map(|rows| {
         let out: Vec<Value> = rows
             .into_iter()
-            .map(|(run_id, status, attempts, sandbox_bound)| {
+            .map(|row| {
                 json!({
-                    "run_id": run_id,
-                    "status": status,
-                    "attempts": attempts,
-                    "sandbox_bound": sandbox_bound,
+                    "run_id": row.run_id,
+                    "status": row.status,
+                    "attempts": row.attempts,
+                    "sandbox_bound": row.sandbox_bound,
                 })
             })
             .collect();
@@ -241,18 +243,19 @@ async fn dispatches(
 }
 
 async fn reconcile(
-    State(host): State<Arc<SharedHost>>,
+    State(application): State<Arc<dyn DurableRunOperations>>,
     Path(thread): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    respond_host_http(
-        host.reconcile(&thread)
+    respond(
+        application
+            .reconcile(&thread)
             .await
             .map(|ids| json!({ "recovered": ids })),
     )
 }
 
 async fn reap(
-    State(host): State<Arc<SharedHost>>,
+    State(application): State<Arc<dyn DurableRunOperations>>,
     Path(thread): Path<String>,
     Query(query): Query<HashMap<String, String>>,
 ) -> (StatusCode, Json<Value>) {
@@ -266,30 +269,33 @@ async fn reap(
         .get("now_ms")
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or_else(now_ms);
-    respond_host_http(
-        host.reap(&thread, max_attempts, now)
+    respond(
+        application
+            .reap(&thread, max_attempts, now)
             .await
             .map(|n| json!({ "dead_lettered": n })),
     )
 }
 
 async fn dead_letters(
-    State(host): State<Arc<SharedHost>>,
+    State(application): State<Arc<dyn DurableRunOperations>>,
     Path(thread): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    respond_host_http(
-        host.dead_letters(&thread)
+    respond(
+        application
+            .dead_letters(&thread)
             .await
             .map(|ids| json!({ "dead_letters": ids })),
     )
 }
 
 async fn purge(
-    State(host): State<Arc<SharedHost>>,
+    State(application): State<Arc<dyn DurableRunOperations>>,
     Path(thread): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    respond_host_http(
-        host.purge_dead_letters(&thread)
+    respond(
+        application
+            .purge_dead_letters(&thread)
             .await
             .map(|n| json!({ "purged": n })),
     )
@@ -300,4 +306,18 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn respond(result: Result<Value, ApplicationError>) -> (StatusCode, Json<Value>) {
+    match result {
+        Ok(value) => (StatusCode::OK, Json(value)),
+        Err(error) => {
+            let status = match error.kind {
+                ApplicationErrorKind::InvalidRequest => StatusCode::BAD_REQUEST,
+                ApplicationErrorKind::Conflict => StatusCode::CONFLICT,
+                ApplicationErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (status, Json(json!({ "error": error.message })))
+        }
+    }
 }

@@ -15,6 +15,7 @@
 //! through the commit boundary's `ThreadReader`/`RunStore` ports.
 
 mod any;
+mod application;
 mod capability;
 mod claimed_stream;
 mod clock;
@@ -38,6 +39,10 @@ mod worker;
 mod worker_context;
 
 pub use any::{AnyDispatchStore, DispatchEnqueue};
+pub use application::{
+    ApplicationError, ApplicationErrorKind, ClaimedCommitApplier, ClaimedCommitService,
+    DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult,
+};
 pub use capability::RunIngressCapabilities;
 // The database-less worker's HTTP dispatch client (drives claim/settle over the wire
 // to the Coordinator's registered Worker router), extracted from awaken-runtime-host.

@@ -34,6 +34,7 @@ awaken-worker = { workspace = true }
 # The service layer: SharedHost / ManagedHost / ConfigService / ConfigPlane and the
 # durable session repositories the composition opens.
 awaken-runtime-host = { workspace = true }
+awaken-resource-worker-http.workspace = true
 awaken-config-service.workspace = true
 awaken-credential-materializer.workspace = true
 awaken-env-store.workspace = true

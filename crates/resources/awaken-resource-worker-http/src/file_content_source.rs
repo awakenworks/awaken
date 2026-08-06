@@ -43,7 +43,7 @@ impl FileContentSource for ApplicationFileContentSource {
     }
 }
 
-pub(crate) struct UnavailableFileContentSource;
+pub struct UnavailableFileContentSource;
 
 #[async_trait::async_trait]
 impl FileContentSource for UnavailableFileContentSource {

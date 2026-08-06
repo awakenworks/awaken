@@ -1,0 +1,55 @@
+[package]
+name = "awaken-run-ingress-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "coordinator"
+layer = "interface"
+authority = "run-ingress-http"
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-resource-contract.workspace = true
+awaken-run-ingress.workspace = true
+awaken-run-ingress-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-runtime.workspace = true
+awaken-session-contract.workspace = true
+awaken-worker-transport-security.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[features]
+test-support = []
+
+[dev-dependencies]
+awaken-resource-application.workspace = true
+awaken-file-store = { workspace = true, features = ["test-support"] }
+awaken-memory-store = { workspace = true, features = ["test-support"] }
+awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
+awaken-run-ingress = { workspace = true, features = ["test-support"] }
+awaken-run-ingress-testkit.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-runtime-host = { workspace = true, features = ["test-support"] }
+awaken-skill-store = { workspace = true, features = ["test-support"] }
+awaken-store-inmem.workspace = true
+awaken-store-postgres.workspace = true
+awaken-tenancy.workspace = true
+awaken-worker-runtime.workspace = true
+async-trait.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+tempfile = "3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tower = { version = "0.5", features = ["util"] }
+
+[[test]]
+name = "durable_verbs"
+
+[lints]
+workspace = true

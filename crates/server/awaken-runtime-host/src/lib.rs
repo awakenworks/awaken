@@ -29,7 +29,7 @@ pub use container_environment::package_image_provisioner;
 mod delegate;
 mod deployment_config;
 mod dispatch_backend;
-mod file_content_transport;
+mod durable_operations;
 mod host;
 mod hub;
 mod inference_routing;
@@ -42,12 +42,10 @@ mod mcp;
 mod mcp_relay;
 mod memory;
 mod memory_stores;
-mod memory_transport;
 mod no_model;
 mod outcome_controller;
 mod provisioning;
 mod redact;
-mod repository_transport;
 mod resource_reclamation;
 mod run_application_host;
 pub use resource_reclamation::HostResourceReclamation;
@@ -56,7 +54,6 @@ mod sandbox_source;
 mod session_environment;
 mod session_slot;
 pub use session_environment::HandExecutorFactory;
-mod skill_bundle_transport;
 mod skill_catalog;
 mod skills;
 mod store;
@@ -96,23 +93,13 @@ pub use crate::dispatch_backend::{
     init_shared_postgres_dispatch_existing_with_config, init_shared_postgres_dispatch_with_config,
     migrate_postgres_dispatch_schema,
 };
-pub use crate::file_content_transport::ApplicationFileContentSource;
 pub use crate::host::{
     AttemptExecutorDecorator, HostResume, RemoteAttemptInstallation, SharedHost,
     remote_worker_placement, self_hosted_inference_holder,
 };
-pub use crate::memory_transport::{
-    HttpMemoryRepository, HttpMemorySnapshotSource, HttpMemoryWritebackClient, WorkerMemoryService,
-    memory_materialization_reference, worker_memory_router,
-};
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
-pub use crate::repository_transport::CatalogRepositoryBindingVerifier;
 pub use crate::run_application_host::{
     RunApplicationHost, SessionDefaultsPreparationError, SessionDefaultsPreparer,
-};
-pub use crate::skill_bundle_transport::{
-    HttpSkillBundleSource, SkillBundleSource, SkillBundleSourceError, StoreSkillBundleSource,
-    WorkerSkillBundleService, worker_skill_bundle_router,
 };
 use awaken_credential_materializer::PinnedCredentialMaterializer;
 #[cfg(test)]
@@ -129,13 +116,12 @@ pub use crate::skills::SkillForkPlacement;
 // advertised-tools helper the composition root builds a config host from.
 pub use crate::acp_provision::PublishedAcpLaunchResolver;
 pub use crate::acp_serve::{AcpServeHost, AcpStop, AcpTurn};
+pub use crate::commit_ingest::claimed_commit_service;
 pub use crate::config::{
     advertised_tools, authorable_config_sections, authorable_config_sections_with_web_search,
     authorable_tools, block_text, platform_plugin_capabilities,
     platform_plugin_capabilities_with_web_search,
 };
-// The per-plane resource routers the composition root merges over one host.
-pub use crate::commit_ingest::ClaimedCommitService;
 pub use crate::deployment_config::{
     AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
     PackageImageBuilder, SandboxSettings, SandboxTier, StoreKind, Wake,
@@ -489,9 +475,9 @@ impl ManagedHost {
         mut self,
         validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
     ) -> Self {
-        self.repository_binding_verifier = Some(Arc::new(CatalogRepositoryBindingVerifier::new(
-            validator.clone(),
-        )));
+        self.repository_binding_verifier = Some(Arc::new(
+            awaken_resource_worker_http::CatalogRepositoryBindingVerifier::new(validator.clone()),
+        ));
         self.resource_validator = Some(validator);
         self.refresh_dispatch_session_runtime();
         self

@@ -8,37 +8,12 @@
 
 use std::sync::Arc;
 
-use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
+use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator as _;
 use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
-use awaken_run_ingress::{
-    ClaimedCommitRequest, ClaimedRunCommit, DispatchQueue, WorkerDirectory, commit_payload_hash,
-};
+use awaken_run_ingress::{ClaimedCommitApplier, ClaimedRunCommit, DispatchQueue};
 
 use crate::host::HostError;
 use crate::host::SharedHost;
-use awaken_worker_transport_security::WorkerRequestAuthenticator;
-
-#[async_trait::async_trait]
-trait CommitApplier: Send + Sync {
-    async fn apply_operation(&self, operation: CommitOperation)
-    -> Result<CommitReceipt, HostError>;
-}
-
-struct CoordinatorCommitApplier(Arc<dyn OperationCoordinator>);
-
-#[async_trait::async_trait]
-impl CommitApplier for CoordinatorCommitApplier {
-    async fn apply_operation(
-        &self,
-        operation: CommitOperation,
-    ) -> Result<CommitReceipt, HostError> {
-        self.0
-            .commit_operation(operation)
-            .await
-            .map_err(|error| HostError::internal(error.to_string()))
-    }
-}
-
 struct HostCommitApplier(Arc<SharedHost>);
 
 async fn apply_host_operation(
@@ -85,87 +60,40 @@ async fn apply_host_operation(
 }
 
 #[async_trait::async_trait]
-impl CommitApplier for HostCommitApplier {
-    async fn apply_operation(
+impl ClaimedCommitApplier for HostCommitApplier {
+    async fn apply(
         &self,
         operation: CommitOperation,
-    ) -> Result<CommitReceipt, HostError> {
-        apply_host_operation(&self.0, operation).await
-    }
-}
-
-/// Explicit application service for the claim-fenced commit boundary.
-///
-/// The injected coordinator is the committed-truth authority used by the
-/// embedding Coordinator cell. The service never constructs a [`SharedHost`] or
-/// selects a storage backend.
-pub struct ClaimedCommitService {
-    dispatch: Arc<dyn DispatchQueue>,
-    applier: Arc<dyn CommitApplier>,
-    directory: Arc<dyn WorkerDirectory>,
-    authenticator: Arc<dyn WorkerRequestAuthenticator>,
-}
-
-impl ClaimedCommitService {
-    #[must_use]
-    pub fn new(
-        dispatch: Arc<dyn DispatchQueue>,
-        coordinator: Arc<dyn OperationCoordinator>,
-        directory: Arc<dyn WorkerDirectory>,
-        authenticator: Arc<dyn WorkerRequestAuthenticator>,
-    ) -> Self {
-        Self {
-            dispatch,
-            applier: Arc::new(CoordinatorCommitApplier(coordinator)),
-            directory,
-            authenticator,
-        }
-    }
-
-    pub fn for_host(
-        dispatch: Arc<dyn DispatchQueue>,
-        host: Arc<SharedHost>,
-        directory: Arc<dyn WorkerDirectory>,
-        authenticator: Arc<dyn WorkerRequestAuthenticator>,
-    ) -> Self {
-        Self {
-            dispatch,
-            applier: Arc::new(HostCommitApplier(host)),
-            directory,
-            authenticator,
-        }
-    }
-
-    pub fn authenticator(&self) -> Arc<dyn WorkerRequestAuthenticator> {
-        self.authenticator.clone()
-    }
-
-    pub fn directory(&self) -> Arc<dyn WorkerDirectory> {
-        self.directory.clone()
-    }
-
-    /// Apply one already-authenticated request while holding its exact epoch guard.
-    pub async fn apply_claimed(
-        &self,
-        request: ClaimedCommitRequest,
-    ) -> Result<CommitReceipt, HostError> {
-        let guard = self
-            .dispatch
-            .lock_commit_epoch(&request.claim)
+    ) -> Result<CommitReceipt, awaken_run_ingress::ApplicationError> {
+        apply_host_operation(&self.0, operation)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
-        let Some(_guard) = guard else {
-            return Err(HostError::bad_request("run claim is stale"));
-        };
-        let expected_hash = commit_payload_hash(&request.operation.commit)
-            .map_err(|error| HostError::bad_request(error.to_string()))?;
-        if expected_hash != request.operation.payload_hash {
-            return Err(HostError::bad_request(
-                "commit operation payload hash does not match ThreadCommit",
-            ));
-        }
-        self.applier.apply_operation(request.operation).await
+            .map_err(map_host_error)
     }
+}
+
+fn map_host_error(error: HostError) -> awaken_run_ingress::ApplicationError {
+    match error.kind {
+        crate::HostErrorKind::BadRequest => {
+            awaken_run_ingress::ApplicationError::invalid(error.message)
+        }
+        crate::HostErrorKind::Conflict => {
+            awaken_run_ingress::ApplicationError::conflict(error.message)
+        }
+        crate::HostErrorKind::Internal => {
+            awaken_run_ingress::ApplicationError::internal(error.message)
+        }
+    }
+}
+
+#[must_use]
+pub fn claimed_commit_service(
+    dispatch: Arc<dyn DispatchQueue>,
+    host: Arc<SharedHost>,
+) -> awaken_run_ingress::ClaimedCommitService {
+    awaken_run_ingress::ClaimedCommitService::with_applier(
+        dispatch,
+        Arc::new(HostCommitApplier(host)),
+    )
 }
 
 pub(crate) fn remote_claimed_commit(

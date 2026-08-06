@@ -1,0 +1,32 @@
+pub mod awaken_run_ingress_http
+pub struct awaken_run_ingress_http::ClaimedCommitHttpService
+impl awaken_run_ingress_http::ClaimedCommitHttpService
+pub fn awaken_run_ingress_http::ClaimedCommitHttpService::new(alloc::sync::Arc<awaken_run_ingress::application::ClaimedCommitService>, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>) -> Self
+pub struct awaken_run_ingress_http::RegisteredDispatchDependencies
+pub awaken_run_ingress_http::RegisteredDispatchDependencies::authenticator: alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
+pub awaken_run_ingress_http::RegisteredDispatchDependencies::checkpoint: alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>
+pub awaken_run_ingress_http::RegisteredDispatchDependencies::completion: alloc::sync::Arc<dyn awaken_run_ingress::pool::CompletionSink>
+pub awaken_run_ingress_http::RegisteredDispatchDependencies::directory: alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>
+pub awaken_run_ingress_http::RegisteredDispatchDependencies::dispatch: alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>
+pub awaken_run_ingress_http::RegisteredDispatchDependencies::policy: alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>
+pub awaken_run_ingress_http::RegisteredDispatchDependencies::recovery: alloc::sync::Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>
+pub awaken_run_ingress_http::RegisteredDispatchDependencies::sessions: alloc::sync::Arc<dyn awaken_session_contract::session_realization::ApplicationSessionControl>
+pub awaken_run_ingress_http::RegisteredDispatchDependencies::stream_sink: alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>
+pub struct awaken_run_ingress_http::WorkerDispatchService
+impl awaken_run_ingress_http::WorkerDispatchService
+pub fn awaken_run_ingress_http::WorkerDispatchService::local(alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>) -> Self
+pub fn awaken_run_ingress_http::WorkerDispatchService::new(alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerClock>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerLeasePolicy>) -> Self
+pub fn awaken_run_ingress_http::WorkerDispatchService::with_application_session_control(self, alloc::sync::Arc<dyn awaken_session_contract::session_realization::ApplicationSessionControl>) -> Self
+pub fn awaken_run_ingress_http::WorkerDispatchService::with_checkpoint_store(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
+pub fn awaken_run_ingress_http::WorkerDispatchService::with_completion_sink(self, alloc::sync::Arc<dyn awaken_run_ingress::pool::CompletionSink>) -> Self
+pub fn awaken_run_ingress_http::WorkerDispatchService::with_local_credential_capabilities(self, awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities) -> Self
+pub fn awaken_run_ingress_http::WorkerDispatchService::with_max_attempts(self, u64) -> Self
+pub fn awaken_run_ingress_http::WorkerDispatchService::with_placement_policy(self, alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>) -> Self
+pub fn awaken_run_ingress_http::WorkerDispatchService::with_recovery_source(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>) -> Self
+pub fn awaken_run_ingress_http::WorkerDispatchService::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
+pub fn awaken_run_ingress_http::WorkerDispatchService::with_worker_directory(self, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>, u64) -> Self
+pub fn awaken_run_ingress_http::claimed_commit_router(alloc::sync::Arc<awaken_run_ingress_http::ClaimedCommitHttpService>) -> axum::routing::Router
+pub fn awaken_run_ingress_http::dispatch_transport_router_with_service(alloc::sync::Arc<awaken_run_ingress_http::WorkerDispatchService>) -> axum::routing::Router
+pub fn awaken_run_ingress_http::durable_ops_router(alloc::sync::Arc<dyn awaken_run_ingress::application::DurableRunOperations>) -> axum::routing::Router
+pub fn awaken_run_ingress_http::registered_dispatch_router(awaken_run_ingress_http::RegisteredDispatchDependencies) -> axum::routing::Router
+pub fn awaken_run_ingress_http::registered_worker_transport_router_with_services(axum::routing::Router, axum::routing::Router, alloc::sync::Arc<awaken_run_ingress_http::ClaimedCommitHttpService>) -> axum::routing::Router
