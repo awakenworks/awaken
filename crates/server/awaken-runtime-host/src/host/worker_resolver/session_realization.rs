@@ -29,6 +29,12 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         let environment_absent = self.host.session_environment(session_id).await.is_none();
         let has_environment_binding =
             environment_absent && projection.environment.binding().is_some();
+        if self.requires_runtime_before_effects && self.published_snapshot.is_none() {
+            return Err(awaken_session_contract::RunError::classified(
+                "session_runtime_publication_missing",
+                "sandbox stdio MCP realization requires the exact claimed Agent snapshot before effects",
+            ));
+        }
         let adopted = if environment_absent && let Some(binding) = projection.environment.binding()
         {
             let published_snapshot = self.published_snapshot.ok_or_else(|| {
@@ -312,7 +318,8 @@ mod tests {
          * the exact bound Environment before MCP stage; E2 never consult current
          * Agent publication; E3 preserve the Sandbox handle and generation; E4 a
          * cold lease-only replay without the exact snapshot fails closed; E5
-         * rebuild only when the claimed Run's explicit recovery policy permits it.
+         * rebuild only when the claimed Run's explicit recovery policy permits it;
+         * E6 no MCP effect runs when a first-use stdio stage lacks that snapshot.
          *
          * | Rule | binding | resident | snapshot | stdio | recovery | Effect |
          * |---|---|---|---|---|---|---|
@@ -323,6 +330,7 @@ mod tests {
          * | R5 | missing | no | yes | no | rebuild | E5 |
          * | R6 | missing | no | yes | no | continuity | fail closed |
          * | R7 | none yet | no | yes | yes | either | install publication, then stage |
+         * | R8 | none yet | no | no | yes | either | E4 + E6 |
          */
         let storage = tempfile::tempdir().expect("storage");
         let thread = "cold-frozen-environment";
@@ -461,7 +469,7 @@ mod tests {
                 projection: first_use_projection,
             },
             first_use_thread,
-            first_use_directive,
+            first_use_directive.clone(),
             None,
             Some(&first_use_activation.snapshot),
             false,
@@ -472,6 +480,42 @@ mod tests {
             first_use_realizer.calls.lock().unwrap().as_slice(),
             ["stage", "publish"],
             "R7"
+        );
+
+        let unpinned_host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+        );
+        let unpinned_realizer = Arc::new(RecordingMcpRealizer::default());
+        let managed = crate::ManagedHost::new(unpinned_host.clone())
+            .with_mcp_attachment_realizer(unpinned_realizer.clone());
+        drop(managed);
+        let error = HostWorkerResolver::realize_application_session(
+            &unpinned_host,
+            &RecoveryControl {
+                projection: frozen_projection(),
+            },
+            first_use_thread,
+            first_use_directive,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect_err("R8 first-use stdio MCP without a publication must fail closed");
+        assert!(
+            error.to_string().contains("exact claimed Agent snapshot"),
+            "R8/E4: {error}"
+        );
+        assert!(
+            unpinned_realizer.calls.lock().unwrap().is_empty(),
+            "R8/E6: no MCP stage, publish, or drain may run"
+        );
+        assert!(
+            unpinned_host
+                .session_environment(first_use_thread)
+                .await
+                .is_none(),
+            "R8/E6: no unpinned Runtime may be installed"
         );
 
         let cold = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());

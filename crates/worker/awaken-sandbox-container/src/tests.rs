@@ -210,10 +210,11 @@ fn container_plan_maps_command_image_env_binds_network_and_outputs() {
 fn container_plan_honors_an_image_override_and_network_variants() {
     /* Container-image authority cause/effect decision table. Causes: C1 the
      * canonical Environment declares an OCI image; C2 it declares a non-image
-     * Environment; C3 it declares no Environment.
+     * Environment; C3 it declares no Environment; C4 a retained/forged legacy
+     * top-level `image` field is present without canonical Environment authority.
      * Effects: E1 Docker/Kubernetes `plan.image` and Podman `plan.rootfs` select
      * the same canonical reference; E2 the configured base is the final fallback.
-     * Rules: I1 C1=>E1; I2 C2=>E2; I3 C3=>E2. This prevents a prepared
+     * Rules: I1 C1=>E1; I2 C2=>E2; I3 C3=>E2; I4 C4=>E2. This prevents a prepared
      * package Environment from silently falling back to the package-free image. */
     let mut s = spec("s2");
     s.extra = Some(serde_json::json!({
@@ -266,6 +267,13 @@ fn container_plan_honors_an_image_override_and_network_variants() {
         container_plan(&s, "def", &[], None).unwrap().image,
         "def",
         "I3"
+    );
+
+    s.extra = Some(serde_json::json!({ "image": "shadow:latest" }));
+    assert_eq!(
+        container_plan(&s, "def", &[], None).unwrap().image,
+        "def",
+        "I4: a legacy shadow field cannot override canonical image authority"
     );
 }
 

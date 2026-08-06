@@ -60,13 +60,14 @@ impl WorkerBootstrap {
             credential_probe_interval_secs: input.credential_probe_interval_secs.unwrap_or(10),
             credential_observation_ttl_secs: input.credential_observation_ttl_secs.unwrap_or(30),
         };
-        if worker.worker_id.trim().is_empty()
-            || worker.credential_material_root.as_os_str().is_empty()
-            || worker.credential_trust_domain.trim().is_empty()
-        {
-            return Err(
-                "Worker identity and credential material settings must not be empty".into(),
-            );
+        if worker.worker_id.trim().is_empty() {
+            return Err("worker_id must not be empty".into());
+        }
+        if worker.credential_material_root.as_os_str().is_empty() {
+            return Err("worker_credential_material_root must not be empty".into());
+        }
+        if worker.credential_trust_domain.trim().is_empty() {
+            return Err("worker_credential_trust_domain must not be empty".into());
         }
         if worker.credential_probe_interval_secs == 0
             || worker.credential_observation_ttl_secs <= worker.credential_probe_interval_secs
@@ -154,7 +155,11 @@ impl WorkerDaemonConfig {
         )?;
         let mut runtime = awaken_runtime_host::DeploymentConfig::ephemeral();
         runtime.upstream = Some(server.clone());
-        runtime.sandbox_tier = parse_sandbox_tier(file.sandbox_tier.as_deref())?;
+        runtime.sandbox_tier = file
+            .sandbox_tier
+            .as_deref()
+            .unwrap_or("namespace")
+            .parse()?;
         runtime.sandbox_dir = file.sandbox_dir;
         runtime.sandbox.allow_local_fallback = file.sandbox_allow_local_fallback.unwrap_or(false);
         let acp_clis = file.acp_clis.unwrap_or_default();
@@ -236,27 +241,61 @@ impl WorkerDaemonConfig {
     }
 }
 
-fn parse_sandbox_tier(value: Option<&str>) -> Result<awaken_runtime_host::SandboxTier, String> {
-    match value.unwrap_or("namespace") {
-        "local" | "none" => Ok(awaken_runtime_host::SandboxTier::Local),
-        "namespace" => Ok(awaken_runtime_host::SandboxTier::Namespace),
-        "docker" => Ok(awaken_runtime_host::SandboxTier::Docker),
-        "podman" => Ok(awaken_runtime_host::SandboxTier::Podman),
-        "k8s" | "kubernetes" => Ok(awaken_runtime_host::SandboxTier::K8s),
-        other => Err(format!("invalid sandbox_tier={other:?}")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn worker_bootstrap_rejects_each_empty_identity_boundary() {
+        /* Worker identity cause/effect decision table. C1 worker_id is nonblank,
+         * C2 material root is nonempty, C3 trust domain is nonblank. E1 is one
+         * fully typed bootstrap; E2 is a field-specific error before transport or
+         * storage construction. Rules W1 C1+C2+C3=>E1; W2 !C1=>E2(worker_id);
+         * W3 !C2=>E2(material root); W4 !C3=>E2(trust domain). */
+        let data_dir = Path::new("/worker-data");
+        assert!(
+            WorkerBootstrap::resolve(WorkerBootstrapInput::default(), data_dir).is_ok(),
+            "W1"
+        );
+        for (rule, input, field) in [
+            (
+                "W2",
+                WorkerBootstrapInput {
+                    worker_id: Some(" ".into()),
+                    ..Default::default()
+                },
+                "worker_id",
+            ),
+            (
+                "W3",
+                WorkerBootstrapInput {
+                    credential_material_root: Some(PathBuf::new()),
+                    ..Default::default()
+                },
+                "worker_credential_material_root",
+            ),
+            (
+                "W4",
+                WorkerBootstrapInput {
+                    credential_trust_domain: Some(" ".into()),
+                    ..Default::default()
+                },
+                "worker_credential_trust_domain",
+            ),
+        ] {
+            let error = WorkerBootstrap::resolve(input, data_dir).expect_err(rule);
+            assert!(error.contains(field), "{rule}: {error}");
+        }
+    }
+
     /// Cause/effect decision table: C1 role is Worker, C2 mode is server, C3 no
     /// authority-only key is present, C4 server is valid, C5 probe TTL exceeds
-    /// interval, C6 the projected signer matches Worker identity. R1 all true ->
-    /// an isolated, resource/inference-capable Worker; R2 !C1/!C2/!C4/!C5/!C6
-    /// -> typed validation failure; R3 !C3 -> serde rejects the unknown authority
-    /// field. The built manifest is the terminal composition effect.
+    /// interval, C6 the projected signer exists and matches Worker identity, C7
+    /// the sandbox tier belongs to the canonical runtime vocabulary.
+    /// R1 all true -> an isolated, resource/inference-capable Worker; R2
+    /// !C1/!C2/!C4/!C5/!C7 -> config validation failure; R3 !C3 -> serde rejects the
+    /// unknown authority field; R4 !C6 -> composition fails before any network
+    /// activity. The built manifest is the terminal composition effect.
     #[test]
     fn standalone_config_boundary_decision_table() {
         let directory = tempfile::tempdir().unwrap();
@@ -296,10 +335,42 @@ mod tests {
             "role='worker'\nmode='local'\nworker_server='http://coordinator:3000'\n",
             "role='worker'\nworker_server='postgres://authority'\n",
             "role='worker'\nworker_server='http://coordinator:3000'\nworker_credential_probe_interval_secs=10\nworker_credential_observation_ttl_secs=10\n",
+            "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='vm'\n",
             "role='worker'\nworker_server='http://coordinator:3000'\nruntime_database_url='postgres://authority'\n",
         ] {
             write(source);
             assert!(WorkerDaemonConfig::load(&path, None).is_err(), "R2/R3");
         }
+
+        std::fs::write(
+            &credential,
+            r#"{"worker_id":"worker-b","key_id":"key-a","credential_id":"credential-a","secret_base64":"c2VjcmV0"}"#,
+        )
+        .unwrap();
+        write(&format!(
+            "role='worker'\nmode='server'\nworker_server='http://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\n",
+            credential.display()
+        ));
+        let error = WorkerDaemonConfig::load(&path, None)
+            .expect("R4 config syntax remains valid")
+            .build()
+            .err()
+            .expect("R4 mismatched signer must fail composition");
+        assert!(error.contains("configured worker_id"), "R4: {error}");
+
+        let missing_credential = directory.path().join("missing-worker.json");
+        write(&format!(
+            "role='worker'\nmode='server'\nworker_server='http://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\n",
+            missing_credential.display()
+        ));
+        let error = WorkerDaemonConfig::load(&path, None)
+            .expect("R4 missing projection is a composition-time cause")
+            .build()
+            .err()
+            .expect("R4 missing signer must fail composition");
+        assert!(
+            error.contains("read Worker request credential"),
+            "R4: {error}"
+        );
     }
 }

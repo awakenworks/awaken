@@ -946,7 +946,12 @@ impl CredentialMaterialResolver for PinnedCredentialMaterializer {
     }
 }
 
-#[cfg(test)]
+// These fixtures exercise the local Vault authority constructor. The
+// database-less Worker path is covered by `S10` in this module when authority
+// tests run, by the no-default-features build matrix, and by the standalone
+// Worker materialization E2E; compiling local-store fixtures into that feature
+// profile would itself violate the boundary under test.
+#[cfg(all(test, feature = "authority"))]
 mod tests {
     use super::*;
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
