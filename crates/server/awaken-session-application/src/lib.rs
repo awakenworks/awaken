@@ -35,6 +35,10 @@ pub use mcp::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
 pub use realization::{
     SessionRealizationError, SessionReconciliation, SessionReconciliationFailure,
 };
+mod update;
+pub use update::{
+    SessionUpdateChanges, SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
+};
 
 /// Secret-free credential selection used while compiling a Session.
 #[async_trait::async_trait]
@@ -1131,6 +1135,71 @@ mod tests {
             Err(SessionActivityError::NotFound),
             "A7"
         );
+    }
+
+    /// Update-admission authority graph. C1 durable status is idle; C2 durable
+    /// status is running/terminal; C3 an interface cache is absent or stale.
+    /// Only C1 permits mutation (E1); C2 always rejects without a root revision
+    /// change (E2), independently of C3. This prevents another process's wire
+    /// projection from becoming a parallel lifecycle authority.
+    ///
+    /// | Rule | Durable status | Wire cache | Effect |
+    /// |---|---|---|---|
+    /// | U1 | idle | any/absent | apply through root CAS |
+    /// | U2 | running | any/absent | reject, no mutation |
+    /// | U3 | terminal | any/absent | reject, no mutation |
+    #[tokio::test]
+    async fn update_admission_uses_only_durable_session_status() {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        create(
+            repo.as_ref(),
+            persisted("update-idle", false, false, "idle"),
+        )
+        .await;
+        create(
+            repo.as_ref(),
+            persisted("update-running", false, false, "running"),
+        )
+        .await;
+        create(
+            repo.as_ref(),
+            persisted("update-terminal", false, false, "terminated"),
+        )
+        .await;
+        let app = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let command = |title: &str| SessionUpdateCommand {
+            title: Some(Some(title.into())),
+            metadata: None,
+            tools: None,
+            mcp_candidates: None,
+            idempotency_key: None,
+            request_fingerprint: awaken_session_contract::stable_fingerprint(&title),
+            if_match: None,
+        };
+
+        let updated = app
+            .update_session("update-idle", command("accepted"))
+            .await
+            .expect("U1");
+        assert_eq!(updated.session.title.as_deref(), Some("accepted"), "U1");
+
+        for (rule, id) in [("U2", "update-running"), ("U3", "update-terminal")] {
+            let before = repo.get(id).await.expect(rule);
+            assert!(
+                matches!(
+                    app.update_session(id, command("rejected")).await,
+                    Err(SessionUpdateError::NotIdle)
+                ),
+                "{rule}"
+            );
+            assert_eq!(repo.get(id).await.expect(rule), before, "{rule}");
+        }
     }
 
     /// Cause/effect graph: C1 the Runtime presents the exact durable realization

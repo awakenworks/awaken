@@ -32,6 +32,7 @@ use awaken_session_contract::{ManagedLifecycleFact, PersistedSession};
 use awaken_session_store::SqliteManagedSessionRepository;
 
 mod application;
+pub(crate) use application::agent_mcp_candidate;
 mod composition;
 mod constants;
 mod deployment_sessions;
@@ -52,7 +53,6 @@ mod session_create_idempotency;
 mod session_mcp_projection;
 mod session_record;
 mod session_update;
-pub(crate) use session_update::SessionUpdateCommand;
 mod sessions;
 #[cfg(test)]
 mod test_support;

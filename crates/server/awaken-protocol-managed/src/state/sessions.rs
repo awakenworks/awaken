@@ -173,6 +173,7 @@ impl ManagedState {
         record.session.metadata = persisted.metadata.clone();
         record.session.deployment_id = persisted.metadata.get("awaken.deployment_id").cloned();
         record.session.archived_at = persisted.archived_at.clone();
+        record.session.agent.tools = crate::project::managed_tools(&persisted.tools);
         record.session.agent.mcp_servers = mcp_servers;
         record.resource_state = persisted.resources.clone();
         Ok(())
@@ -195,22 +196,6 @@ impl ManagedState {
             .map_err(Self::map_application_mutation_error)?;
         self.refresh_cached_projection(&session)?;
         Ok(session)
-    }
-
-    pub(super) async fn commit_session_snapshot_with_record(
-        &self,
-        owner_scope: &str,
-        session: PersistedSession,
-        idempotency: awaken_session_contract::IdempotencyRecord,
-        lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<(PersistedSession, bool), StateError> {
-        let result = self
-            .application
-            .commit_session_snapshot_with_record(owner_scope, session, idempotency, lifecycle_facts)
-            .await
-            .map_err(Self::map_application_mutation_error)?;
-        self.refresh_cached_projection(&result.0)?;
-        Ok(result)
     }
 
     fn map_application_mutation_error(

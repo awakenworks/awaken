@@ -16,7 +16,7 @@ use awaken_session_contract::{
     ApplicationSessionContributionFailure,
 };
 
-pub(super) fn agent_mcp_candidate(
+pub(crate) fn agent_mcp_candidate(
     server: AgentMcpServer,
     origin: awaken_session_contract::McpAttachmentOrigin,
 ) -> McpAttachmentCandidate {
