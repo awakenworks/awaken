@@ -23,7 +23,7 @@ pub(super) async fn build_runtime_process_assembly(
         config::OperatingMode::Local => PostgresSchemaMode::Migrate,
         config::OperatingMode::Server => PostgresSchemaMode::Verify,
     };
-    let worker_directory = match deployment.mode {
+    let persistence = match deployment.mode {
         config::OperatingMode::Local => {
             awaken_coordinator::open_coordinator_persistence(&deployment.runtime).await?
         }
@@ -31,6 +31,7 @@ pub(super) async fn build_runtime_process_assembly(
             awaken_coordinator::open_existing_coordinator_persistence(&deployment.runtime).await?
         }
     };
+    let worker_directory = persistence.worker_directory.clone();
     let worker_observations = worker_observation_wiring::WorkerObservationWiring::runtime(
         role,
         deployment,
@@ -107,6 +108,7 @@ pub(super) async fn build_runtime_process_assembly(
             executable_environment_wiring: Some(executable_environment_wiring),
             worker_authenticator: Some(worker_authenticator),
             worker_directory: Some(worker_directory),
+            runtime_authority: Some(persistence.runtime_authority),
             worker_observations: Some(worker_observations),
             control_service_token: None,
             control_service,

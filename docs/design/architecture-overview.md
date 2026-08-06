@@ -114,6 +114,31 @@ public protocols, registry publication workflow, vault schemas, remote execution
 placement, or product-specific session names. Server and product code adapt into
 the runtime through explicit ports.
 
+### 1.2 Runtime Host, authority, protocol, and composition
+
+`awaken-runtime-host` owns execution semantics, Session environments, Worker
+transport adapters, and the `RuntimeAuthority`/`LocalCommit` injection contracts.
+Its default dependency closure contains no SQL/FS commit, dispatch, Session,
+Resource, or Credential store and it has no backend-selection feature.
+
+`awaken-coordinator::runtime_authority` is the sole durable implementation. It
+selects SQLite, filesystem, or PostgreSQL once at Coordinator startup and returns
+one capability containing commit, dispatch, wake, and stream-checkpoint access.
+The Host can therefore distinguish only local injected authority from a
+claim-fenced remote Worker projection; it cannot reopen or reselect a backend.
+
+`awaken-protocol-managed` is a driving anti-corruption layer. It translates the
+Managed HTTP contract into the existing Session application and Runtime Host
+interfaces; it is neither a Coordinator Runtime nor a persistence owner. Its
+Memory and Skill routes depend on `awaken-resource-contract` and the canonical
+Resources application ingestion path, with concrete stores supplied only by the
+Resources composition.
+
+The `awaken`/`awaken-control`/`awaken-coordinator` targets share the single
+`awaken-cli::run_service` lifecycle. `awaken-worker` remains a separate package so
+its feature-resolved dependency closure can be proven authority-store-free. The
+CLI assembles these deployables; it does not become another domain owner.
+
 Under the accepted target, config publication is a Control flow, not a runtime
 subsystem. Control persists one immutable `StoredPublication`, then invokes
 `ExecutableAgentRegistrar::register`. Coordinator stores a rebuildable

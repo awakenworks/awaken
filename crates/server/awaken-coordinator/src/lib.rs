@@ -33,6 +33,8 @@ pub mod mcp_export;
 pub mod model_directory;
 pub mod model_discovery;
 pub mod model_resolver;
+mod oauth_refresh;
+mod runtime_authority;
 pub mod webhooks;
 pub mod worker_observation_boundary;
 pub mod worker_placement;
@@ -47,9 +49,10 @@ pub use coordinator_component::{
 #[cfg(any(test, feature = "test-support"))]
 pub use coordinator_persistence::init_scenario_runtime;
 pub use coordinator_persistence::{
-    migrate_postgres_schema as migrate_postgres_coordinator_schema,
+    CoordinatorPersistence, migrate_postgres_schema as migrate_postgres_coordinator_schema,
     open as open_coordinator_persistence, open_existing as open_existing_coordinator_persistence,
 };
+pub use oauth_refresh::{VaultRefreshFactory, VaultRefresher};
 
 use std::sync::Arc;
 
@@ -83,8 +86,7 @@ pub fn memory_store_application(
 pub use awaken_run_ingress_http::durable_ops_router;
 pub use awaken_runtime_host::{
     ExtMcpProbe, HostResume, ManagedHost, NoModelConfiguredExecutor, RunApplicationHost,
-    SharedHost, ThreadEvent, ThreadEventHub, UNCONFIGURED_MODEL_REF, VaultRefresher,
-    advertised_tools,
+    SharedHost, ThreadEvent, ThreadEventHub, UNCONFIGURED_MODEL_REF, advertised_tools,
 };
 pub use awaken_sandbox_local::content_fingerprint;
 pub use awaken_worker_registry::{WorkerDirectory, WorkerObservationSource};

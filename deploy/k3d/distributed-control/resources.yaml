@@ -187,10 +187,8 @@ spec:
         - name: control
           image: awaken-roles:latest
           imagePullPolicy: Never
-          command: ["/usr/local/bin/awaken-server"]
+          command: ["/usr/local/bin/awaken-control", "--config", "/etc/awaken/control.toml"]
           env:
-            - { name: AWAKEN_MODEL_MODE, value: distributed-control }
-            - { name: AWAKEN_HTTP_ADDR, value: "0.0.0.0:3000" }
             - { name: HOME, value: "/etc/awaken-home" }
           ports: [{ containerPort: 3000 }]
           readinessProbe:

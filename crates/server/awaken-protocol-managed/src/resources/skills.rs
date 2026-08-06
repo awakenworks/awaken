@@ -6,18 +6,20 @@
 //! Two create paths coexist so nothing regresses: a JSON body `{id, content}`
 //! keeps the original delivery contract (used by the resource-mount e2e), while a
 //! multipart upload is the SDK path. BOTH feed the runtime's delivered-skill
-//! catalog ([`awaken_skill_store::SkillStore`]) so a skill created either way is
+//! catalog ([`awaken_resource_contract::SkillStore`]) so a skill created either way is
 //! offered on selected threads and survives a restart. The SDK object, immutable
 //! versions, and binary bundle share that one Workspace-scoped repository; the
 //! former API-local registry is migration input only.
 
 use std::sync::Arc;
 
-use awaken_resource_contract::{ResourceKind, ResourceTarget};
-use awaken_skill_store::{
-    CanonicalSkillBundle, MAX_SKILL_ARCHIVE_BYTES, MAX_SKILL_FILES, SkillDefinition,
-    SkillStoreError, SkillVersion, UploadedSkillBundleFile, canonicalize_skill_bundle,
-    normalize_bundle_path,
+use awaken_resource_application::{
+    CanonicalSkillBundle, MAX_SKILL_ARCHIVE_BYTES, MAX_SKILL_FILES, UploadedSkillBundleFile,
+    canonicalize_skill_bundle, normalize_bundle_path,
+};
+use awaken_resource_contract::{
+    ResourceKind, ResourceTarget, SkillDefinition, SkillStore, SkillStoreError, SkillVersion,
+    skill_bundle_sha256, skill_catalog_id, skill_stem,
 };
 use axum::extract::{FromRequest, Multipart, Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -74,7 +76,7 @@ fn project_version(version: &SkillVersion) -> Value {
 /// Skills API state. The durable repository is the only resource truth; there is
 /// deliberately no HTTP-local registry or authorization data here.
 struct SkillsApi {
-    store: Option<Arc<dyn awaken_skill_store::SkillStore>>,
+    store: Option<Arc<dyn SkillStore>>,
     purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
 }
 
@@ -145,7 +147,7 @@ impl SkillsApi {
 
 /// Mount the skills API over the host's durable skill catalog.
 pub fn skills_router(
-    store: Option<Arc<dyn awaken_skill_store::SkillStore>>,
+    store: Option<Arc<dyn SkillStore>>,
     purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
 ) -> Router {
     let state = Arc::new(SkillsApi { store, purge });
@@ -270,19 +272,15 @@ fn build_version(
     let spec = awaken_ext_skills::parse_skill_md("skill", content);
     let files = bundle.files;
     SkillVersion {
-        id: format!(
-            "skver_{}_{ordinal}",
-            awaken_skill_store::sanitize_stem(skill_id)
-        )
-        .into(),
+        id: format!("skver_{}_{ordinal}", skill_stem(skill_id)).into(),
         skill_id: skill_id.into(),
         version: ordinal,
         name: spec.name.clone(),
         description: spec.description.clone(),
         directory: bundle
             .source_directory
-            .unwrap_or_else(|| awaken_skill_store::sanitize_stem(&spec.name)),
-        bundle_sha256: awaken_skill_store::bundle_sha256(&files),
+            .unwrap_or_else(|| skill_stem(&spec.name)),
+        bundle_sha256: skill_bundle_sha256(&files),
         files,
         created_unix_nanos: now_nanos(),
     }
@@ -345,7 +343,7 @@ async fn create_skill(
             Err(error) => return err(StatusCode::BAD_REQUEST, error),
         };
         let parsed = awaken_ext_skills::parse_skill_md("skill", &content);
-        let id = awaken_skill_store::catalog_id(&parsed.name);
+        let id = skill_catalog_id(&parsed.name);
         let version = build_version(&id, &content, 1, bundle);
         let definition = SkillDefinition {
             id: id.clone().into(),
@@ -385,7 +383,7 @@ async fn create_skill(
             "skill needs a string `id` and `content`",
         );
     };
-    let id = awaken_skill_store::sanitize_stem(id);
+    let id = skill_stem(id);
     let bundle = canonicalize_skill_bundle(vec![UploadedSkillBundleFile {
         path: "SKILL.md".to_owned(),
         content: content.as_bytes().to_vec(),
@@ -656,7 +654,7 @@ async fn version_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_skill_store::{InMemorySkillStore, SkillStore};
+    use awaken_skill_store::InMemorySkillStore;
     use awaken_tenancy::WorkspaceScope;
     use axum::body::Body;
     use axum::http::Request;

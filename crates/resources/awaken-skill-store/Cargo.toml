@@ -23,10 +23,6 @@ awaken-resource-contract.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-# Canonical bundle ingestion decodes ZIP in memory before the repository write.
-# Only the ubiquitous deflate codec is enabled; paths and expanded sizes are
-# validated by `canonicalize_skill_bundle`.
-zip = { version = "8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "fs"] }
 # Feature `sqlite`: embedded durable SkillStore over the crate's own `skill_store`

@@ -25,6 +25,7 @@ RUNTIME_HOST_BUILD = "crates/server/awaken-runtime-host/src/host/build.rs"
 PROCESS_STORES = "crates/bin/awaken-cli/src/process_stores.rs"
 RUNTIME_HOST_MANIFEST = "crates/server/awaken-runtime-host/Cargo.toml"
 COORDINATOR_MANIFEST = "crates/server/awaken-coordinator/Cargo.toml"
+PROTOCOL_MANAGED_MANIFEST = "crates/server/awaken-protocol-managed/Cargo.toml"
 CLI_MANIFEST = "crates/bin/awaken-cli/Cargo.toml"
 CLI_SERVICE = "crates/bin/awaken-cli/src/service.rs"
 CONTROL_BIN = "crates/bin/awaken-cli/src/bin/awaken-control.rs"
@@ -52,7 +53,7 @@ TOOL_RELAY_SOURCE = "crates/worker/awaken-tool-relay/src/lib.rs"
 RUN_INGRESS_ANY_SOURCE = "crates/server/awaken-run-ingress/src/any.rs"
 RUN_INGRESS_LIB_SOURCE = "crates/server/awaken-run-ingress/src/lib.rs"
 RUN_INGRESS_SQLITE_SOURCE = "crates/server/awaken-run-ingress/src/sqlite.rs"
-DISPATCH_BACKEND_SOURCE = "crates/server/awaken-runtime-host/src/dispatch_backend.rs"
+RUNTIME_AUTHORITY_SOURCE = "crates/server/awaken-coordinator/src/runtime_authority.rs"
 RUNTIME_STORE_SOURCE = "crates/server/awaken-runtime-host/src/store.rs"
 RUNTIME_LIB_SOURCE = "crates/runtime/awaken-runtime/src/lib.rs"
 STORE_FS_MANIFEST = "crates/stores/awaken-store-fs/Cargo.toml"
@@ -473,45 +474,16 @@ def dependency_closure(root: str, graph: dict[str, set[str]]) -> set[str]:
     return reached
 
 
-def resolved_worker_dependencies(repo_root: Path) -> set[str]:
-    """Read Cargo's feature-resolved normal closure for the Worker artifact."""
-
+def resolved_product_dependencies(
+    repo_root: Path, package: str, boundary: str
+) -> set[str]:
+    """Read Cargo's feature-resolved normal closure for one product boundary."""
     result = subprocess.run(
         [
             "cargo",
             "tree",
             "-p",
-            "awaken-worker",
-            "--edges",
-            "normal",
-            "--prefix",
-            "none",
-            "--format",
-            "{p}",
-        ],
-        cwd=repo_root,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"resolve Worker dependency closure: {result.stderr.strip()}")
-    return {
-        match.group(1)
-        for line in result.stdout.splitlines()
-        if (match := re.match(r"^([A-Za-z0-9_-]+)\s+v", line))
-    }
-
-
-def resolved_runtime_host_dependencies(repo_root: Path) -> set[str]:
-    """Read the default normal closure of the reusable Runtime Host."""
-
-    result = subprocess.run(
-        [
-            "cargo",
-            "tree",
-            "-p",
-            "awaken-runtime-host",
+            package,
             "--edges",
             "normal",
             "--prefix",
@@ -526,26 +498,22 @@ def resolved_runtime_host_dependencies(repo_root: Path) -> set[str]:
     )
     if result.returncode != 0:
         raise RuntimeError(
-            f"resolve default Runtime Host dependency closure: {result.stderr.strip()}"
+            f"resolve {boundary} dependency closure: {result.stderr.strip()}"
         )
     return {
         match.group(1)
         for line in result.stdout.splitlines()
         if (match := re.match(r"^([A-Za-z0-9_-]+)\s+v", line))
     }
-
-
 def runtime_host_feature_violations(manifest: dict) -> list[str]:
-    """Keep authority acquisition explicit and role-named at product edges."""
+    """Keep authority acquisition outside the reusable Runtime Host."""
 
     features = manifest.get("features", {})
     errors: list[str] = []
     if features.get("default", []) != []:
         errors.append("Runtime Host default features must be authority-free")
-    if "authority" not in features.get("coordinator", []):
-        errors.append(
-            "Runtime Host `coordinator` feature must select the compatibility assembly"
-        )
+    if "coordinator" in features:
+        errors.append("Runtime Host must not retain a Coordinator compatibility feature")
     return errors
 
 
@@ -897,6 +865,11 @@ def coordinator_persistence_composition_violations(cli_source: str) -> list[str]
 def product_dispatch_fallback_violations(source: str) -> list[str]:
     """Require missing SQLite durability to fail closed outside test support."""
 
+    coordinator_owned = (
+        "Coordinator SQLite dispatch requires runtime.storage_dir; refusing volatile dispatch authority"
+        in source
+        and "open_sqlite_in_memory" not in source
+    )
     guarded = re.search(
         rf"None\s*=>\s*\{{.*?{TEST_SUPPORT_GATE}.*?"
         rf"AnyDispatchStore::open_sqlite_in_memory\(\).*?"
@@ -905,20 +878,27 @@ def product_dispatch_fallback_violations(source: str) -> list[str]:
         source,
         re.DOTALL,
     )
-    return [] if guarded else ["SQLite dispatch missing-storage path does not fail closed"]
+    return [] if coordinator_owned or guarded else [
+        "SQLite dispatch missing-storage path does not fail closed"
+    ]
 
 
-def product_commit_fallback_violations(source: str) -> list[str]:
-    """Require SQLite commit without durable storage to be test-only."""
+def runtime_commit_authority_violations(source: str) -> list[str]:
+    """Runtime Host may discriminate local/remote commits, never Store backends."""
 
-    guarded = re.search(
-        rf"{TEST_SUPPORT_GATE}\s*return\s+CommitPlan::Memory\s*;.*?"
-        rf"#\s*\[\s*cfg\s*\(\s*not\s*\(\s*any\s*\(\s*test\s*,\s*feature\s*=\s*\"test-support\"\s*\)\s*\)\s*\)\s*\].*?"
-        r"return\s+CommitPlan::SqliteNeedsStorageDir",
-        source,
-        re.DOTALL,
+    forbidden = (
+        "CommitPlan",
+        "thread_commit_path",
+        "StoreKind",
+        "SqliteCommitCoordinator",
+        "FsCommitCoordinator",
+        "PostgresCommitCoordinator",
     )
-    return [] if guarded else ["SQLite commit missing-storage path does not fail closed"]
+    return [
+        f"Runtime Host retains commit backend selector `{name}`"
+        for name in forbidden
+        if name in source
+    ]
 
 
 def redundant_admin_store_reexport_violations(source: str) -> list[str]:
@@ -980,9 +960,9 @@ def selftest() -> None:
     dispatch durability fails closed in product and selects memory only with test
     support -> accepted; O22 an unconditional in-memory fallback -> rejected;
     O23 one authoritative Config Resolver store path -> accepted; O24 an Admin
-    compatibility re-export of that path -> rejected; O25 missing SQLite commit
-    durability selects memory only for test-support and fails closed in product ->
-    accepted; O26 an unconditional Memory commit fallback -> rejected; O27 the
+    compatibility re-export of that path -> rejected; O25 Runtime Host carries
+    only local/remote commit semantics -> accepted; O26 any Store backend selector
+    retained by Runtime Host -> rejected; O27 the
     FS log's rebuild projection and an optional test-support feature may depend on
     inmem -> accepted; O28 an ordinary, aliased, or target-conditioned product
     dependency on the selectable backend -> rejected; O29 Runtime has no
@@ -1240,15 +1220,8 @@ def selftest() -> None:
     assert redundant_admin_store_reexport_violations(
         "pub use awaken_config_resolver::{InferenceProfileStore, InMemoryProfileStore};"
     ) == ["Admin API re-exports Config Resolver store contracts or fixtures"]  # O24
-    guarded_commit = (
-        '#[cfg(any(test, feature = "test-support"))] return CommitPlan::Memory; '
-        '#[cfg(not(any(test, feature = "test-support")))] '
-        "return CommitPlan::SqliteNeedsStorageDir;"
-    )
-    assert product_commit_fallback_violations(guarded_commit) == []  # O25
-    assert product_commit_fallback_violations("return CommitPlan::Memory;") == [
-        "SQLite commit missing-storage path does not fail closed"
-    ]  # O26
+    assert runtime_commit_authority_violations("enum HostCommit { Local, Remote }") == []  # O25
+    assert runtime_commit_authority_violations("enum CommitPlan { Sqlite }")  # O26
     assert product_inmem_dependency_violations(
         STORE_FS_MANIFEST, {"dependencies": {"awaken-store-inmem": {}}}
     ) == []  # O27 rebuild projection
@@ -1308,13 +1281,13 @@ def selftest() -> None:
         + " fn put(&self, def: WebhookEndpointDef"
     )  # O34
     assert runtime_host_feature_violations(
-        {"features": {"default": [], "coordinator": ["authority"], "authority": []}}
+        {"features": {"default": [], "test-support": []}}
     ) == []  # O35
     assert runtime_host_feature_violations(
         {"features": {"default": ["authority"], "coordinator": []}}
     ) == [
         "Runtime Host default features must be authority-free",
-        "Runtime Host `coordinator` feature must select the compatibility assembly",
+        "Runtime Host must not retain a Coordinator compatibility feature",
     ]  # O36
     service_bins = {
         "package": {"default-run": "awaken"},
@@ -1364,7 +1337,9 @@ def check_all(repo_root: Path) -> list[str]:
         ):
             errors.append(f"{product_manifest}: {error}")
     try:
-        dependencies = resolved_worker_dependencies(repo_root)
+        dependencies = resolved_product_dependencies(
+            repo_root, "awaken-worker", "Worker"
+        )
     except RuntimeError as error:
         errors.append(str(error))
         dependencies = set()
@@ -1377,7 +1352,9 @@ def check_all(repo_root: Path) -> list[str]:
     for error in runtime_host_feature_violations(runtime_host_manifest):
         errors.append(f"{RUNTIME_HOST_MANIFEST}: {error}")
     try:
-        runtime_dependencies = resolved_runtime_host_dependencies(repo_root)
+        runtime_dependencies = resolved_product_dependencies(
+            repo_root, "awaken-runtime-host", "default Runtime Host"
+        )
     except RuntimeError as error:
         errors.append(str(error))
         runtime_dependencies = set()
@@ -1385,6 +1362,27 @@ def check_all(repo_root: Path) -> list[str]:
         errors.append(
             f"{RUNTIME_HOST_MANIFEST}: default Runtime Host transitively links "
             f"authority-store dependency `{package}`; select it only from Coordinator composition"
+        )
+    try:
+        protocol_dependencies = resolved_product_dependencies(
+            repo_root, "awaken-protocol-managed", "Managed protocol"
+        )
+    except RuntimeError as error:
+        errors.append(str(error))
+        protocol_dependencies = set()
+    for package in sorted(
+        protocol_dependencies
+        & {
+            "awaken-file-store",
+            "awaken-memory-store",
+            "awaken-resource-store",
+            "awaken-session-store",
+            "awaken-skill-store",
+        }
+    ):
+        errors.append(
+            f"{PROTOCOL_MANAGED_MANIFEST}: default Managed protocol transitively links "
+            f"concrete persistence adapter `{package}`; inject the existing contract/application"
         )
     for error in service_binary_violations(
         product_manifests[CLI_MANIFEST],
@@ -1468,10 +1466,10 @@ def check_all(repo_root: Path) -> list[str]:
     for error in non_product_surface_violations(non_product_sources):
         errors.append(f"Non-product surface: {error}")
     for error in product_dispatch_fallback_violations(
-        (repo_root / DISPATCH_BACKEND_SOURCE).read_text(encoding="utf-8")
+        (repo_root / RUNTIME_AUTHORITY_SOURCE).read_text(encoding="utf-8")
     ):
-        errors.append(f"{DISPATCH_BACKEND_SOURCE}: {error}")
-    for error in product_commit_fallback_violations(
+        errors.append(f"{RUNTIME_AUTHORITY_SOURCE}: {error}")
+    for error in runtime_commit_authority_violations(
         (repo_root / RUNTIME_STORE_SOURCE).read_text(encoding="utf-8")
     ):
         errors.append(f"{RUNTIME_STORE_SOURCE}: {error}")

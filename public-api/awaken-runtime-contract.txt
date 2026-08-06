@@ -428,6 +428,12 @@ pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::capabilities
 pub fn awaken_runtime_contract::execution::AttemptExecutorRegistry::execute<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::execution::execution_capability(&str) -> alloc::string::String
 pub type awaken_runtime_contract::execution::Result<T> = core::result::Result<T, awaken_runtime_contract::execution::Error>
+pub mod awaken_runtime_contract::inference
+pub trait awaken_runtime_contract::inference::InferenceExecutorMaterializer: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::inference::InferenceExecutorMaterializer::credential_realization_capabilities(&self) -> awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities
+pub fn awaken_runtime_contract::inference::InferenceExecutorMaterializer::materialize(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>, alloc::string::String>
+pub fn awaken_runtime_contract::inference::InferenceExecutorMaterializer::materialize_pinned(&self, &awaken_runtime_contract::resolved::ResolvedModelCandidate, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
+pub fn awaken_runtime_contract::inference::InferenceExecutorMaterializer::supported_access_schemes(&self) -> &'static [&'static str]
 pub mod awaken_runtime_contract::live_inbox
 pub enum awaken_runtime_contract::live_inbox::EditError
 pub awaken_runtime_contract::live_inbox::EditError::Closed
@@ -1927,6 +1933,11 @@ pub trait awaken_runtime_contract::DataSubjectResolver: awaken_runtime_contract:
 pub fn awaken_runtime_contract::DataSubjectResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::data_subject::ErasureReceipt, awaken_runtime_contract::data_subject::ErasureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_runtime_contract::data_subject::DataSubjectResolver for awaken_runtime_contract::data_subject::NullResolver
 pub fn awaken_runtime_contract::data_subject::NullResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::data_subject::ErasureReceipt, awaken_runtime_contract::data_subject::ErasureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_runtime_contract::InferenceExecutorMaterializer: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::InferenceExecutorMaterializer::credential_realization_capabilities(&self) -> awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities
+pub fn awaken_runtime_contract::InferenceExecutorMaterializer::materialize(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>, alloc::string::String>
+pub fn awaken_runtime_contract::InferenceExecutorMaterializer::materialize_pinned(&self, &awaken_runtime_contract::resolved::ResolvedModelCandidate, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
+pub fn awaken_runtime_contract::InferenceExecutorMaterializer::supported_access_schemes(&self) -> &'static [&'static str]
 pub trait awaken_runtime_contract::LiveRunControl
 pub fn awaken_runtime_contract::LiveRunControl::deliver(&self, awaken_runtime_contract::control::LiveCommand) -> core::result::Result<(), awaken_runtime_contract::control::Error>
 pub trait awaken_runtime_contract::LlmExecutor: core::marker::Send + core::marker::Sync

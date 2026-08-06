@@ -1338,6 +1338,7 @@ mod process_role_surface_tests {
                 control_service: Some(control_service),
                 deployment: Some(coordinator_deployment.runtime),
                 worker_directory: Some(worker_directory.clone()),
+                runtime_authority: None,
                 worker_observations: Some(
                     worker_observation_wiring::WorkerObservationWiring::local(worker_directory),
                 ),

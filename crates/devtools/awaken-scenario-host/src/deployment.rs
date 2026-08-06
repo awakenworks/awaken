@@ -3,6 +3,20 @@ use std::sync::Arc;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_host::SharedHost;
 
+static SCENARIO_RUNTIME_AUTHORITY: std::sync::OnceLock<
+    Arc<dyn awaken_runtime_host::RuntimeAuthority>,
+> = std::sync::OnceLock::new();
+
+/// Install the one Coordinator-owned authority selected by the scenario entry
+/// point before any router is assembled.
+pub fn install_scenario_runtime_authority(
+    authority: Arc<dyn awaken_runtime_host::RuntimeAuthority>,
+) -> Result<(), std::io::Error> {
+    SCENARIO_RUNTIME_AUTHORITY
+        .set(authority)
+        .map_err(|_| std::io::Error::other("scenario runtime authority was already installed"))
+}
+
 /// Resolve the scenario-only process fixture into the same typed deployment
 /// consumed by every scenario composition. Production binaries never use these
 /// environment variables; their sole boundary is `ResolvedDeployment`.
@@ -83,7 +97,7 @@ pub(crate) fn resource_host_with_deployment(
     // explicit Local sandbox tier with the fail-closed Namespace default.
     let extraction_repository =
         SharedHost::test_memory_extraction_repository(deployment.storage_dir.as_deref());
-    let host = SharedHost::new_with_resource_component_and_deployment(
+    let mut host = SharedHost::new_with_resource_component_and_deployment(
         llm,
         model_ref,
         resources.ports(),
@@ -96,6 +110,9 @@ pub(crate) fn resource_host_with_deployment(
         resources.artifact_publisher(),
     )
     .with_skill_bundle_source(resources.skill_bundle_source());
+    if let Some(authority) = SCENARIO_RUNTIME_AUTHORITY.get() {
+        host = host.with_runtime_authority(authority.clone());
+    }
     let scenario_workspace = std::env::var("AWAKEN_SCENARIO_WORKSPACE")
         .ok()
         .filter(|workspace| !workspace.trim().is_empty());

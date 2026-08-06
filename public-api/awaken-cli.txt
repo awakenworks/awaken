@@ -9,6 +9,7 @@ pub use awaken_cli::RemoteManagementAuthz
 pub use awaken_cli::TokenSpec
 pub use awaken_cli::embedded_iam
 pub mod awaken_cli::config
+pub use awaken_cli::config::WorkerBootstrap
 pub enum awaken_cli::config::CloudModelMode
 pub awaken_cli::config::CloudModelMode::Disabled
 pub awaken_cli::config::CloudModelMode::Enabled
@@ -104,7 +105,7 @@ pub awaken_cli::config::ResolvedDeployment::run_local_pool: bool
 pub awaken_cli::config::ResolvedDeployment::runtime: awaken_runtime_host::deployment_config::DeploymentConfig
 pub awaken_cli::config::ResolvedDeployment::seal_key: awaken_cli::config::SealKeySource
 pub awaken_cli::config::ResolvedDeployment::suite_hub_url: core::option::Option<alloc::string::String>
-pub awaken_cli::config::ResolvedDeployment::worker: awaken_cli::config::WorkerBootstrap
+pub awaken_cli::config::ResolvedDeployment::worker: awaken_worker::bootstrap::WorkerBootstrap
 pub awaken_cli::config::ResolvedDeployment::worker_server: core::option::Option<alloc::string::String>
 pub awaken_cli::config::ResolvedDeployment::worker_trust_credentials_file: core::option::Option<std::path::PathBuf>
 impl awaken_cli::config::ResolvedDeployment
@@ -113,20 +114,44 @@ pub fn awaken_cli::config::ResolvedDeployment::ensure_data_layout(&self) -> core
 pub fn awaken_cli::config::ResolvedDeployment::load(awaken_cli::config::ConfigOverrides) -> core::result::Result<Self, alloc::string::String>
 impl awaken_cli::config::ResolvedDeployment
 pub fn awaken_cli::config::ResolvedDeployment::report(&self, bool) -> alloc::string::String
-pub struct awaken_cli::config::WorkerBootstrap
-pub awaken_cli::config::WorkerBootstrap::admin_listen: core::option::Option<alloc::string::String>
-pub awaken_cli::config::WorkerBootstrap::build_digest: core::option::Option<alloc::string::String>
-pub awaken_cli::config::WorkerBootstrap::capabilities: alloc::vec::Vec<alloc::string::String>
-pub awaken_cli::config::WorkerBootstrap::credential_material_root: std::path::PathBuf
-pub awaken_cli::config::WorkerBootstrap::credential_observation_ttl_secs: u64
-pub awaken_cli::config::WorkerBootstrap::credential_probe_interval_secs: u64
-pub awaken_cli::config::WorkerBootstrap::credential_trust_domain: alloc::string::String
-pub awaken_cli::config::WorkerBootstrap::drain_grace_secs: u64
-pub awaken_cli::config::WorkerBootstrap::max_concurrent: core::option::Option<u32>
-pub awaken_cli::config::WorkerBootstrap::request_credential_file: core::option::Option<std::path::PathBuf>
-pub awaken_cli::config::WorkerBootstrap::worker_id: alloc::string::String
-pub awaken_cli::config::WorkerBootstrap::zone: core::option::Option<alloc::string::String>
 pub const awaken_cli::config::DEFAULT_BIND: &str
+pub mod awaken_cli::console
+pub enum awaken_cli::console::Command
+pub awaken_cli::console::Command::AllInOne(awaken_cli::console::ServiceArgs)
+pub awaken_cli::console::Command::Config
+pub awaken_cli::console::Command::Config::config_path: core::option::Option<std::path::PathBuf>
+pub awaken_cli::console::Command::Config::json: bool
+pub awaken_cli::console::Command::Control(awaken_cli::console::ServiceArgs)
+pub awaken_cli::console::Command::ControlIamProfile
+pub awaken_cli::console::Command::ControlIamResourceProfile
+pub awaken_cli::console::Command::ControlIamRuntimeProfile
+pub awaken_cli::console::Command::Coordinator(awaken_cli::console::ServiceArgs)
+pub awaken_cli::console::Command::DatabaseMigrate
+pub awaken_cli::console::Command::DatabaseMigrate::config_path: core::option::Option<std::path::PathBuf>
+pub awaken_cli::console::Command::DoctorAcp
+pub awaken_cli::console::Command::DoctorAcp::json: bool
+pub awaken_cli::console::Command::Help
+pub awaken_cli::console::Command::Version
+pub enum awaken_cli::console::ServiceBinaryCommand
+pub awaken_cli::console::ServiceBinaryCommand::DatabaseMigrate
+pub awaken_cli::console::ServiceBinaryCommand::DatabaseMigrate::config_path: core::option::Option<std::path::PathBuf>
+pub awaken_cli::console::ServiceBinaryCommand::Help
+pub awaken_cli::console::ServiceBinaryCommand::Serve(awaken_cli::console::ServiceArgs)
+pub struct awaken_cli::console::ServiceArgs
+pub awaken_cli::console::ServiceArgs::cloud_models: core::option::Option<awaken_cli::config::CloudModelMode>
+pub awaken_cli::console::ServiceArgs::config_path: core::option::Option<std::path::PathBuf>
+pub awaken_cli::console::ServiceArgs::data_dir: core::option::Option<std::path::PathBuf>
+pub awaken_cli::console::ServiceArgs::identity_mode: core::option::Option<awaken_control::authz::ManagementIdentityMode>
+pub awaken_cli::console::ServiceArgs::no_browser: bool
+pub awaken_cli::console::ServiceArgs::port: core::option::Option<u16>
+pub fn awaken_cli::console::parse_args(impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> core::result::Result<awaken_cli::console::Command, alloc::string::String>
+pub fn awaken_cli::console::parse_service_binary_command(impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> core::result::Result<awaken_cli::console::ServiceBinaryCommand, alloc::string::String>
+pub fn awaken_cli::console::print_help()
+pub fn awaken_cli::console::print_service_help(&str)
+pub enum awaken_cli::ServiceRole
+pub awaken_cli::ServiceRole::AllInOne
+pub awaken_cli::ServiceRole::Control
+pub awaken_cli::ServiceRole::Coordinator
 pub struct awaken_cli::DrainController
 impl awaken_cli::DrainController
 pub fn awaken_cli::DrainController::active_streams(&self) -> usize
@@ -147,15 +172,14 @@ pub awaken_cli::ProcessAssembly::router: axum::routing::Router
 pub async fn awaken_cli::build_all_in_one_assembly(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<awaken_cli::ProcessAssembly, alloc::string::String>
 pub async fn awaken_cli::build_all_in_one_router() -> axum::routing::Router
 pub async fn awaken_cli::build_all_in_one_router_with_deployment(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<axum::routing::Router, alloc::string::String>
-pub async fn awaken_cli::build_configured_worker(impl core::convert::Into<alloc::string::String>, &awaken_cli::config::ResolvedDeployment) -> core::result::Result<awaken_worker::WorkerNode, alloc::string::String>
 pub async fn awaken_cli::build_control_assembly(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<awaken_cli::ProcessAssembly, alloc::string::String>
 pub async fn awaken_cli::build_control_router(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<axum::routing::Router, alloc::string::String>
 pub async fn awaken_cli::build_control_router_with_publication_resolver(&awaken_cli::config::ResolvedDeployment, &[u8; 32], alloc::sync::Arc<dyn awaken_config_service::binding_resolver::ModelPublicationResolver>) -> core::result::Result<axum::routing::Router, alloc::string::String>
 pub async fn awaken_cli::build_control_router_with_publication_resolver_and_web_search(&awaken_cli::config::ResolvedDeployment, &[u8; 32], alloc::sync::Arc<dyn awaken_config_service::binding_resolver::ModelPublicationResolver>, core::option::Option<alloc::sync::Arc<dyn awaken_admin_config_api::router::BrokeredCatalogDiscovery>>, awaken_ext_builtin_tools::web::WebSearchProviderRegistry, alloc::sync::Arc<dyn awaken_config_service::plugin_validation::PluginPublicationResolver>) -> core::result::Result<axum::routing::Router, alloc::string::String>
 pub async fn awaken_cli::build_coordinator_assembly(&awaken_cli::config::ResolvedDeployment) -> core::result::Result<awaken_cli::ProcessAssembly, alloc::string::String>
-pub fn awaken_cli::load_worker_request_authorizer(&std::path::Path, &str) -> core::result::Result<alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthorizer>, alloc::string::String>
 pub async fn awaken_cli::local_acp_diagnostics(bool) -> alloc::string::String
 pub async fn awaken_cli::migrate_deployment_schema(&awaken_cli::config::ResolvedDeployment, core::option::Option<&[u8; 32]>) -> core::result::Result<(), alloc::string::String>
+pub async fn awaken_cli::migrate_service(core::option::Option<std::path::PathBuf>) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_cli::mount_console(axum::routing::Router) -> axum::routing::Router
 pub fn awaken_cli::mount_console_with_navigation(axum::routing::Router, awaken_api_contract::console::SuiteNavigation) -> axum::routing::Router
 pub async fn awaken_cli::prepare_local_acp(&mut awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<core::option::Option<awaken_cli::PreparedLocalAcp>, alloc::string::String>
@@ -163,5 +187,7 @@ pub async fn awaken_cli::prepare_local_worker(&mut awaken_cli::config::ResolvedD
 pub fn awaken_cli::process_admin_router(alloc::sync::Arc<awaken_cli::DrainController>) -> axum::routing::Router
 pub fn awaken_cli::register_active_streams_gauge(alloc::sync::Arc<awaken_cli::DrainController>) -> alloc::vec::Vec<opentelemetry::metrics::instruments::gauge::ObservableGauge<u64>>
 pub fn awaken_cli::registered_memory_mounter_factory() -> awaken_worker::RegisteredMemoryMounterFactory
+pub async fn awaken_cli::run_service(awaken_cli::console::ServiceArgs, awaken_cli::ServiceRole) -> core::result::Result<(), alloc::string::String>
+pub async fn awaken_cli::run_service_binary(awaken_cli::ServiceRole) -> std::process::ExitCode
 pub fn awaken_cli::with_connection_metric(axum::routing::Router, alloc::sync::Arc<awaken_cli::DrainController>) -> axum::routing::Router
 pub fn awaken_cli::with_process_admin(axum::routing::Router, alloc::sync::Arc<awaken_cli::DrainController>) -> axum::routing::Router

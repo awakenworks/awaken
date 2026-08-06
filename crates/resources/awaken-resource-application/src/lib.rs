@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 mod execution_sources;
 mod files;
+mod skill_ingest;
 use awaken_resource_contract::{
     ConfigVersion, CreateMemoryStoreCommand, FileApplicationService, MemoryStoreApplicationError,
     MemoryStoreApplicationService, MemoryStoreConfigVersion, MemoryStoreDefinition,
@@ -21,6 +22,10 @@ pub use execution_sources::{
     StoreSkillBundleSource,
 };
 pub use files::{CreateFileCommand, FileApplication};
+pub use skill_ingest::{
+    CanonicalSkillBundle, MAX_SKILL_ARCHIVE_BYTES, MAX_SKILL_BUNDLE_BYTES, MAX_SKILL_FILE_BYTES,
+    MAX_SKILL_FILES, UploadedSkillBundleFile, canonicalize_skill_bundle, normalize_bundle_path,
+};
 
 #[derive(Clone)]
 pub struct ResourcesApplication {

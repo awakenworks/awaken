@@ -8,6 +8,8 @@ pub use awaken_memory_store::MemoryPurgeSummary
 pub use awaken_memory_store::MemoryRepository
 pub use awaken_memory_store::MemoryVersion
 pub use awaken_memory_store::MemoryVersionOperation
+pub use awaken_memory_store::sanitize_stem
+pub use awaken_memory_store::sha256_hex
 pub mod awaken_memory_store::repository
 pub use awaken_memory_store::repository::MAX_MEMORIES_PER_STORE
 pub use awaken_memory_store::repository::MAX_MEMORY_BYTES
@@ -19,6 +21,4 @@ pub use awaken_memory_store::repository::MemoryPurgeSummary
 pub use awaken_memory_store::repository::MemoryRepository
 pub use awaken_memory_store::repository::MemoryVersion
 pub use awaken_memory_store::repository::MemoryVersionOperation
-pub fn awaken_memory_store::repository::sha256_hex(&str) -> alloc::string::String
-pub fn awaken_memory_store::sanitize_stem(&str) -> alloc::string::String
-pub fn awaken_memory_store::sha256_hex(&str) -> alloc::string::String
+pub use awaken_memory_store::repository::sha256_hex

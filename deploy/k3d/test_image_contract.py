@@ -27,10 +27,12 @@ def main() -> None:
     assert "COPY awaken-worker /usr/local/bin/awaken-worker" in dockerfile
     resources = (Path(__file__).parent / "distributed-control" / "resources.yaml").read_text()
     assert '/usr/local/bin/awaken-control", "database", "migrate"' in resources
+    assert '/usr/local/bin/awaken-control", "--config"' in resources
     assert '/usr/local/bin/awaken-coordinator", "database", "migrate"' in resources
     assert '/usr/local/bin/awaken-coordinator", "--config"' in resources
     assert '/usr/local/bin/awaken", "coordinator"' not in resources
     assert '/usr/local/bin/awaken", "database", "migrate"' not in resources
+    assert "AWAKEN_MODEL_MODE, value: distributed-control" not in resources
     worker_image = (
         Path(__file__).parent.parent / "images" / "worker" / "Dockerfile"
     ).read_text()

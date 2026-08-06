@@ -1447,10 +1447,16 @@ async fn reopening_a_terminal_thread_recovers_a_missing_extraction_outbox_intent
         .as_nanos();
     let dir = std::env::temp_dir().join(format!("awaken-memory-outbox-{stamp}"));
     let thread = "memory-outbox-thread";
+    let authority = Arc::new(crate::EphemeralRuntimeAuthority::new());
 
-    // Commit the terminal run without a Memory binding, modeling a crash after
-    // terminal truth but before the auxiliary intent could be inserted.
-    let first = SharedHost::new(Arc::new(MemoryHostModel), "stub").with_store_dir(&dir);
+    // Cause/effect recovery table: R1 terminal truth exists and extraction intent
+    // is absent -> reopening through the same injected commit authority creates
+    // and completes the intent; R2 the extraction repository is durable -> the
+    // completed receipt survives the Host replacement. The test intentionally
+    // injects authority because runtime-host no longer opens a commit Store.
+    let first = SharedHost::new(Arc::new(MemoryHostModel), "stub")
+        .with_store_dir(&dir)
+        .with_runtime_authority(authority.clone());
     first
         .run(None, thread, user("remember rust"))
         .await
@@ -1460,7 +1466,9 @@ async fn reopening_a_terminal_thread_recovers_a_missing_extraction_outbox_intent
     // Rebind the frozen resource and reopen the committed thread. Context recovery
     // derives the missing outbox identity from the latest terminal run and inserts
     // the same durable intent normal after-commit delivery would have produced.
-    let second = SharedHost::new(Arc::new(MemoryHostModel), "stub").with_store_dir(&dir);
+    let second = SharedHost::new(Arc::new(MemoryHostModel), "stub")
+        .with_store_dir(&dir)
+        .with_runtime_authority(authority);
     bind_test_memory(&second, thread, "outbox-store", true);
     let ctx = second
         .ctx_for(thread, None)

@@ -6,9 +6,9 @@ pub use awaken_skill_store::SkillStore
 pub use awaken_skill_store::SkillStoreError
 pub use awaken_skill_store::SkillVersion
 pub use awaken_skill_store::SkillVersionId
-pub struct awaken_skill_store::CanonicalSkillBundle
-pub awaken_skill_store::CanonicalSkillBundle::files: alloc::vec::Vec<awaken_resource_contract::SkillBundleFile>
-pub awaken_skill_store::CanonicalSkillBundle::source_directory: core::option::Option<alloc::string::String>
+pub use awaken_skill_store::bundle_sha256
+pub use awaken_skill_store::catalog_id
+pub use awaken_skill_store::sanitize_stem
 pub struct awaken_skill_store::FsSkillStore
 impl awaken_skill_store::FsSkillStore
 pub fn awaken_skill_store::FsSkillStore::open(impl core::convert::Into<std::path::PathBuf>) -> core::io::error::Result<Self>
@@ -24,16 +24,3 @@ pub fn awaken_skill_store::FsSkillStore::list_versions<'life0, 'life1, 'life2, '
 pub fn awaken_skill_store::FsSkillStore::purge_skill<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<u64, awaken_resource_contract::SkillStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_skill_store::FsSkillStore::snapshot_latest_versions<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_resource_contract::SkillVersion>, awaken_resource_contract::SkillStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_skill_store::FsSkillStore::version<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_resource_contract::SkillVersion>, awaken_resource_contract::SkillStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub struct awaken_skill_store::UploadedSkillBundleFile
-pub awaken_skill_store::UploadedSkillBundleFile::content: alloc::vec::Vec<u8>
-pub awaken_skill_store::UploadedSkillBundleFile::executable: bool
-pub awaken_skill_store::UploadedSkillBundleFile::path: alloc::string::String
-pub const awaken_skill_store::MAX_SKILL_ARCHIVE_BYTES: usize
-pub const awaken_skill_store::MAX_SKILL_BUNDLE_BYTES: usize
-pub const awaken_skill_store::MAX_SKILL_FILES: usize
-pub const awaken_skill_store::MAX_SKILL_FILE_BYTES: usize
-pub fn awaken_skill_store::bundle_sha256(&[awaken_resource_contract::SkillBundleFile]) -> alloc::string::String
-pub fn awaken_skill_store::canonicalize_skill_bundle(alloc::vec::Vec<awaken_skill_store::UploadedSkillBundleFile>) -> core::result::Result<awaken_skill_store::CanonicalSkillBundle, alloc::string::String>
-pub fn awaken_skill_store::catalog_id(&str) -> alloc::string::String
-pub fn awaken_skill_store::normalize_bundle_path(&str) -> core::result::Result<alloc::string::String, alloc::string::String>
-pub fn awaken_skill_store::sanitize_stem(&str) -> alloc::string::String
