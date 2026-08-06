@@ -213,37 +213,26 @@ impl ManagedState {
         }
     }
 
-    async fn create_session_snapshot(
+    async fn create_session_root(
         &self,
         owner_scope: &str,
-        mut session: PersistedSession,
+        session: PersistedSession,
     ) -> Result<PersistedSession, StateError> {
         let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
         let payload_hash = payload.stable_hash();
-        let revision = self
-            .application
-            .session_repository()
-            .create(
+        let session_id = session.session_id.clone();
+        self.application
+            .create_session_root(
                 owner_scope,
-                session.clone(),
+                session,
                 awaken_session_contract::IdempotencyRecord {
-                    key: format!("managed:create:{}:{payload_hash}", session.session_id),
+                    key: format!("managed:create:{session_id}:{payload_hash}"),
                     payload_hash,
                 },
                 Vec::new(),
             )
             .await
-            .map_err(|error| match error {
-                awaken_session_contract::SessionRepositoryError::IdempotencyMismatch => {
-                    StateError::IdempotencyMismatch
-                }
-                awaken_session_contract::SessionRepositoryError::AlreadyExists => {
-                    StateError::Conflict
-                }
-                error => StateError::Run(RunError::internal(error.to_string())),
-            })?;
-        session.revision = revision;
-        Ok(session)
+            .map_err(Self::map_application_mutation_error)
     }
 
     /// `POST /v1/sessions`.
@@ -715,9 +704,7 @@ impl ManagedState {
             archived_at: None,
         };
         // The activation intent and owner fence commit before Host/worker IO.
-        persisted = self
-            .create_session_snapshot(&owner_scope, persisted)
-            .await?;
+        persisted = self.create_session_root(&owner_scope, persisted).await?;
         if let Some(compiled) = compiled {
             persisted = self
                 .application

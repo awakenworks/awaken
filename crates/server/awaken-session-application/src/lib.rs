@@ -1031,6 +1031,82 @@ mod tests {
         );
     }
 
+    /// Session-root insertion graph. C1 identity is unused; C2 key/hash/payload
+    /// exactly replay; C3 an existing key carries another hash; C4 another key
+    /// targets an existing identity. Effects are E1 one insert/revision advance,
+    /// E2 replay of the same revision, E3 idempotency mismatch, and E4 identity
+    /// conflict. The application is the only repository-result classifier.
+    ///
+    /// | Rule | Identity | Key/hash | Payload | Effect |
+    /// |---|---|---|---|---|
+    /// | C1 | unused | new | original | E1 |
+    /// | C2 | existing | exact | exact | E2 |
+    /// | C3 | existing | same key/different hash | changed | E3 |
+    /// | C4 | existing | another key | any | E4 |
+    #[tokio::test]
+    async fn create_session_root_classifies_insert_replay_and_conflicts() {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        let app = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let original = persisted("create-root", false, false, "preparing");
+        let payload = awaken_session_contract::SessionMutationPayload::Replace(original.clone());
+        let record = awaken_session_contract::IdempotencyRecord {
+            key: "create-root:one".into(),
+            payload_hash: payload.stable_hash(),
+        };
+
+        let inserted = app
+            .create_session_root("workspace", original.clone(), record.clone(), Vec::new())
+            .await
+            .expect("C1");
+        assert_eq!(
+            inserted.revision,
+            awaken_session_contract::SessionRevision(1),
+            "C1"
+        );
+        let replayed = app
+            .create_session_root("workspace", original.clone(), record.clone(), Vec::new())
+            .await
+            .expect("C2");
+        assert_eq!(replayed.revision, inserted.revision, "C2");
+
+        let mut changed = original.clone();
+        changed.title = Some("changed".into());
+        assert_eq!(
+            app.create_session_root(
+                "workspace",
+                changed,
+                awaken_session_contract::IdempotencyRecord {
+                    key: record.key,
+                    payload_hash: "changed-hash".into(),
+                },
+                Vec::new(),
+            )
+            .await,
+            Err(SessionMutationError::IdempotencyMismatch),
+            "C3"
+        );
+        assert_eq!(
+            app.create_session_root(
+                "workspace",
+                original,
+                awaken_session_contract::IdempotencyRecord {
+                    key: "create-root:another".into(),
+                    payload_hash: "another-hash".into(),
+                },
+                Vec::new(),
+            )
+            .await,
+            Err(SessionMutationError::Conflict),
+            "C4"
+        );
+    }
+
     /// Activity-fence FMECA cause/effect graph. Causes: C1 the Session exists;
     /// C2 it is nonterminal; C3 the epoch can advance; C4 settlement presents
     /// the current epoch; C5 a later admission or terminal transition has
