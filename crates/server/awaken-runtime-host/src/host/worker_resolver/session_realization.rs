@@ -186,12 +186,18 @@ mod tests {
             request: awaken_session_contract::StageMcpAttachment,
         ) -> Result<awaken_session_contract::McpRealizationReceipt, awaken_session_contract::RunError>
         {
-            self.calls.lock().unwrap().push("stage");
-            if let Some(stage_entered) = &self.stage_entered {
-                stage_entered.notify_one();
-            }
-            if let Some(release_stage) = &self.release_stage {
-                release_stage.notified().await;
+            let first_stage = {
+                let mut calls = self.calls.lock().unwrap();
+                calls.push("stage");
+                calls.iter().filter(|call| **call == "stage").count() == 1
+            };
+            if first_stage {
+                if let Some(stage_entered) = &self.stage_entered {
+                    stage_entered.notify_one();
+                }
+                if let Some(release_stage) = &self.release_stage {
+                    release_stage.notified().await;
+                }
             }
             let resident = self.required_runtime.as_ref().is_none_or(|(host, thread)| {
                 host.upgrade().is_some_and(|host| {
@@ -276,17 +282,32 @@ mod tests {
             awaken_session_contract::SessionRealizationDirective,
             awaken_session_contract::SessionRealizationControlFailure,
         > {
-            Ok(awaken_session_contract::SessionRealizationDirective {
-                projection: self.projection.clone(),
-                lease: self.lease.lock().unwrap().clone(),
-                action: awaken_session_contract::SessionRealizationAction::Publish {
+            let lease = self.lease.lock().unwrap().clone();
+            let needs_renewal_stage = command.mcp_receipts.iter().any(|receipt| {
+                receipt.generation.lease_expires_at_unix_ms < lease.expires_at_unix_ms
+            });
+            let action = if needs_renewal_stage {
+                let mut stage = self.stage.clone();
+                stage.generation.lease_expires_at_unix_ms = lease.expires_at_unix_ms;
+                stage.stage_idempotency_key = format!("renew:{}", lease.expires_at_unix_ms);
+                awaken_session_contract::SessionRealizationAction::Stage {
+                    prepare_session: false,
+                    mcp_stages: vec![stage],
+                }
+            } else {
+                awaken_session_contract::SessionRealizationAction::Publish {
                     publish: command
                         .mcp_receipts
                         .into_iter()
                         .map(|receipt| receipt.generation)
                         .collect(),
                     drain: Vec::new(),
-                },
+                }
+            };
+            Ok(awaken_session_contract::SessionRealizationDirective {
+                projection: self.projection.clone(),
+                lease,
+                action,
             })
         }
 
@@ -452,16 +473,16 @@ mod tests {
 
     /// Concurrent-renewal cause/effect graph: C1 an initial phase driver owns
     /// the Session realization lock; C2 its MCP Stage is still pending; C3 a
-    /// heartbeat extends the same owner/incarnation/epoch lease. Effects: E1
-    /// renew durable and local authority without waiting; E2 never start a
-    /// second Stage/Publish driver; E3 the original driver observes the renewed
-    /// lease at its next Control phase and completes. Replacement fencing is
-    /// owned by the contract authorization table; ordinary idle renewal is W6
-    /// in the parent resolver tests.
+    /// heartbeat requests the same owner/incarnation/epoch lease extension.
+    /// Effects: E1 return without blocking or changing durable authority; E2
+    /// never start a second Stage/Publish driver; E3 the next heartbeat renews
+    /// through the canonical driver after the first completes. Replacement
+    /// fencing is owned by the contract authorization table; ordinary idle
+    /// renewal is W6 in the parent resolver tests.
     ///
     /// | Rule | C1 | C2 | C3 | Effect |
     /// |---|---|---|---|---|
-    /// | R1 | yes | yes | yes | E1 + E2 + E3 |
+    /// | R1 | yes | yes | yes | E1 + E2; retry later |
     /// | R2 | no | no | yes | canonical renewal driver (W6) |
     /// | R3 | any | any | replacement | fence/revoke (authorization A2/W7) |
     #[tokio::test]
@@ -469,7 +490,7 @@ mod tests {
         let thread = "renew-during-stage";
         let initial_expiry = 1_000;
         let renewed_expiry = 2_000;
-        let projection = frozen_projection();
+        let mut projection = frozen_projection();
         let lease = awaken_session_contract::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
@@ -497,6 +518,29 @@ mod tests {
             prompts_as_skills: false,
             selected_plaintext_holder: None,
         };
+        projection
+            .mcp
+            .push(awaken_session_contract::SessionMcpAttachment {
+                attachment_id: stage.generation.attachment_id.clone(),
+                name: stage.name.clone(),
+                generation: stage.generation.generation,
+                target: stage.target.clone(),
+                prompts_as_skills: stage.prompts_as_skills,
+                origin: awaken_session_contract::McpAttachmentOrigin::Agent,
+                credential: stage.credential.clone(),
+                selected_plaintext_holder: stage.selected_plaintext_holder.clone(),
+                state: awaken_session_contract::McpAttachmentState::Realizing,
+                publication_acknowledged: false,
+                realization: Some(awaken_session_contract::McpRealizationClaim {
+                    realization_id: stage.realization_id.clone(),
+                    runtime_incarnation: stage.generation.runtime_incarnation.clone(),
+                    lease_epoch: stage.generation.lease_epoch,
+                    lease_expires_at_unix_ms: stage.generation.lease_expires_at_unix_ms,
+                    stage_idempotency_key: stage.stage_idempotency_key.clone(),
+                }),
+                attempts: 1,
+                last_error: None,
+            });
         let control = Arc::new(RenewalDuringStageControl {
             projection: projection.clone(),
             stage: stage.clone(),
@@ -543,10 +587,6 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), stage_entered.notified())
             .await
             .expect("R1 initial Stage entered");
-        host.session_slots.update(thread, |slot| {
-            slot.has_mcp_projection = true;
-        });
-
         assert_eq!(
             tokio::time::timeout(
                 std::time::Duration::from_secs(1),
@@ -555,8 +595,15 @@ mod tests {
             .await
             .expect("R1/E1 renewal does not wait for Stage")
             .expect("R1/E1 renewal succeeds"),
-            1,
+            0,
             "R1/E1"
+        );
+        assert_eq!(
+            control
+                .begin_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "R1/E1 durable renewal is deferred"
         );
         assert_eq!(
             realizer.calls.lock().unwrap().as_slice(),
@@ -572,7 +619,19 @@ mod tests {
         assert_eq!(
             realizer.calls.lock().unwrap().as_slice(),
             ["stage", "publish"],
-            "R1/E2-E3"
+            "R1/E2"
+        );
+        assert_eq!(
+            host.renew_due_session_realizations(initial_expiry, renewed_expiry)
+                .await
+                .expect("R2/E3 deferred renewal succeeds"),
+            1,
+            "R2/E3"
+        );
+        assert_eq!(
+            realizer.calls.lock().unwrap().as_slice(),
+            ["stage", "publish", "stage", "publish"],
+            "R2/E3 uses one later canonical driver"
         );
         assert_eq!(
             host.session_slots

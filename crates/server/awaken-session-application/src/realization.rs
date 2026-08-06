@@ -702,6 +702,23 @@ impl SessionRealizationControl for SessionApplication {
                     .map_err(unavailable)?;
             }
         }
+        // A heartbeat may have extended the aggregate lease while the Runtime
+        // was staging a previously admitted request. Promote the newly Active
+        // durable claim to that current lease before publication. The returned
+        // Stage directive then updates the same process-local projection by its
+        // renewal binding; it does not reconnect or reopen credentials.
+        let current_lease = session
+            .realization
+            .clone()
+            .ok_or(SessionRealizationControlFailure::NotReady)?;
+        let renewed_after_activation = session
+            .mcp
+            .renew_active_realizations(
+                &current_lease.runtime_incarnation,
+                current_lease.epoch,
+                current_lease.expires_at_unix_ms,
+            )
+            .map_err(unavailable)?;
         session.mcp.begin_obsolete_drains().map_err(unavailable)?;
         // Initial creation remains non-visible until publication acknowledgement.
         // A hot mutation belongs to an already-idle Session, so keep that lifecycle
@@ -722,6 +739,9 @@ impl SessionRealizationControl for SessionApplication {
                 SessionMutationError::Conflict => SessionRealizationControlFailure::Conflict,
                 error => unavailable(error),
             })?;
+        if renewed_after_activation > 0 {
+            return Self::next_action(owner_scope, &session, false);
+        }
         let publish = Self::publication_generations(&session)?;
         let drain = Self::draining_generations(&session)?;
         Self::realization_directive(

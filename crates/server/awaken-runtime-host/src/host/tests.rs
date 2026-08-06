@@ -4591,6 +4591,108 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
     );
 }
 
+#[test]
+fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
+    use crate::session_slot::{McpGenerationProjection, McpProjectionState};
+    use awaken_session_contract::{
+        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt, StageMcpAttachment,
+    };
+
+    /* Runtime renewal cause/effect decision table. C1 the same logical
+     * generation/incarnation/epoch and immutable binding exists; C2 its state is
+     * Staged or Active; C3 expiry advances. E1 rewrites that one projection and
+     * receipt without reconnecting; E2 no second slot appears. R1 C1+C2(Staged)+
+     * C3=>E1+E2 closes renewal during first Stage; R2 C1+C2(Active)+C3=>E1+E2
+     * covers steady renewal; R3 no matching projection=>no-op. Conflicting
+     * bindings and non-monotonic expiry are rejected by the aggregate N2–N5
+     * table and this adapter's shared conflict gate. */
+    for (rule, state) in [
+        ("R1", McpProjectionState::Staged),
+        ("R2", McpProjectionState::Active),
+    ] {
+        let host = SharedHost::new(Arc::new(OkModel), "stub");
+        let old_generation = McpGenerationRef {
+            session_id: format!("renew-{rule}"),
+            attachment_id: McpAttachmentId("browser".into()),
+            generation: McpGeneration(1),
+            runtime_incarnation: "runtime-a/boot-1".into(),
+            lease_epoch: 3,
+            lease_expires_at_unix_ms: u64::MAX - 1,
+        };
+        let request = StageMcpAttachment {
+            workspace_id: "workspace".into(),
+            generation: old_generation.clone(),
+            realization_id: "realization-1".into(),
+            stage_idempotency_key: "stage-1".into(),
+            name: "browser".into(),
+            target: awaken_session_contract::McpTarget::parse_http(
+                "https://browser.example.test/mcp",
+            )
+            .unwrap(),
+            prompts_as_skills: false,
+            credential: None,
+            selected_plaintext_holder: None,
+        };
+        host.insert_mcp_projection(McpGenerationProjection {
+            receipt: McpRealizationReceipt {
+                receipt_fingerprint: request.fingerprint(),
+                generation: old_generation.clone(),
+                realization_id: request.realization_id.clone(),
+                selected_plaintext_holder: None,
+                actual_realization_kind: None,
+            },
+            request: request.clone(),
+            server: None,
+            native_wiring: None,
+            mcp_process: None,
+            state,
+        })
+        .unwrap();
+        let mut renewed = request;
+        renewed.generation.lease_expires_at_unix_ms = u64::MAX;
+        renewed.stage_idempotency_key = "renew-max".into();
+        let receipt = host
+            .renew_mcp_projection(&renewed)
+            .expect(rule)
+            .expect(rule);
+        assert_eq!(receipt.generation, renewed.generation, "{rule}/E1");
+        assert!(host.mcp_projection(&old_generation).is_none(), "{rule}/E1");
+        assert_eq!(
+            host.mcp_projection(&renewed.generation).expect(rule).state,
+            state,
+            "{rule}/E1"
+        );
+        assert_eq!(
+            host.session_slots
+                .read(&renewed.generation.session_id, |slot| slot.mcp.len()),
+            Some(1),
+            "{rule}/E2"
+        );
+    }
+
+    let absent = SharedHost::new(Arc::new(OkModel), "stub");
+    let request = StageMcpAttachment {
+        workspace_id: "workspace".into(),
+        generation: McpGenerationRef {
+            session_id: "renew-absent".into(),
+            attachment_id: McpAttachmentId("browser".into()),
+            generation: McpGeneration(1),
+            runtime_incarnation: "runtime-a/boot-1".into(),
+            lease_epoch: 3,
+            lease_expires_at_unix_ms: u64::MAX,
+        },
+        realization_id: "realization-1".into(),
+        stage_idempotency_key: "renew-max".into(),
+        name: "browser".into(),
+        target: awaken_session_contract::McpTarget::parse_http("https://browser.example.test/mcp")
+            .unwrap(),
+        prompts_as_skills: false,
+        credential: None,
+        selected_plaintext_holder: None,
+    };
+    assert_eq!(absent.renew_mcp_projection(&request).unwrap(), None, "R3");
+}
+
 /// Relay effects are created only by MCP staging. Publication may expose an
 /// exact staged effect, but must never manufacture the missing route as a
 /// compatibility/recovery path.

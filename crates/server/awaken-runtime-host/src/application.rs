@@ -378,6 +378,15 @@ impl crate::SharedHost {
         let mut renewed = 0;
         for (session_id, lease) in &due {
             let renewal = async {
+                let realization = self.session_slots.realization_lock(session_id);
+                let Ok(_realization) = realization.try_lock() else {
+                    // The current driver still owns this Session. Do not advance
+                    // durable authority behind an action it has already received;
+                    // the next heartbeat retries inside the ordinary renewal
+                    // horizon. This keeps every Control phase and Runtime effect
+                    // on one serialized exact-generation path.
+                    return Ok::<bool, crate::HostError>(false);
+                };
                 let directive = control
                     .begin_session_realization(awaken_session_contract::BeginSessionRealization {
                         session_id: session_id.clone(),
@@ -390,16 +399,6 @@ impl crate::SharedHost {
                     })
                     .await
                     .map_err(|error| crate::HostError::internal(error.to_string()))?;
-                let realization = self.session_slots.realization_lock(session_id);
-                let Ok(_realization) = realization.try_lock() else {
-                    // The in-flight canonical driver owns Stage/Publish. Begin
-                    // above has already extended durable same-epoch authority;
-                    // retain that authority locally and let the driver observe
-                    // it at its next Control phase. A later heartbeat renews the
-                    // resulting Active projection without duplicating effects.
-                    self.install_session_realization_lease(session_id, directive.lease.clone());
-                    return Ok(());
-                };
                 crate::host::HostWorkerResolver::drive_application_session(
                     self,
                     control.as_ref(),
@@ -410,11 +409,13 @@ impl crate::SharedHost {
                     false,
                 )
                 .await
-                .map_err(|error| crate::HostError::internal(error.to_string()))
+                .map_err(|error| crate::HostError::internal(error.to_string()))?;
+                Ok::<bool, crate::HostError>(true)
             }
             .await;
             match renewal {
-                Ok(()) => renewed += 1,
+                Ok(true) => renewed += 1,
+                Ok(false) => {}
                 Err(error) => {
                     eprintln!(
                         "Session realization renewal lost authority for `{session_id}`; revoking only that Session: {error}"
