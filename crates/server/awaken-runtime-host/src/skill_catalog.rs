@@ -369,6 +369,25 @@ impl SkillCatalog {
             .unwrap_or_default()
     }
 
+    /// Whether the exact Skill surface visible to a Session needs a physical
+    /// Environment. A published Agent supplies `selected`; legacy/direct
+    /// Sessions expose the whole configured and cached catalog.
+    pub(crate) fn requires_environment_in(
+        &self,
+        workspace: &str,
+        selected: Option<&std::collections::BTreeSet<String>>,
+    ) -> bool {
+        let is_selected = |id: &str| selected.is_none_or(|ids| ids.contains(id));
+        self.specs.iter().any(|skill| {
+            is_selected(&skill.id)
+                && (skill.environment != awaken_ext_skills::SkillEnvironment::InstructionOnly
+                    || skill.context != awaken_ext_skills::SkillContext::Inline)
+        }) || self.cache_snapshot_in(workspace).iter().any(|version| {
+            is_selected(version.skill_id.as_str())
+                && crate::skills::version_requires_environment(version)
+        })
+    }
+
     /// The skill ids offered on every thread (advertised as the agent's `skills`):
     /// the static configured set plus any durable `/v1/skills` catalog, de-duplicated
     /// with the static set winning, so the advertisement matches what `list_skills`

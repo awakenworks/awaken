@@ -2821,19 +2821,22 @@ async fn prepare_session_is_lazy_and_first_turn_materializes_the_environment() {
 }
 
 /// Cause/effect graph: C1 the Host is Coordinator-only; C2 the frozen
-/// Environment is eager; C3 context construction is needed to serialize a Run.
-/// C1 dominates C2: E1 construct the dispatch context, E2 retain the frozen
-/// Environment snapshot, E3 allocate no physical sandbox. The local-pool row is
-/// covered by `prepare_session_is_lazy_and_first_turn_materializes_the_environment`.
+/// Environment is eager; C3 context construction is needed to serialize a Run;
+/// C4 the exact delivered Skill includes filesystem support. C1 dominates C2
+/// and assigns C4 realization to the claimed Worker: E1 construct the dispatch
+/// context and Skill registry, E2 retain the frozen Environment snapshot, E3
+/// allocate and write no physical sandbox. The local-pool materialization row is
+/// covered by `replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately`.
 ///
-/// | Rule | Coordinator-only | Provisioning | Context | Physical environment |
-/// |---|---|---|---|---|
-/// | D1 | yes | eager | build | absent |
-/// | D2 | no | eager | build/turn | resident |
-/// | D3 | any | on_tool_use | inference only | absent |
+/// | Rule | Coordinator-only | Provisioning | Filesystem Skill | Context/registry | Physical environment |
+/// |---|---|---|---|---|---|
+/// | D1 | yes | eager | yes | built | absent |
+/// | D2 | no | eager | yes | built | resident + files |
+/// | D3 | any | on_tool_use | no | inference only | absent |
 #[tokio::test]
 async fn coordinator_dispatch_context_never_materializes_an_eager_environment() {
     use awaken_session_contract::{SessionInit, SessionRuntime};
+    use awaken_skill_store::{SkillBundleFile, SkillVersion, bundle_sha256};
     let mut host = SharedHost::new(Arc::new(OkModel), "stub");
     host.deployment.disable_local_pool = true;
     let host = Arc::new(host);
@@ -2857,10 +2860,40 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
         )
         .await
         .expect("D1 installs frozen dispatch facts");
+    let files = vec![
+        SkillBundleFile {
+            path: "SKILL.md".into(),
+            content: b"---\nname: files\ndescription: inspect files\n---\nRead the bundled guide."
+                .to_vec(),
+            executable: false,
+        },
+        SkillBundleFile {
+            path: "references/guide.md".into(),
+            content: b"guide".to_vec(),
+            executable: false,
+        },
+    ];
+    let hash = bundle_sha256(&files);
+    host.session_slots
+        .update("coordinator-dispatch-only", |slot| {
+            slot.skills = Some(vec![SkillVersion {
+                id: "skver_files_1".into(),
+                skill_id: "files".into(),
+                version: 1,
+                name: "files".into(),
+                description: "inspect files".into(),
+                directory: "/skills/files".into(),
+                bundle_sha256: hash,
+                files,
+                created_unix_nanos: 0,
+            }]);
+        });
 
-    host.ctx_for("coordinator-dispatch-only", Some("assistant"))
+    let context = host
+        .ctx_for("coordinator-dispatch-only", Some("assistant"))
         .await
         .expect("D1 builds a sandbox-free dispatch context");
+    assert!(context.skill_registry.is_some(), "D1/E1");
     assert!(
         host.session_environment("coordinator-dispatch-only")
             .await
@@ -3083,6 +3116,128 @@ async fn on_tool_use_filesystem_skill_forces_an_eager_environment() {
         host.session_environment("deferred-filesystem-skill")
             .await
             .is_some()
+    );
+}
+
+/// Legacy delivered-Skill deferral cause/effect decision table. Causes: C1 the
+/// Environment is `on_tool_use`; C2 the legacy resource manifest has no frozen
+/// Skill selection; C3 a cold-process durable catalog contains a Skill
+/// with a support file. Effects: E1 catalog capability classification defeats
+/// deferral; E2 one Environment exists before Skill wiring; E3 the support file
+/// is materialized there. Rule L8: C1+C2+C3=>E1+E2+E3. L1/L2 above cover the
+/// negative text-only and instruction-only rows.
+#[tokio::test]
+async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environment() {
+    use awaken_skill_store::{SkillBundleFile, SkillDefinition, SkillVersion, bundle_sha256};
+
+    let storage = tempfile::tempdir().expect("storage");
+    let skill_store = storage.path().join("skills");
+    let catalog_host =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_skill_store(skill_store.clone()));
+    let workspace = catalog_host.local_workspace().to_string();
+    let files = vec![
+        SkillBundleFile {
+            path: "SKILL.md".into(),
+            content: b"---\nname: files\ndescription: inspect files\n---\nRead the bundled guide."
+                .to_vec(),
+            executable: false,
+        },
+        SkillBundleFile {
+            path: "references/guide.md".into(),
+            content: b"guide".to_vec(),
+            executable: false,
+        },
+    ];
+    let hash = bundle_sha256(&files);
+    catalog_host
+        .skills
+        .create(
+            SkillDefinition {
+                id: "files".into(),
+                workspace_id: workspace.clone(),
+                display_title: None,
+                latest_version: 1,
+                last_version: 1,
+                timestamps: Default::default(),
+            },
+            SkillVersion {
+                id: "skver_files_1".into(),
+                skill_id: "files".into(),
+                version: 1,
+                name: "files".into(),
+                description: "inspect files".into(),
+                directory: "/skills/files".into(),
+                bundle_sha256: hash,
+                files,
+                created_unix_nanos: 0,
+            },
+        )
+        .await
+        .expect("durable SkillStore")
+        .expect("create Skill");
+    drop(catalog_host);
+
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .with_skill_store(skill_store)
+            .with_store_dir(storage.path()),
+    );
+    assert!(
+        host.skills.cache_snapshot_in(&workspace).is_empty(),
+        "L8 starts from a cold process cache"
+    );
+    let baseline = awaken_session_contract::SessionBaseline::compile(
+        awaken_session_contract::SessionBaselineInputs {
+            environment: on_tool_use_environment(),
+            runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
+            mcp_authoring: Default::default(),
+            agent_id: "assistant".into(),
+            model: "stub".into(),
+            runtime: None,
+            application: None,
+            delegate_ids: Vec::new(),
+            toolsets: Vec::new(),
+            mounts: Vec::new(),
+            env: Vec::new(),
+            prompts: Vec::new(),
+        },
+    );
+    host.install_frozen_session_projection(
+        "deferred-legacy-delivered-skill",
+        awaken_session_contract::FrozenSessionProjection {
+            workspace_id: workspace,
+            revision: awaken_session_contract::SessionRevision(1),
+            baseline,
+            resource_revision: 0,
+            resources: Default::default(),
+            mcp: Vec::new(),
+            toolsets: Vec::new(),
+        },
+        None,
+    )
+    .await
+    .expect("L8 cold legacy projection");
+    let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> =
+        Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
+            Arc::downgrade(&host),
+            "deferred-legacy-delivered-skill",
+        ));
+    host.session_slots
+        .update("deferred-legacy-delivered-skill", |slot| {
+            slot.deferred_executor = Some(executor)
+        });
+
+    let context = host
+        .ctx_for("deferred-legacy-delivered-skill", Some("assistant"))
+        .await
+        .expect("L8 context");
+    assert!(context.env.is_some(), "L8/E1+E2");
+    assert!(
+        storage
+            .path()
+            .join("sandboxes/deferred-legacy-delivered-skill/.skills/files/references/guide.md")
+            .is_file(),
+        "L8/E3"
     );
 }
 
