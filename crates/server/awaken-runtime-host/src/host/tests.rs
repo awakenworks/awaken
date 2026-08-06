@@ -4687,12 +4687,13 @@ async fn worker_authority_loss_revokes_every_session_projection() {
     };
 
     // Cause graph: unprovable Worker authority -> enumerate the canonical
-    // process-local Session projections -> terminal Host disposal -> route,
-    // material, and slot absent. Repeating the fence is idempotent.
+    // process-local Session projections -> nonterminal realization revocation ->
+    // route, material, and slot absent while durable environments remain owned
+    // by the Session. Repeating the fence is idempotent.
     //
     // | Rule | Authority | Live projections | Effect |
     // |---|---|---|---|
-    // | A1 | lost/unprovable | one | dispose + revoke route + remove slot |
+    // | A1 | lost/unprovable | one | detach + revoke route + remove slot |
     // | A2 | lost/unprovable | none | zero/no-op |
     let host = SharedHost::new(Arc::new(OkModel), "stub");
     let generation = McpGenerationRef {

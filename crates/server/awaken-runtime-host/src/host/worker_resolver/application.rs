@@ -101,6 +101,8 @@ pub(super) async fn install_claimed_session_projection(
             directive,
             Some(&claim),
             Some(&claimed.request.activation.snapshot),
+            claimed.request.placement.recovery
+                == awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
         )
         .await?;
     } else {
@@ -157,6 +159,8 @@ pub(super) async fn install_claimed_session_projection(
             receipt.realization,
             Some(&claim),
             Some(&claimed.request.activation.snapshot),
+            claimed.request.placement.recovery
+                == awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
         )
         .await?;
     }

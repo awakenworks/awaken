@@ -7,6 +7,7 @@ struct WorkerProjectionSynchronizer<'a> {
     host: &'a SharedHost,
     claim: Option<&'a awaken_run_ingress::RunClaim>,
     published_snapshot: Option<&'a awaken_runtime_contract::ExecutableAgentSnapshot>,
+    rebuild_unavailable_environment: bool,
 }
 
 #[async_trait::async_trait]
@@ -33,17 +34,16 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
                     "a cold Worker needs the exact claimed Agent snapshot to adopt a durable Session Environment",
                 )
             })?;
-            let (adopted, rebuild) = self
+            let (adopted, _) = self
                 .host
                 .adopt_bound_session_environment(
                     session_id,
                     Some(binding),
                     &published_snapshot.resolved_spec.model_binding.provisioning,
-                    false,
+                    self.rebuild_unavailable_environment,
                 )
                 .await
                 .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
-            debug_assert!(!rebuild);
             self.host
                 .ctx_for_snapshot_with_sandbox(
                     session_id,
@@ -93,6 +93,7 @@ impl HostWorkerResolver {
         directive: awaken_session_contract::SessionRealizationDirective,
         claim: Option<&awaken_run_ingress::RunClaim>,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+        rebuild_unavailable_environment: bool,
     ) -> Result<(), awaken_run_ingress::Error> {
         awaken_session_contract::drive_session_realization(
             session_id,
@@ -101,6 +102,7 @@ impl HostWorkerResolver {
                 host,
                 claim,
                 published_snapshot,
+                rebuild_unavailable_environment,
             },
             &WorkerMcpEffects(host),
             directive,
@@ -284,17 +286,21 @@ mod tests {
          * frozen Session with an opaque resident-Environment binding; C2 the new
          * Worker process has no resident Runtime/Environment; C3 the claimed Run
          * carries the exact immutable Agent snapshot; C4 Control requires the
-         * active sandbox-stdio MCP generation to be restaged. Effects: E1 adopt
+         * active sandbox-stdio MCP generation to be restaged; C5 a rebuild-mode
+         * Run names a durable Environment that is no longer available. Effects: E1 adopt
          * the exact bound Environment before MCP stage; E2 never consult current
          * Agent publication; E3 preserve the Sandbox handle and generation; E4 a
-         * cold lease-only replay without the exact snapshot fails closed.
+         * cold lease-only replay without the exact snapshot fails closed; E5
+         * rebuild only when the claimed Run's explicit recovery policy permits it.
          *
-         * | Rule | binding | resident | exact snapshot | stdio recovery | Effect |
-         * |---|---|---|---|---|---|
-         * | R1 | yes | no | yes | yes | E1 + E2 + E3 |
-         * | R2 | yes | yes | no | yes | reuse resident (covered by W6) |
-         * | R3 | yes | no | no | yes | E4 |
-         * | R4 | no | no | yes | no | ordinary frozen resume (covered by O1) |
+         * | Rule | binding | resident | snapshot | stdio | recovery | Effect |
+         * |---|---|---|---|---|---|---|
+         * | R1 | ready | no | yes | yes | either | E1 + E2 + E3 |
+         * | R2 | ready | yes | no | yes | either | reuse resident (covered by W6) |
+         * | R3 | ready | no | no | yes | either | E4 |
+         * | R4 | no | no | yes | no | either | ordinary resume (covered by O1) |
+         * | R5 | missing | no | yes | no | rebuild | E5 |
+         * | R6 | missing | no | yes | no | continuity | fail closed |
          */
         let storage = tempfile::tempdir().expect("storage");
         let thread = "cold-frozen-environment";
@@ -377,12 +383,13 @@ mod tests {
             directive.clone(),
             None,
             Some(&activation.snapshot),
+            false,
         )
         .await
         .expect("R1 frozen Environment recovery");
         assert_eq!(
             host.session_environment_handle(thread).await,
-            Some(handle),
+            Some(handle.clone()),
             "R1/E1-E3"
         );
         assert_eq!(
@@ -393,7 +400,7 @@ mod tests {
 
         let cold = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
         let error = HostWorkerResolver::realize_application_session(
-            &cold, &control, thread, directive, None, None,
+            &cold, &control, thread, directive, None, None, false,
         )
         .await
         .expect_err("R3 cold lease-only recovery must fail closed");
@@ -401,5 +408,89 @@ mod tests {
             error.to_string().contains("exact claimed Agent snapshot"),
             "R3/E4: {error}"
         );
+
+        let rebuild_thread = "cold-missing-environment";
+        let rebuild_activation = test_activation(rebuild_thread, "run-cold-missing-environment");
+        let missing =
+            awaken_provisioning_contract::SandboxHandle::new(handle.provider_kind, rebuild_thread);
+        let mut rebuild_frozen = frozen_projection();
+        rebuild_frozen
+            .environment
+            .set_resident(serde_json::to_string(&missing).expect("R5 missing durable binding"));
+        let rebuild_directive = awaken_session_contract::SessionRealizationDirective {
+            projection: rebuild_frozen.clone(),
+            lease: awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "worker-a".into(),
+                epoch: 2,
+                expires_at_unix_ms: u64::MAX,
+            },
+            action: awaken_session_contract::SessionRealizationAction::Complete,
+        };
+        let rebuild_host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+        );
+        let managed = crate::ManagedHost::new(rebuild_host.clone());
+        drop(managed);
+        HostWorkerResolver::realize_application_session(
+            &rebuild_host,
+            &RecoveryControl {
+                projection: rebuild_frozen,
+            },
+            rebuild_thread,
+            rebuild_directive,
+            None,
+            Some(&rebuild_activation.snapshot),
+            true,
+        )
+        .await
+        .expect("R5 rebuild policy replaces the unavailable Environment");
+        assert!(
+            rebuild_host
+                .session_environment(rebuild_thread)
+                .await
+                .is_some(),
+            "R5/E5"
+        );
+
+        let continuity_thread = "cold-continuity-missing";
+        let continuity_activation =
+            test_activation(continuity_thread, "run-cold-continuity-missing");
+        let mut continuity_frozen = frozen_projection();
+        continuity_frozen.environment.set_resident(
+            serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
+                missing.provider_kind,
+                continuity_thread,
+            ))
+            .expect("R6 missing durable binding"),
+        );
+        let continuity_directive = awaken_session_contract::SessionRealizationDirective {
+            projection: continuity_frozen.clone(),
+            lease: awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "worker-a".into(),
+                epoch: 3,
+                expires_at_unix_ms: u64::MAX,
+            },
+            action: awaken_session_contract::SessionRealizationAction::Complete,
+        };
+        let continuity_host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+        );
+        let managed = crate::ManagedHost::new(continuity_host.clone());
+        drop(managed);
+        HostWorkerResolver::realize_application_session(
+            &continuity_host,
+            &RecoveryControl {
+                projection: continuity_frozen,
+            },
+            continuity_thread,
+            continuity_directive,
+            None,
+            Some(&continuity_activation.snapshot),
+            false,
+        )
+        .await
+        .expect_err("R6 continuity policy rejects a missing Environment");
     }
 }
