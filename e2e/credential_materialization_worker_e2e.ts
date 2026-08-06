@@ -11,13 +11,15 @@
 // closed while the same Worker remains available for P1.
 
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deploymentEnv, spawnServer, stopServer, waitForPort } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
+// @ts-expect-error The shared Cargo artifact resolver is intentionally JavaScript.
+import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38823);
@@ -43,19 +45,12 @@ function stableFingerprint(value: unknown): string {
 }
 
 function workerBinary(): string {
-  const output = execFileSync(
-    'cargo',
-    ['build', '--quiet', '--message-format=json', '-p', 'awaken-cli', '--bin', 'awaken'],
-    { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-  );
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const artifact = JSON.parse(line);
-      if (artifact.executable && artifact.target?.name === 'awaken') return artifact.executable;
-    } catch { /* only Cargo artifact records matter */ }
-  }
-  throw new Error('could not resolve awaken binary');
+  return cargoExecutable({
+    cwd: ROOT,
+    packageName: 'awaken-cli',
+    targetName: 'awaken',
+    prebuiltEnvironmentName: AWAKEN_BIN_ENV,
+  });
 }
 
 async function request(

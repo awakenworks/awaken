@@ -23,7 +23,7 @@
 //    1  1  1  1  1  1  1  0 + C9 | policy freezes without a parallel vocabulary/path
 
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -33,6 +33,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
 // @ts-expect-error The shared MCP fixture is intentionally JavaScript.
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
+// @ts-expect-error The shared Cargo artifact resolver is intentionally JavaScript.
+import { cargoExecutable } from './cargo_binary.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 39851);
@@ -47,23 +49,12 @@ function etagRevision(value: string | null): number {
 }
 
 function buildWorker(): string {
-  const output = execFileSync(
-    'cargo',
-    ['build', '--quiet', '--message-format=json', '-p', 'awaken-cli', '--example', 'application_session_worker'],
-    { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-  );
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'application_session_worker') {
-        return message.executable;
-      }
-    } catch {
-      // Cargo diagnostics are not artifact records.
-    }
-  }
-  throw new Error('could not resolve application_session_worker example');
+  return cargoExecutable({
+    cwd: ROOT,
+    packageName: 'awaken-cli',
+    targetName: 'application_session_worker',
+    targetKind: 'example',
+  });
 }
 
 async function events(client: Anthropic, sessionId: string): Promise<any[]> {

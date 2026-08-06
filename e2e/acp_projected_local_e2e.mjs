@@ -34,12 +34,13 @@ import { closeHttpServer } from './http_server.mjs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, execSync, spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
+import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38442);
@@ -53,20 +54,12 @@ const GEMINI_AGENT = 'projected-gemini-agent';
 const CODEX_AGENT = 'projected-codex-agent';
 
 function awakenBin() {
-  const output = execSync('cargo build --quiet --message-format=json -p awaken-cli --bin awaken', {
+  return cargoExecutable({
     cwd: ROOT,
-    maxBuffer: 128 * 1024 * 1024,
-  }).toString();
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken') return message.executable;
-    } catch {
-      // Cargo diagnostic.
-    }
-  }
-  throw new Error('could not resolve the awaken binary');
+    packageName: 'awaken-cli',
+    targetName: 'awaken',
+    prebuiltEnvironmentName: AWAKEN_BIN_ENV,
+  });
 }
 
 function installGeminiFixture() {

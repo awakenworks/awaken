@@ -23,6 +23,8 @@ import { childDirectories, onlyChildDirectory, pass, spawnServer, stopServer, wa
 // @ts-expect-error shared JavaScript fixture intentionally has no declarations.
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { alwaysAllowMcpAgent } from './fixtures/managed_mcp_session.ts';
+// @ts-expect-error The shared Cargo artifact resolver is intentionally JavaScript.
+import { cargoExecutable } from './cargo_binary.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 39852);
@@ -36,24 +38,13 @@ const RULES = CONTAINER
 const IMAGE = process.env.AWAKEN_TEST_SESSION_IMAGE ?? 'awaken-sandbox:session-e2e';
 
 function buildWorker(): string {
-  const features = CONTAINER ? ['--features', `container-${TIER}`] : [];
-  const output = execFileSync(
-    'cargo',
-    ['build', '--quiet', '--message-format=json', '-p', 'awaken-cli', '--example', 'hand_brain_lazy_worker', ...features],
-    { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-  );
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'hand_brain_lazy_worker') {
-        return message.executable;
-      }
-    } catch {
-      // Cargo diagnostics are not artifact records.
-    }
-  }
-  throw new Error('could not resolve hand_brain_lazy_worker example');
+  return cargoExecutable({
+    cwd: ROOT,
+    packageName: 'awaken-cli',
+    targetName: 'hand_brain_lazy_worker',
+    targetKind: 'example',
+    features: CONTAINER ? [`container-${TIER}`] : [],
+  });
 }
 
 function containerAvailable(): boolean {

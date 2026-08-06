@@ -6,32 +6,21 @@
 // production resolves the equivalent tier from typed deployment configuration.
 
 import assert from 'node:assert/strict';
-import { execSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { availablePort, REPO_ROOT, pass } from './harness.mjs';
+// @ts-expect-error The shared Cargo artifact resolver is intentionally JavaScript.
+import { cargoExecutable } from './cargo_binary.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38215);
 
 function buildBrain(features: string[] = []): string {
-  const args = [
-    'cargo build --quiet --message-format=json -p awaken-scenario-host',
-    '--bin awaken-scenario-host --no-default-features',
-    ...(features.length > 0 ? [`--features ${features.join(',')}`] : []),
-  ].join(' ');
-  const output = execSync(args, {
+  return cargoExecutable({
     cwd: REPO_ROOT,
-    env: process.env,
-    maxBuffer: 128 * 1024 * 1024,
-  }).toString();
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken-scenario-host') return message.executable;
-    } catch {
-      // Cargo may emit a non-JSON diagnostic around JSON compiler messages.
-    }
-  }
-  throw new Error('could not resolve the scenario-host binary path');
+    packageName: 'awaken-scenario-host',
+    targetName: 'awaken-scenario-host',
+    noDefaultFeatures: true,
+    features,
+  });
 }
 
 async function expectBootFailure(

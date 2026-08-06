@@ -21,10 +21,11 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, execFileSync as rawExecFileSync, execSync, spawnSync } from 'node:child_process';
+import { spawn, execFileSync as rawExecFileSync, spawnSync } from 'node:child_process';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
 import { REPO_ROOT } from './harness.mjs';
+import { cargoExecutable } from './cargo_binary.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38143);
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
@@ -442,21 +443,12 @@ function ensurePackageFixtureImage() {
 // Build the brain with the selected container feature (the shared harness builds
 // default features only), and resolve the binary path from cargo's JSON output.
 function buildBrain() {
-  const out = execSync(
-    `cargo build --quiet --message-format=json -p awaken-scenario-host --bin awaken-scenario-host --features container-${ENGINE}`,
-    { cwd: REPO_ROOT, maxBuffer: 128 * 1024 * 1024 },
-  ).toString();
-  for (const line of out.split('\n')) {
-    if (!line.trim()) continue;
-    let msg;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (msg.executable && msg.target?.name === 'awaken-scenario-host') return msg.executable;
-  }
-  throw new Error('could not resolve the scenario-host binary path');
+  return cargoExecutable({
+    cwd: REPO_ROOT,
+    packageName: 'awaken-scenario-host',
+    targetName: 'awaken-scenario-host',
+    features: [`container-${ENGINE}`],
+  });
 }
 
 function waitForPort(port, timeoutMs = 60_000) {

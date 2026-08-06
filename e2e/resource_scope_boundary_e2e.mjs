@@ -5,26 +5,20 @@
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import path from 'node:path';
-import { execSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { SCENARIO_HOST_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38438);
 
 function binary() {
-  const output = execSync(
-    'cargo build --quiet --message-format=json -p awaken-scenario-host --bin awaken-scenario-host',
-    { cwd: ROOT, env: process.env, maxBuffer: 64 * 1024 * 1024 },
-  ).toString();
-  for (const line of output.split('\n')) {
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken-scenario-host') {
-        return message.executable;
-      }
-    } catch { /* cargo diagnostic */ }
-  }
-  throw new Error('awaken-scenario-host binary was not produced');
+  return cargoExecutable({
+    cwd: ROOT,
+    packageName: 'awaken-scenario-host',
+    targetName: 'awaken-scenario-host',
+    prebuiltEnvironmentName: SCENARIO_HOST_BIN_ENV,
+  });
 }
 
 function start() {
