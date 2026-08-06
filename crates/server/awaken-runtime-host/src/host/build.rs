@@ -150,7 +150,7 @@ impl SharedHost {
     pub fn new_worker_with_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        file_content_source: Arc<dyn crate::FileContentSource>,
+        file_content_source: Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>,
         memory_repository: Arc<dyn awaken_memory_store::MemoryRepository>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
@@ -169,7 +169,7 @@ impl SharedHost {
         model_ref: String,
         resources: Option<awaken_resource_contract::ResourceComponent>,
         worker_content: Option<(
-            Arc<dyn crate::FileContentSource>,
+            Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>,
             Arc<dyn awaken_memory_store::MemoryRepository>,
         )>,
         extraction_repository: Option<Arc<dyn awaken_ext_memory::MemoryExtractionRepository>>,
@@ -279,37 +279,38 @@ impl SharedHost {
             )) as Arc<dyn awaken_resource_contract::FileApplicationService>
         });
         let session_slots = crate::session_slot::SessionRuntimeSlots::default();
-        let file_content_source: Arc<dyn crate::FileContentSource> = worker_content
-            .as_ref()
-            .map(|(source, _)| source.clone())
-            .unwrap_or_else(|| {
-                file_application.as_ref().map_or_else(
-                    || {
-                        Arc::new(awaken_resource_worker_http::UnavailableFileContentSource)
-                            as Arc<dyn crate::FileContentSource>
-                    },
-                    |application| {
-                        Arc::new(
-                            awaken_resource_worker_http::ApplicationFileContentSource::new(
+        let file_content_source: Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>> =
+            worker_content
+                .as_ref()
+                .map(|(source, _)| source.clone())
+                .unwrap_or_else(|| {
+                    #[cfg(test)]
+                    if let Some(application) = &file_application {
+                        return Arc::new(
+                            awaken_resource_application::ApplicationFileContentSource::new(
                                 application.clone(),
                             ),
-                        )
-                    },
-                )
-            });
-        let artifact_publisher: Arc<dyn awaken_run_ingress_contract::ArtifactPublisher> =
-            file_application.as_ref().map_or_else(
-                || {
-                    Arc::new(crate::provisioning::UnavailableArtifactPublisher)
-                        as Arc<dyn awaken_run_ingress_contract::ArtifactPublisher>
-                },
-                |application| {
-                    Arc::new(crate::provisioning::ApplicationArtifactPublisher::new(
+                        );
+                    }
+                    Arc::new(awaken_resource_contract::UnavailableFileContentSource)
+                        as Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>
+                });
+        let artifact_publisher: Arc<
+            dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>,
+        > = {
+            #[cfg(test)]
+            if let Some(application) = &file_application {
+                Arc::new(
+                    awaken_resource_application::ApplicationArtifactPublisher::new(
                         application.clone(),
-                    ))
-                        as Arc<dyn awaken_run_ingress_contract::ArtifactPublisher>
-                },
-            );
+                    ),
+                )
+            } else {
+                Arc::new(awaken_resource_contract::UnavailableArtifactPublisher)
+            }
+            #[cfg(not(test))]
+            Arc::new(awaken_resource_contract::UnavailableArtifactPublisher)
+        };
         let capture_decision = crate::redact::capture_decision(deployment.content_capture, false);
         Self {
             llm,
@@ -353,6 +354,7 @@ impl SharedHost {
                 .clone()
                 .map(|root| Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(root))),
             upstream: None,
+            memory_reference_encoder: None,
             worker_credential_resolver: None,
             deployment,
             memory,
@@ -535,10 +537,10 @@ impl SharedHost {
             ))
                 as Arc<dyn awaken_resource_contract::FileApplicationService>;
             self.file_content_source = Arc::new(
-                awaken_resource_worker_http::ApplicationFileContentSource::new(application.clone()),
+                awaken_resource_application::ApplicationFileContentSource::new(application.clone()),
             );
             self.artifact_publisher = Arc::new(
-                crate::provisioning::ApplicationArtifactPublisher::new(application.clone()),
+                awaken_resource_application::ApplicationArtifactPublisher::new(application.clone()),
             );
             self.file_application = Some(application);
         }
@@ -552,13 +554,13 @@ impl SharedHost {
     pub fn with_file_application(
         mut self,
         application: Arc<dyn awaken_resource_contract::FileApplicationService>,
+        content_source: Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>,
+        artifact_publisher: Arc<
+            dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>,
+        >,
     ) -> Self {
-        self.file_content_source = Arc::new(
-            awaken_resource_worker_http::ApplicationFileContentSource::new(application.clone()),
-        );
-        self.artifact_publisher = Arc::new(crate::provisioning::ApplicationArtifactPublisher::new(
-            application.clone(),
-        ));
+        self.file_content_source = content_source;
+        self.artifact_publisher = artifact_publisher;
         self.file_application = Some(application);
         self
     }
@@ -568,7 +570,9 @@ impl SharedHost {
     #[must_use]
     pub fn with_artifact_publisher(
         mut self,
-        publisher: Arc<dyn awaken_run_ingress_contract::ArtifactPublisher>,
+        publisher: Arc<
+            dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>,
+        >,
     ) -> Self {
         // This is the database-less Worker composition edge. Retaining the
         // test-only/local File application here would create a second command
@@ -746,6 +750,21 @@ impl SharedHost {
         self
     }
 
+    /// Install the Resource transport's opaque Memory capability encoder.
+    /// The execution host does not own or inspect the wire representation.
+    #[must_use]
+    pub fn with_memory_reference_encoder(
+        mut self,
+        encoder: Arc<
+            dyn awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+                    awaken_run_ingress::RunClaim,
+                >,
+        >,
+    ) -> Self {
+        self.memory_reference_encoder = Some(encoder);
+        self
+    }
+
     /// Install the registered Worker's claim-fenced live-progress publisher.
     #[must_use]
     pub fn with_worker_stream_publisher(
@@ -834,9 +853,14 @@ impl SharedHost {
     /// Test/scenario shorthand for a filesystem Skill store.
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_skill_store(mut self, dir: impl Into<PathBuf>) -> Self {
-        let store = awaken_skill_store::FsSkillStore::open(dir.into())
-            .expect("open durable skill store root");
-        self.skills.set_store(Arc::new(store));
+        let store = Arc::new(
+            awaken_skill_store::FsSkillStore::open(dir.into())
+                .expect("open durable skill store root"),
+        );
+        self.skills.set_bundle_source(Arc::new(
+            awaken_resource_application::StoreSkillBundleSource::new(store.clone()),
+        ));
+        self.skills.set_store(store);
         self
     }
 
@@ -846,6 +870,9 @@ impl SharedHost {
         mut self,
         store: Arc<dyn awaken_skill_store::SkillStore>,
     ) -> Self {
+        self.skills.set_bundle_source(Arc::new(
+            awaken_resource_application::StoreSkillBundleSource::new(store.clone()),
+        ));
         self.skills.set_store(store);
         self
     }
@@ -854,7 +881,7 @@ impl SharedHost {
     /// execution Worker. This does not grant authoring or catalog access.
     pub fn with_skill_bundle_source(
         mut self,
-        source: Arc<dyn awaken_resource_worker_http::SkillBundleSource>,
+        source: Arc<dyn awaken_session_contract::SkillBundleSource<awaken_run_ingress::RunClaim>>,
     ) -> Self {
         self.skills.set_bundle_source(source);
         self
@@ -968,7 +995,10 @@ impl SharedHost {
     /// Test-support replacement of a volatile fixture's File content port.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub fn with_file_content_source(mut self, source: Arc<dyn crate::FileContentSource>) -> Self {
+    pub fn with_file_content_source(
+        mut self,
+        source: Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>,
+    ) -> Self {
         self.file_content_source = source;
         self
     }
@@ -1049,26 +1079,46 @@ impl SharedHost {
         host_path: impl Into<std::path::PathBuf>,
     ) -> Result<(), String> {
         self.cache_volume_prewarmer
-            .prewarm(crate::CacheVolumeWarmup::new(key, host_path))
+            .prewarm(crate::CacheVolumeWarmup::host_path(key, host_path))
             .await
     }
 
-    /// Warm the deployment's canonical empty Session shape to its configured
-    /// target. The Worker calls this before publishing Ready. Shape normalization
-    /// is shared with ordinary Session creation, so warmup cannot drift into a
-    /// parallel creation path.
-    pub async fn prewarm_environment_capacity(
+    /// Warm the deployment's canonical empty Session shape to the target selected
+    /// by the Worker's one global capacity plan.
+    pub async fn prewarm_default_environment_capacity(
         &self,
+        target: usize,
     ) -> Result<usize, awaken_provisioning_contract::SandboxError> {
-        if self.deployment.disable_local_pool || self.deployment.sandbox.warm_pool_size == 0 {
+        if self.deployment.disable_local_pool
+            || self.deployment.sandbox.warm_pool_size == 0
+            || target == 0
+        {
             return Ok(0);
         }
         self.session_provider
             .prewarm(
                 &crate::provisioning::agent_run_sandbox_spec("environment-warmup"),
-                self.deployment.sandbox.warm_pool_size,
+                target,
             )
             .await
+    }
+
+    #[must_use]
+    pub fn default_environment_capacity_shape(
+        &self,
+    ) -> awaken_provisioning_contract::SandboxCapacityShapeId {
+        awaken_provisioning_contract::SandboxCapacityShapeId::from_spec(
+            &crate::provisioning::agent_run_sandbox_spec("environment-warmup"),
+        )
+        .expect("default Environment capacity spec is mount-less")
+    }
+
+    pub async fn discard_default_environment_capacity(&self) {
+        self.session_provider
+            .discard_capacity(&crate::provisioning::agent_run_sandbox_spec(
+                "environment-warmup",
+            ))
+            .await;
     }
 
     /// Reconcile one current executable Environment into the exact mount-less
@@ -1086,15 +1136,17 @@ impl SharedHost {
         {
             return Ok(0);
         }
-        let spec = crate::provisioning::environment_capacity_spec(
+        let projection = crate::provisioning::environment_capacity_projection(
             environment,
             self.session_provider.capabilities().network_isolation,
         );
-        self.session_provider.prewarm(&spec, target).await
+        self.session_provider
+            .prewarm(&projection.spec, target)
+            .await
     }
 
-    /// Per-shape target and total ready-capacity budget used to select a stable
-    /// deterministic subset when the catalog is larger than local capacity.
+    /// Per-shape target and the global ready-capacity budget across both the
+    /// default Session shape and current Environment shapes.
     #[must_use]
     pub fn environment_warmup_limits(&self) -> (usize, usize) {
         if self.deployment.disable_local_pool || self.deployment.sandbox.warm_pool_size == 0 {
@@ -1113,11 +1165,25 @@ impl SharedHost {
         &self,
         environment: &awaken_session_contract::EnvironmentSnapshot,
     ) -> usize {
-        let spec = crate::provisioning::environment_capacity_spec(
+        let projection = crate::provisioning::environment_capacity_projection(
             environment,
             self.session_provider.capabilities().network_isolation,
         );
-        self.session_provider.ready_capacity(&spec)
+        self.session_provider.ready_capacity(&projection.spec)
+    }
+
+    /// Exact identity published in Worker receipts for the same canonical spec
+    /// consumed by the installed capacity provider.
+    #[must_use]
+    pub fn environment_snapshot_capacity_shape(
+        &self,
+        environment: &awaken_session_contract::EnvironmentSnapshot,
+    ) -> awaken_provisioning_contract::SandboxCapacityShapeId {
+        crate::provisioning::environment_capacity_projection(
+            environment,
+            self.session_provider.capabilities().network_isolation,
+        )
+        .shape_id
     }
 
     /// Drop unused capacity for an Environment shape removed from current
@@ -1126,11 +1192,13 @@ impl SharedHost {
         &self,
         environment: &awaken_session_contract::EnvironmentSnapshot,
     ) {
-        let spec = crate::provisioning::environment_capacity_spec(
+        let projection = crate::provisioning::environment_capacity_projection(
             environment,
             self.session_provider.capabilities().network_isolation,
         );
-        self.session_provider.discard_capacity(&spec).await;
+        self.session_provider
+            .discard_capacity(&projection.spec)
+            .await;
     }
 
     /// Dispose never-used warm capacity after claim admission and in-flight work

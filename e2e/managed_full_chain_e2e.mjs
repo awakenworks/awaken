@@ -11,6 +11,25 @@
 // scenario on the wire); the far ends (git remote = a local bare repo, memory store,
 // blob store) are all real. Deterministic, hermetic, no API key.
 //
+// End-to-end FMECA / cause-effect graph (the assertions in `main` own the table):
+// C1 authoritative Skill/Memory/Repository configuration exists; C2 Session
+// freezes those resources and env_local; C3 the real provider turn completes;
+// C4 gated mutations are approved; C5 release/reconciliation succeeds. Effects:
+// E1 Skill is offered and invoked; E2 Memory and Repository mutations publish;
+// E3 the output is one downloadable File whose bytes are exact; E4 extraction
+// persists cross-Session memory; E5 equal authored Skill bytes are idempotent and
+// changed bytes append one version. Any missing cause must fail the scenario,
+// never be interpreted as an empty store or successful no-op.
+//
+// | Rule | C1 | C2 | C3 | C4 | C5 | Required effects |
+// | F1 | yes | yes | yes | yes | yes | E1+E2+E3+E4+E5 |
+// | F2 | missing/invalid | any | any | any | any | fail closed before invocation |
+// | F3 | yes | yes | provider/turn fails | any | any | no fabricated terminal success |
+// | F4 | yes | yes | yes | denied | any | no gated Resource mutation |
+// | F5 | yes | yes | yes | yes | fails | no false publication success; retryable intent remains |
+// Negative partitions F2-F5 are exercised at their authoritative unit/integration
+// boundaries; F1 is the non-redundant real-process composition proof here.
+//
 // Run: (from e2e/)  node managed_full_chain_e2e.mjs
 
 import assert from 'node:assert/strict';
@@ -160,7 +179,14 @@ async function main() {
         headers: MEMORY_HEADERS,
       });
       memContent = (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');
-      if (memContent.includes(MEMO_MARKER)) break;
+      files = await listArtifacts(c, session.id);
+      const listed = files?.data ?? files?.files ?? files ?? [];
+      const listedArray = Array.isArray(listed) ? listed : listed.data ?? [];
+      if (
+        memContent.includes(MEMO_MARKER)
+        && listedArray.some((file) =>
+          (file.filename ?? file.path ?? file.logical_path ?? '').includes('result.txt'))
+      ) break;
       await sleep(200);
     }
 
@@ -184,7 +210,16 @@ async function main() {
     const arr = Array.isArray(artifacts) ? artifacts : artifacts.data ?? [];
     const artifact = arr.find((f) => (f.filename ?? f.path ?? f.logical_path ?? '').includes('result.txt'));
     assert.ok(artifact, `the output artifact is listed by /v1/files: ${JSON.stringify(arr)}`);
-    pass('output artifact projected + retrievable via GET /v1/files');
+    const artifactResponse = await fetch(`http://127.0.0.1:${PORT}/v1/files/${artifact.id}/content`, {
+      headers: {
+        'x-api-key': 'e2e-dummy',
+        'anthropic-beta': BETAS.join(','),
+      },
+    });
+    const artifactBytes = await artifactResponse.text();
+    assert.equal(artifactResponse.status, 200, `artifact content is downloadable: ${artifactBytes}`);
+    assert.equal(artifactBytes, ARTIFACT_MARKER, 'downloaded File bytes equal the sandbox output');
+    pass('output artifact projected, listed, and downloaded with exact bytes via /v1/files');
 
     // 8) Cross-session memory: the extractor sub-run saved a memory the store persisted.
     // Extraction is out-of-band (fires after the turn's terminal step, runs its own

@@ -3,15 +3,13 @@
 use std::sync::Arc;
 
 use awaken_resource_contract::{
-    FileApplicationService, MAX_MANAGED_FILE_SIZE_BYTES, ResourcePurgeError, content_id,
-    harvest_idempotency_key,
+    ArtifactPublication, ArtifactPublicationError, ArtifactPublisher, FileApplicationService,
+    MAX_MANAGED_FILE_SIZE_BYTES, ResourcePurgeError, content_id, harvest_idempotency_key,
 };
-use awaken_run_ingress_contract::{
-    ARTIFACT_METADATA_HEADER, ARTIFACT_PUBLICATION_PATH, ArtifactPublicationRequest, DispatchQueue,
-    WorkerDirectory,
-};
+use awaken_run_ingress_contract::{DispatchQueue, RunClaim};
+use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
-    VerifiedWorkerContext, WorkerRequestAuthenticator, authenticate_worker_request,
+    VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
     verify_claim_owner,
 };
 use axum::body::Bytes;
@@ -21,6 +19,91 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use base64::Engine as _;
+use serde::{Deserialize, Serialize};
+
+pub const ARTIFACT_PUBLICATION_PATH: &str = "/v1/worker/resources/files/artifacts";
+pub const ARTIFACT_METADATA_HEADER: &str = "x-awaken-artifact-publication";
+
+/// Signed HTTP metadata; bytes remain in the request body to avoid base64
+/// expansion of large artifacts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactPublicationRequest {
+    pub claim: RunClaim,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<WorkerIdentity>,
+    pub workspace_id: String,
+    pub session_id: String,
+    pub logical_path: String,
+    pub mime_type: String,
+    pub content_id: String,
+}
+
+/// Worker-side peer of the claim-fenced artifact HTTP endpoint.
+#[derive(Clone)]
+pub struct HttpArtifactPublisher {
+    upstream: WorkerUpstream,
+}
+
+impl HttpArtifactPublisher {
+    #[must_use]
+    pub fn new(upstream: WorkerUpstream) -> Self {
+        Self { upstream }
+    }
+}
+
+#[async_trait::async_trait]
+impl ArtifactPublisher<RunClaim> for HttpArtifactPublisher {
+    async fn publish(
+        &self,
+        publication: ArtifactPublication<RunClaim>,
+    ) -> Result<awaken_resource_contract::FileRecord, ArtifactPublicationError> {
+        let claim = publication.fence.ok_or_else(|| {
+            ArtifactPublicationError::new("remote artifact publication requires a dispatch claim")
+        })?;
+        let metadata = ArtifactPublicationRequest {
+            claim,
+            identity: self.upstream.worker_identity().cloned(),
+            workspace_id: publication.workspace_id,
+            session_id: publication.session_id,
+            logical_path: publication.logical_path,
+            mime_type: publication.mime_type,
+            content_id: content_id(&publication.bytes),
+        };
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&metadata)
+                .map_err(|error| ArtifactPublicationError::new(error.to_string()))?,
+        );
+        let request = self
+            .upstream
+            .http_client()
+            .post(format!(
+                "{}{ARTIFACT_PUBLICATION_PATH}",
+                self.upstream.base_url()
+            ))
+            .header(ARTIFACT_METADATA_HEADER, encoded)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(publication.bytes);
+        let request = self
+            .upstream
+            .authorize_request("POST", ARTIFACT_PUBLICATION_PATH, request)
+            .map_err(ArtifactPublicationError::new)?;
+        let response = request
+            .send()
+            .await
+            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+        let status = response.status();
+        if status != reqwest::StatusCode::OK {
+            return Err(ArtifactPublicationError::new(format!(
+                "artifact authority returned HTTP {status}"
+            )));
+        }
+        response
+            .json::<awaken_resource_contract::FileRecord>()
+            .await
+            .map_err(|error| ArtifactPublicationError::new(error.to_string()))
+    }
+}
 
 pub struct WorkerArtifactPublicationService {
     application: Arc<dyn FileApplicationService>,
@@ -168,7 +251,8 @@ fn unix_now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_run_ingress_contract::{RunClaim, WorkerIdentity};
+    use awaken_run_ingress_contract::RunClaim;
+    use awaken_worker_contract::WorkerIdentity;
 
     fn metadata(path: &str) -> ArtifactPublicationRequest {
         ArtifactPublicationRequest {
@@ -233,6 +317,31 @@ mod tests {
             application_error_status(&ResourcePurgeError::Storage("offline".into())),
             StatusCode::SERVICE_UNAVAILABLE,
             "V5"
+        );
+    }
+
+    #[test]
+    fn artifact_metadata_wire_is_strict_and_lossless() {
+        // Wire FMECA cause/effect table: C1 every authority field is present;
+        // C2 a version-skewed/attacker-controlled field is present. Effects: E1
+        // lossless claim/scope/digest transport; E2 fail closed before authority
+        // checks. Rules W1 C1+!C2=>E1; W2 C1+C2=>E2.
+        let request = metadata("reports/result.txt");
+        let encoded = serde_json::to_value(&request).expect("W1 encode");
+        let decoded: ArtifactPublicationRequest =
+            serde_json::from_value(encoded.clone()).expect("W1 decode");
+        assert_eq!(decoded.claim, request.claim, "W1");
+        assert_eq!(decoded.logical_path, request.logical_path, "W1");
+        assert_eq!(decoded.content_id, request.content_id, "W1");
+
+        let mut unknown = encoded;
+        unknown
+            .as_object_mut()
+            .expect("request object")
+            .insert("authority_bypass".into(), serde_json::json!(true));
+        assert!(
+            serde_json::from_value::<ArtifactPublicationRequest>(unknown).is_err(),
+            "W2"
         );
     }
 }

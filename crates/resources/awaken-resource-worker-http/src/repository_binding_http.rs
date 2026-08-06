@@ -2,11 +2,14 @@
 
 use std::sync::Arc;
 
-use awaken_resource_contract::ResourceBindingValidator;
-use awaken_run_ingress_contract::{DispatchQueue, WorkerDirectory};
-use awaken_run_ingress_contract::{REPOSITORY_BINDING_PATH, RepositoryBindingRequest};
+use awaken_resource_contract::{
+    ConfigVersion, RepositoryBindingVerifier, RepositoryBindingVerifierError,
+    ResourceBindingValidator,
+};
+use awaken_run_ingress_contract::{DispatchQueue, RunClaim};
+use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
-    VerifiedWorkerContext, WorkerRequestAuthenticator, authenticate_worker_request,
+    VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
     verify_claim_owner,
 };
 use axum::extract::{Extension, State};
@@ -14,12 +17,90 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
+use serde::{Deserialize, Serialize};
+
+const REPOSITORY_BINDING_PATH: &str = "/v1/worker/resources/repositories/verify";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RepositoryBindingRequest {
+    claim: RunClaim,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    identity: Option<WorkerIdentity>,
+    workspace_id: String,
+    repository_id: String,
+    config_version: ConfigVersion,
+}
 
 pub struct WorkerRepositoryBindingService {
     validator: Arc<dyn ResourceBindingValidator>,
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
+}
+
+/// Registered-Worker client for exact Repository binding verification.
+#[derive(Clone)]
+pub struct HttpRepositoryBindingVerifier {
+    upstream: WorkerUpstream,
+}
+
+impl HttpRepositoryBindingVerifier {
+    #[must_use]
+    pub fn new(upstream: WorkerUpstream) -> Self {
+        Self { upstream }
+    }
+}
+
+#[async_trait::async_trait]
+impl RepositoryBindingVerifier<RunClaim> for HttpRepositoryBindingVerifier {
+    async fn verify(
+        &self,
+        workspace_id: &str,
+        repository_id: &str,
+        config_version: ConfigVersion,
+        claim: Option<&RunClaim>,
+    ) -> Result<(), RepositoryBindingVerifierError> {
+        let claim = claim.ok_or_else(|| {
+            RepositoryBindingVerifierError::new(
+                "remote Repository verification requires a dispatch claim",
+            )
+        })?;
+        if workspace_id.trim().is_empty() || repository_id.trim().is_empty() {
+            return Err(RepositoryBindingVerifierError::new(
+                "Workspace and Repository identities must not be empty",
+            ));
+        }
+        let request = self
+            .upstream
+            .http_client()
+            .post(format!(
+                "{}{REPOSITORY_BINDING_PATH}",
+                self.upstream.base_url()
+            ))
+            .json(&RepositoryBindingRequest {
+                claim: claim.clone(),
+                identity: self.upstream.worker_identity().cloned(),
+                workspace_id: workspace_id.to_owned(),
+                repository_id: repository_id.to_owned(),
+                config_version,
+            });
+        let request = self
+            .upstream
+            .authorize_request("POST", REPOSITORY_BINDING_PATH, request)
+            .map_err(RepositoryBindingVerifierError::new)?;
+        let response = request
+            .send()
+            .await
+            .map_err(|error| RepositoryBindingVerifierError::new(error.to_string()))?;
+        if response.status() != reqwest::StatusCode::NO_CONTENT {
+            return Err(RepositoryBindingVerifierError::new(format!(
+                "Repository binding authority returned HTTP {}",
+                response.status()
+            )));
+        }
+        Ok(())
+    }
 }
 
 impl WorkerRepositoryBindingService {
@@ -119,4 +200,43 @@ fn unix_now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repository_binding_wire_rejects_unknown_authority_fields() {
+        // Wire cause/effect decision table: R1 exact claim/workspace/repository/
+        // revision => lossless request; R2 an unknown compatibility or attacker
+        // field => reject before validation. Rules W1 R1+!R2=>decode; W2
+        // R1+R2=>fail closed.
+        let request = RepositoryBindingRequest {
+            claim: RunClaim {
+                run_id: awaken_agent_contract::agent::run::Id("run-repo".into()),
+                owner: "worker-repo".into(),
+                epoch: 5,
+            },
+            identity: None,
+            workspace_id: "workspace".into(),
+            repository_id: "repository".into(),
+            config_version: ConfigVersion(9),
+        };
+        let encoded = serde_json::to_value(&request).expect("W1 encode");
+        let decoded: RepositoryBindingRequest =
+            serde_json::from_value(encoded.clone()).expect("W1 decode");
+        assert_eq!(decoded.claim, request.claim, "W1 claim");
+        assert_eq!(decoded.config_version, request.config_version, "W1 version");
+
+        let mut unknown = encoded;
+        unknown
+            .as_object_mut()
+            .expect("request object")
+            .insert("authority_bypass".into(), serde_json::json!(true));
+        assert!(
+            serde_json::from_value::<RepositoryBindingRequest>(unknown).is_err(),
+            "W2"
+        );
+    }
 }

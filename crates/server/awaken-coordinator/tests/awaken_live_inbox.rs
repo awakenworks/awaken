@@ -16,6 +16,7 @@ use awaken_session_contract::{
     LiveInboxEntry, LiveInboxError, LiveInboxSnapshot, OutcomeReport, RunError, SessionRuntime,
     StepOutcome,
 };
+use awaken_tenancy::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -28,7 +29,17 @@ async fn call(
     uri: &str,
     body: serde_json::Value,
 ) -> (StatusCode, serde_json::Value) {
-    let req = Request::builder()
+    call_in_scope(app, method, uri, body, Some("default")).await
+}
+
+async fn call_in_scope(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: serde_json::Value,
+    workspace: Option<&str>,
+) -> (StatusCode, serde_json::Value) {
+    let mut req = Request::builder()
         .method(method)
         .uri(uri)
         .header("content-type", "application/json")
@@ -38,13 +49,18 @@ async fn call(
             Body::from(serde_json::to_vec(&body).unwrap())
         })
         .unwrap();
+    if let Some(workspace) = workspace {
+        req.extensions_mut()
+            .insert(WorkspaceScope(workspace.to_string()));
+    }
     let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let value = if bytes.is_empty() {
         serde_json::Value::Null
     } else {
-        serde_json::from_slice(&bytes).unwrap()
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(&bytes).into()))
     };
     (status, value)
 }
@@ -305,7 +321,73 @@ fn app(fake: Arc<QueueFake>) -> Router {
         }
     }
     let state = Arc::new(ManagedState::new(Shared(fake)));
-    router(state.clone()).merge(live_inbox_router(state))
+    router(state.clone()).merge(live_inbox_router(state.session_application()))
+}
+
+#[tokio::test]
+async fn workspace_scope_fences_every_live_inbox_operation() {
+    // FMECA cause/effect graph:
+    // C1 Session exists; C2 request scope is missing, foreign, or owning; C3
+    // operation is read or mutation. Effects: E1 missing/foreign always returns
+    // indistinguishable 404; E2 owning reads/mutations reach the queue; E3 a
+    // rejected request causes no queue side effect.
+    //
+    // | Rule | Session | scope | verb | effect |
+    // |---|---|---|---|---|
+    // | S1 | exists | missing | GET | 404, no disclosure |
+    // | S2 | exists | foreign | POST | 404, no mutation |
+    // | S3 | exists | owner | POST | accepted by active queue |
+    let fake = Arc::new(QueueFake::default());
+    fake.active.store(true, Ordering::SeqCst);
+    let app = app(fake);
+    let session = create(&app).await;
+    let base = format!("/v1/awaken/sessions/{session}/live-inbox");
+
+    let (status, _) = call_in_scope(&app, "GET", &base, serde_json::Value::Null, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "S1");
+
+    let (status, _) = call_in_scope(
+        &app,
+        "POST",
+        &base,
+        text_content("foreign"),
+        Some("workspace-b"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "S2");
+
+    let (status, queued) = call(&app, "POST", &base, text_content("owner")).await;
+    assert_eq!(status, StatusCode::OK, "S3");
+    assert_eq!(queued["id"], 1, "S2 must not consume a queue id");
+}
+
+#[tokio::test]
+async fn malformed_live_inbox_commands_are_rejected_before_application_mutation() {
+    // FMECA parser-boundary graph: C1 request has the required content/order;
+    // C2 it contains an unknown field (version skew or injection); C3 the queue
+    // is active. Effects: E1 exact command mutates once; E2 malformed command is
+    // a 4xx and never reaches the application. Rule P1 C1+C3 -> E1; P2 C2 -> E2.
+    let fake = Arc::new(QueueFake::default());
+    fake.active.store(true, Ordering::SeqCst);
+    let app = app(fake);
+    let session = create(&app).await;
+    let base = format!("/v1/awaken/sessions/{session}/live-inbox");
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        &base,
+        serde_json::json!({
+            "content": [{"type": "text", "text": "must-not-land"}],
+            "unexpected": true
+        }),
+    )
+    .await;
+    assert!(status.is_client_error(), "P2: {status}");
+
+    let (status, snapshot) = call(&app, "GET", &base, serde_json::Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(snapshot["messages"].as_array().unwrap().len(), 0, "P2/E2");
 }
 
 #[tokio::test]
@@ -360,6 +442,56 @@ async fn inactive_queue_lists_empty_and_refuses_mutations_with_410() {
     )
     .await;
     assert_eq!(status, StatusCode::GONE);
+}
+
+#[tokio::test]
+async fn inactive_live_steer_has_the_existing_durable_event_fallback() {
+    // End-to-end FMECA rule: C1 no locally reachable active attempt; C2 caller
+    // first tries best-effort steer; C3 caller retries the content through the
+    // ordinary Session event ingress. Effects: E1 live steer returns 410 without
+    // consuming content; E2 the existing event command accepts and processes the
+    // message exactly once; E3 committed event history, not LiveInbox, owns truth.
+    //
+    // | Rule | live active | selected ingress | effect |
+    // |---|---|---|---|
+    // | F1 | no | LiveInbox | 410, no queue entry |
+    // | F2 | no | Session events | 200, one committed user.message |
+    let app = app(Arc::new(QueueFake::default()));
+    let session = create(&app).await;
+    let live = format!("/v1/awaken/sessions/{session}/live-inbox");
+
+    let (status, _) = call(&app, "POST", &live, text_content("reliable")).await;
+    assert_eq!(status, StatusCode::GONE, "F1");
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{session}/events"),
+        serde_json::json!({
+            "events": [{
+                "type": "user.message",
+                "content": [{"type": "text", "text": "reliable"}]
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "F2");
+
+    let (status, events) = call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{session}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let committed = events["data"]
+        .as_array()
+        .expect("event page")
+        .iter()
+        .filter(|event| event["type"] == "user.message")
+        .count();
+    assert_eq!(committed, 1, "F2/E3");
 }
 
 #[tokio::test]

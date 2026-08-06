@@ -14,9 +14,8 @@ awaken-agent-contract.workspace = true
 awaken-memory-store.workspace = true
 awaken-resource-contract.workspace = true
 awaken-run-ingress-contract.workspace = true
-awaken-runtime-contract.workspace = true
 awaken-session-contract.workspace = true
-awaken-skill-store.workspace = true
+awaken-worker-contract.workspace = true
 awaken-worker-transport-security.workspace = true
 async-trait.workspace = true
 base64 = "0.22"
@@ -24,7 +23,6 @@ axum.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-thiserror.workspace = true
 
 [features]
 test-support = []
@@ -39,7 +37,6 @@ awaken-run-ingress-testkit.workspace = true
 awaken-skill-store = { workspace = true, features = ["test-support"] }
 awaken-store-inmem.workspace = true
 awaken-tenancy.workspace = true
-awaken-worker-runtime.workspace = true
 tempfile = "3"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 

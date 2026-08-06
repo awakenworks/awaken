@@ -2,12 +2,11 @@
 
 use std::sync::Arc;
 
-use awaken_run_ingress_contract::{DispatchQueue, WorkerDirectory};
-use awaken_run_ingress_contract::{
-    FILE_CONTENT_DIGEST_HEADER, FILE_CONTENT_PATH, FileContentRequest, FileContentSource,
-};
+use awaken_resource_contract::{FileContentSource, FileContentSourceError, content_id};
+use awaken_run_ingress_contract::{DispatchQueue, RunClaim};
+use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
-    VerifiedWorkerContext, WorkerRequestAuthenticator, authenticate_worker_request,
+    VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
     verify_claim_owner,
 };
 use axum::body::Body;
@@ -16,9 +15,23 @@ use axum::http::{Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
+use serde::{Deserialize, Serialize};
+
+const FILE_CONTENT_PATH: &str = "/v1/worker/resources/files/content";
+const FILE_CONTENT_DIGEST_HEADER: &str = "x-awaken-file-content-digest";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileContentRequest {
+    claim: RunClaim,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    identity: Option<WorkerIdentity>,
+    workspace_id: String,
+    file_id: String,
+}
 
 pub struct WorkerFileContentService {
-    source: Arc<dyn FileContentSource>,
+    source: Arc<dyn FileContentSource<RunClaim>>,
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
@@ -27,7 +40,7 @@ pub struct WorkerFileContentService {
 impl WorkerFileContentService {
     #[must_use]
     pub fn new(
-        source: Arc<dyn FileContentSource>,
+        source: Arc<dyn FileContentSource<RunClaim>>,
         dispatch: Arc<dyn DispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
     ) -> Self {
@@ -43,6 +56,84 @@ impl WorkerFileContentService {
     pub fn with_worker_directory(mut self, directory: Arc<dyn WorkerDirectory>) -> Self {
         self.directory = Some(directory);
         self
+    }
+}
+
+/// Registered-Worker client for claim-bound immutable File content.
+#[derive(Clone)]
+pub struct HttpFileContentSource {
+    upstream: WorkerUpstream,
+}
+
+impl HttpFileContentSource {
+    #[must_use]
+    pub fn new(upstream: WorkerUpstream) -> Self {
+        Self { upstream }
+    }
+}
+
+#[async_trait::async_trait]
+impl FileContentSource<RunClaim> for HttpFileContentSource {
+    async fn read(
+        &self,
+        workspace_id: &str,
+        file_id: &str,
+        claim: Option<&RunClaim>,
+    ) -> Result<Option<(String, Vec<u8>)>, FileContentSourceError> {
+        let claim = claim.ok_or_else(|| {
+            FileContentSourceError::new("remote File materialization requires a dispatch claim")
+        })?;
+        if workspace_id.trim().is_empty() || file_id.trim().is_empty() {
+            return Err(FileContentSourceError::new(
+                "Workspace and File identities must not be empty",
+            ));
+        }
+        let request = self
+            .upstream
+            .http_client()
+            .post(format!("{}{FILE_CONTENT_PATH}", self.upstream.base_url()))
+            .json(&FileContentRequest {
+                claim: claim.clone(),
+                identity: self.upstream.worker_identity().cloned(),
+                workspace_id: workspace_id.to_owned(),
+                file_id: file_id.to_owned(),
+            });
+        let request = self
+            .upstream
+            .authorize_request("POST", FILE_CONTENT_PATH, request)
+            .map_err(FileContentSourceError::new)?;
+        let response = request
+            .send()
+            .await
+            .map_err(|error| FileContentSourceError::new(error.to_string()))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(FileContentSourceError::new(format!(
+                "File content authority returned HTTP {}",
+                response.status()
+            )));
+        }
+        let digest = response
+            .headers()
+            .get(FILE_CONTENT_DIGEST_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| FileContentSourceError::new("File response has no content digest"))?
+            .to_string();
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| FileContentSourceError::new(error.to_string()))?
+            .to_vec();
+        let actual = content_id(&bytes);
+        if actual != digest {
+            return Err(FileContentSourceError::new(format!(
+                "File response digest mismatch: expected {digest}, received {actual}"
+            )));
+        }
+        Ok(Some((digest, bytes)))
     }
 }
 
@@ -123,4 +214,41 @@ fn unix_now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_content_wire_rejects_unknown_authority_fields() {
+        // Wire cause/effect decision table: F1 exact claim, identity, workspace,
+        // and File id => lossless request; F2 any unknown field => reject before
+        // claim/resource checks. Rules W1 F1+!F2=>decode; W2 F1+F2=>fail closed.
+        let request = FileContentRequest {
+            claim: RunClaim {
+                run_id: awaken_agent_contract::agent::run::Id("run-file".into()),
+                owner: "worker-file".into(),
+                epoch: 4,
+            },
+            identity: None,
+            workspace_id: "workspace".into(),
+            file_id: "file".into(),
+        };
+        let encoded = serde_json::to_value(&request).expect("W1 encode");
+        let decoded: FileContentRequest =
+            serde_json::from_value(encoded.clone()).expect("W1 decode");
+        assert_eq!(decoded.claim, request.claim, "W1 claim");
+        assert_eq!(decoded.file_id, request.file_id, "W1 file");
+
+        let mut unknown = encoded;
+        unknown
+            .as_object_mut()
+            .expect("request object")
+            .insert("authority_bypass".into(), serde_json::json!(true));
+        assert!(
+            serde_json::from_value::<FileContentRequest>(unknown).is_err(),
+            "W2"
+        );
+    }
 }

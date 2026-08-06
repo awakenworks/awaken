@@ -19,9 +19,11 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 
 mod catalog;
 mod component;
+mod execution;
 mod input;
 mod lifecycle;
 mod memory_application;
@@ -33,6 +35,12 @@ pub use catalog::{
     ResourceTimestamps, RetentionPolicy,
 };
 pub use component::{ResourceComponent, ResourceDependencies, build_resource_component};
+pub use execution::{
+    ArtifactPublication, ArtifactPublicationError, ArtifactPublisher, FileContentSource,
+    FileContentSourceError, MemoryMaterializationReferenceEncoder,
+    MemoryMaterializationReferenceError, RepositoryBindingVerifier, RepositoryBindingVerifierError,
+    UnavailableArtifactPublisher, UnavailableFileContentSource,
+};
 pub use input::{
     BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
     SkillId, SkillVersionId,
@@ -349,6 +357,28 @@ pub struct SkillVersion {
     pub files: Vec<SkillBundleFile>,
     #[serde(default)]
     pub created_unix_nanos: u64,
+}
+
+/// Canonical SHA-256 identity of a complete immutable Skill bundle.
+///
+/// The Resources contract owns this algorithm because stores, HTTP transports,
+/// execution materializers, and Managed projections must reject exactly the
+/// same mutations. Paths are sorted and every variable-length field is framed.
+#[must_use]
+pub fn skill_bundle_sha256(files: &[SkillBundleFile]) -> String {
+    let mut ordered = files.iter().collect::<Vec<_>>();
+    ordered.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut hash = Sha256::new();
+    for file in ordered {
+        hash.update((file.path.len() as u64).to_be_bytes());
+        hash.update(file.path.as_bytes());
+        hash.update((file.content.len() as u64).to_be_bytes());
+        hash.update(&file.content);
+        if file.executable {
+            hash.update(b"\0awaken-skill-executable\0");
+        }
+    }
+    format!("sha256:{:x}", hash.finalize())
 }
 
 impl SkillVersion {

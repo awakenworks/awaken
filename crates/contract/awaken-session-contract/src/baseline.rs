@@ -140,48 +140,6 @@ pub struct EnvironmentSnapshot {
     pub credential_realization: CredentialRealizationProfile,
 }
 
-impl EnvironmentSnapshot {
-    /// Provider-neutral creation-shape identity used for warm-capacity receipts
-    /// and placement preference. Credential holders and authoring metadata are
-    /// intentionally excluded because they do not change container creation.
-    /// An unprepared unpinned package set retains its frozen revision identity;
-    /// once Coordinator supplies an immutable image, the image owns that fact.
-    #[must_use]
-    pub fn runtime_shape_fingerprint(&self) -> EnvironmentFingerprint {
-        // Mirror the creation-relevant subset of SandboxOverride without making
-        // Session depend outward on the Worker provisioning contract. Snapshot
-        // network is authoritative; retained sandbox.network and unknown authoring
-        // fields are ignored by Host projection. A prepared image overwrites the
-        // policy's original environment declaration.
-        let sandbox_environment = self.prepared_image.as_ref().map_or_else(
-            || self.sandbox.get("environment").cloned(),
-            |reference| {
-                Some(serde_json::json!({
-                    "kind": "image",
-                    "reference": reference,
-                }))
-            },
-        );
-        let sandbox_isolation = self.sandbox.get("isolation");
-        let sandbox_limits = self
-            .sandbox
-            .get("limits")
-            .filter(|limits| limits.as_object().is_some_and(|fields| !fields.is_empty()));
-        let unresolved_packages = self.prepared_image.is_none().then_some(&self.packages);
-        let unresolved_package_revision = (self.prepared_image.is_none()
-            && !self.packages.is_empty())
-        .then_some((&self.environment_id, self.revision));
-        EnvironmentFingerprint(awaken_agent_contract::stable_fingerprint(&(
-            sandbox_environment,
-            sandbox_isolation,
-            sandbox_limits,
-            unresolved_packages,
-            &self.network,
-            unresolved_package_revision,
-        )))
-    }
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionMcpAuthoringContext {
     pub ordered_vault_ids: Vec<String>,
@@ -612,64 +570,6 @@ mod tests {
         let decoded: EnvironmentSnapshot =
             serde_json::from_value(serde_json::to_value(explicit).unwrap()).unwrap();
         assert!(decoded.self_hosted, "P1");
-    }
-
-    #[test]
-    fn runtime_shape_excludes_non_creation_facts() {
-        // FMECA: F1 metadata/revision churn evicts useful capacity (S3 O7 D2,
-        // RPN42); F2 a network/image/unprepared-package change reuses an incompatible
-        // container (S9 O3 D3, RPN81). Mitigation is one shape fingerprint over
-        // creation facts, with unresolved package revision included until an
-        // immutable prepared image exists.
-        // Cause-effect graph: C1=only id/revision/credential/provisioning or
-        // ignored policy-network changes; C2=network changes; C3=prepared image
-        // changes; C4=packages change under the same prepared image. E1=same key;
-        // E2=new key.
-        // | Rule | C1 | C2 | C3 | C4 | Effect |
-        // | S1   | 1  | 0  | 0  | -  | E1     |
-        // | S2   | -  | 1  | 0  | -  | E2     |
-        // | S3   | -  | 0  | 1  | -  | E2     |
-        // | S4   | -  | 0  | 0  | 1  | E1     |
-        let mut first = environment(1, SessionNetworkPolicy::Unrestricted);
-        first.prepared_image = Some("registry/env@sha256:a".into());
-        let mut metadata_revision = first.clone();
-        metadata_revision.environment_id = "renamed-coordinate".into();
-        metadata_revision.revision = EnvironmentRevision(9);
-        metadata_revision.credential_realization.inference_holder =
-            PlaintextHolder::new(PlaintextBoundary::Worker, "different.holder");
-        metadata_revision.sandbox_provisioning = SandboxProvisioning::OnToolUse;
-        metadata_revision.sandbox = serde_json::json!({
-            "network": {"mode": "none"},
-        });
-        assert_eq!(
-            first.runtime_shape_fingerprint(),
-            metadata_revision.runtime_shape_fingerprint(),
-            "S1"
-        );
-        let mut network = first.clone();
-        network.network = SessionNetworkPolicy::None;
-        assert_ne!(
-            first.runtime_shape_fingerprint(),
-            network.runtime_shape_fingerprint(),
-            "S2"
-        );
-        let mut image = first.clone();
-        image.prepared_image = Some("registry/env@sha256:b".into());
-        assert_ne!(
-            first.runtime_shape_fingerprint(),
-            image.runtime_shape_fingerprint(),
-            "S3"
-        );
-        let mut packaged = first.clone();
-        packaged
-            .packages
-            .npm
-            .push("metadata-only-after-build".into());
-        assert_eq!(
-            first.runtime_shape_fingerprint(),
-            packaged.runtime_shape_fingerprint(),
-            "S4"
-        );
     }
 
     fn baseline_inputs(environment: EnvironmentSnapshot) -> SessionBaselineInputs {

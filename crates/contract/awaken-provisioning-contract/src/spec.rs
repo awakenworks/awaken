@@ -3,7 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::borrow::Borrow;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Arc;
 
 use crate::sandbox::IsolationClass;
@@ -348,6 +350,66 @@ pub struct SandboxSpec {
     pub extra: Option<Value>,
 }
 
+/// Canonical identity of one substitutable, never-used sandbox capacity shape.
+///
+/// This is the only shape algorithm used by proactive warmup, pool checkout,
+/// Worker receipts, and Coordinator placement preference. It excludes only the
+/// per-Session scope and the process command launched after environment creation.
+/// Every other current and future [`SandboxSpec`] field participates by default.
+/// Specs with creation-time mounts are deliberately not poolable.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SandboxCapacityShapeId(String);
+
+impl SandboxCapacityShapeId {
+    /// Derive the exact poolable capacity identity, or `None` when the spec
+    /// contains Session-specific creation mounts.
+    #[must_use]
+    pub fn from_spec(spec: &SandboxSpec) -> Option<Self> {
+        if !spec.mounts.is_empty() {
+            return None;
+        }
+        let mut normalized = spec.clone();
+        normalized.scope.clear();
+        if let Some(Value::Object(extra)) = normalized.extra.as_mut() {
+            extra.remove("command");
+            if extra.is_empty() {
+                normalized.extra = None;
+            }
+        }
+        Some(Self(awaken_agent_contract::stable_fingerprint(&normalized)))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<str> for SandboxCapacityShapeId {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for SandboxCapacityShapeId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl From<String> for SandboxCapacityShapeId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for SandboxCapacityShapeId {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
 /// The **declared** control-plane environment config (persisted + admitted),
 /// distinct from a realized live environment. Mirrors the shapes both source
 /// repos converged on; the realizer maps a `kind` to an [`IsolationClass`].
@@ -459,6 +521,110 @@ mod tests {
             },
             "\"source\":\"tarball\"",
         );
+    }
+
+    fn capacity_spec() -> SandboxSpec {
+        SandboxSpec {
+            scope: "session-a".into(),
+            isolation: IsolationClass::Container,
+            mounts: Vec::new(),
+            env: Vec::new(),
+            packages: Default::default(),
+            network: NetworkPolicy::None,
+            outputs_path: "/mnt/session/outputs".into(),
+            limits: Default::default(),
+            lease_ttl_secs: None,
+            extra: Some(serde_json::json!({
+                "command": ["agent", "--acp"],
+                "environment": { "kind": "image", "reference": "agent:v1" }
+            })),
+        }
+    }
+
+    #[test]
+    fn capacity_shape_is_the_single_complete_creation_identity() {
+        // FMECA: F1 placement and pool use different field allowlists, so a new
+        // creation field can advertise a false warm hit (S9,O4,D4,RPN144); F2
+        // Session scope/attempt command fragments substitutable capacity
+        // (S4,O6,D3,RPN72); F3 a mounted shape crosses Session bytes (S10,O3,D2,
+        // RPN60). Cause graph: C1=only scope changes; C2=only command changes;
+        // C3=any creation field changes; C4=any mount exists. Effects: E1=same
+        // typed identity; E2=different identity; E3=not poolable.
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // | S1   | 1  | 0  | 0  | 0  | E1     |
+        // | S2   | 0  | 1  | 0  | 0  | E1     |
+        // | S3   | 0  | 0  | 1  | 0  | E2     |
+        // | S4   | -  | -  | -  | 1  | E3     |
+        let base = capacity_spec();
+        let base_id = SandboxCapacityShapeId::from_spec(&base).expect("poolable");
+
+        let mut scope = base.clone();
+        scope.scope = "session-b".into();
+        assert_eq!(
+            SandboxCapacityShapeId::from_spec(&scope),
+            Some(base_id.clone()),
+            "S1"
+        );
+
+        let mut command = base.clone();
+        command.extra.as_mut().unwrap()["command"] = serde_json::json!(["other"]);
+        assert_eq!(
+            SandboxCapacityShapeId::from_spec(&command),
+            Some(base_id.clone()),
+            "S2"
+        );
+
+        let mut variants = Vec::new();
+        let mut isolation = base.clone();
+        isolation.isolation = IsolationClass::Namespace;
+        variants.push(isolation);
+        let mut env = base.clone();
+        env.env.push(EnvVar {
+            name: "MODE".into(),
+            value: EnvValue::Inline {
+                value: "strict".into(),
+            },
+            visibility: EnvVisibility::Process,
+        });
+        variants.push(env);
+        let mut packages = base.clone();
+        packages.packages.resolution_id = Some("packages-v2".into());
+        variants.push(packages);
+        let mut network = base.clone();
+        network.network = NetworkPolicy::Unrestricted;
+        variants.push(network);
+        let mut outputs = base.clone();
+        outputs.outputs_path = "/other/outputs".into();
+        variants.push(outputs);
+        let mut limits = base.clone();
+        limits.limits.memory_bytes = Some(1 << 20);
+        variants.push(limits);
+        let mut lease = base.clone();
+        lease.lease_ttl_secs = Some(60);
+        variants.push(lease);
+        let mut extra = base.clone();
+        extra.extra.as_mut().unwrap()["seccomp_profile"] = serde_json::json!("strict-v2");
+        variants.push(extra);
+        for variant in variants {
+            assert_ne!(
+                SandboxCapacityShapeId::from_spec(&variant),
+                Some(base_id.clone()),
+                "S3"
+            );
+        }
+
+        let mut mounted = base;
+        mounted.mounts.push(MountRequirement {
+            mount_id: "session-input".into(),
+            source: crate::MountSource::Inline {
+                contents: "x".into(),
+            },
+            mount_path: "/input".into(),
+            access: crate::MountAccess::ReadOnly,
+            lifetime: crate::MountLifetime::PerRun,
+            required: true,
+        });
+        assert_eq!(SandboxCapacityShapeId::from_spec(&mounted), None, "S4");
     }
 }
 

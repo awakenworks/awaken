@@ -1539,13 +1539,14 @@ mod tests {
         struct ClaimFileSource;
 
         #[async_trait::async_trait]
-        impl crate::FileContentSource for ClaimFileSource {
+        impl crate::FileContentSource<awaken_run_ingress::RunClaim> for ClaimFileSource {
             async fn read(
                 &self,
                 workspace_id: &str,
                 file_id: &str,
                 claim: Option<&awaken_run_ingress::RunClaim>,
-            ) -> Result<Option<(String, Vec<u8>)>, crate::FileContentSourceError> {
+            ) -> Result<Option<(String, Vec<u8>)>, awaken_resource_contract::FileContentSourceError>
+            {
                 let Some(claim) = claim else {
                     return Ok(None);
                 };

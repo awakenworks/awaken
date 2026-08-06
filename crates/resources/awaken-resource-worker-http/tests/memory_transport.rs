@@ -9,9 +9,9 @@ use awaken_resource_contract::{
     ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceAccess,
     ResourceCatalog as _, ResourceState,
 };
+use awaken_resource_worker_http::memory_materialization_reference;
 use awaken_resource_worker_http::{
-    HttpMemoryRepository, WorkerMemoryService, memory_materialization_reference,
-    worker_memory_router,
+    HttpMemoryRepository, WorkerMemoryService, worker_memory_router,
 };
 use awaken_run_ingress::{DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch};
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};

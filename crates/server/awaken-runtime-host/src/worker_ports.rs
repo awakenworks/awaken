@@ -45,13 +45,15 @@ impl SharedHost {
         self.completion.clone()
     }
 
-    pub fn worker_file_content_source(&self) -> Arc<dyn FileContentSource> {
+    pub fn worker_file_content_source(
+        &self,
+    ) -> Arc<dyn FileContentSource<awaken_run_ingress::RunClaim>> {
         self.file_content_source.clone()
     }
 
     pub fn worker_artifact_publisher(
         &self,
-    ) -> Arc<dyn awaken_run_ingress_contract::ArtifactPublisher> {
+    ) -> Arc<dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>> {
         self.artifact_publisher.clone()
     }
 }
@@ -63,15 +65,17 @@ mod tests {
     struct RemotePublisher;
 
     #[async_trait::async_trait]
-    impl awaken_run_ingress_contract::ArtifactPublisher for RemotePublisher {
+    impl awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim> for RemotePublisher {
         async fn publish(
             &self,
-            _publication: awaken_run_ingress_contract::ArtifactPublication,
+            _publication: awaken_resource_contract::ArtifactPublication<
+                awaken_run_ingress::RunClaim,
+            >,
         ) -> Result<
             awaken_resource_contract::FileRecord,
-            awaken_run_ingress_contract::ArtifactPublicationError,
+            awaken_resource_contract::ArtifactPublicationError,
         > {
-            Err(awaken_run_ingress_contract::ArtifactPublicationError::new(
+            Err(awaken_resource_contract::ArtifactPublicationError::new(
                 "fixture",
             ))
         }

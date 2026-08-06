@@ -2,19 +2,17 @@
 
 use std::sync::Arc;
 
-use awaken_resource_contract::{FileStore, FileStoreError, content_id};
+use awaken_resource_contract::{
+    ArtifactPublication, ArtifactPublisher as _, FileStore, FileStoreError, content_id,
+};
 use awaken_resource_worker_http::{
+    ARTIFACT_METADATA_HEADER, ARTIFACT_PUBLICATION_PATH, HttpArtifactPublisher,
     WorkerArtifactPublicationService, worker_artifact_publication_router,
 };
 use awaken_run_ingress::{
     DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };
-use awaken_run_ingress_contract::{
-    ARTIFACT_METADATA_HEADER, ARTIFACT_PUBLICATION_PATH, ArtifactPublication,
-    ArtifactPublisher as _,
-};
 use awaken_run_ingress_testkit::worker_http as support;
-use awaken_worker_runtime::HttpArtifactPublisher;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 use base64::Engine as _;
 
@@ -41,14 +39,14 @@ fn publication(
     session: &str,
     path: &str,
     bytes: &[u8],
-) -> ArtifactPublication {
+) -> ArtifactPublication<RunClaim> {
     ArtifactPublication {
         workspace_id: workspace.into(),
         session_id: session.into(),
         logical_path: path.into(),
         mime_type: "text/html".into(),
         bytes: bytes.to_vec(),
-        claim,
+        fence: claim,
     }
 }
 

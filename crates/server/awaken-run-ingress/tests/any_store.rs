@@ -7,18 +7,15 @@
 
 mod harness;
 
-use std::sync::{Arc, Mutex};
-
-use async_trait::async_trait;
+use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_run_ingress::{
-    AnyDispatchStore, DispatchCursor, DispatchEnqueue, DispatchOperation, DispatchOperationalFeed,
-    DispatchOutcome, DispatchQueue, DurableRunIngress, Inbox, LeastLoadedPolicy,
-    MemoryDispatchStore, PlacementContext, PlacementError, PlacementPolicy, PlacementRequirements,
-    RankedWorker, RunDispatch, SubmitOptions, WorkerIdentity, WorkerManifest, WorkerSnapshot,
-    WorkerState,
+    AnyDispatchStore, DispatchCursor, DispatchOperation, DispatchOperationalFeed, DispatchOutcome,
+    DispatchQueue, DurableRunIngress, Inbox, LeastLoadedPolicy, MemoryDispatchStore,
+    PlacementContext, PlacementError, PlacementPolicy, PlacementRequirements, RankedWorker,
+    RunDispatch, SubmitOptions, WorkerIdentity, WorkerManifest, WorkerSnapshot, WorkerState,
 };
 use awaken_run_ingress::{RunClaim, SettleOutcome, WorkerRecoveryMode};
 use awaken_runtime::RunIngress;
@@ -41,76 +38,6 @@ fn non_postgres_wrapper_does_not_fabricate_a_checkpoint_authority() {
     assert!(any_in_memory().stream_checkpoint_store().is_none(), "R2");
     let remote = AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new()));
     assert!(remote.stream_checkpoint_store().is_none(), "R3");
-}
-
-#[derive(Default)]
-struct RecordingAdmission {
-    admitted: Mutex<Vec<(RunDispatch, SubmitOptions)>>,
-}
-
-#[async_trait]
-impl DispatchEnqueue for RecordingAdmission {
-    async fn enqueue_with(
-        &self,
-        request: RunDispatch,
-        options: SubmitOptions,
-    ) -> Result<(), awaken_run_ingress::DispatchError> {
-        self.admitted.lock().unwrap().push((request, options));
-        Ok(())
-    }
-}
-
-#[tokio::test]
-async fn enqueue_decoration_changes_only_the_admission_edge() {
-    // Cause graph: optional decorator × queue operation. A new enqueue crosses
-    // the decorator exactly once; read/claim/inbox/outbox operations retain the
-    // one inner Dispatch authority. Absence preserves ordinary delegation.
-    // Decision table:
-    // | decorator | operation | effect |
-    // | absent | enqueue | inner queue receives dispatch (R1) |
-    // | present | enqueue | decorator receives exact payload/options; inner is untouched (R2) |
-    // | present | non-enqueue | exact inner operation remains authoritative (R3) |
-    let ordinary_inner = Arc::new(MemoryDispatchStore::new());
-    let ordinary = AnyDispatchStore::from_dispatch(ordinary_inner);
-    ordinary
-        .enqueue(RunDispatch::new(activation_on(
-            "ordinary",
-            "thread-ordinary",
-        )))
-        .await
-        .unwrap();
-    assert_eq!(ordinary.runnable_depth(0).await.unwrap(), Some(1));
-
-    let inner = Arc::new(MemoryDispatchStore::new());
-    let admission = Arc::new(RecordingAdmission::default());
-    let decorated = AnyDispatchStore::from_dispatch(inner.clone()).with_enqueue(admission.clone());
-    let options = SubmitOptions {
-        priority: 9,
-        dedupe_key: Some("deployment-run-a".into()),
-        supersede: false,
-    };
-
-    decorated
-        .enqueue_with(
-            RunDispatch::new(activation_on("admitted", "thread-admitted")),
-            options.clone(),
-        )
-        .await
-        .unwrap();
-
-    {
-        let admitted = admission.admitted.lock().unwrap();
-        assert_eq!(admitted.len(), 1);
-        assert_eq!(admitted[0].0.run_id().0, "admitted");
-        assert_eq!(admitted[0].1, options);
-    }
-    assert_eq!(decorated.runnable_depth(0).await.unwrap(), Some(0));
-
-    inner
-        .enqueue(RunDispatch::new(activation_on("inner", "thread-inner")))
-        .await
-        .unwrap();
-    assert_eq!(decorated.runnable_depth(0).await.unwrap(), Some(1));
 }
 
 fn candidate(

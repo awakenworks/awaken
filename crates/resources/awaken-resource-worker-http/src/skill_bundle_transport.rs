@@ -8,9 +8,12 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::AgentSkillKind;
-use awaken_run_ingress_contract::{DispatchQueue, RunClaim, WorkerDirectory, WorkerIdentity};
-use awaken_session_contract::ResolvedSkillBinding;
-use awaken_skill_store::{SkillStore, SkillVersion};
+use awaken_resource_contract::SkillVersion;
+use awaken_run_ingress_contract::{DispatchQueue, RunClaim};
+use awaken_session_contract::{
+    ResolvedSkillBinding, SkillBundleSource, SkillBundleSourceError, validate_skill_bundle,
+};
+use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -25,89 +28,6 @@ use awaken_worker_transport_security::{
 
 const SKILL_BUNDLE_PATH: &str = "/v1/worker/resources/skills/bundle";
 
-/// Failure at the exact immutable custom-Skill bundle boundary.
-#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
-#[error("Skill bundle source: {0}")]
-pub struct SkillBundleSourceError(String);
-
-impl SkillBundleSourceError {
-    fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
-    }
-}
-
-/// Read one exact frozen custom-Skill version.
-///
-/// A remote implementation requires `claim`; a local store adapter ignores it
-/// because no process trust boundary is crossed. Built-in Skills never use this
-/// port because their immutable bytes are owned by the runtime binary.
-#[async_trait::async_trait]
-pub trait SkillBundleSource: Send + Sync {
-    async fn load(
-        &self,
-        workspace_id: &str,
-        binding: &ResolvedSkillBinding,
-        claim: Option<&RunClaim>,
-    ) -> Result<Option<SkillVersion>, SkillBundleSourceError>;
-}
-
-/// Local adapter over the authoritative Skill aggregate store.
-pub struct StoreSkillBundleSource {
-    store: Arc<dyn SkillStore>,
-}
-
-impl StoreSkillBundleSource {
-    #[must_use]
-    pub fn new(store: Arc<dyn SkillStore>) -> Self {
-        Self { store }
-    }
-}
-
-fn validate_bundle(
-    binding: &ResolvedSkillBinding,
-    version: SkillVersion,
-) -> Result<SkillVersion, SkillBundleSourceError> {
-    if binding.kind != AgentSkillKind::Custom
-        || version.skill_id.as_str() != binding.skill_id
-        || version.version != binding.version
-        || version.bundle_sha256 != binding.bundle_sha256
-    {
-        return Err(SkillBundleSourceError::new(
-            "returned Skill does not match the frozen binding",
-        ));
-    }
-    let actual = awaken_skill_store::bundle_sha256(&version.files);
-    if actual != version.bundle_sha256 {
-        return Err(SkillBundleSourceError::new(format!(
-            "Skill bundle digest mismatch: expected {}, received {actual}",
-            version.bundle_sha256
-        )));
-    }
-    Ok(version)
-}
-
-#[async_trait::async_trait]
-impl SkillBundleSource for StoreSkillBundleSource {
-    async fn load(
-        &self,
-        workspace_id: &str,
-        binding: &ResolvedSkillBinding,
-        _claim: Option<&RunClaim>,
-    ) -> Result<Option<SkillVersion>, SkillBundleSourceError> {
-        if binding.kind != AgentSkillKind::Custom {
-            return Err(SkillBundleSourceError::new(
-                "only custom Skills are stored in the Resources context",
-            ));
-        }
-        self.store
-            .version(workspace_id, &binding.skill_id, binding.version)
-            .await
-            .map_err(|error| SkillBundleSourceError::new(error.to_string()))?
-            .map(|version| validate_bundle(binding, version))
-            .transpose()
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SkillBundleRequest {
@@ -120,7 +40,7 @@ struct SkillBundleRequest {
 
 /// Handler dependencies for claim-fenced exact custom-Skill reads.
 pub struct WorkerSkillBundleService {
-    source: Arc<dyn SkillBundleSource>,
+    source: Arc<dyn SkillBundleSource<RunClaim>>,
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
@@ -129,7 +49,7 @@ pub struct WorkerSkillBundleService {
 impl WorkerSkillBundleService {
     #[must_use]
     pub fn new(
-        source: Arc<dyn SkillBundleSource>,
+        source: Arc<dyn SkillBundleSource<RunClaim>>,
         dispatch: Arc<dyn DispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
     ) -> Self {
@@ -234,7 +154,7 @@ impl HttpSkillBundleSource {
 }
 
 #[async_trait::async_trait]
-impl SkillBundleSource for HttpSkillBundleSource {
+impl SkillBundleSource<RunClaim> for HttpSkillBundleSource {
     async fn load(
         &self,
         workspace_id: &str,
@@ -280,6 +200,6 @@ impl SkillBundleSource for HttpSkillBundleSource {
             .json::<SkillVersion>()
             .await
             .map_err(|error| SkillBundleSourceError::new(error.to_string()))?;
-        validate_bundle(binding, version).map(Some)
+        validate_skill_bundle(binding, version).map(Some)
     }
 }

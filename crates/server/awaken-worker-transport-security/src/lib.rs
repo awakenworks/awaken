@@ -11,9 +11,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use awaken_run_ingress_contract::{
-    RunClaim, WorkerDirectory, WorkerIdentity, WorkerSnapshot, WorkerState,
-};
+use awaken_run_ingress_contract::RunClaim;
+use awaken_worker_contract::{WorkerDirectory, WorkerIdentity, WorkerSnapshot, WorkerState};
 use axum::Json;
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, request::Parts};

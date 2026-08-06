@@ -292,7 +292,12 @@ impl awaken_resource_contract::ResourceBindingValidator for TestResourceBindingV
 }
 
 fn managed_with_resource_source(host: Arc<SharedHost>) -> crate::ManagedHost {
-    crate::ManagedHost::new(host).with_resource_validator(Arc::new(TestResourceBindingValidator))
+    let validator = Arc::new(TestResourceBindingValidator);
+    crate::ManagedHost::new(host)
+        .with_resource_validator(validator.clone())
+        .with_repository_binding_verifier(Arc::new(
+            awaken_resource_application::CatalogRepositoryBindingVerifier::new(validator),
+        ))
 }
 
 fn http_basic_material(username: &str, password: &str) -> awaken_agent_contract::RedactedString {
@@ -898,14 +903,14 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
     struct RepositoryClaimRecorder(Mutex<Vec<Option<awaken_run_ingress::RunClaim>>>);
 
     #[async_trait::async_trait]
-    impl crate::RepositoryBindingVerifier for RepositoryClaimRecorder {
+    impl crate::RepositoryBindingVerifier<awaken_run_ingress::RunClaim> for RepositoryClaimRecorder {
         async fn verify(
             &self,
             _workspace_id: &str,
             _repository_id: &str,
             _config_version: awaken_resource_contract::ConfigVersion,
             claim: Option<&awaken_run_ingress::RunClaim>,
-        ) -> Result<(), crate::RepositoryBindingVerifierError> {
+        ) -> Result<(), awaken_resource_contract::RepositoryBindingVerifierError> {
             self.0.lock().unwrap().push(claim.cloned());
             Ok(())
         }
@@ -3746,7 +3751,13 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
             .resource_lifecycle()
             .expect("test lifecycle repository"),
     ));
-    raw_host = raw_host.with_file_application(application);
+    raw_host = raw_host.with_file_application(
+        application.clone(),
+        Arc::new(
+            awaken_resource_application::ApplicationFileContentSource::new(application.clone()),
+        ),
+        Arc::new(awaken_resource_application::ApplicationArtifactPublisher::new(application)),
+    );
     let host = Arc::new(raw_host);
     let public_id = "file_corrupt".to_string();
     host.file_catalog()
@@ -7176,6 +7187,47 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
     );
 }
 
+#[tokio::test]
+async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() {
+    // FMECA cause/effect graph:
+    // C1 execution topology owns a local dispatch pool; C2 the Session context
+    // exists; C3 an attempt is active. E1 expose the exact process-local inbox;
+    // E2 report inactive so callers use durable Session events; E3 never accept
+    // a message into a Coordinator-only inbox that a remote Worker cannot read.
+    //
+    // | Rule | local pool | context | active | effect |
+    // |---|---|---|---|---|
+    // | L1 | yes | yes | yes | E1 reachable inbox |
+    // | L2 | yes | yes | no | E2 inactive |
+    // | L3 | no | yes | yes | E2 + E3 fail closed |
+    let mut local_deployment = crate::DeploymentConfig::ephemeral();
+    local_deployment.durable = true;
+    let local = Arc::new(SharedHost::new_with_deployment(
+        Arc::new(OkModel),
+        "stub",
+        local_deployment,
+    ));
+    let local_ctx = local.ctx_for("local-live", None).await.expect("L1 context");
+    assert!(local.live_inbox("local-live").await.is_none(), "L2");
+    *local_ctx.active_run.lock().expect("active run mutex") = Some(RunId("run-local".into()));
+    assert!(local.live_inbox("local-live").await.is_some(), "L1");
+
+    let mut remote_deployment = crate::DeploymentConfig::ephemeral();
+    remote_deployment.durable = true;
+    remote_deployment.disable_local_pool = true;
+    let remote = Arc::new(SharedHost::new_with_deployment(
+        Arc::new(OkModel),
+        "stub",
+        remote_deployment,
+    ));
+    let remote_ctx = remote
+        .ctx_for("remote-live", None)
+        .await
+        .expect("L3 context");
+    *remote_ctx.active_run.lock().expect("active run mutex") = Some(RunId("run-remote".into()));
+    assert!(remote.live_inbox("remote-live").await.is_none(), "L3");
+}
+
 /// Cause/effect design:
 /// C1=Session spec declares CacheVolume, C2=no eager preparation exists,
 /// C3=initializer succeeds, C4=the same identity is explicitly prewarmed later.
@@ -7202,9 +7254,10 @@ async fn session_creation_and_explicit_cache_warmup_share_one_preparation_path()
         .push(awaken_provisioning_contract::MountRequirement {
             mount_id: "build-cache".into(),
             source: awaken_provisioning_contract::MountSource::CacheVolume {
-                host_path: "/tmp/awaken-cache-volume-wiring".into(),
+                location: awaken_provisioning_contract::CacheVolumeLocation::HostPath {
+                    path: "/tmp/awaken-cache-volume-wiring".into(),
+                },
                 key: "build-cache-v1".into(),
-                persistent_volume_claim: None,
             },
             mount_path: "cache-placeholder".into(),
             access: awaken_provisioning_contract::MountAccess::ReadWrite,

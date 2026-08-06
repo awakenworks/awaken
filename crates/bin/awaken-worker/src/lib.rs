@@ -884,17 +884,17 @@ impl WorkerNode {
         let remote_memory = Arc::new(awaken_resource_worker_http::HttpMemoryRepository::new(
             upstream.clone(),
         ));
-        let remote_files = Arc::new(awaken_worker_runtime::HttpFileContentSource::new(
+        let remote_files = Arc::new(awaken_resource_worker_http::HttpFileContentSource::new(
             upstream.clone(),
         ));
-        let remote_artifacts = Arc::new(awaken_worker_runtime::HttpArtifactPublisher::new(
+        let remote_artifacts = Arc::new(awaken_resource_worker_http::HttpArtifactPublisher::new(
             upstream.clone(),
         ));
         let remote_skills = Arc::new(awaken_resource_worker_http::HttpSkillBundleSource::new(
             upstream.clone(),
         ));
         let remote_repositories = Arc::new(
-            awaken_worker_runtime::HttpRepositoryBindingVerifier::new(upstream.clone()),
+            awaken_resource_worker_http::HttpRepositoryBindingVerifier::new(upstream.clone()),
         );
         let mut host = SharedHost::new_worker_with_deployment(
             Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
@@ -905,6 +905,9 @@ impl WorkerNode {
         )
         .with_artifact_publisher(remote_artifacts)
         .with_worker_upstream(upstream)
+        .with_memory_reference_encoder(Arc::new(
+            awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder,
+        ))
         .with_worker_stream_publisher(stream_publisher)
         .with_dispatch_port(dispatch)
         .with_skill_bundle_source(remote_skills)
@@ -959,21 +962,6 @@ impl WorkerNode {
             .await
             .with_acp_from_deployment(self.credential_materializer)
             .await;
-
-        // Pay the canonical empty-container cold start before publishing Ready.
-        // Warmup is an optimization: failure degrades to the existing cold-create
-        // path and is observable, but never weakens the selected isolation tier.
-        match host.prewarm_environment_capacity().await {
-            Ok(ready) if ready > 0 => {
-                eprintln!("awaken-worker prewarmed {ready} Session environments")
-            }
-            Ok(_) => {}
-            Err(error) => {
-                eprintln!(
-                    "awaken-worker Session environment prewarm failed; cold path retained: {error}"
-                )
-            }
-        }
 
         let host = Arc::new(host);
         let acp_capability_observation_source = match self.acp_capability_observation_source {

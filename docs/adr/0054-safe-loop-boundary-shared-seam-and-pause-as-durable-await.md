@@ -118,6 +118,15 @@ The `Supervisor::Injection` channel is **not** used for steer: `Injection` is
 mid-turn control (cancel); steer is "the next turn's input", which belongs at the
 executor boundary, not inside a turn against an opaque CLI.
 
+The inbox remains a **process-local attempt handle**. Wiring it into a durable
+worker context means that a locally hosted durable attempt reaches the same
+boundary; it does not make the handle remotely addressable. A Coordinator that
+has delegated execution to another Worker must therefore report the live inbox
+as inactive instead of accepting input into an unreachable local queue. The
+existing Session event ingress is the durable fallback: it owns the message,
+persists it once, and lets durable ingress schedule its consumption. Adding a
+second remote live-inbox relay or another durable steer queue is forbidden.
+
 ### D3: Pause is a durable await at the next safe boundary — never an in-flight freeze
 
 Add `LiveCommand::Pause{run_id}` (breaks two exhaustive `match`es on `LiveCommand`
@@ -188,10 +197,11 @@ not durable, while correlation, authority, transcript, and session identity are.
 
 ## Consequences
 
-- **Steer / redirect works for every execution path** — direct-native (already),
-  durable-native (repaired by the D2 wiring), and external-CLI — because all reach
-  the one boundary seam over a neutral inbox. The fix is broader than "ACP": it
-  closes the durable path's silent inbox drop, which affected native runs too.
+- **Steer / redirect works for every locally reachable execution path** —
+  direct-native, locally hosted durable-native, and locally hosted external-CLI —
+  because all reach the one boundary seam over a neutral inbox. A remote Worker
+  is not reachable through this process-local API; the adapter returns inactive
+  and callers use durable Session event ingress without losing input.
 - **Operators get pause / resume** without a new live run state: the Run aggregate
   stays `{Running, Awaiting, Ended}`; pause is a `Running → Awaiting` transition at a
   boundary, preserving the commit-at-boundary and lease/fencing invariants.

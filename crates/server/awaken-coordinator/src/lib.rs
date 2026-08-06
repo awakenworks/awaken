@@ -466,6 +466,9 @@ fn local_managed_state_over(
     let managed = ManagedState::new_with_mcp(
         ManagedHost::new(host)
             .with_resource_validator(catalog.clone())
+            .with_repository_binding_verifier(Arc::new(
+                awaken_resource_application::CatalogRepositoryBindingVerifier::new(catalog.clone()),
+            ))
             .with_credentials(credentials, secrets),
     );
     let managed = match session_repo {
@@ -823,7 +826,7 @@ fn mount_with_managed_over_and_models(
     dream_application.resume_incomplete();
     let dreams = awaken_protocol_managed::dreams_router(dream_application.clone());
     let managed = router(managed_state.clone()).merge(dreams).merge(
-        awaken_protocol_awaken::live_inbox_router(managed_state.clone()),
+        awaken_protocol_awaken::live_inbox_router(managed_state.session_application()),
     );
     // One neutral port impl behind the three wire adapters (each `router` takes
     // `Arc<dyn RunApplication>`), so they share the host with no per-protocol twin.
@@ -935,7 +938,7 @@ fn mount_with_managed_over_and_models(
         resource_worker = resource_worker.merge(
             awaken_resource_worker_http::worker_skill_bundle_router(Arc::new(
                 awaken_resource_worker_http::WorkerSkillBundleService::new(
-                    Arc::new(awaken_resource_worker_http::StoreSkillBundleSource::new(
+                    Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
                         store,
                     )),
                     dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,

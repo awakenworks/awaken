@@ -148,18 +148,29 @@ fn sandbox_spec_from_projection(
         .map_or(base.clone(), |sandbox| sandbox.apply(base))
 }
 
-pub(crate) fn environment_capacity_spec(
+pub(crate) struct EnvironmentCapacityProjection {
+    pub(crate) spec: pc::SandboxSpec,
+    pub(crate) shape_id: pc::SandboxCapacityShapeId,
+}
+
+/// Project one frozen Environment into both the creation request and its
+/// canonical capacity identity. Keeping them in one value prevents placement,
+/// heartbeat receipts, and pool checkout from recomputing parallel identities.
+pub(crate) fn environment_capacity_projection(
     environment: &awaken_session_contract::EnvironmentSnapshot,
     provider_enforces_network_isolation: bool,
-) -> pc::SandboxSpec {
+) -> EnvironmentCapacityProjection {
     let projection = project_environment(environment);
-    sandbox_spec_from_projection(
+    let spec = sandbox_spec_from_projection(
         "environment-warmup",
         Vec::new(),
         Vec::new(),
         Some(&projection),
         provider_enforces_network_isolation,
-    )
+    );
+    let shape_id = pc::SandboxCapacityShapeId::from_spec(&spec)
+        .expect("Environment capacity projection is mount-less");
+    EnvironmentCapacityProjection { spec, shape_id }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -596,7 +607,9 @@ impl SharedHost {
 pub(crate) struct ArtifactHarvester {
     session_slots: crate::session_slot::SessionRuntimeSlots,
     local_workspace: String,
-    publisher: std::sync::Arc<dyn awaken_run_ingress_contract::ArtifactPublisher>,
+    publisher: std::sync::Arc<
+        dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>,
+    >,
     local_claim_fence: Option<Result<std::sync::Arc<awaken_run_ingress::AnyDispatchStore>, String>>,
 }
 
@@ -679,78 +692,19 @@ impl ArtifactHarvester {
             let mime_type = mime_type_for_path(&logical_path).to_string();
             let record = self
                 .publisher
-                .publish(awaken_run_ingress_contract::ArtifactPublication {
+                .publish(awaken_resource_contract::ArtifactPublication {
                     workspace_id: workspace.clone(),
                     session_id: thread.to_string(),
                     logical_path,
                     mime_type,
                     bytes,
-                    claim: claim.clone(),
+                    fence: claim.clone(),
                 })
                 .await
                 .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
             out.push(record);
         }
         Ok(out)
-    }
-}
-
-pub(crate) struct ApplicationArtifactPublisher {
-    application: std::sync::Arc<dyn awaken_resource_contract::FileApplicationService>,
-}
-
-impl ApplicationArtifactPublisher {
-    pub(crate) fn new(
-        application: std::sync::Arc<dyn awaken_resource_contract::FileApplicationService>,
-    ) -> Self {
-        Self { application }
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_run_ingress_contract::ArtifactPublisher for ApplicationArtifactPublisher {
-    async fn publish(
-        &self,
-        publication: awaken_run_ingress_contract::ArtifactPublication,
-    ) -> Result<
-        awaken_resource_contract::FileRecord,
-        awaken_run_ingress_contract::ArtifactPublicationError,
-    > {
-        let digest = awaken_resource_contract::content_id(&publication.bytes);
-        self.application
-            .create_artifact(
-                &publication.workspace_id,
-                &publication.session_id,
-                publication.logical_path.clone(),
-                publication.mime_type,
-                &publication.bytes,
-                awaken_resource_contract::harvest_idempotency_key(
-                    &publication.session_id,
-                    &publication.logical_path,
-                    &digest,
-                ),
-            )
-            .await
-            .map_err(|error| {
-                awaken_run_ingress_contract::ArtifactPublicationError::new(error.to_string())
-            })
-    }
-}
-
-pub(crate) struct UnavailableArtifactPublisher;
-
-#[async_trait::async_trait]
-impl awaken_run_ingress_contract::ArtifactPublisher for UnavailableArtifactPublisher {
-    async fn publish(
-        &self,
-        _publication: awaken_run_ingress_contract::ArtifactPublication,
-    ) -> Result<
-        awaken_resource_contract::FileRecord,
-        awaken_run_ingress_contract::ArtifactPublicationError,
-    > {
-        Err(awaken_run_ingress_contract::ArtifactPublicationError::new(
-            "artifact publisher is not configured by the composition root",
-        ))
     }
 }
 
@@ -1139,7 +1093,13 @@ mod provisioning_registry_tests {
                 .resource_lifecycle()
                 .expect("test lifecycle repository"),
         ));
-        raw_host = raw_host.with_file_application(application);
+        raw_host = raw_host.with_file_application(
+            application.clone(),
+            Arc::new(
+                awaken_resource_application::ApplicationFileContentSource::new(application.clone()),
+            ),
+            Arc::new(awaken_resource_application::ApplicationArtifactPublisher::new(application)),
+        );
         let host = Arc::new(raw_host);
         let spec = agent_run_sandbox_spec("session-harvest-failure");
         let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(

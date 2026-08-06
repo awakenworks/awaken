@@ -640,7 +640,7 @@ mod tests {
     struct FailingExecutor;
 
     struct RecordingArtifactPublisher {
-        inner: Arc<dyn awaken_run_ingress_contract::ArtifactPublisher>,
+        inner: Arc<dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>>,
         claims: Arc<std::sync::Mutex<Vec<Option<awaken_run_ingress::RunClaim>>>>,
     }
 
@@ -648,6 +648,53 @@ mod tests {
         slots: crate::session_slot::SessionRuntimeSlots,
         thread: String,
         replacement: awaken_run_ingress::RunClaim,
+        failure: Option<&'static str>,
+    }
+
+    impl ReplacingClaimExecutor {
+        fn succeeding(
+            slots: crate::session_slot::SessionRuntimeSlots,
+            thread: &str,
+            replacement: awaken_run_ingress::RunClaim,
+        ) -> Self {
+            Self {
+                slots,
+                thread: thread.into(),
+                replacement,
+                failure: None,
+            }
+        }
+
+        fn failing(
+            slots: crate::session_slot::SessionRuntimeSlots,
+            thread: &str,
+            replacement: awaken_run_ingress::RunClaim,
+            failure: &'static str,
+        ) -> Self {
+            Self {
+                slots,
+                thread: thread.into(),
+                replacement,
+                failure: Some(failure),
+            }
+        }
+    }
+
+    fn assert_recorded_claims_since(
+        claims: &std::sync::Mutex<Vec<Option<awaken_run_ingress::RunClaim>>>,
+        from: usize,
+        expected: Option<&awaken_run_ingress::RunClaim>,
+        rule: &str,
+    ) {
+        let claims = claims.lock().expect("recorded claims mutex poisoned");
+        assert!(claims.len() > from, "{rule}: no artifact was published");
+        assert!(
+            claims
+                .iter()
+                .skip(from)
+                .all(|claim| claim.as_ref() == expected),
+            "{rule}: every artifact must use the attempt-start claim snapshot"
+        );
     }
 
     #[async_trait::async_trait]
@@ -660,7 +707,10 @@ mod tests {
             self.slots.update(&self.thread, |slot| {
                 slot.dispatch_claim = Some(self.replacement.clone());
             });
-            Ok(RunState::Ended(EndCause::Stopped("replaced".into())))
+            match self.failure {
+                Some(message) => Err(ExecutionError::Execution(message.into())),
+                None => Ok(RunState::Ended(EndCause::Stopped("replaced".into()))),
+            }
         }
     }
 
@@ -685,18 +735,22 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_run_ingress_contract::ArtifactPublisher for RecordingArtifactPublisher {
+    impl awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>
+        for RecordingArtifactPublisher
+    {
         async fn publish(
             &self,
-            publication: awaken_run_ingress_contract::ArtifactPublication,
+            publication: awaken_resource_contract::ArtifactPublication<
+                awaken_run_ingress::RunClaim,
+            >,
         ) -> Result<
             awaken_resource_contract::FileRecord,
-            awaken_run_ingress_contract::ArtifactPublicationError,
+            awaken_resource_contract::ArtifactPublicationError,
         > {
             self.claims
                 .lock()
                 .expect("recorded claims mutex poisoned")
-                .push(publication.claim.clone());
+                .push(publication.fence.clone());
             self.inner.publish(publication).await
         }
     }
@@ -801,7 +855,8 @@ mod tests {
         // its original error while best-effort publishing partial output; E4 cancel
         // does not invent a completed-step boundary; E5 publication failure blocks a
         // successful step; E6 every effect uses the claim snapshotted before the
-        // attempt; E7 a settled/replaced local claim publishes nothing.
+        // attempt; E7 a settled/replaced local claim publishes nothing; E8 an
+        // attempt that began without a claim never borrows one installed in-flight.
         // The same decorator is used by direct and durable ingress.
         //
         // | Rule | operation | inner | output | publisher/claim | effect |
@@ -812,6 +867,11 @@ mod tests {
         // | R5 | execute | ok | present | no | E5 |
         // | R6 | execute | ok | present | claim replaced in-flight | E6 |
         // | R7 | execute | ok | present | stale local claim | E7 |
+        // | R8 | resume | ok | present | claim replaced in-flight | E6 |
+        // | R9 | execute | error | present | claim replaced in-flight | E3+E6 |
+        // | R10 | execute | ok | present | absent then installed | E8 |
+        // R8 and R9 provide MC/DC for the resume and failure branches around the
+        // shared `finish` path; enumerating resume+failure would be redundant.
         let thread = "thread-router";
         let storage = tempfile::tempdir().unwrap();
         let dispatch = Arc::new(
@@ -942,25 +1002,17 @@ mod tests {
         std::fs::write(output_dir.join("claim-race.txt"), b"claim race").unwrap();
         let recorded_before = claims.lock().expect("recorded claims mutex poisoned").len();
         ArtifactHarvestAttemptExecutor::new(
-            Arc::new(ReplacingClaimExecutor {
-                slots: host.session_slots.clone(),
-                thread: thread.into(),
+            Arc::new(ReplacingClaimExecutor::succeeding(
+                host.session_slots.clone(),
+                thread,
                 replacement,
-            }),
+            )),
             host.artifact_harvester(),
         )
         .execute(activation("awaken"), RuntimeRunContext::new())
         .await
         .expect("R6");
-        assert!(
-            claims
-                .lock()
-                .expect("recorded claims mutex poisoned")
-                .iter()
-                .skip(recorded_before)
-                .all(|claim| claim.as_ref() == Some(&expected_claim)),
-            "R6 every artifact uses the claim snapshotted before execution"
-        );
+        assert_recorded_claims_since(&claims, recorded_before, Some(&expected_claim), "R6");
         assert_eq!(
             host.file_application()
                 .unwrap()
@@ -970,6 +1022,119 @@ mod tests {
                 .len(),
             4,
             "R6"
+        );
+
+        host.session_slots.update(thread, |slot| {
+            slot.dispatch_claim = Some(expected_claim.clone());
+        });
+
+        let replacement = awaken_run_ingress::RunClaim {
+            run_id: expected_claim.run_id.clone(),
+            owner: "worker-resume-new".into(),
+            epoch: expected_claim.epoch + 1,
+        };
+        std::fs::write(
+            output_dir.join("resume-claim-race.txt"),
+            b"resume claim race",
+        )
+        .unwrap();
+        let recorded_before = claims.lock().expect("recorded claims mutex poisoned").len();
+        let resumed = activation("awaken");
+        ArtifactHarvestAttemptExecutor::new(
+            Arc::new(ReplacingClaimExecutor::succeeding(
+                host.session_slots.clone(),
+                thread,
+                replacement,
+            )),
+            host.artifact_harvester(),
+        )
+        .resume(resumed.clone(), resume(&resumed), RuntimeRunContext::new())
+        .await
+        .expect("R8");
+        assert_recorded_claims_since(&claims, recorded_before, Some(&expected_claim), "R8");
+        assert_eq!(
+            host.file_application()
+                .unwrap()
+                .list("workspace-a", Some(thread))
+                .await
+                .unwrap()
+                .len(),
+            5,
+            "R8"
+        );
+
+        host.session_slots.update(thread, |slot| {
+            slot.dispatch_claim = Some(expected_claim.clone());
+        });
+        let replacement = awaken_run_ingress::RunClaim {
+            run_id: expected_claim.run_id.clone(),
+            owner: "worker-failing-new".into(),
+            epoch: expected_claim.epoch + 1,
+        };
+        std::fs::write(
+            output_dir.join("failed-claim-race.txt"),
+            b"failed claim race",
+        )
+        .unwrap();
+        let recorded_before = claims.lock().expect("recorded claims mutex poisoned").len();
+        let error = ArtifactHarvestAttemptExecutor::new(
+            Arc::new(ReplacingClaimExecutor::failing(
+                host.session_slots.clone(),
+                thread,
+                replacement,
+                "in-flight replacement failed",
+            )),
+            host.artifact_harvester(),
+        )
+        .execute(activation("awaken"), RuntimeRunContext::new())
+        .await
+        .expect_err("R9");
+        assert!(
+            error.to_string().contains("in-flight replacement failed"),
+            "R9"
+        );
+        assert_recorded_claims_since(&claims, recorded_before, Some(&expected_claim), "R9");
+        assert_eq!(
+            host.file_application()
+                .unwrap()
+                .list("workspace-a", Some(thread))
+                .await
+                .unwrap()
+                .len(),
+            6,
+            "R9"
+        );
+
+        host.session_slots
+            .update(thread, |slot| slot.dispatch_claim = None);
+        let replacement = awaken_run_ingress::RunClaim {
+            run_id: expected_claim.run_id.clone(),
+            owner: "worker-late".into(),
+            epoch: expected_claim.epoch + 1,
+        };
+        std::fs::write(output_dir.join("no-claim-race.txt"), b"no claim race").unwrap();
+        let recorded_before = claims.lock().expect("recorded claims mutex poisoned").len();
+        ArtifactHarvestAttemptExecutor::new(
+            Arc::new(ReplacingClaimExecutor::succeeding(
+                host.session_slots.clone(),
+                thread,
+                replacement,
+            )),
+            host.artifact_harvester(),
+        )
+        .execute(activation("awaken"), RuntimeRunContext::new())
+        .await
+        .expect("R10");
+        assert_recorded_claims_since(&claims, recorded_before, None, "R10");
+        assert_eq!(
+            host.file_application()
+                .unwrap()
+                .list("workspace-a", Some(thread))
+                .await
+                .unwrap()
+                .len(),
+            7,
+            "R10"
         );
 
         host.session_slots.update(thread, |slot| {
@@ -1003,14 +1168,15 @@ mod tests {
                 .await
                 .unwrap()
                 .len(),
-            4,
+            7,
             "R7"
         );
 
         let failed_storage = tempfile::tempdir().unwrap();
         let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test");
         raw_host.file_application = None;
-        raw_host.artifact_publisher = Arc::new(crate::provisioning::UnavailableArtifactPublisher);
+        raw_host.artifact_publisher =
+            Arc::new(awaken_resource_contract::UnavailableArtifactPublisher);
         let failed_host = Arc::new(raw_host);
         failed_host.register_thread_workspace(thread, "workspace-a");
         let failed_environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(

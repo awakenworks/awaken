@@ -289,30 +289,34 @@ pub enum LiveInboxApplicationError {
     Unavailable(String),
 }
 
-/// Driving port for Awaken's live-inbox protocol. The Managed compatibility
-/// adapter may implement this port as part of its Session application state,
-/// but no protocol adapter depends on another protocol adapter.
+/// Driving port for Awaken's live-inbox protocol. The Session application is
+/// the sole owner: protocol adapters supply the trusted Workspace scope and do
+/// not perform a second ownership lookup or reach through protocol state.
 #[async_trait]
 pub trait LiveInboxApplication: Send + Sync {
     async fn snapshot(
         &self,
+        workspace_id: &str,
         session_id: &str,
     ) -> Result<LiveInboxSnapshot, LiveInboxApplicationError>;
 
     async fn queue(
         &self,
+        workspace_id: &str,
         session_id: &str,
         content: Vec<ContentBlock>,
     ) -> Result<u64, LiveInboxApplicationError>;
 
     async fn remove(
         &self,
+        workspace_id: &str,
         session_id: &str,
         message_id: u64,
     ) -> Result<(), LiveInboxApplicationError>;
 
     async fn replace(
         &self,
+        workspace_id: &str,
         session_id: &str,
         message_id: u64,
         content: Vec<ContentBlock>,
@@ -320,6 +324,7 @@ pub trait LiveInboxApplication: Send + Sync {
 
     async fn reorder(
         &self,
+        workspace_id: &str,
         session_id: &str,
         order: Vec<u64>,
     ) -> Result<(), LiveInboxApplicationError>;

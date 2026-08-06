@@ -9,6 +9,77 @@ use awaken_worker_runtime::WorkerControlClient;
 
 use crate::credential_liveness::WorkerObservationCache;
 
+#[derive(Clone)]
+enum WarmCapacityDemand {
+    Environment(awaken_session_contract::EnvironmentSnapshot),
+    Default,
+}
+
+#[derive(Clone)]
+struct WarmCapacityTarget {
+    shape: awaken_provisioning_contract::SandboxCapacityShapeId,
+    target: usize,
+    demand: WarmCapacityDemand,
+}
+
+/// The one Worker-owned allocation of the process-global warm-container budget.
+/// Exact current Environment shapes have priority; the generic default shape uses
+/// only the remaining capacity and is deduplicated when it is already selected.
+struct WarmCapacityPlan {
+    targets: Vec<WarmCapacityTarget>,
+}
+
+impl WarmCapacityPlan {
+    fn build(
+        host: &SharedHost,
+        desired: Vec<awaken_session_contract::EnvironmentSnapshot>,
+    ) -> Self {
+        let (per_shape, total) = host.environment_warmup_limits();
+        if per_shape == 0 || total == 0 {
+            return Self {
+                targets: Vec::new(),
+            };
+        }
+        let mut remaining = total;
+        let mut selected = BTreeSet::new();
+        let mut targets = Vec::new();
+        for snapshot in desired {
+            if snapshot.self_hosted || remaining == 0 {
+                continue;
+            }
+            let shape = host.environment_snapshot_capacity_shape(&snapshot);
+            if !selected.insert(shape.clone()) {
+                continue;
+            }
+            let target = per_shape.min(remaining);
+            remaining -= target;
+            targets.push(WarmCapacityTarget {
+                shape,
+                target,
+                demand: WarmCapacityDemand::Environment(snapshot),
+            });
+        }
+        if remaining > 0 {
+            let shape = host.default_environment_capacity_shape();
+            if selected.insert(shape.clone()) {
+                targets.push(WarmCapacityTarget {
+                    shape,
+                    target: per_shape.min(remaining),
+                    demand: WarmCapacityDemand::Default,
+                });
+            }
+        }
+        Self { targets }
+    }
+
+    fn shapes(&self) -> BTreeSet<awaken_provisioning_contract::SandboxCapacityShapeId> {
+        self.targets
+            .iter()
+            .map(|target| target.shape.clone())
+            .collect()
+    }
+}
+
 /// Why the Worker lifecycle is stopping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerShutdown {
@@ -30,8 +101,14 @@ pub(crate) struct WorkerLifecycle {
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     pub(crate) observations: Arc<WorkerObservationCache>,
     pub(crate) observation_ttl: std::time::Duration,
-    pub(crate) warm_environments:
-        Arc<RwLock<BTreeMap<String, awaken_session_contract::EnvironmentSnapshot>>>,
+    pub(crate) warm_environments: Arc<
+        RwLock<
+            BTreeMap<
+                awaken_provisioning_contract::SandboxCapacityShapeId,
+                awaken_session_contract::EnvironmentSnapshot,
+            >,
+        >,
+    >,
 }
 
 impl WorkerLifecycle {
@@ -62,7 +139,9 @@ impl WorkerLifecycle {
             .await
     }
 
-    pub(crate) fn warm_environment_shapes(&self) -> BTreeSet<String> {
+    pub(crate) fn warm_environment_shapes(
+        &self,
+    ) -> BTreeSet<awaken_provisioning_contract::SandboxCapacityShapeId> {
         self.warm_environments
             .read()
             .expect("warm Environment receipt lock")
@@ -72,67 +151,72 @@ impl WorkerLifecycle {
             .collect()
     }
 
-    /// Reconcile derived desired state from Coordinator into the canonical Host
-    /// capacity path. A failed refresh leaves the previous receipts untouched;
-    /// a successful refresh drops shapes no longer present in the current catalog.
+    /// Reconcile Coordinator-derived Environment demand and the default Session
+    /// demand through one global plan. A failed pull reuses the last successful
+    /// Environment set, so it neither erases receipts nor bypasses the default
+    /// share of the same budget.
     pub(crate) async fn reconcile_environment_warmups(&self) -> Result<usize, String> {
-        let desired = self
-            .control
-            .current_environment_warmups(&self.identity)
-            .await?;
-        let (per_shape, total) = self.host.environment_warmup_limits();
-        let mut remaining = total;
-        let mut desired_with_targets = BTreeMap::new();
-        // Coordinator returns a stable Environment-id/revision order. Preserve it
-        // while selecting a bounded subset so a catalog larger than local capacity
-        // does not rotate LRU entries and recreate containers every reconciliation.
-        for snapshot in desired {
-            let shape = snapshot.runtime_shape_fingerprint().0;
-            if desired_with_targets.contains_key(&shape) {
-                continue;
-            }
-            let target = per_shape.min(remaining);
-            if target == 0 {
-                break;
-            }
-            remaining -= target;
-            desired_with_targets.insert(shape, (snapshot, target));
-        }
         let previous = self
             .warm_environments
             .read()
             .expect("warm Environment receipt lock")
             .clone();
-        // Free shapes outside the deterministic selected set before adding their
-        // replacements. This lets the pool remain bounded without eviction churn.
+        let fetched = self
+            .control
+            .current_environment_warmups(&self.identity)
+            .await;
+        let (desired, fetch_error) = match fetched {
+            Ok(desired) => (desired, None),
+            Err(error) => (previous.values().cloned().collect(), Some(error)),
+        };
+        let plan = WarmCapacityPlan::build(&self.host, desired);
+        let selected_shapes = plan.shapes();
+
+        // Release every plan-external shape before creating replacements. Both
+        // default and Environment capacity are compared with the same typed id,
+        // so an identical projection cannot discard its own selected capacity.
         for (shape, snapshot) in &previous {
-            if !desired_with_targets.contains_key(shape) {
+            if !selected_shapes.contains(shape) {
                 self.host
                     .discard_environment_snapshot_capacity(snapshot)
                     .await;
             }
         }
+        let default_shape = self.host.default_environment_capacity_shape();
+        if !selected_shapes.contains(&default_shape) {
+            self.host.discard_default_environment_capacity().await;
+        }
         let mut next = previous
             .into_iter()
-            .filter(|(shape, _)| desired_with_targets.contains_key(shape))
+            .filter(|(shape, _)| selected_shapes.contains(shape))
             .collect::<BTreeMap<_, _>>();
-        for (shape, (snapshot, target)) in &desired_with_targets {
-            match self
-                .host
-                .prewarm_environment_snapshot(snapshot, *target)
-                .await
-            {
-                Ok(ready) if ready > 0 => {
-                    next.insert(shape.clone(), snapshot.clone());
+        for target in &plan.targets {
+            let result = match &target.demand {
+                WarmCapacityDemand::Environment(snapshot) => {
+                    self.host
+                        .prewarm_environment_snapshot(snapshot, target.target)
+                        .await
                 }
-                Ok(_) => {
-                    next.remove(shape);
+                WarmCapacityDemand::Default => {
+                    self.host
+                        .prewarm_default_environment_capacity(target.target)
+                        .await
                 }
-                Err(error) => {
-                    eprintln!(
-                        "Environment shape prewarm failed for {}@{}; cold path retained: {error}",
-                        snapshot.environment_id, snapshot.revision.0
-                    );
+            };
+            match (result, &target.demand) {
+                (Ok(ready), WarmCapacityDemand::Environment(snapshot)) if ready > 0 => {
+                    next.insert(target.shape.clone(), snapshot.clone());
+                }
+                (Ok(_), WarmCapacityDemand::Environment(_)) => {
+                    next.remove(&target.shape);
+                }
+                (Ok(_), WarmCapacityDemand::Default) => {}
+                (Err(error), WarmCapacityDemand::Environment(snapshot)) => eprintln!(
+                    "Environment shape prewarm failed for {}@{}; cold path retained: {error}",
+                    snapshot.environment_id, snapshot.revision.0
+                ),
+                (Err(error), WarmCapacityDemand::Default) => {
+                    eprintln!("default Session shape prewarm failed; cold path retained: {error}")
                 }
             }
         }
@@ -140,7 +224,12 @@ impl WorkerLifecycle {
             .warm_environments
             .write()
             .expect("warm Environment receipt lock") = next;
-        Ok(self.warm_environment_shapes().len())
+        let ready = self.warm_environment_shapes().len();
+        if let Some(error) = fetch_error {
+            Err(error)
+        } else {
+            Ok(ready)
+        }
     }
 }
 
