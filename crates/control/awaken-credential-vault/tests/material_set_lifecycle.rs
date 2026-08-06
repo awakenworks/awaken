@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::repo::{
@@ -10,6 +11,56 @@ use awaken_credential_vault::{
     CredentialCreateParams, CredentialError, CredentialKind, InMemorySecretStore,
     OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretRef, SecretStore,
 };
+
+struct FailNthPutStore {
+    inner: InMemorySecretStore,
+    puts: AtomicUsize,
+    fail_on: AtomicUsize,
+}
+
+impl FailNthPutStore {
+    fn new() -> Self {
+        Self {
+            inner: InMemorySecretStore::new(),
+            puts: AtomicUsize::new(0),
+            fail_on: AtomicUsize::new(usize::MAX),
+        }
+    }
+
+    fn fail_after_one_more_success(&self) {
+        self.fail_on
+            .store(self.puts.load(Ordering::SeqCst) + 2, Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl SecretStore for FailNthPutStore {
+    async fn put(
+        &self,
+        reference: &SecretRef,
+        secret: RedactedString,
+    ) -> Result<(), CredentialError> {
+        let call = self.puts.fetch_add(1, Ordering::SeqCst) + 1;
+        if call == self.fail_on.load(Ordering::SeqCst) {
+            return Err(CredentialError::Storage(
+                "injected rotation put failure".into(),
+            ));
+        }
+        self.inner.put(reference, secret).await
+    }
+
+    async fn get(&self, reference: &SecretRef) -> Result<RedactedString, CredentialError> {
+        self.inner.get(reference).await
+    }
+
+    async fn delete(&self, reference: &SecretRef) -> Result<(), CredentialError> {
+        self.inner.delete(reference).await
+    }
+
+    async fn inventory(&self) -> Result<Vec<SecretRef>, CredentialError> {
+        self.inner.inventory().await
+    }
+}
 
 /// Cause/effect graph and derived decision-table rules:
 /// C1 exact active revision; C2 primary supplied; C3 auxiliary slot supplied;
@@ -130,6 +181,157 @@ async fn named_material_set_rotates_and_reclaims_as_one_exact_aggregate() {
     .unwrap();
     assert_eq!(archived.material_refs().count(), 0);
     assert!(store.inventory().await.unwrap().is_empty());
+}
+
+/// Rotation failure FMECA and cause/effect decision table:
+///
+/// | Rule | source/revision | patch | injected failure | Effect |
+/// |---|---|---|---|---|
+/// | F1 | active/current | empty | none | idempotent no-op; no new revision/ref |
+/// | F2 | active/current | invalid slot | none | reject before WAL/secret write |
+/// | F3 | active/current | primary + auxiliary | second put | preserve old row/material; remove every candidate ref |
+/// | F4 | disabled/current | material | none | reject before secret write |
+/// | F5 | active/i64::MAX | material | none | fail revision exhaustion before WAL/secret write |
+///
+/// These rules close partial-write, invalid-input, retired-source and counter-
+/// exhaustion modes around the same WAL/CAS authority. Recovery of ambiguous
+/// pre/post-publication intents is covered by `recovery_reconciles_*` below.
+#[tokio::test]
+async fn rotation_failures_preserve_one_committed_revision_and_material_set() {
+    async fn inventory(store: &dyn SecretStore) -> BTreeSet<String> {
+        store
+            .inventory()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|reference| reference.0)
+            .collect()
+    }
+
+    let repo = InMemoryCredentialRepo::new();
+    let store = FailNthPutStore::new();
+    let created = enter_credential_with_materials(
+        CredentialCreateParams {
+            workspace_id: "ws-failure".into(),
+            kind: CredentialKind::Vault,
+            provider_id: Some("mcp".into()),
+            env_key: None,
+            secret: Some(RedactedString::new("primary-old")),
+            oauth_command: None,
+        },
+        BTreeMap::from([(
+            OAUTH_REFRESH_TOKEN_SLOT.into(),
+            RedactedString::new("refresh-old"),
+        )]),
+        &store,
+        &repo,
+    )
+    .await
+    .unwrap();
+    let original_inventory = inventory(&store).await;
+
+    let unchanged = rotate_credential_materials_exact(
+        &created.id,
+        created.version,
+        CredentialMaterialPatch::default(),
+        &store,
+        &repo,
+    )
+    .await
+    .expect("F1");
+    assert_eq!(unchanged, created, "F1");
+    assert_eq!(inventory(&store).await, original_inventory, "F1");
+
+    let invalid = rotate_credential_materials_exact(
+        &created.id,
+        created.version,
+        CredentialMaterialPatch {
+            primary: None,
+            auxiliary: BTreeMap::from([(
+                "../escape".into(),
+                Some(RedactedString::new("must-not-write")),
+            )]),
+        },
+        &store,
+        &repo,
+    )
+    .await;
+    assert!(
+        matches!(invalid, Err(CredentialError::InvalidSource(_))),
+        "F2"
+    );
+    assert_eq!(inventory(&store).await, original_inventory, "F2");
+
+    store.fail_after_one_more_success();
+    let partial = rotate_credential_materials_exact(
+        &created.id,
+        created.version,
+        CredentialMaterialPatch {
+            primary: Some(RedactedString::new("primary-new")),
+            auxiliary: BTreeMap::from([(
+                OAUTH_REFRESH_TOKEN_SLOT.into(),
+                Some(RedactedString::new("refresh-new")),
+            )]),
+        },
+        &store,
+        &repo,
+    )
+    .await;
+    assert!(matches!(partial, Err(CredentialError::Storage(_))), "F3");
+    assert_eq!(repo.get(&created.id).await.unwrap(), created, "F3");
+    assert_eq!(inventory(&store).await, original_inventory, "F3");
+    assert!(repo.pending_mutations().await.unwrap().is_empty(), "F3");
+
+    let disabled = awaken_credential_vault::repo::transition_credential_status(
+        &created.id,
+        awaken_credential_vault::CredentialStatus::Disabled,
+        &repo,
+    )
+    .await
+    .unwrap();
+    let before_disabled = inventory(&store).await;
+    assert!(
+        matches!(
+            rotate_credential_materials_exact(
+                &disabled.id,
+                disabled.version,
+                CredentialMaterialPatch {
+                    primary: Some(RedactedString::new("must-not-write")),
+                    auxiliary: BTreeMap::new(),
+                },
+                &store,
+                &repo,
+            )
+            .await,
+            Err(CredentialError::NotActive(_))
+        ),
+        "F4"
+    );
+    assert_eq!(inventory(&store).await, before_disabled, "F4");
+
+    let mut exhausted = disabled.clone();
+    exhausted.status = awaken_credential_vault::CredentialStatus::Active;
+    exhausted.version = i64::MAX;
+    repo.put(exhausted.clone()).await.unwrap();
+    assert!(
+        matches!(
+            rotate_credential_materials_exact(
+                &exhausted.id,
+                exhausted.version,
+                CredentialMaterialPatch {
+                    primary: Some(RedactedString::new("must-not-write")),
+                    auxiliary: BTreeMap::new(),
+                },
+                &store,
+                &repo,
+            )
+            .await,
+            Err(CredentialError::InvalidSource(message)) if message.contains("overflow")
+        ),
+        "F5"
+    );
+    assert_eq!(inventory(&store).await, before_disabled, "F5");
+    assert!(repo.pending_mutations().await.unwrap().is_empty(), "F5");
 }
 
 /// Recovery decision table: C1 intent unpublished -> E1 delete every new ref

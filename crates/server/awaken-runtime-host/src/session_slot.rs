@@ -75,9 +75,10 @@ pub(crate) struct SessionRuntimeSlot {
     pub runtime: Option<Arc<crate::host::SessionCtx>>,
     pub environment: Option<Arc<crate::session_environment::SessionEnvironment>>,
     pub deferred_executor: Option<Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>,
-    /// Current durable claim allowed to publish a deferred Sandbox binding.
-    /// Replaced at every resolve; the dispatch store remains the lease fence.
-    pub deferred_claim: Option<awaken_run_ingress::RunClaim>,
+    /// Current durable dispatch claim used by claim-fenced Resource effects.
+    /// This process-local projection is replaced at every claimed resolve; the
+    /// dispatch store remains the lease/epoch authority.
+    pub dispatch_claim: Option<awaken_run_ingress::RunClaim>,
     pub workspace: Option<String>,
     /// Exact Agent identity copied from the frozen Session baseline. Internal
     /// history/recovery calls do not carry a wire Agent parameter, so they must

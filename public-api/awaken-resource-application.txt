@@ -1,4 +1,6 @@
 pub mod awaken_resource_application
+pub use awaken_resource_application::MAX_MANAGED_FILE_SIZE_BYTES
+pub use awaken_resource_application::MAX_WORKSPACE_FILE_BYTES
 pub struct awaken_resource_application::CreateFileCommand<'a>
 pub awaken_resource_application::CreateFileCommand::bytes: &'a [u8]
 pub awaken_resource_application::CreateFileCommand::downloadable: bool
@@ -48,5 +50,3 @@ pub fn awaken_resource_application::ResourcesApplication::memory_stores(&self) -
 pub fn awaken_resource_application::ResourcesApplication::new(awaken_resource_contract::component::ResourceComponent) -> Self
 pub fn awaken_resource_application::ResourcesApplication::ports(&self) -> awaken_resource_contract::component::ResourceComponent
 pub fn awaken_resource_application::ResourcesApplication::purge_scheduler(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>
-pub const awaken_resource_application::MAX_MANAGED_FILE_SIZE_BYTES: u64
-pub const awaken_resource_application::MAX_WORKSPACE_FILE_BYTES: u64

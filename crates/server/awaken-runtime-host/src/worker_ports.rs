@@ -48,4 +48,48 @@ impl SharedHost {
     pub fn worker_file_content_source(&self) -> Arc<dyn FileContentSource> {
         self.file_content_source.clone()
     }
+
+    pub fn worker_artifact_publisher(
+        &self,
+    ) -> Arc<dyn awaken_run_ingress_contract::ArtifactPublisher> {
+        self.artifact_publisher.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct RemotePublisher;
+
+    #[async_trait::async_trait]
+    impl awaken_run_ingress_contract::ArtifactPublisher for RemotePublisher {
+        async fn publish(
+            &self,
+            _publication: awaken_run_ingress_contract::ArtifactPublication,
+        ) -> Result<
+            awaken_resource_contract::FileRecord,
+            awaken_run_ingress_contract::ArtifactPublicationError,
+        > {
+            Err(awaken_run_ingress_contract::ArtifactPublicationError::new(
+                "fixture",
+            ))
+        }
+    }
+
+    #[test]
+    fn remote_artifact_port_removes_the_local_file_command_path() {
+        // Composition FMECA/cause-effect rule: C1 test/embedded Host owns a local
+        // File application; C2 composition installs the database-less Worker's
+        // remote artifact port. Effect E1 only the remote port remains and local
+        // File management authority is absent. Rule P1 C1+C2=>E1 prevents the
+        // Worker from selecting an unfenced parallel command path.
+        let host = SharedHost::new(
+            Arc::new(crate::NoModelConfiguredExecutor),
+            "composition-fixture",
+        );
+        assert!(host.file_application().is_some(), "P1/C1");
+        let host = host.with_artifact_publisher(Arc::new(RemotePublisher));
+        assert!(host.file_application().is_none(), "P1/E1");
+    }
 }

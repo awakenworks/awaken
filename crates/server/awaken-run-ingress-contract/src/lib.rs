@@ -7,6 +7,7 @@
 //! serializable [`RunDispatch`] a durable queue persists and replays — no live
 //! handles (G3). Worker wiring stays private to the host.
 
+mod artifact_publication;
 mod claimed_commit;
 mod claimed_session;
 mod claimed_stream;
@@ -17,6 +18,10 @@ mod repository_binding;
 pub mod run_dispatch;
 mod worker_transport;
 
+pub use artifact_publication::{
+    ARTIFACT_METADATA_HEADER, ARTIFACT_PUBLICATION_PATH, ArtifactPublication,
+    ArtifactPublicationError, ArtifactPublicationRequest, ArtifactPublisher,
+};
 pub use awaken_runtime_contract::{
     AttemptCredentialBinding, CandidateFingerprint, CredentialRealizationReceipt,
     CredentialReceiptError, verify_credential_realization_receipt,

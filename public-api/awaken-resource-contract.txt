@@ -387,9 +387,11 @@ pub awaken_resource_contract::UpdateMemoryStoreCommand::description: core::optio
 pub awaken_resource_contract::UpdateMemoryStoreCommand::id: awaken_resource_contract::MemoryStoreId
 pub awaken_resource_contract::UpdateMemoryStoreCommand::metadata_patch: alloc::collections::btree::map::BTreeMap<alloc::string::String, core::option::Option<alloc::string::String>>
 pub awaken_resource_contract::UpdateMemoryStoreCommand::workspace_id: alloc::string::String
+pub const awaken_resource_contract::MAX_MANAGED_FILE_SIZE_BYTES: u64
 pub const awaken_resource_contract::MAX_MEMORIES_PER_STORE: usize
 pub const awaken_resource_contract::MAX_MEMORY_BYTES: usize
 pub const awaken_resource_contract::MAX_PATH_BYTES: usize
+pub const awaken_resource_contract::MAX_WORKSPACE_FILE_BYTES: u64
 pub trait awaken_resource_contract::AgentResourceReferenceSource: core::marker::Send + core::marker::Sync
 pub fn awaken_resource_contract::AgentResourceReferenceSource::agents_referencing(&self, &awaken_resource_contract::ResourceTarget) -> alloc::vec::Vec<alloc::string::String>
 pub trait awaken_resource_contract::FileApplicationService: core::marker::Send + core::marker::Sync
@@ -485,4 +487,5 @@ pub fn awaken_resource_contract::SkillStore::snapshot_latest_versions<'life0, 'l
 pub fn awaken_resource_contract::SkillStore::version<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_resource_contract::SkillVersion>, awaken_resource_contract::SkillStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_resource_contract::build_resource_component(awaken_resource_contract::ResourceDependencies) -> awaken_resource_contract::ResourceComponent
 pub fn awaken_resource_contract::content_id(&[u8]) -> alloc::string::String
+pub fn awaken_resource_contract::harvest_idempotency_key(&str, &str, &str) -> alloc::string::String
 pub fn awaken_resource_contract::validate_path_len(&str) -> core::result::Result<(), awaken_resource_contract::MemErr>

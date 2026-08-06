@@ -887,6 +887,9 @@ impl WorkerNode {
         let remote_files = Arc::new(awaken_worker_runtime::HttpFileContentSource::new(
             upstream.clone(),
         ));
+        let remote_artifacts = Arc::new(awaken_worker_runtime::HttpArtifactPublisher::new(
+            upstream.clone(),
+        ));
         let remote_skills = Arc::new(awaken_resource_worker_http::HttpSkillBundleSource::new(
             upstream.clone(),
         ));
@@ -900,6 +903,7 @@ impl WorkerNode {
             remote_memory,
             self.deployment,
         )
+        .with_artifact_publisher(remote_artifacts)
         .with_worker_upstream(upstream)
         .with_worker_stream_publisher(stream_publisher)
         .with_dispatch_port(dispatch)

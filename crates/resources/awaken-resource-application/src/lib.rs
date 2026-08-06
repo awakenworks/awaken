@@ -14,9 +14,8 @@ use awaken_resource_contract::{
     ResourceLifecycleRepository, ResourcePurgeError, ResourcePurgeIntent, ResourcePurgeScheduler,
     ResourceState, ResourceTarget, ResourceTimestamps, UpdateMemoryStoreCommand,
 };
-pub use files::{
-    CreateFileCommand, FileApplication, MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES,
-};
+pub use awaken_resource_contract::{MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES};
+pub use files::{CreateFileCommand, FileApplication};
 
 #[derive(Clone)]
 pub struct ResourcesApplication {

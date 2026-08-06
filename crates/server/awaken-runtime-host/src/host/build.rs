@@ -297,6 +297,19 @@ impl SharedHost {
                     },
                 )
             });
+        let artifact_publisher: Arc<dyn awaken_run_ingress_contract::ArtifactPublisher> =
+            file_application.as_ref().map_or_else(
+                || {
+                    Arc::new(crate::provisioning::UnavailableArtifactPublisher)
+                        as Arc<dyn awaken_run_ingress_contract::ArtifactPublisher>
+                },
+                |application| {
+                    Arc::new(crate::provisioning::ApplicationArtifactPublisher::new(
+                        application.clone(),
+                    ))
+                        as Arc<dyn awaken_run_ingress_contract::ArtifactPublisher>
+                },
+            );
         let capture_decision = crate::redact::capture_decision(deployment.content_capture, false);
         Self {
             llm,
@@ -352,6 +365,7 @@ impl SharedHost {
             file_content_source,
             file_catalog,
             file_application,
+            artifact_publisher,
             resource_lifecycle,
             memory_stores,
             memory_mounter: std::sync::RwLock::new(None),
@@ -523,6 +537,9 @@ impl SharedHost {
             self.file_content_source = Arc::new(
                 awaken_resource_worker_http::ApplicationFileContentSource::new(application.clone()),
             );
+            self.artifact_publisher = Arc::new(
+                crate::provisioning::ApplicationArtifactPublisher::new(application.clone()),
+            );
             self.file_application = Some(application);
         }
         self.resource_lifecycle = Some(repository);
@@ -539,7 +556,25 @@ impl SharedHost {
         self.file_content_source = Arc::new(
             awaken_resource_worker_http::ApplicationFileContentSource::new(application.clone()),
         );
+        self.artifact_publisher = Arc::new(crate::provisioning::ApplicationArtifactPublisher::new(
+            application.clone(),
+        ));
         self.file_application = Some(application);
+        self
+    }
+
+    /// Install the narrow artifact publisher used by a database-less Worker.
+    /// This does not grant File management or catalog access.
+    #[must_use]
+    pub fn with_artifact_publisher(
+        mut self,
+        publisher: Arc<dyn awaken_run_ingress_contract::ArtifactPublisher>,
+    ) -> Self {
+        // This is the database-less Worker composition edge. Retaining the
+        // test-only/local File application here would create a second command
+        // path and incorrectly classify the remote publisher as locally fenced.
+        self.file_application = None;
+        self.artifact_publisher = publisher;
         self
     }
 

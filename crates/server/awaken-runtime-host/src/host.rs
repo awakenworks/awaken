@@ -278,10 +278,13 @@ pub struct SharedHost {
     /// Logical Files-API truth: public identity, metadata, Workspace visibility,
     /// Session scope, and harvest idempotency. Bytes remain in `file_store` only.
     pub(crate) file_catalog: Arc<dyn FileCatalog>,
-    /// Resources-owned command application. It is absent only on database-less
-    /// Workers, which receive immutable content through `file_content_source` and
-    /// cannot expose management or artifact-publication commands.
+    /// Full Resources-owned File application retained for local management and
+    /// Coordinator composition. Database-less Workers do not receive this port.
     pub(crate) file_application: Option<Arc<dyn awaken_resource_contract::FileApplicationService>>,
+    /// Sole Runtime-to-Resources artifact command edge. Embedded compositions
+    /// install the local application adapter; database-less Workers install the
+    /// claim-fenced HTTP client.
+    pub(crate) artifact_publisher: Arc<dyn awaken_run_ingress_contract::ArtifactPublisher>,
     /// Durable workspace ownership projection for content-addressed resources.
     /// Durable resource-plane lifecycle/reference state. It contains intrinsic
     /// Workspace/resource edges only and is independent of the IAM deployment.

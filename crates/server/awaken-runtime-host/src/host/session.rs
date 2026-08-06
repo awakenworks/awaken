@@ -249,7 +249,7 @@ impl SharedHost {
     ) -> Result<bool, HostError> {
         let claim = self
             .session_slots
-            .read(thread, |slot| slot.deferred_claim.clone())
+            .read(thread, |slot| slot.dispatch_claim.clone())
             .flatten();
         let Some(claim) = claim else {
             return Ok(false);
@@ -339,10 +339,8 @@ impl SharedHost {
             }
             return Err(error);
         }
-        self.session_slots.update(thread, |slot| {
-            slot.environment = Some(environment.clone());
-            slot.deferred_claim = None;
-        });
+        self.session_slots
+            .update(thread, |slot| slot.environment = Some(environment.clone()));
         Ok(environment)
     }
 

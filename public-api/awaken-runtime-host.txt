@@ -323,6 +323,7 @@ pub fn awaken_runtime_host::SharedHost::with_agent_resource_references(self, all
 pub fn awaken_runtime_host::SharedHost::with_application_attempt_decorator(self, awaken_runtime_host::AttemptExecutorDecorator) -> Self
 pub fn awaken_runtime_host::SharedHost::with_application_session_control(self, alloc::sync::Arc<dyn awaken_run_ingress_contract::claimed_session::ClaimedSessionControl>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_application_session_provisioner(self, alloc::sync::Arc<dyn awaken_session_contract::application_provisioning::ApplicationSessionProvisioner>) -> Self
+pub fn awaken_runtime_host::SharedHost::with_artifact_publisher(self, alloc::sync::Arc<dyn awaken_run_ingress_contract::artifact_publication::ArtifactPublisher>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_cache_volume_initializer(self, alloc::sync::Arc<dyn awaken_runtime_host::CacheVolumeInitializer>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_capture_sink(self, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_client_tools(self, std::collections::hash::set::HashSet<alloc::string::String>) -> Self
@@ -362,13 +363,6 @@ impl awaken_runtime_host::SharedHost
 pub fn awaken_runtime_host::SharedHost::builtin_tools(&self) -> alloc::vec::Vec<(alloc::string::String, bool)>
 pub fn awaken_runtime_host::SharedHost::custom_tools(&self) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub fn awaken_runtime_host::SharedHost::delegate_ids_in(&self, &str) -> alloc::vec::Vec<alloc::string::String>
-pub fn awaken_runtime_host::SharedHost::file_application(&self) -> core::option::Option<alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>>
-pub fn awaken_runtime_host::SharedHost::file_catalog(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::FileCatalog>
-pub async fn awaken_runtime_host::SharedHost::file_has_any_reference(&self, &str) -> core::result::Result<bool, awaken_resource_contract::lifecycle::ResourcePurgeError>
-pub fn awaken_runtime_host::SharedHost::file_store(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::FileStore>
-pub async fn awaken_runtime_host::SharedHost::harvest_thread_artifacts(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_resource_contract::FileRecord>, awaken_resource_contract::lifecycle::ResourcePurgeError>
-pub async fn awaken_runtime_host::SharedHost::harvest_thread_skills(&self, &str)
-pub async fn awaken_runtime_host::SharedHost::publish_thread_repositories(&self, &str)
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::cancel_durable(&self, &str, &str) -> core::result::Result<(), awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::pause_durable(&self, &str, core::option::Option<&str>) -> core::result::Result<alloc::string::String, awaken_runtime_host::HostError>
@@ -380,12 +374,21 @@ pub async fn awaken_runtime_host::SharedHost::define_outcome(&self, &str, &str, 
 impl awaken_runtime_host::SharedHost
 pub fn awaken_runtime_host::SharedHost::ensure_terminal_dispatch_reconciliation(&alloc::sync::Arc<Self>) -> bool
 impl awaken_runtime_host::SharedHost
+pub fn awaken_runtime_host::SharedHost::file_application(&self) -> core::option::Option<alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>>
+pub fn awaken_runtime_host::SharedHost::file_catalog(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::FileCatalog>
+pub async fn awaken_runtime_host::SharedHost::file_has_any_reference(&self, &str) -> core::result::Result<bool, awaken_resource_contract::lifecycle::ResourcePurgeError>
+pub fn awaken_runtime_host::SharedHost::file_store(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::FileStore>
+pub async fn awaken_runtime_host::SharedHost::harvest_thread_artifacts(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_resource_contract::FileRecord>, awaken_resource_contract::lifecycle::ResourcePurgeError>
+pub async fn awaken_runtime_host::SharedHost::harvest_thread_skills(&self, &str)
+pub async fn awaken_runtime_host::SharedHost::publish_thread_repositories(&self, &str)
+impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::interrupt_all_session_runs(&self) -> usize
 pub async fn awaken_runtime_host::SharedHost::renew_due_session_realizations(&self, u64, u64) -> core::result::Result<usize, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::revoke_all_session_realizations(&self) -> core::result::Result<usize, awaken_runtime_host::HostError>
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::live_inbox(&self, &str) -> core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 impl awaken_runtime_host::SharedHost
+pub fn awaken_runtime_host::SharedHost::worker_artifact_publisher(&self) -> alloc::sync::Arc<dyn awaken_run_ingress_contract::artifact_publication::ArtifactPublisher>
 pub fn awaken_runtime_host::SharedHost::worker_completion_sink(&self) -> alloc::sync::Arc<dyn awaken_run_ingress::pool::CompletionSink>
 pub fn awaken_runtime_host::SharedHost::worker_file_content_source(&self) -> alloc::sync::Arc<dyn awaken_run_ingress_contract::file_content::FileContentSource>
 pub fn awaken_runtime_host::SharedHost::worker_recovery_source(&alloc::sync::Arc<Self>) -> alloc::sync::Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>

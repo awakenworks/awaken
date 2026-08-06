@@ -331,6 +331,13 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
 
 #[tokio::test]
 async fn http_claim_requires_the_exact_worker_private_credential_revision() {
+    // Worker-observation rotation FMECA and cause/effect table. C1 dispatch pins
+    // revision N/N+1; C2 Worker reports N/N+1; C3 observation live/expired; C4
+    // heartbeat sequence current/stale. Effects: E1 only exact live revision may
+    // claim; E2 rotation becomes eligible after one authoritative heartbeat; E3
+    // a delayed pre-rotation heartbeat cannot roll the observation back.
+    // Rules: R1 N/N/live=>E1; R2 N+1/N/live=>reject; R3 N+1/N+1/live=>E2;
+    // R4 any/exact/expired=>reject; R5 stale sequence carrying N=>E3.
     let clock = Arc::new(ManualWorkerClock::new(100));
     let directory = Arc::new(MemoryWorkerDirectory::new());
     let dispatch = Arc::new(MemoryDispatchStore::new());
@@ -352,7 +359,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
         .unwrap();
 
     let service = WorkerDispatchService::new(
-        dispatch as Arc<dyn DispatchQueue>,
+        dispatch.clone() as Arc<dyn DispatchQueue>,
         Arc::new(HeaderWorkerAuthenticator),
         clock.clone(),
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),
@@ -419,7 +426,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
         "a nearby credential revision is not equivalent to the published revision"
     );
 
-    let exact = ready_worker(address, "worker-exact-revision", required).await;
+    let exact = ready_worker(address, "worker-exact-revision", required.clone()).await;
     let exact_queue = HttpDispatchQueue::new(format!("http://{address}"), exact.clone());
     clock.set(130);
     assert!(
@@ -465,5 +472,107 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
         .unwrap()
         .expect("the worker reporting the exact revision can claim the run");
     assert_eq!(claimed.request.run_id().0, "worker-private");
-    assert_eq!(claimed.assignment.unwrap().identity, exact);
+    assert_eq!(claimed.assignment.as_ref().unwrap().identity, exact, "R1");
+    dispatch
+        .settle(
+            &claimed.lease.run_id,
+            claimed.lease.epoch,
+            awaken_run_ingress::DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let rotated = WorkerCredentialRevision {
+        id: required.id,
+        revision: required.revision + 1,
+    };
+    let mut rotated_placement = PlacementRequirements::remote_required();
+    rotated_placement
+        .required_capabilities
+        .insert(WORKER_LOCAL_CREDENTIALS_CAPABILITY.to_string());
+    rotated_placement
+        .required_credentials
+        .insert(rotated.clone());
+    dispatch
+        .enqueue(
+            dispatch_with_capability(
+                "worker-private-rotated",
+                WORKER_LOCAL_CREDENTIALS_CAPABILITY,
+            )
+            .with_placement(rotated_placement),
+        )
+        .await
+        .unwrap();
+    assert!(
+        exact_queue
+            .claim("ignored", 1_000, 130, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
+        "R2: the pre-rotation observation cannot claim the successor revision"
+    );
+
+    clock.set(135);
+    assert_eq!(
+        control
+            .heartbeat(
+                &exact,
+                WorkerHeartbeat {
+                    sequence: 3,
+                    ready: true,
+                    in_flight: 0,
+                    warm_environment_shapes: Default::default(),
+                    credential_observations: [WorkerCredentialObservation::available(
+                        rotated, 135, 165,
+                    )]
+                    .into_iter()
+                    .collect(),
+                    acp_capability_observations: Default::default(),
+                },
+            )
+            .await
+            .unwrap(),
+        RegistryMutation::Applied,
+        "R3"
+    );
+    assert_eq!(
+        control
+            .heartbeat(
+                &exact,
+                WorkerHeartbeat {
+                    sequence: 2,
+                    ready: true,
+                    in_flight: 0,
+                    warm_environment_shapes: Default::default(),
+                    credential_observations: [WorkerCredentialObservation::available(
+                        WorkerCredentialRevision {
+                            id: "credential-source-worker-private".into(),
+                            revision: 12,
+                        },
+                        135,
+                        165,
+                    )]
+                    .into_iter()
+                    .collect(),
+                    acp_capability_observations: Default::default(),
+                },
+            )
+            .await
+            .unwrap(),
+        RegistryMutation::StaleSequence,
+        "R5"
+    );
+    assert_eq!(
+        exact_queue
+            .claim("ignored", 1_000, 135, &Default::default())
+            .await
+            .unwrap()
+            .expect("R3 rotated revision")
+            .request
+            .run_id()
+            .0,
+        "worker-private-rotated",
+        "R3+R5"
+    );
 }

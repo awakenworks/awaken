@@ -620,6 +620,8 @@ pub enum WorkerTransportBuildError {
         "registered Worker transport requires durable stream checkpoints from Postgres or storage_dir"
     )]
     MissingCheckpointAuthority,
+    #[error("registered Worker artifact transport requires the Resources File application")]
+    MissingFileApplication,
 }
 
 fn worker_checkpoint_authority(
@@ -896,6 +898,18 @@ fn mount_with_managed_over_and_models(
         )
         .with_worker_directory(worker_directory.clone()),
     ));
+    let file_application = host
+        .file_application()
+        .ok_or(WorkerTransportBuildError::MissingFileApplication)?;
+    let artifact_publication =
+        awaken_resource_worker_http::worker_artifact_publication_router(Arc::new(
+            awaken_resource_worker_http::WorkerArtifactPublicationService::new(
+                file_application,
+                dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
+                worker_authenticator.clone(),
+                worker_directory.clone(),
+            ),
+        ));
     let memory = awaken_resource_worker_http::worker_memory_router(Arc::new(
         awaken_resource_worker_http::WorkerMemoryService::new(
             host.memory_repository(),
@@ -913,7 +927,10 @@ fn mount_with_managed_over_and_models(
         )
         .with_worker_directory(worker_directory.clone()),
     ));
-    let mut resource_worker = file_content.merge(memory).merge(repositories);
+    let mut resource_worker = file_content
+        .merge(artifact_publication)
+        .merge(memory)
+        .merge(repositories);
     if let Some(store) = host.skill_store() {
         resource_worker = resource_worker.merge(
             awaken_resource_worker_http::worker_skill_bundle_router(Arc::new(

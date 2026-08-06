@@ -13,6 +13,7 @@ use awaken_resource_contract::{
     FileCatalog, FileCatalogError, FileRecord, ResourceKind, ResourcePurgeError, ResourceReference,
     ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
+use awaken_run_ingress::{Clock as _, DispatchQueue as _};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 
 /// Anthropic Managed Agents' canonical sandbox-absolute deliverables directory.
@@ -294,7 +295,15 @@ impl SharedHost {
         ArtifactHarvester {
             session_slots: self.session_slots.clone(),
             local_workspace: self.local_workspace.clone(),
-            file_application: self.file_application.clone(),
+            publisher: self.artifact_publisher.clone(),
+            // A local File application shares the Coordinator's dispatch
+            // authority and must hold its epoch guard across publication. A
+            // database-less Worker has no File application; its HTTP publisher
+            // is fenced by the Coordinator-side adapter instead.
+            local_claim_fence: self
+                .file_application
+                .as_ref()
+                .map(|_| self.dispatch_store().map_err(|error| error.to_string())),
         }
     }
 
@@ -587,14 +596,51 @@ impl SharedHost {
 pub(crate) struct ArtifactHarvester {
     session_slots: crate::session_slot::SessionRuntimeSlots,
     local_workspace: String,
-    file_application: Option<std::sync::Arc<dyn awaken_resource_contract::FileApplicationService>>,
+    publisher: std::sync::Arc<dyn awaken_run_ingress_contract::ArtifactPublisher>,
+    local_claim_fence: Option<Result<std::sync::Arc<awaken_run_ingress::AnyDispatchStore>, String>>,
 }
 
 impl ArtifactHarvester {
+    pub(crate) fn current_claim(&self, thread: &str) -> Option<awaken_run_ingress::RunClaim> {
+        self.session_slots
+            .read(thread, |slot| slot.dispatch_claim.clone())
+            .flatten()
+    }
+
     pub(crate) async fn harvest(
         &self,
         thread: &str,
     ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
+        let claim = self.current_claim(thread);
+        self.harvest_with_claim(thread, claim).await
+    }
+
+    pub(crate) async fn harvest_with_claim(
+        &self,
+        thread: &str,
+        claim: Option<awaken_run_ingress::RunClaim>,
+    ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
+        let _local_guard = match (&claim, &self.local_claim_fence) {
+            (Some(claim), Some(Ok(dispatch))) => {
+                let guard = dispatch
+                    .lock_commit_epoch(claim)
+                    .await
+                    .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?
+                    .filter(|guard| guard.is_live_at(awaken_run_ingress::SystemClock.now_ms()))
+                    .ok_or_else(|| {
+                        ResourcePurgeError::Storage(
+                            "artifact publication lost its local dispatch claim".into(),
+                        )
+                    })?;
+                Some(guard)
+            }
+            (Some(_), Some(Err(error))) => {
+                return Err(ResourcePurgeError::Storage(format!(
+                    "artifact publication cannot resolve its local dispatch authority: {error}"
+                )));
+            }
+            _ => None,
+        };
         let env = self
             .session_slots
             .read(thread, |slot| slot.environment.clone())
@@ -632,25 +678,79 @@ impl ArtifactHarvester {
                 .to_string();
             let mime_type = mime_type_for_path(&logical_path).to_string();
             let record = self
-                .file_application
-                .as_ref()
-                .ok_or_else(|| {
-                    ResourcePurgeError::Storage(
-                        "File application is unavailable on this execution process".into(),
-                    )
-                })?
-                .create_artifact(
-                    &workspace,
-                    thread,
-                    logical_path.clone(),
+                .publisher
+                .publish(awaken_run_ingress_contract::ArtifactPublication {
+                    workspace_id: workspace.clone(),
+                    session_id: thread.to_string(),
+                    logical_path,
                     mime_type,
-                    &bytes,
-                    awaken_file_store::harvest_idempotency_key(thread, &logical_path, &content_id),
-                )
-                .await?;
+                    bytes,
+                    claim: claim.clone(),
+                })
+                .await
+                .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
             out.push(record);
         }
         Ok(out)
+    }
+}
+
+pub(crate) struct ApplicationArtifactPublisher {
+    application: std::sync::Arc<dyn awaken_resource_contract::FileApplicationService>,
+}
+
+impl ApplicationArtifactPublisher {
+    pub(crate) fn new(
+        application: std::sync::Arc<dyn awaken_resource_contract::FileApplicationService>,
+    ) -> Self {
+        Self { application }
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_run_ingress_contract::ArtifactPublisher for ApplicationArtifactPublisher {
+    async fn publish(
+        &self,
+        publication: awaken_run_ingress_contract::ArtifactPublication,
+    ) -> Result<
+        awaken_resource_contract::FileRecord,
+        awaken_run_ingress_contract::ArtifactPublicationError,
+    > {
+        let digest = awaken_resource_contract::content_id(&publication.bytes);
+        self.application
+            .create_artifact(
+                &publication.workspace_id,
+                &publication.session_id,
+                publication.logical_path.clone(),
+                publication.mime_type,
+                &publication.bytes,
+                awaken_resource_contract::harvest_idempotency_key(
+                    &publication.session_id,
+                    &publication.logical_path,
+                    &digest,
+                ),
+            )
+            .await
+            .map_err(|error| {
+                awaken_run_ingress_contract::ArtifactPublicationError::new(error.to_string())
+            })
+    }
+}
+
+pub(crate) struct UnavailableArtifactPublisher;
+
+#[async_trait::async_trait]
+impl awaken_run_ingress_contract::ArtifactPublisher for UnavailableArtifactPublisher {
+    async fn publish(
+        &self,
+        _publication: awaken_run_ingress_contract::ArtifactPublication,
+    ) -> Result<
+        awaken_resource_contract::FileRecord,
+        awaken_run_ingress_contract::ArtifactPublicationError,
+    > {
+        Err(awaken_run_ingress_contract::ArtifactPublicationError::new(
+            "artifact publisher is not configured by the composition root",
+        ))
     }
 }
 
@@ -1032,14 +1132,14 @@ mod provisioning_registry_tests {
         let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test");
         let catalog = Arc::new(FailingFileCatalog);
         raw_host.file_catalog = catalog.clone();
-        raw_host.file_application =
-            Some(Arc::new(awaken_resource_application::FileApplication::new(
-                raw_host.file_store(),
-                catalog,
-                raw_host
-                    .resource_lifecycle()
-                    .expect("test lifecycle repository"),
-            )));
+        let application = Arc::new(awaken_resource_application::FileApplication::new(
+            raw_host.file_store(),
+            catalog,
+            raw_host
+                .resource_lifecycle()
+                .expect("test lifecycle repository"),
+        ));
+        raw_host = raw_host.with_file_application(application);
         let host = Arc::new(raw_host);
         let spec = agent_run_sandbox_spec("session-harvest-failure");
         let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(

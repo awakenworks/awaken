@@ -96,11 +96,16 @@ impl ArtifactHarvestAttemptExecutor {
         Self { inner, harvester }
     }
 
-    async fn finish<T>(&self, thread: &str, result: ExecutionResult<T>) -> ExecutionResult<T> {
+    async fn finish<T>(
+        &self,
+        thread: &str,
+        claim: Option<awaken_run_ingress::RunClaim>,
+        result: ExecutionResult<T>,
+    ) -> ExecutionResult<T> {
         match result {
             Ok(value) => {
                 self.harvester
-                    .harvest(thread)
+                    .harvest_with_claim(thread, claim)
                     .await
                     .map_err(|error| ExecutionError::Execution(error.to_string()))?;
                 Ok(value)
@@ -108,7 +113,7 @@ impl ArtifactHarvestAttemptExecutor {
             Err(error) => {
                 // Preserve the execution failure while still retaining any bytes
                 // written before the failed model/tool step.
-                let _ = self.harvester.harvest(thread).await;
+                let _ = self.harvester.harvest_with_claim(thread, claim).await;
                 Err(error)
             }
         }
@@ -123,8 +128,11 @@ impl RunExecutor for ArtifactHarvestAttemptExecutor {
         context: RuntimeRunContext,
     ) -> ExecutionResult<RunState> {
         let thread = activation.thread_id.0.clone();
+        // Capture before execution: a stale attempt must never borrow a newer
+        // replacement claim for its post-attempt Resource effects.
+        let claim = self.harvester.current_claim(&thread);
         let result = self.inner.execute(activation, context).await;
-        self.finish(&thread, result).await
+        self.finish(&thread, claim, result).await
     }
 }
 
@@ -137,8 +145,9 @@ impl RunAttemptExecutor for ArtifactHarvestAttemptExecutor {
         context: RuntimeRunContext,
     ) -> ExecutionResult<RunState> {
         let thread = activation.thread_id.0.clone();
+        let claim = self.harvester.current_claim(&thread);
         let result = self.inner.resume(activation, command, context).await;
-        self.finish(&thread, result).await
+        self.finish(&thread, claim, result).await
     }
 
     async fn cancel(
@@ -551,6 +560,7 @@ mod tests {
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_run_ingress::{Clock as _, DispatchQueue as _};
     use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
     use awaken_runtime_contract::resume::ResumeResult;
@@ -628,6 +638,28 @@ mod tests {
     }
 
     struct FailingExecutor;
+
+    struct RecordingArtifactPublisher {
+        inner: Arc<dyn awaken_run_ingress_contract::ArtifactPublisher>,
+        claims: Arc<std::sync::Mutex<Vec<Option<awaken_run_ingress::RunClaim>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_run_ingress_contract::ArtifactPublisher for RecordingArtifactPublisher {
+        async fn publish(
+            &self,
+            publication: awaken_run_ingress_contract::ArtifactPublication,
+        ) -> Result<
+            awaken_resource_contract::FileRecord,
+            awaken_run_ingress_contract::ArtifactPublicationError,
+        > {
+            self.claims
+                .lock()
+                .expect("recorded claims mutex poisoned")
+                .push(publication.claim.clone());
+            self.inner.publish(publication).await
+        }
+    }
 
     #[async_trait::async_trait]
     impl RunExecutor for FailingExecutor {
@@ -722,22 +754,54 @@ mod tests {
     #[tokio::test]
     async fn attempt_output_harvest_decision_table() {
         // Cause/effect graph: C1=execute/resume/cancel; C2=inner success/failure;
-        // C3=Sandbox output absent/present/changed; C4=File application available.
+        // C3=Sandbox output absent/present/changed; C4=artifact publisher available;
+        // C5=current dispatch claim absent/present.
         // Effects: E1 one Session-scoped immutable File per unique content; E2
         // successful attempt waits for durable publication; E3 failed attempt keeps
         // its original error while best-effort publishing partial output; E4 cancel
         // does not invent a completed-step boundary; E5 publication failure blocks a
-        // successful step. The same decorator is used by direct and durable ingress.
+        // successful step; E6 a settled/replaced local claim publishes nothing.
+        // The same decorator is used by direct and durable ingress.
         //
-        // | Rule | operation | inner | output | Files app | effect |
-        // | R1 | execute | ok | present | yes | E1+E2 |
+        // | Rule | operation | inner | output | publisher/claim | effect |
+        // | R1 | execute | ok | present | yes/current | E1+E2; exact claim forwarded |
         // | R2 | resume | ok | changed | yes | new version + E2 |
         // | R3 | execute | error | present | yes | E1+E3 |
         // | R4 | cancel | ok | any | yes | E4 |
         // | R5 | execute | ok | present | no | E5 |
+        // | R6 | execute | ok | present | stale local claim | E6 |
         let thread = "thread-router";
         let storage = tempfile::tempdir().unwrap();
-        let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
+        let dispatch = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+                .expect("artifact test dispatch"),
+        );
+        dispatch
+            .enqueue(awaken_run_ingress::RunDispatch::new(activation("awaken")))
+            .await
+            .expect("enqueue artifact attempt");
+        let claimed = dispatch
+            .claim(
+                "worker-a",
+                60_000,
+                awaken_run_ingress::SystemClock.now_ms(),
+                &Default::default(),
+            )
+            .await
+            .expect("claim artifact attempt")
+            .expect("artifact attempt available");
+        let expected_claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
+        let mut raw_host =
+            SharedHost::new(Arc::new(NoLlm), "test").with_dispatch_store(dispatch.clone());
+        let claims = Arc::new(std::sync::Mutex::new(Vec::new()));
+        raw_host.artifact_publisher = Arc::new(RecordingArtifactPublisher {
+            inner: raw_host.artifact_publisher.clone(),
+            claims: claims.clone(),
+        });
+        raw_host.session_slots.update(thread, |slot| {
+            slot.dispatch_claim = Some(expected_claim.clone());
+        });
+        let host = Arc::new(raw_host);
         host.register_thread_workspace(thread, "workspace-a");
         let spec = crate::provisioning::agent_run_sandbox_spec(thread);
         assert_eq!(
@@ -774,6 +838,16 @@ mod tests {
             .unwrap();
         assert_eq!(files.len(), 1, "R1");
         assert_eq!(files[0].filename, "result.txt", "R1");
+        assert_eq!(
+            claims
+                .lock()
+                .expect("recorded claims mutex poisoned")
+                .first()
+                .cloned()
+                .flatten(),
+            Some(expected_claim),
+            "R1 exact claim captured before execution reaches publication"
+        );
 
         std::fs::write(output_dir.join("result.txt"), b"revision two").unwrap();
         let resumed = activation("awaken");
@@ -818,9 +892,41 @@ mod tests {
             .expect("R4");
         assert_eq!(inner.cancels.load(Ordering::SeqCst), 1, "R4");
 
+        dispatch
+            .settle(
+                &claimed.lease.run_id,
+                claimed.lease.epoch,
+                awaken_run_ingress::DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .expect("settle artifact claim");
+        std::fs::write(output_dir.join("stale.txt"), b"must not publish").unwrap();
+        let stale_error = executor
+            .execute(activation("awaken"), RuntimeRunContext::new())
+            .await
+            .expect_err("R6 stale local claim");
+        assert!(
+            stale_error
+                .to_string()
+                .contains("lost its local dispatch claim"),
+            "R6: {stale_error}"
+        );
+        assert_eq!(
+            host.file_application()
+                .unwrap()
+                .list("workspace-a", Some(thread))
+                .await
+                .unwrap()
+                .len(),
+            3,
+            "R6"
+        );
+
         let failed_storage = tempfile::tempdir().unwrap();
         let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test");
         raw_host.file_application = None;
+        raw_host.artifact_publisher = Arc::new(crate::provisioning::UnavailableArtifactPublisher);
         let failed_host = Arc::new(raw_host);
         failed_host.register_thread_workspace(thread, "workspace-a");
         let failed_environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
@@ -848,7 +954,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("File application is unavailable"),
+                .contains("artifact publisher is not configured"),
             "R5: {error}"
         );
     }
