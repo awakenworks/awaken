@@ -1674,7 +1674,14 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                                 refresh.clone(),
                             ),
                     ))),
-                    None => None,
+                    None => self.credential_refresh_factory.as_ref().map(|factory| {
+                        Box::new(crate::mcp::McpRefreshMaterial(factory.bearer_reloader(
+                            awaken_credential_contract::CredentialSourceId(
+                                access.credential.id.clone(),
+                            ),
+                            access.credential.revision,
+                        )))
+                    }),
                 };
                 (
                     Some(bearer),

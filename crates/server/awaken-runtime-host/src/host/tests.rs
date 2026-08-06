@@ -3857,6 +3857,40 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     };
     use awaken_session_contract::McpAttachmentRealizer;
 
+    struct PinnedBearerRefresher;
+
+    #[async_trait::async_trait]
+    impl awaken_ext_mcp::CredentialRefresher for PinnedBearerRefresher {
+        async fn refresh(
+            &self,
+            _challenge: &awaken_ext_mcp::AuthChallenge,
+        ) -> Option<awaken_ext_mcp::Credential> {
+            Some(awaken_ext_mcp::Credential::Bearer(
+                "published-mcp-token".into(),
+            ))
+        }
+    }
+
+    struct ExactRefreshFactory;
+
+    impl crate::CredentialRefreshFactory for ExactRefreshFactory {
+        fn refresher(
+            &self,
+            _credential_id: awaken_credential_contract::CredentialSourceId,
+            _access: awaken_runtime_contract::CredentialRefreshAccess,
+        ) -> Arc<dyn awaken_ext_mcp::CredentialRefresher> {
+            Arc::new(PinnedBearerRefresher)
+        }
+
+        fn bearer_reloader(
+            &self,
+            _credential_id: awaken_credential_contract::CredentialSourceId,
+            _credential_revision: u64,
+        ) -> Arc<dyn awaken_ext_mcp::CredentialRefresher> {
+            Arc::new(PinnedBearerRefresher)
+        }
+    }
+
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
@@ -3877,7 +3911,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     .await
     .unwrap();
     let managed = crate::ManagedHost::new(host.clone())
-        .with_credentials(credentials.clone(), secrets.clone());
+        .with_credentials(credentials.clone(), secrets.clone())
+        .with_credential_refresh_factory(Arc::new(ExactRefreshFactory));
     let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
     let (mcp_url, seen) = crate::test_mcp::start(Some("Bearer published-mcp-token")).await;
     let generation = |session: &str| awaken_session_contract::McpGenerationRef {
@@ -3939,6 +3974,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // | H17 | non-bearer usage | exact holder/revision | stage | - | reject before materialization |
     // | H18 | authenticated ACP/Forbidden exposure | exact | stage | - | reject before relay/no lookup |
     // | H20 | authenticated ACP/complete provider evidence | exact | stage+publish+call | generation route injects; no inline secret |
+    // | H21 | non-OAuth bearer/exact factory | exact | stage | - | one neutral challenge refresher; no Vault in Runtime |
     let exact_request = request("mcp-exact", "workspace-a", 1);
     let receipt = managed
         .stage_mcp_attachment(exact_request.clone())
@@ -3961,6 +3997,17 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             .bearer()
             .map(|secret| secret.expose_secret()),
         Some("published-mcp-token")
+    );
+    let projection = host.mcp_projection(&generation("mcp-exact")).unwrap();
+    assert!(
+        matches!(
+            projection.server.unwrap().transport,
+            crate::mcp::McpTransportMaterialKind::Http {
+                refresh: Some(_),
+                ..
+            }
+        ),
+        "H21"
     );
     managed
         .publish_mcp_generation(generation("mcp-exact"))

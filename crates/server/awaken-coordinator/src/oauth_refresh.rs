@@ -43,6 +43,40 @@ impl awaken_runtime_host::CredentialRefreshFactory for VaultRefreshFactory {
             self.secrets.clone(),
         ))
     }
+
+    fn bearer_reloader(
+        &self,
+        credential_id: CredentialSourceId,
+        credential_revision: u64,
+    ) -> Arc<dyn CredentialRefresher> {
+        Arc::new(VaultBearerReloader {
+            credential_id,
+            credential_revision,
+            credentials: self.credentials.clone(),
+            secrets: self.secrets.clone(),
+        })
+    }
+}
+
+struct VaultBearerReloader {
+    credential_id: CredentialSourceId,
+    credential_revision: u64,
+    credentials: Arc<dyn CredentialRepo>,
+    secrets: Arc<dyn SecretStore>,
+}
+
+#[async_trait::async_trait]
+impl CredentialRefresher for VaultBearerReloader {
+    async fn refresh(&self, _challenge: &AuthChallenge) -> Option<Credential> {
+        let source = self.credentials.get(&self.credential_id).await.ok()?;
+        if source.status != CredentialStatus::Active
+            || u64::try_from(source.version).ok()? != self.credential_revision
+        {
+            return None;
+        }
+        let bearer = self.secrets.get(source.material_ref.as_ref()?).await.ok()?;
+        Some(Credential::Bearer(bearer.expose_secret().to_owned()))
+    }
 }
 
 pub struct VaultRefresher {
@@ -244,6 +278,115 @@ mod tests {
                 .await,
             None,
             "R2/E2"
+        );
+    }
+
+    #[tokio::test]
+    async fn pinned_bearer_reload_decision_table() {
+        // Bearer-reload FMECA / cause-effect graph: C1 the frozen credential id
+        // exists; C2 lifecycle is Active; C3 revision equals the Session pin;
+        // C4 its exact material reference resolves. Effect E1 returns only the
+        // current bytes behind that pin; every other combination yields E2 None
+        // before retry. F1 identity widening (S10,O3,D2,RPN60), F2 revoked-use
+        // (S10,O3,D2,RPN60), and F3 missing material (S8,O4,D2,RPN64) fail closed.
+        //
+        // | Rule | exists | active | revision | material | Effect |
+        // |---|---|---|---|---|---|
+        // | B1 | yes | yes | exact | present | E1 |
+        // | B2 | yes | no | exact | present | E2/F2 |
+        // | B3 | yes | yes | changed | present | E2/F1 |
+        // | B4 | yes | yes | exact | missing | E2/F3 |
+        // | B5 | no | any | any | any | E2 |
+        let secret_ref = SecretRef("secret:run-mcp".into());
+        let secrets: Arc<dyn SecretStore> =
+            Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+        secrets
+            .put(&secret_ref, RedactedString::new("current-bearer"))
+            .await
+            .unwrap();
+        let credentials: Arc<dyn CredentialRepo> =
+            Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
+        let source = awaken_credential_vault::CredentialSource {
+            id: CredentialSourceId("cred:run-mcp".into()),
+            workspace_id: "workspace".into(),
+            kind: awaken_credential_vault::CredentialKind::Vault,
+            provider_id: Some("awaken-flow/run-mcp".into()),
+            protocol_endpoint_id: None,
+            env_key: None,
+            material_ref: Some(secret_ref.clone()),
+            auxiliary_material_refs: Default::default(),
+            oauth_command: None,
+            worker_local_binding: None,
+            status: CredentialStatus::Active,
+            version: 1,
+        };
+        credentials.put(source.clone()).await.unwrap();
+        let factory = VaultRefreshFactory::new(credentials.clone(), secrets.clone());
+        let challenge = AuthChallenge {
+            status: 401,
+            www_authenticate: None,
+        };
+        assert_eq!(
+            awaken_runtime_host::CredentialRefreshFactory::bearer_reloader(
+                &factory,
+                source.id.clone(),
+                1,
+            )
+            .refresh(&challenge)
+            .await,
+            Some(Credential::Bearer("current-bearer".into())),
+            "B1/E1"
+        );
+
+        for (case, replacement) in [
+            (
+                "B2/E2/F2",
+                awaken_credential_vault::CredentialSource {
+                    status: CredentialStatus::Disabled,
+                    ..source.clone()
+                },
+            ),
+            (
+                "B3/E2/F1",
+                awaken_credential_vault::CredentialSource {
+                    version: 2,
+                    ..source.clone()
+                },
+            ),
+            (
+                "B4/E2/F3",
+                awaken_credential_vault::CredentialSource {
+                    material_ref: Some(SecretRef("secret:missing".into())),
+                    ..source.clone()
+                },
+            ),
+        ] {
+            let case_credentials: Arc<dyn CredentialRepo> =
+                Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
+            case_credentials.put(replacement).await.unwrap();
+            let case_factory = VaultRefreshFactory::new(case_credentials, secrets.clone());
+            assert_eq!(
+                awaken_runtime_host::CredentialRefreshFactory::bearer_reloader(
+                    &case_factory,
+                    source.id.clone(),
+                    1,
+                )
+                .refresh(&challenge)
+                .await,
+                None,
+                "{case}"
+            );
+        }
+        assert_eq!(
+            awaken_runtime_host::CredentialRefreshFactory::bearer_reloader(
+                &factory,
+                CredentialSourceId("cred:missing".into()),
+                1,
+            )
+            .refresh(&challenge)
+            .await,
+            None,
+            "B5/E2"
         );
     }
 }
