@@ -644,6 +644,46 @@ mod tests {
         claims: Arc<std::sync::Mutex<Vec<Option<awaken_run_ingress::RunClaim>>>>,
     }
 
+    struct ReplacingClaimExecutor {
+        slots: crate::session_slot::SessionRuntimeSlots,
+        thread: String,
+        replacement: awaken_run_ingress::RunClaim,
+    }
+
+    #[async_trait::async_trait]
+    impl RunExecutor for ReplacingClaimExecutor {
+        async fn execute(
+            &self,
+            _activation: RunActivation,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<RunState> {
+            self.slots.update(&self.thread, |slot| {
+                slot.dispatch_claim = Some(self.replacement.clone());
+            });
+            Ok(RunState::Ended(EndCause::Stopped("replaced".into())))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RunAttemptExecutor for ReplacingClaimExecutor {
+        async fn resume(
+            &self,
+            activation: RunActivation,
+            _command: ResumeCommand,
+            context: RuntimeRunContext,
+        ) -> ExecutionResult<RunState> {
+            self.execute(activation, context).await
+        }
+
+        async fn cancel(
+            &self,
+            _activation: RunActivation,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<()> {
+            Ok(())
+        }
+    }
+
     #[async_trait::async_trait]
     impl awaken_run_ingress_contract::ArtifactPublisher for RecordingArtifactPublisher {
         async fn publish(
@@ -760,7 +800,8 @@ mod tests {
         // successful attempt waits for durable publication; E3 failed attempt keeps
         // its original error while best-effort publishing partial output; E4 cancel
         // does not invent a completed-step boundary; E5 publication failure blocks a
-        // successful step; E6 a settled/replaced local claim publishes nothing.
+        // successful step; E6 every effect uses the claim snapshotted before the
+        // attempt; E7 a settled/replaced local claim publishes nothing.
         // The same decorator is used by direct and durable ingress.
         //
         // | Rule | operation | inner | output | publisher/claim | effect |
@@ -769,7 +810,8 @@ mod tests {
         // | R3 | execute | error | present | yes | E1+E3 |
         // | R4 | cancel | ok | any | yes | E4 |
         // | R5 | execute | ok | present | no | E5 |
-        // | R6 | execute | ok | present | stale local claim | E6 |
+        // | R6 | execute | ok | present | claim replaced in-flight | E6 |
+        // | R7 | execute | ok | present | stale local claim | E7 |
         let thread = "thread-router";
         let storage = tempfile::tempdir().unwrap();
         let dispatch = Arc::new(
@@ -845,7 +887,7 @@ mod tests {
                 .first()
                 .cloned()
                 .flatten(),
-            Some(expected_claim),
+            Some(expected_claim.clone()),
             "R1 exact claim captured before execution reaches publication"
         );
 
@@ -892,6 +934,48 @@ mod tests {
             .expect("R4");
         assert_eq!(inner.cancels.load(Ordering::SeqCst), 1, "R4");
 
+        let replacement = awaken_run_ingress::RunClaim {
+            run_id: expected_claim.run_id.clone(),
+            owner: "worker-new".into(),
+            epoch: expected_claim.epoch + 1,
+        };
+        std::fs::write(output_dir.join("claim-race.txt"), b"claim race").unwrap();
+        let recorded_before = claims.lock().expect("recorded claims mutex poisoned").len();
+        ArtifactHarvestAttemptExecutor::new(
+            Arc::new(ReplacingClaimExecutor {
+                slots: host.session_slots.clone(),
+                thread: thread.into(),
+                replacement,
+            }),
+            host.artifact_harvester(),
+        )
+        .execute(activation("awaken"), RuntimeRunContext::new())
+        .await
+        .expect("R6");
+        assert!(
+            claims
+                .lock()
+                .expect("recorded claims mutex poisoned")
+                .iter()
+                .skip(recorded_before)
+                .all(|claim| claim.as_ref() == Some(&expected_claim)),
+            "R6 every artifact uses the claim snapshotted before execution"
+        );
+        assert_eq!(
+            host.file_application()
+                .unwrap()
+                .list("workspace-a", Some(thread))
+                .await
+                .unwrap()
+                .len(),
+            4,
+            "R6"
+        );
+
+        host.session_slots.update(thread, |slot| {
+            slot.dispatch_claim = Some(expected_claim.clone());
+        });
+
         dispatch
             .settle(
                 &claimed.lease.run_id,
@@ -905,12 +989,12 @@ mod tests {
         let stale_error = executor
             .execute(activation("awaken"), RuntimeRunContext::new())
             .await
-            .expect_err("R6 stale local claim");
+            .expect_err("R7 stale local claim");
         assert!(
             stale_error
                 .to_string()
                 .contains("lost its local dispatch claim"),
-            "R6: {stale_error}"
+            "R7: {stale_error}"
         );
         assert_eq!(
             host.file_application()
@@ -919,8 +1003,8 @@ mod tests {
                 .await
                 .unwrap()
                 .len(),
-            3,
-            "R6"
+            4,
+            "R7"
         );
 
         let failed_storage = tempfile::tempdir().unwrap();
