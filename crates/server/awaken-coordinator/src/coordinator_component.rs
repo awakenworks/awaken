@@ -174,7 +174,8 @@ mod tests {
     use async_trait::async_trait;
     use awaken_deployment_contract::DeploymentLifecycleFact;
     use awaken_deployment_contract::{
-        DeploymentRecord, DeploymentRepositoryError, DeploymentRunRecord,
+        DeploymentRecord, DeploymentRepositoryError, DeploymentRunRecord, DeploymentWriteOutcome,
+        ScheduledRunClaimOutcome,
     };
 
     use super::*;
@@ -193,11 +194,13 @@ mod tests {
             unreachable!("restore stops after the first failed authority read")
         }
 
-        async fn upsert_deployment(
+        async fn write_deployment(
             &self,
             _record: DeploymentRecord,
+            _expected_revision: Option<u64>,
+            _scheduled_limit: usize,
             _lifecycle: Option<DeploymentLifecycleFact>,
-        ) -> Result<(), DeploymentRepositoryError> {
+        ) -> Result<DeploymentWriteOutcome, DeploymentRepositoryError> {
             unreachable!("restore is read-only")
         }
 
@@ -212,10 +215,11 @@ mod tests {
         async fn claim_scheduled_run(
             &self,
             _claim_id: &str,
+            _expected_deployment_revision: u64,
             _deployment: DeploymentRecord,
             _run: DeploymentRunRecord,
             _lifecycle: DeploymentLifecycleFact,
-        ) -> Result<bool, DeploymentRepositoryError> {
+        ) -> Result<ScheduledRunClaimOutcome, DeploymentRepositoryError> {
             unreachable!("restore never claims scheduled work")
         }
     }

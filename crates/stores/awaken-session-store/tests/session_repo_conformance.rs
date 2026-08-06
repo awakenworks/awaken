@@ -6,6 +6,10 @@
 //! suite checks that universal invariant for both backends; durable restart persistence
 //! remains in the backend-specific suite.
 
+use awaken_deployment_contract::{
+    DeploymentLifecycleFact, DeploymentRecord, DeploymentRepository, DeploymentRunRecord,
+    DeploymentWriteOutcome, ScheduledRunClaimOutcome,
+};
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, McpAttachmentDraft,
     McpAttachmentOrigin, McpTarget, PersistedSession, ScopedPersistedSession, SessionMutation,
@@ -558,13 +562,191 @@ async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
     root_cas_decision_table(&cas_repo).await;
 }
 
+fn deployment_record(id: &str, revision: u64, scheduled: bool) -> DeploymentRecord {
+    DeploymentRecord {
+        deployment_id: id.to_string(),
+        workspace_id: "ws_a".into(),
+        revision,
+        data: json!({
+            "schedule": scheduled.then_some(json!({"type": "cron"})),
+            "archived_at": null
+        })
+        .to_string(),
+    }
+}
+
+fn deployment_fact(id: &str) -> DeploymentLifecycleFact {
+    DeploymentLifecycleFact {
+        id: id.into(),
+        object_id: "depl_cas".into(),
+        workspace_id: Some("ws_a".into()),
+        event_type: "deployment.updated".into(),
+        timestamp: 1,
+    }
+}
+
+async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionRepository>(
+    repo: &R,
+) {
+    // Deployment repository cause/effect graph:
+    // C1=create or two writers share revision r; C2=row is scheduled; C3=the
+    // capacity limit is already occupied; C4=scheduler presents current or
+    // stale revision. Effects: E1=one CAS write advances r exactly once;
+    // E2=the loser conflicts without a lifecycle fact; E3=capacity admission
+    // is transactional; E4=claim+run+cursor commit atomically; E5=stale claim
+    // creates neither claim nor run.
+    //
+    // | Rule | C1                | C2 | C3 | C4      | Effect       |
+    // | D1   | create            | F  | F  | -       | applied      |
+    // | D2   | jump/reuse r      | F  | F  | -       | E2 reject   |
+    // | D3   | two writers at r  | F  | F  | -       | E1 + E2     |
+    // | D4   | create            | T  | T  | -       | E3 reject   |
+    // | D5   | scheduler at r    | -  | -  | current | E4          |
+    // | D6   | scheduler at r-1  | -  | -  | stale   | E5          |
+    let baseline_facts = repo.pending_lifecycle().await.len();
+    let created = deployment_record("depl_cas", 0, false);
+    assert_eq!(
+        repo.write_deployment(
+            created.clone(),
+            None,
+            1,
+            Some(deployment_fact("deployment-create")),
+        )
+        .await
+        .unwrap(),
+        DeploymentWriteOutcome::Applied,
+        "D1"
+    );
+    assert_eq!(
+        repo.write_deployment(
+            deployment_record("depl_cas", 2, false),
+            Some(0),
+            1,
+            Some(deployment_fact("invalid-jump")),
+        )
+        .await
+        .unwrap(),
+        DeploymentWriteOutcome::Conflict,
+        "D2 exact successor"
+    );
+    let mut left = created.clone();
+    left.revision = 1;
+    left.data = json!({"schedule": null, "archived_at": null, "writer": "left"}).to_string();
+    let mut right = left.clone();
+    right.data = json!({"schedule": null, "archived_at": null, "writer": "right"}).to_string();
+    let (left_outcome, right_outcome) = tokio::join!(
+        repo.write_deployment(left, Some(0), 1, Some(deployment_fact("left-writer")),),
+        repo.write_deployment(right, Some(0), 1, Some(deployment_fact("right-writer")),)
+    );
+    let outcomes = [left_outcome.unwrap(), right_outcome.unwrap()];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| **outcome == DeploymentWriteOutcome::Applied)
+            .count(),
+        1,
+        "D3/E1"
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| **outcome == DeploymentWriteOutcome::Conflict)
+            .count(),
+        1,
+        "D3/E2"
+    );
+    let facts = repo.pending_lifecycle().await;
+    assert_eq!(facts.len(), baseline_facts + 2, "D1/D3 lifecycle atomicity");
+    assert!(
+        facts.iter().all(|fact| fact.id != "invalid-jump"),
+        "D2 no fact"
+    );
+    assert_eq!(
+        usize::from(facts.iter().any(|fact| fact.id == "left-writer"))
+            + usize::from(facts.iter().any(|fact| fact.id == "right-writer")),
+        1,
+        "D3/E2 only winner fact"
+    );
+
+    assert_eq!(
+        repo.write_deployment(deployment_record("depl_scheduled", 0, true), None, 1, None)
+            .await
+            .unwrap(),
+        DeploymentWriteOutcome::Applied,
+        "D4 setup"
+    );
+    assert_eq!(
+        repo.write_deployment(deployment_record("depl_over_limit", 0, true), None, 1, None)
+            .await
+            .unwrap(),
+        DeploymentWriteOutcome::ScheduledCapacityReached,
+        "D4/E3"
+    );
+
+    let mut advanced = deployment_record("depl_cas", 2, false);
+    advanced.data = json!({"schedule": null, "archived_at": null, "cursor": 2}).to_string();
+    let run = DeploymentRunRecord {
+        run_id: "drun_current".into(),
+        deployment_id: "depl_cas".into(),
+        workspace_id: "ws_a".into(),
+        data: json!({"state": "started"}).to_string(),
+    };
+    let fact = DeploymentLifecycleFact {
+        id: "deployment-run-started".into(),
+        object_id: run.run_id.clone(),
+        workspace_id: Some("ws_a".into()),
+        event_type: "deployment_run.started".into(),
+        timestamp: 1,
+    };
+    assert_eq!(
+        repo.claim_scheduled_run("depl_cas:instant", 1, advanced.clone(), run, fact)
+            .await
+            .unwrap(),
+        ScheduledRunClaimOutcome::Claimed,
+        "D5/E4"
+    );
+    assert_eq!(repo.deployment_runs().await.unwrap().len(), 1, "D5/E4");
+    assert_eq!(
+        repo.claim_scheduled_run(
+            "depl_cas:stale",
+            1,
+            advanced,
+            DeploymentRunRecord {
+                run_id: "drun_stale".into(),
+                deployment_id: "depl_cas".into(),
+                workspace_id: "ws_a".into(),
+                data: json!({"state": "started"}).to_string(),
+            },
+            DeploymentLifecycleFact {
+                id: "stale-fact".into(),
+                object_id: "drun_stale".into(),
+                workspace_id: Some("ws_a".into()),
+                event_type: "deployment_run.started".into(),
+                timestamp: 2,
+            },
+        )
+        .await
+        .unwrap(),
+        ScheduledRunClaimOutcome::StaleDeployment,
+        "D6/E5"
+    );
+    assert_eq!(repo.deployment_runs().await.unwrap().len(), 1, "D6/E5");
+}
+
 // ── Backend rows: each must pass the identical universal suite ───────────────────
 
 #[test]
 fn sqlite_backend_conforms() {
-    block(run_suite(|| {
-        SqliteManagedSessionRepository::open_in_memory().expect("sqlite in-memory repo")
-    }));
+    block(async {
+        run_suite(|| {
+            SqliteManagedSessionRepository::open_in_memory().expect("sqlite in-memory repo")
+        })
+        .await;
+        deployment_cas_decision_table(
+            &SqliteManagedSessionRepository::open_in_memory().expect("sqlite deployment repo"),
+        )
+        .await;
+    });
 }
 
 #[tokio::test]
@@ -604,4 +786,5 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
         .await
         .expect("open Postgres Session repository");
     root_cas_decision_table(&repo).await;
+    deployment_cas_decision_table(&repo).await;
 }

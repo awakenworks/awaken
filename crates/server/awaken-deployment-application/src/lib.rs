@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use awaken_deployment_contract::{
     AgentArchiveCascade, Cron, DeploymentLifecycleFact, DeploymentRecord as StoredDeployment,
     DeploymentRepository, DeploymentRepositoryError, DeploymentRunRecord as StoredRun,
+    DeploymentWriteOutcome, MAX_DEPLOYMENT_REVISION, ScheduledRunClaimOutcome,
 };
 use awaken_executable_agent_contract::{
     ExecutableAgentRegistrationError, ExecutableAgentRegistrationSource,
@@ -28,6 +29,14 @@ use chrono_tz::Tz;
 
 const DEFAULT_SCHEDULED_LIMIT: usize = 1_000;
 const MAX_JITTER_MS: u64 = 10_000;
+
+type ScheduledCandidate = (
+    String,
+    DeploymentLaunch,
+    DeploymentRunRecord,
+    DeploymentRecord,
+    u64,
+);
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -193,6 +202,7 @@ impl DeploymentApplication {
             .await?;
         let now = now_ms();
         let record = DeploymentRecord {
+            revision: 0,
             created_at: timestamp(now),
             updated_at: timestamp(now),
             workspace_id: command.workspace_id,
@@ -222,8 +232,20 @@ impl DeploymentApplication {
             }
         }
         let id = format!("depl_{}", uuid::Uuid::new_v4().simple());
-        self.persist_deployment(&id, &record, "deployment.created")
-            .await?;
+        match self
+            .persist_deployment(&id, &record, None, "deployment.created")
+            .await?
+        {
+            DeploymentWriteOutcome::Applied => {}
+            DeploymentWriteOutcome::Conflict => {
+                return Err(DeploymentApplicationError::Conflict(
+                    "Deployment identity collision; retry create".into(),
+                ));
+            }
+            DeploymentWriteOutcome::ScheduledCapacityReached => {
+                return Err(scheduled_capacity_error(self.scheduled_limit));
+            }
+        }
         self.deployments
             .lock()
             .expect("Deployment projection lock")
@@ -278,7 +300,8 @@ impl DeploymentApplication {
         if let Some(Some(schedule)) = &command.schedule {
             validate_schedule(Some(schedule))?;
         }
-        let mut candidate = self.get_cached(workspace_id, id)?;
+        let current = self.get_cached(workspace_id, id)?;
+        let mut candidate = current.clone();
         if candidate.archived_at.is_some() {
             return Err(DeploymentApplicationError::Terminal);
         }
@@ -325,7 +348,7 @@ impl DeploymentApplication {
             candidate.vault_ids = value.unwrap_or_default();
         }
         validate_record(&candidate)?;
-        let current_had_schedule = self.get_cached(workspace_id, id)?.schedule.is_some();
+        let current_had_schedule = current.schedule.is_some();
         if !current_had_schedule && candidate.schedule.is_some() {
             ensure_scheduled_capacity(
                 &self.deployments.lock().expect("Deployment projection lock"),
@@ -333,8 +356,12 @@ impl DeploymentApplication {
             )?;
         }
         candidate.updated_at = timestamp(now_ms());
-        self.persist_deployment(id, &candidate, "deployment.updated")
-            .await?;
+        candidate.revision = next_revision(current.revision)?;
+        apply_write_outcome(
+            self.persist_deployment(id, &candidate, Some(current.revision), "deployment.updated")
+                .await?,
+            self.scheduled_limit,
+        )?;
         self.deployments
             .lock()
             .expect("Deployment projection lock")
@@ -353,11 +380,21 @@ impl DeploymentApplication {
         self.refresh().await?;
         let mut record = self.get_cached(workspace_id, id)?;
         if record.archived_at.is_none() {
+            let expected_revision = record.revision;
             let now = now_ms();
             record.archived_at = Some(timestamp(now));
             record.updated_at = timestamp(now);
-            self.persist_deployment(id, &record, "deployment.archived")
-                .await?;
+            record.revision = next_revision(expected_revision)?;
+            apply_write_outcome(
+                self.persist_deployment(
+                    id,
+                    &record,
+                    Some(expected_revision),
+                    "deployment.archived",
+                )
+                .await?,
+                self.scheduled_limit,
+            )?;
             self.deployments
                 .lock()
                 .expect("Deployment projection lock")
@@ -397,6 +434,7 @@ impl DeploymentApplication {
             return Err(DeploymentApplicationError::Terminal);
         }
         let now = now_ms();
+        let expected_revision = record.revision;
         let event = if pause {
             record.status = DeploymentStatus::Paused;
             record.paused_reason = Some(DeploymentPauseReason::Manual);
@@ -411,7 +449,12 @@ impl DeploymentApplication {
             "deployment.unpaused"
         };
         record.updated_at = timestamp(now);
-        self.persist_deployment(id, &record, event).await?;
+        record.revision = next_revision(expected_revision)?;
+        apply_write_outcome(
+            self.persist_deployment(id, &record, Some(expected_revision), event)
+                .await?,
+            self.scheduled_limit,
+        )?;
         self.deployments
             .lock()
             .expect("Deployment projection lock")
@@ -509,12 +552,19 @@ impl DeploymentApplication {
                 let mut candidate = record.clone();
                 candidate.archived_at = Some(now.clone());
                 candidate.updated_at = now.clone();
-                (id.clone(), candidate)
+                candidate.revision = next_revision(record.revision)?;
+                Ok((id.clone(), candidate))
             })
-            .collect();
+            .collect::<Result<_, DeploymentApplicationError>>()?;
         for (id, candidate) in &candidates {
-            self.persist_deployment(id, candidate, "deployment.archived")
-                .await?;
+            let expected = candidate.revision.checked_sub(1).ok_or_else(|| {
+                DeploymentApplicationError::Conflict("Deployment revision did not advance".into())
+            })?;
+            apply_write_outcome(
+                self.persist_deployment(id, candidate, Some(expected), "deployment.archived")
+                    .await?,
+                self.scheduled_limit,
+            )?;
         }
         let mut deployments = self.deployments.lock().expect("Deployment projection lock");
         for (id, candidate) in &candidates {
@@ -528,9 +578,9 @@ impl DeploymentApplication {
         now: u64,
     ) -> Result<Vec<DeploymentRunView>, DeploymentApplicationError> {
         self.refresh().await?;
-        let candidates = self.tick(now);
+        let candidates = self.tick(now)?;
         let mut completed = Vec::with_capacity(candidates.len());
-        for (run_id, launch, run, deployment) in candidates {
+        for (run_id, launch, run, deployment, expected_revision) in candidates {
             if self
                 .primary_agent_missing(&launch.workspace_id, &launch.agent.id)
                 .await?
@@ -539,6 +589,9 @@ impl DeploymentApplication {
                     .lock()
                     .expect("DeploymentRun projection lock")
                     .remove(&run_id);
+                // `tick` speculatively advances the working cursor. Restore the
+                // durable revision before the Agent cascade performs its CAS.
+                self.refresh().await?;
                 self.archive_for_agent(&launch.workspace_id, &launch.agent.id)
                     .await?;
                 continue;
@@ -550,9 +603,10 @@ impl DeploymentApplication {
                     ));
                 };
                 let claim_id = format!("{}:{scheduled_at}", run.deployment_id);
-                if !repository
+                match repository
                     .claim_scheduled_run(
                         &claim_id,
+                        expected_revision,
                         stored_deployment(&run.deployment_id, &deployment)?,
                         stored_run(&run_id, &run)?,
                         lifecycle_fact(
@@ -564,11 +618,25 @@ impl DeploymentApplication {
                     )
                     .await?
                 {
-                    self.runs
-                        .lock()
-                        .expect("DeploymentRun projection lock")
-                        .remove(&run_id);
-                    continue;
+                    ScheduledRunClaimOutcome::Claimed => {
+                        // `tick` may calculate several overdue occurrences at
+                        // once. Publish only this transaction's committed
+                        // revision before launch so an auto-pause is fenced by
+                        // the database revision it actually follows.
+                        self.deployments
+                            .lock()
+                            .expect("Deployment projection lock")
+                            .insert(run.deployment_id.clone(), deployment.clone());
+                    }
+                    ScheduledRunClaimOutcome::AlreadyClaimed
+                    | ScheduledRunClaimOutcome::StaleDeployment => {
+                        self.runs
+                            .lock()
+                            .expect("DeploymentRun projection lock")
+                            .remove(&run_id);
+                        self.refresh().await?;
+                        continue;
+                    }
                 }
             }
             completed.push(self.launch_run(&run_id, launch).await?);
@@ -576,15 +644,7 @@ impl DeploymentApplication {
         Ok(completed)
     }
 
-    fn tick(
-        &self,
-        now: u64,
-    ) -> Vec<(
-        String,
-        DeploymentLaunch,
-        DeploymentRunRecord,
-        DeploymentRecord,
-    )> {
+    fn tick(&self, now: u64) -> Result<Vec<ScheduledCandidate>, DeploymentApplicationError> {
         let mut result = Vec::new();
         let mut deployments = self.deployments.lock().expect("Deployment projection lock");
         let mut runs = self.runs.lock().expect("DeploymentRun projection lock");
@@ -607,6 +667,8 @@ impl DeploymentApplication {
                 }
                 let run_id = format!("drun_{}", uuid::Uuid::new_v4().simple());
                 let scheduled_at = timestamp(cursor);
+                let expected_revision = deployment.revision;
+                let advanced_revision = next_revision(expected_revision)?;
                 let run = DeploymentRunRecord {
                     created_at: timestamp(now),
                     deployment_id: deployment_id.clone(),
@@ -620,20 +682,28 @@ impl DeploymentApplication {
                 };
                 runs.insert(run_id.clone(), run.clone());
                 deployment.last_run_at = Some(scheduled_at);
+                deployment.next_fire_ms = Some(next.unwrap_or(cursor));
+                deployment.revision = advanced_revision;
                 result.push((
                     run_id.clone(),
                     launch_for(deployment, deployment_id, &run_id),
                     run,
                     deployment.clone(),
+                    expected_revision,
                 ));
                 cursor = match next {
                     Some(cursor) => cursor,
                     None => break,
                 };
+                if deployment.revision == MAX_DEPLOYMENT_REVISION {
+                    break;
+                }
             }
-            deployment.next_fire_ms = Some(cursor);
+            if deployment.next_fire_ms.is_none() {
+                deployment.next_fire_ms = Some(cursor);
+            }
         }
-        result
+        Ok(result)
     }
 
     async fn launch_run(
@@ -722,8 +792,18 @@ impl DeploymentApplication {
             deployment.status = DeploymentStatus::Paused;
             deployment.paused_reason = Some(DeploymentPauseReason::Error { error });
             deployment.updated_at = timestamp(now_ms());
-            self.persist_deployment(&run.deployment_id, &deployment, "deployment.paused")
-                .await?;
+            let expected_revision = deployment.revision;
+            deployment.revision = next_revision(expected_revision)?;
+            apply_write_outcome(
+                self.persist_deployment(
+                    &run.deployment_id,
+                    &deployment,
+                    Some(expected_revision),
+                    "deployment.paused",
+                )
+                .await?,
+                self.scheduled_limit,
+            )?;
             self.deployments
                 .lock()
                 .expect("Deployment projection lock")
@@ -773,23 +853,25 @@ impl DeploymentApplication {
         &self,
         id: &str,
         record: &DeploymentRecord,
+        expected_revision: Option<u64>,
         event: &str,
-    ) -> Result<(), DeploymentApplicationError> {
+    ) -> Result<DeploymentWriteOutcome, DeploymentApplicationError> {
         let Some(repository) = &self.repository else {
-            return Ok(());
+            return Ok(DeploymentWriteOutcome::Applied);
         };
-        repository
-            .upsert_deployment(
+        Ok(repository
+            .write_deployment(
                 stored_deployment(id, record)?,
+                expected_revision,
+                self.scheduled_limit,
                 Some(lifecycle_fact(
-                    format!("deployment:{id}:{event}:{}", record.updated_at),
+                    format!("deployment:{id}:{event}:{}", record.revision),
                     id,
                     &record.workspace_id,
                     event,
                 )),
             )
-            .await?;
-        Ok(())
+            .await?)
     }
 
     async fn persist_run(
@@ -845,6 +927,37 @@ fn agent_error(error: ExecutableAgentRegistrationError) -> DeploymentApplication
     }
 }
 
+fn next_revision(revision: u64) -> Result<u64, DeploymentApplicationError> {
+    (revision < MAX_DEPLOYMENT_REVISION)
+        .then_some(revision + 1)
+        .ok_or_else(|| {
+            DeploymentApplicationError::Conflict(
+                "Deployment durable revision exhausted; mutation rejected fail-closed".into(),
+            )
+        })
+}
+
+fn scheduled_capacity_error(limit: usize) -> DeploymentApplicationError {
+    DeploymentApplicationError::Invalid(format!(
+        "an organization supports at most {limit} scheduled deployments"
+    ))
+}
+
+fn apply_write_outcome(
+    outcome: DeploymentWriteOutcome,
+    scheduled_limit: usize,
+) -> Result<(), DeploymentApplicationError> {
+    match outcome {
+        DeploymentWriteOutcome::Applied => Ok(()),
+        DeploymentWriteOutcome::Conflict => Err(DeploymentApplicationError::Conflict(
+            "Deployment changed concurrently; retry the command".into(),
+        )),
+        DeploymentWriteOutcome::ScheduledCapacityReached => {
+            Err(scheduled_capacity_error(scheduled_limit))
+        }
+    }
+}
+
 async fn load_projection(
     repository: &dyn DeploymentRepository,
 ) -> Result<
@@ -861,7 +974,7 @@ async fn load_projection(
         .map(|stored| {
             let record: DeploymentRecord = serde_json::from_str(&stored.data)
                 .map_err(|error| DeploymentApplicationError::Unavailable(error.to_string()))?;
-            if record.workspace_id != stored.workspace_id {
+            if record.workspace_id != stored.workspace_id || record.revision != stored.revision {
                 return Err(DeploymentApplicationError::Unavailable(
                     "Deployment owner mismatch in durable row".into(),
                 ));
@@ -896,6 +1009,7 @@ fn stored_deployment(
     Ok(StoredDeployment {
         deployment_id: id.to_string(),
         workspace_id: record.workspace_id.clone(),
+        revision: record.revision,
         data: serde_json::to_string(record)
             .map_err(|error| DeploymentApplicationError::Unavailable(error.to_string()))?,
     })
@@ -987,9 +1101,7 @@ fn ensure_scheduled_capacity(
         .filter(|record| record.archived_at.is_none() && record.schedule.is_some())
         .count();
     if count >= limit {
-        return Err(DeploymentApplicationError::Invalid(format!(
-            "an organization supports at most {limit} scheduled deployments"
-        )));
+        return Err(scheduled_capacity_error(limit));
     }
     Ok(())
 }
@@ -1180,6 +1292,34 @@ mod tests {
         }
     }
 
+    struct MissingAgentSource;
+
+    #[async_trait]
+    impl ExecutableAgentRegistrationSource for MissingAgentSource {
+        async fn current_registration(
+            &self,
+            _workspace_id: &str,
+            _agent_id: &str,
+        ) -> Result<
+            Option<awaken_executable_agent_contract::ExecutableAgentRegistration>,
+            ExecutableAgentRegistrationError,
+        > {
+            Ok(None)
+        }
+
+        async fn registration_at_revision(
+            &self,
+            _workspace_id: &str,
+            _agent_id: &str,
+            _source_revision: u64,
+        ) -> Result<
+            Option<awaken_executable_agent_contract::ExecutableAgentRegistration>,
+            ExecutableAgentRegistrationError,
+        > {
+            Ok(None)
+        }
+    }
+
     #[tokio::test]
     async fn launch_outcome_decision_table_preserves_pending_and_controls_pause() {
         // Cause graph: C1=manual/scheduled trigger; C2=created, terminal
@@ -1325,11 +1465,11 @@ mod tests {
             let mut records = application.deployments.lock().unwrap();
             records.get_mut(&deployment.id).unwrap().next_fire_ms = None;
         }
-        assert!(application.tick(MONDAY_0900).is_empty(), "S1");
+        assert!(application.tick(MONDAY_0900).unwrap().is_empty(), "S1");
         let scheduled = MONDAY_0900 + 15 * 60_000;
         let due = scheduled.saturating_add(execution_jitter_ms(&deployment.id, scheduled));
-        assert!(application.tick(due - 1).is_empty(), "S2");
-        let fired = application.tick(due);
+        assert!(application.tick(due - 1).unwrap().is_empty(), "S2");
+        let fired = application.tick(due).unwrap();
         assert_eq!(fired.len(), 1, "S3");
         assert!(
             matches!(
@@ -1344,7 +1484,10 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            application.tick(MONDAY_0900 + 2 * 60 * 60_000).is_empty(),
+            application
+                .tick(MONDAY_0900 + 2 * 60 * 60_000)
+                .unwrap()
+                .is_empty(),
             "S4"
         );
         application
@@ -1430,7 +1573,10 @@ mod tests {
         // Distributed cause/effect table: D1 committed Deployment+restart ->
         // same owner projection; D2 two replicas calculate one occurrence ->
         // repository unique claim selects one; D3 loser -> no launch or durable
-        // duplicate; D4 lifecycle row and started/succeeded facts commit.
+        // duplicate; D4 lifecycle row and started/succeeded facts commit;
+        // D5 a tick speculatively advances its cache but the durable Agent is
+        // missing -> refresh the durable revision, archive by CAS, and create
+        // no run/launch. D5 guards the cache-vs-repository causal edge.
         let unique = uuid::Uuid::new_v4();
         let path = std::env::temp_dir().join(format!("deployment-{unique}.db"));
         let repository = Arc::new(
@@ -1447,9 +1593,16 @@ mod tests {
             .await
             .unwrap()
             .record;
+        let expected_revision = record.revision;
         record.next_fire_ms = Some(scheduled);
+        record.revision = next_revision(expected_revision).unwrap();
         repository
-            .upsert_deployment(stored_deployment(&deployment.id, &record).unwrap(), None)
+            .write_deployment(
+                stored_deployment(&deployment.id, &record).unwrap(),
+                Some(expected_revision),
+                DEFAULT_SCHEDULED_LIMIT,
+                None,
+            )
             .await
             .unwrap();
         let left = DeploymentApplication::from_repository(repository.clone())
@@ -1500,11 +1653,299 @@ mod tests {
                 .any(|fact| fact.event_type == "deployment_run.succeeded"),
             "D4"
         );
+
+        let missing_deployment = first.create(command(true)).await.unwrap();
+        let missing_scheduled = scheduled + 60 * 60_000;
+        let mut missing_record = first
+            .get("workspace-a", &missing_deployment.id)
+            .await
+            .unwrap()
+            .record;
+        let missing_expected_revision = missing_record.revision;
+        missing_record.next_fire_ms = Some(missing_scheduled);
+        missing_record.revision = next_revision(missing_expected_revision).unwrap();
+        assert_eq!(
+            repository
+                .write_deployment(
+                    stored_deployment(&missing_deployment.id, &missing_record).unwrap(),
+                    Some(missing_expected_revision),
+                    DEFAULT_SCHEDULED_LIMIT,
+                    None,
+                )
+                .await
+                .unwrap(),
+            DeploymentWriteOutcome::Applied,
+            "D5 setup"
+        );
+        let missing = DeploymentApplication::from_repository(repository.clone())
+            .await
+            .unwrap();
+        missing.bind_executable_agents(Arc::new(MissingAgentSource));
+        missing.bind_launcher(Arc::new(OutcomeLauncher {
+            outcome: DeploymentLaunchOutcome::Created {
+                session_id: "must-not-launch".into(),
+            },
+            calls: calls.clone(),
+        }));
+        let missing_due = missing_scheduled.saturating_add(execution_jitter_ms(
+            &missing_deployment.id,
+            missing_scheduled,
+        ));
+        assert!(
+            missing
+                .tick_and_launch(missing_due)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "D5 no launch");
+        let missing_restored = DeploymentApplication::from_repository(repository.clone())
+            .await
+            .unwrap();
+        assert!(
+            missing_restored
+                .get("workspace-a", &missing_deployment.id)
+                .await
+                .unwrap()
+                .record
+                .archived_at
+                .is_some(),
+            "D5 archived"
+        );
+        assert_eq!(
+            missing_restored
+                .list_runs("workspace-a")
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "D5 no durable run"
+        );
+        drop(missing_restored);
+        drop(missing);
         drop(restored);
         drop(left);
         drop(right);
         drop(first);
         drop(repository);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn repository_cas_fences_lost_updates_and_stale_scheduler_commits() {
+        // CAS cause-effect graph: C1=two commands share revision r; C2=one wins
+        // and advances to r+1; C3=the loser is an ordinary mutation or a
+        // scheduled occurrence. Effects: E1=one business row/fact commits,
+        // E2=second write returns Conflict, E3=stale scheduler returns
+        // StaleDeployment and creates no claim/run, E4=winner state survives.
+        // Decision rules: F1 concurrent update/update->E1/E2/E4;
+        // F2 archive wins before stale tick claim->E3/E4.
+        let path = std::env::temp_dir().join(format!(
+            "deployment-cas-{}.db",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let repository = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
+                .unwrap(),
+        );
+        let application = DeploymentApplication::from_repository(repository.clone())
+            .await
+            .unwrap();
+        let deployment = application.create(command(true)).await.unwrap();
+        let original = deployment.record;
+        let mut paused = original.clone();
+        paused.status = DeploymentStatus::Paused;
+        paused.revision = next_revision(original.revision).unwrap();
+        let mut archived = original.clone();
+        archived.archived_at = Some(timestamp(now_ms()));
+        archived.revision = next_revision(original.revision).unwrap();
+        let (left, right) = tokio::join!(
+            repository.write_deployment(
+                stored_deployment(&deployment.id, &paused).unwrap(),
+                Some(original.revision),
+                DEFAULT_SCHEDULED_LIMIT,
+                None,
+            ),
+            repository.write_deployment(
+                stored_deployment(&deployment.id, &archived).unwrap(),
+                Some(original.revision),
+                DEFAULT_SCHEDULED_LIMIT,
+                None,
+            )
+        );
+        let outcomes = [left.unwrap(), right.unwrap()];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == DeploymentWriteOutcome::Applied)
+                .count(),
+            1,
+            "F1"
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == DeploymentWriteOutcome::Conflict)
+                .count(),
+            1,
+            "F1/F2"
+        );
+
+        let committed = DeploymentApplication::from_repository(repository.clone())
+            .await
+            .unwrap()
+            .get("workspace-a", &deployment.id)
+            .await
+            .unwrap()
+            .record;
+        let stale = original;
+        let scheduled_at = timestamp(now_ms());
+        let run_id = "drun-stale";
+        let run = DeploymentRunRecord {
+            created_at: scheduled_at.clone(),
+            deployment_id: deployment.id.clone(),
+            workspace_id: "workspace-a".into(),
+            agent: stale.agent.clone(),
+            trigger: DeploymentTrigger::Schedule {
+                scheduled_at: scheduled_at.clone(),
+            },
+            session_id: None,
+            error: None,
+        };
+        let mut stale_advanced = stale.clone();
+        stale_advanced.revision = next_revision(stale.revision).unwrap();
+        assert_eq!(
+            repository
+                .claim_scheduled_run(
+                    &format!("{}:{scheduled_at}", deployment.id),
+                    stale.revision,
+                    stored_deployment(&deployment.id, &stale_advanced).unwrap(),
+                    stored_run(run_id, &run).unwrap(),
+                    lifecycle_fact(
+                        "stale-scheduler".into(),
+                        run_id,
+                        "workspace-a",
+                        "deployment_run.started",
+                    ),
+                )
+                .await
+                .unwrap(),
+            ScheduledRunClaimOutcome::StaleDeployment,
+            "F2/E3"
+        );
+        let restored = DeploymentApplication::from_repository(repository.clone())
+            .await
+            .unwrap();
+        assert!(
+            restored.list_runs("workspace-a").await.unwrap().is_empty(),
+            "E3"
+        );
+        assert_eq!(
+            restored
+                .get("workspace-a", &deployment.id)
+                .await
+                .unwrap()
+                .record,
+            committed,
+            "E4"
+        );
+        drop(restored);
+        drop(application);
+        drop(repository);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn scheduled_capacity_is_linearizable_across_replicas() {
+        // Capacity graph: C1=two replicas observe zero scheduled rows at limit 1;
+        // C2=both concurrently create a scheduled Deployment. Effects:
+        // E1=database transaction admits exactly one; E2=other receives capacity
+        // rejection; E3=restart lists one row. This is the cross-replica rule
+        // that a process-local count cannot provide.
+        let path = std::env::temp_dir().join(format!(
+            "deployment-capacity-{}.db",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let repository = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
+                .unwrap(),
+        );
+        let mut left = DeploymentApplication::from_repository(repository.clone())
+            .await
+            .unwrap();
+        left.scheduled_limit = 1;
+        let mut right = DeploymentApplication::from_repository(repository.clone())
+            .await
+            .unwrap();
+        right.scheduled_limit = 1;
+        let (left, right) = tokio::join!(left.create(command(true)), right.create(command(true)));
+        assert_eq!(
+            usize::from(left.is_ok()) + usize::from(right.is_ok()),
+            1,
+            "E1/E2"
+        );
+        let restored = DeploymentApplication::from_repository(repository.clone())
+            .await
+            .unwrap();
+        assert_eq!(restored.list("workspace-a").await.unwrap().len(), 1, "E3");
+        drop(restored);
+        drop(repository);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn revision_exhaustion_rejects_without_mutation() {
+        // Revision boundary table: R1 r<i64::MAX -> advance once; R2 r reaches
+        // the SQL BIGINT ceiling -> fail closed with Conflict and preserve the
+        // aggregate. R3=scheduled tick at the ceiling -> no speculative run or
+        // cursor mutation. No saturating/wrapping revision or later store
+        // conversion failure may make two distinct writes share one fence value.
+        let application = DeploymentApplication::new();
+        let deployment = application.create(command(false)).await.unwrap();
+        application
+            .deployments
+            .lock()
+            .unwrap()
+            .get_mut(&deployment.id)
+            .unwrap()
+            .revision = MAX_DEPLOYMENT_REVISION;
+        assert!(
+            matches!(
+                application.pause("workspace-a", &deployment.id).await,
+                Err(DeploymentApplicationError::Conflict(_))
+            ),
+            "R2"
+        );
+        let current = application
+            .get("workspace-a", &deployment.id)
+            .await
+            .unwrap();
+        assert_eq!(current.record.revision, MAX_DEPLOYMENT_REVISION, "R2");
+        assert_eq!(
+            current.record.status,
+            DeploymentStatus::Active,
+            "R2 no mutation"
+        );
+
+        let scheduled = DeploymentApplication::new();
+        let deployment = scheduled.create(command(true)).await.unwrap();
+        let scheduled_at = now_ms().saturating_sub(MAX_JITTER_MS);
+        {
+            let mut deployments = scheduled.deployments.lock().unwrap();
+            let record = deployments.get_mut(&deployment.id).unwrap();
+            record.revision = MAX_DEPLOYMENT_REVISION;
+            record.next_fire_ms = Some(scheduled_at);
+        }
+        assert!(
+            matches!(
+                scheduled.tick_and_launch(now_ms()).await,
+                Err(DeploymentApplicationError::Conflict(_))
+            ),
+            "R3"
+        );
+        assert!(scheduled.runs.lock().unwrap().is_empty(), "R3 no run");
+        let current = scheduled.get("workspace-a", &deployment.id).await.unwrap();
+        assert_eq!(current.record.last_run_at, None, "R3 no cursor mutation");
+        assert_eq!(current.record.next_fire_ms, Some(scheduled_at), "R3");
     }
 }

@@ -197,6 +197,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/config-cas" \
     -config formal/tla/ConfigCAS.cfg formal/tla/ConfigCAS.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/deployment-cas" \
+    -config formal/tla/DeploymentCAS.cfg formal/tla/DeploymentCAS.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/live-inbox" \
     -config formal/tla/LiveInbox.cfg formal/tla/LiveInbox.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \

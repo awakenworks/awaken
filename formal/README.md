@@ -113,9 +113,10 @@ production logic.
   production `ThreadCommit`s: Run state/ticket, `ActiveToolBatch`, and
   `RunDelegations`. Its binary `NextState(s, t)` relation is also the checker for
   executable Rust traces.
-- `RemoteTool.tla`, `SessionOwnership.tla`, `CircuitBreaker.tla`, and
-  `ConfigCAS.tla` cover durable operation identity, atomic ownership,
-  generation-fenced permits, and optimistic config concurrency.
+- `RemoteTool.tla`, `SessionOwnership.tla`, `CircuitBreaker.tla`, `ConfigCAS.tla`,
+  and `DeploymentCAS.tla` cover durable operation identity, atomic ownership,
+  generation-fenced permits, optimistic concurrency, transactionally bounded
+  scheduled capacity, and revision-fenced scheduled-occurrence claims.
 - `RemoteAttempt.tla` covers the A2A root-attempt boundary: stable replay message
   identity across the external-send/local-commit crash window, durable task and
   endpoint pinning, reattachment without resend after the reference commit,

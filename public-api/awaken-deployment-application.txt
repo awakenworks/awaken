@@ -146,6 +146,7 @@ pub awaken_deployment_application::DeploymentRecord::name: alloc::string::String
 pub awaken_deployment_application::DeploymentRecord::next_fire_ms: core::option::Option<u64>
 pub awaken_deployment_application::DeploymentRecord::paused_reason: core::option::Option<awaken_deployment_application::DeploymentPauseReason>
 pub awaken_deployment_application::DeploymentRecord::resources: alloc::vec::Vec<serde_json::value::Value>
+pub awaken_deployment_application::DeploymentRecord::revision: u64
 pub awaken_deployment_application::DeploymentRecord::schedule: core::option::Option<awaken_deployment_application::DeploymentSchedule>
 pub awaken_deployment_application::DeploymentRecord::status: awaken_deployment_application::DeploymentStatus
 pub awaken_deployment_application::DeploymentRecord::updated_at: alloc::string::String

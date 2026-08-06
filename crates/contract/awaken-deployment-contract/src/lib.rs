@@ -11,6 +11,9 @@ mod schedule;
 
 pub use schedule::Cron;
 
+/// Largest revision representable by every supported durable SQL adapter.
+pub const MAX_DEPLOYMENT_REVISION: u64 = i64::MAX as u64;
+
 /// Durable lifecycle fact committed atomically with one Deployment mutation.
 /// The public protocol may project it to a webhook, but the application owns
 /// the fact and never depends on a protocol-specific state object.
@@ -27,6 +30,7 @@ pub struct DeploymentLifecycleFact {
 pub struct DeploymentRecord {
     pub deployment_id: String,
     pub workspace_id: String,
+    pub revision: u64,
     pub data: String,
 }
 
@@ -44,17 +48,36 @@ pub enum DeploymentRepositoryError {
     Storage(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeploymentWriteOutcome {
+    Applied,
+    Conflict,
+    ScheduledCapacityReached,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduledRunClaimOutcome {
+    Claimed,
+    AlreadyClaimed,
+    StaleDeployment,
+}
+
 #[async_trait]
 pub trait DeploymentRepository: Send + Sync {
     async fn deployments(&self) -> Result<Vec<DeploymentRecord>, DeploymentRepositoryError>;
 
     async fn deployment_runs(&self) -> Result<Vec<DeploymentRunRecord>, DeploymentRepositoryError>;
 
-    async fn upsert_deployment(
+    /// Create at revision zero (`expected_revision=None`) or compare-and-swap
+    /// one Deployment to the exact successor revision. Capacity admission and
+    /// the lifecycle fact commit in the same transaction.
+    async fn write_deployment(
         &self,
         record: DeploymentRecord,
+        expected_revision: Option<u64>,
+        scheduled_limit: usize,
         lifecycle: Option<DeploymentLifecycleFact>,
-    ) -> Result<(), DeploymentRepositoryError>;
+    ) -> Result<DeploymentWriteOutcome, DeploymentRepositoryError>;
 
     async fn upsert_deployment_run(
         &self,
@@ -62,15 +85,16 @@ pub trait DeploymentRepository: Send + Sync {
         lifecycle: Option<DeploymentLifecycleFact>,
     ) -> Result<(), DeploymentRepositoryError>;
 
-    /// Atomically claim one exact `(Deployment, scheduled instant)` and persist
-    /// its first DeploymentRun. `false` is an idempotent loss to another replica.
+    /// Atomically claim one exact `(Deployment, scheduled instant)`, advance to
+    /// the exact successor revision, and persist its first DeploymentRun.
     async fn claim_scheduled_run(
         &self,
         claim_id: &str,
+        expected_deployment_revision: u64,
         deployment: DeploymentRecord,
         run: DeploymentRunRecord,
         lifecycle: DeploymentLifecycleFact,
-    ) -> Result<bool, DeploymentRepositoryError>;
+    ) -> Result<ScheduledRunClaimOutcome, DeploymentRepositoryError>;
 }
 
 /// Coordinator lifecycle command consumed after an Agent is archived.

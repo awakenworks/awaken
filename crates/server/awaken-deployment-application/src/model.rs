@@ -173,6 +173,8 @@ pub enum DeploymentTrigger {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeploymentRecord {
+    #[serde(default)]
+    pub revision: u64,
     pub created_at: String,
     pub updated_at: String,
     pub workspace_id: String,
