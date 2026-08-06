@@ -1294,6 +1294,14 @@ impl SharedHost {
                 capture_sink,
                 self.data_subject_consent.clone(),
             ));
+        // This is the one post-attempt output edge. Because it wraps the final
+        // executor shared by DirectRunIngress and DurableRunIngress, claimed
+        // recovery cannot bypass artifact publication.
+        let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
+            Arc::new(crate::run_exec::ArtifactHarvestAttemptExecutor::new(
+                attempt_executor,
+                self.artifact_harvester(),
+            ));
         // The foreground delivery seam (slice C/D): a turn's execution goes through
         // `RunIngress` rather than calling `runtime.start_run` directly. Direct
         // ingress runs inline on the same `runtime`; durable ingress queues the run

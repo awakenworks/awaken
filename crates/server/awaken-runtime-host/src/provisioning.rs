@@ -15,9 +15,11 @@ use awaken_resource_contract::{
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
 
-/// The sandbox-absolute outputs dir (must be absolute for `prepare_environment`);
-/// resolved under the root to `<root>/outputs`, which `list_files("outputs")` reads.
-const OUTPUTS_PATH: &str = "/outputs";
+/// Anthropic Managed Agents' canonical sandbox-absolute deliverables directory.
+/// `AWAKEN_OUTPUTS_DIR`, Sandbox creation, durable handles, recovery, and Files
+/// harvesting all derive from this one value. Previously persisted handles retain
+/// their exact path and remain adoptable without a second live-path convention.
+const OUTPUTS_PATH: &str = "/mnt/session/outputs";
 
 /// Canonical projection from the frozen Session Environment into neutral
 /// provisioning vocabulary. Admission and realization both consume this value,
@@ -288,6 +290,14 @@ pub(crate) struct RepositoryActivation {
 }
 
 impl SharedHost {
+    pub(crate) fn artifact_harvester(&self) -> ArtifactHarvester {
+        ArtifactHarvester {
+            session_slots: self.session_slots.clone(),
+            local_workspace: self.local_workspace.clone(),
+            file_application: self.file_application.clone(),
+        }
+    }
+
     /// The provisioning request for a thread. Skills are not a sandbox mount
     /// (ADR-0036); the environment provisions isolation tools plus the session's
     /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.
@@ -563,7 +573,32 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
-        let env = self.session_environment(thread).await;
+        self.artifact_harvester().harvest(thread).await
+    }
+}
+
+/// The single Runtime-to-Resources application edge for Session outputs.
+///
+/// It is cloneable so the same operation can decorate direct, durable, and
+/// recovered attempts without retaining the whole Host (and creating a
+/// SessionCtx -> executor -> Host reference cycle). Terminal release calls the
+/// same operation as an idempotent final retry before Sandbox disposal.
+#[derive(Clone)]
+pub(crate) struct ArtifactHarvester {
+    session_slots: crate::session_slot::SessionRuntimeSlots,
+    local_workspace: String,
+    file_application: Option<std::sync::Arc<dyn awaken_resource_contract::FileApplicationService>>,
+}
+
+impl ArtifactHarvester {
+    pub(crate) async fn harvest(
+        &self,
+        thread: &str,
+    ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
+        let env = self
+            .session_slots
+            .read(thread, |slot| slot.environment.clone())
+            .flatten();
         let Some(env) = env else {
             return Ok(Vec::new());
         };
@@ -571,7 +606,11 @@ impl SharedHost {
             .artifacts()
             .await
             .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
-        let workspace = self.thread_workspace(thread);
+        let workspace = self
+            .session_slots
+            .read(thread, |slot| slot.workspace.clone())
+            .flatten()
+            .unwrap_or_else(|| self.local_workspace.clone());
         let mut out = Vec::new();
         for artifact in artifacts {
             let bytes = env
@@ -613,7 +652,9 @@ impl SharedHost {
         }
         Ok(out)
     }
+}
 
+impl SharedHost {
     /// The registered built-in tools advertised on a managed session's agent object:
     /// each hand-tool id and whether its calls require confirmation. Folded into the
     /// public `agent_toolset` by the adapter. Deterministic from host config.
@@ -879,9 +920,10 @@ mod provisioning_registry_tests {
         let storage = tempfile::tempdir().unwrap();
         let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
         host.register_thread_workspace("session-artifacts", "workspace-a");
+        let spec = agent_run_sandbox_spec("session-artifacts");
         let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
             LocalProvider::new(storage.path())
-                .create_sandbox(&agent_run_sandbox_spec("session-artifacts"))
+                .create_sandbox(&spec)
                 .await
                 .unwrap(),
         ));
@@ -891,7 +933,7 @@ mod provisioning_registry_tests {
         let output = storage
             .path()
             .join("session-artifacts")
-            .join("outputs")
+            .join(spec.outputs_path.trim_start_matches('/'))
             .join("report.txt");
         std::fs::create_dir_all(output.parent().unwrap()).unwrap();
         std::fs::write(&output, b"durable report").unwrap();
@@ -999,9 +1041,10 @@ mod provisioning_registry_tests {
                     .expect("test lifecycle repository"),
             )));
         let host = Arc::new(raw_host);
+        let spec = agent_run_sandbox_spec("session-harvest-failure");
         let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
             LocalProvider::new(storage.path())
-                .create_sandbox(&agent_run_sandbox_spec("session-harvest-failure"))
+                .create_sandbox(&spec)
                 .await
                 .unwrap(),
         ));
@@ -1011,7 +1054,9 @@ mod provisioning_registry_tests {
             });
         let output = storage
             .path()
-            .join("session-harvest-failure/outputs/report.txt");
+            .join("session-harvest-failure")
+            .join(spec.outputs_path.trim_start_matches('/'))
+            .join("report.txt");
         std::fs::create_dir_all(output.parent().unwrap()).unwrap();
         std::fs::write(&output, b"retry me").unwrap();
 

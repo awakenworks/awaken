@@ -81,6 +81,75 @@ pub(crate) struct SessionAttemptExecutor {
     registry: AttemptExecutorRegistry,
 }
 
+/// Persist Sandbox outputs after every completed attempt, independently of
+/// whether delivery was direct, durable, or recovered by another claim.
+pub(crate) struct ArtifactHarvestAttemptExecutor {
+    inner: Arc<dyn RunAttemptExecutor>,
+    harvester: crate::provisioning::ArtifactHarvester,
+}
+
+impl ArtifactHarvestAttemptExecutor {
+    pub(crate) fn new(
+        inner: Arc<dyn RunAttemptExecutor>,
+        harvester: crate::provisioning::ArtifactHarvester,
+    ) -> Self {
+        Self { inner, harvester }
+    }
+
+    async fn finish<T>(&self, thread: &str, result: ExecutionResult<T>) -> ExecutionResult<T> {
+        match result {
+            Ok(value) => {
+                self.harvester
+                    .harvest(thread)
+                    .await
+                    .map_err(|error| ExecutionError::Execution(error.to_string()))?;
+                Ok(value)
+            }
+            Err(error) => {
+                // Preserve the execution failure while still retaining any bytes
+                // written before the failed model/tool step.
+                let _ = self.harvester.harvest(thread).await;
+                Err(error)
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RunExecutor for ArtifactHarvestAttemptExecutor {
+    async fn execute(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        let thread = activation.thread_id.0.clone();
+        let result = self.inner.execute(activation, context).await;
+        self.finish(&thread, result).await
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for ArtifactHarvestAttemptExecutor {
+    async fn resume(
+        &self,
+        activation: RunActivation,
+        command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        let thread = activation.thread_id.0.clone();
+        let result = self.inner.resume(activation, command, context).await;
+        self.finish(&thread, result).await
+    }
+
+    async fn cancel(
+        &self,
+        activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<()> {
+        self.inner.cancel(activation, context).await
+    }
+}
+
 /// The one privacy-context decorator shared by direct and durable attempts.
 ///
 /// Delivery topology may replace commit, cancellation, and ownership wiring,
@@ -482,12 +551,25 @@ mod tests {
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
     use awaken_runtime_contract::resume::ResumeResult;
     use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct NoLlm;
+
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::llm::LlmExecutor for NoLlm {
+        async fn infer(
+            &self,
+            _request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            unreachable!("attempt-boundary tests never call inference")
+        }
+    }
 
     struct RecordingExecutor {
         executes: AtomicUsize,
@@ -541,6 +623,39 @@ mod tests {
             _context: RuntimeRunContext,
         ) -> ExecutionResult<()> {
             self.cancels.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    struct FailingExecutor;
+
+    #[async_trait::async_trait]
+    impl RunExecutor for FailingExecutor {
+        async fn execute(
+            &self,
+            _activation: RunActivation,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<RunState> {
+            Err(ExecutionError::Execution("inner attempt failed".into()))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RunAttemptExecutor for FailingExecutor {
+        async fn resume(
+            &self,
+            _activation: RunActivation,
+            _command: ResumeCommand,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<RunState> {
+            Err(ExecutionError::Execution("inner resume failed".into()))
+        }
+
+        async fn cancel(
+            &self,
+            _activation: RunActivation,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<()> {
             Ok(())
         }
     }
@@ -602,6 +717,140 @@ mod tests {
             resolved.model_candidates.push(candidate);
         }
         resolved
+    }
+
+    #[tokio::test]
+    async fn attempt_output_harvest_decision_table() {
+        // Cause/effect graph: C1=execute/resume/cancel; C2=inner success/failure;
+        // C3=Sandbox output absent/present/changed; C4=File application available.
+        // Effects: E1 one Session-scoped immutable File per unique content; E2
+        // successful attempt waits for durable publication; E3 failed attempt keeps
+        // its original error while best-effort publishing partial output; E4 cancel
+        // does not invent a completed-step boundary; E5 publication failure blocks a
+        // successful step. The same decorator is used by direct and durable ingress.
+        //
+        // | Rule | operation | inner | output | Files app | effect |
+        // | R1 | execute | ok | present | yes | E1+E2 |
+        // | R2 | resume | ok | changed | yes | new version + E2 |
+        // | R3 | execute | error | present | yes | E1+E3 |
+        // | R4 | cancel | ok | any | yes | E4 |
+        // | R5 | execute | ok | present | no | E5 |
+        let thread = "thread-router";
+        let storage = tempfile::tempdir().unwrap();
+        let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
+        host.register_thread_workspace(thread, "workspace-a");
+        let spec = crate::provisioning::agent_run_sandbox_spec(thread);
+        assert_eq!(
+            spec.outputs_path, "/mnt/session/outputs",
+            "Managed Agents writes deliverables at its documented path"
+        );
+        let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
+            awaken_sandbox_local::LocalProvider::new(storage.path())
+                .create_sandbox(&spec)
+                .await
+                .unwrap(),
+        ));
+        host.session_slots
+            .update(thread, |slot| slot.environment = Some(environment));
+        let output_dir = storage
+            .path()
+            .join(thread)
+            .join(spec.outputs_path.trim_start_matches('/'));
+        std::fs::create_dir_all(&output_dir).unwrap();
+        std::fs::write(output_dir.join("result.txt"), b"revision one").unwrap();
+
+        let inner = Arc::new(RecordingExecutor::new("harvested"));
+        let executor =
+            ArtifactHarvestAttemptExecutor::new(inner.clone(), host.artifact_harvester());
+        executor
+            .execute(activation("awaken"), RuntimeRunContext::new())
+            .await
+            .expect("R1");
+        let files = host
+            .file_application()
+            .unwrap()
+            .list("workspace-a", Some(thread))
+            .await
+            .unwrap();
+        assert_eq!(files.len(), 1, "R1");
+        assert_eq!(files[0].filename, "result.txt", "R1");
+
+        std::fs::write(output_dir.join("result.txt"), b"revision two").unwrap();
+        let resumed = activation("awaken");
+        executor
+            .resume(resumed.clone(), resume(&resumed), RuntimeRunContext::new())
+            .await
+            .expect("R2");
+        assert_eq!(
+            host.file_application()
+                .unwrap()
+                .list("workspace-a", Some(thread))
+                .await
+                .unwrap()
+                .len(),
+            2,
+            "R2 creates a content version, not an overwrite"
+        );
+
+        std::fs::write(output_dir.join("partial.txt"), b"partial").unwrap();
+        let error = ArtifactHarvestAttemptExecutor::new(
+            Arc::new(FailingExecutor),
+            host.artifact_harvester(),
+        )
+        .execute(activation("awaken"), RuntimeRunContext::new())
+        .await
+        .expect_err("R3");
+        assert!(error.to_string().contains("inner attempt failed"), "R3");
+        assert_eq!(
+            host.file_application()
+                .unwrap()
+                .list("workspace-a", Some(thread))
+                .await
+                .unwrap()
+                .len(),
+            3,
+            "R3"
+        );
+
+        executor
+            .cancel(activation("awaken"), RuntimeRunContext::new())
+            .await
+            .expect("R4");
+        assert_eq!(inner.cancels.load(Ordering::SeqCst), 1, "R4");
+
+        let failed_storage = tempfile::tempdir().unwrap();
+        let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test");
+        raw_host.file_application = None;
+        let failed_host = Arc::new(raw_host);
+        failed_host.register_thread_workspace(thread, "workspace-a");
+        let failed_environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
+            awaken_sandbox_local::LocalProvider::new(failed_storage.path())
+                .create_sandbox(&spec)
+                .await
+                .unwrap(),
+        ));
+        failed_host
+            .session_slots
+            .update(thread, |slot| slot.environment = Some(failed_environment));
+        let failed_output = failed_storage
+            .path()
+            .join(thread)
+            .join(spec.outputs_path.trim_start_matches('/'));
+        std::fs::create_dir_all(&failed_output).unwrap();
+        std::fs::write(failed_output.join("blocked.txt"), b"blocked").unwrap();
+        let error = ArtifactHarvestAttemptExecutor::new(
+            Arc::new(RecordingExecutor::new("must-not-escape")),
+            failed_host.artifact_harvester(),
+        )
+        .execute(activation("awaken"), RuntimeRunContext::new())
+        .await
+        .expect_err("R5");
+        assert!(
+            error
+                .to_string()
+                .contains("File application is unavailable"),
+            "R5: {error}"
+        );
     }
 
     #[tokio::test]
