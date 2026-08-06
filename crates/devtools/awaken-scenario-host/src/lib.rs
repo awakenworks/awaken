@@ -1117,7 +1117,7 @@ pub async fn build_config_router() -> Router {
         // scenario host (no durable env state in scope).
         Arc::new(
             awaken_environment_application::EnvironmentApplicationAuthor::new(
-                awaken_protocol_managed::EnvironmentState::new().application(),
+                composition::test_environment_components().0.application(),
             ),
         ),
         Arc::new(awaken_admin_assistant::TracingAuditSink),

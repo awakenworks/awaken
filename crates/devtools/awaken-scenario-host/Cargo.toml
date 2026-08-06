@@ -108,6 +108,12 @@ tower = { version = "0.5", features = ["util"] }
 
 # Depends on the product crate for the now-pub assembly helpers + production executors.
 awaken-environment-application.workspace = true
+awaken-environment-execution-application.workspace = true
+awaken-env-store = { workspace = true, features = ["test-support"] }
+awaken-work-store = { workspace = true, features = ["test-support"] }
+awaken-executable-environment-catalog.workspace = true
+awaken-executable-environment-contract.workspace = true
+awaken-session-contract.workspace = true
 awaken-coordinator = { workspace = true, features = ["test-support"] }
 # Reuse the production worker lifecycle/registration/heartbeat/dispatch wiring in
 # the worker-failover scenario; only its deterministic executor provider differs.

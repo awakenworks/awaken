@@ -9,9 +9,10 @@ use std::sync::Arc;
 use awaken_authz_enforce::ApplicationAccessStore;
 use awaken_deployment_application::DeploymentApplication;
 use awaken_deployment_contract::DeploymentRepository;
+use awaken_environment_execution_application::EnvironmentExecutionApplication;
 use awaken_executable_agent_contract::ExecutableAgentRegistrationSource;
 use awaken_protocol_managed::ModelDirectory;
-use awaken_protocol_managed::{EnvironmentExecutionState, ManagedRateLimiter, ManagedState};
+use awaken_protocol_managed::{ManagedRateLimiter, ManagedState};
 use awaken_resource_contract::ResourceCatalog;
 use awaken_session_contract::DreamProcessStore;
 use awaken_session_contract::ManagedSessionRepository;
@@ -45,7 +46,7 @@ pub struct CoordinatorDependencies {
     pub deployment_application: Arc<DeploymentApplication>,
     pub executable_agents: Arc<dyn ExecutableAgentRegistrationSource>,
     pub rate_limiter: Arc<ManagedRateLimiter>,
-    pub environments: Arc<EnvironmentExecutionState>,
+    pub environments: Arc<EnvironmentExecutionApplication>,
     pub sessions: Arc<dyn ManagedSessionRepository>,
     pub default_workspace: String,
     /// Authenticated executable Agent and Environment registration routes.

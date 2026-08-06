@@ -189,7 +189,7 @@ mod tests {
 
         let unavailable = Arc::new(
             ManagedState::new(RehydrateFake::default()).with_environments(Arc::new(
-                crate::routes::environments::EnvironmentExecutionState::new(
+                awaken_environment_execution_application::EnvironmentExecutionApplication::new(
                     Arc::new(awaken_work_store::InMemoryWorkQueue::new()),
                     Arc::new(UnavailableEnvironmentSource),
                 ),

@@ -33,6 +33,9 @@ mod routes;
 /// from neutral domain state lives in [`project`] and the private adapter state.
 pub mod types;
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
 pub use common::headers::MANAGED_BETA;
 pub use control::{
     ModelDirectory, ModelDirectoryFuture, ModelEntry, default_models, models_router,
@@ -59,8 +62,7 @@ pub use routes::agents_registry::{
 };
 pub use routes::deployments::{LocalDeploymentSessionLauncher, deployments_router};
 pub use routes::environments::{
-    CoordinatorEnvironmentRegistrar, EnvironmentAuthoringState, EnvironmentExecutionState,
-    EnvironmentState, environment_authoring_router, environment_work_router, environments_router,
+    EnvironmentAuthoringState, environment_authoring_router, environment_work_router,
 };
 pub use routes::user_profiles::{UserProfileState, user_profiles_router};
 pub use routes::vaults::{VaultState, vault_router};

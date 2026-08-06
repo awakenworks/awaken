@@ -85,7 +85,7 @@ owns exact sandbox-policy versions and stores the selected policy reference in
 the Environment revision. `awaken-environment-application` owns the sole
 `EnvironmentApplication`, which publishes the resolved exact revision through
 `ExecutableEnvironmentRegistrar`. Coordinator persists only a
-rebuildable executable command log and owns `EnvironmentExecutionState`, image
+rebuildable executable command log and owns `EnvironmentExecutionApplication`, image
 build/realization state, and the WorkQueue. Session admission freezes an
 `EnvironmentSnapshot`; Worker consumes that snapshot and never reopens either
 authority.
@@ -151,7 +151,7 @@ crate name.
 | Config publication contract | Control-owned records and immutable publication values | `ConfigStore`, `StoredPublication`, `ExecutableAgentSnapshot`, `ExecutableAgentRegistrar` |
 | Environment contract | Control-owned static definitions, exact revisions, and policy references | `EnvItem`, `EnvironmentRevision`, `EnvRegistry`, `EnvironmentSandboxPolicyRef` |
 | Coordinator execution catalog | rebuildable executable-Agent availability for new Sessions | `ExecutableAgentCatalog`, current/exact-revision/fingerprint reads, local/HTTP/PostgreSQL registrar adapters, authenticated private router, and durable command replay |
-| Coordinator Environment projection | rebuildable executable-Environment availability and dynamic work coordination | `ExecutableEnvironmentCatalog`, `EnvironmentExecutionState`, `WorkQueue`; no authoring repository |
+| Coordinator Environment application | rebuildable executable-Environment availability, frozen Session snapshot compilation, registration convergence, and dynamic work coordination | `EnvironmentExecutionApplication` over `ExecutableEnvironmentCatalog` and `WorkQueue`; no authoring repository, HTTP, or Managed DTO |
 | Resources application contract | resource commands and per-kind materialization/lifecycle ports | `ResourcesApplication`, `FileApplicationService`, `MemoryStoreApplicationService`, `ResourceCatalog`, `ResourceLifecycleRepository`, Memory/Skill/File ports |
 | Runtime-facing contract | immutable values and ports used to prepare and execute one Run | `ExecutableAgentSnapshot`, `RunActivation`, `RuntimeRunContext`, `RunExecutor`, `RuntimeCapabilitySource`, `PluginManifest` |
 | Runtime implementation | live execution behavior over agent-domain vocabulary | agent loop, resolver implementation, provider routing, plugin execution, retry/backoff modules |

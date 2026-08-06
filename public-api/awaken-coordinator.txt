@@ -240,7 +240,7 @@ pub awaken_coordinator::CoordinatorDependencies::application_access: alloc::sync
 pub awaken_coordinator::CoordinatorDependencies::default_workspace: alloc::string::String
 pub awaken_coordinator::CoordinatorDependencies::deployment_application: alloc::sync::Arc<awaken_deployment_application::DeploymentApplication>
 pub awaken_coordinator::CoordinatorDependencies::dream_process_store: alloc::sync::Arc<dyn awaken_session_contract::dream::DreamProcessStore>
-pub awaken_coordinator::CoordinatorDependencies::environments: alloc::sync::Arc<awaken_protocol_managed::routes::environments::EnvironmentExecutionState>
+pub awaken_coordinator::CoordinatorDependencies::environments: alloc::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>
 pub awaken_coordinator::CoordinatorDependencies::executable_agents: alloc::sync::Arc<dyn awaken_executable_agent_contract::ExecutableAgentRegistrationSource>
 pub awaken_coordinator::CoordinatorDependencies::host: alloc::sync::Arc<awaken_runtime_host::host::SharedHost>
 pub awaken_coordinator::CoordinatorDependencies::managed_state: alloc::sync::Arc<awaken_protocol_managed::state::managed_state::ManagedState>

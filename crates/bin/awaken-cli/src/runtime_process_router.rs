@@ -266,10 +266,11 @@ pub(super) async fn assemble_runtime_process_router(
         captured_content_eraser: _,
         environment_work,
     } = coordinator.expect("Managed Execution role requires Coordinator stores");
-    let environment_execution = awaken_protocol_managed::EnvironmentExecutionState::new(
-        environment_work,
-        executable_environment_catalog,
-    );
+    let environment_execution =
+        awaken_environment_execution_application::EnvironmentExecutionApplication::new(
+            environment_work,
+            executable_environment_catalog,
+        );
     let environment_execution = match executable_environment_image_builds {
         Some(builds) => environment_execution.with_image_readiness(builds),
         None => environment_execution,

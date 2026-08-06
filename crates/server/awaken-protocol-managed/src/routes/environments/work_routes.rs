@@ -6,49 +6,39 @@ use axum::Json;
 use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 
-use super::{EnvironmentExecutionState, WireError, bad_request, not_found};
+use super::{WireError, bad_request, not_found};
 use crate::routes::ManagedJson;
 use crate::types::environment::{Work, WorkHeartbeat, WorkQueueStats, WorkUpdateParams};
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 use crate::work_queue::{HeartbeatResult, LeaseHeartbeat};
+use awaken_environment_execution_application::{
+    EnvironmentExecutionApplication, EnvironmentExecutionError,
+};
 
-fn map_work_queue_error(error: crate::work_queue::WorkQueueError) -> WireError {
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(ErrorResponse::new("api_error", error.to_string())),
-    )
-}
-
-async fn require_env(state: &EnvironmentExecutionState, id: &str) -> Result<(), WireError> {
-    let registration = state
-        .execution_source
-        .current_registration(id)
-        .await
-        .map_err(|error| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse::new("api_error", error.to_string())),
-            )
-        })?;
-    if registration.is_some() {
-        Ok(())
-    } else {
-        Err(not_found("environment"))
+fn map_execution_error(error: EnvironmentExecutionError) -> WireError {
+    match error {
+        EnvironmentExecutionError::EnvironmentNotFound => not_found("environment"),
+        EnvironmentExecutionError::Registration(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse::new("api_error", error.to_string())),
+        ),
+        EnvironmentExecutionError::WorkQueue(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse::new("api_error", error.to_string())),
+        ),
     }
 }
 
 /// `GET /v1/environments/:id/work` — the environment's work items.
 pub(super) async fn list_work(
-    State(state): State<Arc<EnvironmentExecutionState>>,
+    State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path(id): Path<String>,
     Query(page): Query<PageQuery>,
 ) -> Result<Json<Page<Work>>, WireError> {
-    require_env(&state, &id).await?;
     let data: Vec<Work> = state
-        .work
-        .list(&id)
+        .list_work(&id)
         .await
-        .map_err(map_work_queue_error)?
+        .map_err(map_execution_error)?
         .iter()
         .map(crate::work_queue::project_work)
         .collect();
@@ -59,12 +49,11 @@ pub(super) async fn list_work(
 /// single worker. Open-tier cap: returns `null` when an item is already `active`
 /// in this environment (one lease at a time) or the queue is empty.
 pub(super) async fn poll_work(
-    State(state): State<Arc<EnvironmentExecutionState>>,
+    State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path(id): Path<String>,
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<Option<Work>>, WireError> {
-    require_env(&state, &id).await?;
     let poll = parse_poll_params(raw.as_deref())?;
     // The official SDK sends worker identity in `Anthropic-Worker-ID`, not in
     // the query string. Long polling repeatedly drives the same authoritative
@@ -73,10 +62,9 @@ pub(super) async fn poll_work(
     let started = tokio::time::Instant::now();
     loop {
         let claimed = state
-            .work
-            .claim_with_reclaim(&id, worker_id, now_ms(), poll.reclaim_older_than_ms)
+            .claim_work(&id, worker_id, now_ms(), poll.reclaim_older_than_ms)
             .await
-            .map_err(map_work_queue_error)?;
+            .map_err(map_execution_error)?;
         if let Some(work) = claimed {
             return Ok(Json(Some(crate::work_queue::project_work(&work))));
         }
@@ -142,15 +130,13 @@ pub(super) struct HeartbeatParams {
 
 /// `GET /v1/environments/:id/work/stats` — the queue's depth + pending count.
 pub(super) async fn work_stats(
-    State(state): State<Arc<EnvironmentExecutionState>>,
+    State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path(id): Path<String>,
 ) -> Result<Json<WorkQueueStats>, WireError> {
-    require_env(&state, &id).await?;
     let s = state
-        .work
-        .stats(&id, now_ms())
+        .work_stats(&id, now_ms())
         .await
-        .map_err(map_work_queue_error)?;
+        .map_err(map_execution_error)?;
     Ok(Json(WorkQueueStats {
         object_type: "work_queue_stats",
         depth: s.depth,
@@ -161,57 +147,50 @@ pub(super) async fn work_stats(
 }
 
 pub(super) async fn retrieve_work(
-    State(state): State<Arc<EnvironmentExecutionState>>,
+    State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<Work>, WireError> {
-    require_env(&state, &id).await?;
     let work = state
-        .work
-        .get(&id, &wid)
+        .get_work(&id, &wid)
         .await
-        .map_err(map_work_queue_error)?
+        .map_err(map_execution_error)?
         .ok_or_else(|| not_found("work"))?;
     Ok(Json(crate::work_queue::project_work(&work)))
 }
 
 pub(super) async fn update_work(
-    State(state): State<Arc<EnvironmentExecutionState>>,
+    State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path((id, wid)): Path<(String, String)>,
     ManagedJson(params): ManagedJson<WorkUpdateParams>,
 ) -> Result<Json<Work>, WireError> {
-    require_env(&state, &id).await?;
     let work = state
-        .work
-        .update_metadata(&id, &wid, params.metadata.unwrap_or_default())
+        .update_work_metadata(&id, &wid, params.metadata.unwrap_or_default())
         .await
-        .map_err(map_work_queue_error)?
+        .map_err(map_execution_error)?
         .ok_or_else(|| not_found("work"))?;
     Ok(Json(crate::work_queue::project_work(&work)))
 }
 
 /// `POST …/work/:wid/ack` — the worker acknowledges it picked up the item.
 pub(super) async fn ack_work(
-    State(state): State<Arc<EnvironmentExecutionState>>,
+    State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<Work>, WireError> {
-    require_env(&state, &id).await?;
     let work = state
-        .work
-        .ack(&id, &wid)
+        .acknowledge_work(&id, &wid)
         .await
-        .map_err(map_work_queue_error)?
+        .map_err(map_execution_error)?
         .ok_or_else(|| not_found("work"))?;
     Ok(Json(crate::work_queue::project_work(&work)))
 }
 
 /// `POST …/work/:wid/heartbeat` — extend the lease; returns the TTL.
 pub(super) async fn heartbeat_work(
-    State(state): State<Arc<EnvironmentExecutionState>>,
+    State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
     Query(params): Query<HeartbeatParams>,
 ) -> Result<Json<WorkHeartbeat>, WireError> {
-    require_env(&state, &id).await?;
     let command = LeaseHeartbeat {
         condition: crate::work_queue::HeartbeatCondition::from_wire(
             params.expected_last_heartbeat.as_deref(),
@@ -219,10 +198,9 @@ pub(super) async fn heartbeat_work(
         desired_ttl_seconds: params.desired_ttl_seconds,
     };
     let hb = match state
-        .work
-        .heartbeat(&id, &wid, worker_id(&headers), now_ms(), command)
+        .heartbeat_work(&id, &wid, worker_id(&headers), now_ms(), command)
         .await
-        .map_err(map_work_queue_error)?
+        .map_err(map_execution_error)?
     {
         HeartbeatResult::Accepted(receipt) => receipt,
         HeartbeatResult::PreconditionFailed => {
@@ -266,15 +244,53 @@ fn now_ms() -> u64 {
 
 /// `POST …/work/:wid/stop` — request the worker stop the item.
 pub(super) async fn stop_work(
-    State(state): State<Arc<EnvironmentExecutionState>>,
+    State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<Work>, WireError> {
-    require_env(&state, &id).await?;
     let work = state
-        .work
-        .stop(&id, &wid)
+        .stop_work(&id, &wid)
         .await
-        .map_err(map_work_queue_error)?
+        .map_err(map_execution_error)?
         .ok_or_else(|| not_found("work"))?;
     Ok(Json(crate::work_queue::project_work(&work)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn application_failures_preserve_work_http_taxonomy() {
+        // Cause/effect graph: C1 current Environment absent; C2 registration
+        // authority unavailable; C3 WorkQueue unavailable. Effects: E1 404 only
+        // for definitive absence, E2/E3 503 and never empty/404/precondition.
+        // Decision rows M1=C1->404, M2=C2->503, M3=C3->503.
+        for (rule, error, expected) in [
+            (
+                "M1",
+                EnvironmentExecutionError::EnvironmentNotFound,
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                "M2",
+                EnvironmentExecutionError::Registration(
+                    awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError::Storage(
+                        "catalog outage".into(),
+                    ),
+                ),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                "M3",
+                EnvironmentExecutionError::WorkQueue(
+                    awaken_session_contract::work_queue::WorkQueueError::Storage(
+                        "queue outage".into(),
+                    ),
+                ),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+        ] {
+            assert_eq!(map_execution_error(error).0, expected, "{rule}");
+        }
+    }
 }
