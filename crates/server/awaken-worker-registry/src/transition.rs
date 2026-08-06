@@ -52,6 +52,7 @@ pub(crate) fn register(
                 manifest: registration.manifest,
                 capability_fingerprint: fingerprint,
                 in_flight: 0,
+                warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
                 expires_at_ms: now_ms.saturating_add(ttl_ms),
@@ -106,6 +107,7 @@ pub(crate) fn heartbeat(
         };
     }
     next.snapshot.in_flight = heartbeat.in_flight;
+    next.snapshot.warm_environment_shapes = heartbeat.warm_environment_shapes;
     next.snapshot.credential_observations = heartbeat.credential_observations;
     next.snapshot.acp_capability_observations = heartbeat.acp_capability_observations;
     next.snapshot.expires_at_ms = now_ms.saturating_add(ttl_ms);
@@ -232,6 +234,7 @@ mod tests {
                 sequence: 1,
                 ready: true,
                 in_flight: 1,
+                warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
             },
@@ -259,6 +262,7 @@ mod tests {
                 sequence: 1,
                 ready: true,
                 in_flight: 0,
+                warm_environment_shapes: Default::default(),
                 credential_observations: std::collections::BTreeSet::from([observation.clone()]),
                 acp_capability_observations: Default::default(),
             },
@@ -269,6 +273,54 @@ mod tests {
         assert_eq!(
             updated.unwrap().snapshot.credential_observations,
             std::collections::BTreeSet::from([observation])
+        );
+    }
+
+    #[test]
+    fn heartbeat_replaces_incarnation_scoped_warm_receipts() {
+        // FMECA: F1 receipts merge forever after config removal (S5 O6 D2,
+        // RPN60); F2 a new incarnation inherits predecessor capacity (S8 O3 D3,
+        // RPN72); F3 stale sequence erases current receipts (S6 O3 D2, RPN36).
+        // Cause graph C1=current identity, C2=new sequence, C3=reported set.
+        // Effects E1=replace exact set, E2=reject with no mutation.
+        // | Rule | C1 | C2 | Effect |
+        // | H1   | 1  | 1  | E1     |
+        // | H2   | 1  | 0  | E2     |
+        // | H3   | 0  | -  | E2     |
+        let (first, _) = register(None, registration("boot-1"), 10, 100).unwrap();
+        let identity = first.snapshot.identity.clone();
+        let heartbeat_with = |sequence, values: &[&str]| WorkerHeartbeat {
+            sequence,
+            ready: true,
+            in_flight: 0,
+            warm_environment_shapes: values.iter().map(|value| (*value).to_owned()).collect(),
+            credential_observations: Default::default(),
+            acp_capability_observations: Default::default(),
+        };
+        let (current, result) = heartbeat(
+            Some(&first),
+            &identity,
+            heartbeat_with(1, &["shape-a", "shape-b"]),
+            20,
+            100,
+        );
+        assert_eq!(result, RegistryMutation::Applied, "H1");
+        let current = current.unwrap();
+        let (stale, result) = heartbeat(Some(&current), &identity, heartbeat_with(1, &[]), 21, 100);
+        assert!(stale.is_none(), "H2");
+        assert_eq!(result, RegistryMutation::StaleSequence, "H2");
+        let (replaced, result) = heartbeat(
+            Some(&current),
+            &identity,
+            heartbeat_with(2, &["shape-b"]),
+            22,
+            100,
+        );
+        assert_eq!(result, RegistryMutation::Applied, "H1 replace");
+        assert_eq!(
+            replaced.unwrap().snapshot.warm_environment_shapes,
+            std::collections::BTreeSet::from(["shape-b".to_owned()]),
+            "H1 replace"
         );
     }
 }

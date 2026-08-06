@@ -12,6 +12,7 @@ pub struct FakeWorkerUpstream {
     requests: Arc<Mutex<Vec<String>>>,
     #[allow(dead_code)] // Only the lifecycle integration test asserts client provenance.
     request_headers: Arc<Mutex<Vec<String>>>,
+    environment_warmups: Arc<Mutex<String>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -42,9 +43,11 @@ impl FakeWorkerUpstream {
         let stop = Arc::new(AtomicBool::new(false));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let request_headers = Arc::new(Mutex::new(Vec::new()));
+        let environment_warmups = Arc::new(Mutex::new("[]".to_owned()));
         let thread_stop = stop.clone();
         let thread_requests = requests.clone();
         let thread_request_headers = request_headers.clone();
+        let thread_environment_warmups = environment_warmups.clone();
         let thread_drain_release = drain_release;
         let heartbeat_count = AtomicUsize::new(0);
         let thread = std::thread::spawn(move || {
@@ -57,12 +60,15 @@ impl FakeWorkerUpstream {
                         stream.set_nonblocking(false).unwrap();
                         handle(
                             stream,
-                            &thread_requests,
-                            &thread_request_headers,
-                            &thread_stop,
-                            thread_drain_release.as_deref(),
-                            applied_heartbeat_budget,
-                            &heartbeat_count,
+                            HandleContext {
+                                requests: &thread_requests,
+                                request_headers: &thread_request_headers,
+                                stop: &thread_stop,
+                                drain_release: thread_drain_release.as_deref(),
+                                applied_heartbeat_budget,
+                                heartbeat_count: &heartbeat_count,
+                                environment_warmups: &thread_environment_warmups,
+                            },
                         );
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -77,6 +83,7 @@ impl FakeWorkerUpstream {
             stop,
             requests,
             request_headers,
+            environment_warmups,
             thread: Some(thread),
         }
     }
@@ -93,6 +100,10 @@ impl FakeWorkerUpstream {
     pub fn request_headers(&self) -> Vec<String> {
         self.request_headers.lock().unwrap().clone()
     }
+
+    pub fn set_environment_warmups_json(&self, warmups: impl Into<String>) {
+        *self.environment_warmups.lock().unwrap() = warmups.into();
+    }
 }
 
 impl Drop for FakeWorkerUpstream {
@@ -107,15 +118,26 @@ impl Drop for FakeWorkerUpstream {
     }
 }
 
-fn handle(
-    mut stream: TcpStream,
-    requests: &Mutex<Vec<String>>,
-    request_headers: &Mutex<Vec<String>>,
-    stop: &AtomicBool,
-    drain_release: Option<&AtomicBool>,
+struct HandleContext<'a> {
+    requests: &'a Mutex<Vec<String>>,
+    request_headers: &'a Mutex<Vec<String>>,
+    stop: &'a AtomicBool,
+    drain_release: Option<&'a AtomicBool>,
     applied_heartbeat_budget: Option<usize>,
-    heartbeat_count: &AtomicUsize,
-) {
+    heartbeat_count: &'a AtomicUsize,
+    environment_warmups: &'a Mutex<String>,
+}
+
+fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
+    let HandleContext {
+        requests,
+        request_headers,
+        stop,
+        drain_release,
+        applied_heartbeat_budget,
+        heartbeat_count,
+        environment_warmups,
+    } = context;
     let request = read_request(&mut stream);
     let header_end = request
         .windows(4)
@@ -158,6 +180,9 @@ fn handle(
             } else {
                 r#"{"mutation":"applied"}"#.to_string()
             }
+        }
+        "/v1/worker/environment/warmups" => {
+            format!(r#"{{"warmups":{}}}"#, environment_warmups.lock().unwrap())
         }
         "/v1/worker/drain" | "/v1/worker/quiesced" | "/v1/worker/deregister" => {
             r#"{"mutation":"applied"}"#.to_string()

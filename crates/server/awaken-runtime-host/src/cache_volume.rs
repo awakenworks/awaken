@@ -138,7 +138,15 @@ impl CacheVolumePrewarmer {
         mounts: &[pc::MountRequirement],
     ) -> Result<(), String> {
         for mount in mounts {
-            if let pc::MountSource::CacheVolume { host_path, key } = &mount.source {
+            if let pc::MountSource::CacheVolume {
+                host_path,
+                key,
+                persistent_volume_claim,
+            } = &mount.source
+            {
+                if persistent_volume_claim.is_some() && host_path.is_empty() {
+                    continue;
+                }
                 self.prewarm(CacheVolumeWarmup::new(key, Path::new(host_path)))
                     .await?;
             }

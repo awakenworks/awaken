@@ -1701,7 +1701,7 @@ async fn resolve_and_stage_realizes_a_file_from_the_seed() {
     let mut seed = HashMap::new();
     seed.insert("blob-1".to_string(), b"resolved-file-bytes".to_vec());
 
-    let guard = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None)
+    let guard = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None, false)
         .await
         .expect("resolve");
     assert!(guard.guard.is_some(), "bytes were staged");
@@ -1737,7 +1737,7 @@ async fn resolve_and_stage_makes_declared_read_write_content_writable_by_contain
     let mut seed = HashMap::new();
     seed.insert("blob-rw".to_string(), b"writable".to_vec());
 
-    let _guard = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None)
+    let _guard = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None, false)
         .await
         .expect("resolve writable mount");
     let mode = std::fs::metadata(&plan.binds[0].source_ref)
@@ -1765,9 +1765,16 @@ async fn resolve_and_stage_resolves_a_resource_from_the_injected_store() {
         b"from-the-store".to_vec(),
     )));
 
-    resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &store, &None)
-        .await
-        .expect("resolve from store");
+    resolve_and_stage(
+        &spec,
+        &mut plan.binds,
+        &HashMap::new(),
+        &store,
+        &None,
+        false,
+    )
+    .await
+    .expect("resolve from store");
     assert_eq!(plan.binds[0].content.as_deref(), Some("from-the-store"));
 }
 
@@ -1782,7 +1789,7 @@ async fn resolve_and_stage_fails_closed_on_a_required_unresolved_mount() {
         true,
     );
     let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
-    let e = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None, &None)
+    let e = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None, &None, false)
         .await
         .expect_err("a required mount with no bytes must fail closed");
     assert!(e.to_string().contains("did not resolve"), "{e}");
@@ -1801,7 +1808,7 @@ async fn resolve_and_stage_rejects_a_content_hash_mismatch() {
     let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
     let mut seed = HashMap::new();
     seed.insert("blob-1".to_string(), b"whatever".to_vec());
-    let e = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None)
+    let e = resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None, false)
         .await
         .expect_err("a hash mismatch must fail closed");
     assert!(e.to_string().contains("hash mismatch"), "{e}");
@@ -1822,7 +1829,7 @@ async fn resolve_and_stage_verifies_a_matching_content_hash() {
     let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
     let mut seed = HashMap::new();
     seed.insert("blob-1".to_string(), bytes);
-    resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None)
+    resolve_and_stage(&spec, &mut plan.binds, &seed, &None, &None, false)
         .await
         .expect("a matching pin resolves");
     assert_eq!(plan.binds[0].content.as_deref(), Some("pinned-bytes"));
@@ -1841,7 +1848,7 @@ async fn inline_bytes_are_staged_binary_safe_and_hash_verified() {
     );
     let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
 
-    let staged = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None, &None)
+    let staged = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None, &None, false)
         .await
         .expect("matching binary content stages");
 
@@ -1866,7 +1873,7 @@ async fn inline_bytes_hash_mismatch_fails_before_container_start() {
     );
     let mut plan = container_plan(&spec, "img", &["x".to_string()], None).unwrap();
 
-    let error = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None, &None)
+    let error = resolve_and_stage(&spec, &mut plan.binds, &HashMap::new(), &None, &None, false)
         .await
         .expect_err("corrupt binary content must fail closed");
 

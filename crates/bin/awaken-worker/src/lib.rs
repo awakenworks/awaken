@@ -27,8 +27,8 @@ mod manifest;
 
 use credential_liveness::WorkerObservationCache;
 use lifecycle::{
-    WorkerLifecycle, grace_window, new_incarnation_id, spawn_heartbeat, wait_for_in_flight,
-    wall_clock_ms,
+    WorkerLifecycle, grace_window, new_incarnation_id, spawn_environment_warmup_reconciliation,
+    spawn_heartbeat, wait_for_in_flight, wall_clock_ms,
 };
 use manifest::{
     CredentialMaterializerSupport, ManifestSelection, ManifestSource, ResourceManifestSupport,
@@ -998,6 +998,7 @@ impl WorkerNode {
             acp_capability_observation_source,
             observations,
             observation_ttl: self.credential_observation_ttl,
+            warm_environments: Default::default(),
         });
         // Publish Ready before starting the pull loop. Starting the pool while the
         // directory still says Starting creates a tight claim/reject race; publishing
@@ -1015,6 +1016,15 @@ impl WorkerNode {
         {
             eprintln!("worker_observation_probe_failed: {error}; publishing no dynamic evidence");
         }
+        match lifecycle.reconcile_environment_warmups().await {
+            Ok(ready) if ready > 0 => {
+                eprintln!("awaken-worker reconciled {ready} current Environment shapes")
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!(
+                "initial Environment warmup reconciliation failed; cold path retained: {error}"
+            ),
+        }
         let initial = control
             .heartbeat(
                 &lifecycle.identity,
@@ -1022,6 +1032,7 @@ impl WorkerNode {
                     sequence: 1,
                     ready: true,
                     in_flight: 0,
+                    warm_environment_shapes: lifecycle.warm_environment_shapes(),
                     credential_observations: lifecycle.observations.credential_snapshot(),
                     acp_capability_observations: lifecycle.observations.acp_capability_snapshot(),
                 },
@@ -1049,6 +1060,7 @@ impl WorkerNode {
             self.credential_probe_interval,
             self.credential_observation_ttl,
         );
+        let environment_warmups = spawn_environment_warmup_reconciliation(lifecycle.clone());
         let mut heartbeat = spawn_heartbeat(lifecycle.clone(), 2);
         eprintln!("awaken-worker registered with {upstream_url}");
 
@@ -1114,6 +1126,7 @@ impl WorkerNode {
         }
         heartbeat.abort();
         credential_probe.abort();
+        environment_warmups.abort();
         if let Some(admin_task) = admin_task {
             admin_task.abort();
         }

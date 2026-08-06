@@ -148,6 +148,7 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
             capability_fingerprint: manifest.fingerprint().unwrap(),
             manifest,
             in_flight: 0,
+            warm_environment_shapes: Default::default(),
             credential_observations: Default::default(),
             acp_capability_observations: Default::default(),
             expires_at_ms: u64::MAX,

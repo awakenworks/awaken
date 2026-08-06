@@ -11,7 +11,10 @@ use awaken_run_ingress::{
     RunDispatch, WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
     WorkerObservationSource, WorkerRegistration, WorkerSnapshot, WorkerState,
 };
-use awaken_run_ingress_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_run_ingress_http::{
+    WorkerDispatchService, dispatch_transport_router_with_service,
+    worker_environment_warmup_router_with_clock,
+};
 use awaken_runtime_contract::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{
@@ -20,7 +23,8 @@ use awaken_runtime_contract::snapshot::{
 use awaken_worker_runtime::WorkerControlClient;
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, ManualWorkerClock, SignedWorkerAuthenticator,
-    SignedWorkerRequestAuthorizer, WorkerSigningCredential, WorkerUpstream,
+    SignedWorkerRequestAuthorizer, WorkerRequestAuthenticator, WorkerSigningCredential,
+    WorkerUpstream,
 };
 
 #[derive(Default)]
@@ -190,6 +194,17 @@ impl awaken_session_contract::SessionRealizationControl for RecordingApplication
 #[derive(Default)]
 struct TestWorkerDirectory(Mutex<Option<RegisteredWorker>>);
 
+struct StaticEnvironmentWarmups(Vec<awaken_session_contract::EnvironmentSnapshot>);
+
+#[async_trait::async_trait]
+impl awaken_session_contract::EnvironmentWarmupSource for StaticEnvironmentWarmups {
+    async fn current_environment_warmups(
+        &self,
+    ) -> Result<Vec<awaken_session_contract::EnvironmentSnapshot>, String> {
+        Ok(self.0.clone())
+    }
+}
+
 #[async_trait::async_trait]
 impl WorkerObservationSource for TestWorkerDirectory {
     async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
@@ -216,6 +231,7 @@ impl WorkerDirectory for TestWorkerDirectory {
                 capability_fingerprint: registration.manifest.fingerprint().unwrap(),
                 manifest: registration.manifest,
                 in_flight: 0,
+                warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
                 expires_at_ms: now_ms.saturating_add(ttl_ms),
@@ -249,6 +265,7 @@ impl WorkerDirectory for TestWorkerDirectory {
             WorkerState::Starting
         };
         record.snapshot.in_flight = heartbeat.in_flight;
+        record.snapshot.warm_environment_shapes = heartbeat.warm_environment_shapes;
         record.snapshot.credential_observations = heartbeat.credential_observations;
         record.snapshot.expires_at_ms = now_ms.saturating_add(ttl_ms);
         record.heartbeat_sequence = heartbeat.sequence;
@@ -325,12 +342,18 @@ fn activation() -> RunActivation {
     )
 }
 
-/// Shared Worker-auth middleware decision table:
+/// Shared Worker-auth middleware decision table and FMECA:
+/// F1 warmup projection accepts bootstrap/stale identity and leaks Environment
+/// configuration (S8 O3 D3, RPN72); F2 warmup route invents a second auth decision
+/// path (S8 O3 D4, RPN96). Both are mitigated by the existing signed middleware and
+/// current-directory identity verifier used by all Worker control routes.
 /// C1 valid route-bound signed bootstrap assertion -> registration only; C2 the
 /// same bootstrap assertion used as an allocated incarnation -> reject before
 /// dispatch; C3 valid incarnation-bound assertion -> heartbeat and dispatch
-/// handlers receive one verified context; C4 invalid/replayed assertion -> HTTP
-/// 401 before a handler. The assertions below cover C1-C4 over real HTTP.
+/// and warmup handlers receive one verified context; C4 invalid/replayed assertion
+/// -> HTTP 401 before a handler. Effects: E1 register only, E2 reject, E3 return
+/// current warmup projection. Decision table: A1 C1->E1; A2 C2->E2;
+/// A3 C3->E3; A4 C4->E2. The assertions below cover A1-A4 over real HTTP.
 #[tokio::test(flavor = "multi_thread")]
 async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let clock = Arc::new(ManualWorkerClock::new(10_000));
@@ -344,18 +367,39 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let authenticator = SignedWorkerAuthenticator::new(credential.clone())
         .with_clock(clock.clone())
         .with_time_policy(60_000, 0);
+    let authenticator: Arc<dyn WorkerRequestAuthenticator> = Arc::new(authenticator);
     let directory = Arc::new(TestWorkerDirectory::default());
     let dispatch = Arc::new(MemoryDispatchStore::new());
     let contributions = Arc::new(RecordingApplicationContributions::default());
     let service = WorkerDispatchService::new(
         dispatch.clone(),
-        Arc::new(authenticator),
+        authenticator.clone(),
         clock.clone(),
         Arc::new(FixedWorkerLeasePolicy::new(30_000)),
     )
-    .with_worker_directory(directory, 30_000)
+    .with_worker_directory(directory.clone(), 30_000)
     .with_application_session_control(contributions.clone());
-    let router = dispatch_transport_router_with_service(Arc::new(service));
+    let warmup = awaken_session_contract::EnvironmentSnapshot {
+        environment_id: "signed-env".into(),
+        revision: awaken_session_contract::EnvironmentRevision(3),
+        self_hosted: false,
+        config_fingerprint: awaken_session_contract::EnvironmentFingerprint("signed-shape".into()),
+        sandbox: serde_json::json!({}),
+        sandbox_provisioning: Default::default(),
+        packages: Default::default(),
+        prepared_image: Some("registry.example/env@sha256:signed".into()),
+        network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+        credential_realization:
+            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+    };
+    let router = dispatch_transport_router_with_service(Arc::new(service)).merge(
+        worker_environment_warmup_router_with_clock(
+            Arc::new(StaticEnvironmentWarmups(vec![warmup])),
+            directory,
+            authenticator,
+            clock.clone(),
+        ),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -396,6 +440,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                     sequence: 1,
                     ready: true,
                     in_flight: 0,
+                    warm_environment_shapes: Default::default(),
                     credential_observations: Default::default(),
                     acp_capability_observations: Default::default(),
                 },
@@ -403,6 +448,13 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .await
             .is_err(),
         "a bootstrap assertion cannot act as an allocated incarnation"
+    );
+    assert!(
+        WorkerControlClient::new(bootstrap.clone())
+            .current_environment_warmups(&registered.snapshot.identity)
+            .await
+            .is_err(),
+        "A2 bootstrap assertion cannot read the Worker warmup projection"
     );
 
     let upstream = bootstrap.with_worker_identity(registered.snapshot.identity.clone());
@@ -413,6 +465,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 sequence: 1,
                 ready: true,
                 in_flight: 0,
+                warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
             },
@@ -420,6 +473,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .await
         .expect("incarnation-bound assertion heartbeats");
     assert_eq!(heartbeat, RegistryMutation::Applied);
+    let warmups = WorkerControlClient::new(upstream.clone())
+        .current_environment_warmups(&registered.snapshot.identity)
+        .await
+        .expect("A3 incarnation-bound assertion reads current warmups");
+    assert_eq!(warmups.len(), 1, "A3");
+    assert_eq!(warmups[0].environment_id, "signed-env", "A3");
 
     let queue = awaken_worker_runtime::dispatch_transport_with_upstream(
         &upstream,
@@ -645,6 +704,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 sequence: 2,
                 ready: true,
                 in_flight: 1,
+                warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
             },

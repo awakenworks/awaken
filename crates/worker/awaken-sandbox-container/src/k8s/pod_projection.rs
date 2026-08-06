@@ -2,13 +2,58 @@
 
 use std::collections::BTreeMap;
 
-use k8s_openapi::api::core::v1::{ConfigMap, Secret};
+use k8s_openapi::api::core::v1::{
+    ConfigMap, EmptyDirVolumeSource, PersistentVolumeClaimVolumeSource, Secret, Volume, VolumeMount,
+};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 
 use super::names::{cfg_owner_label, configmap_name, credential_secret_name};
 use crate::{BindPlan, ContainerPlan};
 
 pub(super) const CONFIGMAP_KEY: &str = "content";
+
+pub(super) fn append_writable_and_cache_volumes(
+    plan: &ContainerPlan,
+    volumes: &mut Vec<Volume>,
+    agent_mounts: &mut Vec<VolumeMount>,
+) {
+    for (index, directory) in crate::writable_dirs(plan).into_iter().enumerate() {
+        let name = format!("rw-{index}");
+        volumes.push(Volume {
+            name: name.clone(),
+            empty_dir: Some(EmptyDirVolumeSource::default()),
+            ..Default::default()
+        });
+        agent_mounts.push(VolumeMount {
+            name,
+            mount_path: directory,
+            ..Default::default()
+        });
+    }
+    for (index, bind) in plan.binds.iter().enumerate() {
+        let Some(claim) = bind
+            .source_ref
+            .strip_prefix(crate::cache_volume::PVC_BIND_REF_PREFIX)
+        else {
+            continue;
+        };
+        let name = format!("cache-{index}");
+        volumes.push(Volume {
+            name: name.clone(),
+            persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+                claim_name: claim.to_owned(),
+                read_only: Some(bind.read_only),
+            }),
+            ..Default::default()
+        });
+        agent_mounts.push(VolumeMount {
+            name,
+            mount_path: bind.mount_path.clone(),
+            read_only: Some(bind.read_only),
+            ..Default::default()
+        });
+    }
+}
 
 pub(super) fn content_binds(plan: &ContainerPlan) -> Vec<&BindPlan> {
     plan.binds

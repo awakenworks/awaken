@@ -1036,6 +1036,68 @@ impl SharedHost {
             .await
     }
 
+    /// Reconcile one current executable Environment into the exact mount-less
+    /// shape ordinary Session creation requests. Docker, Podman and Kubernetes
+    /// all enter through the installed provider/capacity pair.
+    pub async fn prewarm_environment_snapshot(
+        &self,
+        environment: &awaken_session_contract::EnvironmentSnapshot,
+        target: usize,
+    ) -> Result<usize, awaken_provisioning_contract::SandboxError> {
+        if self.deployment.disable_local_pool
+            || self.deployment.sandbox.warm_pool_size == 0
+            || target == 0
+            || environment.self_hosted
+        {
+            return Ok(0);
+        }
+        let spec = crate::provisioning::environment_capacity_spec(
+            environment,
+            self.session_provider.capabilities().network_isolation,
+        );
+        self.session_provider.prewarm(&spec, target).await
+    }
+
+    /// Per-shape target and total ready-capacity budget used to select a stable
+    /// deterministic subset when the catalog is larger than local capacity.
+    #[must_use]
+    pub fn environment_warmup_limits(&self) -> (usize, usize) {
+        if self.deployment.disable_local_pool || self.deployment.sandbox.warm_pool_size == 0 {
+            return (0, 0);
+        }
+        (
+            self.deployment.sandbox.warm_pool_size,
+            self.deployment.sandbox.warm_pool_total_size,
+        )
+    }
+
+    /// Observe actual ready capacity instead of trusting the last reconciliation
+    /// result; checkout and global eviction may change it between heartbeats.
+    #[must_use]
+    pub fn ready_environment_snapshot_capacity(
+        &self,
+        environment: &awaken_session_contract::EnvironmentSnapshot,
+    ) -> usize {
+        let spec = crate::provisioning::environment_capacity_spec(
+            environment,
+            self.session_provider.capabilities().network_isolation,
+        );
+        self.session_provider.ready_capacity(&spec)
+    }
+
+    /// Drop unused capacity for an Environment shape removed from current
+    /// desired state. Active Sessions are unaffected.
+    pub async fn discard_environment_snapshot_capacity(
+        &self,
+        environment: &awaken_session_contract::EnvironmentSnapshot,
+    ) {
+        let spec = crate::provisioning::environment_capacity_spec(
+            environment,
+            self.session_provider.capabilities().network_isolation,
+        );
+        self.session_provider.discard_capacity(&spec).await;
+    }
+
     /// Dispose never-used warm capacity after claim admission and in-flight work
     /// have drained. Active Session environments remain owned by their slots.
     pub async fn shutdown_environment_capacity(&self) {

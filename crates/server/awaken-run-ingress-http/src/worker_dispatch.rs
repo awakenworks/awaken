@@ -36,6 +36,79 @@ use awaken_worker_transport_security::{
     verify_current_worker_identity, verify_worker_identity,
 };
 
+/// Read-only, authenticated projection of current Environment warm demand.
+/// Desired state remains in `EnvironmentWarmupSource`; this adapter owns no
+/// queue, cache, or receipt store.
+pub fn worker_environment_warmup_router(
+    source: Arc<dyn awaken_session_contract::EnvironmentWarmupSource>,
+    directory: Arc<dyn WorkerDirectory>,
+    authenticator: Arc<dyn WorkerRequestAuthenticator>,
+) -> Router {
+    worker_environment_warmup_router_with_clock(
+        source,
+        directory,
+        authenticator,
+        Arc::new(SystemWorkerClock),
+    )
+}
+
+/// Clock-injected form used by the same deterministic Worker transport tests as
+/// registration and dispatch. Production calls [`worker_environment_warmup_router`].
+pub fn worker_environment_warmup_router_with_clock(
+    source: Arc<dyn awaken_session_contract::EnvironmentWarmupSource>,
+    directory: Arc<dyn WorkerDirectory>,
+    authenticator: Arc<dyn WorkerRequestAuthenticator>,
+    clock: Arc<dyn WorkerClock>,
+) -> Router {
+    #[derive(Clone)]
+    struct WarmupState {
+        source: Arc<dyn awaken_session_contract::EnvironmentWarmupSource>,
+        directory: Arc<dyn WorkerDirectory>,
+        authenticator: Arc<dyn WorkerRequestAuthenticator>,
+        clock: Arc<dyn WorkerClock>,
+    }
+
+    async fn current(
+        State(state): State<WarmupState>,
+        Extension(worker): Extension<VerifiedWorkerContext>,
+        Json(request): Json<WorkerIdentityReq>,
+    ) -> (StatusCode, Json<Value>) {
+        let result = async {
+            verify_current_worker_identity(
+                state.directory.as_ref(),
+                &worker,
+                &request.identity,
+                state.clock.now_ms(),
+                false,
+            )
+            .await
+            .map_err(HostError::bad_request)?;
+            let warmups = state
+                .source
+                .current_environment_warmups()
+                .await
+                .map_err(HostError::internal)?;
+            Ok(json!({ "warmups": warmups }))
+        }
+        .await;
+        respond(result)
+    }
+
+    let state = WarmupState {
+        source,
+        directory,
+        authenticator,
+        clock,
+    };
+    Router::new()
+        .route("/v1/worker/environment/warmups", post(current))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.authenticator.clone(),
+            authenticate_worker_request,
+        ))
+        .with_state(state)
+}
+
 /// Explicit application service mounted by the worker HTTP adapter.
 pub struct WorkerDispatchService {
     dispatch: Arc<dyn DispatchQueue>,

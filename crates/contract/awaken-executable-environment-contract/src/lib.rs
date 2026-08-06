@@ -57,6 +57,23 @@ impl ExecutableEnvironmentRegistration {
         }
         Ok(())
     }
+
+    /// Exact OCI base selected by this executable revision. Registration-time
+    /// eager build and Session snapshot compilation must both call this method;
+    /// otherwise a policy image and the deployment fallback can create two
+    /// competing package-image recipes for one Environment.
+    #[must_use]
+    pub fn package_base_image<'a>(&'a self, fallback: &'a str) -> &'a str {
+        self.sandbox_policy
+            .as_ref()
+            .and_then(|policy| match &policy.config.environment {
+                Some(awaken_provisioning_contract::EnvironmentKind::Image { reference }) => {
+                    Some(reference.as_str())
+                }
+                _ => None,
+            })
+            .unwrap_or(fallback)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +138,16 @@ pub trait ExecutableEnvironmentRegistrar: Send + Sync {
 
 #[async_trait]
 pub trait ExecutableEnvironmentRegistrationSource: Send + Sync {
+    /// Current executable registrations. This is a rebuildable projection of
+    /// the existing catalog, not a second desired-state queue. The default keeps
+    /// remote/legacy readers source-compatible while advertising no warm demand.
+    async fn current_registrations(
+        &self,
+    ) -> Result<Vec<ExecutableEnvironmentRegistration>, ExecutableEnvironmentRegistrationError>
+    {
+        Ok(Vec::new())
+    }
+
     async fn current_registration(
         &self,
         environment_id: &str,
@@ -176,6 +203,40 @@ mod tests {
                 .validate()
                 .is_err(),
             "R3"
+        );
+    }
+
+    #[test]
+    fn policy_image_is_the_single_package_base_selection() {
+        // FMECA: F1 registration eager-build uses deployment default while
+        // Session uses policy image (S8 O5 D3, RPN120), producing two builds and
+        // possibly running the wrong system dependencies. Cause graph:
+        // C1=policy declares Image; C2=policy absent/non-image. E1=policy exact;
+        // E2=fallback. Decision table B1 C1->E1; B2 !C1->E2.
+        let config = awaken_provisioning_contract::SandboxOverride {
+            environment: Some(awaken_provisioning_contract::EnvironmentKind::Image {
+                reference: "registry/policy@sha256:exact".into(),
+            }),
+            ..Default::default()
+        };
+        let policy = awaken_provisioning_contract::SandboxExecutionPolicy {
+            id: awaken_provisioning_contract::SandboxExecutionPolicyId("policy-a".into()),
+            version: awaken_provisioning_contract::SandboxExecutionPolicyVersion(1),
+            config,
+            provisioning: Default::default(),
+            disabled: false,
+        };
+        let registration = ExecutableEnvironmentRegistration::new(definition(), Some(policy));
+        assert_eq!(
+            registration.package_base_image("registry/default:latest"),
+            "registry/policy@sha256:exact",
+            "B1"
+        );
+        assert_eq!(
+            ExecutableEnvironmentRegistration::new(definition(), None)
+                .package_base_image("registry/default:latest"),
+            "registry/default:latest",
+            "B2"
         );
     }
 }

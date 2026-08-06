@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
@@ -70,6 +71,7 @@ pub fn pool_key(spec: &pc::SandboxSpec) -> Option<String> {
 struct WarmEntry<R: ContainerRuntime> {
     template: pc::SandboxSpec,
     ready: Vec<ContainerSandbox<R>>,
+    last_desired: Instant,
 }
 
 /// The one admission gate for explicit startup warmup and adaptive replenishment.
@@ -111,6 +113,8 @@ impl Drop for InFlightCreate {
 pub struct WarmContainerPool<R: ContainerRuntime> {
     inner: Arc<ContainerProvider<R>>,
     size: usize,
+    total_size: usize,
+    idle_ttl: Duration,
     warm: Arc<Mutex<HashMap<String, WarmEntry<R>>>>,
     /// Serialize explicit startup warmup per exact shape. Adaptive replenishment
     /// still remains off-path; its cap check disposes any concurrent excess.
@@ -129,9 +133,25 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
     /// deployment opts out of the warm cost with.
     #[must_use]
     pub fn new(inner: Arc<ContainerProvider<R>>, size: usize) -> Self {
+        Self::with_limits(inner, size, usize::MAX, Duration::MAX)
+    }
+
+    /// Bounded multi-shape pool. `size` caps one exact shape; `total_size` caps
+    /// all ready containers. `idle_ttl` opportunistically reaps shapes no longer
+    /// requested, while explicit desired-state reconciliation removes them
+    /// immediately.
+    #[must_use]
+    pub fn with_limits(
+        inner: Arc<ContainerProvider<R>>,
+        size: usize,
+        total_size: usize,
+        idle_ttl: Duration,
+    ) -> Self {
         Self {
             inner,
             size,
+            total_size,
+            idle_ttl,
             warm: Arc::new(Mutex::new(HashMap::new())),
             prewarm_gates: Mutex::new(HashMap::new()),
             closed: Arc::new(AtomicBool::new(false)),
@@ -169,7 +189,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         spec: &pc::SandboxSpec,
         target: usize,
     ) -> Result<usize, pc::SandboxError> {
-        let target = target.min(self.size);
+        let target = target.min(self.size).min(self.total_size);
         if target == 0 {
             return Ok(self.ready_len(spec));
         }
@@ -185,7 +205,30 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             .clone();
         let _guard = gate.lock().await;
         loop {
-            let ready = self.ready_len(spec);
+            let (ready, expired) = {
+                let now = Instant::now();
+                let mut map = self.warm.lock().expect("warm pool mutex");
+                let expired_keys = map
+                    .iter()
+                    .filter(|(shape, entry)| {
+                        *shape != &key && now.duration_since(entry.last_desired) >= self.idle_ttl
+                    })
+                    .map(|(shape, _)| shape.clone())
+                    .collect::<Vec<_>>();
+                let expired = expired_keys
+                    .into_iter()
+                    .filter_map(|shape| map.remove(&shape))
+                    .flat_map(|entry| entry.ready)
+                    .collect::<Vec<_>>();
+                let ready = map.get_mut(&key).map_or(0, |entry| {
+                    entry.last_desired = now;
+                    entry.ready.len()
+                });
+                (ready, expired)
+            };
+            for sandbox in expired {
+                let _ = pc::Sandbox::dispose(&sandbox).await;
+            }
             if ready >= target {
                 return Ok(ready);
             }
@@ -193,19 +236,45 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             let mut warm_spec = spec.clone();
             warm_spec.scope = self.warm_scope();
             let sandbox = ready_candidate(self.inner.create_container(&warm_spec).await?).await?;
-            let excess = {
+            let (excess, evicted) = {
                 let mut map = self.warm.lock().expect("warm pool mutex");
+                let mut evicted = Vec::new();
+                let mut total = map.values().map(|entry| entry.ready.len()).sum::<usize>();
+                while total >= self.total_size {
+                    let oldest = map
+                        .iter()
+                        .filter(|(shape, entry)| *shape != &key && !entry.ready.is_empty())
+                        .min_by_key(|(_, entry)| entry.last_desired)
+                        .map(|(shape, _)| shape.clone());
+                    let Some(oldest) = oldest else {
+                        break;
+                    };
+                    if let Some(candidate) =
+                        map.get_mut(&oldest).and_then(|entry| entry.ready.pop())
+                    {
+                        evicted.push(candidate);
+                        total -= 1;
+                    }
+                }
                 let entry = map.entry(key.clone()).or_insert_with(|| WarmEntry {
                     template: spec.clone(),
                     ready: Vec::new(),
+                    last_desired: Instant::now(),
                 });
-                if self.closed.load(Ordering::SeqCst) || entry.ready.len() >= target {
-                    Some(sandbox)
+                entry.last_desired = Instant::now();
+                if self.closed.load(Ordering::SeqCst)
+                    || entry.ready.len() >= target
+                    || total >= self.total_size
+                {
+                    (Some(sandbox), evicted)
                 } else {
                     entry.ready.push(sandbox);
-                    None
+                    (None, evicted)
                 }
             };
+            for sandbox in evicted {
+                let _ = pc::Sandbox::dispose(&sandbox).await;
+            }
             if let Some(excess) = excess {
                 let _ = pc::Sandbox::dispose(&excess).await;
                 if self.closed.load(Ordering::SeqCst) {
@@ -230,6 +299,28 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                     .map(|e| e.ready.len())
             })
             .unwrap_or(0)
+    }
+
+    /// Remove one exact unused shape without closing the pool. A subsequent
+    /// current demand can recreate it through the same prewarm path.
+    pub async fn discard(&self, spec: &pc::SandboxSpec) {
+        let Some(key) = pool_key(spec) else {
+            return;
+        };
+        let ready = self
+            .warm
+            .lock()
+            .expect("warm pool mutex")
+            .remove(&key)
+            .map(|entry| entry.ready)
+            .unwrap_or_default();
+        self.prewarm_gates
+            .lock()
+            .expect("warm prewarm gate mutex")
+            .remove(&key);
+        for sandbox in ready {
+            let _ = pc::Sandbox::dispose(&sandbox).await;
+        }
     }
 
     /// Dispose every warm container (a graceful drain). Stops replenishment first, then
@@ -277,6 +368,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         let in_flight_creates = self.in_flight_creates.clone();
         let create_changed = self.create_changed.clone();
         let size = self.size;
+        let total_size = self.total_size;
         in_flight_creates.fetch_add(1, Ordering::SeqCst);
         if closed.load(Ordering::SeqCst) {
             in_flight_creates.fetch_sub(1, Ordering::SeqCst);
@@ -308,8 +400,10 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                             // Re-check the cap under the lock; dispose an over-cap create.
                             let over = {
                                 let mut map = warm.lock().expect("warm pool mutex");
+                                let total =
+                                    map.values().map(|entry| entry.ready.len()).sum::<usize>();
                                 match map.get_mut(&key) {
-                                    Some(e) if e.ready.len() < size => {
+                                    Some(e) if e.ready.len() < size && total < total_size => {
                                         e.ready.push(sandbox);
                                         None
                                     }
@@ -339,6 +433,14 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentCapacity for WarmContain
         target: usize,
     ) -> Result<usize, pc::SandboxError> {
         self.prewarm(spec, target).await
+    }
+
+    fn ready_capacity(&self, spec: &pc::SandboxSpec) -> usize {
+        self.ready_len(spec)
+    }
+
+    async fn discard_shape(&self, spec: &pc::SandboxSpec) {
+        self.discard(spec).await;
     }
 
     async fn shutdown_capacity(&self) {
@@ -402,7 +504,9 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
             let entry = map.entry(key.clone()).or_insert_with(|| WarmEntry {
                 template: spec.clone(),
                 ready: Vec::new(),
+                last_desired: Instant::now(),
             });
+            entry.last_desired = Instant::now();
             entry.ready.pop()
         };
         let environment = match warm {
@@ -596,6 +700,41 @@ mod tests {
         assert_eq!(runtime.removes.load(Ordering::SeqCst), 2);
     }
 
+    #[tokio::test]
+    async fn multi_shape_capacity_obeys_global_budget_and_desired_removal() {
+        // FMECA: F1 N Environment revisions each consume per-shape capacity
+        // without a global bound (S7 O6 D3, RPN126); F2 evict active Session
+        // environment (S10 O2 D3, RPN60); F3 removed desired shape keeps unused
+        // containers (S5 O5 D2, RPN50). Mitigations: budget applies only to the
+        // ready set, consumed environments leave it before eviction, and explicit
+        // discard removes only never-used capacity.
+        // Cause graph: C1=new shape requested; C2=global budget full;
+        // C3=old shape removed from desired state. E1=oldest unused entry evicted;
+        // E2=total remains bounded; E3=removed shape reaches zero.
+        // | Rule | C1 | C2 | C3 | Effect |
+        // | B1   | 1  | 0  | 0  | add     |
+        // | B2   | 1  | 1  | 0  | E1,E2   |
+        // | B3   | -  | -  | 1  | E3      |
+        let runtime = Arc::new(RecordingRuntime::ready());
+        let pool = WarmContainerPool::with_limits(
+            Arc::new(ContainerProvider::new(runtime.clone(), "agent:test")),
+            2,
+            2,
+            Duration::from_secs(300),
+        );
+        let first = spec("first", &[]);
+        let mut second = spec("second", &[]);
+        second.network = pc::NetworkPolicy::Unrestricted;
+        assert_eq!(pool.prewarm(&first, 2).await.unwrap(), 2, "B1");
+        assert_eq!(pool.prewarm(&second, 1).await.unwrap(), 1, "B2");
+        assert_eq!(pool.ready_len(&first) + pool.ready_len(&second), 2, "B2");
+        assert_eq!(runtime.removes.load(Ordering::SeqCst), 1, "B2 E1");
+        pool.discard(&second).await;
+        assert_eq!(pool.ready_len(&second), 0, "B3");
+        assert_eq!(runtime.removes.load(Ordering::SeqCst), 2, "B3");
+        pool.shutdown().await;
+    }
+
     /// Cause/effect design:
     /// C1=spec contains any creation-time mount. E1=shape is non-poolable,
     /// E2=no container is created, E3=reported capacity is zero. This preserves
@@ -610,6 +749,7 @@ mod tests {
             source: pc::MountSource::CacheVolume {
                 host_path: "/tmp/cache".into(),
                 key: "cache-v1".into(),
+                persistent_volume_claim: None,
             },
             mount_path: "/workspace/cache".into(),
             access: pc::MountAccess::ReadWrite,
@@ -835,6 +975,7 @@ mod tests {
             pc::MountSource::CacheVolume {
                 host_path: "/cache".into(),
                 key: "k".into(),
+                persistent_volume_claim: None,
             },
             pc::MountSource::Other(serde_json::json!({ "content": "x" })),
         ];

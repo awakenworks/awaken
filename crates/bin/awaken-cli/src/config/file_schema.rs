@@ -79,6 +79,8 @@ pub(super) struct FileConfig {
     pub(super) sandbox_dir: Option<PathBuf>,
     pub(super) sandbox_allow_local_fallback: Option<bool>,
     pub(super) sandbox_warm_pool_size: Option<usize>,
+    pub(super) sandbox_warm_pool_total_size: Option<usize>,
+    pub(super) sandbox_warm_pool_idle_ttl_secs: Option<u64>,
     pub(super) container_forward_proxy: Option<String>,
     pub(super) k8s_namespace: Option<String>,
     pub(super) k8s_image_pull_secrets: Option<Vec<String>>,

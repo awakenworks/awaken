@@ -28,7 +28,7 @@ impl EnvironmentImageBuildStore for InMemoryEnvironmentImageBuildStore {
     ) -> Result<(), EnvironmentImageBuildError> {
         let mut records = self.records.lock().expect("image build store");
         match records.get(&demand.build_key) {
-            Some(existing) if existing.demand == demand => Ok(()),
+            Some(existing) if existing.demand.same_recipe(&demand) => Ok(()),
             Some(_) => Err(EnvironmentImageBuildError::Conflict(demand.build_key)),
             None => {
                 records.insert(

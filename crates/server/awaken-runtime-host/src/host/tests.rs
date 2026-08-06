@@ -7046,6 +7046,7 @@ async fn session_creation_and_explicit_cache_warmup_share_one_preparation_path()
             source: awaken_provisioning_contract::MountSource::CacheVolume {
                 host_path: "/tmp/awaken-cache-volume-wiring".into(),
                 key: "build-cache-v1".into(),
+                persistent_volume_claim: None,
             },
             mount_path: "cache-placeholder".into(),
             access: awaken_provisioning_contract::MountAccess::ReadWrite,

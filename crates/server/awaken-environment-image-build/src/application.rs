@@ -42,13 +42,14 @@ impl EnvironmentImageBuildCoordinator {
     async fn demand(
         &self,
         registration: &ExecutableEnvironmentRegistration,
-        base_image: &str,
+        base_image: Option<&str>,
     ) -> Result<Option<EnvironmentImageBuildDemand>, EnvironmentImageBuildError> {
         if registration.definition.config.is_self_hosted()
             || registration.definition.config.packages().is_empty()
         {
             return Ok(None);
         }
+        let base_image = registration.package_base_image(base_image.unwrap_or(&self.base_image));
         let base_image = self.builder.base_image_identity(base_image).await?;
         Ok(EnvironmentImageBuildDemand::from_registration(
             registration,
@@ -80,7 +81,7 @@ impl EnvironmentImageBuildCoordinator {
         &self,
         registration: &ExecutableEnvironmentRegistration,
     ) -> Result<(), EnvironmentImageBuildError> {
-        if let Some(demand) = self.demand(registration, &self.base_image).await? {
+        if let Some(demand) = self.demand(registration, None).await? {
             self.store.ensure(demand, crate::now_unix_ms()).await?;
         }
         Ok(())
@@ -158,10 +159,7 @@ impl EnvironmentImageReadiness for EnvironmentImageBuildCoordinator {
         registration: &ExecutableEnvironmentRegistration,
         base_image: Option<&str>,
     ) -> Result<Option<String>, EnvironmentImageBuildError> {
-        let Some(demand) = self
-            .demand(registration, base_image.unwrap_or(&self.base_image))
-            .await?
-        else {
+        let Some(demand) = self.demand(registration, base_image).await? else {
             return Ok(None);
         };
         self.store
@@ -186,6 +184,33 @@ impl EnvironmentImageReadiness for EnvironmentImageBuildCoordinator {
                 )));
             }
             tokio::time::sleep(self.policy.poll_interval).await;
+        }
+    }
+
+    async fn ready_image_now(
+        &self,
+        registration: &ExecutableEnvironmentRegistration,
+        base_image: Option<&str>,
+    ) -> Result<Option<String>, EnvironmentImageBuildError> {
+        let Some(demand) = self.demand(registration, base_image).await? else {
+            return Ok(None);
+        };
+        self.store
+            .ensure(demand.clone(), crate::now_unix_ms())
+            .await?;
+        let Some(record) = self.store.get(&demand.build_key).await? else {
+            return Ok(None);
+        };
+        let EnvironmentImageBuildState::Ready { image, .. } = record.state else {
+            return Ok(None);
+        };
+        if self.builder.available(&image).await? {
+            Ok(Some(image))
+        } else {
+            self.store
+                .invalidate_ready(&demand.build_key, crate::now_unix_ms())
+                .await?;
+            Ok(None)
         }
     }
 }

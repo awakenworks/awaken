@@ -122,6 +122,7 @@ fn configured_worker() -> (WorkerIdentity, Arc<dyn WorkerDirectory>) {
             capability_fingerprint: manifest.fingerprint().expect("manifest fingerprint"),
             manifest,
             in_flight: 0,
+            warm_environment_shapes: Default::default(),
             credential_observations: Default::default(),
             acp_capability_observations: Default::default(),
             expires_at_ms: u64::MAX,

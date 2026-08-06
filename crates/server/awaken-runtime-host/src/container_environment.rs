@@ -42,17 +42,20 @@ struct BuiltContainerEnvironment {
 ))]
 fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     provider: ContainerProvider<R>,
-    size: usize,
+    settings: &crate::deployment_config::SandboxSettings,
 ) -> BuiltContainerEnvironment {
+    let size = settings.warm_pool_size;
     if size == 0 {
         BuiltContainerEnvironment {
             provider: Arc::new(provider),
             capacity: None,
         }
     } else {
-        let pool = Arc::new(awaken_sandbox_container::WarmContainerPool::new(
+        let pool = Arc::new(awaken_sandbox_container::WarmContainerPool::with_limits(
             Arc::new(provider),
             size,
+            settings.warm_pool_total_size,
+            std::time::Duration::from_secs(settings.warm_pool_idle_ttl_secs),
         ));
         BuiltContainerEnvironment {
             provider: pool.clone(),
@@ -85,7 +88,7 @@ fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
             url: url.to_owned(),
         });
     }
-    Ok(wrap(provider, settings.warm_pool_size))
+    Ok(wrap(provider, settings))
 }
 
 #[cfg(feature = "container-docker")]
@@ -310,11 +313,19 @@ mod tests {
     fn provider_composition_selects_direct_and_warm_pool_shapes() {
         use awaken_sandbox_container::podman::PodmanRuntime;
 
+        let settings = crate::deployment_config::SandboxSettings {
+            warm_pool_size: 0,
+            ..Default::default()
+        };
         let direct = ContainerProvider::new(Arc::new(PodmanRuntime::new(8080)), "busybox");
-        let _ = wrap(direct, 0);
+        let _ = wrap(direct, &settings);
 
+        let settings = crate::deployment_config::SandboxSettings {
+            warm_pool_size: 2,
+            ..Default::default()
+        };
         let pooled = ContainerProvider::new(Arc::new(PodmanRuntime::new(8080)), "busybox");
-        let _ = wrap(pooled, 2);
+        let _ = wrap(pooled, &settings);
     }
 
     #[test]

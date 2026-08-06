@@ -37,6 +37,9 @@ pub const PROVIDER_CREDENTIAL_SOURCE_CAPABILITY: &str = "credential-source/v1";
 /// File/Memory/Skill and public Repository inputs.
 pub const REPOSITORY_CREDENTIALS_CAPABILITY: &str = "repository-credentials/v1";
 
+/// Placement-context key for a soft, exact Environment capacity preference.
+pub const PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE: &str = "environment_shape";
+
 /// Worker can revalidate and use exact private credential revisions that never
 /// cross the control plane. Use may be secret materialization or a local backend
 /// (such as a CLI) reading its own login. Eligibility additionally requires a
@@ -508,6 +511,10 @@ pub struct WorkerSnapshot {
     pub manifest: WorkerManifest,
     pub capability_fingerprint: String,
     pub in_flight: u32,
+    /// Exact mount-less Environment shapes currently ready in this incarnation's
+    /// never-used capacity. These are ephemeral receipts, not capabilities.
+    #[serde(default)]
+    pub warm_environment_shapes: BTreeSet<String>,
     /// Latest non-secret credential observations reported by this incarnation.
     /// The set is deliberately outside the immutable manifest: local login or
     /// revocation may change while the worker process remains alive.
@@ -612,6 +619,8 @@ pub struct WorkerHeartbeat {
     pub sequence: u64,
     pub ready: bool,
     pub in_flight: u32,
+    #[serde(default)]
+    pub warm_environment_shapes: BTreeSet<String>,
     /// Exact worker-private credential revisions currently materializable.
     /// No secret, local path, environment name, or broker token crosses here.
     #[serde(default)]
@@ -767,21 +776,39 @@ impl PlacementPolicy for LeastLoadedPolicy {
 
     fn rank(
         &self,
-        _context: &PlacementContext,
+        context: &PlacementContext,
         eligible: &[WorkerSnapshot],
     ) -> Result<Vec<RankedWorker>, PlacementError> {
         let mut workers = eligible.to_vec();
+        let preferred = context
+            .attributes
+            .get(PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE);
         workers.sort_by(|left, right| {
-            left.in_flight
-                .cmp(&right.in_flight)
-                .then_with(|| left.identity.cmp(&right.identity))
+            let left_warm =
+                preferred.is_some_and(|shape| left.warm_environment_shapes.contains(shape));
+            let right_warm =
+                preferred.is_some_and(|shape| right.warm_environment_shapes.contains(shape));
+            right_warm.cmp(&left_warm).then_with(|| {
+                left.in_flight
+                    .cmp(&right.in_flight)
+                    .then_with(|| left.identity.cmp(&right.identity))
+            })
         });
         Ok(workers
             .into_iter()
-            .map(|worker| RankedWorker {
-                identity: worker.identity,
-                score: -(i64::from(worker.in_flight)),
-                reason: "least in-flight work".to_string(),
+            .map(|worker| {
+                let warm =
+                    preferred.is_some_and(|shape| worker.warm_environment_shapes.contains(shape));
+                RankedWorker {
+                    identity: worker.identity,
+                    score: if warm { 1_000_000 } else { 0 } - i64::from(worker.in_flight),
+                    reason: if warm {
+                        "ready Environment shape, then least in-flight work"
+                    } else {
+                        "least in-flight work"
+                    }
+                    .to_string(),
+                }
             })
             .collect())
     }
@@ -967,6 +994,7 @@ mod tests {
             manifest,
             capability_fingerprint,
             in_flight: load,
+            warm_environment_shapes: BTreeSet::new(),
             credential_observations: BTreeSet::new(),
             acp_capability_observations: Vec::new(),
             expires_at_ms: 1_000,
@@ -1320,6 +1348,69 @@ mod tests {
         let workers = vec![manifest("b", 1), manifest("a", 1), manifest("c", 3)];
         let selected = place(&LeastLoadedPolicy, &context(requirements()), &workers, 10).unwrap();
         assert_eq!(selected.identity.worker_id, "a");
+    }
+
+    #[test]
+    fn warm_shape_is_a_soft_preference_before_load() {
+        // FMECA (S=severity, O=occurrence, D=detection; 1..10):
+        // F1 stale/missing receipt selects a cold Worker (S3 O4 D2, RPN24):
+        // acceptable latency degradation, never an eligibility failure.
+        // F2 receipt treated as hard capability (S8 O2 D3, RPN48): prevented by
+        // applying it only inside ranking after the compatibility kernel.
+        // F3 lower-load cold Worker defeats useful capacity (S4 O5 D2, RPN40):
+        // prevented by ordering warm match before in-flight count.
+        //
+        // Cause-effect graph: C1=request has preferred shape; C2=worker has exact
+        // receipt; C3=worker is otherwise eligible; C4=worker has lower load.
+        // Effects: E1=warm worker ranks first; E2=least-loaded fallback; E3=no
+        // eligible worker is excluded. Derived decision table:
+        // | Rule | C1 | C2(any) | C3 | C4(cold) | Effect |
+        // | P1   | 1  | 1       | 1  | 1        | E1     |
+        // | P2   | 1  | 0       | 1  | 1        | E2,E3  |
+        // | P3   | 0  | -       | 1  | 1        | E2,E3  |
+        let mut warm = manifest("warm", 3);
+        warm.warm_environment_shapes.insert("shape-a".into());
+        let cold = manifest("cold", 0);
+        let mut preferred = context(requirements());
+        preferred.attributes.insert(
+            PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE.into(),
+            "shape-a".into(),
+        );
+        assert_eq!(
+            place(&LeastLoadedPolicy, &preferred, &[cold.clone(), warm], 10)
+                .unwrap()
+                .identity
+                .worker_id,
+            "warm",
+            "P1"
+        );
+
+        assert_eq!(
+            place(
+                &LeastLoadedPolicy,
+                &preferred,
+                &[cold.clone(), manifest("other", 2)],
+                10
+            )
+            .unwrap()
+            .identity
+            .worker_id,
+            "cold",
+            "P2"
+        );
+        assert_eq!(
+            place(
+                &LeastLoadedPolicy,
+                &context(requirements()),
+                &[cold, manifest("other", 2)],
+                10
+            )
+            .unwrap()
+            .identity
+            .worker_id,
+            "cold",
+            "P3"
+        );
     }
 
     struct InjectingPolicy;

@@ -38,6 +38,12 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
     let sandbox = SandboxSettings {
         allow_local_fallback: file.sandbox_allow_local_fallback.unwrap_or(false),
         warm_pool_size: file.sandbox_warm_pool_size.unwrap_or(0),
+        warm_pool_total_size: file
+            .sandbox_warm_pool_total_size
+            .unwrap_or(sandbox_defaults.warm_pool_total_size),
+        warm_pool_idle_ttl_secs: file
+            .sandbox_warm_pool_idle_ttl_secs
+            .unwrap_or(sandbox_defaults.warm_pool_idle_ttl_secs),
         container_forward_proxy: file.container_forward_proxy.clone(),
         k8s_namespace: file
             .k8s_namespace
@@ -135,6 +141,14 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
     }
     if sandbox.package_local_cache_ttl_secs == 0 {
         return Err("package image local cache TTL must be non-zero".to_owned());
+    }
+    if sandbox.warm_pool_size > 0
+        && (sandbox.warm_pool_total_size < sandbox.warm_pool_size
+            || sandbox.warm_pool_idle_ttl_secs == 0)
+    {
+        return Err(
+            "warm pool total size must cover one shape and idle TTL must be non-zero".to_owned(),
+        );
     }
     let content_capture = ContentCaptureSettings {
         level: match file.content_capture.as_deref() {

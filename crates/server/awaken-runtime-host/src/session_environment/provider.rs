@@ -216,6 +216,31 @@ impl SessionEnvironmentProvider {
         }
     }
 
+    pub(crate) async fn discard_capacity(&self, spec: &pc::SandboxSpec) {
+        if let Self::Container {
+            capacity: Some(capacity),
+            extra_mounts,
+            ..
+        } = self
+            && let Ok(spec) = container_spec(spec, extra_mounts)
+        {
+            capacity.discard_shape(&spec).await;
+        }
+    }
+
+    pub(crate) fn ready_capacity(&self, spec: &pc::SandboxSpec) -> usize {
+        if let Self::Container {
+            capacity: Some(capacity),
+            extra_mounts,
+            ..
+        } = self
+            && let Ok(spec) = container_spec(spec, extra_mounts)
+        {
+            return capacity.ready_capacity(&spec);
+        }
+        0
+    }
+
     /// Drain only unused container capacity. Active Session environments are no
     /// longer members of the pool and retain their ordinary Session lifecycle.
     pub(crate) async fn shutdown_capacity(&self) {

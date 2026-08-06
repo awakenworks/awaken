@@ -2375,6 +2375,7 @@ dependencies = [
  "awaken-worker-transport-security",
  "axum",
  "getrandom 0.2.17",
+ "serde_json",
  "tokio",
  "tower",
 ]

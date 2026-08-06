@@ -36,16 +36,19 @@ use crate::{
     BindPlan, ContainerPlan, ContainerRuntime, ContainerState, RuntimeAgentProcess, RuntimeError,
 };
 
+mod error;
 mod live_inputs;
 mod names;
 mod pod_projection;
 mod pod_security;
 mod process;
 mod realization;
+use error::api_not_found;
+pub(crate) use error::{api_conflict, backend};
 use names::{configmap_name, credential_secret_name, k8s_runtime_id, pod_name};
 use pod_projection::{
-    CONFIGMAP_KEY, build_configmap, build_credential_secret, content_binds, credential_binds,
-    credential_key,
+    CONFIGMAP_KEY, append_writable_and_cache_volumes, build_configmap, build_credential_secret,
+    content_binds, credential_binds, credential_key,
 };
 use pod_security::{
     egress_label, fuse_sidecar_security_context, hardened_security_context, pod_resources,
@@ -62,18 +65,6 @@ use realization::{
 pub use crate::k8s_package_image::K8sPackageImageProvisioner;
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-pub(crate) fn backend(e: impl std::fmt::Display) -> RuntimeError {
-    RuntimeError::Backend(e.to_string())
-}
-
-pub(crate) fn api_conflict(error: &kube::Error) -> bool {
-    matches!(error, kube::Error::Api(response) if response.code == 409)
-}
-
-pub(crate) fn api_not_found(error: &kube::Error) -> bool {
-    matches!(error, kube::Error::Api(response) if response.code == 404)
-}
 
 /// A Kubernetes-backed [`ContainerRuntime`]. `agent_addr` is the Service endpoint the
 /// runtime dials for the [`AgentChannel`]; `owner` (optional) is the GC owner.
@@ -325,22 +316,7 @@ fn build_pod(
             });
         }
 
-        // Under the read-only rootfs, the writable app paths (outputs + scratch /tmp)
-        // are backed by pod-scoped emptyDir volumes so the agent can still write.
-        for (i, dir) in crate::writable_dirs(plan).into_iter().enumerate() {
-            let vol = format!("rw-{i}");
-            volumes.push(Volume {
-                name: vol.clone(),
-                empty_dir: Some(EmptyDirVolumeSource::default()),
-                ..Default::default()
-            });
-            agent_mounts.push(VolumeMount {
-                name: vol,
-                mount_path: dir,
-                ..Default::default()
-            });
-        }
-
+        append_writable_and_cache_volumes(plan, &mut volumes, &mut agent_mounts);
         live_inputs::append_projection(plan, &mut volumes, &mut agent_mounts, &mut sidecars);
 
         // Inline content has no host path a Pod can bind, so every item is backed by
@@ -517,6 +493,10 @@ async fn accept_reverse(addr: SocketAddr) -> Result<Box<dyn AgentChannel>, Runti
 #[async_trait]
 impl ContainerRuntime for K8sRuntime {
     fn has_native_memory_mounts(&self) -> bool {
+        true
+    }
+
+    fn uses_persistent_volume_claims(&self) -> bool {
         true
     }
 
@@ -1628,6 +1608,55 @@ mod tests {
         assert_eq!(m.mount_path, "/acp-config/config.toml");
         assert_eq!(m.sub_path.as_deref(), Some("content"));
         assert_eq!(m.read_only, Some(true));
+    }
+
+    #[test]
+    fn cache_volume_projects_the_exact_existing_pvc() {
+        // FMECA: F1 K8s ignores a CacheVolume bind (S7 O5 D3, RPN105);
+        // F2 node hostPath is substituted for a portable claim (S9 O3 D4,
+        // RPN108); F3 read-only intent is lost (S8 O2 D3, RPN48). The provider
+        // resolves CacheVolume to a namespaced PVC reference before this pure
+        // Pod projection; no second cache implementation exists here.
+        // Cause graph: C1=PVC reference present; C2=read-only; C3=ordinary bind.
+        // Effects: E1=PVC volume+mount; E2=read-only preserved; E3=no PVC.
+        // | Rule | C1 | C2 | C3 | Effect |
+        // | K1   | 1  | 1  | 0  | E1,E2  |
+        // | K2   | 0  | -  | 1  | E3     |
+        let mut plan = plan_with_memory(Vec::new());
+        plan.binds.push(crate::BindPlan {
+            source_ref: format!("{}build-cache-v7", crate::cache_volume::PVC_BIND_REF_PREFIX),
+            mount_path: "/workspace/.cache/build".into(),
+            read_only: true,
+            content: None,
+            content_bytes: None,
+            secret_content: None,
+            secret_writeback: false,
+            credential_file_path: None,
+        });
+        let spec = build_pod("run-pvc", &plan, &None, "m", None, false, &[])
+            .spec
+            .unwrap();
+        let volume = spec
+            .volumes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|volume| volume.persistent_volume_claim.is_some())
+            .expect("K1 PVC volume");
+        assert_eq!(
+            volume.persistent_volume_claim.as_ref().unwrap().claim_name,
+            "build-cache-v7",
+            "K1"
+        );
+        let mount = spec.containers[0]
+            .volume_mounts
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|mount| mount.name == volume.name)
+            .expect("K1 PVC mount");
+        assert_eq!(mount.mount_path, "/workspace/.cache/build", "K1");
+        assert_eq!(mount.read_only, Some(true), "K1/K2");
     }
 
     #[test]

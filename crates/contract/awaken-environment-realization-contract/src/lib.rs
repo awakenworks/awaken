@@ -30,10 +30,14 @@ impl EnvironmentImageBuildDemand {
         {
             return None;
         }
-        let build_key = format!(
-            "environment-image:{}:{base_image}",
-            registration.fingerprint
-        );
+        // Only build inputs own image identity. Environment name, description,
+        // metadata and authored revision remain provenance and must not create a
+        // parallel image for identical package/network/base facts.
+        let recipe_fingerprint = awaken_environment_contract::environment_facts_fingerprint(&(
+            base_image,
+            &registration.definition.config,
+        ));
+        let build_key = format!("environment-image:{recipe_fingerprint}");
         Some(Self {
             build_key,
             environment_id: registration.definition.id.clone(),
@@ -42,6 +46,15 @@ impl EnvironmentImageBuildDemand {
             base_image: base_image.to_owned(),
             config: registration.definition.config.clone(),
         })
+    }
+
+    /// Whether two demands name the same authoritative build recipe. Provenance
+    /// may advance while a content-identical ready image remains reusable.
+    #[must_use]
+    pub fn same_recipe(&self, other: &Self) -> bool {
+        self.build_key == other.build_key
+            && self.base_image == other.base_image
+            && self.config == other.config
     }
 }
 
@@ -266,11 +279,24 @@ pub trait EnvironmentImageReadiness: Send + Sync {
         registration: &ExecutableEnvironmentRegistration,
         base_image: Option<&str>,
     ) -> Result<Option<String>, EnvironmentImageBuildError>;
+
+    /// Non-blocking readiness used by capacity reconciliation. `None` means the
+    /// exact image is not ready yet (or no image is required); callers already
+    /// know whether the Environment declares packages and can distinguish those
+    /// cases without manufacturing another state store.
+    async fn ready_image_now(
+        &self,
+        _registration: &ExecutableEnvironmentRegistration,
+        _base_image: Option<&str>,
+    ) -> Result<Option<String>, EnvironmentImageBuildError> {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_environment_contract::{EnvItem, EnvironmentPackages, EnvironmentRevision};
 
     #[test]
     fn build_state_lease_decision_table() {
@@ -305,5 +331,86 @@ mod tests {
             ),
             "R7"
         );
+    }
+
+    #[test]
+    fn image_recipe_identity_ignores_authoring_only_changes() {
+        // FMECA: F1 metadata/revision/id-only change duplicates a recipe build
+        // (S4 O7 D2, RPN56);
+        // F2 package/base/network update aliases an old image (S9 O3 D3,
+        // RPN81). The recipe key therefore contains only base+config while the
+        // Environment coordinate keeps unrelated Environments isolated.
+        // Cause graph: C1=metadata/revision differs; C2=Environment id differs;
+        // C3=config differs; C4=base differs. E1=same recipe; E2=distinct recipe.
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // | I1   | 1  | 0  | 0  | 0  | E1     |
+        // | I2   | -  | 1  | 0  | 0  | E1     |
+        // | I3   | -  | -  | 1  | 0  | E2     |
+        // | I4   | -  | -  | 0  | 1  | E2     |
+        let config = EnvironmentConfig::Cloud {
+            networking: Default::default(),
+            packages: EnvironmentPackages {
+                npm: vec!["tsx@4.0.0".into()],
+                ..Default::default()
+            },
+        };
+        let registration = |id: &str, revision, description: &str, config: EnvironmentConfig| {
+            ExecutableEnvironmentRegistration::new(
+                EnvItem {
+                    id: id.into(),
+                    revision: EnvironmentRevision(revision),
+                    name: format!("name-{revision}"),
+                    description: description.into(),
+                    metadata: [("revision".into(), revision.to_string())]
+                        .into_iter()
+                        .collect(),
+                    scope: None,
+                    config,
+                    sandbox_policy: None,
+                    archived_at: None,
+                },
+                None,
+            )
+        };
+        let first = EnvironmentImageBuildDemand::from_registration(
+            &registration("env-a", 1, "first", config.clone()),
+            "base@sha256:a",
+        )
+        .unwrap();
+        let metadata = EnvironmentImageBuildDemand::from_registration(
+            &registration("env-a", 2, "changed", config.clone()),
+            "base@sha256:a",
+        )
+        .unwrap();
+        assert!(first.same_recipe(&metadata), "I1");
+        let coordinate = EnvironmentImageBuildDemand::from_registration(
+            &registration("env-b", 1, "first", config.clone()),
+            "base@sha256:a",
+        )
+        .unwrap();
+        assert!(first.same_recipe(&coordinate), "I2");
+        let packages = EnvironmentImageBuildDemand::from_registration(
+            &registration(
+                "env-a",
+                3,
+                "changed",
+                EnvironmentConfig::Cloud {
+                    networking: Default::default(),
+                    packages: EnvironmentPackages {
+                        npm: vec!["tsx@5.0.0".into()],
+                        ..Default::default()
+                    },
+                },
+            ),
+            "base@sha256:a",
+        )
+        .unwrap();
+        assert!(!first.same_recipe(&packages), "I3");
+        let base = EnvironmentImageBuildDemand::from_registration(
+            &registration("env-a", 4, "changed", config),
+            "base@sha256:b",
+        )
+        .unwrap();
+        assert!(!first.same_recipe(&base), "I4");
     }
 }
