@@ -240,7 +240,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             dispatched_resources.as_ref(),
         )
         .await?;
-        if let Some(stages) = dispatched_mcp_stages {
+        if let Some(stages) = dispatched_mcp_stages.as_ref() {
             host.register_thread_agent_projection(&thread_id.0, agent_id.unwrap_or("assistant"));
             host.register_thread_backend_projection(
                 &thread_id.0,
@@ -255,7 +255,6 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             if let Some(workspace) = stages.first().map(|stage| stage.workspace_id.as_str()) {
                 host.register_thread_workspace(&thread_id.0, workspace);
             }
-            Self::reconcile_dispatched_mcp(&host, &thread_id.0, stages).await?;
         }
         let needs_deferred_executor = host
             .session_slots
@@ -294,6 +293,32 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             claimed.request.placement.recovery,
         )
         .await?;
+        let mut adopted = adopted;
+        let requires_sandbox_stdio_environment =
+            dispatched_mcp_stages.as_ref().is_some_and(|stages| {
+                stages
+                    .iter()
+                    .any(|stage| stage.target.sandbox_stdio_target().is_some())
+            });
+        if requires_sandbox_stdio_environment {
+            // A sandbox-stdio stage may need to realize a cold Environment. The
+            // claimed Run's immutable snapshot is already the exact execution
+            // authority, so open the Session with it before the generic MCP
+            // realizer falls back to ctx_for() without a publication argument.
+            // Publication invalidates this temporary Runtime projection below;
+            // the final resolve rebuilds it with the now-active MCP generation.
+            self.resolve(
+                &host,
+                thread_id,
+                agent_id,
+                Some(claimed.request.activation.snapshot.clone()),
+                adopted.take(),
+            )
+            .await?;
+        }
+        if let Some(stages) = dispatched_mcp_stages {
+            Self::reconcile_dispatched_mcp(&host, &thread_id.0, stages).await?;
+        }
         host.session_slots.update(&thread_id.0, |slot| {
             if slot.deferred_executor.is_some() {
                 slot.deferred_claim = Some(awaken_run_ingress::RunClaim::from(&claimed.lease));
@@ -305,7 +330,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 thread_id,
                 agent_id,
                 Some(claimed.request.activation.snapshot.clone()),
-                adopted,
+                adopted.take(),
             )
             .await?;
         if claimed.sandbox.is_none() || rebuild_binding {
