@@ -11,6 +11,13 @@ use super::{
     SessionReconciliationFailure,
 };
 
+#[derive(Clone)]
+enum ResourceSettlement {
+    Commit,
+    Rollback(String),
+    RetryableFailure(String),
+}
+
 pub(crate) fn mutation_failure(error: SessionMutationError) -> SessionPreparationError {
     match error {
         SessionMutationError::NotFound => SessionPreparationError::NotFound,
@@ -41,6 +48,148 @@ fn deleted_lifecycle_fact(session_id: &str, owner_scope: &str) -> ManagedLifecyc
 }
 
 impl SessionApplication {
+    async fn prepare_resource_transition(
+        &self,
+        owner_scope: &str,
+        mut current: PersistedSession,
+        desired: &awaken_session_contract::ResolvedSessionResources,
+    ) -> Result<PersistedSession, SessionPreparationError> {
+        let unchanged_resources = current.resources.clone();
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            if current.resources != unchanged_resources {
+                return Err(SessionPreparationError::Conflict);
+            }
+            let mut candidate = current.clone();
+            candidate
+                .resources
+                .prepare(&candidate.session_id, desired.clone())
+                .map_err(|error| {
+                    SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
+                })?;
+            candidate.resources.start_attempt().map_err(internal)?;
+            match self
+                .commit_session_snapshot(owner_scope, candidate, "resource-prepare", Vec::new())
+                .await
+            {
+                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                    current = self
+                        .session_repository()
+                        .get(&current.session_id)
+                        .await
+                        .ok_or(SessionPreparationError::NotFound)?;
+                }
+                result => return result.map_err(mutation_failure),
+            }
+        }
+        Err(SessionPreparationError::Conflict)
+    }
+
+    async fn settle_resource_transition(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+        resource_revision: u64,
+        desired: &awaken_session_contract::ResolvedSessionResources,
+        settlement: ResourceSettlement,
+    ) -> Result<PersistedSession, SessionPreparationError> {
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            let mut current = self
+                .session_repository()
+                .get(session_id)
+                .await
+                .ok_or(SessionPreparationError::NotFound)?;
+            if current.resources.revision != resource_revision
+                || current.resources.pending.as_ref() != Some(desired)
+            {
+                return Err(SessionPreparationError::Conflict);
+            }
+            let operation = match &settlement {
+                ResourceSettlement::Commit => {
+                    current.resources.commit().map_err(internal)?;
+                    "resource-activate"
+                }
+                ResourceSettlement::Rollback(error) => {
+                    current
+                        .resources
+                        .rollback(error.clone())
+                        .map_err(internal)?;
+                    "resource-rollback"
+                }
+                ResourceSettlement::RetryableFailure(error) => {
+                    current
+                        .resources
+                        .note_retryable_failure(error.clone())
+                        .map_err(internal)?;
+                    "resource-retryable-failure"
+                }
+            };
+            match self
+                .commit_session_snapshot(owner_scope, current, operation, Vec::new())
+                .await
+            {
+                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                    continue;
+                }
+                result => return result.map_err(mutation_failure),
+            }
+        }
+        Err(SessionPreparationError::Conflict)
+    }
+
+    /// Apply one live Resource replacement through the same durable phase
+    /// protocol consumed by recovery.
+    pub async fn activate_session_inputs(
+        &self,
+        persisted: PersistedSession,
+        owner_scope: &str,
+        desired: awaken_session_contract::ResolvedSessionResources,
+    ) -> Result<PersistedSession, SessionPreparationError> {
+        let session_id = persisted.session_id.clone();
+        let previous = persisted.resources.active.clone();
+        let persisted = self
+            .prepare_resource_transition(owner_scope, persisted, &desired)
+            .await?;
+        let resource_revision = persisted.resources.revision;
+        if let Err(error) = self
+            .runtime()
+            .apply_session_inputs(&session_id, owner_scope, resource_revision, &desired)
+            .await
+        {
+            let settlement = match self
+                .runtime()
+                .apply_session_inputs(
+                    &session_id,
+                    owner_scope,
+                    resource_revision.saturating_sub(1),
+                    &previous,
+                )
+                .await
+            {
+                Ok(()) => ResourceSettlement::Rollback(error.to_string()),
+                Err(rollback_error) => ResourceSettlement::RetryableFailure(format!(
+                    "activation failed: {error}; rollback failed: {rollback_error}"
+                )),
+            };
+            self.settle_resource_transition(
+                owner_scope,
+                &session_id,
+                resource_revision,
+                &desired,
+                settlement,
+            )
+            .await?;
+            return Err(SessionPreparationError::Rejected(error));
+        }
+        self.settle_resource_transition(
+            owner_scope,
+            &session_id,
+            resource_revision,
+            &desired,
+            ResourceSettlement::Commit,
+        )
+        .await
+    }
+
     /// Commit the terminal delete tombstone through the canonical Session CAS.
     pub async fn tombstone_session_snapshot(
         &self,
