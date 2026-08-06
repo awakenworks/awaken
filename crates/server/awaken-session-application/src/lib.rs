@@ -1725,6 +1725,7 @@ mod tests {
                 awaken_session_contract::ActivateSessionRealization {
                     session_id: "in-flight-renewal".into(),
                     lease: asserted_lease,
+                    prepared_resource_revision: None,
                     mcp_receipts: vec![admitted_receipt],
                 },
             )
@@ -1761,6 +1762,7 @@ mod tests {
                 awaken_session_contract::ActivateSessionRealization {
                     session_id: "in-flight-renewal".into(),
                     lease: current_lease,
+                    prepared_resource_revision: None,
                     mcp_receipts: vec![renewed_receipt],
                 },
             )

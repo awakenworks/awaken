@@ -628,6 +628,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             awaken_session_contract::ActivateSessionRealization {
                 session_id: "signed-thread".into(),
                 lease: realization_lease.clone(),
+                prepared_resource_revision: None,
                 mcp_receipts: Vec::new(),
             },
         )
@@ -643,6 +644,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 awaken_session_contract::ActivateSessionRealization {
                     session_id: "signed-thread".into(),
                     lease: realization_lease.clone(),
+                    prepared_resource_revision: None,
                     mcp_receipts: Vec::new(),
                 },
             )
@@ -661,6 +663,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 awaken_session_contract::ActivateSessionRealization {
                     session_id: "signed-thread".into(),
                     lease: expired_lease,
+                    prepared_resource_revision: None,
                     mcp_receipts: Vec::new(),
                 },
             )
@@ -690,6 +693,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             awaken_session_contract::FailSessionRealization {
                 session_id: "signed-thread".into(),
                 lease: realization_lease,
+                prepared_resource_revision: None,
                 reason: "test failure".into(),
             },
         )

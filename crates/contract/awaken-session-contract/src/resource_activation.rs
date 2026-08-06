@@ -253,6 +253,27 @@ impl SessionResourceState {
             .any(|activation| activation.state == ActivationState::Active)
     }
 
+    /// Generation of the manifest currently visible to the Runtime. During a
+    /// replacement, `revision` already names the pending generation while the
+    /// prior Active/Releasing activation still owns the installed manifest.
+    #[must_use]
+    pub fn active_revision(&self) -> u64 {
+        self.activations
+            .iter()
+            .filter(|activation| {
+                matches!(
+                    activation.state,
+                    ActivationState::Active | ActivationState::Releasing
+                )
+            })
+            .map(|activation| activation.revision)
+            .max()
+            .unwrap_or_else(|| {
+                self.revision
+                    .saturating_sub(u64::from(self.pending.is_some()))
+            })
+    }
+
     #[must_use]
     pub fn needs_reconciliation(&self) -> bool {
         self.pending.is_some()
@@ -332,12 +353,37 @@ mod tests {
         state.prepare("session-1", manifest("a")).unwrap();
         state.commit().unwrap();
         state.prepare("session-1", manifest("b")).unwrap();
+        assert_eq!(state.active_revision(), 1);
         assert_eq!(state.active, manifest("a"));
         assert_eq!(state.activations[0].state, ActivationState::Releasing);
         state.commit().unwrap();
+        assert_eq!(state.active_revision(), 2);
         assert_eq!(state.active, manifest("b"));
         assert_eq!(state.activations[0].state, ActivationState::Released);
         assert_eq!(state.activations[1].state, ActivationState::Active);
+    }
+
+    /// Visible-generation cause/effect table. C1=pending replacement; C2=an
+    /// activation record exists. E1 reports the installed generation, never the
+    /// merely desired generation. Legacy rows use the same revision arithmetic.
+    ///
+    /// | Rule | C1 | C2 | Effect |
+    /// |---|---|---|---|
+    /// | V1 | no | no | current revision |
+    /// | V2 | yes | no | revision - 1 |
+    /// | V3 | yes | yes | Active/Releasing activation revision |
+    #[test]
+    fn active_revision_tracks_the_visible_manifest_during_replacement() {
+        let mut legacy = SessionResourceState::from_legacy(manifest("legacy"));
+        assert_eq!(legacy.active_revision(), 1, "V1");
+        legacy.prepare("session-legacy", manifest("next")).unwrap();
+        assert_eq!(legacy.active_revision(), 1, "V2");
+
+        let mut activated = SessionResourceState::default();
+        activated.prepare("session-1", manifest("a")).unwrap();
+        activated.commit().unwrap();
+        activated.prepare("session-1", manifest("b")).unwrap();
+        assert_eq!(activated.active_revision(), 1, "V3");
     }
 
     #[test]
