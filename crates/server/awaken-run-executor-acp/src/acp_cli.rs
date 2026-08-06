@@ -1071,13 +1071,14 @@ mod tests {
                 "{id}"
             );
         }
+        let hermes = acp_cli("hermes")
+            .unwrap()
+            .project(&route, Some(1_000_000), &[]);
+        assert_eq!(hermes.session_model.as_deref(), Some("MiniMax-M3[1m]"));
         assert_eq!(
-            acp_cli("hermes")
-                .unwrap()
-                .project(&route, None, &[])
-                .session_model
-                .as_deref(),
-            Some("MiniMax-M3[1m]")
+            env_of(&hermes, "HERMES_CONTEXT_WINDOW").as_deref(),
+            Some("1000000"),
+            "Hermes' offline startup metadata must retain the catalog window"
         );
     }
 

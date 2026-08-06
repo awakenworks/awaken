@@ -374,7 +374,7 @@ const HERMES: AcpCli = AcpCli {
     memory_entrypoint: "AGENTS.md",
     session_export_excludes: &[".env"],
     session_persistence: SessionPersistence::None,
-    context_window_env: None,
+    context_window_env: Some("HERMES_CONTEXT_WINDOW"),
     env: &[],
 };
 

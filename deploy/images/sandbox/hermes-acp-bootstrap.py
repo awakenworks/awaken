@@ -22,8 +22,8 @@ import yaml
 
 
 REAL_ADAPTER = "/opt/awaken-python/bin/hermes-acp.real"
-DEFAULT_CONTEXT_WINDOW = 131_072
-DEFAULT_OUTPUT_TOKENS = 8_192
+DEFAULT_CONTEXT_WINDOW = 1_000_000
+DEFAULT_OUTPUT_TOKENS = 384_000
 
 
 def _positive_int(name: str, default: int) -> int:
