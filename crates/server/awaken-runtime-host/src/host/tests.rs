@@ -938,10 +938,10 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
     let _managed = crate::ManagedHost::new(host.clone())
         .with_repository_binding_verifier(repository_claims.clone());
     let frozen = projection("Use the bound Flow project.", true);
-    host.install_frozen_session_projection("flow-thread", frozen.clone(), None)
+    host.install_frozen_session_projection("flow-thread", frozen.clone(), None, true)
         .await
         .expect("first frozen projection installs");
-    host.install_frozen_session_projection("flow-thread", frozen, None)
+    host.install_frozen_session_projection("flow-thread", frozen, None, true)
         .await
         .expect("same frozen fingerprint is idempotent");
 
@@ -994,6 +994,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
         "prompt-thread",
         projection("Use the bound Flow project.", false),
         None,
+        true,
     )
     .await
     .expect("P2/P4 projection");
@@ -1003,9 +1004,14 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
     host.run(None, "prompt-thread", user("P4"))
         .await
         .expect("P4");
-    host.install_frozen_session_projection("deduplicated", projection("exact prompt", false), None)
-        .await
-        .expect("P3 projection");
+    host.install_frozen_session_projection(
+        "deduplicated",
+        projection("exact prompt", false),
+        None,
+        true,
+    )
+    .await
+    .expect("P3 projection");
     host.run(
         None,
         "deduplicated",
@@ -1051,7 +1057,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
 
     let replacement = projection("different", true);
     assert!(
-        host.install_frozen_session_projection("flow-thread", replacement, None)
+        host.install_frozen_session_projection("flow-thread", replacement, None, true)
             .await
             .is_err(),
         "a bound Session cannot switch frozen baselines"
@@ -1079,6 +1085,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
         "repository-claim-thread",
         repository_projection.clone(),
         Some(&claim(1)),
+        true,
     )
     .await
     .expect("C1 first claim");
@@ -1086,6 +1093,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
         "repository-claim-thread",
         repository_projection,
         Some(&claim(2)),
+        true,
     )
     .await
     .expect("C2 replacement claim");
@@ -3229,6 +3237,7 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
             toolsets: Vec::new(),
         },
         None,
+        true,
     )
     .await
     .expect("L8 cold legacy projection");
