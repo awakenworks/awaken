@@ -29,14 +29,16 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         let environment_absent = self.host.session_environment(session_id).await.is_none();
         let has_environment_binding =
             environment_absent && projection.environment.binding().is_some();
-        let runtime_resident = self
+        let runtime_authority_resident = self
             .host
             .session_slots
-            .read(session_id, |slot| slot.runtime.is_some())
+            .read(session_id, |slot| {
+                slot.runtime.is_some() || slot.environment.is_some()
+            })
             .unwrap_or(false);
         if self.requires_runtime_before_effects
             && self.published_snapshot.is_none()
-            && !runtime_resident
+            && !runtime_authority_resident
         {
             return Err(awaken_session_contract::RunError::classified(
                 "session_runtime_publication_missing",
@@ -182,7 +184,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingMcpRealizer {
         calls: Mutex<Vec<&'static str>>,
-        required_runtime: Option<(std::sync::Weak<SharedHost>, String)>,
+        required_environment: Option<(std::sync::Weak<SharedHost>, String)>,
         stage_entered: Option<Arc<tokio::sync::Notify>>,
         release_stage: Option<Arc<tokio::sync::Notify>>,
     }
@@ -207,17 +209,20 @@ mod tests {
                     release_stage.notified().await;
                 }
             }
-            let resident = self.required_runtime.as_ref().is_none_or(|(host, thread)| {
-                host.upgrade().is_some_and(|host| {
-                    host.session_slots
-                        .read(thread, |slot| slot.runtime.is_some())
-                        .unwrap_or(false)
-                })
-            });
+            let resident = self
+                .required_environment
+                .as_ref()
+                .is_none_or(|(host, thread)| {
+                    host.upgrade().is_some_and(|host| {
+                        host.session_slots
+                            .read(thread, |slot| slot.environment.is_some())
+                            .unwrap_or(false)
+                    })
+                });
             if !resident {
                 return Err(awaken_session_contract::RunError::classified(
                     "test_session_runtime_missing",
-                    "MCP stage ran before the frozen Environment was adopted",
+                    "MCP stage ran before the frozen Environment was resident",
                 ));
             }
             Ok(awaken_session_contract::McpRealizationReceipt {
@@ -641,8 +646,8 @@ mod tests {
             .expect("R1/E3 initial realization completes");
         assert_eq!(
             realizer.calls.lock().unwrap().as_slice(),
-            ["stage", "publish", "stage", "publish"],
-            "R1/E2-E3 catches the predecessor publication up exactly once"
+            ["stage", "stage", "publish"],
+            "R1/E2-E3 catches up before publishing only the current fence"
         );
         assert_eq!(
             host.session_slots
@@ -673,7 +678,7 @@ mod tests {
          * | Rule | binding | resident | snapshot | stdio | recovery | Effect |
          * |---|---|---|---|---|---|---|
          * | R1 | ready | no | yes | yes | either | E1 + E2 + E3 |
-         * | R2 | ready | yes | no | yes | either | reuse resident (covered by W6) |
+         * | R2 | ready | yes | no | yes | either | reuse resident Environment |
          * | R3 | ready | no | no | yes | either | E4 |
          * | R4 | no | no | yes | no | either | ordinary resume (covered by O1) |
          * | R5 | missing | no | yes | no | rebuild | E5 |
@@ -749,7 +754,7 @@ mod tests {
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
         );
         let realizer = Arc::new(RecordingMcpRealizer {
-            required_runtime: Some((Arc::downgrade(&host), thread.into())),
+            required_environment: Some((Arc::downgrade(&host), thread.into())),
             ..Default::default()
         });
         let managed =
@@ -777,6 +782,17 @@ mod tests {
             "R1/E1"
         );
 
+        // Publication deliberately evicts the rebuildable SessionCtx before the
+        // final claimed resolve. A heartbeat may enter this exact gap; the
+        // retained Environment remains the publication-authorized effect owner.
+        host.evict_session_for_rebuild(thread).await;
+        assert!(
+            host.session_slots
+                .read(thread, |slot| slot.runtime.is_none()
+                    && slot.environment.is_some())
+                .unwrap_or(false),
+            "R2 fixture is the publish-to-final-resolve gap"
+        );
         HostWorkerResolver::realize_application_session(
             &host,
             &control,
@@ -787,11 +803,11 @@ mod tests {
             false,
         )
         .await
-        .expect("R2 resident Runtime is the already-installed publication authority");
+        .expect("R2 resident Environment is the already-installed publication authority");
         assert_eq!(
             realizer.calls.lock().unwrap().as_slice(),
             ["stage", "publish", "stage", "publish"],
-            "R2 reuses the resident Runtime without another claimed snapshot"
+            "R2 reuses the resident Environment without another claimed snapshot"
         );
 
         let first_use_thread = "cold-first-use-environment";
@@ -823,7 +839,7 @@ mod tests {
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
         );
         let first_use_realizer = Arc::new(RecordingMcpRealizer {
-            required_runtime: Some((Arc::downgrade(&first_use_host), first_use_thread.into())),
+            required_environment: Some((Arc::downgrade(&first_use_host), first_use_thread.into())),
             ..Default::default()
         });
         let managed = crate::ManagedHost::new(first_use_host.clone())
