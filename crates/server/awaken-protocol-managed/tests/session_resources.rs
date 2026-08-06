@@ -1160,6 +1160,54 @@ async fn published_agent_resources_are_visible_as_effective_session_inputs() {
 }
 
 #[tokio::test]
+async fn session_get_projects_the_durable_activity_lifecycle() {
+    // Cause/effect graph: C1 a driving event crosses durable activity admission;
+    // C2 its Runtime execution remains in flight; C3 the same activity epoch
+    // settles. Effects: E1 the canonical Session snapshot is running; E2 GET
+    // projects running while C2 holds; E3 settlement commits idle and GET
+    // projects idle. Decision rules: A1=C1+C2=>E1+E2, A2=C1+C2+C3=>E3.
+    // This exercises the authoritative aggregate-to-wire projection seam; a
+    // dispatch lookup or protocol-only status owner would be a duplicate path.
+    let runtime = AcceptingFake::default();
+    runtime
+        .settle_run
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let app = router(std::sync::Arc::new(ManagedState::new(runtime.clone())));
+    let (status, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let session_id = session["id"].as_str().unwrap().to_owned();
+
+    let run_app = app.clone();
+    let run_session_id = session_id.clone();
+    let in_flight = tokio::spawn(async move {
+        call(
+            &run_app,
+            "POST",
+            &format!("/v1/sessions/{run_session_id}/events"),
+            Some(json!({
+                "events": [{
+                    "type": "user.message",
+                    "content": [{"type": "text", "text": "hold"}]
+                }]
+            })),
+        )
+        .await
+    });
+    runtime.run_started.notified().await;
+
+    let (status, running) = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "A1");
+    assert_eq!(running["status"], "running", "A1/E2");
+
+    runtime.run_release.notify_one();
+    let (status, body) = in_flight.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "A2: {body}");
+    let (status, idle) = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "A2");
+    assert_eq!(idle["status"], "idle", "A2/E3");
+}
+
+#[tokio::test]
 async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
     // Cause/effect graph:
     // C1 Published -> E1 a Session may be admitted; C2 lifecycle changes to

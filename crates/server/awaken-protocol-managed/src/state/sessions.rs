@@ -146,11 +146,13 @@ impl ManagedState {
         }
     }
 
-    fn wire_session_status(status: &str) -> &'static str {
+    pub(super) fn wire_session_status(status: &str) -> &'static str {
         match status {
             "preparing" => "preparing",
             "activating" => "activating",
             "activation_failed" => "failed",
+            "running" => "running",
+            "rescheduling" => "rescheduling",
             "terminated" => "terminated",
             _ => "idle",
         }

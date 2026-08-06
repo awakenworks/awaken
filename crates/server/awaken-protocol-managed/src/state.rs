@@ -1567,6 +1567,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn wire_projection_preserves_the_durable_execution_lifecycle() {
+        // Session-status cause/effect decision table. C1 the durable activity
+        // aggregate is running; C2 it is rescheduling; C3 it is idle; C4 it is
+        // preparing/activating/failed; C5 it is terminal; C6 a legacy unknown
+        // value is read. E1 public GET reports running; E2 reports rescheduling;
+        // E3 reports idle; E4 preserves the existing preparation vocabulary;
+        // E5 reports terminated; E6 fails safe to idle. Rules S1=C1=>E1,
+        // S2=C2=>E2, S3=C3=>E3, S4=C4=>E4, S5=C5=>E5, S6=C6=>E6. This keeps
+        // the durable Session aggregate as the sole status truth; the wire cache
+        // owns no separate dispatch inference.
+        for (rule, durable, public) in [
+            ("S1", "running", "running"),
+            ("S2", "rescheduling", "rescheduling"),
+            ("S3", "idle", "idle"),
+            ("S4a", "preparing", "preparing"),
+            ("S4b", "activating", "activating"),
+            ("S4c", "activation_failed", "failed"),
+            ("S5", "terminated", "terminated"),
+            ("S6", "legacy-unknown", "idle"),
+        ] {
+            assert_eq!(ManagedState::wire_session_status(durable), public, "{rule}");
+        }
+    }
+
     #[tokio::test]
     async fn terminal_root_fences_mcp_recovery_before_runtime_effects() {
         // Cause graph: repository index hit + MCP nonterminal + root terminal
