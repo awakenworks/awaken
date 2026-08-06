@@ -29,7 +29,15 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         let environment_absent = self.host.session_environment(session_id).await.is_none();
         let has_environment_binding =
             environment_absent && projection.environment.binding().is_some();
-        if self.requires_runtime_before_effects && self.published_snapshot.is_none() {
+        let runtime_resident = self
+            .host
+            .session_slots
+            .read(session_id, |slot| slot.runtime.is_some())
+            .unwrap_or(false);
+        if self.requires_runtime_before_effects
+            && self.published_snapshot.is_none()
+            && !runtime_resident
+        {
             return Err(awaken_session_contract::RunError::classified(
                 "session_runtime_publication_missing",
                 "sandbox stdio MCP realization requires the exact claimed Agent snapshot before effects",
@@ -313,15 +321,30 @@ mod tests {
 
         async fn acknowledge_session_realization(
             &self,
-            _command: awaken_session_contract::AcknowledgeSessionRealization,
+            command: awaken_session_contract::AcknowledgeSessionRealization,
         ) -> Result<
             awaken_session_contract::SessionRealizationDirective,
             awaken_session_contract::SessionRealizationControlFailure,
         > {
+            let lease = self.lease.lock().unwrap().clone();
+            let action =
+                if command.published.iter().any(|generation| {
+                    generation.lease_expires_at_unix_ms < lease.expires_at_unix_ms
+                }) {
+                    let mut stage = self.stage.clone();
+                    stage.generation.lease_expires_at_unix_ms = lease.expires_at_unix_ms;
+                    stage.stage_idempotency_key = format!("renew:{}", lease.expires_at_unix_ms);
+                    awaken_session_contract::SessionRealizationAction::Stage {
+                        prepare_session: false,
+                        mcp_stages: vec![stage],
+                    }
+                } else {
+                    awaken_session_contract::SessionRealizationAction::Complete
+                };
             Ok(awaken_session_contract::SessionRealizationDirective {
                 projection: self.projection.clone(),
-                lease: self.lease.lock().unwrap().clone(),
-                action: awaken_session_contract::SessionRealizationAction::Complete,
+                lease,
+                action,
             })
         }
 
@@ -474,15 +497,15 @@ mod tests {
     /// Concurrent-renewal cause/effect graph: C1 an initial phase driver owns
     /// the Session realization lock; C2 its MCP Stage is still pending; C3 a
     /// heartbeat requests the same owner/incarnation/epoch lease extension.
-    /// Effects: E1 return without blocking or changing durable authority; E2
-    /// never start a second Stage/Publish driver; E3 the next heartbeat renews
-    /// through the canonical driver after the first completes. Replacement
+    /// Effects: E1 extend durable and local authority without blocking; E2 never
+    /// start a second Stage/Publish driver; E3 the current driver catches its
+    /// exact generation up before completion. Replacement
     /// fencing is owned by the contract authorization table; ordinary idle
     /// renewal is W6 in the parent resolver tests.
     ///
     /// | Rule | C1 | C2 | C3 | Effect |
     /// |---|---|---|---|---|
-    /// | R1 | yes | yes | yes | E1 + E2; retry later |
+    /// | R1 | yes | yes | yes | E1 + E2 + E3 |
     /// | R2 | no | no | yes | canonical renewal driver (W6) |
     /// | R3 | any | any | replacement | fence/revoke (authorization A2/W7) |
     #[tokio::test]
@@ -595,15 +618,15 @@ mod tests {
             .await
             .expect("R1/E1 renewal does not wait for Stage")
             .expect("R1/E1 renewal succeeds"),
-            0,
+            1,
             "R1/E1"
         );
         assert_eq!(
             control
                 .begin_calls
                 .load(std::sync::atomic::Ordering::SeqCst),
-            0,
-            "R1/E1 durable renewal is deferred"
+            1,
+            "R1/E1 durable renewal advances once"
         );
         assert_eq!(
             realizer.calls.lock().unwrap().as_slice(),
@@ -618,20 +641,8 @@ mod tests {
             .expect("R1/E3 initial realization completes");
         assert_eq!(
             realizer.calls.lock().unwrap().as_slice(),
-            ["stage", "publish"],
-            "R1/E2"
-        );
-        assert_eq!(
-            host.renew_due_session_realizations(initial_expiry, renewed_expiry)
-                .await
-                .expect("R2/E3 deferred renewal succeeds"),
-            1,
-            "R2/E3"
-        );
-        assert_eq!(
-            realizer.calls.lock().unwrap().as_slice(),
             ["stage", "publish", "stage", "publish"],
-            "R2/E3 uses one later canonical driver"
+            "R1/E2-E3 catches the predecessor publication up exactly once"
         );
         assert_eq!(
             host.session_slots
@@ -764,6 +775,23 @@ mod tests {
             realizer.calls.lock().unwrap().as_slice(),
             ["stage", "publish"],
             "R1/E1"
+        );
+
+        HostWorkerResolver::realize_application_session(
+            &host,
+            &control,
+            thread,
+            directive.clone(),
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("R2 resident Runtime is the already-installed publication authority");
+        assert_eq!(
+            realizer.calls.lock().unwrap().as_slice(),
+            ["stage", "publish", "stage", "publish"],
+            "R2 reuses the resident Runtime without another claimed snapshot"
         );
 
         let first_use_thread = "cold-first-use-environment";

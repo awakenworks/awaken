@@ -378,15 +378,6 @@ impl crate::SharedHost {
         let mut renewed = 0;
         for (session_id, lease) in &due {
             let renewal = async {
-                let realization = self.session_slots.realization_lock(session_id);
-                let Ok(_realization) = realization.try_lock() else {
-                    // The current driver still owns this Session. Do not advance
-                    // durable authority behind an action it has already received;
-                    // the next heartbeat retries inside the ordinary renewal
-                    // horizon. This keeps every Control phase and Runtime effect
-                    // on one serialized exact-generation path.
-                    return Ok::<bool, crate::HostError>(false);
-                };
                 let directive = control
                     .begin_session_realization(awaken_session_contract::BeginSessionRealization {
                         session_id: session_id.clone(),
@@ -399,6 +390,16 @@ impl crate::SharedHost {
                     })
                     .await
                     .map_err(|error| crate::HostError::internal(error.to_string()))?;
+                let realization = self.session_slots.realization_lock(session_id);
+                let Ok(_realization) = realization.try_lock() else {
+                    // Control has extended only the same owner/incarnation/epoch.
+                    // Preserve that authority locally, but never start a second
+                    // effect driver. The active driver compares exact generation
+                    // fences at Activate/Acknowledge and catches up before it can
+                    // report completion.
+                    self.install_session_realization_lease(session_id, directive.lease.clone());
+                    return Ok::<bool, crate::HostError>(true);
+                };
                 crate::host::HostWorkerResolver::drive_application_session(
                     self,
                     control.as_ref(),

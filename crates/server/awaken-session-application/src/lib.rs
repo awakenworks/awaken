@@ -955,6 +955,159 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn publication_acknowledgement_follows_the_renewal_decision_table() {
+        // Cause/effect graph: C1 acknowledgement names the exact active
+        // generation; C2 it names the same owner/incarnation/epoch under a
+        // shorter expiry; C3 any immutable generation coordinate differs.
+        // Effects: E1 acknowledge and make the Session idle; E2 commit nothing
+        // and return the current Stage for canonical catch-up; E3 fail closed
+        // without changing publication state.
+        //
+        // | Rule | exact | monotonic predecessor | replacement | Effect |
+        // |---|---|---|---|---|
+        // | A1 | yes | no | no | E1 |
+        // | A2 | no | yes | no | E2 |
+        // | A3 | no | no | yes | E3 |
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        let environments = Arc::new(RecordingEnvironmentSource::default());
+        let application = application(repo.clone(), environments);
+        let current_expiry = u64::MAX - 1;
+
+        let fixture = |id: &str| {
+            let mut session = persisted(id, false, false, "activating");
+            let lease = awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "worker-a/boot-1".into(),
+                epoch: 7,
+                expires_at_unix_ms: current_expiry,
+            };
+            let attachment_id = awaken_session_contract::McpAttachmentId("browser".into());
+            let generation = awaken_session_contract::McpGeneration(1);
+            session.realization = Some(lease.clone());
+            session
+                .mcp
+                .attachments
+                .push(awaken_session_contract::SessionMcpAttachment {
+                    attachment_id: attachment_id.clone(),
+                    name: "browser".into(),
+                    generation,
+                    target: awaken_session_contract::McpTarget::parse_http(
+                        "https://browser.example.test/mcp",
+                    )
+                    .expect("MCP target"),
+                    prompts_as_skills: false,
+                    origin: awaken_session_contract::McpAttachmentOrigin::Agent,
+                    credential: None,
+                    selected_plaintext_holder: None,
+                    state: awaken_session_contract::McpAttachmentState::Active,
+                    publication_acknowledged: false,
+                    realization: Some(awaken_session_contract::McpRealizationClaim {
+                        realization_id: "realize-browser-1".into(),
+                        runtime_incarnation: lease.runtime_incarnation.clone(),
+                        lease_epoch: lease.epoch,
+                        lease_expires_at_unix_ms: current_expiry,
+                        stage_idempotency_key: "renew-browser-1".into(),
+                    }),
+                    attempts: 1,
+                    last_error: None,
+                });
+            let generation_ref = awaken_session_contract::McpGenerationRef {
+                session_id: id.into(),
+                attachment_id,
+                generation,
+                runtime_incarnation: lease.runtime_incarnation.clone(),
+                lease_epoch: lease.epoch,
+                lease_expires_at_unix_ms: current_expiry,
+            };
+            (session, lease, generation_ref)
+        };
+
+        let (exact, exact_lease, exact_generation) = fixture("ack-exact");
+        create(repo.as_ref(), exact).await;
+        let exact_result =
+            awaken_session_contract::SessionRealizationControl::acknowledge_session_realization(
+                &application,
+                awaken_session_contract::AcknowledgeSessionRealization {
+                    session_id: "ack-exact".into(),
+                    lease: exact_lease,
+                    published: vec![exact_generation],
+                    drained: Vec::new(),
+                },
+            )
+            .await
+            .expect("A1 exact acknowledgement");
+        assert!(
+            matches!(
+                exact_result.action,
+                awaken_session_contract::SessionRealizationAction::Complete
+            ),
+            "A1/E1"
+        );
+        assert_eq!(repo.get("ack-exact").await.unwrap().status, "idle", "A1/E1");
+
+        let (renewed, renewed_lease, mut predecessor) = fixture("ack-renewed");
+        create(repo.as_ref(), renewed).await;
+        predecessor.lease_expires_at_unix_ms -= 1;
+        let mut predecessor_lease = renewed_lease.clone();
+        predecessor_lease.expires_at_unix_ms -= 1;
+        let renewed_result =
+            awaken_session_contract::SessionRealizationControl::acknowledge_session_realization(
+                &application,
+                awaken_session_contract::AcknowledgeSessionRealization {
+                    session_id: "ack-renewed".into(),
+                    lease: predecessor_lease,
+                    published: vec![predecessor],
+                    drained: Vec::new(),
+                },
+            )
+            .await
+            .expect("A2 monotonic predecessor");
+        assert!(
+            matches!(
+                renewed_result.action,
+                awaken_session_contract::SessionRealizationAction::Stage { .. }
+            ),
+            "A2/E2"
+        );
+        let renewed_truth = repo.get("ack-renewed").await.unwrap();
+        assert_eq!(renewed_truth.status, "activating", "A2/E2");
+        assert!(
+            !renewed_truth.mcp.attachments[0].publication_acknowledged,
+            "A2/E2"
+        );
+
+        let (replacement, replacement_lease, mut wrong_generation) = fixture("ack-replaced");
+        create(repo.as_ref(), replacement).await;
+        wrong_generation.attachment_id = awaken_session_contract::McpAttachmentId("other".into());
+        let error =
+            awaken_session_contract::SessionRealizationControl::acknowledge_session_realization(
+                &application,
+                awaken_session_contract::AcknowledgeSessionRealization {
+                    session_id: "ack-replaced".into(),
+                    lease: replacement_lease,
+                    published: vec![wrong_generation],
+                    drained: Vec::new(),
+                },
+            )
+            .await
+            .expect_err("A3 replacement must fail closed");
+        assert!(
+            matches!(
+                error,
+                awaken_session_contract::SessionRealizationControlFailure::Invalid(_)
+            ),
+            "A3/E3: {error}"
+        );
+        assert!(
+            !repo.get("ack-replaced").await.unwrap().mcp.attachments[0].publication_acknowledged,
+            "A3/E3"
+        );
+    }
+
+    #[tokio::test]
     async fn root_mutation_cause_effect_decision_table() {
         // Cause-effect graph: C1 expected revision is current; C2 idempotency key
         // and payload hash replay exactly; C3 expected revision is stale; C4 an
