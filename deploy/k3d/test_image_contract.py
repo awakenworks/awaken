@@ -18,10 +18,19 @@ def main() -> None:
     mkdir = next(line for line in install.splitlines() if "mkdir -p" in line)
     for mount_point in ("/workspace", "/outputs"):
         assert mount_point in mkdir, f"K3D product image is missing mount point: {mount_point}"
-    # I3 the execution role is a separate deployable -> the combined black-box
-    # fixture image must copy that exact artifact, not route it through the
-    # management CLI auxiliary slot.
+    # I3 Coordinator and Worker are separate deployables -> the combined
+    # black-box fixture image must copy those exact artifacts, not route either
+    # role through the management CLI auxiliary slot.
+    assert "ARG AUXILIARY_EXECUTABLE=awaken-control" in dockerfile
+    assert "COPY ${AUXILIARY_EXECUTABLE} /usr/local/bin/${AUXILIARY_EXECUTABLE}" in dockerfile
+    assert "COPY awaken-coordinator /usr/local/bin/awaken-coordinator" in dockerfile
     assert "COPY awaken-worker /usr/local/bin/awaken-worker" in dockerfile
+    resources = (Path(__file__).parent / "distributed-control" / "resources.yaml").read_text()
+    assert '/usr/local/bin/awaken-control", "database", "migrate"' in resources
+    assert '/usr/local/bin/awaken-coordinator", "database", "migrate"' in resources
+    assert '/usr/local/bin/awaken-coordinator", "--config"' in resources
+    assert '/usr/local/bin/awaken", "coordinator"' not in resources
+    assert '/usr/local/bin/awaken", "database", "migrate"' not in resources
     worker_image = (
         Path(__file__).parent.parent / "images" / "worker" / "Dockerfile"
     ).read_text()
@@ -32,6 +41,17 @@ def main() -> None:
     assert "USER 10001" in worker_image
     assert "bubblewrap" in worker_image
     assert "/usr/local/bin/awaken\n" not in worker_image
+    # Cause/effect rule I5: selecting a Control or Coordinator production image
+    # yields exactly its role-named entry executable; the container cannot switch
+    # authority by supplying another aggregate CLI subcommand.
+    for role in ("control", "coordinator"):
+        role_image = (
+            Path(__file__).parent.parent / "images" / role / "Dockerfile"
+        ).read_text()
+        assert f"COPY ${{BIN}} /usr/local/bin/awaken-{role}" in role_image
+        assert f'ENTRYPOINT ["/usr/local/bin/awaken-{role}"]' in role_image
+        assert "USER 10001" in role_image
+        assert " /usr/local/bin/awaken\n" not in role_image
     # Cause/effect decision table. C5 Docker uses a non-default Buildx driver;
     # C6 the production-image acceptance command immediately runs the tagged
     # image. E3 the build explicitly loads its result into Docker's image store.

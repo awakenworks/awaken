@@ -129,7 +129,7 @@ spec:
         - name: migrate
           image: awaken-roles:latest
           imagePullPolicy: Never
-          command: ["/usr/local/bin/awaken", "database", "migrate", "--config", "/etc/awaken/control.toml"]
+          command: ["/usr/local/bin/awaken-control", "database", "migrate", "--config", "/etc/awaken/control.toml"]
           volumeMounts:
             - { name: config, mountPath: /etc/awaken, readOnly: true }
             - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
@@ -152,7 +152,7 @@ spec:
         - name: migrate
           image: awaken-roles:latest
           imagePullPolicy: Never
-          command: ["/usr/local/bin/awaken", "database", "migrate", "--config", "/etc/awaken/coordinator.toml"]
+          command: ["/usr/local/bin/awaken-coordinator", "database", "migrate", "--config", "/etc/awaken/coordinator.toml"]
           volumeMounts:
             - { name: config, mountPath: /etc/awaken, readOnly: true }
             - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
@@ -236,7 +236,7 @@ spec:
         - name: coordinator
           image: awaken-roles:latest
           imagePullPolicy: Never
-          command: ["/usr/local/bin/awaken", "coordinator", "--config", "/etc/awaken/coordinator.toml"]
+          command: ["/usr/local/bin/awaken-coordinator", "--config", "/etc/awaken/coordinator.toml"]
           ports: [{ containerPort: 3000 }]
           readinessProbe:
             httpGet: { path: /readyz, port: 3000 }

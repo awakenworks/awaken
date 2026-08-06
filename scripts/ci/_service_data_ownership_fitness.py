@@ -26,6 +26,9 @@ PROCESS_STORES = "crates/bin/awaken-cli/src/process_stores.rs"
 RUNTIME_HOST_MANIFEST = "crates/server/awaken-runtime-host/Cargo.toml"
 COORDINATOR_MANIFEST = "crates/server/awaken-coordinator/Cargo.toml"
 CLI_MANIFEST = "crates/bin/awaken-cli/Cargo.toml"
+CLI_SERVICE = "crates/bin/awaken-cli/src/service.rs"
+CONTROL_BIN = "crates/bin/awaken-cli/src/bin/awaken-control.rs"
+COORDINATOR_BIN = "crates/bin/awaken-cli/src/bin/awaken-coordinator.rs"
 FILE_STORE_SOURCE = "crates/resources/awaken-file-store/src/lib.rs"
 COORDINATOR_SOURCE = "crates/server/awaken-coordinator/src/lib.rs"
 MEMORY_STORE_SOURCE = "crates/resources/awaken-memory-store/src/repository.rs"
@@ -500,6 +503,93 @@ def resolved_worker_dependencies(repo_root: Path) -> set[str]:
     }
 
 
+def resolved_runtime_host_dependencies(repo_root: Path) -> set[str]:
+    """Read the default normal closure of the reusable Runtime Host."""
+
+    result = subprocess.run(
+        [
+            "cargo",
+            "tree",
+            "-p",
+            "awaken-runtime-host",
+            "--edges",
+            "normal",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+        ],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"resolve default Runtime Host dependency closure: {result.stderr.strip()}"
+        )
+    return {
+        match.group(1)
+        for line in result.stdout.splitlines()
+        if (match := re.match(r"^([A-Za-z0-9_-]+)\s+v", line))
+    }
+
+
+def runtime_host_feature_violations(manifest: dict) -> list[str]:
+    """Keep authority acquisition explicit and role-named at product edges."""
+
+    features = manifest.get("features", {})
+    errors: list[str] = []
+    if features.get("default", []) != []:
+        errors.append("Runtime Host default features must be authority-free")
+    if "authority" not in features.get("coordinator", []):
+        errors.append(
+            "Runtime Host `coordinator` feature must select the compatibility assembly"
+        )
+    return errors
+
+
+def service_binary_violations(
+    manifest: dict,
+    service_source: str,
+    control_source: str,
+    coordinator_source: str,
+) -> list[str]:
+    """Keep one lifecycle implementation behind the role-named executables."""
+
+    errors: list[str] = []
+    bins = {
+        entry.get("name"): entry.get("path")
+        for entry in manifest.get("bin", [])
+        if isinstance(entry, dict)
+    }
+    expected = {
+        "awaken": "src/main.rs",
+        "awaken-control": "src/bin/awaken-control.rs",
+        "awaken-coordinator": "src/bin/awaken-coordinator.rs",
+    }
+    for name, path in expected.items():
+        if bins.get(name) != path:
+            errors.append(f"missing canonical `{name}` executable at `{path}`")
+    if manifest.get("package", {}).get("default-run") != "awaken":
+        errors.append("aggregate operator launcher must remain Cargo's default executable")
+    if "awaken-worker" in bins:
+        errors.append("aggregate CLI package must not recreate the Worker executable")
+    if service_source.count("pub async fn run_service(") != 1:
+        errors.append("CLI must own exactly one shared service lifecycle")
+    if service_source.count("async fn migrate_service_for_role(") != 1:
+        errors.append("role executables must share one role-fenced migration lifecycle")
+    for name, source in (
+        ("awaken-control", control_source),
+        ("awaken-coordinator", coordinator_source),
+    ):
+        if "run_service_binary(" not in source:
+            errors.append(f"`{name}` bypasses the shared service lifecycle")
+        if "build_" in source:
+            errors.append(f"`{name}` reconstructs composition inside its thin entrypoint")
+    return errors
+
+
 def source_violations(source: str) -> list[str]:
     """Return forbidden production authority constructors/vocabulary."""
 
@@ -901,7 +991,11 @@ def selftest() -> None:
     per schema mode in the canonical Runtime assembly -> accepted; O32 a duplicate
     initializer or retired global Worker authority path -> rejected; O33 one
     journaled Webhook mutation authority -> accepted; O34 direct put/delete or a
-    missing recovery edge -> rejected.
+    missing recovery edge -> rejected; O35 an empty Runtime Host default plus an
+    explicit Coordinator capability -> accepted; O36 an implicit default or a
+    detached Coordinator capability -> rejected; O37 all role-named executables
+    terminate in one lifecycle -> accepted; O38 a missing target, Worker twin, or
+    entrypoint-local composition -> rejected.
     Together the rules cover compile-time acquisition, production call paths,
     component ownership, and schema acquisition.
     """
@@ -1213,6 +1307,42 @@ def selftest() -> None:
         webhook_store.replace("fn material_refs", "")
         + " fn put(&self, def: WebhookEndpointDef"
     )  # O34
+    assert runtime_host_feature_violations(
+        {"features": {"default": [], "coordinator": ["authority"], "authority": []}}
+    ) == []  # O35
+    assert runtime_host_feature_violations(
+        {"features": {"default": ["authority"], "coordinator": []}}
+    ) == [
+        "Runtime Host default features must be authority-free",
+        "Runtime Host `coordinator` feature must select the compatibility assembly",
+    ]  # O36
+    service_bins = {
+        "package": {"default-run": "awaken"},
+        "bin": [
+            {"name": "awaken", "path": "src/main.rs"},
+            {"name": "awaken-control", "path": "src/bin/awaken-control.rs"},
+            {
+                "name": "awaken-coordinator",
+                "path": "src/bin/awaken-coordinator.rs",
+            },
+        ]
+    }
+    assert service_binary_violations(
+        service_bins,
+        "pub async fn run_service( async fn migrate_service_for_role(",
+        "run_service_binary(",
+        "run_service_binary(",
+    ) == []  # O37
+    assert service_binary_violations(
+        {
+            "package": {"default-run": "awaken"},
+            "bin": service_bins["bin"]
+            + [{"name": "awaken-worker", "path": "worker.rs"}],
+        },
+        "pub async fn run_service( pub async fn run_service( async fn migrate_service_for_role(",
+        "build_control()",
+        "",
+    )  # O38
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -1243,6 +1373,26 @@ def check_all(repo_root: Path) -> list[str]:
             f"{WORKER_MANIFEST}: Worker transitively links authority-store dependency `{package}`; "
             "use the existing claim-fenced boundary adapter"
         )
+    runtime_host_manifest = product_manifests[RUNTIME_HOST_MANIFEST]
+    for error in runtime_host_feature_violations(runtime_host_manifest):
+        errors.append(f"{RUNTIME_HOST_MANIFEST}: {error}")
+    try:
+        runtime_dependencies = resolved_runtime_host_dependencies(repo_root)
+    except RuntimeError as error:
+        errors.append(str(error))
+        runtime_dependencies = set()
+    for package in dependency_violations(runtime_dependencies):
+        errors.append(
+            f"{RUNTIME_HOST_MANIFEST}: default Runtime Host transitively links "
+            f"authority-store dependency `{package}`; select it only from Coordinator composition"
+        )
+    for error in service_binary_violations(
+        product_manifests[CLI_MANIFEST],
+        (repo_root / CLI_SERVICE).read_text(encoding="utf-8"),
+        (repo_root / CONTROL_BIN).read_text(encoding="utf-8"),
+        (repo_root / COORDINATOR_BIN).read_text(encoding="utf-8"),
+    ):
+        errors.append(f"{CLI_MANIFEST}: {error}")
 
     source_root = repo_root / WORKER_SOURCE
     for path in sorted(source_root.rglob("*.rs")):

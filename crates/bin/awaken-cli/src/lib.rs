@@ -1,15 +1,18 @@
-//! `awaken-cli` library: the single-machine **composition root**.
+//! `awaken-cli` library: the product process **composition root**.
 //!
 //! Control (`awaken-control`) and Coordinator (`awaken-coordinator`) do not depend on
 //! each other. This crate is their process composition root: it opens deployment
 //! stores, builds shared adapters, asks each owner for its router, and exposes
 //! exactly the API selected by `config::Role`. AllInOne merges those same routers;
-//! it does not maintain a second implementation.
+//! it does not maintain a second implementation. The role-named Control and
+//! Coordinator executables terminate in the same lifecycle, while Worker keeps
+//! its independent authority-free bootstrap.
 //!
-//! The `awaken` binary ([`main`](../main.rs)) is a thin shell over this library.
+//! Every binary target is a thin shell over this library.
 mod acp_local_credentials;
 mod assistant_selection;
 pub mod config;
+pub mod console;
 mod console_assets;
 mod control;
 mod control_component;
@@ -30,6 +33,7 @@ mod process_stores;
 mod process_surface;
 mod resource_component;
 mod runtime_process_router;
+mod service;
 mod web_search_publication;
 mod worker_observation_wiring;
 mod worker_transport_security;
@@ -81,6 +85,7 @@ use process_stores::{
 use resource_component::ephemeral_resource_component;
 use resource_component::open_resource_component;
 use runtime_process_router::assemble_runtime_process_router;
+pub use service::{ServiceRole, migrate_service, run_service, run_service_binary};
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
 // constants a test / operator embedding drives — re-exported from the authoring plane.
 pub use awaken_control::{

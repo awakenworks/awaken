@@ -53,6 +53,13 @@ Resources component builders; an optional local Worker uses the same
 | Worker | `WorkerNodeBuilder` | none; execution state is ephemeral | claim-fenced Coordinator and per-kind Resources/Credential clients |
 | AllInOne | the same Control, Coordinator, Resources, and optional Worker components | the union of those authorities in one process | local adapters implement the same ports |
 
+Production process targets are role-named: `awaken-control`,
+`awaken-coordinator`, and `awaken-worker`. The `awaken` target remains the
+operator/AllInOne launcher and retains `awaken control` / `awaken coordinator`
+as compatibility commands. Control and Coordinator targets share the canonical
+source-level lifecycle in `awaken-cli`; neither entrypoint reconstructs a domain
+component. Worker keeps its independent authority-store-free bootstrap.
+
 Package names make the application and adapter roles explicit even though several
 live under the technical `crates/server/` workspace bucket:
 
@@ -325,10 +332,11 @@ or remote agent execution is added only when a future ADR introduces it.
 ## 7. Operational Convergence And Deployment Topology
 
 The four bounded contexts and their persistence authorities are complete in the
-current composition. The distributed binary exposes Control, Coordinator, and
-Worker roles; Resources is a canonical sibling component currently hosted by the
-Coordinator process. This is process co-location, not shared ownership: its
-stores, migrations, application services, and ports remain Resources-owned.
+current composition. Distributed deployment uses role-named Control,
+Coordinator, and Worker executables; Resources is a canonical sibling component
+currently hosted by the Coordinator process. This is process co-location, not
+shared ownership: its stores, migrations, application services, and contracts
+remain Resources-owned.
 
 ### 7.1 Static registration recovery
 

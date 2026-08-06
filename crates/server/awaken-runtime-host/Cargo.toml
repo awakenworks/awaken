@@ -93,10 +93,18 @@ regex = "1"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 [features]
-default = ["authority"]
-# Store-owning Coordinator/AllInOne adapters. The Worker build disables default
-# features and retains only the injected execution ports, so database drivers
-# and Control credential authority cannot enter its artifact transitively.
+# The reusable Host is authority-free by default. Product composition must opt
+# into the Coordinator compatibility assembly explicitly; Worker and other
+# execution-only consumers therefore cannot acquire a Store through an omitted
+# `default-features = false` flag.
+default = []
+# Public composition capability for Coordinator/AllInOne. `authority` remains
+# the internal compatibility switch while the store-opening code is migrated to
+# the Coordinator owner; callers name the role that acquires it, not a generic
+# authority layer.
+coordinator = ["authority"]
+# Internal compatibility capability for the existing store-opening adapters.
+# New product callers must select `coordinator` instead.
 authority = [
     "awaken-run-ingress/durable",
     "awaken-file-store/sqlite",

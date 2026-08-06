@@ -3,6 +3,7 @@ name = "awaken-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+default-run = "awaken"
 
 [package.metadata.awaken]
 context = "apps"
@@ -17,11 +18,17 @@ path = "src/lib.rs"
 name = "awaken"
 path = "src/main.rs"
 
-# The single aggregated command + the single-machine composition root. Config
-# (AWAKEN_ROLE + the deployment axes) decides the deployment: single-machine all-in-one,
-# a coordinator, a registered execution worker, or a hand executor endpoint. The Serve role
-# weaves the authoring plane (awaken-control) and the data plane (awaken-coordinator) — two
-# siblings that never depend on each other — into one management router here.
+[[bin]]
+name = "awaken-control"
+path = "src/bin/awaken-control.rs"
+
+[[bin]]
+name = "awaken-coordinator"
+path = "src/bin/awaken-coordinator.rs"
+
+# One shared source-level composition root produces the operator/AllInOne launcher
+# and thin Control/Coordinator executables. Every target calls the same role
+# service lifecycle; the authority-free Worker remains its own package and binary.
 [dependencies]
 awaken-api-contract = { workspace = true }
 # The two management planes this composition root weaves together.
@@ -33,7 +40,7 @@ awaken-authz-enforce = { workspace = true }
 awaken-worker = { workspace = true }
 # The service layer: SharedHost / ManagedHost / ConfigService / ConfigPlane and the
 # durable session repositories the composition opens.
-awaken-runtime-host = { workspace = true, features = ["authority"] }
+awaken-runtime-host = { workspace = true, features = ["coordinator"] }
 awaken-resource-worker-http.workspace = true
 awaken-config-service.workspace = true
 awaken-credential-materializer = { workspace = true, features = ["authority"] }

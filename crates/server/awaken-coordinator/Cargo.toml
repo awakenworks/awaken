@@ -13,7 +13,7 @@ authority = "coordinator"
 [dependencies]
 # The extracted service layer: SharedHost / ManagedHost / RunApplicationHost and all
 # host modules live here; this bin only composes them into router modes.
-awaken-runtime-host = { workspace = true, features = ["authority"] }
+awaken-runtime-host = { workspace = true, features = ["coordinator"] }
 awaken-run-ingress-http.workspace = true
 awaken-resource-worker-http.workspace = true
 awaken-worker-runtime.workspace = true
