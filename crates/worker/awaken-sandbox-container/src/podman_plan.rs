@@ -53,6 +53,31 @@ pub fn rootfs_plan(kind: &pc::EnvironmentKind) -> Result<RootfsPlan, RootfsError
     }
 }
 
+fn declared_environment(spec: &pc::SandboxSpec) -> Option<pc::EnvironmentKind> {
+    spec.extra
+        .as_ref()
+        .and_then(|value| value.get("environment"))
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+}
+
+pub(crate) fn image_of(spec: &pc::SandboxSpec, default_image: &str) -> String {
+    declared_environment(spec)
+        .and_then(|environment| match environment {
+            pc::EnvironmentKind::Image { reference } => Some(reference),
+            _ => None,
+        })
+        .unwrap_or_else(|| default_image.to_owned())
+}
+
+/// Resolve the rootfs from the same canonical Environment that selects the
+/// Docker/Kubernetes image. A non-container or absent declaration falls back to
+/// the configured container image.
+pub(crate) fn rootfs_of(spec: &pc::SandboxSpec, default_image: &str) -> RootfsPlan {
+    declared_environment(spec)
+        .and_then(|kind| rootfs_plan(&kind).ok())
+        .unwrap_or_else(|| RootfsPlan::Image(image_of(spec, default_image)))
+}
+
 /// Render a deterministic rootless-Podman `run` argv for a Session environment.
 #[must_use]
 pub fn podman_run_argv(name: &str, plan: &ContainerPlan, rootfs: &RootfsPlan) -> Vec<String> {

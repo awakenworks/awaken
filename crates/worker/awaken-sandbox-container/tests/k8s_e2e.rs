@@ -80,6 +80,13 @@ fn fixture_image() -> String {
     std::env::var("AWAKEN_K8S_FIXTURE_IMAGE").unwrap_or_else(|_| "awaken-bb:1".to_string())
 }
 
+fn container_extra(command: Vec<String>, image: String) -> serde_json::Value {
+    serde_json::json!({
+        "command": command,
+        "environment": { "kind": "image", "reference": image }
+    })
+}
+
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
         scope: scope.into(),
@@ -91,7 +98,7 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({ "command": session_argv(), "image": fixture_image() })),
+        extra: Some(container_extra(session_argv(), fixture_image())),
     }
 }
 
@@ -128,7 +135,7 @@ fn inline_spec(scope: &str, marker: &str) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({ "command": session_argv(), "image": fixture_image() })),
+        extra: Some(container_extra(session_argv(), fixture_image())),
     }
 }
 
@@ -152,7 +159,7 @@ fn managed_input_spec(scope: &str, path: &str, marker: &str) -> pc::SandboxSpec 
         outputs_path: "/mnt/session/outputs".into(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({ "command": session_argv(), "image": fixture_image() })),
+        extra: Some(container_extra(session_argv(), fixture_image())),
     }
 }
 
@@ -179,7 +186,7 @@ fn file_spec(scope: &str) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({ "command": session_argv(), "image": fixture_image() })),
+        extra: Some(container_extra(session_argv(), fixture_image())),
     }
 }
 
@@ -266,7 +273,7 @@ fn binary_file_spec(scope: &str) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({ "command": session_argv(), "image": fixture_image() })),
+        extra: Some(container_extra(session_argv(), fixture_image())),
     }
 }
 
@@ -291,10 +298,17 @@ fn credential_spec(scope: &str, refreshed: &[u8]) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         limits: Default::default(),
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({
-            "command": ["sh", "-c", format!("printf '%s' '{}' > /acp-config/auth.json; sleep 300", String::from_utf8_lossy(refreshed))],
-            "image": fixture_image()
-        })),
+        extra: Some(container_extra(
+            vec![
+                "sh".into(),
+                "-c".into(),
+                format!(
+                    "printf '%s' '{}' > /acp-config/auth.json; sleep 300",
+                    String::from_utf8_lossy(refreshed)
+                ),
+            ],
+            fixture_image(),
+        )),
     }
 }
 
@@ -966,10 +980,7 @@ async fn an_expired_hand_exec_is_safe_to_replace_inside_the_same_session_pod() {
         .expect("connect to Kubernetes");
     let provider = ContainerProvider::new(Arc::new(runtime), image.clone());
     let mut sandbox_spec = spec(&scope);
-    sandbox_spec.extra = Some(serde_json::json!({
-        "command": session_argv(),
-        "image": image,
-    }));
+    sandbox_spec.extra = Some(container_extra(session_argv(), image));
     let sandbox = provider
         .create_container(&sandbox_spec)
         .await

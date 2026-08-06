@@ -208,8 +208,17 @@ fn container_plan_maps_command_image_env_binds_network_and_outputs() {
 
 #[test]
 fn container_plan_honors_an_image_override_and_network_variants() {
+    /* Container-image authority cause/effect decision table. Causes: C1 the
+     * canonical Environment declares an OCI image; C2 it declares a non-image
+     * Environment; C3 it declares no Environment.
+     * Effects: E1 Docker/Kubernetes `plan.image` and Podman `plan.rootfs` select
+     * the same canonical reference; E2 the configured base is the final fallback.
+     * Rules: I1 C1=>E1; I2 C2=>E2; I3 C3=>E2. This prevents a prepared
+     * package Environment from silently falling back to the package-free image. */
     let mut s = spec("s2");
-    s.extra = Some(serde_json::json!({ "image": "custom:1" }));
+    s.extra = Some(serde_json::json!({
+        "environment": { "kind": "image", "reference": "custom:1" }
+    }));
     s.network = pc::NetworkPolicy::None;
     assert_eq!(
         container_plan(&s, "def", &[], None).unwrap().image,
@@ -224,6 +233,39 @@ fn container_plan_honors_an_image_override_and_network_variants() {
     assert_eq!(
         container_plan(&s, "def", &[], None).unwrap().network,
         NetworkMode::Open
+    );
+
+    s.extra = Some(serde_json::json!({
+        "environment": {
+            "kind": "image",
+            "reference": "registry.example/prepared@sha256:exact"
+        }
+    }));
+    let prepared = container_plan(&s, "def", &[], None).unwrap();
+    assert_eq!(
+        prepared.image, "registry.example/prepared@sha256:exact",
+        "I1"
+    );
+    assert_eq!(
+        prepared.rootfs,
+        RootfsPlan::Image("registry.example/prepared@sha256:exact".into()),
+        "I1/E1"
+    );
+
+    s.extra = Some(serde_json::json!({
+        "environment": { "kind": "sandbox" }
+    }));
+    assert_eq!(
+        container_plan(&s, "def", &[], None).unwrap().image,
+        "def",
+        "I2"
+    );
+
+    s.extra = None;
+    assert_eq!(
+        container_plan(&s, "def", &[], None).unwrap().image,
+        "def",
+        "I3"
     );
 }
 
