@@ -83,7 +83,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use awaken_agent_contract::agent::message::Message;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn ephemeral_resource_catalog() -> awaken_resource_store::SqliteResourceStore {
         awaken_resource_store::SqliteResourceStore::in_memory()
@@ -474,6 +474,64 @@ mod tests {
             vec![id],
             "a re-archive (idempotent) does not re-dispose"
         );
+    }
+
+    /// Terminal-cleanup cause/effect graph. C1 the primary Runtime exists; C2
+    /// zero or more child Runtime ids exist; C3 a duplicate child id is present;
+    /// C4 the terminal command is replayed. E1 every unique Runtime is torn down
+    /// once on the transition; E2 duplicates do not duplicate effects; E3 a
+    /// replay performs no teardown. Background recovery drives the same
+    /// application method, so there is no second cleanup algorithm.
+    ///
+    /// | Rule | Primary | Children | Duplicate | Replay | Effect |
+    /// |---|---|---|---|---|---|
+    /// | T1 | yes | two | no | no | E1 |
+    /// | T2 | yes | two | yes | no | E1 + E2 |
+    /// | T3 | yes | any | any | yes | E3 |
+    #[tokio::test]
+    async fn archive_terminal_cleanup_tears_down_each_unique_runtime_once() {
+        let runtime = EndSessionRecorder::default();
+        let ended = runtime.ended.clone();
+        let state = ManagedState::new(runtime);
+        let id = state
+            .create_session(bare_create_params(), None)
+            .await
+            .expect("create")
+            .id;
+        {
+            let mut sessions = state.sessions.lock().unwrap();
+            let record = sessions.get_mut(&id).unwrap();
+            record.child_threads.push(ManagedState::child_thread(
+                &record.session,
+                "child-a",
+                "researcher",
+            ));
+            record.child_threads.push(ManagedState::child_thread(
+                &record.session,
+                "child-b",
+                "reviewer",
+            ));
+            record.child_threads.push(ManagedState::child_thread(
+                &record.session,
+                "child-a",
+                "duplicate-projection",
+            ));
+        }
+
+        state.archive_session(&id).await.expect("T1/T2");
+        assert_eq!(
+            ended
+                .lock()
+                .unwrap()
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([id.clone(), "child-a".into(), "child-b".into()]),
+            "T1/T2"
+        );
+        assert_eq!(ended.lock().unwrap().len(), 3, "T2");
+        state.archive_session(&id).await.expect("T3");
+        assert_eq!(ended.lock().unwrap().len(), 3, "T3");
     }
 
     #[tokio::test]

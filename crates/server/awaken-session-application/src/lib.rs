@@ -39,6 +39,8 @@ mod update;
 pub use update::{
     SessionUpdateChanges, SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
 };
+mod terminal;
+pub use terminal::SessionTerminalTransition;
 
 /// Secret-free credential selection used while compiling a Session.
 #[async_trait::async_trait]
@@ -1104,6 +1106,86 @@ mod tests {
             .await,
             Err(SessionMutationError::Conflict),
             "C4"
+        );
+    }
+
+    /// Terminal-transition cause/effect graph. C1 the durable Session is live;
+    /// C2 two archive commands race; C3 the same archive is replayed; C4 delete
+    /// targets a live Session; C5 delete targets another terminal state. Effects:
+    /// E1 exactly one archive CAS/fact and one idempotent observation; E2 replay
+    /// does not advance revision; E3 delete atomically records hidden terminal
+    /// status plus recoverable cleanup classification; E4 terminal-to-terminal mutation is rejected.
+    ///
+    /// | Rule | Durable state | Command | Race/replay | Effect |
+    /// |---|---|---|---|---|
+    /// | L1 | idle | archive | race | E1 |
+    /// | L2 | terminated | archive | replay | E2 |
+    /// | L3 | idle | delete | none | E3 |
+    /// | L4 | terminated | delete | none | E4 |
+    #[tokio::test]
+    async fn terminal_transition_decision_table_is_durable_and_idempotent() {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        create(
+            repo.as_ref(),
+            persisted("archive-race", false, false, "idle"),
+        )
+        .await;
+        create(
+            repo.as_ref(),
+            persisted("delete-live", false, false, "idle"),
+        )
+        .await;
+        let app = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let fact = |id: &str, event_type: &str| awaken_session_contract::ManagedLifecycleFact {
+            id: format!("{id}:{event_type}"),
+            object_id: id.into(),
+            workspace_id: Some("workspace".into()),
+            event_type: event_type.into(),
+            timestamp: 1,
+        };
+
+        let archive_fact = fact("archive-race", "session.terminated");
+        let (first, second) = tokio::join!(
+            app.begin_archive("archive-race", "2026-08-06T00:00:00Z", archive_fact.clone()),
+            app.begin_archive("archive-race", "2026-08-06T00:00:00Z", archive_fact)
+        );
+        let first = first.expect("L1 first");
+        let second = second.expect("L1 second");
+        assert_ne!(first.transitioned, second.transitioned, "L1");
+        let archived = repo.get("archive-race").await.expect("L1 durable");
+        assert_eq!(archived.status, "terminated", "L1");
+        let revision = archived.revision;
+        let replay = app
+            .begin_archive(
+                "archive-race",
+                "another-timestamp",
+                fact("archive-race", "session.terminated"),
+            )
+            .await
+            .expect("L2");
+        assert!(!replay.transitioned, "L2");
+        assert_eq!(replay.session.revision, revision, "L2");
+
+        let deleted = app
+            .begin_delete("delete-live", fact("delete-live", "session.deleted"))
+            .await
+            .expect("L3");
+        assert!(deleted.transitioned, "L3");
+        assert_eq!(deleted.session.status, "deleted", "L3");
+        assert!(deleted.session.needs_resource_reconciliation(), "L3");
+        assert!(
+            matches!(
+                app.begin_delete("archive-race", fact("archive-race", "session.deleted"))
+                    .await,
+                Err(SessionPreparationError::NotFound)
+            ),
+            "L4"
         );
     }
 

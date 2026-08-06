@@ -11,7 +11,7 @@ use super::{
     SessionReconciliationFailure,
 };
 
-fn mutation_failure(error: SessionMutationError) -> SessionPreparationError {
+pub(crate) fn mutation_failure(error: SessionMutationError) -> SessionPreparationError {
     match error {
         SessionMutationError::NotFound => SessionPreparationError::NotFound,
         SessionMutationError::Conflict => SessionPreparationError::Conflict,
@@ -22,7 +22,7 @@ fn mutation_failure(error: SessionMutationError) -> SessionPreparationError {
     }
 }
 
-fn internal(error: impl std::fmt::Display) -> SessionPreparationError {
+pub(crate) fn internal(error: impl std::fmt::Display) -> SessionPreparationError {
     SessionPreparationError::Rejected(RunError::internal(error.to_string()))
 }
 
@@ -210,19 +210,60 @@ impl SessionApplication {
             return Ok(session);
         }
 
+        match self
+            .release_terminal_resources(owner_scope, &session_id, &[])
+            .await?
+        {
+            Some(session) => Ok(session),
+            None => Ok(session),
+        }
+    }
+
+    /// The sole terminal cleanup implementation shared by archive/delete edges
+    /// and background recovery. Every supplied child Runtime is attempted even
+    /// when another teardown fails; durable release completion commits only when
+    /// all external effects succeed.
+    pub async fn release_terminal_resources(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+        child_thread_ids: &[String],
+    ) -> Result<Option<PersistedSession>, SessionPreparationError> {
+        let Some(mut session) = self.session_repository().get(session_id).await else {
+            return Ok(None);
+        };
         if session.resources.pending.is_none() {
             session.resources.begin_release().map_err(internal)?;
+            session = self
+                .commit_session_snapshot(
+                    owner_scope,
+                    session,
+                    "resource-release-intent",
+                    Vec::new(),
+                )
+                .await
+                .map_err(mutation_failure)?;
         }
-        session = self
-            .commit_session_snapshot(owner_scope, session, "resource-release-intent", Vec::new())
-            .await
-            .map_err(mutation_failure)?;
-        self.runtime()
-            .end_session(&session_id)
-            .await
-            .map_err(SessionPreparationError::Rejected)?;
+
+        let mut threads = std::collections::BTreeSet::from([session_id.to_string()]);
+        threads.extend(child_thread_ids.iter().cloned());
+        let mut teardown_error = None;
+        for thread in threads {
+            if let Err(error) = self.runtime().end_session(&thread).await {
+                tracing::warn!(
+                    session = session_id,
+                    thread = %thread,
+                    error = ?error,
+                    "Session terminal Runtime teardown remains pending"
+                );
+                teardown_error.get_or_insert(error);
+            }
+        }
+        if let Some(error) = teardown_error {
+            return Err(SessionPreparationError::Rejected(error));
+        }
         if !self
-            .retire_session_repositories(owner_scope, &session_id, &session.resources)
+            .retire_session_repositories(owner_scope, session_id, &session.resources)
             .await
         {
             return Err(internal(
@@ -245,12 +286,13 @@ impl SessionApplication {
             self.tombstone_session_snapshot(
                 owner_scope,
                 &session,
-                deleted_lifecycle_fact(&session_id, owner_scope),
+                deleted_lifecycle_fact(session_id, owner_scope),
             )
             .await
             .map_err(mutation_failure)?;
+            return Ok(None);
         }
-        Ok(session)
+        Ok(Some(session))
     }
 
     pub async fn retire_session_repositories(
