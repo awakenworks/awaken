@@ -45,23 +45,6 @@ impl ManagedState {
         }
     }
 
-    async fn activate_inputs(
-        &self,
-        persisted: PersistedSession,
-        owner_scope: &str,
-        desired: awaken_session_contract::ResolvedSessionResources,
-    ) -> Result<(), StateError> {
-        let session_id = persisted.session_id.clone();
-        let persisted = self
-            .application
-            .activate_session_inputs(persisted, owner_scope, desired)
-            .await
-            .map_err(Self::map_preparation_error)?;
-        self.refresh_cached_projection(&persisted)?;
-        debug_assert_eq!(persisted.session_id, session_id);
-        Ok(())
-    }
-
     fn resolve_live_file_input(
         &self,
         owner_scope: &str,
@@ -152,10 +135,12 @@ impl ManagedState {
             )
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
         let input = self.resolve_live_file_input(&owner_scope, binding_id, &parsed)?;
-        let next = current
-            .attach(input.clone())
-            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        self.activate_inputs(persisted, &owner_scope, next).await?;
+        let committed = self
+            .application
+            .attach_session_input(id, &owner_scope, input.clone())
+            .await
+            .map_err(Self::map_preparation_error)?;
+        self.refresh_cached_projection(&committed)?;
         Ok(resolved_resource_dto(id, &input))
     }
 
@@ -185,106 +170,25 @@ impl ManagedState {
     ) -> Result<crate::types::resource::SessionResource, StateError> {
         let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
-        let ingress = self
+        let persisted = self
             .application
-            .repository_credential_ingress()
-            .ok_or_else(|| {
-                StateError::Run(RunError::bad_request(
-                    "repository authorization requires a configured credential Vault",
-                ))
-            })?;
-        let mut persisted = self
-            .application
-            .session_repository()
-            .get(id)
+            .rotate_repository_credential(
+                id,
+                &owner_scope,
+                &binding_id,
+                patch.authorization_token.into_redacted(),
+            )
             .await
-            .ok_or(StateError::NotFound)?;
-        let binding = persisted
+            .map_err(Self::map_preparation_error)?;
+        self.refresh_cached_projection(&persisted)?;
+        let input = persisted
             .resources
             .active
             .inputs
             .iter()
             .find(|input| input.binding_id == binding_id)
-            .and_then(|input| match &input.source {
-                awaken_session_contract::ResolvedInputSource::Repository { config, .. } => {
-                    config.credential_binding.clone()
-                }
-                _ => None,
-            })
-            .ok_or_else(|| {
-                StateError::Run(RunError::bad_request(
-                    "repository credential update requires an authenticated Repository resource",
-                ))
-            })?;
-        ingress
-            .rotate_repository_token(
-                &awaken_credential_contract::CredentialSourceId(binding.clone()),
-                &owner_scope,
-                patch.authorization_token.into_redacted(),
-            )
-            .await
-            .map_err(|error| {
-                StateError::Run(RunError::bad_request(format!(
-                    "repository authorization could not be rotated: {error}"
-                )))
-            })?;
-
-        for attempt in 0..awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS {
-            let holder = self
-                .application
-                .resource_plaintext_holder(&persisted)
-                .map_err(Self::map_preparation_error)?;
-            let input = persisted
-                .resources
-                .active
-                .inputs
-                .iter_mut()
-                .find(|input| input.binding_id == binding_id)
-                .ok_or(StateError::NotFound)?;
-            let awaken_session_contract::ResolvedInputSource::Repository { credential, .. } =
-                &mut input.source
-            else {
-                return Err(StateError::NotFound);
-            };
-            *credential = None;
-            self.application
-                .pin_repository_credential(&owner_scope, &holder, input)
-                .await
-                .map_err(Self::map_preparation_error)?;
-            match self
-                .commit_session_snapshot(
-                    &owner_scope,
-                    persisted,
-                    "repository-credential-update",
-                    Vec::new(),
-                )
-                .await
-            {
-                Ok(committed) => {
-                    let input = committed
-                        .resources
-                        .active
-                        .inputs
-                        .iter()
-                        .find(|input| input.binding_id == binding_id)
-                        .ok_or(StateError::NotFound)?;
-                    return Ok(resolved_resource_dto(id, input));
-                }
-                Err(StateError::Conflict)
-                    if attempt + 1
-                        < awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS =>
-                {
-                    persisted = self
-                        .application
-                        .session_repository()
-                        .get(id)
-                        .await
-                        .ok_or(StateError::NotFound)?;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        Err(StateError::Conflict)
+            .ok_or(StateError::NotFound)?;
+        Ok(resolved_resource_dto(id, input))
     }
 
     pub async fn delete_resource(&self, id: &str, resource_id: &str) -> Result<(), StateError> {
@@ -296,38 +200,26 @@ impl ManagedState {
             .get(id)
             .await
             .ok_or(StateError::NotFound)?;
-        let (current, input) = {
-            let current = persisted.resources.active.clone();
-            let input = current
-                .inputs
-                .iter()
-                .find(|input| input.binding_id == binding_id)
-                .cloned()
-                .ok_or(StateError::NotFound)?;
-            (current, input)
-        };
+        let input = persisted
+            .resources
+            .active
+            .inputs
+            .iter()
+            .find(|input| input.binding_id == binding_id)
+            .cloned()
+            .ok_or(StateError::NotFound)?;
         if matches!(
             input.source,
             awaken_session_contract::ResolvedInputSource::MemoryStore { .. }
         ) {
             return Err(StateError::Run(RunError::bad_request(MEMORY_CREATE_ONLY)));
         }
-        let (next, removed) = current
-            .detach(&binding_id)
-            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        self.activate_inputs(persisted, &owner_scope, next).await?;
-        if let awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. } =
-            removed.source
-            && let Some(catalog) = &self.application.resource_catalog()
-        {
-            catalog
-                .set_repository_state(
-                    &owner_scope,
-                    repository_id.as_str(),
-                    awaken_resource_contract::ResourceState::Deleted,
-                )
-                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        }
+        let committed = self
+            .application
+            .detach_session_input(id, &owner_scope, &binding_id)
+            .await
+            .map_err(Self::map_preparation_error)?;
+        self.refresh_cached_projection(&committed)?;
         Ok(())
     }
 }

@@ -48,6 +48,147 @@ fn deleted_lifecycle_fact(session_id: &str, owner_scope: &str) -> ManagedLifecyc
 }
 
 impl SessionApplication {
+    /// Attach one already-resolved neutral input and converge the Runtime before
+    /// returning the committed aggregate.
+    pub async fn attach_session_input(
+        &self,
+        session_id: &str,
+        owner_scope: &str,
+        input: awaken_session_contract::ResolvedInput,
+    ) -> Result<PersistedSession, SessionPreparationError> {
+        let persisted = self
+            .session_repository()
+            .get(session_id)
+            .await
+            .ok_or(SessionPreparationError::NotFound)?;
+        let desired = persisted.resources.active.attach(input).map_err(|error| {
+            SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
+        })?;
+        self.activate_session_inputs(persisted, owner_scope, desired)
+            .await
+    }
+
+    /// Detach one neutral binding and converge the Runtime. Repository
+    /// definitions are retired only after the durable/Runtime replacement wins.
+    pub async fn detach_session_input(
+        &self,
+        session_id: &str,
+        owner_scope: &str,
+        binding_id: &awaken_resource_contract::BindingId,
+    ) -> Result<PersistedSession, SessionPreparationError> {
+        let persisted = self
+            .session_repository()
+            .get(session_id)
+            .await
+            .ok_or(SessionPreparationError::NotFound)?;
+        let (desired, removed) =
+            persisted
+                .resources
+                .active
+                .detach(binding_id)
+                .map_err(|error| {
+                    SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
+                })?;
+        let committed = self
+            .activate_session_inputs(persisted, owner_scope, desired)
+            .await?;
+        if let ResolvedInputSource::Repository { repository_id, .. } = removed.source
+            && !self
+                .retire_repository(owner_scope, repository_id.as_str())
+                .await
+        {
+            return Err(internal(format!(
+                "Repository `{repository_id}` retirement remains pending"
+            )));
+        }
+        Ok(committed)
+    }
+
+    /// Rotate and repin one Session-scoped Repository credential through the
+    /// durable root CAS. A conflict reloads and recompiles the exact pin.
+    pub async fn rotate_repository_credential(
+        &self,
+        session_id: &str,
+        owner_scope: &str,
+        binding_id: &awaken_resource_contract::BindingId,
+        token: awaken_agent_contract::RedactedString,
+    ) -> Result<PersistedSession, SessionPreparationError> {
+        let ingress = self.repository_credential_ingress().ok_or_else(|| {
+            SessionPreparationError::Rejected(RunError::bad_request(
+                "repository authorization requires a configured credential Vault",
+            ))
+        })?;
+        let mut persisted = self
+            .session_repository()
+            .get(session_id)
+            .await
+            .ok_or(SessionPreparationError::NotFound)?;
+        let credential_source = persisted
+            .resources
+            .active
+            .inputs
+            .iter()
+            .find(|input| input.binding_id == *binding_id)
+            .and_then(|input| match &input.source {
+                ResolvedInputSource::Repository { config, .. } => config.credential_binding.clone(),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                SessionPreparationError::Rejected(RunError::bad_request(
+                    "repository credential update requires an authenticated Repository resource",
+                ))
+            })?;
+        ingress
+            .rotate_repository_token(
+                &awaken_credential_contract::CredentialSourceId(credential_source),
+                owner_scope,
+                token,
+            )
+            .await
+            .map_err(|error| {
+                SessionPreparationError::Rejected(RunError::bad_request(format!(
+                    "repository authorization could not be rotated: {error}"
+                )))
+            })?;
+
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            let holder = self.resource_plaintext_holder(&persisted)?;
+            let input = persisted
+                .resources
+                .active
+                .inputs
+                .iter_mut()
+                .find(|input| input.binding_id == *binding_id)
+                .ok_or(SessionPreparationError::NotFound)?;
+            let ResolvedInputSource::Repository { credential, .. } = &mut input.source else {
+                return Err(SessionPreparationError::NotFound);
+            };
+            *credential = None;
+            self.pin_repository_credential(owner_scope, &holder, input)
+                .await?;
+            match self
+                .commit_session_snapshot(
+                    owner_scope,
+                    persisted,
+                    "repository-credential-update",
+                    Vec::new(),
+                )
+                .await
+            {
+                Ok(committed) => return Ok(committed),
+                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                    persisted = self
+                        .session_repository()
+                        .get(session_id)
+                        .await
+                        .ok_or(SessionPreparationError::NotFound)?;
+                }
+                Err(error) => return Err(mutation_failure(error)),
+            }
+        }
+        Err(SessionPreparationError::Conflict)
+    }
+
     async fn prepare_resource_transition(
         &self,
         owner_scope: &str,
