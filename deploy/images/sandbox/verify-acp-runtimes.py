@@ -124,8 +124,17 @@ async def verify(runtime, root):
         try:
             result = await asyncio.wait_for(negotiate(), timeout=30)
         except asyncio.TimeoutError as error:
+            if process.returncode is None:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=2)
+                except asyncio.TimeoutError:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    await process.wait()
+            stderr = (await process.stderr.read()).decode(errors="replace")[-2000:]
             raise RuntimeError(
-                f"{runtime_id}: initialize+session/new exceeded the Worker probe deadline"
+                f"{runtime_id}: initialize+session/new exceeded the Worker probe deadline: "
+                f"{stderr}"
             ) from error
     finally:
         if process.returncode is None:
