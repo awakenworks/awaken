@@ -290,6 +290,13 @@ impl SharedHost {
                 })
             })
             .flatten();
+        // `SessionRuntime::prepare_session` is the sole Coordinator-side owner
+        // that installs this frozen runtime projection. Preserve that existing
+        // ownership fact in the dispatch contract so a registered Worker enters
+        // the canonical Control-owned realization path before it constructs the
+        // execution context. Resource manifests alone are deliberately
+        // insufficient: ordinary Runs may carry one without being Sessions.
+        let is_session_dispatch = runtime_projection.is_some();
         let environment_snapshot = runtime_projection
             .as_ref()
             .map(|(environment, _, _)| environment);
@@ -309,6 +316,9 @@ impl SharedHost {
             });
         let mut request = RunDispatch::new(activation)
             .with_traceparent(awaken_observability::current_traceparent());
+        if is_session_dispatch {
+            request = request.for_session(ThreadId(thread.clone()));
+        }
         if let Some(holder) = inference_holder {
             request = request.with_inference_plaintext_holder(holder);
         }

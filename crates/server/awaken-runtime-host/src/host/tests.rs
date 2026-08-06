@@ -6125,6 +6125,57 @@ fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
             .contains(awaken_run_ingress::SESSION_RESOURCES_CAPABILITY),
         "mixed local/remote deployments must not expose the manifest to an ineligible worker"
     );
+    assert_eq!(
+        dispatch.session_thread_id, None,
+        "a resource-bearing ordinary Run must not be promoted to a Session"
+    );
+}
+
+#[test]
+fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realization() {
+    // Cause/effect graph: C1 a Coordinator has installed the frozen Session
+    // runtime projection; C2 only a Resource manifest exists; C3 a child Run is
+    // parent-mediated. Effects: E1 the root dispatch names its own Session and
+    // the Worker enters Control realization; E2 an ordinary resource-bearing
+    // Run remains ordinary; E3 a child retains the parent Session pointer. C1
+    // and C2 are mutually exclusive test fixtures here; C3 is owned by
+    // `child_dispatch_reuses_publication_pinned_model_candidates`.
+    //
+    // | Rule | Frozen runtime | Resources only | Child | session_thread_id |
+    // | R1   | yes            | any            | no    | root thread       |
+    // | R2   | no             | yes            | no    | none              |
+    // | R3   | n/a            | any            | yes   | parent thread     |
+    //
+    // This test owns R1. The adjacent resource-envelope test owns R2 and the
+    // existing child-dispatch test owns R3, avoiding a parallel child builder.
+    let host = SharedHost::new(Arc::new(OkModel), "host-default");
+    let thread = "prepared-root-session";
+    host.install_environment_projection(
+        thread,
+        &session_environment(
+            awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+            serde_json::json!({}),
+        ),
+    )
+    .expect("install frozen Session runtime projection");
+    let activation = awaken_runtime_contract::RunActivation::new(
+        awaken_agent_contract::agent::run::Id("run-prepared-root-session".into()),
+        awaken_agent_contract::agent::thread::Id(thread.into()),
+        awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
+            .fingerprint("sha256:prepared-root-session")
+            .build(),
+        Vec::new(),
+    );
+
+    let dispatch = host
+        .resolved_dispatch(activation)
+        .expect("decorate prepared Session dispatch");
+
+    assert_eq!(
+        dispatch.session_thread_id,
+        Some(awaken_agent_contract::agent::thread::Id(thread.into())),
+        "R1/E1"
+    );
 }
 
 #[test]
