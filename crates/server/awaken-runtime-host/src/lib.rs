@@ -1514,17 +1514,25 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
         }
         let request_fingerprint = request.fingerprint();
         if let Some(existing) = self.host.mcp_projection(&request.generation) {
-            if existing.request.realization_id == request.realization_id
+            let exact_replay = existing.request.realization_id == request.realization_id
                 && existing.request.stage_idempotency_key == request.stage_idempotency_key
-                && existing.receipt.receipt_fingerprint == request_fingerprint
-                && existing.state != crate::session_slot::McpProjectionState::Removed
-            {
-                return Ok(existing.receipt);
+                && existing.receipt.receipt_fingerprint == request_fingerprint;
+            if exact_replay {
+                if existing.state != crate::session_slot::McpProjectionState::Removed {
+                    return Ok(existing.receipt);
+                }
+                if !self.host.forget_exact_removed_mcp_projection(&request) {
+                    return Err(RunError::classified(
+                        "mcp_stale_generation",
+                        "MCP generation changed while its removed projection was being recovered",
+                    ));
+                }
+            } else {
+                return Err(RunError::classified(
+                    "mcp_stale_generation",
+                    "MCP generation is already bound to another realization",
+                ));
             }
-            return Err(RunError::classified(
-                "mcp_stale_generation",
-                "MCP generation is already bound to another realization",
-            ));
         }
         match self.host.renew_mcp_projection(&request) {
             Ok(Some(receipt)) => return Ok(receipt),

@@ -3985,6 +3985,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // | H19 | expired predecessor/current same-epoch renewal | exact | stage+publish | admitted effects complete under current local authority |
     // | H20 | authenticated ACP/complete provider evidence | exact | stage+publish+call | generation route injects; no inline secret |
     // | H21 | non-OAuth bearer/exact factory | exact | stage | - | one neutral challenge refresher; no Vault in Runtime |
+    // | H22 | exact removed tombstone | exact request replay | stage | - | rebuild one staged projection/material |
     let exact_request = request("mcp-exact", "workspace-a", 1);
     let receipt = managed
         .stage_mcp_attachment(exact_request.clone())
@@ -4085,7 +4086,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     renewal.stage_idempotency_key = "renew-exact".into();
     let renewed_generation = renewal.generation.clone();
     let renewed = managed
-        .stage_mcp_attachment(renewal)
+        .stage_mcp_attachment(renewal.clone())
         .await
         .expect("H14 stage");
     assert_eq!(renewed.generation, renewed_generation, "H14");
@@ -4121,10 +4122,28 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("H7");
     assert!(
         managed
-            .publish_mcp_generation(renewed_generation)
+            .publish_mcp_generation(renewed_generation.clone())
             .await
             .is_err(),
         "H8"
+    );
+    let recovered = managed
+        .stage_mcp_attachment(renewal)
+        .await
+        .expect("H22 exact removed replay");
+    assert_eq!(recovered.generation, renewed_generation, "H22");
+    let recovered_projection = host
+        .mcp_projection(&renewed_generation)
+        .expect("H22 rebuilt projection");
+    assert_eq!(
+        recovered_projection.state,
+        crate::session_slot::McpProjectionState::Staged,
+        "H22"
+    );
+    assert_eq!(
+        host.session_slots.read("mcp-exact", |slot| slot.mcp.len()),
+        Some(1),
+        "H22 no duplicate tombstone"
     );
     let mut expired = request("mcp-expired", "workspace-a", 1);
     expired.generation.lease_expires_at_unix_ms = 0;

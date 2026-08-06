@@ -300,6 +300,34 @@ impl crate::SharedHost {
             })
     }
 
+    /// Forget an already-cleaned process-local tombstone only when Control
+    /// replays the exact same authorized Stage command. A removed projection
+    /// owns no remaining process, route, or credential material, so retaining
+    /// it must not permanently prevent the canonical realization driver from
+    /// recovering after a concurrent Control CAS. Any changed request remains
+    /// resident and is rejected by the caller as a conflicting realization.
+    pub(crate) fn forget_exact_removed_mcp_projection(
+        &self,
+        request: &awaken_session_contract::StageMcpAttachment,
+    ) -> bool {
+        let request_fingerprint = request.fingerprint();
+        self.session_slots
+            .modify(&request.generation.session_id, |slot| {
+                let Some(index) = slot.mcp.iter().position(|projection| {
+                    projection.request.generation == request.generation
+                        && projection.state == crate::session_slot::McpProjectionState::Removed
+                        && projection.request.realization_id == request.realization_id
+                        && projection.request.stage_idempotency_key == request.stage_idempotency_key
+                        && projection.receipt.receipt_fingerprint == request_fingerprint
+                }) else {
+                    return false;
+                };
+                slot.mcp.remove(index);
+                true
+            })
+            .unwrap_or(false)
+    }
+
     pub(crate) async fn publish_mcp_projection(
         &self,
         generation: &awaken_session_contract::McpGenerationRef,
