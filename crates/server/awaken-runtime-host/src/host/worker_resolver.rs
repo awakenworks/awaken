@@ -4,10 +4,10 @@
 use super::*;
 mod application;
 mod claimed_dispatch;
+mod session_realization;
 #[cfg(test)]
 pub(super) mod test_support;
 use application::install_claimed_session_projection;
-use claimed_dispatch::{WorkerMcpEffects, WorkerProjectionSynchronizer};
 
 /// Routes a claimed run to the worker that owns its thread, opening (or reusing)
 /// the session through the host. Holds a `Weak` back-reference so the pool's tasks
@@ -28,24 +28,6 @@ impl HostWorkerResolver {
         self.host
             .upgrade()
             .ok_or_else(|| Self::execution_error("host dropped; pool idling"))
-    }
-
-    pub(crate) async fn realize_application_session(
-        host: &SharedHost,
-        control: &Arc<dyn awaken_run_ingress_contract::ClaimedSessionControl>,
-        session_id: &str,
-        directive: awaken_session_contract::SessionRealizationDirective,
-        claim: Option<&awaken_run_ingress::RunClaim>,
-    ) -> Result<(), awaken_run_ingress::Error> {
-        awaken_session_contract::drive_session_realization(
-            session_id,
-            control.as_ref(),
-            &WorkerProjectionSynchronizer { host, claim },
-            &WorkerMcpEffects(host),
-            directive,
-        )
-        .await
-        .map_err(|error| Self::execution_error(error.to_string()))
     }
 
     async fn resolve(
@@ -679,6 +661,7 @@ mod tests {
                 workspace_id: "workspace".into(),
                 revision: awaken_session_contract::SessionRevision(2),
                 baseline,
+                environment: Default::default(),
                 resource_revision: 0,
                 resources: Default::default(),
                 mcp,
@@ -891,6 +874,7 @@ mod tests {
             workspace_id: "workspace".into(),
             revision: awaken_session_contract::SessionRevision(2),
             baseline,
+            environment: Default::default(),
             resource_revision: 0,
             resources: Default::default(),
             toolsets: Vec::new(),

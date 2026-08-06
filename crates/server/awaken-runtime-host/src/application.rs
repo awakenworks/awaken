@@ -391,7 +391,12 @@ impl crate::SharedHost {
                     .await
                     .map_err(|error| crate::HostError::internal(error.to_string()))?;
                 crate::host::HostWorkerResolver::realize_application_session(
-                    self, control, session_id, directive, None,
+                    self,
+                    control.as_ref(),
+                    session_id,
+                    directive,
+                    None,
+                    None,
                 )
                 .await
                 .map_err(|error| crate::HostError::internal(error.to_string()))

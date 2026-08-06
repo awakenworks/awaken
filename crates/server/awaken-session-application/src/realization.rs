@@ -87,7 +87,6 @@ pub struct SessionReconciliation {
 
 struct LocalProjectionSynchronizer<'a> {
     runtime: &'a dyn SessionRuntime,
-    environment_binding: Option<&'a str>,
 }
 
 #[async_trait::async_trait]
@@ -107,7 +106,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
         self.runtime
             .prepare_session(session_id, projection.session_init())
             .await?;
-        if let Some(binding) = self.environment_binding {
+        if let Some(binding) = projection.environment.binding() {
             self.runtime
                 .restore_session_environment(&projection.baseline.agent_id, session_id, binding)
                 .await?;
@@ -263,17 +262,11 @@ impl SessionApplication {
         session_id: &str,
         directive: SessionRealizationDirective,
     ) -> Result<(), SessionRealizationError> {
-        let environment_binding = self
-            .session_repository()
-            .get(session_id)
-            .await
-            .and_then(|session| session.environment.binding().map(str::to_string));
         awaken_session_contract::drive_session_realization(
             session_id,
             self,
             &LocalProjectionSynchronizer {
                 runtime: self.runtime(),
-                environment_binding: environment_binding.as_deref(),
             },
             self.mcp_realizer(),
             directive,
