@@ -174,6 +174,13 @@ k3d_import_images() {
     k3d image import "${archives[@]}" -c "$cluster" >/dev/null || status=$?
   fi
   rm -rf "$archive_dir"
+  # k3d copies every imported archive into its shared /k3d/images transport
+  # volume. The node has already consumed those archives when `image import`
+  # returns, so retaining them only creates a second, unbounded image store.
+  # Clean the transport files on both success and failure; containerd remains
+  # the authoritative runtime image store.
+  docker exec "$node" find /k3d/images -mindepth 1 -maxdepth 1 -type f -delete \
+    >/dev/null 2>&1 || true
   (( status == 0 )) || return "$status"
   kubectl -n kube-system delete pod -l k8s-app=kube-dns >/dev/null 2>&1 || true
   kubectl -n kube-system rollout status deploy/coredns --timeout=90s
@@ -208,7 +215,8 @@ k3d_harness_selftest() (
   # thresholds; H2 zero agents -> no agent threshold; H3 option-shaped name or
   # non-numeric count/percentage -> rejected before any k3d effect; H4 duplicate
   # image coordinates -> one single-platform archive per unique image plus the
-  # canonical Pause/CoreDNS prerequisites; H5 malformed port-forward identity ->
+  # canonical Pause/CoreDNS prerequisites, then delete k3d's redundant transport
+  # copies; H5 malformed port-forward identity ->
   # rejection before kubectl; H6 valid preferred port -> an available IPv4 port;
   # H7 malformed preferred port -> rejection before a socket probe; H8 an exact
   # Registry coordinate is attached once and malformed input is rejected before
@@ -216,7 +224,7 @@ k3d_harness_selftest() (
   # H10 tools unavailable + optional mode -> successful explicit skip; H11 tools
   # unavailable + strict mode -> failure; H12 malformed strictness -> configuration
   # failure. The scenario tests own network and topology effects.
-  local k3d_calls=() docker_saves=()
+  local k3d_calls=() docker_saves=() docker_execs=()
   k3d() { k3d_calls+=("$*"); }
 
   k3d_validate_name "awaken-test-1"
@@ -235,8 +243,8 @@ k3d_harness_selftest() (
   ! k3d_create_cluster "awaken-test" many 2
   ! k3d_create_cluster "awaken-test" 1 low
   (( ${#k3d_calls[@]} == 0 ))
-  k3d_create_cluster "awaken-test" 1 2 "k3d-awaken-registry.localhost:5111"
-  [[ "${k3d_calls[1]}" = *"--registry-use k3d-awaken-registry.localhost:5111"* ]]
+  k3d_create_cluster "awaken-test" 1 2 "k3d-awaken-registry.localhost:5000"
+  [[ "${k3d_calls[1]}" = *"--registry-use k3d-awaken-registry.localhost:5000"* ]]
   k3d_calls=()
   ! k3d_create_cluster "awaken-test" 1 2 "--all"
   (( ${#k3d_calls[@]} == 0 ))
@@ -281,7 +289,10 @@ k3d_harness_selftest() (
   [[ "$(k3d_archive_name 'registry:5000/awaken@sha256:abc')" = "registry_5000_awaken_sha256_abc" ]]
   docker() {
     if [[ "$1" = exec ]]; then
-      printf '%s' 'rancher/mirrored-pause:3.6'
+      docker_execs+=("$*")
+      if [[ "$*" = *"sandbox_image"* ]]; then
+        printf '%s' 'rancher/mirrored-pause:3.6'
+      fi
     elif [[ "$1 $2" = "image inspect" ]]; then
       return 0
     elif [[ "$1" = save ]]; then
@@ -298,6 +309,7 @@ k3d_harness_selftest() (
   (( ${#docker_saves[@]} == 4 ))
   [[ "${docker_saves[*]}" = *"--platform $K3D_PLATFORM"* ]]
   [[ "${k3d_calls[0]}" = image\ import* ]]
+  [[ "${docker_execs[-1]}" = "exec k3d-awaken-test-server-0 find /k3d/images -mindepth 1 -maxdepth 1 -type f -delete" ]]
 )
 
 if [[ "${BASH_SOURCE[0]}" = "$0" ]]; then
