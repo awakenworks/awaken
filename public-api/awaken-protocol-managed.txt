@@ -1404,48 +1404,6 @@ pub awaken_protocol_managed::types::Usage::input_tokens: u64
 pub awaken_protocol_managed::types::Usage::output_tokens: u64
 pub fn awaken_protocol_managed::types::paginate<T: core::clone::Clone>(alloc::vec::Vec<T>, &awaken_protocol_managed::types::page::PageQuery, impl core::ops::function::Fn(&T) -> &str) -> awaken_protocol_managed::types::page::Page<T>
 pub fn awaken_protocol_managed::types::paginate_by<T: core::clone::Clone>(alloc::vec::Vec<T>, &awaken_protocol_managed::types::page::PageQuery, impl core::ops::function::Fn(&T) -> alloc::string::String) -> awaken_protocol_managed::types::page::Page<T>
-pub enum awaken_protocol_managed::DeploymentLaunchOutcome
-pub awaken_protocol_managed::DeploymentLaunchOutcome::Created
-pub awaken_protocol_managed::DeploymentLaunchOutcome::Created::session_id: alloc::string::String
-pub awaken_protocol_managed::DeploymentLaunchOutcome::Failed
-pub awaken_protocol_managed::DeploymentLaunchOutcome::Failed::error: awaken_protocol_managed::types::deployment::RunError
-pub awaken_protocol_managed::DeploymentLaunchOutcome::Unavailable
-pub awaken_protocol_managed::DeploymentLaunchOutcome::Unavailable::message: alloc::string::String
-pub enum awaken_protocol_managed::DeploymentRunError
-pub awaken_protocol_managed::DeploymentRunError::AgentArchivedError
-pub awaken_protocol_managed::DeploymentRunError::AgentArchivedError::message: alloc::string::String
-pub awaken_protocol_managed::DeploymentRunError::EnvironmentArchivedError
-pub awaken_protocol_managed::DeploymentRunError::EnvironmentArchivedError::message: alloc::string::String
-pub awaken_protocol_managed::DeploymentRunError::EnvironmentNotFoundError
-pub awaken_protocol_managed::DeploymentRunError::EnvironmentNotFoundError::message: alloc::string::String
-pub awaken_protocol_managed::DeploymentRunError::FileNotFoundError
-pub awaken_protocol_managed::DeploymentRunError::FileNotFoundError::message: alloc::string::String
-pub awaken_protocol_managed::DeploymentRunError::McpEgressBlockedError
-pub awaken_protocol_managed::DeploymentRunError::McpEgressBlockedError::message: alloc::string::String
-pub awaken_protocol_managed::DeploymentRunError::MemoryStoreArchivedError
-pub awaken_protocol_managed::DeploymentRunError::MemoryStoreArchivedError::message: alloc::string::String
-pub awaken_protocol_managed::DeploymentRunError::OrganizationDisabledError
-pub awaken_protocol_managed::DeploymentRunError::OrganizationDisabledError::message: alloc::string::String
-pub awaken_protocol_managed::DeploymentRunError::SelfHostedResourcesUnsupportedError
-pub awaken_protocol_managed::DeploymentRunError::SelfHostedResourcesUnsupportedError::message: alloc::string::String
-pub awaken_protocol_managed::DeploymentRunError::SessionCreationRejectedError
-pub awaken_protocol_managed::DeploymentRunError::SessionCreationRejectedError::message: alloc::string::String
-pub awaken_protocol_managed::DeploymentRunError::SessionRateLimitedError
-pub awaken_protocol_managed::DeploymentRunError::SessionRateLimitedError::message: alloc::string::String
-pub awaken_protocol_managed::DeploymentRunError::SessionResourceNotFoundError
-pub awaken_protocol_managed::DeploymentRunError::SessionResourceNotFoundError::message: alloc::string::String
-pub awaken_protocol_managed::DeploymentRunError::SkillNotFoundError
-pub awaken_protocol_managed::DeploymentRunError::SkillNotFoundError::message: alloc::string::String
-pub awaken_protocol_managed::DeploymentRunError::UnknownError
-pub awaken_protocol_managed::DeploymentRunError::UnknownError::message: alloc::string::String
-pub awaken_protocol_managed::DeploymentRunError::VaultArchivedError
-pub awaken_protocol_managed::DeploymentRunError::VaultArchivedError::message: alloc::string::String
-pub awaken_protocol_managed::DeploymentRunError::VaultNotFoundError
-pub awaken_protocol_managed::DeploymentRunError::VaultNotFoundError::message: alloc::string::String
-pub awaken_protocol_managed::DeploymentRunError::WorkspaceArchivedError
-pub awaken_protocol_managed::DeploymentRunError::WorkspaceArchivedError::message: alloc::string::String
-impl awaken_protocol_managed::types::deployment::RunError
-pub fn awaken_protocol_managed::types::deployment::RunError::paused_reason(&self) -> core::option::Option<awaken_protocol_managed::types::deployment::PausedReasonError>
 pub enum awaken_protocol_managed::ManagedAgentError
 pub awaken_protocol_managed::ManagedAgentError::Conflict(alloc::string::String)
 pub awaken_protocol_managed::ManagedAgentError::Invalid(alloc::string::String)
@@ -1462,37 +1420,13 @@ pub awaken_protocol_managed::StateError::VaultNotFound(alloc::string::String)
 pub struct awaken_protocol_managed::AgentRegistryState
 impl awaken_protocol_managed::AgentRegistryState
 pub fn awaken_protocol_managed::AgentRegistryState::from_repository(alloc::sync::Arc<dyn awaken_protocol_managed::ManagedAgentRepository>) -> Self
-pub fn awaken_protocol_managed::AgentRegistryState::with_archive_cascade(self, alloc::sync::Arc<dyn awaken_protocol_managed::AgentArchiveCascade>) -> Self
+pub fn awaken_protocol_managed::AgentRegistryState::with_archive_cascade(self, alloc::sync::Arc<dyn awaken_deployment_contract::AgentArchiveCascade>) -> Self
 pub struct awaken_protocol_managed::CoordinatorEnvironmentRegistrar
 impl awaken_protocol_managed::CoordinatorEnvironmentRegistrar
 pub fn awaken_protocol_managed::CoordinatorEnvironmentRegistrar::new(alloc::sync::Arc<dyn awaken_executable_environment_contract::ExecutableEnvironmentRegistrar>, alloc::sync::Arc<dyn awaken_session_contract::work_queue::WorkQueue>) -> Self
 impl awaken_executable_environment_contract::ExecutableEnvironmentRegistrar for awaken_protocol_managed::CoordinatorEnvironmentRegistrar
 pub fn awaken_protocol_managed::CoordinatorEnvironmentRegistrar::register<'life0, 'async_trait>(&'life0 self, awaken_executable_environment_contract::ExecutableEnvironmentRegistration) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_executable_environment_contract::ExecutableEnvironmentRegistrationOutcome, awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_protocol_managed::CoordinatorEnvironmentRegistrar::withdraw<'life0, 'async_trait>(&'life0 self, awaken_executable_environment_contract::ExecutableEnvironmentWithdrawal) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_executable_environment_contract::ExecutableEnvironmentWithdrawalOutcome, awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub struct awaken_protocol_managed::DeploymentLaunch
-pub awaken_protocol_managed::DeploymentLaunch::agent: awaken_protocol_managed::types::agent::AgentReference
-pub awaken_protocol_managed::DeploymentLaunch::deployment_id: alloc::string::String
-pub awaken_protocol_managed::DeploymentLaunch::deployment_run_id: alloc::string::String
-pub awaken_protocol_managed::DeploymentLaunch::environment_id: alloc::string::String
-pub awaken_protocol_managed::DeploymentLaunch::initial_events: alloc::vec::Vec<awaken_protocol_managed::types::deployment::DeploymentInitialEvent>
-pub awaken_protocol_managed::DeploymentLaunch::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
-pub awaken_protocol_managed::DeploymentLaunch::resources: alloc::vec::Vec<awaken_protocol_managed::types::resource::ResourceInput>
-pub awaken_protocol_managed::DeploymentLaunch::vault_ids: alloc::vec::Vec<alloc::string::String>
-pub awaken_protocol_managed::DeploymentLaunch::workspace_id: alloc::string::String
-pub struct awaken_protocol_managed::DeploymentState
-impl awaken_protocol_managed::DeploymentState
-pub async fn awaken_protocol_managed::DeploymentState::archive_for_agent(&self, &str, &str) -> core::result::Result<usize, awaken_deployment_contract::DeploymentRepositoryError>
-pub fn awaken_protocol_managed::DeploymentState::bind_executable_agents(&self, alloc::sync::Arc<dyn awaken_executable_agent_contract::ExecutableAgentRegistrationSource>)
-pub fn awaken_protocol_managed::DeploymentState::bind_launcher(&self, alloc::sync::Arc<dyn awaken_protocol_managed::DeploymentSessionLauncher>)
-pub fn awaken_protocol_managed::DeploymentState::bind_rate_limiter(&self, alloc::sync::Arc<awaken_protocol_managed::ManagedRateLimiter>)
-pub fn awaken_protocol_managed::DeploymentState::new() -> Self
-pub fn awaken_protocol_managed::DeploymentState::tick(&self, u64) -> alloc::vec::Vec<alloc::string::String>
-pub async fn awaken_protocol_managed::DeploymentState::tick_and_launch(&self, u64) -> core::result::Result<alloc::vec::Vec<awaken_protocol_managed::types::deployment::DeploymentRun>, awaken_deployment_contract::DeploymentRepositoryError>
-pub async fn awaken_protocol_managed::DeploymentState::with_repository(alloc::sync::Arc<dyn awaken_deployment_contract::DeploymentRepository>) -> core::result::Result<Self, awaken_deployment_contract::DeploymentRepositoryError>
-impl awaken_protocol_managed::AgentArchiveCascade for awaken_protocol_managed::DeploymentState
-pub fn awaken_protocol_managed::DeploymentState::archive_agent_dependents<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-impl core::default::Default for awaken_protocol_managed::DeploymentState
-pub fn awaken_protocol_managed::DeploymentState::default() -> Self
 pub struct awaken_protocol_managed::EnvironmentAuthoringState
 impl awaken_protocol_managed::EnvironmentAuthoringState
 pub fn awaken_protocol_managed::EnvironmentAuthoringState::application(&self) -> alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>
@@ -1528,11 +1462,12 @@ pub async fn awaken_protocol_managed::EnvironmentState::snapshot_exact_for_sessi
 pub async fn awaken_protocol_managed::EnvironmentState::snapshot_for_session(&self, &str, core::option::Option<&str>, &[awaken_agent_contract::mcp_target::McpTarget]) -> core::result::Result<core::option::Option<awaken_session_contract::baseline::EnvironmentSnapshot>, awaken_environment_realization_contract::EnvironmentImageBuildError>
 pub fn awaken_protocol_managed::EnvironmentState::with_sandbox_policies(self, alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>) -> Self
 pub fn awaken_protocol_managed::EnvironmentState::with_stores(alloc::sync::Arc<dyn awaken_environment_contract::EnvRegistry>, alloc::sync::Arc<dyn awaken_session_contract::work_queue::WorkQueue>) -> Self
-pub struct awaken_protocol_managed::LocalDeploymentSessionLauncher(_)
+pub struct awaken_protocol_managed::LocalDeploymentSessionLauncher
 impl awaken_protocol_managed::LocalDeploymentSessionLauncher
 pub fn awaken_protocol_managed::LocalDeploymentSessionLauncher::new(alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> Self
-impl awaken_protocol_managed::DeploymentSessionLauncher for awaken_protocol_managed::LocalDeploymentSessionLauncher
-pub fn awaken_protocol_managed::LocalDeploymentSessionLauncher::launch<'life0, 'async_trait>(&'life0 self, awaken_protocol_managed::DeploymentLaunch) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_protocol_managed::DeploymentLaunchOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_protocol_managed::LocalDeploymentSessionLauncher::with_rate_limiter(self, alloc::sync::Arc<awaken_protocol_managed::ManagedRateLimiter>) -> Self
+impl awaken_deployment_application::DeploymentSessionLauncher for awaken_protocol_managed::LocalDeploymentSessionLauncher
+pub fn awaken_protocol_managed::LocalDeploymentSessionLauncher::launch<'life0, 'async_trait>(&'life0 self, awaken_deployment_application::model::DeploymentLaunch) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_deployment_application::model::DeploymentLaunchOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_protocol_managed::ManagedRateLimiter
 impl awaken_protocol_managed::ManagedRateLimiter
 pub fn awaken_protocol_managed::ManagedRateLimiter::for_organization(impl core::convert::Into<alloc::string::String>) -> Self
@@ -1647,14 +1582,6 @@ pub const awaken_protocol_managed::DREAMING_BETA: &str
 pub const awaken_protocol_managed::MANAGED_BETA: &str
 pub const awaken_protocol_managed::MEMORY_BETA: &str
 pub const awaken_protocol_managed::SKILLS_BETA: &str
-pub trait awaken_protocol_managed::AgentArchiveCascade: core::marker::Send + core::marker::Sync
-pub fn awaken_protocol_managed::AgentArchiveCascade::archive_agent_dependents<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-impl awaken_protocol_managed::AgentArchiveCascade for awaken_protocol_managed::DeploymentState
-pub fn awaken_protocol_managed::DeploymentState::archive_agent_dependents<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub trait awaken_protocol_managed::DeploymentSessionLauncher: core::marker::Send + core::marker::Sync
-pub fn awaken_protocol_managed::DeploymentSessionLauncher::launch<'life0, 'async_trait>(&'life0 self, awaken_protocol_managed::DeploymentLaunch) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_protocol_managed::DeploymentLaunchOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl awaken_protocol_managed::DeploymentSessionLauncher for awaken_protocol_managed::LocalDeploymentSessionLauncher
-pub fn awaken_protocol_managed::LocalDeploymentSessionLauncher::launch<'life0, 'async_trait>(&'life0 self, awaken_protocol_managed::DeploymentLaunch) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_protocol_managed::DeploymentLaunchOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_protocol_managed::ManagedAgentRepository: core::marker::Send + core::marker::Sync
 pub fn awaken_protocol_managed::ManagedAgentRepository::archive<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_protocol_managed::ManagedAgentRepository::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_protocol_managed::types::agent::AgentCreateParams) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -1667,7 +1594,7 @@ pub trait awaken_protocol_managed::ModelDirectory: core::marker::Send + core::ma
 pub fn awaken_protocol_managed::ModelDirectory::list<'a>(&'a self, &'a str) -> awaken_protocol_managed::ModelDirectoryFuture<'a>
 pub fn awaken_protocol_managed::agents_router(alloc::sync::Arc<awaken_protocol_managed::AgentRegistryState>) -> axum::routing::Router
 pub fn awaken_protocol_managed::default_models() -> alloc::vec::Vec<awaken_protocol_managed::ModelEntry>
-pub fn awaken_protocol_managed::deployments_router(alloc::sync::Arc<awaken_protocol_managed::DeploymentState>) -> axum::routing::Router
+pub fn awaken_protocol_managed::deployments_router(alloc::sync::Arc<awaken_deployment_application::DeploymentApplication>) -> axum::routing::Router
 pub fn awaken_protocol_managed::dreams_router(alloc::sync::Arc<awaken_dream_application::DreamApplication>) -> axum::routing::Router
 pub async fn awaken_protocol_managed::enforce_managed_beta(axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response
 pub async fn awaken_protocol_managed::enforce_managed_rate_limit(axum::extract::state::State<alloc::sync::Arc<awaken_protocol_managed::ManagedRateLimiter>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response

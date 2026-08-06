@@ -68,12 +68,12 @@ pub(super) async fn assemble_runtime_process_router(
     // Restore the Coordinator-owned Deployment aggregate exactly once before
     // sibling components are assembled. AllInOne Agent lifecycle commands and
     // the Coordinator router/scheduler receive this same instance.
-    let deployment_state =
-        awaken_coordinator::restore_deployment_state(coordinator_stores.deployments.clone())
+    let deployment_application =
+        awaken_coordinator::restore_deployment_application(coordinator_stores.deployments.clone())
             .await
             .map_err(|error| format!("restore Deployment state: {error}"))?;
     let agent_archive_cascade =
-        deployment_state.clone() as Arc<dyn awaken_protocol_managed::AgentArchiveCascade>;
+        deployment_application.clone() as Arc<dyn awaken_deployment_contract::AgentArchiveCascade>;
     let executable_environment_wiring = executable_environment_registration::require_process_wiring(
         assembly.executable_environment_wiring,
     );
@@ -532,7 +532,7 @@ pub(super) async fn assemble_runtime_process_router(
             dream_process_store,
             worker_authenticator,
             worker_directory: worker_directory.clone(),
-            deployment_state,
+            deployment_application,
             executable_agents: executable_agent_catalog,
             rate_limiter: managed_rate_limiter.clone(),
             environments: environment_execution,

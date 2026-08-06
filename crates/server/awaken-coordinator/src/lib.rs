@@ -43,7 +43,7 @@ pub mod workspace_path;
 pub use awaken_protocol_managed::ModelDirectory;
 pub use coordinator_component::{
     CoordinatorBuildError, CoordinatorComponent, CoordinatorDependencies,
-    build_coordinator_component, restore_deployment_state,
+    build_coordinator_component, restore_deployment_application,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use coordinator_persistence::init_scenario_runtime;

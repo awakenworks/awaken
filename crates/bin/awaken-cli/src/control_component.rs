@@ -10,7 +10,7 @@ pub(super) async fn control_component_for_process(
     stores: &ProcessStores,
     execution_workspace: &str,
     executable_agent_registrar: Arc<dyn awaken_executable_agent_contract::ExecutableAgentRegistrar>,
-    agent_archive_cascade: Option<Arc<dyn awaken_protocol_managed::AgentArchiveCascade>>,
+    agent_archive_cascade: Option<Arc<dyn awaken_deployment_contract::AgentArchiveCascade>>,
     model_publication_resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
     web_search_publication_resolver: Arc<dyn awaken_config_service::PluginPublicationResolver>,
     web_search_providers: &awaken_ext_builtin_tools::WebSearchProviderRegistry,

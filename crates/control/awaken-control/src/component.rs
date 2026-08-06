@@ -56,7 +56,7 @@ pub struct ControlDependencies {
     pub executable_agent_registrar: Arc<dyn ExecutableAgentRegistrar>,
     /// Optional local lifecycle command edge. Present only in AllInOne
     /// composition; its execution-owned implementation stays outside Control.
-    pub agent_archive_cascade: Option<Arc<dyn awaken_protocol_managed::AgentArchiveCascade>>,
+    pub agent_archive_cascade: Option<Arc<dyn awaken_deployment_contract::AgentArchiveCascade>>,
     pub model_publication_resolver: Arc<dyn ModelPublicationResolver>,
     pub plugin_publication_resolvers: Vec<Arc<dyn PluginPublicationResolver>>,
     pub credential_probe: Arc<dyn CredentialProbe>,

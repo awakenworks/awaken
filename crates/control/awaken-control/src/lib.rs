@@ -73,10 +73,11 @@ use awaken_config_resolver::{InferenceProfileStore, WebhookStore};
 use awaken_config_service::{ConfigPlane, ManagementAuditPlane, config_router};
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
+use awaken_deployment_contract::AgentArchiveCascade;
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_protocol_managed::{
-    AgentArchiveCascade, AgentRegistryState, ManagedAgentRepository, UserProfileState, VaultState,
-    agents_router, user_profiles_router, vault_router,
+    AgentRegistryState, ManagedAgentRepository, UserProfileState, VaultState, agents_router,
+    user_profiles_router, vault_router,
 };
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;

@@ -5,11 +5,23 @@
 //! multi-replica schedule claims explicit.
 
 use async_trait::async_trait;
-use awaken_session_contract::ManagedLifecycleFact;
+use serde::{Deserialize, Serialize};
 
 mod schedule;
 
 pub use schedule::Cron;
+
+/// Durable lifecycle fact committed atomically with one Deployment mutation.
+/// The public protocol may project it to a webhook, but the application owns
+/// the fact and never depends on a protocol-specific state object.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeploymentLifecycleFact {
+    pub id: String,
+    pub object_id: String,
+    pub workspace_id: Option<String>,
+    pub event_type: String,
+    pub timestamp: i64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeploymentRecord {
@@ -41,13 +53,13 @@ pub trait DeploymentRepository: Send + Sync {
     async fn upsert_deployment(
         &self,
         record: DeploymentRecord,
-        lifecycle: Option<ManagedLifecycleFact>,
+        lifecycle: Option<DeploymentLifecycleFact>,
     ) -> Result<(), DeploymentRepositoryError>;
 
     async fn upsert_deployment_run(
         &self,
         record: DeploymentRunRecord,
-        lifecycle: Option<ManagedLifecycleFact>,
+        lifecycle: Option<DeploymentLifecycleFact>,
     ) -> Result<(), DeploymentRepositoryError>;
 
     /// Atomically claim one exact `(Deployment, scheduled instant)` and persist
@@ -57,6 +69,16 @@ pub trait DeploymentRepository: Send + Sync {
         claim_id: &str,
         deployment: DeploymentRecord,
         run: DeploymentRunRecord,
-        lifecycle: ManagedLifecycleFact,
+        lifecycle: DeploymentLifecycleFact,
     ) -> Result<bool, DeploymentRepositoryError>;
+}
+
+/// Coordinator lifecycle command consumed after an Agent is archived.
+#[async_trait]
+pub trait AgentArchiveCascade: Send + Sync {
+    async fn archive_agent_dependents(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Result<(), String>;
 }

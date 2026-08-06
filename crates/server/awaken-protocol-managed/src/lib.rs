@@ -55,13 +55,9 @@ mod work_queue;
 
 pub use rate_limit::{ManagedRateLimiter, ManagedRateLimits, enforce_managed_rate_limit};
 pub use routes::agents_registry::{
-    AgentArchiveCascade, AgentRegistryState, ManagedAgentError, ManagedAgentRepository,
-    agents_router,
+    AgentRegistryState, ManagedAgentError, ManagedAgentRepository, agents_router,
 };
-pub use routes::deployments::{
-    DeploymentLaunch, DeploymentLaunchOutcome, DeploymentRunError, DeploymentSessionLauncher,
-    DeploymentState, LocalDeploymentSessionLauncher, deployments_router,
-};
+pub use routes::deployments::{LocalDeploymentSessionLauncher, deployments_router};
 pub use routes::environments::{
     CoordinatorEnvironmentRegistrar, EnvironmentAuthoringState, EnvironmentExecutionState,
     EnvironmentState, environment_authoring_router, environment_work_router, environments_router,

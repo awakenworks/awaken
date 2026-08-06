@@ -2,16 +2,20 @@
 
 use async_trait::async_trait;
 use awaken_deployment_contract::{
-    DeploymentRecord, DeploymentRepository, DeploymentRepositoryError, DeploymentRunRecord,
+    DeploymentLifecycleFact, DeploymentRecord, DeploymentRepository, DeploymentRepositoryError,
+    DeploymentRunRecord,
 };
-use awaken_session_contract::ManagedLifecycleFact;
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use sqlx::Row;
 
-use crate::{PostgresManagedSessionRepository, SqliteManagedSessionRepository, lifecycle_str};
+use crate::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 
 fn storage(error: impl std::fmt::Display) -> DeploymentRepositoryError {
     DeploymentRepositoryError::Storage(error.to_string())
+}
+
+fn deployment_lifecycle_str(fact: &DeploymentLifecycleFact) -> String {
+    serde_json::to_string(fact).expect("Deployment lifecycle fact serializes")
 }
 
 #[async_trait]
@@ -62,7 +66,7 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
     async fn upsert_deployment(
         &self,
         record: DeploymentRecord,
-        lifecycle: Option<ManagedLifecycleFact>,
+        lifecycle: Option<DeploymentLifecycleFact>,
     ) -> Result<(), DeploymentRepositoryError> {
         let mut conn = self.conn.lock().map_err(storage)?;
         let tx = conn.transaction().map_err(storage)?;
@@ -76,7 +80,7 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
         if let Some(fact) = lifecycle {
             tx.execute(
                 "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
-                params![fact.id, lifecycle_str(&fact)],
+                params![fact.id, deployment_lifecycle_str(&fact)],
             )
             .map_err(storage)?;
         }
@@ -87,7 +91,7 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
     async fn upsert_deployment_run(
         &self,
         record: DeploymentRunRecord,
-        lifecycle: Option<ManagedLifecycleFact>,
+        lifecycle: Option<DeploymentLifecycleFact>,
     ) -> Result<(), DeploymentRepositoryError> {
         let mut conn = self.conn.lock().map_err(storage)?;
         let tx = conn.transaction().map_err(storage)?;
@@ -106,7 +110,7 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
         if let Some(fact) = lifecycle {
             tx.execute(
                 "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
-                params![fact.id, lifecycle_str(&fact)],
+                params![fact.id, deployment_lifecycle_str(&fact)],
             )
             .map_err(storage)?;
         }
@@ -119,7 +123,7 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
         claim_id: &str,
         deployment: DeploymentRecord,
         run: DeploymentRunRecord,
-        lifecycle: ManagedLifecycleFact,
+        lifecycle: DeploymentLifecycleFact,
     ) -> Result<bool, DeploymentRepositoryError> {
         let mut conn = self.conn.lock().map_err(storage)?;
         let tx = conn
@@ -161,7 +165,7 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
         .map_err(storage)?;
         tx.execute(
             "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
-            params![lifecycle.id, lifecycle_str(&lifecycle)],
+            params![lifecycle.id, deployment_lifecycle_str(&lifecycle)],
         )
         .map_err(storage)?;
         tx.commit().map_err(storage)?;
@@ -213,7 +217,7 @@ impl DeploymentRepository for PostgresManagedSessionRepository {
     async fn upsert_deployment(
         &self,
         record: DeploymentRecord,
-        lifecycle: Option<ManagedLifecycleFact>,
+        lifecycle: Option<DeploymentLifecycleFact>,
     ) -> Result<(), DeploymentRepositoryError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
         sqlx::query(
@@ -233,7 +237,7 @@ impl DeploymentRepository for PostgresManagedSessionRepository {
                  ON CONFLICT(fact_id) DO NOTHING",
             )
             .bind(&fact.id)
-            .bind(lifecycle_str(&fact))
+            .bind(deployment_lifecycle_str(&fact))
             .execute(&mut *tx)
             .await
             .map_err(storage)?;
@@ -245,7 +249,7 @@ impl DeploymentRepository for PostgresManagedSessionRepository {
     async fn upsert_deployment_run(
         &self,
         record: DeploymentRunRecord,
-        lifecycle: Option<ManagedLifecycleFact>,
+        lifecycle: Option<DeploymentLifecycleFact>,
     ) -> Result<(), DeploymentRepositoryError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
         sqlx::query(
@@ -265,7 +269,7 @@ impl DeploymentRepository for PostgresManagedSessionRepository {
                  ON CONFLICT(fact_id) DO NOTHING",
             )
             .bind(&fact.id)
-            .bind(lifecycle_str(&fact))
+            .bind(deployment_lifecycle_str(&fact))
             .execute(&mut *tx)
             .await
             .map_err(storage)?;
@@ -279,7 +283,7 @@ impl DeploymentRepository for PostgresManagedSessionRepository {
         claim_id: &str,
         deployment: DeploymentRecord,
         run: DeploymentRunRecord,
-        lifecycle: ManagedLifecycleFact,
+        lifecycle: DeploymentLifecycleFact,
     ) -> Result<bool, DeploymentRepositoryError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let inserted = sqlx::query(
@@ -313,7 +317,7 @@ impl DeploymentRepository for PostgresManagedSessionRepository {
              ON CONFLICT(fact_id) DO NOTHING",
         )
         .bind(&lifecycle.id)
-        .bind(lifecycle_str(&lifecycle))
+        .bind(deployment_lifecycle_str(&lifecycle))
         .execute(&mut *tx)
         .await
         .map_err(storage)?;

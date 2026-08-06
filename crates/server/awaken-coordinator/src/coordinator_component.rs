@@ -7,12 +7,11 @@
 use std::sync::Arc;
 
 use awaken_authz_enforce::ApplicationAccessStore;
+use awaken_deployment_application::DeploymentApplication;
 use awaken_deployment_contract::DeploymentRepository;
 use awaken_executable_agent_contract::ExecutableAgentRegistrationSource;
 use awaken_protocol_managed::ModelDirectory;
-use awaken_protocol_managed::{
-    DeploymentState, EnvironmentExecutionState, ManagedRateLimiter, ManagedState,
-};
+use awaken_protocol_managed::{EnvironmentExecutionState, ManagedRateLimiter, ManagedState};
 use awaken_resource_contract::ResourceCatalog;
 use awaken_session_contract::DreamProcessStore;
 use awaken_session_contract::ManagedSessionRepository;
@@ -43,7 +42,7 @@ pub struct CoordinatorDependencies {
     /// The one restored Deployment aggregate. The process composition creates
     /// it before sibling components so an AllInOne Control Agent archive can
     /// invoke the exact same state mounted and scheduled by Coordinator.
-    pub deployment_state: Arc<DeploymentState>,
+    pub deployment_application: Arc<DeploymentApplication>,
     pub executable_agents: Arc<dyn ExecutableAgentRegistrationSource>,
     pub rate_limiter: Arc<ManagedRateLimiter>,
     pub environments: Arc<EnvironmentExecutionState>,
@@ -71,10 +70,10 @@ pub enum CoordinatorBuildError {
     WorkerTransport(#[from] awaken_coordinator_runtime::RegisteredWorkerTransportBuildError),
 }
 
-pub async fn restore_deployment_state(
+pub async fn restore_deployment_application(
     repository: Arc<dyn DeploymentRepository>,
-) -> Result<Arc<DeploymentState>, CoordinatorBuildError> {
-    DeploymentState::with_repository(repository)
+) -> Result<Arc<DeploymentApplication>, CoordinatorBuildError> {
+    DeploymentApplication::from_repository(repository)
         .await
         .map(Arc::new)
         .map_err(|error| CoordinatorBuildError::DeploymentRestore(error.to_string()))
@@ -94,7 +93,7 @@ pub async fn build_coordinator_component(
         dream_process_store,
         worker_authenticator,
         worker_directory,
-        deployment_state,
+        deployment_application,
         executable_agents,
         rate_limiter,
         environments,
@@ -103,8 +102,7 @@ pub async fn build_coordinator_component(
         registration_router,
     } = dependencies;
 
-    deployment_state.bind_rate_limiter(rate_limiter);
-    deployment_state.bind_executable_agents(executable_agents);
+    deployment_application.bind_executable_agents(executable_agents);
 
     // The canonical supervisor owns durable resource, MCP, and WorkQueue
     // recovery as background work. Component construction must expose readiness
@@ -112,8 +110,9 @@ pub async fn build_coordinator_component(
     let _ = managed_state
         .session_application()
         .spawn_lifecycle_supervisor();
-    deployment_state.bind_launcher(Arc::new(
-        awaken_protocol_managed::LocalDeploymentSessionLauncher::new(managed_state.clone()),
+    deployment_application.bind_launcher(Arc::new(
+        awaken_protocol_managed::LocalDeploymentSessionLauncher::new(managed_state.clone())
+            .with_rate_limiter(rate_limiter),
     ));
 
     let (data, dream_application) = crate::mount_with_managed_application_access_models_and_dreams(
@@ -130,22 +129,23 @@ pub async fn build_coordinator_component(
         },
     )?;
     let data = data.merge(registration_router);
-    let management_router = awaken_protocol_managed::deployments_router(deployment_state.clone())
-        .merge(awaken_protocol_awaken::dream_policy_router(
-            dream_application.clone(),
-        ))
-        .merge(awaken_protocol_managed::environment_work_router(
-            environments,
-        ))
-        .merge(crate::application_access::router(
-            application_access,
-            sessions,
-            default_workspace,
-        ));
+    let management_router =
+        awaken_protocol_managed::deployments_router(deployment_application.clone())
+            .merge(awaken_protocol_awaken::dream_policy_router(
+                dream_application.clone(),
+            ))
+            .merge(awaken_protocol_managed::environment_work_router(
+                environments,
+            ))
+            .merge(crate::application_access::router(
+                application_access,
+                sessions,
+                default_workspace,
+            ));
 
-    // One timer drives the exact DeploymentState and DreamApplication mounted above;
+    // One timer drives the exact DeploymentApplication and DreamApplication mounted above;
     // no scheduler may reconstruct either aggregate beside this component.
-    let scheduled_deployments = deployment_state;
+    let scheduled_deployments = deployment_application;
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
         loop {
@@ -172,10 +172,10 @@ pub async fn build_coordinator_component(
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
+    use awaken_deployment_contract::DeploymentLifecycleFact;
     use awaken_deployment_contract::{
         DeploymentRecord, DeploymentRepositoryError, DeploymentRunRecord,
     };
-    use awaken_session_contract::ManagedLifecycleFact;
 
     use super::*;
 
@@ -196,7 +196,7 @@ mod tests {
         async fn upsert_deployment(
             &self,
             _record: DeploymentRecord,
-            _lifecycle: Option<ManagedLifecycleFact>,
+            _lifecycle: Option<DeploymentLifecycleFact>,
         ) -> Result<(), DeploymentRepositoryError> {
             unreachable!("restore is read-only")
         }
@@ -204,7 +204,7 @@ mod tests {
         async fn upsert_deployment_run(
             &self,
             _record: DeploymentRunRecord,
-            _lifecycle: Option<ManagedLifecycleFact>,
+            _lifecycle: Option<DeploymentLifecycleFact>,
         ) -> Result<(), DeploymentRepositoryError> {
             unreachable!("restore is read-only")
         }
@@ -214,7 +214,7 @@ mod tests {
             _claim_id: &str,
             _deployment: DeploymentRecord,
             _run: DeploymentRunRecord,
-            _lifecycle: ManagedLifecycleFact,
+            _lifecycle: DeploymentLifecycleFact,
         ) -> Result<bool, DeploymentRepositoryError> {
             unreachable!("restore never claims scheduled work")
         }
@@ -226,8 +226,8 @@ mod tests {
         // C1 Deployment repository restores -> the component may bind routes and
         // supervisors (covered by CLI role-surface tests); C2 its first authority
         // read fails -> return CoordinatorBuildError and create no router, launcher,
-        // scheduler, or parallel in-memory DeploymentState.
-        let error = restore_deployment_state(Arc::new(FailingDeploymentRepository))
+        // scheduler, or parallel in-memory Deployment aggregate.
+        let error = restore_deployment_application(Arc::new(FailingDeploymentRepository))
             .await
             .err()
             .expect("C2 must fail before component construction");

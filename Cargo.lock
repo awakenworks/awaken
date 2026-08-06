@@ -562,6 +562,7 @@ dependencies = [
  "awaken-credential-store",
  "awaken-credential-vault",
  "awaken-data-subject",
+ "awaken-deployment-contract",
  "awaken-env-store",
  "awaken-environment-application",
  "awaken-environment-contract",
@@ -621,6 +622,7 @@ dependencies = [
  "awaken-credential-materializer",
  "awaken-credential-store",
  "awaken-credential-vault",
+ "awaken-deployment-application",
  "awaken-deployment-contract",
  "awaken-dream-application",
  "awaken-executable-agent-contract",
@@ -811,6 +813,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-deployment-application"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-deployment-contract",
+ "awaken-executable-agent-contract",
+ "awaken-session-contract",
+ "awaken-session-store",
+ "chrono-tz",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "awaken-deployment-contract"
 version = "1.0.0-dev"
 dependencies = [
@@ -818,6 +837,8 @@ dependencies = [
  "awaken-session-contract",
  "chrono",
  "chrono-tz",
+ "serde",
+ "serde_json",
  "thiserror 2.0.19",
 ]
 
@@ -1448,6 +1469,7 @@ dependencies = [
  "awaken-config-resolver",
  "awaken-credential-contract",
  "awaken-credential-vault",
+ "awaken-deployment-application",
  "awaken-deployment-contract",
  "awaken-dream-application",
  "awaken-env-store",

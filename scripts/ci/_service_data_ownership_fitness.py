@@ -104,7 +104,7 @@ FORBIDDEN_WORKER_SOURCE = re.compile(
 # either aggregate from the authoring service would recreate the former
 # Control/Coordinator parallel state path.
 FORBIDDEN_CONTROL_EXECUTION_SOURCE = re.compile(
-    r"\b(?:DeploymentState|deployments_router|environments_router)\b"
+    r"\b(?:DeploymentApplication|DeploymentState|deployments_router|environments_router)\b"
 )
 
 # The retired private launch boundary must not return beside the local
@@ -575,7 +575,7 @@ def domain_component_violations(
             f"awaken_coordinator::build_coordinator_component (found {coordinator_calls})"
         )
     for forbidden in (
-        "DeploymentState::with_repository(",
+        "DeploymentApplication::from_repository(",
         "mount_with_managed_application_access_models_and_dreams(",
         "ResourcePlane::new(",
     ):
@@ -583,7 +583,7 @@ def domain_component_violations(
             errors.append(f"awaken-cli reconstructs a domain component through `{forbidden}`")
     for required in (
         "pub async fn build_coordinator_component(",
-        "DeploymentState::with_repository(",
+        "DeploymentApplication::from_repository(",
         "mount_with_managed_application_access_models_and_dreams(",
     ):
         if required not in coordinator_source:
@@ -865,8 +865,8 @@ def selftest() -> None:
     assert source_violations("let client = HttpMemoryRepository::new(url, token);") == []  # O4
     aliased = {"dependencies": {"session_backend": {"package": "awaken-session-store"}}}
     assert dependency_violations(_normal_dependencies(aliased)) == ["awaken-session-store"]  # O2
-    assert control_execution_violations("let x = DeploymentState::new();") == [
-        "DeploymentState"
+    assert control_execution_violations("let x = DeploymentApplication::new();") == [
+        "DeploymentApplication"
     ]  # O5
     assert control_execution_violations("let x = ConfigPlane::new();") == []  # O6
     assert retired_launch_violations("HttpDeploymentSessionLauncher::new(url, token)") == [
@@ -893,7 +893,7 @@ def selftest() -> None:
     )  # O12 Control must consume Resource ports without constructing Resources
     coordinator = (
         "pub async fn build_coordinator_component("
-        " DeploymentState::with_repository("
+        " DeploymentApplication::from_repository("
         " mount_with_managed_application_access_models_and_dreams("
     )
     resources = (
@@ -909,7 +909,7 @@ def selftest() -> None:
         "pub struct WorkerNodeBuilder",
     ) == []  # O10 four canonical component owners
     assert domain_component_violations(
-        "DeploymentState::with_repository(",
+        "DeploymentApplication::from_repository(",
         "ManagedSessionRepository",
         "",
         "",

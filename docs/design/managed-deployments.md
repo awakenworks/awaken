@@ -9,7 +9,7 @@ successful admission, one ordinary Managed Session. Deployment never owns
 Session execution or history.
 
 ```text
-Deployment API -> DeploymentState -> DeploymentRepository
+Deployment API -> DeploymentApplication -> DeploymentRepository
                          |                    |
                          |                    `- aggregate/run rows
                          |                    `- exact occurrence claim
@@ -42,7 +42,7 @@ modified, or genuinely new before describing the dependency graph.
 
 | Owner | Change | Result |
 |---|---|---|
-| `DeploymentState` | repository restore, Workspace checks, persistent cursor, exact occurrence claim, Agent version resolution | restart-safe and replica-safe aggregate projection |
+| `DeploymentApplication` | repository restore, Workspace checks, persistent cursor, exact occurrence claim, Agent version resolution | restart-safe and replica-safe aggregate projection |
 | Managed Session store | Deployment, DeploymentRun, occurrence-claim migrations and SQLite/Postgres adapters | business row and lifecycle fact commit atomically |
 | Coordinator composition | owns the public router, scheduler, repository projection, and ordinary Session launcher | one Deployment aggregate instance and no remote launch hop |
 | `DeploymentSessionLauncher` request | carries the existing stable `deployment_run_id` | restart recovery resolves to at most one Session |
@@ -65,7 +65,7 @@ model. The local and remote launch adapters implement the same port.
 
 ```text
 HTTP adapter (official DTOs)
-  `- DeploymentState (application aggregate)
+  `- DeploymentApplication (application aggregate)
        |- ManagedAgentRepository (latest/pinned version resolution)
        |- DeploymentRepository (durability + occurrence claim + lifecycle fact)
        |- ManagedRateLimiter (create admission)
@@ -76,7 +76,7 @@ ManagedLifecycleFact outbox
   `- WebhookLifecycleSink -> official deployment.* / deployment_run.* events
 ```
 
-`DeploymentState` keeps a locked working projection for fast list/retrieve and
+`DeploymentApplication` keeps a locked working projection for fast list/retrieve and
 schedule evaluation. The repository remains the restart and multi-replica
 authority. Stored payloads are opaque JSON at the port, so storage adapters do
 not depend on Managed wire DTOs. `claim_id` is the stable pair

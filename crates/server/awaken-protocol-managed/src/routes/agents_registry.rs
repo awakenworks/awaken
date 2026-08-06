@@ -68,33 +68,10 @@ pub trait ManagedAgentRepository: Send + Sync {
 /// archived an Agent. The protocol adapter does not know which downstream
 /// aggregate consumes the command; AllInOne binds the Coordinator-owned
 /// implementation and split Control leaves it absent.
-#[async_trait::async_trait]
-pub trait AgentArchiveCascade: Send + Sync {
-    async fn archive_agent_dependents(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-    ) -> Result<(), String>;
-}
-
-#[async_trait::async_trait]
-impl AgentArchiveCascade for crate::routes::deployments::DeploymentState {
-    async fn archive_agent_dependents(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-    ) -> Result<(), String> {
-        self.archive_for_agent(workspace_id, agent_id)
-            .await
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    }
-}
-
 /// Router state containing exactly one Agent repository implementation.
 pub struct AgentRegistryState {
     repository: Arc<dyn ManagedAgentRepository>,
-    archive_cascade: Option<Arc<dyn AgentArchiveCascade>>,
+    archive_cascade: Option<Arc<dyn awaken_deployment_contract::AgentArchiveCascade>>,
 }
 
 impl AgentRegistryState {
@@ -109,7 +86,10 @@ impl AgentRegistryState {
     /// Bind one lifecycle command edge so archiving an Agent can synchronously
     /// terminalize its dependents in the same request operation.
     #[must_use]
-    pub fn with_archive_cascade(mut self, archive_cascade: Arc<dyn AgentArchiveCascade>) -> Self {
+    pub fn with_archive_cascade(
+        mut self,
+        archive_cascade: Arc<dyn awaken_deployment_contract::AgentArchiveCascade>,
+    ) -> Self {
         self.archive_cascade = Some(archive_cascade);
         self
     }
