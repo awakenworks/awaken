@@ -31,7 +31,6 @@ use awaken_session_contract::{ManagedLifecycleFact, PersistedSession};
 #[cfg(test)]
 use awaken_session_store::SqliteManagedSessionRepository;
 
-mod activity;
 mod application;
 mod composition;
 mod constants;

@@ -22,6 +22,8 @@ use awaken_session_contract::{
 
 mod mutation;
 pub use mutation::SessionMutationError;
+mod activity;
+pub use activity::SessionActivityError;
 mod contribution;
 mod credentials;
 mod projection;
@@ -1022,6 +1024,112 @@ mod tests {
             mismatch,
             Err(SessionMutationError::IdempotencyMismatch),
             "M4"
+        );
+    }
+
+    /// Activity-fence FMECA cause/effect graph. Causes: C1 the Session exists;
+    /// C2 it is nonterminal; C3 the epoch can advance; C4 settlement presents
+    /// the current epoch; C5 a later admission or terminal transition has
+    /// fenced that settlement. Effects: E1 admission commits `running` with one
+    /// unique monotonic epoch; E2 only the current completion commits `idle`;
+    /// E3 stale/terminal completions are no-ops; E4 missing, terminal-admission,
+    /// and exhausted-epoch failures do not mutate durable truth.
+    ///
+    /// | Rule | Exists | Terminal | Epoch available | Current settle | Fence | Effect |
+    /// |---|---|---|---|---|---|---|
+    /// | A1 | yes | no | yes | n/a | concurrent admit | E1, distinct epochs |
+    /// | A2 | yes | no | n/a | no | newer epoch | E3, remains running |
+    /// | A3 | yes | no | n/a | yes | none | E2, idle |
+    /// | A4 | yes | yes | n/a | any | terminal | E3, terminal preserved |
+    /// | A5 | yes | yes | any | n/a | n/a | E4, reject admission |
+    /// | A6 | yes | no | no | n/a | n/a | E4, reject exhaustion |
+    /// | A7 | no | n/a | n/a | n/a | n/a | E4, not found |
+    #[tokio::test]
+    async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        create(repo.as_ref(), persisted("activity", false, false, "idle")).await;
+        let app = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+
+        let (first, second) = tokio::join!(
+            app.begin_activity("activity"),
+            app.begin_activity("activity")
+        );
+        let first = first.expect("A1 first admission");
+        let second = second.expect("A1 concurrent admission");
+        let mut epochs = [first.activity_epoch, second.activity_epoch];
+        epochs.sort_unstable();
+        assert_eq!(epochs, [1, 2], "A1");
+        let active = repo.get("activity").await.expect("A1 durable Session");
+        assert_eq!(active.status, "running", "A1");
+
+        let stale = app
+            .settle_activity("activity", epochs[0])
+            .await
+            .expect("A2 stale settlement");
+        assert_eq!(stale.status, "running", "A2");
+        assert_eq!(stale.activity_epoch, epochs[1], "A2");
+
+        let idle = app
+            .settle_activity("activity", epochs[1])
+            .await
+            .expect("A3 current settlement");
+        assert_eq!(idle.status, "idle", "A3");
+
+        let running = app
+            .begin_activity("activity")
+            .await
+            .expect("A4 activity before terminal transition");
+        let mut terminated = running.clone();
+        terminated.status = "terminated".into();
+        let terminated = app
+            .commit_session_snapshot(
+                "workspace",
+                terminated,
+                "activity-test-terminal",
+                Vec::new(),
+            )
+            .await
+            .expect("A4 terminal transition");
+        let fenced = app
+            .settle_activity("activity", running.activity_epoch)
+            .await
+            .expect("A4 terminal settlement is idempotent");
+        assert_eq!(fenced, terminated, "A4");
+        assert_eq!(
+            app.begin_activity("activity").await,
+            Err(SessionActivityError::Terminal),
+            "A5"
+        );
+
+        let mut exhausted = persisted("activity-exhausted", false, false, "idle");
+        exhausted.activity_epoch = u64::MAX;
+        create(repo.as_ref(), exhausted).await;
+        let exhausted_before = repo
+            .get("activity-exhausted")
+            .await
+            .expect("A6 durable Session before admission");
+        assert_eq!(
+            app.begin_activity("activity-exhausted").await,
+            Err(SessionActivityError::EpochExhausted),
+            "A6"
+        );
+        assert_eq!(
+            repo.get("activity-exhausted")
+                .await
+                .expect("A6 durable Session"),
+            exhausted_before,
+            "A6"
+        );
+        assert_eq!(
+            app.begin_activity("missing").await,
+            Err(SessionActivityError::NotFound),
+            "A7"
         );
     }
 

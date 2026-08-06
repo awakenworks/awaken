@@ -14,6 +14,20 @@ struct DelegateCall {
 }
 
 impl ManagedState {
+    fn map_activity_error(error: awaken_session_application::SessionActivityError) -> StateError {
+        match error {
+            awaken_session_application::SessionActivityError::NotFound => StateError::NotFound,
+            awaken_session_application::SessionActivityError::Terminal => StateError::Archived,
+            awaken_session_application::SessionActivityError::Conflict => StateError::Conflict,
+            awaken_session_application::SessionActivityError::EpochExhausted => {
+                StateError::Run(RunError::internal("Session activity epoch is exhausted"))
+            }
+            awaken_session_application::SessionActivityError::Unavailable(message) => {
+                StateError::Run(RunError::internal(message))
+            }
+        }
+    }
+
     pub(super) fn next_event_id(&self) -> String {
         format!("evt_{}", self.event_seq.fetch_add(1, Ordering::SeqCst))
     }
@@ -975,7 +989,14 @@ impl ManagedState {
                     | InboundEvent::UserDefineOutcome { .. }
             );
             let activity_epoch = if drives_turn {
-                Some(self.begin_session_activity(session_id).await?)
+                let session = self
+                    .application
+                    .begin_activity(session_id)
+                    .await
+                    .map_err(Self::map_activity_error)?;
+                let epoch = session.activity_epoch;
+                self.refresh_cached_projection(&session)?;
+                Some(epoch)
             } else {
                 None
             };
@@ -1005,8 +1026,12 @@ impl ManagedState {
                 record.session.status = "idle";
             }
             if let Some(activity_epoch) = activity_epoch {
-                self.settle_session_activity(session_id, activity_epoch)
-                    .await?;
+                let session = self
+                    .application
+                    .settle_activity(session_id, activity_epoch)
+                    .await
+                    .map_err(Self::map_activity_error)?;
+                self.refresh_cached_projection(&session)?;
             }
             processing?;
         }
