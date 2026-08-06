@@ -17,6 +17,7 @@ awaken-environment-realization-contract.workspace = true
 awaken-executable-agent-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
 awaken-resource-contract.workspace = true
+awaken-runtime-contract.workspace = true
 awaken-session-contract.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
