@@ -3,13 +3,13 @@
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
-use awaken_sandbox_container::ContainerEnvironmentProvider;
 #[cfg(any(
     feature = "container-docker",
     feature = "container-podman",
     feature = "container-k8s"
 ))]
 use awaken_sandbox_container::ContainerProvider;
+use awaken_sandbox_container::{ContainerEnvironmentCapacity, ContainerEnvironmentProvider};
 
 use crate::deployment_config::SandboxTier;
 #[cfg(any(
@@ -30,17 +30,34 @@ use crate::sandbox_source::spawn_container_reaper;
     feature = "container-podman",
     feature = "container-k8s"
 ))]
+struct BuiltContainerEnvironment {
+    provider: Arc<dyn ContainerEnvironmentProvider>,
+    capacity: Option<Arc<dyn ContainerEnvironmentCapacity>>,
+}
+
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
 fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     provider: ContainerProvider<R>,
     size: usize,
-) -> Arc<dyn ContainerEnvironmentProvider> {
+) -> BuiltContainerEnvironment {
     if size == 0 {
-        Arc::new(provider)
+        BuiltContainerEnvironment {
+            provider: Arc::new(provider),
+            capacity: None,
+        }
     } else {
-        Arc::new(awaken_sandbox_container::WarmContainerPool::new(
+        let pool = Arc::new(awaken_sandbox_container::WarmContainerPool::new(
             Arc::new(provider),
             size,
-        ))
+        ));
+        BuiltContainerEnvironment {
+            provider: pool.clone(),
+            capacity: Some(pool),
+        }
     }
 }
 
@@ -54,7 +71,7 @@ fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     image: Option<&str>,
     settings: &crate::deployment_config::SandboxSettings,
     package_provisioner: Option<Arc<dyn awaken_sandbox_container::PackageImageProvisioner>>,
-) -> Result<Arc<dyn ContainerEnvironmentProvider>, String> {
+) -> Result<BuiltContainerEnvironment, String> {
     let mut provider = ContainerProvider::new(runtime, container_image(image)?);
     if let Some(package_provisioner) = package_provisioner {
         provider = provider.with_package_provisioner(package_provisioner);
@@ -203,11 +220,12 @@ pub(crate) async fn build(
 ) -> Result<
     (
         Arc<dyn ContainerEnvironmentProvider>,
+        Option<Arc<dyn ContainerEnvironmentCapacity>>,
         Vec<pc::MountRequirement>,
     ),
     String,
 > {
-    let provider = match tier {
+    let built = match tier {
         #[cfg(feature = "container-docker")]
         SandboxTier::Docker => {
             let runtime = Arc::new(docker_runtime(settings)?);
@@ -252,7 +270,7 @@ pub(crate) async fn build(
             return Err("AWAKEN_SANDBOX_TIER=k8s needs the `container-k8s` feature".into());
         }
     };
-    Ok((provider, Vec::new()))
+    Ok((built.provider, built.capacity, Vec::new()))
 }
 
 #[cfg(not(any(
@@ -267,6 +285,7 @@ pub(crate) async fn build(
 ) -> Result<
     (
         Arc<dyn ContainerEnvironmentProvider>,
+        Option<Arc<dyn ContainerEnvironmentCapacity>>,
         Vec<pc::MountRequirement>,
     ),
     String,

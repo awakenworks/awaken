@@ -245,15 +245,16 @@ impl crate::host::SharedHost {
             let hand_factory = hand_factory.unwrap_or_else(|| {
                 panic!("container Session environments require a hand executor factory")
             });
-            let (provider, extra_mounts) = crate::container_environment::build(
+            let (provider, capacity, extra_mounts) = crate::container_environment::build(
                 tier,
                 deployment.container_image.as_deref(),
                 &deployment.sandbox,
             )
             .await
             .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
-            crate::session_environment::SessionEnvironmentProvider::container_with_hand_idle(
+            crate::session_environment::SessionEnvironmentProvider::container_with_capacity_and_hand_idle(
                 provider,
+                capacity,
                 extra_mounts,
                 hand_factory,
                 deployment.sandbox.container_hand_bin.clone(),

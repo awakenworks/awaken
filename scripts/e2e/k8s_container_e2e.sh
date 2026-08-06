@@ -38,7 +38,12 @@ k3d_admit_or_exit "Kubernetes container E2E" 1
 # Prepare the exact offline fixtures before starting the disposable cluster. The
 # shared harness remains the sole owner of cluster policy and image import.
 log "building offline fixture images"
-docker pull --platform "$K3D_PLATFORM" busybox:1.36 >/dev/null
+# Reuse the exact local fixture when present. Requiring a registry HEAD even
+# after the bytes are cached makes the otherwise-offline K8s proof depend on
+# Docker Hub availability.
+if ! docker image inspect busybox:1.36 >/dev/null 2>&1; then
+  docker pull --platform "$K3D_PLATFORM" busybox:1.36 >/dev/null
+fi
 docker run --name "$FIXTURE_CONTAINER" --platform "$K3D_PLATFORM" busybox:1.36 true >/dev/null
 docker commit "$FIXTURE_CONTAINER" "$FIXTURE_IMAGE" >/dev/null
 docker rm -f "$FIXTURE_CONTAINER" >/dev/null

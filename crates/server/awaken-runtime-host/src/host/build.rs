@@ -315,6 +315,7 @@ impl SharedHost {
             session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
                 sandbox_root.clone(),
             ),
+            cache_volume_prewarmer: crate::cache_volume::CacheVolumePrewarmer::default(),
             backend_owned_session_provider: None,
             session_provider_explicit: false,
             judge_snapshot: None,
@@ -959,14 +960,28 @@ impl SharedHost {
     /// on the authoritative environment path.
     #[must_use]
     pub fn with_session_container_provider(
-        mut self,
+        self,
         provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
         hand_factory: Arc<dyn crate::HandExecutorFactory>,
     ) -> Self {
+        self.with_session_container_provider_and_capacity(provider, None, hand_factory)
+    }
+
+    /// Install one container provider and its optional never-used-capacity owner.
+    /// Keeping both handles from the same composition prevents provider erasure
+    /// from orphaning startup warmup and shutdown drain.
+    #[must_use]
+    pub fn with_session_container_provider_and_capacity(
+        mut self,
+        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+        capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
+        hand_factory: Arc<dyn crate::HandExecutorFactory>,
+    ) -> Self {
         let hand_bin = self.deployment.sandbox.container_hand_bin.clone();
-        self.session_provider =
-            crate::session_environment::SessionEnvironmentProvider::container_with_hand_idle(
+        self.session_provider = crate::session_environment::SessionEnvironmentProvider::
+            container_with_capacity_and_hand_idle(
                 provider,
+                capacity,
                 Vec::new(),
                 hand_factory,
                 hand_bin,
@@ -977,6 +992,54 @@ impl SharedHost {
             self.session_provider.install_memory_mounter(mounter);
         }
         self
+    }
+
+    /// Replace the default directory-only CacheVolume preparation with one
+    /// product-specific initializer. Explicit warmup and Session creation keep
+    /// sharing the same single-flight owner.
+    #[must_use]
+    pub fn with_cache_volume_initializer(
+        mut self,
+        initializer: Arc<dyn crate::CacheVolumeInitializer>,
+    ) -> Self {
+        self.cache_volume_prewarmer = crate::cache_volume::CacheVolumePrewarmer::new(initializer);
+        self
+    }
+
+    /// Eagerly prepare one caller-owned CacheVolume. The same `(key, host_path)`
+    /// is a no-op when Session realization later requests it.
+    pub async fn prewarm_cache_volume(
+        &self,
+        key: impl Into<String>,
+        host_path: impl Into<std::path::PathBuf>,
+    ) -> Result<(), String> {
+        self.cache_volume_prewarmer
+            .prewarm(crate::CacheVolumeWarmup::new(key, host_path))
+            .await
+    }
+
+    /// Warm the deployment's canonical empty Session shape to its configured
+    /// target. The Worker calls this before publishing Ready. Shape normalization
+    /// is shared with ordinary Session creation, so warmup cannot drift into a
+    /// parallel creation path.
+    pub async fn prewarm_environment_capacity(
+        &self,
+    ) -> Result<usize, awaken_provisioning_contract::SandboxError> {
+        if self.deployment.disable_local_pool || self.deployment.sandbox.warm_pool_size == 0 {
+            return Ok(0);
+        }
+        self.session_provider
+            .prewarm(
+                &crate::provisioning::agent_run_sandbox_spec("environment-warmup"),
+                self.deployment.sandbox.warm_pool_size,
+            )
+            .await
+    }
+
+    /// Dispose never-used warm capacity after claim admission and in-flight work
+    /// have drained. Active Session environments remain owned by their slots.
+    pub async fn shutdown_environment_capacity(&self) {
+        self.session_provider.shutdown_capacity().await;
     }
 
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first turn.

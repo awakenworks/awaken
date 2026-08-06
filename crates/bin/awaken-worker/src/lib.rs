@@ -348,13 +348,26 @@ impl WorkerNodeBuilder {
     /// substitution/no-bypass implementations; it does not add a credential port.
     #[must_use]
     pub fn with_session_container_provider(
+        self,
+        backend: impl Into<String>,
+        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+    ) -> Self {
+        self.with_session_container_provider_and_capacity(backend, provider, None)
+    }
+
+    /// Install a Session container provider together with the capacity lifecycle
+    /// produced by the same downstream composition.
+    #[must_use]
+    pub fn with_session_container_provider_and_capacity(
         mut self,
         backend: impl Into<String>,
         provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+        capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
     ) -> Self {
         self.session_container_provider = Some(InstalledSessionContainerProvider {
             backend: backend.into(),
             provider,
+            capacity,
         });
         self
     }
@@ -576,6 +589,7 @@ pub struct WorkerNode {
 struct InstalledSessionContainerProvider {
     backend: String,
     provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+    capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
 }
 
 struct InstalledSandboxBoundary {
@@ -928,7 +942,11 @@ impl WorkerNode {
                 .hand_executor_factory
                 .clone()
                 .expect("container provider was validated with a hand factory");
-            host = host.with_session_container_provider(installed.provider, hand_factory);
+            host = host.with_session_container_provider_and_capacity(
+                installed.provider,
+                installed.capacity,
+                hand_factory,
+            );
         }
         // Serve only the ACP CLI capability this worker advertises. The run's snapshot
         // selects the matching backend and supplies its published provider access.
@@ -937,6 +955,21 @@ impl WorkerNode {
             .await
             .with_acp_from_deployment(self.credential_materializer)
             .await;
+
+        // Pay the canonical empty-container cold start before publishing Ready.
+        // Warmup is an optimization: failure degrades to the existing cold-create
+        // path and is observable, but never weakens the selected isolation tier.
+        match host.prewarm_environment_capacity().await {
+            Ok(ready) if ready > 0 => {
+                eprintln!("awaken-worker prewarmed {ready} Session environments")
+            }
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!(
+                    "awaken-worker Session environment prewarm failed; cold path retained: {error}"
+                )
+            }
+        }
 
         let host = Arc::new(host);
         let acp_capability_observation_source = match self.acp_capability_observation_source {
@@ -1084,6 +1117,7 @@ impl WorkerNode {
         if let Some(admin_task) = admin_task {
             admin_task.abort();
         }
+        host.shutdown_environment_capacity().await;
         if host.pool_in_flight() == 0 {
             let _ = control.mark_quiesced(&lifecycle.identity).await;
         }

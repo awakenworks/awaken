@@ -20,6 +20,7 @@ mod agent_catalog;
 mod agent_runner;
 mod application;
 mod background;
+mod cache_volume;
 mod commit_backend;
 mod commit_ingest;
 mod compact;
@@ -85,6 +86,7 @@ pub use crate::worker_http::respond as respond_host_http;
 // The neutral session substrate and its resume vocabulary.
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
 pub use crate::acp_tool_export::{AcpToolExport, AcpToolExporter};
+pub use crate::cache_volume::{CacheVolumeInitializer, CacheVolumeWarmup};
 pub use crate::commit_backend::{
     init_shared_postgres_commit, init_shared_postgres_commit_existing,
     migrate_postgres_commit_schema,

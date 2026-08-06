@@ -5,7 +5,7 @@ use awaken_worker_transport_security::{
 };
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -66,6 +66,47 @@ fn poll_status(address: &str, method: &str, path: &str, expected: u16) -> bool {
 }
 
 struct ExternalSessionProvider;
+
+#[derive(Default)]
+struct RecordingCapacity {
+    warmups: Mutex<Vec<(awaken_provisioning_contract::SandboxSpec, usize)>>,
+    fail_warmup: AtomicBool,
+    shut_down: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl awaken_sandbox_container::ContainerEnvironmentCapacity for RecordingCapacity {
+    async fn prewarm_to(
+        &self,
+        spec: &awaken_provisioning_contract::SandboxSpec,
+        target: usize,
+    ) -> Result<usize, awaken_provisioning_contract::SandboxError> {
+        self.warmups.lock().unwrap().push((spec.clone(), target));
+        if self.fail_warmup.load(Ordering::SeqCst) {
+            Err(awaken_provisioning_contract::SandboxError::new(
+                "injected warmup failure",
+            ))
+        } else {
+            Ok(target)
+        }
+    }
+
+    async fn shutdown_capacity(&self) {
+        self.shut_down.store(true, Ordering::SeqCst);
+    }
+}
+
+struct NoHandFactory;
+
+impl awaken_runtime_host::HandExecutorFactory for NoHandFactory {
+    fn bind(
+        &self,
+        _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
+        _operation_scope: &str,
+    ) -> Arc<dyn awaken_runtime_contract::tool::ToolExecutor> {
+        panic!("lifecycle fixture never binds a hand channel")
+    }
+}
 
 #[async_trait::async_trait]
 impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionProvider {
@@ -303,6 +344,113 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
             .to_ascii_lowercase()
             .contains("authorization: awakenworker ")
     }));
+}
+
+/// Cause/effect design:
+/// C1=Worker has external provider+capacity, C2=warm target > 0, C3=warmup
+/// succeeds, C4=prompt shutdown after Ready. E1=the canonical empty Container
+/// shape is warmed before Ready is observable, E2=target is forwarded exactly,
+/// E3=shutdown drains capacity before deregistration completes.
+/// Decision rule: (C1,C2,C3,C4)->(E1,E2,E3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_warms_before_ready_and_drains_capacity_on_shutdown() {
+    let upstream = FakeWorkerUpstream::start();
+    let capacity = Arc::new(RecordingCapacity::default());
+    let mut deployment = local_coordinator_deployment();
+    deployment.sandbox.warm_pool_size = 2;
+
+    WorkerNodeBuilder::new(
+        WorkerUpstream::new(upstream.url()).with_worker_id("worker-warmup-lifecycle-test"),
+    )
+    .with_deployment_config(deployment)
+    .with_session_container_provider_and_capacity(
+        "external-secure",
+        Arc::new(ExternalSessionProvider),
+        Some(capacity.clone()),
+    )
+    .with_hand_executor_factory(Arc::new(NoHandFactory))
+    .with_manifest(manifest())
+    .without_admin_surface()
+    .build()
+    .expect("valid warm-capacity Worker topology")
+    .run_until(async {
+        for _ in 0..300 {
+            if upstream
+                .requests()
+                .iter()
+                .any(|path| path == "/v1/worker/heartbeat")
+            {
+                let warmups = capacity.warmups.lock().unwrap();
+                assert_eq!(warmups.len(), 1, "Ready cannot precede warmup");
+                assert_eq!(warmups[0].1, 2);
+                assert_eq!(
+                    warmups[0].0.isolation,
+                    awaken_provisioning_contract::IsolationClass::Container
+                );
+                assert!(warmups[0].0.mounts.is_empty());
+                return Ok(WorkerShutdown::Prompt);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("Worker did not publish Ready")
+    })
+    .await
+    .expect("warm-capacity Worker lifecycle completes");
+
+    assert!(capacity.shut_down.load(Ordering::SeqCst));
+    let requests = upstream.requests();
+    let deregistered = requests
+        .iter()
+        .position(|path| path == "/v1/worker/deregister")
+        .expect("Worker deregisters");
+    assert!(deregistered > 0);
+}
+
+/// Cause/effect design:
+/// C1=capacity warmup fails, C2=provider/isolation selection remains valid.
+/// E1=Worker still publishes Ready with the existing cold-create path, E2=no
+/// alternate/lower-isolation provider is selected, E3=capacity shutdown still runs.
+/// Decision rule: (C1,C2)->(E1,E2,E3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn warmup_failure_retains_cold_path_and_still_closes_capacity() {
+    let upstream = FakeWorkerUpstream::start();
+    let capacity = Arc::new(RecordingCapacity::default());
+    capacity.fail_warmup.store(true, Ordering::SeqCst);
+    let mut deployment = local_coordinator_deployment();
+    deployment.sandbox.warm_pool_size = 1;
+
+    WorkerNodeBuilder::new(
+        WorkerUpstream::new(upstream.url()).with_worker_id("worker-warmup-failure-test"),
+    )
+    .with_deployment_config(deployment)
+    .with_session_container_provider_and_capacity(
+        "external-secure",
+        Arc::new(ExternalSessionProvider),
+        Some(capacity.clone()),
+    )
+    .with_hand_executor_factory(Arc::new(NoHandFactory))
+    .with_manifest(manifest())
+    .without_admin_surface()
+    .build()
+    .expect("valid failure-degradation Worker topology")
+    .run_until(async {
+        for _ in 0..300 {
+            if upstream
+                .requests()
+                .iter()
+                .any(|path| path == "/v1/worker/heartbeat")
+            {
+                assert_eq!(capacity.warmups.lock().unwrap().len(), 1, "E1/E2");
+                return Ok(WorkerShutdown::Prompt);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("warmup failure must not prevent Ready")
+    })
+    .await
+    .expect("cold path remains available");
+
+    assert!(capacity.shut_down.load(Ordering::SeqCst), "E3");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

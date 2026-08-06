@@ -156,7 +156,6 @@ awaken-resource-application = { path = "crates/resources/awaken-resource-applica
 awaken-sandbox-local = { path = "crates/worker/awaken-sandbox-local" }
 awaken-sandbox-memoryd = { path = "crates/worker/awaken-sandbox-memoryd" }
 awaken-sandbox-container = { path = "crates/worker/awaken-sandbox-container" }
-awaken-sandbox-manager = { path = "crates/worker/awaken-sandbox-manager" }
 awaken-runtime-examples = { path = "crates/devtools/awaken-runtime-examples" }
 awaken-run-ingress-contract = { path = "crates/server/awaken-run-ingress-contract" }
 awaken-run-ingress = { path = "crates/server/awaken-run-ingress" }

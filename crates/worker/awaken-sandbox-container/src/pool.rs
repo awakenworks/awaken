@@ -12,7 +12,7 @@
 //! workspace reset and is deliberately out of scope.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -20,8 +20,8 @@ use awaken_provisioning_contract as pc;
 
 use crate::{
     AgentContainerProvider, AgentContainerSession, ContainerEnvironment,
-    ContainerEnvironmentProvider, ContainerProvider, ContainerRuntime, ContainerSandbox,
-    EnvironmentOwnedProcess, RuntimeAgentProcess, command_of,
+    ContainerEnvironmentCapacity, ContainerEnvironmentProvider, ContainerProvider,
+    ContainerRuntime, ContainerSandbox, EnvironmentOwnedProcess, RuntimeAgentProcess, command_of,
 };
 
 /// A process-global sequence for warm container scopes, so names are unique across
@@ -72,6 +72,39 @@ struct WarmEntry<R: ContainerRuntime> {
     ready: Vec<ContainerSandbox<R>>,
 }
 
+/// The one admission gate for explicit startup warmup and adaptive replenishment.
+/// A candidate is never published into capacity until the runtime reports Ready;
+/// every rejected candidate is disposed here.
+async fn ready_candidate<R: ContainerRuntime + 'static>(
+    sandbox: ContainerSandbox<R>,
+) -> Result<ContainerSandbox<R>, pc::SandboxError> {
+    match pc::Sandbox::status(&sandbox).await {
+        Ok(pc::SandboxStatus::Ready) => Ok(sandbox),
+        Ok(_) => {
+            let _ = pc::Sandbox::dispose(&sandbox).await;
+            Err(pc::SandboxError::new(
+                "prewarmed container did not become ready",
+            ))
+        }
+        Err(error) => {
+            let _ = pc::Sandbox::dispose(&sandbox).await;
+            Err(error)
+        }
+    }
+}
+
+struct InFlightCreate {
+    count: Arc<AtomicUsize>,
+    changed: Arc<tokio::sync::Notify>,
+}
+
+impl Drop for InFlightCreate {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::SeqCst);
+        self.changed.notify_waiters();
+    }
+}
+
 /// A warm pool wrapping a concrete [`ContainerProvider`]. Implements
 /// [`AgentContainerProvider`], so it drops into the host's container channel source
 /// exactly where a bare provider would (`build_docker_source`/`build_k8s_source`).
@@ -79,10 +112,15 @@ pub struct WarmContainerPool<R: ContainerRuntime> {
     inner: Arc<ContainerProvider<R>>,
     size: usize,
     warm: Arc<Mutex<HashMap<String, WarmEntry<R>>>>,
+    /// Serialize explicit startup warmup per exact shape. Adaptive replenishment
+    /// still remains off-path; its cap check disposes any concurrent excess.
+    prewarm_gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Set by [`shutdown`](Self::shutdown) so in-flight replenishment stops adding
     /// containers after the drain — otherwise a replenish that lands mid-drain would
     /// leak a warm container past teardown.
     closed: Arc<AtomicBool>,
+    in_flight_creates: Arc<AtomicUsize>,
+    create_changed: Arc<tokio::sync::Notify>,
 }
 
 impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
@@ -95,7 +133,10 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             inner,
             size,
             warm: Arc::new(Mutex::new(HashMap::new())),
+            prewarm_gates: Mutex::new(HashMap::new()),
             closed: Arc::new(AtomicBool::new(false)),
+            in_flight_creates: Arc::new(AtomicUsize::new(0)),
+            create_changed: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -105,26 +146,76 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         next_warm_scope()
     }
 
-    /// Eagerly create `n` warm containers for `spec`'s shape (a no-op for a
-    /// non-poolable spec). Deterministic (awaited), for startup pre-warm and tests.
-    pub async fn prewarm(&self, spec: &pc::SandboxSpec, n: usize) -> Result<(), pc::SandboxError> {
+    fn begin_create(&self) -> Result<InFlightCreate, pc::SandboxError> {
+        self.in_flight_creates.fetch_add(1, Ordering::SeqCst);
+        if self.closed.load(Ordering::SeqCst) {
+            self.in_flight_creates.fetch_sub(1, Ordering::SeqCst);
+            self.create_changed.notify_waiters();
+            return Err(pc::SandboxError::new(
+                "warm container capacity is shut down",
+            ));
+        }
+        Ok(InFlightCreate {
+            count: self.in_flight_creates.clone(),
+            changed: self.create_changed.clone(),
+        })
+    }
+
+    /// Ensure `target` warm containers exist for `spec`'s exact shape. This is a
+    /// target, not an increment: repeated and concurrent startup calls are
+    /// idempotent. Every candidate must report `Ready` before it enters the pool.
+    pub async fn prewarm(
+        &self,
+        spec: &pc::SandboxSpec,
+        target: usize,
+    ) -> Result<usize, pc::SandboxError> {
+        let target = target.min(self.size);
+        if target == 0 {
+            return Ok(self.ready_len(spec));
+        }
         let Some(key) = pool_key(spec) else {
-            return Ok(());
+            return Ok(0);
         };
-        for _ in 0..n {
+        let gate = self
+            .prewarm_gates
+            .lock()
+            .expect("warm prewarm gate mutex")
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _guard = gate.lock().await;
+        loop {
+            let ready = self.ready_len(spec);
+            if ready >= target {
+                return Ok(ready);
+            }
+            let create = self.begin_create()?;
             let mut warm_spec = spec.clone();
             warm_spec.scope = self.warm_scope();
-            let sandbox = self.inner.create_container(&warm_spec).await?;
-            let mut map = self.warm.lock().expect("warm pool mutex");
-            map.entry(key.clone())
-                .or_insert_with(|| WarmEntry {
+            let sandbox = ready_candidate(self.inner.create_container(&warm_spec).await?).await?;
+            let excess = {
+                let mut map = self.warm.lock().expect("warm pool mutex");
+                let entry = map.entry(key.clone()).or_insert_with(|| WarmEntry {
                     template: spec.clone(),
                     ready: Vec::new(),
-                })
-                .ready
-                .push(sandbox);
+                });
+                if self.closed.load(Ordering::SeqCst) || entry.ready.len() >= target {
+                    Some(sandbox)
+                } else {
+                    entry.ready.push(sandbox);
+                    None
+                }
+            };
+            if let Some(excess) = excess {
+                let _ = pc::Sandbox::dispose(&excess).await;
+                if self.closed.load(Ordering::SeqCst) {
+                    return Err(pc::SandboxError::new(
+                        "warm container capacity is shut down",
+                    ));
+                }
+            }
+            drop(create);
         }
-        Ok(())
     }
 
     /// How many warm containers are ready for `spec`'s shape (0 when not poolable).
@@ -151,14 +242,25 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 let mut map = self.warm.lock().expect("warm pool mutex");
                 map.drain().flat_map(|(_, e)| e.ready).collect()
             };
-            if batch.is_empty() {
-                break;
-            }
             for sandbox in batch {
                 let _ = pc::Sandbox::dispose(&sandbox).await;
             }
-            // Yield so any in-flight replenish create lands, then drain it too.
-            tokio::task::yield_now().await;
+            let changed = self.create_changed.notified();
+            if self.in_flight_creates.load(Ordering::SeqCst) == 0 {
+                // No create can begin after `closed`; drain once more to cover the
+                // insertion that happened immediately before the count reached zero.
+                if self
+                    .warm
+                    .lock()
+                    .expect("warm pool mutex")
+                    .values()
+                    .all(|entry| entry.ready.is_empty())
+                {
+                    break;
+                }
+                continue;
+            }
+            changed.await;
         }
     }
 
@@ -172,8 +274,20 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         let inner = self.inner.clone();
         let warm = self.warm.clone();
         let closed = self.closed.clone();
+        let in_flight_creates = self.in_flight_creates.clone();
+        let create_changed = self.create_changed.clone();
         let size = self.size;
+        in_flight_creates.fetch_add(1, Ordering::SeqCst);
+        if closed.load(Ordering::SeqCst) {
+            in_flight_creates.fetch_sub(1, Ordering::SeqCst);
+            create_changed.notify_waiters();
+            return;
+        }
         tokio::spawn(async move {
+            let _create = InFlightCreate {
+                count: in_flight_creates,
+                changed: create_changed,
+            };
             loop {
                 if closed.load(Ordering::SeqCst) {
                     return;
@@ -189,28 +303,46 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 let mut warm_spec = template;
                 warm_spec.scope = next_warm_scope();
                 match inner.create_container(&warm_spec).await {
-                    Ok(sandbox) => {
-                        // Re-check the cap under the lock; dispose an over-cap create.
-                        let over = {
-                            let mut map = warm.lock().expect("warm pool mutex");
-                            match map.get_mut(&key) {
-                                Some(e) if e.ready.len() < size => {
-                                    e.ready.push(sandbox);
-                                    None
+                    Ok(sandbox) => match ready_candidate(sandbox).await {
+                        Ok(sandbox) => {
+                            // Re-check the cap under the lock; dispose an over-cap create.
+                            let over = {
+                                let mut map = warm.lock().expect("warm pool mutex");
+                                match map.get_mut(&key) {
+                                    Some(e) if e.ready.len() < size => {
+                                        e.ready.push(sandbox);
+                                        None
+                                    }
+                                    _ => Some(sandbox),
                                 }
-                                _ => Some(sandbox),
+                            };
+                            if let Some(excess) = over {
+                                let _ = pc::Sandbox::dispose(&excess).await;
+                                return;
                             }
-                        };
-                        if let Some(excess) = over {
-                            let _ = pc::Sandbox::dispose(&excess).await;
-                            return;
                         }
-                    }
+                        Err(_) => return,
+                    },
                     // A create failure stops replenishing this key (fail closed, no spin).
                     Err(_) => return,
                 }
             }
         });
+    }
+}
+
+#[async_trait]
+impl<R: ContainerRuntime + 'static> ContainerEnvironmentCapacity for WarmContainerPool<R> {
+    async fn prewarm_to(
+        &self,
+        spec: &pc::SandboxSpec,
+        target: usize,
+    ) -> Result<usize, pc::SandboxError> {
+        self.prewarm(spec, target).await
+    }
+
+    async fn shutdown_capacity(&self) {
+        self.shutdown().await;
     }
 }
 
@@ -293,6 +425,130 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
 mod tests {
     use super::*;
 
+    struct RecordingRuntime {
+        creates: AtomicUsize,
+        removes: AtomicUsize,
+        ready: AtomicBool,
+        block_create: AtomicBool,
+        create_started: tokio::sync::Notify,
+        allow_create: tokio::sync::Semaphore,
+    }
+
+    impl RecordingRuntime {
+        fn ready() -> Self {
+            Self {
+                creates: AtomicUsize::new(0),
+                removes: AtomicUsize::new(0),
+                ready: AtomicBool::new(true),
+                block_create: AtomicBool::new(false),
+                create_started: tokio::sync::Notify::new(),
+                allow_create: tokio::sync::Semaphore::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ContainerRuntime for RecordingRuntime {
+        fn enforces_network_none(&self) -> bool {
+            true
+        }
+
+        async fn create(
+            &self,
+            id: &str,
+            _plan: &crate::ContainerPlan,
+        ) -> Result<String, crate::RuntimeError> {
+            self.creates.fetch_add(1, Ordering::SeqCst);
+            if self.block_create.load(Ordering::SeqCst) {
+                self.create_started.notify_waiters();
+                self.allow_create
+                    .acquire()
+                    .await
+                    .expect("test create semaphore remains open")
+                    .forget();
+            }
+            Ok(format!("container-{id}"))
+        }
+
+        async fn open_channel(
+            &self,
+            _container_id: &str,
+        ) -> Result<Box<dyn crate::AgentChannel>, crate::RuntimeError> {
+            Err(crate::RuntimeError::Backend(
+                "not used by warmup test".into(),
+            ))
+        }
+
+        async fn inspect(
+            &self,
+            _container_id: &str,
+        ) -> Result<crate::ContainerState, crate::RuntimeError> {
+            Ok(if self.ready.load(Ordering::SeqCst) {
+                crate::ContainerState::Running
+            } else {
+                crate::ContainerState::Gone
+            })
+        }
+
+        async fn wait(&self, _container_id: &str) -> Result<pc::ExitStatus, crate::RuntimeError> {
+            Ok(pc::ExitStatus {
+                code: Some(0),
+                signaled: false,
+            })
+        }
+
+        async fn poll(
+            &self,
+            _container_id: &str,
+        ) -> Result<Option<pc::ExitStatus>, crate::RuntimeError> {
+            Ok(None)
+        }
+
+        async fn signal(
+            &self,
+            _container_id: &str,
+            _signal: pc::Signal,
+        ) -> Result<(), crate::RuntimeError> {
+            Ok(())
+        }
+
+        async fn artifacts(
+            &self,
+            _container_id: &str,
+        ) -> Result<Vec<pc::Artifact>, crate::RuntimeError> {
+            Ok(Vec::new())
+        }
+
+        async fn read_artifact(
+            &self,
+            _container_id: &str,
+            _artifact_id: &str,
+        ) -> Result<Vec<u8>, crate::RuntimeError> {
+            Err(crate::RuntimeError::Backend(
+                "not used by warmup test".into(),
+            ))
+        }
+
+        async fn touch_lease(&self, _container_id: &str) -> Result<(), crate::RuntimeError> {
+            Ok(())
+        }
+
+        async fn remove(&self, _container_id: &str) -> Result<(), crate::RuntimeError> {
+            self.removes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn recording_pool(
+        runtime: Arc<RecordingRuntime>,
+        size: usize,
+    ) -> WarmContainerPool<RecordingRuntime> {
+        WarmContainerPool::new(
+            Arc::new(ContainerProvider::new(runtime, "agent:test")),
+            size,
+        )
+    }
+
     #[cfg(feature = "podman")]
     #[test]
     fn pool_preserves_inner_provider_capability_evidence() {
@@ -318,6 +574,125 @@ mod tests {
             lease_ttl_secs: None,
             extra: Some(serde_json::json!({ "command": cmd })),
         }
+    }
+
+    /// Cause/effect design:
+    /// C1=poolable exact shape, C2=target exceeds ready count, C3=repeated call,
+    /// C4=runtime reports Ready. E1=only the deficit is created, E2=result reaches
+    /// target, E3=repeated warmup is idempotent.
+    /// Rules: (C1,C2,C4)->(E1,E2); (C1,!C2,C3)->E3.
+    #[tokio::test]
+    async fn prewarm_uses_a_ready_target_instead_of_an_increment() {
+        let runtime = Arc::new(RecordingRuntime::ready());
+        let pool = recording_pool(runtime.clone(), 2);
+        let spec = spec("startup", &[]);
+
+        assert_eq!(pool.prewarm(&spec, 2).await.unwrap(), 2);
+        assert_eq!(pool.prewarm(&spec, 2).await.unwrap(), 2);
+        assert_eq!(runtime.creates.load(Ordering::SeqCst), 2);
+        assert_eq!(pool.ready_len(&spec), 2);
+
+        pool.shutdown().await;
+        assert_eq!(runtime.removes.load(Ordering::SeqCst), 2);
+    }
+
+    /// Cause/effect design:
+    /// C1=spec contains any creation-time mount. E1=shape is non-poolable,
+    /// E2=no container is created, E3=reported capacity is zero. This preserves
+    /// the never-used/no-cross-session-bytes invariant.
+    #[tokio::test]
+    async fn mounted_specs_never_enter_startup_capacity() {
+        let runtime = Arc::new(RecordingRuntime::ready());
+        let pool = recording_pool(runtime.clone(), 2);
+        let mut mounted = spec("mounted", &[]);
+        mounted.mounts.push(pc::MountRequirement {
+            mount_id: "cache".into(),
+            source: pc::MountSource::CacheVolume {
+                host_path: "/tmp/cache".into(),
+                key: "cache-v1".into(),
+            },
+            mount_path: "/workspace/cache".into(),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Durable,
+            required: true,
+        });
+
+        assert_eq!(pool.prewarm(&mounted, 2).await.unwrap(), 0);
+        assert_eq!(runtime.creates.load(Ordering::SeqCst), 0);
+        assert_eq!(pool.ready_len(&mounted), 0);
+    }
+
+    /// Cause/effect design:
+    /// C1=create is in flight, C2=shutdown closes capacity before create returns.
+    /// E1=shutdown waits for the create, E2=the late container is disposed,
+    /// E3=no ready capacity survives, E4=future warmup is rejected.
+    /// Rule: (C1,C2)->(E1,E2,E3,E4).
+    #[tokio::test]
+    async fn shutdown_fences_and_disposes_an_in_flight_prewarm() {
+        let runtime = Arc::new(RecordingRuntime::ready());
+        runtime.block_create.store(true, Ordering::SeqCst);
+        let pool = Arc::new(recording_pool(runtime.clone(), 1));
+        let spec = spec("shutdown-race", &[]);
+        let started = runtime.create_started.notified();
+        let warming = {
+            let pool = pool.clone();
+            let spec = spec.clone();
+            tokio::spawn(async move { pool.prewarm(&spec, 1).await })
+        };
+        started.await;
+        let shutting_down = {
+            let pool = pool.clone();
+            tokio::spawn(async move { pool.shutdown().await })
+        };
+        runtime.allow_create.add_permits(1);
+
+        assert!(warming.await.unwrap().is_err());
+        shutting_down.await.unwrap();
+        assert_eq!(runtime.removes.load(Ordering::SeqCst), 1);
+        assert_eq!(pool.ready_len(&spec), 0);
+        assert!(pool.prewarm(&spec, 1).await.is_err());
+    }
+
+    /// Cause/effect design:
+    /// C1=runtime creates a candidate, C2=readiness probe reports terminated.
+    /// E1=warmup fails, E2=candidate is disposed, E3=it is never advertised ready.
+    /// Rule: (C1,C2)->(E1,E2,E3).
+    #[tokio::test]
+    async fn an_unready_candidate_is_disposed_and_never_published() {
+        let runtime = Arc::new(RecordingRuntime::ready());
+        runtime.ready.store(false, Ordering::SeqCst);
+        let pool = recording_pool(runtime.clone(), 1);
+        let spec = spec("not-ready", &[]);
+
+        assert!(pool.prewarm(&spec, 1).await.is_err());
+        assert_eq!(runtime.creates.load(Ordering::SeqCst), 1);
+        assert_eq!(runtime.removes.load(Ordering::SeqCst), 1);
+        assert_eq!(pool.ready_len(&spec), 0);
+    }
+
+    /// Cause/effect design:
+    /// C1=a cold Session consumes no ready capacity, C2=adaptive replenish creates
+    /// a candidate, C3=its readiness probe reports terminated. E1=the Session cold
+    /// path still returns, E2=the candidate is disposed, E3=capacity stays empty.
+    /// Rule: (C1,C2,C3)->(E1,E2,E3).
+    #[tokio::test]
+    async fn adaptive_replenishment_uses_the_same_readiness_gate() {
+        let runtime = Arc::new(RecordingRuntime::ready());
+        runtime.ready.store(false, Ordering::SeqCst);
+        let pool = recording_pool(runtime.clone(), 1);
+        let spec = spec("adaptive-not-ready", &[]);
+
+        let environment = pool.create_environment(&spec).await.expect("E1 cold path");
+        for _ in 0..100 {
+            if runtime.creates.load(Ordering::SeqCst) >= 2 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(runtime.creates.load(Ordering::SeqCst), 2);
+        assert_eq!(runtime.removes.load(Ordering::SeqCst), 1, "E2");
+        assert_eq!(pool.ready_len(&spec), 0, "E3");
+        environment.dispose().await.unwrap();
     }
 
     #[test]

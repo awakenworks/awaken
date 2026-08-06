@@ -1745,6 +1745,29 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
 }
 
+/// Backend-erased lifecycle for never-used container capacity.
+///
+/// This is deliberately separate from [`ContainerEnvironmentProvider`]: every
+/// container backend can create a Session environment, while only a deployment
+/// that opted into a warm pool owns pre-created capacity. A composition root keeps
+/// this handle long enough to prewarm before advertising readiness and to drain the
+/// unused capacity during shutdown.
+#[async_trait]
+pub trait ContainerEnvironmentCapacity: Send + Sync {
+    /// Ensure at least `target` ready, never-used containers exist for `spec`'s
+    /// exact creation shape. Returns the resulting ready count. Non-poolable specs
+    /// (currently any spec with mounts) return zero without creating anything.
+    async fn prewarm_to(
+        &self,
+        spec: &pc::SandboxSpec,
+        target: usize,
+    ) -> Result<usize, pc::SandboxError>;
+
+    /// Stop replenishment and dispose all never-used capacity. Active Session
+    /// environments have already left the pool and are not affected.
+    async fn shutdown_capacity(&self);
+}
+
 struct ContainerLifecycle {
     staging: std::sync::Mutex<Option<StagingGuard>>,
     secret_writebacks: Vec<SecretWriteback>,

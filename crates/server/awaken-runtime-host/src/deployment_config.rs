@@ -196,7 +196,8 @@ impl SandboxTier {
 pub struct SandboxSettings {
     /// Permit an unavailable Namespace provider to degrade to unsandboxed Workdir.
     pub allow_local_fallback: bool,
-    /// Number of ready container environments retained by the warm pool.
+    /// Startup and steady-state target of ready, never-used containers per exact
+    /// mount-less Session shape. Zero disables warm capacity.
     pub warm_pool_size: usize,
     /// Optional HTTP(S) proxy used by the container provider.
     pub container_forward_proxy: Option<String>,

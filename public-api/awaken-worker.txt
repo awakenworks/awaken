@@ -58,6 +58,7 @@ pub fn awaken_worker::WorkerNodeBuilder::with_mcp_attachment_realizer(self, allo
 pub fn awaken_worker::WorkerNodeBuilder::with_registered_memory_mounter_factory(self, awaken_worker::RegisteredMemoryMounterFactory) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_remote_attempt_executor(self, awaken_runtime_host::host::RemoteAttemptInstallation) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_session_container_provider(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>) -> Self
+pub fn awaken_worker::WorkerNodeBuilder::with_session_container_provider_and_capacity(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>, core::option::Option<alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_standard_manifest(self, alloc::collections::btree::set::BTreeSet<alloc::string::String>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_standard_manifest_config(self, awaken_worker::StandardManifestConfig) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_web_search_provider_registry(self, awaken_ext_builtin_tools::web::WebSearchProviderRegistry) -> Self

@@ -13,6 +13,7 @@ pub(crate) enum SessionEnvironmentProvider {
     Namespace(NamespaceProvider),
     Container {
         provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+        capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: String,
@@ -82,8 +83,9 @@ impl SessionEnvironmentProvider {
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
     ) -> Self {
-        Self::container_with_hand_idle(
+        Self::container_with_capacity_and_hand_idle(
             provider,
+            None,
             extra_mounts,
             hand_factory,
             hand_bin,
@@ -91,8 +93,9 @@ impl SessionEnvironmentProvider {
         )
     }
 
-    pub(crate) fn container_with_hand_idle(
+    pub(crate) fn container_with_capacity_and_hand_idle(
         provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+        capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
@@ -100,6 +103,7 @@ impl SessionEnvironmentProvider {
     ) -> Self {
         Self::Container {
             provider,
+            capacity,
             extra_mounts,
             hand_factory,
             hand_bin: hand_bin.into(),
@@ -119,12 +123,14 @@ impl SessionEnvironmentProvider {
             }
             Self::Container {
                 provider,
+                capacity,
                 extra_mounts,
                 hand_factory,
                 hand_bin,
                 hand_idle_after,
             } => Self::Container {
                 provider: provider.clone(),
+                capacity: capacity.clone(),
                 extra_mounts: extra_mounts.clone(),
                 hand_factory: hand_factory.clone(),
                 hand_bin: hand_bin.clone(),
@@ -172,16 +178,10 @@ impl SessionEnvironmentProvider {
                 hand_factory,
                 hand_bin,
                 hand_idle_after,
+                ..
             } => {
                 let capabilities = provider.sandbox_capabilities();
-                let mut spec = spec.clone();
-                spec.isolation = pc::IsolationClass::Container;
-                spec.mounts.extend(extra_mounts.iter().cloned());
-                for mount in &mut spec.mounts {
-                    if !mount.mount_path.starts_with('/') {
-                        mount.mount_path = container_files::workspace_path(&mount.mount_path)?;
-                    }
-                }
+                let spec = container_spec(spec, extra_mounts)?;
                 let environment = provider.create_environment(&spec).await?;
                 SessionEnvironment::container(
                     environment,
@@ -192,6 +192,39 @@ impl SessionEnvironmentProvider {
                 )
                 .await
             }
+        }
+    }
+
+    /// Pre-create never-used capacity for the same exact normalized container
+    /// shape that [`Self::create`] will request. Non-container and direct-provider
+    /// deployments have no capacity owner and return zero.
+    pub(crate) async fn prewarm(
+        &self,
+        spec: &pc::SandboxSpec,
+        target: usize,
+    ) -> Result<usize, pc::SandboxError> {
+        match self {
+            Self::Container {
+                capacity: Some(capacity),
+                extra_mounts,
+                ..
+            } => {
+                let spec = container_spec(spec, extra_mounts)?;
+                capacity.prewarm_to(&spec, target).await
+            }
+            _ => Ok(0),
+        }
+    }
+
+    /// Drain only unused container capacity. Active Session environments are no
+    /// longer members of the pool and retain their ordinary Session lifecycle.
+    pub(crate) async fn shutdown_capacity(&self) {
+        if let Self::Container {
+            capacity: Some(capacity),
+            ..
+        } = self
+        {
+            capacity.shutdown_capacity().await;
         }
     }
 
@@ -229,4 +262,19 @@ impl SessionEnvironmentProvider {
             }
         }
     }
+}
+
+fn container_spec(
+    spec: &pc::SandboxSpec,
+    extra_mounts: &[pc::MountRequirement],
+) -> Result<pc::SandboxSpec, pc::SandboxError> {
+    let mut spec = spec.clone();
+    spec.isolation = pc::IsolationClass::Container;
+    spec.mounts.extend(extra_mounts.iter().cloned());
+    for mount in &mut spec.mounts {
+        if !mount.mount_path.starts_with('/') {
+            mount.mount_path = container_files::workspace_path(&mount.mount_path)?;
+        }
+    }
+    Ok(spec)
 }
