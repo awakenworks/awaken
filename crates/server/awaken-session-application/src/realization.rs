@@ -45,12 +45,9 @@ fn verify_lease(
     session: &PersistedSession,
     asserted: &SessionRealizationLease,
 ) -> Result<(), SessionRealizationControlFailure> {
-    if session.realization.as_ref() != Some(asserted)
-        || !awaken_session_contract::realization_lease_is_live_at(
-            asserted.expires_at_unix_ms,
-            now_unix_ms(),
-        )
-    {
+    if !session.realization.as_ref().is_some_and(|current| {
+        awaken_session_contract::realization_lease_authorizes(current, asserted, now_unix_ms())
+    }) {
         return Err(SessionRealizationControlFailure::StaleOwnership);
     }
     Ok(())

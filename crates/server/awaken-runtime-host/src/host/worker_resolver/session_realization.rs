@@ -114,6 +114,32 @@ impl HostWorkerResolver {
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         rebuild_unavailable_environment: bool,
     ) -> Result<(), awaken_run_ingress::Error> {
+        let realization = host.session_slots.realization_lock(session_id);
+        let _realization = realization.lock().await;
+        Self::drive_application_session(
+            host,
+            control,
+            session_id,
+            directive,
+            claim,
+            published_snapshot,
+            rebuild_unavailable_environment,
+        )
+        .await
+    }
+
+    /// Drive one already-serialized directive. Callers that coordinate a lease
+    /// renewal acquire the Session's realization lock before entering here so a
+    /// heartbeat never creates a parallel phase driver.
+    pub(crate) async fn drive_application_session(
+        host: &SharedHost,
+        control: &dyn awaken_session_contract::SessionRealizationControl,
+        session_id: &str,
+        directive: awaken_session_contract::SessionRealizationDirective,
+        claim: Option<&awaken_run_ingress::RunClaim>,
+        published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+        rebuild_unavailable_environment: bool,
+    ) -> Result<(), awaken_run_ingress::Error> {
         let requires_runtime_before_effects = matches!(
             &directive.action,
             awaken_session_contract::SessionRealizationAction::Stage { mcp_stages, .. }
@@ -149,6 +175,8 @@ mod tests {
     struct RecordingMcpRealizer {
         calls: Mutex<Vec<&'static str>>,
         required_runtime: Option<(std::sync::Weak<SharedHost>, String)>,
+        stage_entered: Option<Arc<tokio::sync::Notify>>,
+        release_stage: Option<Arc<tokio::sync::Notify>>,
     }
 
     #[async_trait::async_trait]
@@ -159,6 +187,12 @@ mod tests {
         ) -> Result<awaken_session_contract::McpRealizationReceipt, awaken_session_contract::RunError>
         {
             self.calls.lock().unwrap().push("stage");
+            if let Some(stage_entered) = &self.stage_entered {
+                stage_entered.notify_one();
+            }
+            if let Some(release_stage) = &self.release_stage {
+                release_stage.notified().await;
+            }
             let resident = self.required_runtime.as_ref().is_none_or(|(host, thread)| {
                 host.upgrade().is_some_and(|host| {
                     host.session_slots
@@ -200,6 +234,115 @@ mod tests {
 
     struct RecoveryControl {
         projection: awaken_session_contract::FrozenSessionProjection,
+    }
+
+    struct RenewalDuringStageControl {
+        projection: awaken_session_contract::FrozenSessionProjection,
+        stage: awaken_session_contract::StageMcpAttachment,
+        lease: Mutex<awaken_session_contract::SessionRealizationLease>,
+        begin_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_session_contract::SessionRealizationControl for RenewalDuringStageControl {
+        async fn begin_session_realization(
+            &self,
+            command: awaken_session_contract::BeginSessionRealization,
+        ) -> Result<
+            awaken_session_contract::SessionRealizationDirective,
+            awaken_session_contract::SessionRealizationControlFailure,
+        > {
+            self.begin_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut lease = self.lease.lock().unwrap();
+            lease.expires_at_unix_ms = command.target.lease_expires_at_unix_ms;
+            let mut stage = self.stage.clone();
+            stage.generation.lease_expires_at_unix_ms = lease.expires_at_unix_ms;
+            stage.stage_idempotency_key = format!("renew:{}", lease.expires_at_unix_ms);
+            Ok(awaken_session_contract::SessionRealizationDirective {
+                projection: self.projection.clone(),
+                lease: lease.clone(),
+                action: awaken_session_contract::SessionRealizationAction::Stage {
+                    prepare_session: false,
+                    mcp_stages: vec![stage],
+                },
+            })
+        }
+
+        async fn activate_session_realization(
+            &self,
+            command: awaken_session_contract::ActivateSessionRealization,
+        ) -> Result<
+            awaken_session_contract::SessionRealizationDirective,
+            awaken_session_contract::SessionRealizationControlFailure,
+        > {
+            Ok(awaken_session_contract::SessionRealizationDirective {
+                projection: self.projection.clone(),
+                lease: self.lease.lock().unwrap().clone(),
+                action: awaken_session_contract::SessionRealizationAction::Publish {
+                    publish: command
+                        .mcp_receipts
+                        .into_iter()
+                        .map(|receipt| receipt.generation)
+                        .collect(),
+                    drain: Vec::new(),
+                },
+            })
+        }
+
+        async fn acknowledge_session_realization(
+            &self,
+            _command: awaken_session_contract::AcknowledgeSessionRealization,
+        ) -> Result<
+            awaken_session_contract::SessionRealizationDirective,
+            awaken_session_contract::SessionRealizationControlFailure,
+        > {
+            Ok(awaken_session_contract::SessionRealizationDirective {
+                projection: self.projection.clone(),
+                lease: self.lease.lock().unwrap().clone(),
+                action: awaken_session_contract::SessionRealizationAction::Complete,
+            })
+        }
+
+        async fn fail_session_realization(
+            &self,
+            _command: awaken_session_contract::FailSessionRealization,
+        ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_run_ingress_contract::ClaimedSessionControl for RenewalDuringStageControl {
+        async fn resume_frozen(
+            &self,
+            _claim: &awaken_run_ingress::RunClaim,
+            _session_id: &str,
+        ) -> Result<
+            Option<awaken_session_contract::SessionRealizationDirective>,
+            awaken_run_ingress_contract::ClaimedSessionControlError,
+        > {
+            Err(
+                awaken_run_ingress_contract::ClaimedSessionControlError::new(
+                    "not used by the renewal concurrency fixture",
+                ),
+            )
+        }
+
+        async fn contribute(
+            &self,
+            _claim: &awaken_run_ingress::RunClaim,
+            _contribution: awaken_session_contract::ApplicationSessionContribution,
+        ) -> Result<
+            awaken_run_ingress_contract::ClaimedSessionContributionReceipt,
+            awaken_run_ingress_contract::ClaimedSessionControlError,
+        > {
+            Err(
+                awaken_run_ingress_contract::ClaimedSessionControlError::new(
+                    "not used by the renewal concurrency fixture",
+                ),
+            )
+        }
     }
 
     #[async_trait::async_trait]
@@ -305,6 +448,142 @@ mod tests {
             toolsets: Vec::new(),
             mcp: Vec::new(),
         }
+    }
+
+    /// Concurrent-renewal cause/effect graph: C1 an initial phase driver owns
+    /// the Session realization lock; C2 its MCP Stage is still pending; C3 a
+    /// heartbeat extends the same owner/incarnation/epoch lease. Effects: E1
+    /// renew durable and local authority without waiting; E2 never start a
+    /// second Stage/Publish driver; E3 the original driver observes the renewed
+    /// lease at its next Control phase and completes. Replacement fencing is
+    /// owned by the contract authorization table; ordinary idle renewal is W6
+    /// in the parent resolver tests.
+    ///
+    /// | Rule | C1 | C2 | C3 | Effect |
+    /// |---|---|---|---|---|
+    /// | R1 | yes | yes | yes | E1 + E2 + E3 |
+    /// | R2 | no | no | yes | canonical renewal driver (W6) |
+    /// | R3 | any | any | replacement | fence/revoke (authorization A2/W7) |
+    #[tokio::test]
+    async fn heartbeat_renewal_does_not_duplicate_an_in_flight_realization_driver() {
+        let thread = "renew-during-stage";
+        let initial_expiry = 1_000;
+        let renewed_expiry = 2_000;
+        let projection = frozen_projection();
+        let lease = awaken_session_contract::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a/boot-1".into(),
+            epoch: 1,
+            expires_at_unix_ms: initial_expiry,
+        };
+        let stage = awaken_session_contract::StageMcpAttachment {
+            workspace_id: "workspace".into(),
+            generation: awaken_session_contract::McpGenerationRef {
+                session_id: thread.into(),
+                attachment_id: awaken_session_contract::McpAttachmentId("browser".into()),
+                generation: awaken_session_contract::McpGeneration(1),
+                runtime_incarnation: lease.runtime_incarnation.clone(),
+                lease_epoch: lease.epoch,
+                lease_expires_at_unix_ms: initial_expiry,
+            },
+            realization_id: "realize-browser-1".into(),
+            stage_idempotency_key: "stage-browser-1".into(),
+            name: "browser".into(),
+            target: awaken_session_contract::McpTarget::parse_http(
+                "https://browser.example.test/mcp",
+            )
+            .expect("HTTP MCP target"),
+            credential: None,
+            prompts_as_skills: false,
+            selected_plaintext_holder: None,
+        };
+        let control = Arc::new(RenewalDuringStageControl {
+            projection: projection.clone(),
+            stage: stage.clone(),
+            lease: Mutex::new(lease.clone()),
+            begin_calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let stage_entered = Arc::new(tokio::sync::Notify::new());
+        let release_stage = Arc::new(tokio::sync::Notify::new());
+        let realizer = Arc::new(RecordingMcpRealizer {
+            stage_entered: Some(stage_entered.clone()),
+            release_stage: Some(release_stage.clone()),
+            ..Default::default()
+        });
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .with_application_session_control(control.clone()),
+        );
+        let managed =
+            crate::ManagedHost::new(host.clone()).with_mcp_attachment_realizer(realizer.clone());
+        drop(managed);
+        let directive = awaken_session_contract::SessionRealizationDirective {
+            projection,
+            lease,
+            action: awaken_session_contract::SessionRealizationAction::Stage {
+                prepare_session: true,
+                mcp_stages: vec![stage],
+            },
+        };
+
+        let initial_host = host.clone();
+        let initial_control = control.clone();
+        let initial = tokio::spawn(async move {
+            HostWorkerResolver::realize_application_session(
+                &initial_host,
+                initial_control.as_ref(),
+                thread,
+                directive,
+                None,
+                None,
+                false,
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), stage_entered.notified())
+            .await
+            .expect("R1 initial Stage entered");
+        host.session_slots.update(thread, |slot| {
+            slot.has_mcp_projection = true;
+        });
+
+        assert_eq!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                host.renew_due_session_realizations(initial_expiry, renewed_expiry),
+            )
+            .await
+            .expect("R1/E1 renewal does not wait for Stage")
+            .expect("R1/E1 renewal succeeds"),
+            1,
+            "R1/E1"
+        );
+        assert_eq!(
+            realizer.calls.lock().unwrap().as_slice(),
+            ["stage"],
+            "R1/E2"
+        );
+
+        release_stage.notify_one();
+        initial
+            .await
+            .expect("R1 initial task")
+            .expect("R1/E3 initial realization completes");
+        assert_eq!(
+            realizer.calls.lock().unwrap().as_slice(),
+            ["stage", "publish"],
+            "R1/E2-E3"
+        );
+        assert_eq!(
+            host.session_slots
+                .read(thread, |slot| slot
+                    .realization_lease
+                    .as_ref()
+                    .map(|lease| lease.expires_at_unix_ms))
+                .flatten(),
+            Some(renewed_expiry),
+            "R1/E3"
+        );
     }
 
     #[tokio::test]

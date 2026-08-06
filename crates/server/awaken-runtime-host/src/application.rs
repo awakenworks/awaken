@@ -390,7 +390,17 @@ impl crate::SharedHost {
                     })
                     .await
                     .map_err(|error| crate::HostError::internal(error.to_string()))?;
-                crate::host::HostWorkerResolver::realize_application_session(
+                let realization = self.session_slots.realization_lock(session_id);
+                let Ok(_realization) = realization.try_lock() else {
+                    // The in-flight canonical driver owns Stage/Publish. Begin
+                    // above has already extended durable same-epoch authority;
+                    // retain that authority locally and let the driver observe
+                    // it at its next Control phase. A later heartbeat renews the
+                    // resulting Active projection without duplicating effects.
+                    self.install_session_realization_lease(session_id, directive.lease.clone());
+                    return Ok(());
+                };
+                crate::host::HostWorkerResolver::drive_application_session(
                     self,
                     control.as_ref(),
                     session_id,

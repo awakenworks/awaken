@@ -541,11 +541,11 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                 .unwrap_or_default();
             let realization_is_current = match (session.realization.as_ref(), realization) {
                 (Some(current), Some(asserted)) => {
-                    current == asserted
-                        && awaken_session_contract::realization_lease_is_live_at(
-                            current.expires_at_unix_ms,
-                            now_unix_ms,
-                        )
+                    awaken_session_contract::realization_lease_authorizes(
+                        current,
+                        asserted,
+                        now_unix_ms,
+                    )
                 }
                 (None, None) => true,
                 _ => false,
@@ -1362,18 +1362,20 @@ mod tests {
     }
 
     /// Cause/effect graph: C1 the Runtime presents the exact durable realization
-    /// lease; C2 the binding is new or an idempotent replay; C3 a replacement
-    /// owner/epoch has fenced the Runtime. C1 permits the ordinary root CAS; C3
-    /// rejects before even an equal binding can be treated as a replay. This
-    /// prevents a stale sandbox owner from publishing after lease replacement.
+    /// lease; C2 the binding is new or an idempotent replay; C3 the same epoch
+    /// has been renewed monotonically; C4 a replacement owner/epoch has fenced
+    /// the Runtime. C1 permits the ordinary root CAS; C3 preserves in-flight
+    /// work admitted before renewal; C4 rejects before even an equal binding can
+    /// be treated as a replay.
     ///
     /// | Rule | Asserted lease | Binding | Effect |
     /// |---|---|---|---|
     /// | B1 | exact | new | persist once |
     /// | B2 | exact | equal | idempotent success |
-    /// | B3 | stale owner/epoch | new/equal | fenced, no mutation |
-    /// | B4 | aggregate/assertion both absent | new/equal | legacy CAS path |
-    /// | B5 | exact but expired | new/equal | fenced, no mutation |
+    /// | B3 | shorter same-epoch assertion under live renewal | new/equal | authorized |
+    /// | B4 | stale owner/epoch | new/equal | fenced, no mutation |
+    /// | B5 | aggregate/assertion both absent | new/equal | legacy CAS path |
+    /// | B6 | current lease expired | new/equal | fenced, no mutation |
     #[tokio::test]
     async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         let repo = Arc::new(
@@ -1397,6 +1399,23 @@ mod tests {
         sink.persist("binding-fence", "sandbox-a", Some(&current))
             .await
             .expect("B2");
+        let mut renewed_session = persisted("binding-renewed", false, false, "idle");
+        renewed_session.realization = Some(awaken_session_contract::SessionRealizationLease {
+            expires_at_unix_ms: u64::MAX,
+            ..current.clone()
+        });
+        create(repo.as_ref(), renewed_session).await;
+        let admitted_before_renewal = awaken_session_contract::SessionRealizationLease {
+            expires_at_unix_ms: u64::MAX - 1,
+            ..current.clone()
+        };
+        sink.persist(
+            "binding-renewed",
+            "sandbox-renewed",
+            Some(&admitted_before_renewal),
+        )
+        .await
+        .expect("B3 monotonic renewal authorizes admitted work");
         create(
             repo.as_ref(),
             persisted("binding-unassigned", false, false, "idle"),
@@ -1404,7 +1423,7 @@ mod tests {
         .await;
         sink.persist("binding-unassigned", "sandbox-legacy", None)
             .await
-            .expect("B4");
+            .expect("B5");
         let stale = awaken_session_contract::SessionRealizationLease {
             owner: "runtime-b".into(),
             runtime_incarnation: "runtime-b/boot-1".into(),
@@ -1414,13 +1433,13 @@ mod tests {
         let error = sink
             .persist("binding-fence", "sandbox-a", Some(&stale))
             .await
-            .expect_err("B3 stale replay is fenced");
-        assert_eq!(error.code, "session_realization_stale", "B3");
+            .expect_err("B4 stale replay is fenced");
+        assert_eq!(error.code, "session_realization_stale", "B4");
         let expired = awaken_session_contract::SessionRealizationLease {
             expires_at_unix_ms: 0,
             ..current.clone()
         };
-        let mut expired_session = repo.get("binding-fence").await.expect("B5 fixture");
+        let mut expired_session = repo.get("binding-fence").await.expect("B6 fixture");
         expired_session.realization = Some(expired.clone());
         let expected_revision = expired_session.revision;
         let payload = awaken_session_contract::SessionMutationPayload::Replace(expired_session);
@@ -1439,16 +1458,16 @@ mod tests {
                 },
             )
             .await
-            .expect("B5 fixture mutation"),
+            .expect("B6 fixture mutation"),
             awaken_session_contract::SessionMutationResult::Applied { .. }
         ));
         assert_eq!(
             sink.persist("binding-fence", "sandbox-a", Some(&expired))
                 .await
-                .expect_err("B5")
+                .expect_err("B6")
                 .code,
             "session_realization_stale",
-            "B5"
+            "B6"
         );
         assert_eq!(
             repo.get("binding-fence")
@@ -1456,7 +1475,7 @@ mod tests {
                 .and_then(|session| session.environment.binding().map(str::to_owned))
                 .as_deref(),
             Some("sandbox-a"),
-            "B3"
+            "B4"
         );
     }
 
