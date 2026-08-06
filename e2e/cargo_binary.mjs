@@ -55,6 +55,28 @@ export function requirePrebuiltExecutable(environmentName, environment = process
   return candidate;
 }
 
+export function cargoArguments({
+  packageName,
+  targetName,
+  targetKind = 'bin',
+  features = [],
+  noDefaultFeatures = false,
+}) {
+  const targetFlag = targetKind === 'example' ? '--example' : '--bin';
+  const args = [
+    'build',
+    '--quiet',
+    '--message-format=json',
+    '-p',
+    packageName,
+    targetFlag,
+    targetName,
+  ];
+  if (noDefaultFeatures) args.push('--no-default-features');
+  if (features.length > 0) args.push('--features', features.join(','));
+  return args;
+}
+
 export function cargoExecutable({
   cwd,
   packageName,
@@ -70,18 +92,13 @@ export function cargoExecutable({
     if (prebuilt) return prebuilt;
   }
 
-  const targetFlag = targetKind === 'example' ? '--example' : '--bin';
-  const args = [
-    'build',
-    '--quiet',
-    '--message-format=json',
-    '-p',
+  const args = cargoArguments({
     packageName,
-    targetFlag,
     targetName,
-  ];
-  if (noDefaultFeatures) args.push('--no-default-features');
-  if (features.length > 0) args.push('--features', features.join(','));
+    targetKind,
+    features,
+    noDefaultFeatures,
+  });
 
   let output;
   try {

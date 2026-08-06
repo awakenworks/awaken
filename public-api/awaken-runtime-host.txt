@@ -240,7 +240,9 @@ pub awaken_runtime_host::SandboxSettings::podman_bin: alloc::string::String
 pub awaken_runtime_host::SandboxSettings::reaper_enabled: bool
 pub awaken_runtime_host::SandboxSettings::reaper_interval_secs: u64
 pub awaken_runtime_host::SandboxSettings::reaper_max_age_secs: u64
+pub awaken_runtime_host::SandboxSettings::warm_pool_idle_ttl_secs: u64
 pub awaken_runtime_host::SandboxSettings::warm_pool_size: usize
+pub awaken_runtime_host::SandboxSettings::warm_pool_total_size: usize
 impl core::default::Default for awaken_runtime_host::SandboxSettings
 pub fn awaken_runtime_host::SandboxSettings::default() -> Self
 pub struct awaken_runtime_host::SessionAcpCapabilityNegotiator
@@ -283,10 +285,12 @@ impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::begin_pool_drain(&self)
 pub fn awaken_runtime_host::SharedHost::client_tools(&self) -> &std::collections::hash::set::HashSet<alloc::string::String>
 pub fn awaken_runtime_host::SharedHost::content_capture_ceiling(&self) -> awaken_runtime_contract::capture::ContentCapture
+pub async fn awaken_runtime_host::SharedHost::discard_environment_snapshot_capacity(&self, &awaken_session_contract::baseline::EnvironmentSnapshot)
 pub fn awaken_runtime_host::SharedHost::dispatch_completion_sink(&self) -> alloc::sync::Arc<dyn awaken_run_ingress::pool::CompletionSink>
 pub fn awaken_runtime_host::SharedHost::dispatch_store(&self) -> core::result::Result<alloc::sync::Arc<awaken_run_ingress::any::AnyDispatchStore>, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::drain_memory(&self, core::time::Duration) -> bool
 pub fn awaken_runtime_host::SharedHost::ensure_dispatch_pool(&alloc::sync::Arc<Self>)
+pub fn awaken_runtime_host::SharedHost::environment_warmup_limits(&self) -> (usize, usize)
 pub fn awaken_runtime_host::SharedHost::hub(&self) -> &alloc::sync::Arc<awaken_runtime_host::ThreadEventHub>
 pub fn awaken_runtime_host::SharedHost::install_capture_sink(&self, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>)
 pub fn awaken_runtime_host::SharedHost::local_workspace(&self) -> &str
@@ -298,8 +302,10 @@ pub fn awaken_runtime_host::SharedHost::pool_accepting_work(&self) -> bool
 pub fn awaken_runtime_host::SharedHost::pool_in_flight(&self) -> u32
 pub async fn awaken_runtime_host::SharedHost::prewarm_cache_volume(&self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<std::path::PathBuf>) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_runtime_host::SharedHost::prewarm_environment_capacity(&self) -> core::result::Result<usize, awaken_provisioning_contract::sandbox::SandboxError>
+pub async fn awaken_runtime_host::SharedHost::prewarm_environment_snapshot(&self, &awaken_session_contract::baseline::EnvironmentSnapshot, usize) -> core::result::Result<usize, awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_runtime_host::SharedHost::provision_local_workspace() -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::provision_local_workspace_at(&std::path::Path) -> alloc::string::String
+pub fn awaken_runtime_host::SharedHost::ready_environment_snapshot_capacity(&self, &awaken_session_contract::baseline::EnvironmentSnapshot) -> usize
 pub fn awaken_runtime_host::SharedHost::register_thread_delegates(&self, &str, alloc::vec::Vec<alloc::string::String>)
 pub fn awaken_runtime_host::SharedHost::register_thread_model(&self, &str, impl core::convert::Into<alloc::string::String>)
 pub fn awaken_runtime_host::SharedHost::registered_thread_workspace(&self, &str) -> core::option::Option<alloc::string::String>

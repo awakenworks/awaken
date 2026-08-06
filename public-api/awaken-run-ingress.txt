@@ -39,6 +39,7 @@ pub use awaken_run_ingress::Lease
 pub use awaken_run_ingress::LeaseLossReason
 pub use awaken_run_ingress::LeastLoadedPolicy
 pub use awaken_run_ingress::Outbox
+pub use awaken_run_ingress::PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE
 pub use awaken_run_ingress::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY
 pub use awaken_run_ingress::PendingInput
 pub use awaken_run_ingress::PendingRecord
