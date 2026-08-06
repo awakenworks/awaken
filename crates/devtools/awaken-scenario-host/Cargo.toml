@@ -69,8 +69,6 @@ awaken-model-catalog-store = { workspace = true, features = ["sqlite", "postgres
 awaken-credential-vault = { workspace = true, features = ["oauth-command", "test-support"] }
 awaken-credential-store = { workspace = true, features = ["sqlite", "sealed-aead", "postgres", "test-support"] }
 awaken-credential-contract.workspace = true
-# Data-subject consent/erasure store (ADR-0050): backs the /v1/user_profiles/:id/erasure endpoint.
-awaken-data-subject = { workspace = true }
 # Embedded IAM (ADR-0042/0043 P1): typed self-managed identity gates management
 # plane behind bearer ApiTokens. contract = ids/scopes/requests, core = token
 # directory + minter + the default-deny PolicySet evaluator, preset = the seeded

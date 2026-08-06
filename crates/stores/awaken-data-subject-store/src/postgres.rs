@@ -1,4 +1,4 @@
-//! Postgres adapter for the data-subject domain (feature `postgres`, ADR-0050),
+//! Postgres adapter for the data-subject application (feature `postgres`, ADR-0050),
 //! the network-DB sibling of [`SqliteDataSubjectRepo`](crate::SqliteDataSubjectRepo)
 //! over the Control-owned `control_data_subject` migration scope. The subject aggregate
 //! serializes into the `data {json}` (jsonb) column; `id`/`org` are keyed columns,
@@ -10,7 +10,7 @@ use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
 use crate::schema::{CONTROL_PREFIX, control_data_subject_bundle};
-use crate::{
+use awaken_data_subject_application::{
     DataSubject, DataSubjectError, DataSubjectId, DataSubjectRepo, ErasureJobRepo, ErasureProgress,
 };
 
@@ -89,19 +89,58 @@ impl PgDataSubjectRepo {
 
 #[async_trait::async_trait]
 impl DataSubjectRepo for PgDataSubjectRepo {
-    async fn put(&self, subject: DataSubject) -> Result<(), DataSubjectError> {
+    async fn create(&self, subject: DataSubject) -> Result<(), DataSubjectError> {
         let p = NS;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_subject (id, org, data) VALUES ($1, $2, $3) \
-             ON CONFLICT (id) DO UPDATE SET org = excluded.org, data = excluded.data"
+        let stored_revision = i64::try_from(subject.revision)
+            .map_err(|_| DataSubjectError::RevisionExhausted(subject.id.0.clone()))?;
+        let result = sqlx::query(&format!(
+            "INSERT INTO {p}_subject (id, org, data, revision) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (id) DO NOTHING"
         ))
         .bind(&subject.id.0)
         .bind(&subject.org)
         .bind(Json(&subject))
+        .bind(stored_revision)
         .execute(&self.pool)
         .await
         .map_err(storage)?;
-        Ok(())
+        if result.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(DataSubjectError::AlreadyExists(subject.id.0))
+        }
+    }
+
+    async fn compare_and_swap(
+        &self,
+        expected_revision: u64,
+        subject: DataSubject,
+    ) -> Result<(), DataSubjectError> {
+        if expected_revision.checked_add(1) != Some(subject.revision) {
+            return Err(DataSubjectError::Conflict(subject.id.0));
+        }
+        let stored_revision = i64::try_from(subject.revision)
+            .map_err(|_| DataSubjectError::RevisionExhausted(subject.id.0.clone()))?;
+        let stored_expected = i64::try_from(expected_revision)
+            .map_err(|_| DataSubjectError::RevisionExhausted(subject.id.0.clone()))?;
+        let p = NS;
+        let result = sqlx::query(&format!(
+            "UPDATE {p}_subject SET org = $1, data = $2, revision = $3 \
+             WHERE id = $4 AND revision = $5"
+        ))
+        .bind(&subject.org)
+        .bind(Json(&subject))
+        .bind(stored_revision)
+        .bind(&subject.id.0)
+        .bind(stored_expected)
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?;
+        if result.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(DataSubjectError::Conflict(subject.id.0))
+        }
     }
 
     async fn get(&self, id: &DataSubjectId) -> Result<DataSubject, DataSubjectError> {
@@ -134,16 +173,6 @@ impl DataSubjectRepo for PgDataSubjectRepo {
             })
             .collect()
     }
-
-    async fn delete(&self, id: &DataSubjectId) -> Result<(), DataSubjectError> {
-        let p = NS;
-        sqlx::query(&format!("DELETE FROM {p}_subject WHERE id = $1"))
-            .bind(&id.0)
-            .execute(&self.pool)
-            .await
-            .map_err(storage)?;
-        Ok(())
-    }
 }
 
 #[async_trait::async_trait]
@@ -164,21 +193,51 @@ impl ErasureJobRepo for PgDataSubjectRepo {
         .transpose()
     }
 
-    async fn save(
+    async fn compare_and_swap_progress(
         &self,
         id: &DataSubjectId,
+        expected_revision: Option<u64>,
         progress: &ErasureProgress,
     ) -> Result<(), DataSubjectError> {
+        if !progress.follows(expected_revision) {
+            return Err(DataSubjectError::Conflict(id.0.clone()));
+        }
+        let revision = i64::try_from(progress.revision)
+            .map_err(|_| DataSubjectError::RevisionExhausted(id.0.clone()))?;
+        let expected = expected_revision
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| DataSubjectError::RevisionExhausted(id.0.clone()))?;
         let p = NS;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_erasure_job (subject_id, data) VALUES ($1, $2) \
-             ON CONFLICT (subject_id) DO UPDATE SET data = excluded.data, updated_at = now()"
-        ))
-        .bind(&id.0)
-        .bind(Json(progress))
-        .execute(&self.pool)
-        .await
-        .map_err(storage)?;
-        Ok(())
+        let result =
+            match expected {
+                None => sqlx::query(&format!(
+                    "INSERT INTO {p}_erasure_job (subject_id, data, revision) VALUES ($1, $2, $3) \
+                 ON CONFLICT (subject_id) DO NOTHING"
+                ))
+                .bind(&id.0)
+                .bind(Json(progress))
+                .bind(revision)
+                .execute(&self.pool)
+                .await,
+                Some(expected) => {
+                    sqlx::query(&format!(
+                        "UPDATE {p}_erasure_job SET data = $2, revision = $3, updated_at = now() \
+                 WHERE subject_id = $1 AND revision = $4"
+                    ))
+                    .bind(&id.0)
+                    .bind(Json(progress))
+                    .bind(revision)
+                    .bind(expected)
+                    .execute(&self.pool)
+                    .await
+                }
+            }
+            .map_err(storage)?;
+        if result.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(DataSubjectError::Conflict(id.0.clone()))
+        }
     }
 }

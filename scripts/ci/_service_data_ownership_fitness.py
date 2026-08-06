@@ -54,8 +54,8 @@ RUNTIME_LIB_SOURCE = "crates/runtime/awaken-runtime/src/lib.rs"
 STORE_FS_MANIFEST = "crates/stores/awaken-store-fs/Cargo.toml"
 CAPTURE_STORE_SOURCE = "crates/stores/awaken-captured-content-store/src/lib.rs"
 CAPTURE_SQLITE_SOURCE = "crates/stores/awaken-captured-content-store/src/sqlite.rs"
-DATA_SUBJECT_SOURCE = "crates/control/awaken-data-subject/src/lib.rs"
-DATA_SUBJECT_SQLITE_SOURCE = "crates/control/awaken-data-subject/src/sqlite.rs"
+DATA_SUBJECT_SOURCE = "crates/stores/awaken-data-subject-store/src/memory.rs"
+DATA_SUBJECT_SQLITE_SOURCE = "crates/stores/awaken-data-subject-store/src/sqlite.rs"
 CONFIG_STORE_SQLITE_SOURCE = "crates/control/awaken-config-store/src/sqlite.rs"
 ADMIN_CONFIG_SOURCE = "crates/control/awaken-admin-config-api/src/lib.rs"
 ADMIN_CONFIG_SQLITE_SOURCE = "crates/control/awaken-admin-config-api/src/sqlite.rs"
@@ -78,6 +78,8 @@ FORBIDDEN_WORKER_DEPENDENCIES = {
     "awaken-config-store",
     "awaken-credential-store",
     "awaken-credential-vault",
+    "awaken-data-subject-application",
+    "awaken-data-subject-store",
     "awaken-executable-agent-catalog",
     "awaken-file-store",
     "awaken-memory-store",

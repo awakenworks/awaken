@@ -398,7 +398,8 @@ dependencies = [
  "awaken-credential-materializer",
  "awaken-credential-store",
  "awaken-credential-vault",
- "awaken-data-subject",
+ "awaken-data-subject-application",
+ "awaken-data-subject-store",
  "awaken-deployment-contract",
  "awaken-env-store",
  "awaken-environment-application",
@@ -562,7 +563,8 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-credential-store",
  "awaken-credential-vault",
- "awaken-data-subject",
+ "awaken-data-subject-application",
+ "awaken-data-subject-store",
  "awaken-deployment-contract",
  "awaken-env-store",
  "awaken-environment-application",
@@ -587,7 +589,6 @@ dependencies = [
  "awaken-tenancy",
  "awaken-webhook-managed",
  "axum",
- "base64",
  "http-body-util",
  "rusqlite",
  "serde",
@@ -598,7 +599,6 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -797,16 +797,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "awaken-data-subject"
+name = "awaken-data-subject-application"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
- "awaken-agent-contract",
+ "awaken-runtime-contract",
+ "base64",
+ "hmac 0.12.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "awaken-data-subject-store"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-data-subject-application",
  "awaken-runtime-contract",
  "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
- "serde",
  "serde_json",
  "sqlx",
  "tempfile",
@@ -1491,6 +1506,8 @@ dependencies = [
  "awaken-config-resolver",
  "awaken-credential-contract",
  "awaken-credential-vault",
+ "awaken-data-subject-application",
+ "awaken-data-subject-store",
  "awaken-deployment-application",
  "awaken-deployment-contract",
  "awaken-dream-application",
@@ -1975,7 +1992,6 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-credential-store",
  "awaken-credential-vault",
- "awaken-data-subject",
  "awaken-env-store",
  "awaken-environment-application",
  "awaken-environment-execution-application",

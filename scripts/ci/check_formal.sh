@@ -73,12 +73,14 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness sandbox_admission_requires_every_requested_capability
   cargo kani -p awaken-provisioning-contract \
     --harness fail_closed_sandbox_policy_never_authorizes_a_downgrade
-  cargo kani -p awaken-data-subject \
+  cargo kani -p awaken-data-subject-application \
     --harness any_withdrawal_vetoes_full_content_capture
-  cargo kani -p awaken-data-subject \
+  cargo kani -p awaken-data-subject-application \
     --harness consent_upsert_leaves_exactly_one_row_for_the_incoming_purpose
-  cargo kani -p awaken-data-subject \
+  cargo kani -p awaken-data-subject-application \
     --harness erasure_withdrawal_is_absorbing_and_idempotent
+  cargo kani -p awaken-data-subject-application \
+    --harness revision_advance_is_strict_or_explicitly_exhausted
   cargo kani -p awaken-credential-vault \
     --harness disabled_credential_pool_members_are_never_eligible
   cargo kani -p awaken-credential-vault \
@@ -195,7 +197,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -config formal/tla/CircuitBreaker.cfg formal/tla/CircuitBreaker.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/config-cas" \
-    -config formal/tla/ConfigCAS.cfg formal/tla/ConfigCAS.tla
+    -config formal/tla/AggregateCAS.cfg formal/tla/AggregateCAS.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/deployment-cas" \
     -config formal/tla/DeploymentCAS.cfg formal/tla/DeploymentCAS.tla

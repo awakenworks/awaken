@@ -19,8 +19,8 @@ use awaken_config_service::{
 };
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
-use awaken_data_subject::{
-    DataSubjectRepo, ErasureJobRepo, ErasureTarget, RepoDataSubjectResolver,
+use awaken_data_subject_application::{
+    DataSubjectApplication, DataSubjectRepo, ErasureJobRepo, ErasureTarget, RepoDataSubjectResolver,
 };
 use awaken_executable_agent_contract::ExecutableAgentRegistrar;
 use awaken_model_catalog::repo::CatalogRepo;
@@ -46,6 +46,8 @@ const CREDENTIAL_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(60);
 /// information enters through narrow read or command ports.
 pub struct ControlDependencies {
     pub execution_workspace: String,
+    pub data_subject_org: String,
+    pub enrollment_signing_key: [u8; 32],
     pub catalog: Arc<dyn CatalogRepo>,
     pub credentials: Arc<dyn CredentialRepo>,
     pub secrets: Arc<dyn SecretStore>,
@@ -109,6 +111,8 @@ pub struct ControlComponent {
 pub async fn build_control_component(dependencies: ControlDependencies) -> ControlComponent {
     let ControlDependencies {
         execution_workspace,
+        data_subject_org,
+        enrollment_signing_key,
         catalog,
         credentials,
         secrets,
@@ -213,7 +217,11 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     let agent_repository: Arc<dyn ManagedAgentRepository> = Arc::new(
         ConfigPlaneManagedAgentRepository::new(config_plane.clone(), execution_workspace.clone()),
     );
-    let resolver = RepoDataSubjectResolver::new(data_subjects.clone(), erasure_jobs)
+    let data_subject_application = Arc::new(
+        DataSubjectApplication::new(data_subjects.clone(), enrollment_signing_key.to_vec())
+            .expect("a derived 32-byte enrollment signing key is valid"),
+    );
+    let resolver = RepoDataSubjectResolver::new(data_subjects, erasure_jobs)
         .with_target(ErasureTarget::Coordinator, coordinator_content_eraser);
     let resolver = match resource_content_eraser {
         Some(eraser) => resolver.with_target(ErasureTarget::Resources, eraser),
@@ -244,16 +252,23 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         plugins: platform_plugins,
         runtimes,
         platform_workspace: execution_workspace,
+        data_subject_application: data_subject_application.clone(),
+        data_subject_org: data_subject_org.clone(),
         environment_router,
         iam,
         local_browser_auth,
         remote_iam,
     })
     .merge(crate::consent_router(
-        data_subjects,
+        data_subject_application.clone(),
+        data_subject_org.clone(),
         content_capture_ceiling,
     ))
-    .merge(crate::erasure_router(data_subject_resolver));
+    .merge(crate::erasure_router(
+        data_subject_application,
+        data_subject_resolver,
+        data_subject_org,
+    ));
 
     ControlComponent {
         router,

@@ -40,7 +40,7 @@ awaken-model-catalog-store = { workspace = true, features = ["sqlite", "postgres
 awaken-credential-vault = { workspace = true, features = ["oauth-command"] }
 awaken-credential-store = { workspace = true, features = ["sqlite", "sealed-aead", "postgres"] }
 awaken-credential-contract.workspace = true
-awaken-data-subject = { workspace = true }
+awaken-data-subject-application.workspace = true
 # Embedded IAM (ADR-0042/0043 P1): the authorizer, the argon2id token directory +
 # minter + default-deny PolicySet evaluator, the seeded Anthropic role catalog, the
 # iam-server SqlStore rows, and the IamGate PDP the management guard drives.
@@ -60,8 +60,6 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
-base64 = "0.22"
-uuid = { version = "1", features = ["v4"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 tracing = "0.1"
@@ -71,7 +69,7 @@ axum = { version = "0.8", features = ["multipart"] }
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
-awaken-data-subject = { workspace = true, features = ["test-support"] }
+awaken-data-subject-store = { workspace = true, features = ["test-support"] }
 awaken-environment-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
 awaken-resource-store = { workspace = true, features = ["test-support"] }

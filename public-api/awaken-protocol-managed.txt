@@ -843,7 +843,7 @@ pub awaken_protocol_managed::types::user_profile::TrustGrantStatus::Active
 pub awaken_protocol_managed::types::user_profile::TrustGrantStatus::Pending
 pub awaken_protocol_managed::types::user_profile::TrustGrantStatus::Rejected
 pub struct awaken_protocol_managed::types::user_profile::EnrollmentUrl
-pub awaken_protocol_managed::types::user_profile::EnrollmentUrl::expires_at: &'static str
+pub awaken_protocol_managed::types::user_profile::EnrollmentUrl::expires_at: alloc::string::String
 pub awaken_protocol_managed::types::user_profile::EnrollmentUrl::object_type: &'static str
 pub awaken_protocol_managed::types::user_profile::EnrollmentUrl::url: alloc::string::String
 pub struct awaken_protocol_managed::types::user_profile::TrustGrant
@@ -868,6 +868,7 @@ pub awaken_protocol_managed::types::user_profile::UserProfileUpdateParams::exter
 pub awaken_protocol_managed::types::user_profile::UserProfileUpdateParams::metadata: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>>
 pub awaken_protocol_managed::types::user_profile::UserProfileUpdateParams::name: core::option::Option<core::option::Option<alloc::string::String>>
 pub awaken_protocol_managed::types::user_profile::UserProfileUpdateParams::relationship: core::option::Option<core::option::Option<awaken_protocol_managed::types::user_profile::Relationship>>
+pub awaken_protocol_managed::types::user_profile::UserProfileUpdateParams::trust_grants: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_protocol_managed::types::user_profile::TrustGrant>>
 pub mod awaken_protocol_managed::types::vault
 pub enum awaken_protocol_managed::types::vault::CredentialAuth
 pub awaken_protocol_managed::types::vault::CredentialAuth::EnvironmentVariable
@@ -1521,9 +1522,6 @@ pub awaken_protocol_managed::ResourcesRouterInput::memories: alloc::sync::Arc<dy
 pub awaken_protocol_managed::ResourcesRouterInput::memory_stores: alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>
 pub awaken_protocol_managed::ResourcesRouterInput::purge: alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>
 pub awaken_protocol_managed::ResourcesRouterInput::skills: core::option::Option<alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>>
-pub struct awaken_protocol_managed::UserProfileState
-impl awaken_protocol_managed::UserProfileState
-pub fn awaken_protocol_managed::UserProfileState::new() -> Self
 pub struct awaken_protocol_managed::VaultState
 impl awaken_protocol_managed::VaultState
 pub async fn awaken_protocol_managed::VaultState::credential_access_for_source(&self, &awaken_credential_contract::CredentialSourceId, &str, awaken_credential_contract::CredentialUsage, awaken_credential_contract::CredentialExecutionPolicy) -> core::result::Result<awaken_credential_contract::CredentialAccess, awaken_credential_vault::CredentialError>
@@ -1546,6 +1544,7 @@ pub const awaken_protocol_managed::DREAMING_BETA: &str
 pub const awaken_protocol_managed::MANAGED_BETA: &str
 pub const awaken_protocol_managed::MEMORY_BETA: &str
 pub const awaken_protocol_managed::SKILLS_BETA: &str
+pub const awaken_protocol_managed::USER_PROFILES_BETA: &str
 pub trait awaken_protocol_managed::ManagedAgentRepository: core::marker::Send + core::marker::Sync
 pub fn awaken_protocol_managed::ManagedAgentRepository::archive<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_protocol_managed::ManagedAgentRepository::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_protocol_managed::types::agent::AgentCreateParams) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -1571,6 +1570,6 @@ pub fn awaken_protocol_managed::models_router_with_directory(alloc::sync::Arc<dy
 pub fn awaken_protocol_managed::resources_router(awaken_protocol_managed::ResourcesRouterInput) -> axum::routing::Router
 pub fn awaken_protocol_managed::router(alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> axum::routing::Router
 pub fn awaken_protocol_managed::skills_router(core::option::Option<alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>) -> axum::routing::Router
-pub fn awaken_protocol_managed::user_profiles_router(alloc::sync::Arc<awaken_protocol_managed::UserProfileState>) -> axum::routing::Router
+pub fn awaken_protocol_managed::user_profiles_router(alloc::sync::Arc<awaken_data_subject_application::DataSubjectApplication>, alloc::string::String) -> axum::routing::Router
 pub fn awaken_protocol_managed::vault_router(alloc::sync::Arc<awaken_protocol_managed::VaultState>) -> axum::routing::Router
 pub type awaken_protocol_managed::ModelDirectoryFuture<'a> = core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_protocol_managed::ModelEntry>, alloc::string::String>> + core::marker::Send + 'a)>>

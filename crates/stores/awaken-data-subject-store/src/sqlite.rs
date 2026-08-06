@@ -1,4 +1,4 @@
-//! SQLite adapter for the data-subject domain, over the crate's own
+//! SQLite adapter for the data-subject application, over the crate's own
 //! `control_data_subject` migration scope ([`control_data_subject_bundle`]). The subject
 //! aggregate serializes into the `data {json}` column; `id`/`org` are keyed
 //! columns for lookups.
@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::schema::{CONTROL_PREFIX, control_data_subject_bundle};
-use crate::{
+use awaken_data_subject_application::{
     DataSubject, DataSubjectError, DataSubjectId, DataSubjectRepo, ErasureJobRepo, ErasureProgress,
 };
 
@@ -97,20 +97,62 @@ impl SqliteDataSubjectRepo {
 
 #[async_trait::async_trait]
 impl DataSubjectRepo for SqliteDataSubjectRepo {
-    async fn put(&self, subject: DataSubject) -> Result<(), DataSubjectError> {
+    async fn create(&self, subject: DataSubject) -> Result<(), DataSubjectError> {
         let id = subject.id.0.clone();
         let org = subject.org.clone();
+        let revision = i64::try_from(subject.revision)
+            .map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
         let data = serde_json::to_string(&subject).map_err(storage)?;
         with_conn(&self.conn, move |conn, p| {
-            conn.execute(
-                &format!(
-                    "INSERT INTO {p}_subject (id, org, data) VALUES (?1, ?2, ?3) \
-                     ON CONFLICT(id) DO UPDATE SET org = excluded.org, data = excluded.data"
-                ),
-                params![id, org, data],
-            )
-            .map_err(storage)?;
-            Ok(())
+            let inserted = conn
+                .execute(
+                    &format!(
+                        "INSERT OR IGNORE INTO {p}_subject (id, org, data, revision) \
+                     VALUES (?1, ?2, ?3, ?4)"
+                    ),
+                    params![id, org, data, revision],
+                )
+                .map_err(storage)?;
+            if inserted == 1 {
+                Ok(())
+            } else {
+                Err(DataSubjectError::AlreadyExists(id))
+            }
+        })
+        .await
+    }
+
+    async fn compare_and_swap(
+        &self,
+        expected_revision: u64,
+        subject: DataSubject,
+    ) -> Result<(), DataSubjectError> {
+        let id = subject.id.0.clone();
+        let org = subject.org.clone();
+        let revision = subject.revision;
+        if expected_revision.checked_add(1) != Some(revision) {
+            return Err(DataSubjectError::Conflict(id));
+        }
+        let stored_revision =
+            i64::try_from(revision).map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
+        let stored_expected = i64::try_from(expected_revision)
+            .map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
+        let data = serde_json::to_string(&subject).map_err(storage)?;
+        with_conn(&self.conn, move |conn, p| {
+            let updated = conn
+                .execute(
+                    &format!(
+                        "UPDATE {p}_subject SET org = ?1, data = ?2, revision = ?3 \
+                         WHERE id = ?4 AND revision = ?5"
+                    ),
+                    params![org, data, stored_revision, id, stored_expected],
+                )
+                .map_err(storage)?;
+            if updated == 1 {
+                Ok(())
+            } else {
+                Err(DataSubjectError::Conflict(id))
+            }
         })
         .await
     }
@@ -148,19 +190,6 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
         })
         .await
     }
-
-    async fn delete(&self, id: &DataSubjectId) -> Result<(), DataSubjectError> {
-        let id = id.0.clone();
-        with_conn(&self.conn, move |conn, p| {
-            conn.execute(
-                &format!("DELETE FROM {p}_subject WHERE id = ?1"),
-                params![id],
-            )
-            .map_err(storage)?;
-            Ok(())
-        })
-        .await
-    }
 }
 
 #[async_trait::async_trait]
@@ -182,23 +211,46 @@ impl ErasureJobRepo for SqliteDataSubjectRepo {
         .await
     }
 
-    async fn save(
+    async fn compare_and_swap_progress(
         &self,
         id: &DataSubjectId,
+        expected_revision: Option<u64>,
         progress: &ErasureProgress,
     ) -> Result<(), DataSubjectError> {
         let id = id.0.clone();
+        if !progress.follows(expected_revision) {
+            return Err(DataSubjectError::Conflict(id));
+        }
+        let revision = i64::try_from(progress.revision)
+            .map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
+        let expected = expected_revision
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
         let data = serde_json::to_string(progress).map_err(storage)?;
         with_conn(&self.conn, move |conn, p| {
-            conn.execute(
-                &format!(
-                    "INSERT INTO {p}_erasure_job (subject_id, data) VALUES (?1, ?2) \
-                     ON CONFLICT(subject_id) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP"
+            let changed = match expected {
+                None => conn.execute(
+                    &format!(
+                        "INSERT OR IGNORE INTO {p}_erasure_job (subject_id, data, revision) \
+                         VALUES (?1, ?2, ?3)"
+                    ),
+                    params![id, data, revision],
                 ),
-                params![id, data],
-            )
+                Some(expected) => conn.execute(
+                    &format!(
+                        "UPDATE {p}_erasure_job SET data = ?2, revision = ?3, \
+                         updated_at = CURRENT_TIMESTAMP WHERE subject_id = ?1 AND revision = ?4"
+                    ),
+                    params![id, data, revision, expected],
+                ),
+            }
             .map_err(storage)?;
-            Ok(())
+            if changed == 1 {
+                Ok(())
+            } else {
+                Err(DataSubjectError::Conflict(id))
+            }
         })
         .await
     }
@@ -217,7 +269,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         let repo = SqliteDataSubjectRepo::over(conn);
         repo.ensure_schema().unwrap();
-        repo.put(DataSubject::new(
+        repo.create(DataSubject::new(
             DataSubjectId("dsub_a".into()),
             "org_1",
             100,

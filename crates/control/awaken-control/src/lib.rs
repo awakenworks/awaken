@@ -76,8 +76,8 @@ use awaken_credential_vault::repo::CredentialRepo;
 use awaken_deployment_contract::AgentArchiveCascade;
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_protocol_managed::{
-    AgentRegistryState, ManagedAgentRepository, UserProfileState, VaultState, agents_router,
-    user_profiles_router, vault_router,
+    AgentRegistryState, ManagedAgentRepository, VaultState, agents_router, user_profiles_router,
+    vault_router,
 };
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
@@ -228,6 +228,10 @@ pub struct ControlRouterInput {
     /// Process-configured workspace used only when no authenticated scope is
     /// stamped (the explicit no-login deployment mode).
     pub platform_workspace: String,
+    /// One neutral Data Subject application shared by profile/consent/erasure adapters.
+    pub data_subject_application: Arc<awaken_data_subject_application::DataSubjectApplication>,
+    /// Controller partition used for every subject access on this Control surface.
+    pub data_subject_org: String,
     /// Control-owned Environment definition and sandbox-policy routes.
     pub environment_router: Router,
     /// The embedded IAM guard, when enabled by typed deployment identity mode.
@@ -265,6 +269,8 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         plugins,
         runtimes,
         platform_workspace,
+        data_subject_application,
+        data_subject_org,
         environment_router,
         iam,
         local_browser_auth,
@@ -321,8 +327,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         awaken_webhook_managed::webhook_config_router(webhook_store, secrets.clone());
     let admin = admin.merge(webhook_crud);
     let vaults = vault_router(vault_state);
-    // The user-profiles front door (`/v1/user_profiles`) over its own in-mem store.
-    let user_profiles = user_profiles_router(Arc::new(UserProfileState::new()));
+    let user_profiles = user_profiles_router(data_subject_application, data_subject_org);
     // The config authoring plane (`/v1/config/agents/*`): the console authors the
     // rich `AgentConfig` here and `publish` compiles + installs it so sessions run it.
     let audit_plane = plane.management_audit_plane();

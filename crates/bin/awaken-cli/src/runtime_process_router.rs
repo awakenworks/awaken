@@ -55,6 +55,17 @@ pub(super) async fn assemble_runtime_process_router(
     let cloud_models_enabled = model_supply.cloud_models_enabled;
     let injected_brokered_catalog = assembly.brokered_catalog.clone();
     let org_id = assembly.org_id.unwrap_or_else(local_org_id);
+    let enrollment_signing_key = match (role, assembly.enrollment_signing_key) {
+        (config::Role::AllInOne, Some(key)) => key,
+        #[cfg(any(test, feature = "test-support"))]
+        (config::Role::AllInOne, None) => [0xA5; 32],
+        #[cfg(not(any(test, feature = "test-support")))]
+        (config::Role::AllInOne, None) => {
+            panic!("AllInOne requires a derived enrollment signing key")
+        }
+        (config::Role::Coordinator, _) => [0; 32],
+        _ => unreachable!(),
+    };
     let managed_rate_limiter =
         Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization(org_id.clone()));
     let mcp_bearer_token = assembly.mcp_bearer_token;
@@ -189,6 +200,8 @@ pub(super) async fn assemble_runtime_process_router(
             control_component_for_process(
                 &stores,
                 &platform_workspace,
+                &org_id,
+                enrollment_signing_key,
                 executable_agent_registrar,
                 Some(agent_archive_cascade),
                 model_assembly

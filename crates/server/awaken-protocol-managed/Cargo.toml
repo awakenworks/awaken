@@ -26,6 +26,7 @@ test-support = [
 ]
 
 [dependencies]
+awaken-data-subject-application.workspace = true
 awaken-agent-contract.workspace = true
 awaken-executable-agent-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
@@ -126,6 +127,7 @@ name = "streaming"
 required-features = ["test-support"]
 
 [dev-dependencies]
+awaken-data-subject-store = { workspace = true, features = ["test-support"] }
 awaken-executable-environment-catalog.workspace = true
 awaken-work-store = { workspace = true, features = ["test-support"] }
 awaken-env-store = { workspace = true, features = ["test-support"] }

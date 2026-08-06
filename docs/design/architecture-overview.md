@@ -90,11 +90,17 @@ build/realization state, and the WorkQueue. Session admission freezes an
 `EnvironmentSnapshot`; Worker consumes that snapshot and never reopens either
 authority.
 
-Data Subject follows the same explicit-crossing rule. Coordinator reads consent
-through `DataSubjectConsentSource`, while Control requests subject-content
-erasure through an authenticated Coordinator port. The single Coordinator
-application fans that command out to its captured-content store and optional
-portable ACP session store; AllInOne calls the same ports locally.
+Data Subject follows the same explicit-crossing rule.
+`awaken-data-subject-application` is the sole aggregate and use-case owner for
+User Profile, consent, enrollment, and accountability-preserving erasure;
+`awaken-data-subject-store` contains only the durable SQLite/PostgreSQL adapters.
+The Managed protocol projects that application and owns no profile state.
+Coordinator reads consent through `DataSubjectConsentSource`, while Control
+requests subject-content erasure through an authenticated Coordinator port. The
+single Coordinator application fans that command out to its captured-content
+store and optional portable ACP session store; AllInOne calls the same ports
+locally. Aggregate writes use revision-fenced compare-and-swap, so concurrent
+profile and consent changes cannot overwrite one another.
 
 The Runtime Core is the domain center. It runs tools in-process but must not know
 public protocols, registry publication workflow, vault schemas, remote execution

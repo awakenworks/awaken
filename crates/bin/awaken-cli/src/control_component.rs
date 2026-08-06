@@ -9,6 +9,8 @@ use super::*;
 pub(super) async fn control_component_for_process(
     stores: &ProcessStores,
     execution_workspace: &str,
+    data_subject_org: &str,
+    enrollment_signing_key: [u8; 32],
     executable_agent_registrar: Arc<dyn awaken_executable_agent_contract::ExecutableAgentRegistrar>,
     agent_archive_cascade: Option<Arc<dyn awaken_deployment_contract::AgentArchiveCascade>>,
     model_publication_resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
@@ -49,6 +51,8 @@ pub(super) async fn control_component_for_process(
     );
     awaken_control::build_control_component(awaken_control::ControlDependencies {
         execution_workspace: execution_workspace.to_owned(),
+        data_subject_org: data_subject_org.to_owned(),
+        enrollment_signing_key,
         catalog: control.catalog.clone(),
         credentials: control.credentials.clone(),
         secrets: control.secrets.clone(),
@@ -115,6 +119,14 @@ pub(super) async fn assemble_control_process_router(
         .map(|wiring| wiring.registrar)
         .expect("Control process requires executable Environment registrar wiring");
     let content_capture_ceiling = assembly.content_capture_ceiling;
+    let data_subject_org = assembly.org_id.clone().unwrap_or_else(local_org_id);
+    let enrollment_signing_key = match assembly.enrollment_signing_key {
+        Some(key) => key,
+        #[cfg(any(test, feature = "test-support"))]
+        None => [0xA5; 32],
+        #[cfg(not(any(test, feature = "test-support")))]
+        None => panic!("Control process requires a derived enrollment signing key"),
+    };
     let execution_workspace = stores.workspace_root.as_deref().map_or_else(
         SharedHost::provision_local_workspace,
         SharedHost::provision_local_workspace_at,
@@ -174,6 +186,8 @@ pub(super) async fn assemble_control_process_router(
     let component = control_component_for_process(
         &stores,
         &execution_workspace,
+        &data_subject_org,
+        enrollment_signing_key,
         executable_agent_registrar,
         None,
         model_assembly.publication_resolver,
@@ -251,9 +265,7 @@ pub(super) async fn assemble_control_process_router(
             worker_observations,
             execution_workspace,
             Arc::new(
-                awaken_protocol_managed::ManagedRateLimiter::for_organization(
-                    assembly.org_id.unwrap_or_else(local_org_id),
-                ),
+                awaken_protocol_managed::ManagedRateLimiter::for_organization(data_subject_org),
             ),
         ),
         Some(component.registration_supervisor),

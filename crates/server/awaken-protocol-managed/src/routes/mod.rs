@@ -2,9 +2,8 @@
 //! surface. Handlers only decode DTOs (from `types`), call the backing state, and
 //! encode responses — no runtime or protocol logic.
 //!
-//! One submodule per surface. Each management-plane resource submodule bundles its
-//! router with the in-memory store it drives (its backing state is a routing
-//! detail, not shared vocabulary):
+//! One submodule per surface. Each handler decodes wire DTOs and delegates to the
+//! injected application owner; protocol modules do not own business stores:
 //! - [`sessions`] — the core session/events/threads/resources surface, plus the
 //!   shared HTTP plumbing ([`ManagedJson`], [`error_response`]) the others reuse.
 //! - [`agents_registry`], [`deployments`], [`environments`], [`user_profiles`],
