@@ -14,7 +14,6 @@ use crate::host::HostError;
 /// The lease-renewal heartbeat cadence for the standing daemon: a third of the
 /// 30s default lease, so a renewal always lands before expiry (ADR-0024). Without
 /// it a long run in a multi-node fleet would be reclaimed by a peer mid-flight.
-pub(crate) const LEASE_RENEWAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The process-wide shared Postgres dispatch backend, connected once at startup.
 /// The pool is shared by every thread's durable ingress (one queue per process,

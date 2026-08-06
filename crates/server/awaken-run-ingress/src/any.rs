@@ -28,7 +28,9 @@ use crate::dispatch::{
     DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary, Inbox,
     Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
 };
+#[cfg(feature = "durable")]
 use crate::postgres::PostgresDispatchStore;
+#[cfg(feature = "durable")]
 use crate::sqlite::SqliteDispatchStore;
 use crate::{DispatchCursor, DispatchOperationalFeed, DispatchPage};
 use awaken_run_ingress_contract::RunDispatch;
@@ -44,6 +46,7 @@ pub struct AnyDispatchStore {
 
 impl AnyDispatchStore {
     /// Open the SQLite backend at `path` (per-thread file queue; survives restart).
+    #[cfg(feature = "durable")]
     pub fn open_sqlite(path: &str) -> Result<Self, String> {
         SqliteDispatchStore::open(path)
             .map(Self::from_store)
@@ -60,6 +63,7 @@ impl AnyDispatchStore {
 
     /// Connect the shared Postgres backend at `url`: one queue for a multi-node
     /// fleet, `FOR UPDATE SKIP LOCKED` gives distinct-claim across processes.
+    #[cfg(feature = "durable")]
     pub async fn connect_postgres(url: &str, max_connections: u32) -> Result<Self, String> {
         PostgresDispatchStore::connect(url, max_connections)
             .await
@@ -69,6 +73,7 @@ impl AnyDispatchStore {
 
     /// Connect to a Postgres queue whose migration ledger was applied by the
     /// deployment migration phase. No DDL is executed.
+    #[cfg(feature = "durable")]
     pub async fn connect_postgres_existing(
         url: &str,
         max_connections: u32,
@@ -85,6 +90,7 @@ impl AnyDispatchStore {
     /// infrastructure (ADR-0019/0024). Returns the store plus the ready wake signal;
     /// keeps sqlx out of the host crate. Only Postgres carries a cross-node wake —
     /// SQLite is single-process, so it stays on the in-process `LocalWakeSignal`.
+    #[cfg(feature = "durable")]
     pub async fn connect_postgres_with_wake(
         url: &str,
         channel: &str,
@@ -100,6 +106,7 @@ impl AnyDispatchStore {
 
     /// Verify and connect an already-migrated Postgres queue with a shared
     /// `LISTEN`/`NOTIFY` wake adapter.
+    #[cfg(feature = "durable")]
     pub async fn connect_postgres_existing_with_wake(
         url: &str,
         channel: &str,
@@ -159,6 +166,7 @@ impl AnyDispatchStore {
         Ok((Self::from_postgres_store(store), wake))
     }
 
+    #[cfg(feature = "durable")]
     fn from_store(store: impl Dispatch + DispatchOperationalFeed + 'static) -> Self {
         let store = Arc::new(store);
         Self {
@@ -168,6 +176,7 @@ impl AnyDispatchStore {
         }
     }
 
+    #[cfg(feature = "durable")]
     fn from_postgres_store(store: PostgresDispatchStore) -> Self {
         let stream_checkpoint: Arc<dyn StreamCheckpointStore> = Arc::new(store.checkpoint_store());
         let store = Arc::new(store);

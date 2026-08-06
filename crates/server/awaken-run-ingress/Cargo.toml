@@ -26,19 +26,29 @@ sha2 = "0.10"
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"] }
-rusqlite = { workspace = true }
-awaken-scoped-migration = { workspace = true, features = ["postgres"] }
-awaken-scoped-migration-sqlite.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
+rusqlite = { workspace = true, optional = true }
+awaken-scoped-migration.workspace = true
+awaken-scoped-migration-sqlite = { workspace = true, optional = true }
 async-nats = { version = "0.38", optional = true }
 futures-lite = { version = "2", optional = true }
 
 [features]
+default = ["durable"]
+# Coordinator-owned SQLite/Postgres queue adapters. A database-less Worker uses
+# `AnyDispatchStore::from_dispatch` over its claim-fenced HTTP transport and
+# therefore must compile this crate without these authority drivers.
+durable = [
+    "dep:sqlx",
+    "dep:rusqlite",
+    "awaken-scoped-migration/postgres",
+    "dep:awaken-scoped-migration-sqlite",
+]
 # Private SQLite dispatch authority for unit/integration/scenario fixtures.
-test-support = []
+test-support = ["durable"]
 # Optional cross-node wake signal over NATS. Off by default — the default build
 # and test suite stay free of the NATS driver; enable for a multi-node fleet.
-nats = ["dep:async-nats", "dep:futures-lite"]
+nats = ["durable", "dep:async-nats", "dep:futures-lite"]
 
 [dev-dependencies]
 awaken-run-ingress-testkit = { workspace = true }

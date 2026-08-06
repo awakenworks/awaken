@@ -13,7 +13,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use awaken_memory_store::MemoryRepository;
+use awaken_resource_contract::MemoryRepository;
 
 /// The Resources context's Memory content backend. See the module docs for why
 /// identity/configuration is kept out.

@@ -97,10 +97,19 @@ impl SharedHost {
     pub fn dispatch_store(&self) -> Result<Arc<awaken_run_ingress::AnyDispatchStore>, HostError> {
         self.dispatch_store_override.clone().map_or_else(
             || {
-                crate::dispatch_backend::shared_durable_store_for(
-                    &self.deployment,
-                    self.store_dir.as_deref(),
-                )
+                #[cfg(feature = "authority")]
+                {
+                    crate::dispatch_backend::shared_durable_store_for(
+                        &self.deployment,
+                        self.store_dir.as_deref(),
+                    )
+                }
+                #[cfg(not(feature = "authority"))]
+                {
+                    Err(HostError::internal(
+                        "database-less Worker requires an injected dispatch transport",
+                    ))
+                }
             },
             Ok,
         )
@@ -151,7 +160,7 @@ impl SharedHost {
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
         file_content_source: Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>,
-        memory_repository: Arc<dyn awaken_memory_store::MemoryRepository>,
+        memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
         Self::build(
@@ -170,7 +179,7 @@ impl SharedHost {
         resources: Option<awaken_resource_contract::ResourceComponent>,
         worker_content: Option<(
             Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>,
-            Arc<dyn awaken_memory_store::MemoryRepository>,
+            Arc<dyn awaken_resource_contract::MemoryRepository>,
         )>,
         extraction_repository: Option<Arc<dyn awaken_ext_memory::MemoryExtractionRepository>>,
         deployment: crate::DeploymentConfig,
@@ -226,12 +235,13 @@ impl SharedHost {
         let (file_store, file_catalog) = if worker_content.is_some() {
             let files = Arc::new(crate::unavailable_worker::UnavailableWorkerFiles);
             (
-                files.clone() as Arc<dyn awaken_file_store::FileStore>,
+                files.clone() as Arc<dyn awaken_resource_contract::FileStore>,
                 files as Arc<dyn awaken_resource_contract::FileCatalog>,
             )
         } else {
             resources.as_ref().map_or_else(
                 || match store_dir.as_ref() {
+                    #[cfg(feature = "authority")]
                     Some(dir) => {
                         let files = Arc::new(
                             awaken_file_store::sqlite::SqliteFileStore::open(
@@ -240,16 +250,20 @@ impl SharedHost {
                             .expect("open durable file store"),
                         );
                         (
-                            files.clone() as Arc<dyn awaken_file_store::FileStore>,
+                            files.clone() as Arc<dyn awaken_resource_contract::FileStore>,
                             files as Arc<dyn awaken_resource_contract::FileCatalog>,
                         )
                     }
+                    #[cfg(not(feature = "authority"))]
+                    Some(_) => unreachable!(
+                        "database-less Worker build requires injected File content adapters"
+                    ),
                     None => {
                         #[cfg(any(test, feature = "test-support"))]
                         {
                             let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
                             (
-                                files.clone() as Arc<dyn awaken_file_store::FileStore>,
+                                files.clone() as Arc<dyn awaken_resource_contract::FileStore>,
                                 files as Arc<dyn awaken_resource_contract::FileCatalog>,
                             )
                         }
@@ -868,7 +882,7 @@ impl SharedHost {
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_skill_store_backend(
         mut self,
-        store: Arc<dyn awaken_skill_store::SkillStore>,
+        store: Arc<dyn awaken_resource_contract::SkillStore>,
     ) -> Self {
         self.skills.set_bundle_source(Arc::new(
             awaken_resource_application::StoreSkillBundleSource::new(store.clone()),
@@ -970,7 +984,7 @@ impl SharedHost {
     /// without a configuration resolver because admission already pinned access.
     pub fn with_inference_materializer(
         mut self,
-        materializer: Arc<dyn crate::inference_routing::InferenceExecutorMaterializer>,
+        materializer: Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>,
     ) -> Self {
         self.memory.set_inference_materializer(materializer.clone());
         self.inference_routing.set_materializer(materializer);
@@ -1008,7 +1022,7 @@ impl SharedHost {
     #[must_use]
     pub fn with_memory_repository(
         mut self,
-        repository: Arc<dyn awaken_memory_store::MemoryRepository>,
+        repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
     ) -> Self {
         self.memory_stores = crate::memory_stores::MemoryStores::with_repository(repository);
         self
@@ -1347,7 +1361,7 @@ impl SharedHost {
             host: Arc::downgrade(self),
         });
         let config = DispatchServiceConfig {
-            lease_renewal_interval: Some(crate::dispatch_backend::LEASE_RENEWAL),
+            lease_renewal_interval: Some(awaken_run_ingress::DEFAULT_LEASE_RENEWAL),
             ..DispatchServiceConfig::default()
         };
         let concurrency = std::thread::available_parallelism()
@@ -1357,7 +1371,11 @@ impl SharedHost {
         // spawn the pool with the cross-node wake so a peer's enqueue nudges this pool
         // without busy-poll; otherwise the in-process `LocalWakeSignal` suffices.
         let completion = self.completion.clone() as Arc<dyn CompletionSink>;
-        let pool = match crate::dispatch_backend::shared_dispatch_wake() {
+        #[cfg(feature = "authority")]
+        let shared_wake = crate::dispatch_backend::shared_dispatch_wake();
+        #[cfg(not(feature = "authority"))]
+        let shared_wake = None;
+        let pool = match shared_wake {
             Some(wake) => DispatchPool::spawn_with_wake_and_completion(
                 store,
                 Arc::new(SystemClock),

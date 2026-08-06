@@ -93,7 +93,7 @@ impl crate::ManagedHost {
                             "file resource `{file_id}` not found in this workspace"
                         ))
                     })?;
-                let actual = awaken_file_store::content_id(&bytes);
+                let actual = awaken_resource_contract::content_id(&bytes);
                 if actual != content_digest {
                     return Err(RunError::bad_request(format!(
                         "file resource `{file_id}` content hash mismatch (realized `{actual}`)"

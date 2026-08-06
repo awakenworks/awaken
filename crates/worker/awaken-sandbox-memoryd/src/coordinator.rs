@@ -113,7 +113,7 @@ impl MountCoordinator {
 /// [`spawn_mount`](crate::fuse::spawn_mount) over the shared [`MemoryRepository`].
 #[cfg(all(feature = "fuse", target_os = "linux"))]
 pub struct FuseMountFactory {
-    fs: std::sync::Arc<dyn awaken_memory_store::MemoryRepository>,
+    fs: std::sync::Arc<dyn awaken_resource_contract::MemoryRepository>,
     root: PathBuf,
 }
 
@@ -121,7 +121,7 @@ pub struct FuseMountFactory {
 impl FuseMountFactory {
     #[must_use]
     pub fn new(
-        fs: std::sync::Arc<dyn awaken_memory_store::MemoryRepository>,
+        fs: std::sync::Arc<dyn awaken_resource_contract::MemoryRepository>,
         root: impl Into<PathBuf>,
     ) -> Self {
         Self {
@@ -134,7 +134,9 @@ impl FuseMountFactory {
 #[cfg(all(feature = "fuse", target_os = "linux"))]
 impl MountFactory for FuseMountFactory {
     fn mount(&self, store_id: &str) -> Result<(PathBuf, Box<dyn Mount>), FuseError> {
-        let mountpoint = self.root.join(awaken_memory_store::sanitize_stem(store_id));
+        let mountpoint = self
+            .root
+            .join(awaken_resource_contract::memory_store_stem(store_id));
         std::fs::create_dir_all(&mountpoint).map_err(|e| FuseError::Internal(e.to_string()))?;
         let handle =
             crate::fuse::spawn_mount(self.fs.clone(), store_id.to_string(), mountpoint.clone())?;

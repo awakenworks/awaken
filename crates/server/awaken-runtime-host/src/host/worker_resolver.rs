@@ -4,54 +4,12 @@
 use super::*;
 mod application;
 mod claimed_dispatch;
+mod resolver;
 mod session_realization;
 #[cfg(test)]
 pub(super) mod test_support;
 use application::install_claimed_session_projection;
-
-/// Routes a claimed run to the worker that owns its thread, opening (or reusing)
-/// the session through the host. Holds a `Weak` back-reference so the pool's tasks
-/// never keep the host alive; if the host is dropped, `worker_for` fails and the
-/// pool's drains idle out.
-pub(crate) struct HostWorkerResolver {
-    pub(crate) host: std::sync::Weak<SharedHost>,
-}
-
-impl HostWorkerResolver {
-    pub(super) fn execution_error(message: impl Into<String>) -> awaken_run_ingress::Error {
-        awaken_run_ingress::Error::Execution(awaken_runtime_contract::execution::Error::Execution(
-            message.into(),
-        ))
-    }
-
-    pub(super) fn host(&self) -> Result<Arc<SharedHost>, awaken_run_ingress::Error> {
-        self.host
-            .upgrade()
-            .ok_or_else(|| Self::execution_error("host dropped; pool idling"))
-    }
-
-    async fn resolve(
-        &self,
-        host: &SharedHost,
-        thread_id: &awaken_agent_contract::agent::thread::Id,
-        agent_id: Option<&str>,
-        published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-        sandbox: Option<crate::session_environment::SessionEnvironment>,
-    ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
-    {
-        let agent = agent_id.filter(|a| !a.is_empty());
-        let ctx = host
-            .ctx_for_snapshot_with_sandbox(&thread_id.0, agent, published_snapshot, sandbox)
-            .await
-            .map_err(|e| Self::execution_error(e.to_string()))?;
-        ctx.durable_ingress
-            .as_ref()
-            .map(|ingress| ingress.worker_handle())
-            .ok_or_else(|| {
-                Self::execution_error(format!("thread {} has no durable ingress", thread_id.0))
-            })
-    }
-}
+pub(crate) use resolver::HostWorkerResolver;
 
 #[cfg(test)]
 mod tests {
@@ -394,6 +352,7 @@ mod tests {
 
     struct RecordingContributor {
         calls: Arc<AtomicUsize>,
+        resume_calls: Arc<AtomicUsize>,
         phases: Arc<std::sync::Mutex<Vec<&'static str>>>,
         projection: Arc<std::sync::Mutex<Option<awaken_session_contract::FrozenSessionProjection>>>,
         mcp_stage: Option<awaken_session_contract::StageMcpAttachment>,
@@ -592,6 +551,7 @@ mod tests {
             Option<awaken_session_contract::SessionRealizationDirective>,
             awaken_run_ingress_contract::ClaimedSessionControlError,
         > {
+            self.resume_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.projection.lock().unwrap().clone().map(|projection| {
                 awaken_session_contract::SessionRealizationDirective {
                     projection,
@@ -898,6 +858,7 @@ mod tests {
     /// | O2 | stale | any | any | present | reject before realization |
     /// | O3 | live | preparing application | absent | present | fail closed |
     /// | O4 | live | local pre-realized | absent | absent | local-pool replay |
+    /// | O5 | live ordinary Run (no Session pointer) | n/a | absent | present | bypass Session control |
     #[tokio::test]
     async fn ordinary_remote_worker_uses_claimed_session_realization_without_an_application() {
         use awaken_run_ingress::{Clock, DispatchQueue};
@@ -907,12 +868,14 @@ mod tests {
                 .expect("in-memory dispatch"),
         );
         let contribution_calls = Arc::new(AtomicUsize::new(0));
+        let resume_calls = Arc::new(AtomicUsize::new(0));
         let projection = Arc::new(std::sync::Mutex::new(Some(ordinary_frozen_projection())));
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub")
                 .with_dispatch_store(dispatch.clone())
                 .with_application_session_control(Arc::new(RecordingContributor {
                     calls: contribution_calls.clone(),
+                    resume_calls: resume_calls.clone(),
                     phases: Arc::new(std::sync::Mutex::new(Vec::new())),
                     projection,
                     mcp_stage: None,
@@ -920,10 +883,15 @@ mod tests {
                 })),
         );
         dispatch
-            .enqueue(awaken_run_ingress::RunDispatch::new(test_activation(
-                "ordinary-remote",
-                "run-ordinary-remote",
-            )))
+            .enqueue(
+                awaken_run_ingress::RunDispatch::new(test_activation(
+                    "ordinary-remote",
+                    "run-ordinary-remote",
+                ))
+                .for_session(awaken_agent_contract::agent::thread::Id(
+                    "ordinary-remote".into(),
+                )),
+            )
             .await
             .expect("O1 enqueue");
         let claimed = dispatch
@@ -944,6 +912,7 @@ mod tests {
         .expect("O1 canonical realization");
 
         assert_eq!(contribution_calls.load(Ordering::SeqCst), 0, "O1/E3");
+        assert_eq!(resume_calls.load(Ordering::SeqCst), 1, "O1/E1");
         assert!(
             host.session_environment("ordinary-remote").await.is_some(),
             "O1/E3"
@@ -959,6 +928,31 @@ mod tests {
                 .unwrap_or(false),
             "O1/E1-E2"
         );
+
+        dispatch
+            .enqueue(awaken_run_ingress::RunDispatch::new(test_activation(
+                "ordinary-run",
+                "run-without-session",
+            )))
+            .await
+            .expect("O5 enqueue");
+        let claimed = dispatch
+            .claim(
+                "worker-a",
+                30_000,
+                awaken_run_ingress::SystemClock.now_ms(),
+                &Default::default(),
+            )
+            .await
+            .expect("O5 claim")
+            .expect("O5 claimed Run");
+        HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        }
+        .worker_for_claimed(&claimed)
+        .await
+        .expect("O5 ordinary Run bypasses Session realization");
+        assert_eq!(resume_calls.load(Ordering::SeqCst), 1, "O5");
     }
 
     #[tokio::test]
@@ -1041,6 +1035,7 @@ mod tests {
             let host = if install_contributor {
                 host.with_application_session_control(Arc::new(RecordingContributor {
                     calls: contribution_calls.clone(),
+                    resume_calls: Arc::new(AtomicUsize::new(0)),
                     phases: phases.clone(),
                     projection,
                     mcp_stage,
@@ -1056,7 +1051,8 @@ mod tests {
             let thread = format!("thread-application-{rule}");
             let run = format!("run-application-{rule}");
             let mut run_dispatch =
-                awaken_run_ingress::RunDispatch::new(test_activation(&thread, &run));
+                awaken_run_ingress::RunDispatch::new(test_activation(&thread, &run))
+                    .for_session(awaken_agent_contract::agent::thread::Id(thread.clone()));
             if let Some(stage) = dispatched_mcp_stage {
                 let runtime = crate::provisioning::encode_session_runtime_envelope(
                     recording_environment(),
@@ -1191,6 +1187,9 @@ mod tests {
         }
     }
 
+    /// Cause/effect rule W3 from the table above: a Session Run with a stale
+    /// claim must fail before application preparation, refresh, or Environment
+    /// creation. The explicit Session pointer distinguishes it from a plain Run.
     #[tokio::test]
     async fn stale_claim_is_rejected_before_application_provisioning() {
         use awaken_run_ingress::{Clock, DispatchQueue};
@@ -1212,10 +1211,15 @@ mod tests {
                 })),
         );
         dispatch
-            .enqueue(awaken_run_ingress::RunDispatch::new(test_activation(
-                "thread-stale-application",
-                "run-stale-application",
-            )))
+            .enqueue(
+                awaken_run_ingress::RunDispatch::new(test_activation(
+                    "thread-stale-application",
+                    "run-stale-application",
+                ))
+                .for_session(awaken_agent_contract::agent::thread::Id(
+                    "thread-stale-application".into(),
+                )),
+            )
             .await
             .expect("enqueue");
         let now = awaken_run_ingress::SystemClock.now_ms();
@@ -1559,7 +1563,7 @@ mod tests {
                     return Ok(None);
                 }
                 let bytes = b"remote immutable File".to_vec();
-                Ok(Some((awaken_file_store::content_id(&bytes), bytes)))
+                Ok(Some((awaken_resource_contract::content_id(&bytes), bytes)))
             }
         }
 

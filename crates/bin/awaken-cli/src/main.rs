@@ -92,29 +92,6 @@ async fn run(command: console::Command) -> Result<(), String> {
             );
             Ok(())
         }
-        console::Command::Worker {
-            server,
-            config_path,
-        } => {
-            let deployment = ResolvedDeployment::load(ConfigOverrides {
-                config_path,
-                role: Some(Role::Worker),
-                worker_server: Some(server.clone()),
-                ..Default::default()
-            })?;
-            warn_deprecations(&deployment);
-            deployment.ensure_data_layout()?;
-            awaken_observability::init(&deployment.observability);
-            let result = match awaken_cli::build_configured_worker(&server, &deployment).await {
-                Ok(worker) => worker
-                    .run_until_shutdown()
-                    .await
-                    .map_err(|error| error.to_string()),
-                Err(error) => Err(error),
-            };
-            awaken_observability::shutdown();
-            result
-        }
         console::Command::AllInOne(args) => {
             run_service(args, Presentation::Interactive, Role::AllInOne).await
         }

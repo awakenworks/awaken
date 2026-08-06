@@ -9,6 +9,7 @@ Control, Coordinator, Credential, or Resource store implementation.
 from __future__ import annotations
 
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -455,6 +456,50 @@ def dependency_violations(dependencies: set[str]) -> list[str]:
     return sorted(dependencies & FORBIDDEN_WORKER_DEPENDENCIES)
 
 
+def dependency_closure(root: str, graph: dict[str, set[str]]) -> set[str]:
+    """Return every normal dependency reachable from one deployable package."""
+
+    reached: set[str] = set()
+    pending = list(graph.get(root, ()))
+    while pending:
+        package = pending.pop()
+        if package in reached:
+            continue
+        reached.add(package)
+        pending.extend(graph.get(package, ()))
+    return reached
+
+
+def resolved_worker_dependencies(repo_root: Path) -> set[str]:
+    """Read Cargo's feature-resolved normal closure for the Worker artifact."""
+
+    result = subprocess.run(
+        [
+            "cargo",
+            "tree",
+            "-p",
+            "awaken-worker",
+            "--edges",
+            "normal",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+        ],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"resolve Worker dependency closure: {result.stderr.strip()}")
+    return {
+        match.group(1)
+        for line in result.stdout.splitlines()
+        if (match := re.match(r"^([A-Za-z0-9_-]+)\s+v", line))
+    }
+
+
 def source_violations(source: str) -> list[str]:
     """Return forbidden production authority constructors/vocabulary."""
 
@@ -824,7 +869,7 @@ def selftest() -> None:
 
     O1 neutral Worker ports/adapters -> accepted; O2 a direct authority-store
     dependency (including a Cargo alias) -> rejected; O3 an authority-store
-    constructor reached through a transitive dependency -> rejected; O4 ordinary
+    dependency reached through a transitive normal edge -> rejected; O4 ordinary
     HTTP adapter construction -> accepted. O5 Control creates Managed Execution
     -> rejected; O6 Control-only construction -> accepted; O7 retired launch path
     -> rejected; O8 one Control builder -> accepted; O9 duplicate/wrong Control
@@ -863,6 +908,15 @@ def selftest() -> None:
 
     assert dependency_violations({"awaken-runtime-host", "awaken-runtime-contract"}) == []  # O1
     assert dependency_violations({"awaken-session-store"}) == ["awaken-session-store"]  # O2
+    graph = {
+        "awaken-worker": {"awaken-runtime-host"},
+        "awaken-runtime-host": {"awaken-session-store"},
+        "awaken-session-store": {"sqlx"},
+    }
+    assert dependency_violations(dependency_closure("awaken-worker", graph)) == [
+        "awaken-session-store",
+        "sqlx",
+    ]  # O3
     assert source_violations("let store = PostgresMemoryRepository::connect(url).await?;")  # O3
     assert source_violations("let client = HttpMemoryRepository::new(url, token);") == []  # O4
     aliased = {"dependencies": {"session_backend": {"package": "awaken-session-store"}}}
@@ -1179,10 +1233,14 @@ def check_all(repo_root: Path) -> list[str]:
             product_manifest, product_manifests[product_manifest]
         ):
             errors.append(f"{product_manifest}: {error}")
-    dependencies = _normal_dependencies(product_manifests[WORKER_MANIFEST])
+    try:
+        dependencies = resolved_worker_dependencies(repo_root)
+    except RuntimeError as error:
+        errors.append(str(error))
+        dependencies = set()
     for package in dependency_violations(dependencies):
         errors.append(
-            f"{WORKER_MANIFEST}: Worker links authority-store dependency `{package}`; "
+            f"{WORKER_MANIFEST}: Worker transitively links authority-store dependency `{package}`; "
             "use the existing claim-fenced boundary adapter"
         )
 

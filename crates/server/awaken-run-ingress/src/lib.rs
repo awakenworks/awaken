@@ -29,10 +29,12 @@ mod live_control;
 #[cfg(any(test, feature = "test-support"))]
 pub mod memory;
 mod pool;
+#[cfg(feature = "durable")]
 mod postgres;
 mod recovery_projection;
 mod send_message;
 mod service;
+#[cfg(feature = "durable")]
 mod sqlite;
 mod wake;
 mod worker;
@@ -86,18 +88,27 @@ pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
 #[cfg(any(test, feature = "test-support"))]
 pub use memory::MemoryDispatchStore;
 pub use pool::{CompletionSink, DispatchPool, WorkerResolver};
+#[cfg(feature = "durable")]
 pub use postgres::{
     PostgresDispatchStore, PostgresStreamCheckpointStore, StoreError as PostgresStoreError,
 };
 pub use recovery_projection::{RecoveryProjection, RecoveryProjectionError};
 pub use send_message::OutboxMessageSender;
 pub use service::{DispatchService, DispatchServiceConfig};
+#[cfg(feature = "durable")]
 pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};
 #[cfg(feature = "nats")]
 pub use wake::NatsWakeSignal;
-pub use wake::{LocalWakeSignal, PgNotifyWake, WakeSignal};
+#[cfg(feature = "durable")]
+pub use wake::PgNotifyWake;
+pub use wake::{LocalWakeSignal, WakeSignal};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker, claim_bound_ownership_verifier};
 pub use worker_context::InferenceMaterializerFn;
+
+/// Canonical renewal cadence for a ten-second claim lease. Both Coordinator
+/// and remote Worker pools use this policy; wake transport selection does not
+/// change lease ownership.
+pub const DEFAULT_LEASE_RENEWAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// A durable-ingress failure: either the dispatch store rejected an operation or
 /// a runtime attempt failed. Kept as two arms so a queue-storage failure never
@@ -113,6 +124,7 @@ pub enum Error {
 /// Shared policy adapter used by every durable backend. Eligibility and
 /// replacement authority remain in the worker-contract kernel; stores only use
 /// the boolean result while holding their backend-specific claim lock.
+#[cfg(feature = "durable")]
 pub(crate) struct DispatchPlacement<'a> {
     pub recovered: bool,
     pub previous: Option<&'a WorkerAssignment>,
@@ -122,6 +134,7 @@ pub(crate) struct DispatchPlacement<'a> {
     pub now_ms: u64,
 }
 
+#[cfg(feature = "durable")]
 pub(crate) fn policy_selects_requester(
     request: &RunDispatch,
     policy: &dyn PlacementPolicy,

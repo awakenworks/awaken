@@ -27,8 +27,8 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunRecoverySource};
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
-use awaken_file_store::FileStore;
 use awaken_resource_contract::FileCatalog;
+use awaken_resource_contract::FileStore;
 use awaken_run_ingress::{
     AnyDispatchStore, CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue,
     DispatchServiceConfig, DurableRunIngress, Inbox, PendingInput, RunDispatch, SubmitOptions,
@@ -52,7 +52,9 @@ use awaken_store_inmem::MemoryStreamCheckpointStore;
 // (rooted tools, repos, artifacts) the host composes into each session's runtime.
 use awaken_sandbox_local::LocalProvider;
 use awaken_session_contract::DelegatedRun;
+#[cfg(feature = "authority")]
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
+#[cfg(feature = "authority")]
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use awaken_ext_compact::{CompactConfig, CompactPlugin};
@@ -102,6 +104,7 @@ fn sub_base(kind: &str) -> PathBuf {
     std::env::temp_dir().join("awaken-coordinator").join(name)
 }
 
+#[cfg(feature = "authority")]
 pub(crate) use crate::store::sanitize_thread;
 
 /// Wall-clock milliseconds since the Unix epoch — the dispatch queue's lease and

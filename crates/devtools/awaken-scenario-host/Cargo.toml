@@ -22,7 +22,7 @@ awaken-config-service.workspace = true
 awaken-ext-permission.workspace = true
 awaken-ext-memory.workspace = true
 awaken-ext-skills.workspace = true
-awaken-run-ingress.workspace = true
+awaken-run-ingress = { workspace = true, features = ["durable"] }
 awaken-sandbox-local.workspace = true
 awaken-worker-transport-security.workspace = true
 awaken-admin-assistant = { workspace = true }

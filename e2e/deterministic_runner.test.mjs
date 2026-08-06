@@ -13,7 +13,7 @@ import {
   timingWeights,
   validPrebuiltManifest,
 } from './deterministic_runner.mjs';
-import { AWAKEN_BIN_ENV, SCENARIO_HOST_BIN_ENV } from './cargo_binary.mjs';
+import { AWAKEN_BIN_ENV, SCENARIO_HOST_BIN_ENV, WORKER_BIN_ENV } from './cargo_binary.mjs';
 
 // Cause/effect decision table:
 // C1 nested suite, C2 npm pretest hook, C3 cycle; E1 ordered leaf commands,
@@ -71,19 +71,22 @@ test('fingerprints build inputs but ignores Cargo storage locations', () => {
   assert.notEqual(prebuildFingerprint({ CARGO_PROFILE_RELEASE_LTO: 'true' }), baseline);
 });
 
-// Artifact consistency boundary: C1 both immutable artifacts exist, C2 only
+// Artifact consistency boundary: C1 all three immutable artifacts exist, C2 only
 // one exists, C3 source/build fingerprint matches, C4 binary digests match.
-// R1 C1+C3+C4 -> reuse exact pair without Cargo; R2 C2 -> fail before a shard
-// can combine builds; R3 C1+(!C3|!C4) -> reject reuse and rebuild the pair.
-test('reuses only a complete explicit prebuilt artifact pair', () => {
+// R1 C1+C3+C4 -> reuse exact set without Cargo; R2 C2 -> fail before a shard
+// can combine builds; R3 C1+(!C3|!C4) -> reject reuse and rebuild the set.
+test('reuses only a complete explicit prebuilt artifact set', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-runner-test-'));
   const suffix = process.platform === 'win32' ? '.exe' : '';
   try {
     const awaken = path.join(directory, `awaken${suffix}`);
     const scenarioHost = path.join(directory, `awaken-scenario-host${suffix}`);
+    const worker = path.join(directory, `awaken-worker${suffix}`);
     fs.writeFileSync(awaken, 'awaken');
     assert.throws(() => preparedEnvironment({}, directory), /incomplete E2E prebuilt directory/);
     fs.writeFileSync(scenarioHost, 'scenario');
+    assert.throws(() => preparedEnvironment({}, directory), /incomplete E2E prebuilt directory/);
+    fs.writeFileSync(worker, 'worker');
     const fingerprint = prebuildFingerprint({});
     const manifest = {
       version: 1,
@@ -91,14 +94,16 @@ test('reuses only a complete explicit prebuilt artifact pair', () => {
       binaries: {
         awaken: fileDigest(awaken),
         scenarioHost: fileDigest(scenarioHost),
+        worker: fileDigest(worker),
       },
     };
     fs.writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify(manifest));
     const environment = preparedEnvironment({}, directory);
     assert.equal(environment[AWAKEN_BIN_ENV], awaken);
     assert.equal(environment[SCENARIO_HOST_BIN_ENV], scenarioHost);
+    assert.equal(environment[WORKER_BIN_ENV], worker);
     fs.writeFileSync(awaken, 'corrupt');
-    assert.equal(validPrebuiltManifest(manifest, fingerprint, awaken, scenarioHost), false);
+    assert.equal(validPrebuiltManifest(manifest, fingerprint, awaken, scenarioHost, worker), false);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

@@ -13,15 +13,15 @@ authority = "coordinator"
 [dependencies]
 # The extracted service layer: SharedHost / ManagedHost / RunApplicationHost and all
 # host modules live here; this bin only composes them into router modes.
-awaken-runtime-host = { workspace = true }
+awaken-runtime-host = { workspace = true, features = ["authority"] }
 awaken-run-ingress-http.workspace = true
 awaken-resource-worker-http.workspace = true
 awaken-worker-runtime.workspace = true
 awaken-config-service.workspace = true
-awaken-credential-materializer.workspace = true
+awaken-credential-materializer = { workspace = true, features = ["authority"] }
 awaken-ext-skills.workspace = true
 awaken-provisioning-contract.workspace = true
-awaken-run-ingress.workspace = true
+awaken-run-ingress = { workspace = true, features = ["durable"] }
 awaken-sandbox-local.workspace = true
 awaken-worker-transport-security.workspace = true
 awaken-executable-agent-contract.workspace = true
@@ -108,7 +108,6 @@ awaken-resource-contract.workspace = true
 awaken-resource-application.workspace = true
 awaken-store-fs.workspace = true
 awaken-store-inmem = { workspace = true, optional = true }
-awaken-tool-relay.workspace = true
 awaken-connection-plan.workspace = true
 # Webhook plane (ADR-0048 / S10): the WebhookLifecycleSink bridges the managed
 # session lifecycle to the neutral dispatcher; the CRUD router manages
@@ -173,7 +172,6 @@ awaken-captured-content-store = { workspace = true, features = ["test-support"] 
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
-awaken-tool-relay = { workspace = true, features = ["test-support"] }
 awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-model-catalog = { workspace = true, features = ["test-support"] }
 awaken-resource-store = { workspace = true, features = ["test-support"] }

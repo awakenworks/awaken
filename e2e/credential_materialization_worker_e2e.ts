@@ -1,4 +1,4 @@
-// Production Worker process E2E: the real `awaken worker` owns no authority
+// Production Worker process E2E: the real `awaken-worker` artifact owns no authority
 // database or seal key. A recipient-bound CSI-style projection supplies only the
 // exact credential material pinned by its dispatch; Resource reads use the same
 // authenticated Worker upstream and the result commits through the claim fence.
@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { deploymentEnv, spawnServer, stopServer, waitForPort } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 // @ts-expect-error The shared Cargo artifact resolver is intentionally JavaScript.
-import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
+import { WORKER_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38823);
@@ -47,9 +47,9 @@ function stableFingerprint(value: unknown): string {
 function workerBinary(): string {
   return cargoExecutable({
     cwd: ROOT,
-    packageName: 'awaken-cli',
-    targetName: 'awaken',
-    prebuiltEnvironmentName: AWAKEN_BIN_ENV,
+    packageName: 'awaken-worker',
+    targetName: 'awaken-worker',
+    prebuiltEnvironmentName: WORKER_BIN_ENV,
   });
 }
 
@@ -166,7 +166,10 @@ async function main() {
     const dispatch = structuredClone(claimed.request);
     dispatch.activation.run_id = `${claimed.request.activation.run_id}-materialized`;
     dispatch.activation.thread_id = THREAD;
-    dispatch.session_thread_id = THREAD;
+    // This fixture exercises an ordinary durable Run, not a Managed Session.
+    // Its activation thread remains the commit/history boundary; inventing a
+    // Session pointer would correctly require a corresponding Control record.
+    dispatch.session_thread_id = null;
     const publishedCandidate = {
       ...structuredClone(dispatch.activation.snapshot.resolved_spec.model_binding),
       provider_identity_ref: 'anthropic',
@@ -359,9 +362,17 @@ async function main() {
     fs.writeFileSync(path.join(materialDirectory, 'secret'), PROVIDER_KEY);
 
     const workerConfig = path.join(storage, 'worker.toml');
+    const workerRequestCredential = path.join(storage, 'worker-request-credential.json');
+    fs.writeFileSync(workerRequestCredential, JSON.stringify({
+      worker_id: 'materialization-worker',
+      key_id: 'materialization-key',
+      credential_id: 'materialization-request-credential',
+      secret_base64: Buffer.from('materialization-worker-request-secret').toString('base64'),
+    }));
     fs.writeFileSync(workerConfig, [
       `data_dir = ${JSON.stringify(path.join(storage, 'worker'))}`,
       'worker_id = "materialization-worker"',
+      `worker_request_credential_file = ${JSON.stringify(workerRequestCredential)}`,
       `worker_credential_material_root = ${JSON.stringify(materialRoot)}`,
       'worker_admin_listen = "127.0.0.1:39823"',
       // Credential envelope materialization is this scenario's subject. The
@@ -369,7 +380,7 @@ async function main() {
       // not an unrelated precondition; production remains Namespace by default.
       'sandbox_tier = "local"',
     ].join('\n'));
-    worker = spawn(workerBinary(), ['worker', '--config', workerConfig, '--server', BASE], {
+    worker = spawn(workerBinary(), ['--config', workerConfig, '--server', BASE], {
       cwd: ROOT,
       env: { ...process.env, AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1' },
       stdio: ['pipe', 'pipe', 'pipe'],

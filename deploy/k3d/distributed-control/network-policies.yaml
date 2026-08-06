@@ -1,0 +1,135 @@
+# Scenario contract for the same least-connectivity graph expected in a
+# production namespace. Readiness/liveness probes originate from the node and
+# are not widened into application-to-application authority.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: dns-egress }
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: public-api }
+spec:
+  podSelector: { matchLabels: { app: awaken-api } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports: [{ protocol: TCP, port: 8080 }]
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [control, coordinator] }
+      ports: [{ protocol: TCP, port: 3000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: control }
+spec:
+  podSelector: { matchLabels: { app: control } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [awaken-api, coordinator] }
+      ports: [{ protocol: TCP, port: 3000 }]
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app: coordinator } }
+      ports: [{ protocol: TCP, port: 3000 }]
+    - to:
+        - podSelector: { matchLabels: { database-role: primary } }
+      ports: [{ protocol: TCP, port: 5432 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: coordinator }
+spec:
+  podSelector: { matchLabels: { app: coordinator } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [awaken-api, control, worker] }
+      ports: [{ protocol: TCP, port: 3000 }]
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app: control } }
+      ports: [{ protocol: TCP, port: 3000 }]
+    - to:
+        - podSelector: { matchLabels: { database-role: primary } }
+      ports: [{ protocol: TCP, port: 5432 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: worker }
+spec:
+  podSelector: { matchLabels: { app: worker } }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app: coordinator } }
+      ports: [{ protocol: TCP, port: 3000 }]
+    - to:
+        - podSelector: { matchLabels: { app: provider } }
+      ports: [{ protocol: TCP, port: 3000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: provider }
+spec:
+  podSelector: { matchLabels: { app: provider } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: worker } }
+      ports: [{ protocol: TCP, port: 3000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: migrations }
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [control-migrate, coordinator-migrate] }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector: { matchLabels: { database-role: primary } }
+      ports: [{ protocol: TCP, port: 5432 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: postgres }
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: database-role, operator: In, values: [primary, standby] }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [control, coordinator, control-migrate, coordinator-migrate, postgres-standby] }
+      ports: [{ protocol: TCP, port: 5432 }]
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app: postgres-primary } }
+      ports: [{ protocol: TCP, port: 5432 }]

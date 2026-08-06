@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use awaken_runtime_contract::execution::NATIVE_RUNTIME_CAPABILITY;
-use awaken_runtime_host::InferenceExecutorMaterializer;
+use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
 use awaken_worker_contract::{
     PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, REPOSITORY_CREDENTIALS_CAPABILITY,
     SESSION_RESOURCES_CAPABILITY, VersionRange, WORKER_LOCAL_CREDENTIALS_CAPABILITY,

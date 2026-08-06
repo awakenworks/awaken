@@ -136,7 +136,7 @@ awaken-resource-store = { path = "crates/stores/awaken-resource-store" }
 awaken-env-store = { path = "crates/stores/awaken-env-store" }
 awaken-config-store = { path = "crates/control/awaken-config-store" }
 awaken-config-service = { path = "crates/control/awaken-config-service" }
-awaken-credential-materializer = { path = "crates/server/awaken-credential-materializer" }
+awaken-credential-materializer = { path = "crates/server/awaken-credential-materializer", default-features = false }
 awaken-provisioning-contract = { path = "crates/contract/awaken-provisioning-contract" }
 awaken-local-process = { path = "crates/worker/awaken-local-process" }
 awaken-sandbox-policy-store = { path = "crates/server/awaken-sandbox-policy-store" }
@@ -158,10 +158,10 @@ awaken-sandbox-memoryd = { path = "crates/worker/awaken-sandbox-memoryd" }
 awaken-sandbox-container = { path = "crates/worker/awaken-sandbox-container" }
 awaken-runtime-examples = { path = "crates/devtools/awaken-runtime-examples" }
 awaken-run-ingress-contract = { path = "crates/server/awaken-run-ingress-contract" }
-awaken-run-ingress = { path = "crates/server/awaken-run-ingress" }
+awaken-run-ingress = { path = "crates/server/awaken-run-ingress", default-features = false }
 awaken-run-ingress-testkit = { path = "crates/server/awaken-run-ingress-testkit" }
 awaken-worker-transport-security = { path = "crates/server/awaken-worker-transport-security" }
-awaken-runtime-host = { path = "crates/server/awaken-runtime-host" }
+awaken-runtime-host = { path = "crates/server/awaken-runtime-host", default-features = false }
 awaken-run-ingress-http = { path = "crates/server/awaken-run-ingress-http" }
 awaken-resource-worker-http = { path = "crates/resources/awaken-resource-worker-http" }
 awaken-worker-runtime = { path = "crates/server/awaken-worker-runtime" }

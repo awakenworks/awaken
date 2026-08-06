@@ -13,10 +13,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use awaken_memory_store::MemoryRepository;
 use awaken_provisioning_contract::{
     MemoryMount, MemoryMounter, MountAccess, Realization, SandboxError,
 };
+use awaken_resource_contract::MemoryRepository;
 
 use crate::copy;
 use crate::invalidate::{InvalidatingMemoryRepository, Invalidator, LocalInvalidator};

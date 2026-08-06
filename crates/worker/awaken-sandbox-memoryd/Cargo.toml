@@ -17,7 +17,7 @@ authority = "sandbox-memoryd"
 # fuser-backed mount (needs `/dev/fuse`); the fs logic + helpers build without it.
 
 [dependencies]
-awaken-memory-store = { workspace = true }
+awaken-resource-contract = { workspace = true }
 awaken-provisioning-contract = { workspace = true }
 async-trait.workspace = true
 thiserror.workspace = true

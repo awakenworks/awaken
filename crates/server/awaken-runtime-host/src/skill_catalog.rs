@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::{AgentSkillBinding, AgentSkillKind};
 use awaken_ext_skills::SkillSpec;
+use awaken_resource_contract::{SkillDefinition, SkillStore, SkillStoreError, SkillVersion};
 use awaken_session_contract::ResolvedSkillBinding;
-use awaken_skill_store::{SkillDefinition, SkillStore, SkillStoreError, SkillVersion};
 
 use awaken_session_contract::SkillBundleSource;
 
@@ -27,7 +27,7 @@ fn anthropic_skill(id: &str) -> Option<SkillVersion> {
     let body = format!(
         "---\nname: {id}\ndescription: {description}\n---\nUse the available sandbox tools and libraries to {description}. Validate the generated artifact before returning it."
     );
-    let files = vec![awaken_skill_store::SkillBundleFile {
+    let files = vec![awaken_resource_contract::SkillBundleFile {
         path: "SKILL.md".into(),
         content: body.into_bytes(),
         executable: false,
@@ -39,7 +39,7 @@ fn anthropic_skill(id: &str) -> Option<SkillVersion> {
         name: id.into(),
         description: description.into(),
         directory: format!("/skills/{id}"),
-        bundle_sha256: awaken_skill_store::bundle_sha256(&files),
+        bundle_sha256: awaken_resource_contract::skill_bundle_sha256(&files),
         files,
         created_unix_nanos: 0,
     })
@@ -163,7 +163,7 @@ impl SkillCatalog {
         content: &str,
     ) -> Option<Result<(), SkillStoreError>> {
         let store = self.store.as_ref()?;
-        let id = awaken_skill_store::sanitize_stem(raw_id);
+        let id = awaken_resource_contract::skill_stem(raw_id);
         let existing = match store.definition(workspace, &id).await {
             Ok(value) => value,
             Err(error) => return Some(Err(error)),
@@ -188,7 +188,7 @@ impl SkillCatalog {
             }
         }
         let parsed = awaken_ext_skills::parse_skill_md(&id, content);
-        let files = vec![awaken_skill_store::SkillBundleFile {
+        let files = vec![awaken_resource_contract::SkillBundleFile {
             path: "SKILL.md".into(),
             content: content.as_bytes().to_vec(),
             executable: false,
@@ -204,7 +204,7 @@ impl SkillCatalog {
             name: parsed.name,
             description: parsed.description,
             directory: format!("/skills/{id}"),
-            bundle_sha256: awaken_skill_store::bundle_sha256(&files),
+            bundle_sha256: awaken_resource_contract::skill_bundle_sha256(&files),
             files,
             created_unix_nanos,
         };

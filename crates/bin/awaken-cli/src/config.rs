@@ -24,6 +24,7 @@ mod seal_key;
 mod service_boundary;
 mod worker_bootstrap;
 
+pub use awaken_worker::WorkerBootstrap;
 pub use deployment::{CloudModelMode, ConfigOverrides, OperatingMode, ResourceStoreBackend};
 use file_schema::FileConfig;
 use file_support::{
@@ -32,7 +33,6 @@ use file_support::{
 pub use role::Role;
 pub use seal_key::SealKeySource;
 pub use service_boundary::{ControlServiceConfig, ExecutableAgentRegistrationConfig};
-pub use worker_bootstrap::WorkerBootstrap;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_WAKE_CHANNEL: &str = "awaken_dispatch_wake";
@@ -268,54 +268,23 @@ impl ResolvedDeployment {
             file.worker_request_credential_file.is_some(),
             file.worker_trust_credentials_file.is_some(),
         )?;
-        let worker = WorkerBootstrap {
-            worker_id: file
-                .worker_id
-                .clone()
-                .unwrap_or_else(|| "awaken-worker".to_owned()),
-            request_credential_file: file.worker_request_credential_file.clone(),
-            credential_material_root: file
-                .worker_credential_material_root
-                .clone()
-                .unwrap_or_else(|| data_dir.join("worker-credentials")),
-            credential_trust_domain: file.worker_credential_trust_domain.clone().unwrap_or_else(
-                || awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN.to_owned(),
-            ),
-            admin_listen: file
-                .worker_admin_listen
-                .clone()
-                .or_else(|| Some("0.0.0.0:9090".to_owned())),
-            drain_grace_secs: file.worker_drain_grace_secs.unwrap_or(20),
-            build_digest: file.worker_build_digest.clone(),
-            zone: file.worker_zone.clone(),
-            capabilities: file.worker_capabilities.clone().unwrap_or_default(),
-            max_concurrent: file.worker_max_concurrent,
-            credential_probe_interval_secs: file
-                .worker_credential_probe_interval_secs
-                .unwrap_or(10),
-            credential_observation_ttl_secs: file
-                .worker_credential_observation_ttl_secs
-                .unwrap_or(30),
-        };
-        if worker.worker_id.trim().is_empty() {
-            return Err("worker_id must not be empty".to_owned());
-        }
-        if worker.credential_material_root.as_os_str().is_empty()
-            || worker.credential_trust_domain.trim().is_empty()
-        {
-            return Err(
-                "worker_credential_material_root and worker_credential_trust_domain must not be empty"
-                    .to_owned(),
-            );
-        }
-        if worker.credential_probe_interval_secs == 0
-            || worker.credential_observation_ttl_secs <= worker.credential_probe_interval_secs
-        {
-            return Err(
-                "worker credential observation TTL must be greater than the non-zero probe interval"
-                    .to_owned(),
-            );
-        }
+        let worker = WorkerBootstrap::resolve(
+            awaken_worker::WorkerBootstrapInput {
+                worker_id: file.worker_id.clone(),
+                request_credential_file: file.worker_request_credential_file.clone(),
+                credential_material_root: file.worker_credential_material_root.clone(),
+                credential_trust_domain: file.worker_credential_trust_domain.clone(),
+                admin_listen: file.worker_admin_listen.clone(),
+                drain_grace_secs: file.worker_drain_grace_secs,
+                build_digest: file.worker_build_digest.clone(),
+                zone: file.worker_zone.clone(),
+                capabilities: file.worker_capabilities.clone(),
+                max_concurrent: file.worker_max_concurrent,
+                credential_probe_interval_secs: file.worker_credential_probe_interval_secs,
+                credential_observation_ttl_secs: file.worker_credential_observation_ttl_secs,
+            },
+            &data_dir,
+        )?;
         if role != Role::AllInOne && file.run_local_pool.is_some() {
             return Err(
                 "run_local_pool is an all-in-one-only setting; Control and Coordinator never own a local claim pool, and Worker always runs its registered claim pool".to_owned(),
@@ -717,22 +686,6 @@ pub(crate) fn local_test_deployment(data_dir: PathBuf) -> ResolvedDeployment {
         FileConfig::default(),
     )
     .expect("test local deployment")
-}
-
-#[cfg(test)]
-pub(crate) fn worker_test_deployment(data_dir: PathBuf) -> ResolvedDeployment {
-    ResolvedDeployment::resolve_file(
-        ConfigOverrides {
-            role: Some(Role::Worker),
-            worker_server: Some("http://coordinator".to_owned()),
-            data_dir: Some(data_dir),
-            ..Default::default()
-        },
-        Some(PathBuf::from("/home/test")),
-        PathBuf::from("/home/test/.awaken/config.toml"),
-        FileConfig::default(),
-    )
-    .expect("test Worker deployment")
 }
 
 #[cfg(test)]

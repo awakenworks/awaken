@@ -30,10 +30,13 @@ use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use std::sync::Arc;
 
+#[cfg(feature = "authority")]
 use awaken_store_fs::FsCommitCoordinator;
 #[cfg(any(test, feature = "test-support"))]
 use awaken_store_inmem::MemoryCommitCoordinator;
+#[cfg(feature = "authority")]
 use awaken_store_postgres::PostgresCommitCoordinator;
+#[cfg(feature = "authority")]
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 /// One thread's commit boundary: either a `Local` read+write store (an
@@ -46,6 +49,7 @@ pub(crate) enum HostCommit {
     /// One of the interchangeable local backends (memory / sqlite / fs / postgres):
     /// polymorphic implementations of the same read+write store, chosen once at the
     /// composition root behind a trait object — no per-backend dispatch here.
+    #[cfg_attr(not(feature = "authority"), allow(dead_code))]
     Local(Arc<dyn HostStore>),
     /// The database-independent Worker's read boundary. Authoritative writes go
     /// through the attempt's claim-fenced operation coordinator; reads use the
@@ -122,6 +126,7 @@ pub(crate) trait HostStore:
 
 /// Recover the awaiting position from a durable backend's fact-derived read model
 /// (`CheckpointReader`): the latest run on the thread plus its committed ticket.
+#[cfg_attr(not(feature = "authority"), allow(dead_code))]
 fn awaiting_from_reader<R: CheckpointReader>(
     reader: &R,
     thread: &ThreadId,
@@ -138,6 +143,7 @@ impl HostStore for MemoryCommitCoordinator {
     }
 }
 
+#[cfg(feature = "authority")]
 #[async_trait::async_trait]
 impl HostStore for SqliteCommitCoordinator {
     fn projected_open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
@@ -154,12 +160,14 @@ impl HostStore for SqliteCommitCoordinator {
     }
 }
 
+#[cfg(feature = "authority")]
 impl HostStore for FsCommitCoordinator {
     fn projected_open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         awaiting_from_reader(self, thread)
     }
 }
 
+#[cfg(feature = "authority")]
 #[async_trait::async_trait]
 impl HostStore for PostgresCommitCoordinator {
     fn projected_open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
@@ -376,6 +384,7 @@ impl RunRecoverySource for HostCommit {
 /// Select the shared Postgres commit backend (ADR-0022 D6), or fail closed when it
 /// was not initialised at startup. Extracted from `build_commit` so both the
 /// initialised and the misconfigured paths are unit-testable without a `SharedHost`.
+#[cfg(feature = "authority")]
 pub(crate) fn postgres_commit_or_err() -> Result<HostCommit, crate::host::HostError> {
     commit_or_err(crate::commit_backend::shared_postgres_commit())
 }
@@ -383,6 +392,7 @@ pub(crate) fn postgres_commit_or_err() -> Result<HostCommit, crate::host::HostEr
 /// Wrap the (maybe-initialised) shared coordinator into a `HostCommit`, or fail
 /// closed. Takes the coordinator as a parameter so both the initialised (`Some`) and
 /// the misconfigured (`None`) branches are testable without the process-global.
+#[cfg(feature = "authority")]
 fn commit_or_err(
     coord: Option<Arc<PostgresCommitCoordinator>>,
 ) -> Result<HostCommit, crate::host::HostError> {
@@ -398,6 +408,7 @@ fn commit_or_err(
 /// Whether the shared Postgres commit coordinator holds a committed run for `thread`.
 /// Extracted so the postgres branch of `durable_thread_exists` is unit-testable
 /// without mutating the process `DeploymentConfig::store` env.
+#[cfg(feature = "authority")]
 pub(crate) fn durable_thread_exists_postgres(thread: &ThreadId) -> bool {
     crate::commit_backend::shared_postgres_commit()
         .and_then(|c| CheckpointReader::latest_run(c.as_ref(), thread))
@@ -507,8 +518,13 @@ pub(crate) fn durable_thread_exists_with_store(
     use crate::deployment_config::StoreKind;
     // Shared Postgres backend: the coordinator is keyed by thread, so a committed
     // run for the thread means it durably exists (no per-thread file to stat).
+    #[cfg(feature = "authority")]
     if store == StoreKind::Postgres {
         return durable_thread_exists_postgres(&ThreadId(thread.to_string()));
+    }
+    #[cfg(not(feature = "authority"))]
+    if store == StoreKind::Postgres {
+        return false;
     }
     let Some(dir) = store_dir else {
         return false;

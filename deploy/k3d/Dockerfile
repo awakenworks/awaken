@@ -19,5 +19,6 @@ COPY awaken-server /usr/local/bin/awaken-server
 # must provide a same-named host-built file in the build context.
 ARG AUXILIARY_EXECUTABLE=awaken-sandbox
 COPY ${AUXILIARY_EXECUTABLE} /usr/local/bin/${AUXILIARY_EXECUTABLE}
+COPY awaken-worker /usr/local/bin/awaken-worker
 
 ENTRYPOINT ["/usr/local/bin/awaken-server"]

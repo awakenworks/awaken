@@ -126,7 +126,7 @@ path, the complete request-to-response path, Worker process isolation,
 Coordinator-total-outage recovery, Pod and in-flight Worker failure, K3D node
 loss, PostgreSQL standby promotion, and concurrent pressure. Model inference is
 the only deterministic edge fixture; all application roles are shipped
-composition roots and both Workers are the production `awaken worker` CLI.
+composition roots and both Workers run the production `awaken-worker` artifact.
 Replicated stateless roles and Workers use a 15-second `not-ready`/`unreachable`
 `NoExecute` tolerance in this overlay. A dead node is therefore removed from
 Service routing and its workloads become replaceable within the test's bounded

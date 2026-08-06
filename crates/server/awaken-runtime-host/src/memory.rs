@@ -111,14 +111,14 @@ impl RecallSelector for AgentSelector {
 /// only data-plane identity and maximum access; authorization policy remains at
 /// the edge that constructs it.
 pub(crate) struct PlatformMemoryHandle {
-    fs: Arc<dyn awaken_memory_store::MemoryRepository>,
+    fs: Arc<dyn awaken_resource_contract::MemoryRepository>,
     store_id: String,
     writable: bool,
 }
 
 impl PlatformMemoryHandle {
     pub(crate) fn new(
-        fs: Arc<dyn awaken_memory_store::MemoryRepository>,
+        fs: Arc<dyn awaken_resource_contract::MemoryRepository>,
         store_id: String,
         writable: bool,
     ) -> Self {
@@ -142,7 +142,7 @@ impl PlatformMemoryHandle {
                 .map_err(|error| error.to_string())?;
             mutations.push(MemoryExtractionMutation {
                 path,
-                target_sha256: awaken_memory_store::sha256_hex(&content),
+                target_sha256: awaken_resource_contract::memory_sha256_hex(&content),
                 content,
                 observed_sha256: current.map(|memory| memory.content_sha256),
             });
@@ -315,7 +315,7 @@ impl MemoryStoreHandle for PlatformMemoryHandle {
 pub struct MemoryRuntime {
     llm: Arc<dyn LlmExecutor>,
     inference_materializer:
-        RwLock<Option<Arc<dyn crate::inference_routing::InferenceExecutorMaterializer>>>,
+        RwLock<Option<Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>>>,
     provider: Arc<LocalProvider>,
     background: Arc<BackgroundRuns>,
     claim_owner: String,
@@ -533,7 +533,7 @@ impl MemoryRuntime {
 
     pub(crate) fn set_inference_materializer(
         &self,
-        materializer: Arc<dyn crate::inference_routing::InferenceExecutorMaterializer>,
+        materializer: Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>,
     ) {
         *self
             .inference_materializer
@@ -829,13 +829,13 @@ impl MemoryStoreHandle for BoundMemory {
 impl crate::host::SharedHost {
     /// The Memory content data-plane port used by an outer composition root to
     /// construct a worker-side mounter. It carries no principal or policy state.
-    pub fn memory_repository(&self) -> Arc<dyn awaken_memory_store::MemoryRepository> {
+    pub fn memory_repository(&self) -> Arc<dyn awaken_resource_contract::MemoryRepository> {
         self.memory_stores.fs_handle()
     }
 
     /// The Workspace-scoped Skill aggregate port shared by HTTP authoring and
     /// runtime activation. `None` means this host has no durable Skill plane.
-    pub fn skill_store(&self) -> Option<Arc<dyn awaken_skill_store::SkillStore>> {
+    pub fn skill_store(&self) -> Option<Arc<dyn awaken_resource_contract::SkillStore>> {
         self.skills.store_handle()
     }
 
