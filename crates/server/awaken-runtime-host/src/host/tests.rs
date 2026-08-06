@@ -3973,6 +3973,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // | H16 | exact binding | same lease/new key | renew | - | reject/no mutation |
     // | H17 | non-bearer usage | exact holder/revision | stage | - | reject before materialization |
     // | H18 | authenticated ACP/Forbidden exposure | exact | stage | - | reject before relay/no lookup |
+    // | H19 | expired predecessor/current same-epoch renewal | exact | stage+publish | admitted effects complete under current local authority |
     // | H20 | authenticated ACP/complete provider evidence | exact | stage+publish+call | generation route injects; no inline secret |
     // | H21 | non-OAuth bearer/exact factory | exact | stage | - | one neutral challenge refresher; no Vault in Runtime |
     let exact_request = request("mcp-exact", "workspace-a", 1);
@@ -4128,6 +4129,25 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H9"
     );
     assert!(host.mcp_projection(&generation("mcp-expired")).is_none());
+    let mut admitted_before_renewal = request("mcp-renewed-authority", "workspace-a", 1);
+    admitted_before_renewal.generation.lease_expires_at_unix_ms = 0;
+    host.install_session_realization_lease(
+        "mcp-renewed-authority",
+        awaken_session_contract::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "runtime-1".into(),
+            epoch: 1,
+            expires_at_unix_ms: u64::MAX,
+        },
+    );
+    let admitted_receipt = managed
+        .stage_mcp_attachment(admitted_before_renewal)
+        .await
+        .expect("H19 stage admitted before renewal");
+    managed
+        .publish_mcp_generation(admitted_receipt.generation)
+        .await
+        .expect("H19 publish admitted before renewal");
     let first = request("mcp-conflict", "workspace-a", 1);
     managed
         .stage_mcp_attachment(first)
@@ -4644,6 +4664,93 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         reqwest::StatusCode::NOT_FOUND,
         "P5"
     );
+}
+
+/// MCP-effect authority cause/effect graph: C1 the asserted generation lease is
+/// live; C2 the local Control projection has the same Runtime incarnation and
+/// epoch; C3 that projection monotonically extends the asserted expiry; C4 the
+/// projected lease is live. Effects: E1 permit the already-admitted effect; E2
+/// fence it before any MCP I/O.
+///
+/// | Rule | C1 | C2 | C3 | C4 | Effect |
+/// |---|---|---|---|---|---|
+/// | A1 | yes | any | any | any | E1 |
+/// | A2 | no | yes | yes | yes | E1 |
+/// | A3 | no | no | any | yes | E2 |
+/// | A4 | no | yes | no | yes | E2 |
+/// | A5 | no | yes | yes | no | E2 |
+/// | A6 | no | absent | absent | absent | E2 |
+#[test]
+fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_renewal() {
+    let generation = awaken_session_contract::McpGenerationRef {
+        session_id: "mcp-effect-authority".into(),
+        attachment_id: awaken_session_contract::McpAttachmentId("browser".into()),
+        generation: awaken_session_contract::McpGeneration(1),
+        runtime_incarnation: "runtime-a/boot-1".into(),
+        lease_epoch: 3,
+        lease_expires_at_unix_ms: 101,
+    };
+    let live = SharedHost::new(Arc::new(OkModel), "stub");
+    assert!(
+        live.mcp_generation_is_authorized_at(&generation, 100),
+        "A1/E1"
+    );
+
+    let mut expired = generation;
+    expired.lease_expires_at_unix_ms = 90;
+    for (rule, lease, expected) in [
+        (
+            "A2",
+            Some(awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "runtime-a/boot-1".into(),
+                epoch: 3,
+                expires_at_unix_ms: 110,
+            }),
+            true,
+        ),
+        (
+            "A3",
+            Some(awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "runtime-b/boot-1".into(),
+                epoch: 3,
+                expires_at_unix_ms: 110,
+            }),
+            false,
+        ),
+        (
+            "A4",
+            Some(awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "runtime-a/boot-1".into(),
+                epoch: 3,
+                expires_at_unix_ms: 80,
+            }),
+            false,
+        ),
+        (
+            "A5",
+            Some(awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "runtime-a/boot-1".into(),
+                epoch: 3,
+                expires_at_unix_ms: 100,
+            }),
+            false,
+        ),
+        ("A6", None, false),
+    ] {
+        let host = SharedHost::new(Arc::new(OkModel), "stub");
+        if let Some(lease) = lease {
+            host.install_session_realization_lease(&expired.session_id, lease);
+        }
+        assert_eq!(
+            host.mcp_generation_is_authorized_at(&expired, 100),
+            expected,
+            "{rule}"
+        );
+    }
 }
 
 #[test]

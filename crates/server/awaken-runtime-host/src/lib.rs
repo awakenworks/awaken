@@ -1503,10 +1503,10 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
             .unwrap_or_default();
-        if !awaken_session_contract::realization_lease_is_live_at(
-            request.generation.lease_expires_at_unix_ms,
-            now_unix_ms,
-        ) {
+        if !self
+            .host
+            .mcp_generation_is_authorized_at(&request.generation, now_unix_ms)
+        {
             return Err(RunError::classified(
                 "mcp_stale_ownership",
                 "MCP realization lease has expired",
@@ -1902,10 +1902,10 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
             .unwrap_or_default();
-        if !awaken_session_contract::realization_lease_is_live_at(
-            generation.lease_expires_at_unix_ms,
-            now_unix_ms,
-        ) {
+        if !self
+            .host
+            .mcp_generation_is_authorized_at(&generation, now_unix_ms)
+        {
             return Err(RunError::classified(
                 "mcp_stale_ownership",
                 "MCP publication lease has expired",

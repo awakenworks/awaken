@@ -350,6 +350,36 @@ impl crate::SharedHost {
             .update(session_id, |slot| slot.realization_lease = Some(lease));
     }
 
+    /// Authorize an MCP effect admitted before a same-epoch lease extension.
+    /// The exact request remains immutable; only the Control-installed local
+    /// lease may prove that its owner incarnation and epoch still have live,
+    /// monotonically extended authority.
+    pub(crate) fn mcp_generation_is_authorized_at(
+        &self,
+        generation: &awaken_session_contract::McpGenerationRef,
+        now_unix_ms: u64,
+    ) -> bool {
+        if awaken_session_contract::realization_lease_is_live_at(
+            generation.lease_expires_at_unix_ms,
+            now_unix_ms,
+        ) {
+            return true;
+        }
+        self.session_slots
+            .read(&generation.session_id, |slot| {
+                slot.realization_lease.as_ref().is_some_and(|current| {
+                    current.runtime_incarnation == generation.runtime_incarnation
+                        && current.epoch == generation.lease_epoch
+                        && current.expires_at_unix_ms >= generation.lease_expires_at_unix_ms
+                        && awaken_session_contract::realization_lease_is_live_at(
+                            current.expires_at_unix_ms,
+                            now_unix_ms,
+                        )
+                })
+            })
+            .unwrap_or(false)
+    }
+
     /// Renew every active MCP projection approaching expiry through the same
     /// Control phase protocol used for initial creation and hot replacement.
     /// A failed renewal revokes that Session's process-local projection before
