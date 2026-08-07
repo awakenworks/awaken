@@ -7,12 +7,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use awaken_agent_contract::RedactedString;
-use awaken_credential_contract::{
-    CredentialAccess, CredentialExecutionPolicy, CredentialSourceId, CredentialUsage,
-};
 use awaken_environment_contract::EnvItem;
-use awaken_environment_realization_contract::EnvironmentImageBuildError;
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
 use awaken_session_contract::{
     ManagedSessionRepository, McpAttachmentRealizer, McpTarget, PersistedSession, RunError,
@@ -22,6 +17,12 @@ use awaken_session_contract::{
 
 mod mutation;
 pub use mutation::SessionMutationError;
+mod ports;
+pub use ports::{
+    RepositoryCredentialIngress, ResolvedSessionEnvironment, SessionCredentialSource,
+    SessionEnvironmentSource,
+};
+include!("application.rs");
 mod activity;
 mod live_inbox;
 pub use activity::SessionActivityError;
@@ -36,6 +37,7 @@ pub use mcp::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
 pub use realization::{
     SessionRealizationError, SessionReconciliation, SessionReconciliationFailure,
 };
+pub use resource_reconciliation::SessionResourcePurgeGuard;
 mod update;
 pub use update::{
     SessionUpdateChanges, SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
@@ -43,580 +45,159 @@ pub use update::{
 mod terminal;
 pub use terminal::SessionTerminalTransition;
 
-/// Secret-free credential selection used while compiling a Session.
-#[async_trait::async_trait]
-pub trait SessionCredentialSource: Send + Sync {
-    async fn has_vault(&self, id: &str) -> Result<bool, String>;
-
-    async fn mcp_credential_source_for_url(
-        &self,
-        vault_ids: &[String],
-        url: &str,
-    ) -> Result<Option<CredentialSourceId>, String>;
-
-    async fn mcp_access_for_source(
-        &self,
-        source_id: &CredentialSourceId,
-    ) -> Result<CredentialAccess, String>;
-
-    async fn credential_access_for_source(
-        &self,
-        source_id: &CredentialSourceId,
-        workspace_id: &str,
-        usage: CredentialUsage,
-        policy: CredentialExecutionPolicy,
-    ) -> Result<CredentialAccess, String>;
-}
-
-/// Write-only ingress for repository material. Implementations seal material
-/// before returning the opaque source id used by Session compilation.
-#[async_trait::async_trait]
-pub trait RepositoryCredentialIngress: Send + Sync {
-    async fn enter_repository_token(
-        &self,
-        source_id: CredentialSourceId,
-        workspace_id: &str,
-        token: RedactedString,
-    ) -> Result<CredentialSourceId, String>;
-
-    async fn rotate_repository_token(
-        &self,
-        source_id: &CredentialSourceId,
-        workspace_id: &str,
-        token: RedactedString,
-    ) -> Result<(), String>;
-}
-
-/// Exact executable Environment projection resolved for one Session creation.
-pub struct ResolvedSessionEnvironment {
-    pub snapshot: awaken_session_contract::EnvironmentSnapshot,
-}
-
-/// Coordinator projection consumed by Session compilation.  Environment HTTP
-/// routes may use the same concrete adapter, but their wire types do not cross
-/// this port.
-#[async_trait::async_trait]
-pub trait SessionEnvironmentSource: Send + Sync {
-    async fn get(
-        &self,
-        environment_id: &str,
-    ) -> Result<Option<EnvItem>, ExecutableEnvironmentRegistrationError>;
-
-    async fn resolve_current_for_session(
-        &self,
-        environment_id: &str,
-        runtime: Option<&str>,
-        mcp_targets: &[McpTarget],
-    ) -> Result<Option<ResolvedSessionEnvironment>, EnvironmentImageBuildError>;
-
-    async fn resolve_exact_for_session(
-        &self,
-        environment_id: &str,
-        revision: u64,
-        runtime: Option<&str>,
-        mcp_targets: &[McpTarget],
-    ) -> Result<Option<ResolvedSessionEnvironment>, EnvironmentImageBuildError>;
-
-    async fn enqueue_session_work(
-        &self,
-        environment_id: &str,
-        session_id: &str,
-    ) -> Result<String, awaken_session_contract::work_queue::WorkQueueError>;
-}
-
-/// One failed durable Session-to-WorkQueue projection. The durable Session
-/// remains authoritative and a later reconciliation may retry this failure.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkDispatchFailure {
-    pub session_id: String,
-    pub environment_id: String,
-    pub message: String,
-}
-
-/// Result of one complete reconciliation scan.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WorkDispatchReconciliation {
-    pub settled: usize,
-    pub failures: Vec<WorkDispatchFailure>,
-}
-
-/// Process-level execution topology interpreted by the Session application.
-/// The selected value is frozen into every newly admitted Session; protocol
-/// adapters never inspect or override it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SessionExecutionPlacement {
-    #[default]
-    LocalWorker,
-    RegisteredWorker,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SessionApplicationConfiguration {
-    pub execution_placement: SessionExecutionPlacement,
-}
-
-/// Canonical application object shared by wire adapters.
-pub struct SessionApplication {
-    configuration: SessionApplicationConfiguration,
-    runtime: Arc<dyn SessionRuntime>,
-    mcp_realizer: Arc<dyn McpAttachmentRealizer>,
-    credential_source: Option<Arc<dyn SessionCredentialSource>>,
-    repository_credential_ingress: Option<Arc<dyn RepositoryCredentialIngress>>,
-    environments: Arc<dyn SessionEnvironmentSource>,
-    config_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
-    resource_catalog: Option<Arc<dyn awaken_resource_contract::ResourceCatalog>>,
-    resource_purge_scheduler: Option<Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>>,
-    sessions_repo: Arc<dyn ManagedSessionRepository>,
-    lifecycle_sink: Option<Arc<dyn SessionLifecycleSink>>,
-    runtime_incarnation: String,
-    lifecycle_supervisor_started: AtomicBool,
-}
-
-static APPLICATION_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
-
-impl SessionApplication {
-    #[must_use]
-    pub fn new(
-        runtime: Arc<dyn SessionRuntime>,
-        mcp_realizer: Arc<dyn McpAttachmentRealizer>,
-        sessions_repo: Arc<dyn ManagedSessionRepository>,
-        environments: Arc<dyn SessionEnvironmentSource>,
-    ) -> Self {
-        Self::new_with_configuration(
-            runtime,
-            mcp_realizer,
-            sessions_repo,
-            environments,
-            SessionApplicationConfiguration::default(),
-        )
-    }
-
-    #[must_use]
-    pub fn new_with_configuration(
-        runtime: Arc<dyn SessionRuntime>,
-        mcp_realizer: Arc<dyn McpAttachmentRealizer>,
-        sessions_repo: Arc<dyn ManagedSessionRepository>,
-        environments: Arc<dyn SessionEnvironmentSource>,
-        configuration: SessionApplicationConfiguration,
-    ) -> Self {
-        runtime.install_environment_binding_sink(Arc::new(RepositoryEnvironmentBindingSink::new(
-            sessions_repo.clone(),
-        )));
-        let started_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        Self {
-            configuration,
-            runtime,
-            mcp_realizer,
-            credential_source: None,
-            repository_credential_ingress: None,
-            environments,
-            config_source: None,
-            resource_catalog: None,
-            resource_purge_scheduler: None,
-            sessions_repo,
-            lifecycle_sink: None,
-            runtime_incarnation: format!(
-                "session:{}:{started_at}:{}",
-                std::process::id(),
-                APPLICATION_INCARNATION_SEQ.fetch_add(1, Ordering::Relaxed)
-            ),
-            lifecycle_supervisor_started: AtomicBool::new(false),
-        }
-    }
-
-    /// Exact immutable fact written into a newly compiled Session baseline.
-    #[must_use]
-    pub fn runtime_placement(&self) -> SessionRuntimePlacement {
-        match self.configuration.execution_placement {
-            SessionExecutionPlacement::LocalWorker => SessionRuntimePlacement::Local,
-            SessionExecutionPlacement::RegisteredWorker => SessionRuntimePlacement::Worker,
-        }
-    }
-
-    /// Resolve the sole physical-realization owner. `LegacyUnspecified` is an
-    /// explicit upgrade state and is the only case allowed to consult current
-    /// process topology; explicit frozen facts remain immutable across restarts.
-    #[must_use]
-    pub fn requires_external_realization(&self, session: &PersistedSession) -> bool {
-        session.frozen_baseline().is_some_and(|baseline| {
-            baseline.application.is_some()
-                || match baseline.runtime_placement {
-                    SessionRuntimePlacement::LegacyUnspecified => {
-                        self.configuration.execution_placement
-                            == SessionExecutionPlacement::RegisteredWorker
-                    }
-                    SessionRuntimePlacement::Local => false,
-                    SessionRuntimePlacement::Worker => true,
-                }
-        })
-    }
-
-    /// Claim the one lifecycle supervisor for this application instance.
-    pub fn claim_lifecycle_supervisor(&self) -> bool {
-        claim_once(&self.lifecycle_supervisor_started)
-    }
-
-    #[must_use]
-    pub fn runtime(&self) -> &dyn SessionRuntime {
-        self.runtime.as_ref()
-    }
-
-    #[must_use]
-    pub fn mcp_realizer(&self) -> &dyn McpAttachmentRealizer {
-        self.mcp_realizer.as_ref()
-    }
-
-    #[must_use]
-    pub fn credential_source(&self) -> Option<&dyn SessionCredentialSource> {
-        self.credential_source.as_deref()
-    }
-
-    #[must_use]
-    pub fn repository_credential_ingress(&self) -> Option<&dyn RepositoryCredentialIngress> {
-        self.repository_credential_ingress.as_deref()
-    }
-
-    #[must_use]
-    pub fn config_source(
-        &self,
-    ) -> Option<&dyn awaken_executable_agent_contract::ExecutableAgentProfileSource> {
-        self.config_source.as_deref()
-    }
-
-    #[must_use]
-    pub fn resource_catalog(&self) -> Option<&dyn awaken_resource_contract::ResourceCatalog> {
-        self.resource_catalog.as_deref()
-    }
-
-    #[must_use]
-    pub fn resource_purge_scheduler(
-        &self,
-    ) -> Option<&dyn awaken_resource_contract::ResourcePurgeScheduler> {
-        self.resource_purge_scheduler.as_deref()
-    }
-
-    #[must_use]
-    pub fn session_repository(&self) -> &dyn ManagedSessionRepository {
-        self.sessions_repo.as_ref()
-    }
-
-    #[must_use]
-    pub fn lifecycle_sink(&self) -> Option<&dyn SessionLifecycleSink> {
-        self.lifecycle_sink.as_deref()
-    }
-
-    #[must_use]
-    pub fn runtime_incarnation(&self) -> &str {
-        &self.runtime_incarnation
-    }
-
-    /// Read the current executable Environment projection for Deployment admission.
-    pub async fn deployment_environment(
-        &self,
-        environment_id: &str,
-    ) -> Result<Option<EnvItem>, ExecutableEnvironmentRegistrationError> {
-        self.environments.get(environment_id).await
-    }
-
-    /// Whether the Control projection marks an Agent unavailable for launch.
-    #[must_use]
-    pub fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
-        self.config_source
-            .as_ref()
-            .is_some_and(|source| source.agent_unavailable_in(workspace_id, agent_id))
-    }
-
-    /// The unavailable delegate that blocks one Deployment launch, if any.
-    #[must_use]
-    pub fn deployment_unavailable_delegate(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-    ) -> Option<String> {
-        self.config_source
-            .as_ref()
-            .and_then(|source| source.unavailable_delegate_in(workspace_id, agent_id))
-    }
-
-    /// Resolve and validate the exact Environment snapshot frozen into a new Session.
-    pub async fn resolve_session_environment(
-        &self,
-        requested_environment_id: Option<&str>,
-        published_environment: Option<
-            &awaken_executable_agent_contract::ExecutableAgentEnvironment,
-        >,
-        published_backend_ref: Option<&str>,
-        mcp_targets: &[McpTarget],
-    ) -> Result<ResolvedSessionEnvironment, RunError> {
-        let environment_id = requested_environment_id
-            .map(str::to_owned)
-            .or_else(|| published_environment.map(|binding| binding.environment_id.clone()))
-            .unwrap_or_else(|| "env_local".to_string());
-        let resolved = match (requested_environment_id, published_environment) {
-            (None, Some(binding)) => {
-                self.environments
-                    .resolve_exact_for_session(
-                        &binding.environment_id,
-                        binding.revision,
-                        published_backend_ref,
-                        mcp_targets,
-                    )
-                    .await
-            }
-            _ => {
-                self.environments
-                    .resolve_current_for_session(
-                        &environment_id,
-                        published_backend_ref,
-                        mcp_targets,
-                    )
-                    .await
-            }
-        }
-        .map_err(|error| RunError::unavailable(error.to_string()))?
-        .ok_or_else(|| {
-            RunError::bad_request(format!("environment `{environment_id}` is unavailable"))
-        })?;
-        validate_sandbox_provisioning_runtime(
-            resolved.snapshot.sandbox_provisioning,
-            published_backend_ref,
-        )?;
-        Ok(resolved)
-    }
-
-    /// Project one durable Session into its Environment WorkQueue when its
-    /// frozen baseline requires external execution. This is the sole fast-path
-    /// and recovery implementation; callers never enqueue independently.
-    pub async fn dispatch_session_work(
-        &self,
-        session: &PersistedSession,
-    ) -> Result<bool, awaken_session_contract::work_queue::WorkQueueError> {
-        dispatch_session_work(self.environments.as_ref(), session).await
-    }
-
-    /// Restore every missing Session-to-WorkQueue projection from durable truth.
-    pub async fn reconcile_work_dispatches(&self) -> WorkDispatchReconciliation {
-        reconcile_work_dispatches(self.sessions_repo.as_ref(), self.environments.as_ref()).await
-    }
-
-    pub fn replace_repository(&mut self, repo: Arc<dyn ManagedSessionRepository>) {
-        self.runtime.install_environment_binding_sink(Arc::new(
-            RepositoryEnvironmentBindingSink::new(repo.clone()),
-        ));
-        self.sessions_repo = repo;
-    }
-
-    pub fn replace_environment_source(&mut self, source: Arc<dyn SessionEnvironmentSource>) {
-        self.environments = source;
-    }
-
-    pub fn set_lifecycle_sink(&mut self, sink: Arc<dyn SessionLifecycleSink>) {
-        self.lifecycle_sink = Some(sink);
-    }
-
-    pub fn set_resource_purge_scheduler(
-        &mut self,
-        scheduler: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
-    ) {
-        self.resource_purge_scheduler = Some(scheduler);
-    }
-
-    pub fn set_credential_source(&mut self, source: Arc<dyn SessionCredentialSource>) {
-        self.credential_source = Some(source);
-    }
-
-    pub fn set_repository_credential_ingress(
-        &mut self,
-        ingress: Arc<dyn RepositoryCredentialIngress>,
-    ) {
-        self.repository_credential_ingress = Some(ingress);
-    }
-
-    pub fn set_config_source(
-        &mut self,
-        source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
-    ) {
-        self.config_source = Some(source);
-    }
-
-    pub fn set_resource_catalog(
-        &mut self,
-        catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
-    ) {
-        self.resource_catalog = Some(catalog);
-    }
-}
-
-fn validate_sandbox_provisioning_runtime(
-    provisioning: SandboxProvisioning,
-    runtime: Option<&str>,
-) -> Result<(), RunError> {
-    let native = runtime.is_none_or(|backend_ref| {
-        matches!(
-            awaken_runtime_contract::resolved::Backend::from_ref(backend_ref),
-            awaken_runtime_contract::resolved::Backend::Native
-        )
-    });
-    if provisioning == SandboxProvisioning::OnToolUse && !native {
-        return Err(RunError::bad_request(format!(
-            "sandbox_provisioning_unsupported: `on_tool_use` requires a native backend, got `{}`",
-            runtime.unwrap_or_default()
-        )));
-    }
-    Ok(())
-}
-
-async fn dispatch_session_work(
-    environments: &dyn SessionEnvironmentSource,
-    session: &PersistedSession,
-) -> Result<bool, awaken_session_contract::work_queue::WorkQueueError> {
-    if !session.needs_work_dispatch() {
-        return Ok(false);
-    }
-    let baseline = session
-        .frozen_baseline()
-        .expect("needs_work_dispatch requires a frozen baseline");
-    environments
-        .enqueue_session_work(&baseline.environment.environment_id, &session.session_id)
-        .await?;
-    Ok(true)
-}
-
-async fn reconcile_work_dispatches(
-    sessions: &dyn ManagedSessionRepository,
-    environments: &dyn SessionEnvironmentSource,
-) -> WorkDispatchReconciliation {
-    let mut report = WorkDispatchReconciliation::default();
-    for scoped in sessions.reconcilable_sessions().await {
-        let session = scoped.session;
-        match dispatch_session_work(environments, &session).await {
-            Ok(true) => report.settled += 1,
-            Ok(false) => {}
-            Err(error) => report.failures.push(WorkDispatchFailure {
-                session_id: session.session_id.clone(),
-                environment_id: session.environment_id().to_string(),
-                message: error.to_string(),
-            }),
-        }
-    }
-    report
-}
-
-fn claim_once(fence: &AtomicBool) -> bool {
-    !fence.swap(true, Ordering::AcqRel)
-}
-
-/// Repository-backed implementation installed at the runtime materialization boundary.
-pub struct RepositoryEnvironmentBindingSink {
-    repo: Arc<dyn ManagedSessionRepository>,
-}
-
-impl RepositoryEnvironmentBindingSink {
-    #[must_use]
-    pub fn new(repo: Arc<dyn ManagedSessionRepository>) -> Self {
-        Self { repo }
-    }
-}
-
-#[async_trait::async_trait]
-impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
-    async fn owns(&self, session_id: &str) -> bool {
-        self.repo.owner(session_id).await.is_some()
-    }
-
-    async fn persist(
-        &self,
-        session_id: &str,
-        binding: &str,
-        realization: Option<&awaken_session_contract::SessionRealizationLease>,
-    ) -> Result<(), RunError> {
-        const CAS_ATTEMPTS: usize = 3;
-        for attempt in 0..CAS_ATTEMPTS {
-            let owner = self.repo.owner(session_id).await.ok_or_else(|| {
-                RunError::internal(format!("Session `{session_id}` is not durable"))
-            })?;
-            let mut session = self.repo.get(session_id).await.ok_or_else(|| {
-                RunError::internal(format!("Session `{session_id}` is not durable"))
-            })?;
-            let now_unix_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-                .unwrap_or_default();
-            let realization_is_current = match (session.realization.as_ref(), realization) {
-                (Some(current), Some(asserted)) => {
-                    awaken_session_contract::realization_lease_authorizes(
-                        current,
-                        asserted,
-                        now_unix_ms,
-                    )
-                }
-                (None, None) => true,
-                _ => false,
-            };
-            if !realization_is_current {
-                return Err(RunError::classified(
-                    "session_realization_stale",
-                    "Session environment binding was fenced by another realization owner",
-                ));
-            }
-            if session.environment.binding() == Some(binding) {
-                return Ok(());
-            }
-            session.environment.set_resident(binding);
-            let expected_revision = session.revision;
-            let payload = awaken_session_contract::SessionMutationPayload::Replace(session);
-            let payload_hash = payload.stable_hash();
-            let mutation = awaken_session_contract::SessionMutation {
-                expected_revision,
-                idempotency: awaken_session_contract::IdempotencyRecord {
-                    key: format!(
-                        "session:bind-environment:{session_id}:{}:{payload_hash}",
-                        expected_revision.0
-                    ),
-                    payload_hash,
-                },
-                payload,
-                lifecycle_facts: Vec::new(),
-            };
-            match self
-                .repo
-                .commit_mutation(&owner, mutation)
-                .await
-                .map_err(|error| RunError::internal(error.to_string()))?
-            {
-                awaken_session_contract::SessionMutationResult::Applied { .. }
-                | awaken_session_contract::SessionMutationResult::Replayed { .. } => return Ok(()),
-                awaken_session_contract::SessionMutationResult::Conflict { .. }
-                    if attempt + 1 < CAS_ATTEMPTS => {}
-                awaken_session_contract::SessionMutationResult::Conflict { .. } => {
-                    return Err(RunError::internal(
-                        "Session environment binding CAS exhausted",
-                    ));
-                }
-                awaken_session_contract::SessionMutationResult::IdempotencyMismatch => {
-                    return Err(RunError::internal(
-                        "Session environment binding idempotency mismatch",
-                    ));
-                }
-            }
-        }
-        Err(RunError::internal(
-            "Session environment binding CAS exhausted",
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
-    use std::sync::Mutex;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use awaken_environment_realization_contract::EnvironmentImageBuildError;
+    use awaken_session_contract::{
+        ManagedSessionRepository, McpAttachmentRealizer, PersistedSession, RunError,
+        SandboxProvisioning, SessionEnvironmentBindingSink, SessionRuntime,
+        SessionRuntimePlacement,
+    };
 
     use super::*;
 
     struct NoopRuntime;
+
+    #[derive(Default)]
+    struct RecordingReferenceIndex {
+        fail_replace: AtomicBool,
+        records: Mutex<BTreeSet<awaken_resource_contract::ResourceReferenceRecord>>,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_resource_contract::ResourceReferenceIndex for RecordingReferenceIndex {
+        async fn add_reference(
+            &self,
+            record: awaken_resource_contract::ResourceReferenceRecord,
+        ) -> Result<bool, awaken_resource_contract::ResourcePurgeError> {
+            Ok(self.records.lock().unwrap().insert(record))
+        }
+
+        async fn remove_reference(
+            &self,
+            record: &awaken_resource_contract::ResourceReferenceRecord,
+        ) -> Result<bool, awaken_resource_contract::ResourcePurgeError> {
+            Ok(self.records.lock().unwrap().remove(record))
+        }
+
+        async fn replace_references(
+            &self,
+            kind: awaken_resource_contract::ResourceReferenceKind,
+            reference_id: &str,
+            records: Vec<awaken_resource_contract::ResourceReferenceRecord>,
+        ) -> Result<(), awaken_resource_contract::ResourcePurgeError> {
+            if self.fail_replace.load(Ordering::SeqCst) {
+                return Err(awaken_resource_contract::ResourcePurgeError::Storage(
+                    "injected reference projection failure".into(),
+                ));
+            }
+            let mut current = self.records.lock().unwrap();
+            current.retain(|record| {
+                record.reference.kind != kind || record.reference.reference_id != reference_id
+            });
+            current.extend(records);
+            Ok(())
+        }
+
+        async fn references(
+            &self,
+            target: &awaken_resource_contract::ResourceTarget,
+        ) -> Result<
+            Vec<awaken_resource_contract::ResourceReference>,
+            awaken_resource_contract::ResourcePurgeError,
+        > {
+            Ok(self
+                .records
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|record| &record.target == target)
+                .map(|record| record.reference.clone())
+                .collect())
+        }
+
+        async fn references_for_resource(
+            &self,
+            kind: awaken_resource_contract::ResourceKind,
+            resource_id: &str,
+        ) -> Result<
+            Vec<awaken_resource_contract::ResourceReferenceRecord>,
+            awaken_resource_contract::ResourcePurgeError,
+        > {
+            Ok(self
+                .records
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|record| {
+                    record.target.kind == kind && record.target.resource_id == resource_id
+                })
+                .cloned()
+                .collect())
+        }
+    }
+
+    struct UnusedFileCatalog;
+
+    #[async_trait::async_trait]
+    impl awaken_resource_contract::FileCatalog for UnusedFileCatalog {
+        async fn create_file(
+            &self,
+            _record: awaken_resource_contract::FileRecord,
+        ) -> Result<
+            awaken_resource_contract::CreateFileRecordOutcome,
+            awaken_resource_contract::FileCatalogError,
+        > {
+            unreachable!("Skill-only projection never creates Files")
+        }
+
+        async fn get_file(
+            &self,
+            _workspace_id: &str,
+            _file_id: &str,
+            _include_deleted: bool,
+        ) -> Result<
+            Option<awaken_resource_contract::FileRecord>,
+            awaken_resource_contract::FileCatalogError,
+        > {
+            unreachable!("Skill-only projection never resolves Files")
+        }
+
+        async fn list_files(
+            &self,
+            _workspace_id: &str,
+            _scope_id: Option<&str>,
+        ) -> Result<
+            Vec<awaken_resource_contract::FileRecord>,
+            awaken_resource_contract::FileCatalogError,
+        > {
+            Ok(Vec::new())
+        }
+
+        async fn mark_file_deleted(
+            &self,
+            _workspace_id: &str,
+            _file_id: &str,
+        ) -> Result<
+            Option<awaken_resource_contract::FileRecord>,
+            awaken_resource_contract::FileCatalogError,
+        > {
+            Ok(None)
+        }
+
+        async fn active_size_bytes(
+            &self,
+            _workspace_id: &str,
+        ) -> Result<u64, awaken_resource_contract::FileCatalogError> {
+            Ok(0)
+        }
+    }
 
     #[async_trait::async_trait]
     impl SessionRuntime for NoopRuntime {
@@ -825,6 +406,417 @@ mod tests {
         )
     }
 
+    fn skill_resources(id: &str) -> awaken_session_contract::ResolvedSessionResources {
+        awaken_session_contract::ResolvedSessionResources {
+            inputs: Vec::new(),
+            skills: Some(vec![awaken_session_contract::ResolvedSkillBinding {
+                kind: awaken_agent_contract::AgentSkillKind::Custom,
+                skill_id: id.into(),
+                version: 1,
+                bundle_sha256: format!("sha-{id}"),
+            }]),
+        }
+    }
+
+    fn file_resources(id: &str) -> awaken_session_contract::ResolvedSessionResources {
+        awaken_session_contract::ResolvedSessionResources {
+            inputs: vec![awaken_session_contract::ResolvedInput {
+                binding_id: awaken_resource_contract::BindingId::from("input"),
+                source: awaken_session_contract::ResolvedInputSource::File {
+                    file_id: awaken_resource_contract::FileId::from(id),
+                },
+                mount_path: "/workspace/input".into(),
+                access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                instructions: None,
+            }],
+            skills: Some(Vec::new()),
+        }
+    }
+
+    /// Local-restart ownership FMECA and cause/effect decision table. C1 the
+    /// configured logical owner is unchanged or different; C2 the Runtime
+    /// incarnation is the original process or a replacement. Effects are E1 an
+    /// exact replay, E2 immediate epoch-fenced takeover, E3 stale-owner
+    /// rejection, or E4 claim-authorized topology reassignment. C3 renewal and
+    /// reassignment are mutually exclusive so one command cannot obscure its
+    /// authority class.
+    ///
+    /// | Rule | Logical owner | Incarnation | Reassign | Renew | Effect |
+    /// |---|---|---|---|---|---|
+    /// | L1 | same | same | false | false | E1 replay |
+    /// | L2 | same | replacement | false | false | E2 epoch advances immediately |
+    /// | L3 | different | replacement | false | false | E3 stale ownership |
+    /// | L4 | different | replacement | true | false | E4 epoch advances immediately |
+    /// | L5 | any | any | true | true | invalid, no mutation |
+    #[tokio::test]
+    async fn local_realization_uses_stable_owner_and_process_incarnation() {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        create(
+            repo.as_ref(),
+            persisted("local-restart", false, false, "idle"),
+        )
+        .await;
+        let configured = |owner: &str| SessionApplicationConfiguration {
+            execution_placement: SessionExecutionPlacement::LocalWorker,
+            local_realization_owner: owner.into(),
+        };
+
+        let first = application_with_configuration(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+            configured("embedded-worker"),
+        );
+        let first_session = first.realize_session("local-restart").await.expect("L1");
+        let first_lease = first_session.realization.expect("L1 lease");
+        assert_eq!(first_lease.owner, "embedded-worker", "L1/E1");
+        assert_eq!(
+            first
+                .realize_session("local-restart")
+                .await
+                .expect("L1 exact replay")
+                .realization
+                .expect("L1 replay lease"),
+            first_lease,
+            "L1/E1"
+        );
+
+        let replacement = application_with_configuration(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+            configured("embedded-worker"),
+        );
+        let replaced = replacement
+            .realize_session("local-restart")
+            .await
+            .expect("L2 same logical owner may fence a crashed incarnation");
+        let replaced_lease = replaced.realization.expect("L2 lease");
+        assert_eq!(replaced_lease.owner, first_lease.owner, "L2/E2");
+        assert_ne!(
+            replaced_lease.runtime_incarnation, first_lease.runtime_incarnation,
+            "L2/E2"
+        );
+        assert_eq!(replaced_lease.epoch, first_lease.epoch + 1, "L2/E2");
+
+        let other = application_with_configuration(
+            repo,
+            Arc::new(RecordingEnvironmentSource::default()),
+            configured("other-worker"),
+        );
+        assert!(
+            matches!(
+                other.realize_session("local-restart").await,
+                Err(crate::SessionRealizationError::Control(
+                    awaken_session_contract::SessionRealizationControlFailure::StaleOwnership
+                ))
+            ),
+            "L3/E3"
+        );
+        let reassigned =
+            awaken_session_contract::SessionRealizationControl::begin_session_realization(
+                &other,
+                awaken_session_contract::BeginSessionRealization {
+                    session_id: "local-restart".into(),
+                    target: awaken_session_contract::SessionRealizationTarget {
+                        owner: "other-worker".into(),
+                        runtime_incarnation: "other-worker/boot-2".into(),
+                        lease_expires_at_unix_ms: u64::MAX,
+                        renew_existing_lease: false,
+                        reassign_existing_lease: true,
+                    },
+                },
+            )
+            .await
+            .expect("L4 claim-authorized reassignment");
+        assert_eq!(reassigned.lease.epoch, replaced_lease.epoch + 1, "L4/E4");
+        assert_eq!(reassigned.lease.owner, "other-worker", "L4/E4");
+
+        let invalid =
+            awaken_session_contract::SessionRealizationControl::begin_session_realization(
+                &other,
+                awaken_session_contract::BeginSessionRealization {
+                    session_id: "local-restart".into(),
+                    target: awaken_session_contract::SessionRealizationTarget {
+                        owner: "other-worker".into(),
+                        runtime_incarnation: "other-worker/boot-2".into(),
+                        lease_expires_at_unix_ms: u64::MAX,
+                        renew_existing_lease: true,
+                        reassign_existing_lease: true,
+                    },
+                },
+            )
+            .await;
+        assert!(
+            matches!(
+                invalid,
+                Err(awaken_session_contract::SessionRealizationControlFailure::Invalid(_))
+            ),
+            "L5"
+        );
+    }
+
+    /// Reference-projection FMECA and cause/effect decision table. C1 the
+    /// Resource index accepts or rejects a replacement; C2 the Session root CAS
+    /// wins or conflicts after projection. Effects are E1 no durable intent is
+    /// exposed without its safety edge, E2 a losing candidate is repaired back
+    /// to repository truth, and E3 a winning pending replacement retains both
+    /// installed and desired targets until settlement.
+    ///
+    /// | Rule | C1 index | C2 root CAS | Effect |
+    /// |---|---|---|---|
+    /// | R1 | rejects | not attempted | E1 unchanged Session |
+    /// | R2 | accepts | conflicts | E2 installed target only |
+    /// | R3 | accepts | wins | E3 installed + desired targets |
+    #[tokio::test]
+    async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        let environments = Arc::new(RecordingEnvironmentSource::default());
+        let mut application = application(repo.clone(), environments);
+        let references = Arc::new(RecordingReferenceIndex::default());
+        application
+            .set_resource_reference_authority(references.clone(), Arc::new(UnusedFileCatalog));
+
+        let mut original = persisted("reference-fence", false, false, "idle");
+        original.resources =
+            awaken_session_contract::SessionResourceState::from_legacy(skill_resources("old"));
+        create(repo.as_ref(), original).await;
+
+        let mut rejected = repo.get("reference-fence").await.unwrap();
+        let original_revision = rejected.revision;
+        rejected
+            .resources
+            .prepare("reference-fence", skill_resources("new"))
+            .unwrap();
+        references.fail_replace.store(true, Ordering::SeqCst);
+        assert!(
+            application
+                .commit_resource_snapshot("workspace", rejected, "R1", Vec::new())
+                .await
+                .is_err(),
+            "R1"
+        );
+        assert_eq!(
+            repo.get("reference-fence").await.unwrap().revision,
+            original_revision,
+            "R1/E1"
+        );
+
+        references.fail_replace.store(false, Ordering::SeqCst);
+        let mut stale = repo.get("reference-fence").await.unwrap();
+        let mut winner = stale.clone();
+        winner.title = Some("concurrent winner".into());
+        application
+            .commit_session_snapshot("workspace", winner, "concurrent", Vec::new())
+            .await
+            .unwrap();
+        stale
+            .resources
+            .prepare("reference-fence", skill_resources("new"))
+            .unwrap();
+        assert!(matches!(
+            application
+                .commit_resource_snapshot("workspace", stale, "R2", Vec::new())
+                .await,
+            Err(SessionMutationError::Conflict)
+        ));
+        let ids = || {
+            references
+                .records
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|record| record.target.resource_id.clone())
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(ids(), BTreeSet::from(["old".to_string()]), "R2/E2");
+
+        let mut accepted = repo.get("reference-fence").await.unwrap();
+        accepted
+            .resources
+            .prepare("reference-fence", skill_resources("new"))
+            .unwrap();
+        application
+            .commit_resource_snapshot("workspace", accepted, "R3", Vec::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            ids(),
+            BTreeSet::from(["new".to_string(), "old".to_string()]),
+            "R3/E3"
+        );
+    }
+
+    /// Legacy Resource adoption FMECA and cause/effect decision table. C1 the
+    /// retained manifest has no activation records; C2 the Worker reports that
+    /// it prepared the exact active revision; C3 the reported revision is stale.
+    /// Effects are E1 one Active/attempted record is committed, E2 no second
+    /// physical-state authority is created, and E3 a mismatched generation is
+    /// rejected without mutating durable truth.
+    ///
+    /// | Rule | Legacy inputs | Prepared revision | Effect |
+    /// |---|---|---|---|
+    /// | L1 | present | exact | E1 adopt once |
+    /// | L2 | present | stale | E3 reject, unchanged |
+    /// | L3 | absent/already adopted | any | E2 normal realization path |
+    #[tokio::test]
+    async fn remote_realization_adopts_only_the_exact_legacy_resource_generation() {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        let application = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let lease = awaken_session_contract::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a/boot-1".into(),
+            epoch: 1,
+            expires_at_unix_ms: u64::MAX,
+        };
+        for id in ["legacy-exact", "legacy-stale"] {
+            let mut session = persisted(id, false, false, "preparing");
+            session.resources =
+                awaken_session_contract::SessionResourceState::from_legacy(file_resources(id));
+            session.realization = Some(lease.clone());
+            create(repo.as_ref(), session).await;
+        }
+
+        let exact =
+            awaken_session_contract::SessionRealizationControl::activate_session_realization(
+                &application,
+                awaken_session_contract::ActivateSessionRealization {
+                    session_id: "legacy-exact".into(),
+                    lease: lease.clone(),
+                    prepared_resource_revision: Some(1),
+                    mcp_receipts: Vec::new(),
+                },
+            )
+            .await
+            .expect("L1 exact legacy generation");
+        assert!(
+            matches!(
+                exact.action,
+                awaken_session_contract::SessionRealizationAction::Publish { .. }
+            ),
+            "L1/E1"
+        );
+        let adopted = repo.get("legacy-exact").await.expect("L1 durable truth");
+        assert_eq!(adopted.resources.activations.len(), 1, "L1/E1");
+        assert_eq!(
+            adopted.resources.activations[0].state,
+            awaken_session_contract::ActivationState::Active,
+            "L1/E1"
+        );
+        assert_eq!(adopted.resources.activations[0].attempts, 1, "L1/E1");
+
+        let stale =
+            awaken_session_contract::SessionRealizationControl::activate_session_realization(
+                &application,
+                awaken_session_contract::ActivateSessionRealization {
+                    session_id: "legacy-stale".into(),
+                    lease,
+                    prepared_resource_revision: Some(2),
+                    mcp_receipts: Vec::new(),
+                },
+            )
+            .await
+            .expect_err("L2 stale generation must fail closed");
+        assert!(
+            matches!(
+                stale,
+                awaken_session_contract::SessionRealizationControlFailure::Invalid(_)
+            ),
+            "L2/E3: {stale}"
+        );
+        assert!(
+            repo.get("legacy-stale")
+                .await
+                .expect("L2 durable truth")
+                .resources
+                .activations
+                .is_empty(),
+            "L2/E3"
+        );
+    }
+
+    /// Terminal Worker-placement FMECA and cause/effect decision table. C1 the
+    /// Session placement delegates live realization to a Worker; C2 the Session
+    /// is live with pending work; C3 it is terminal with Releasing work. Effects
+    /// are E1 no Coordinator execution effect for a live generation and E2 the
+    /// sole terminal cleanup path converges because no future Run can claim it.
+    ///
+    /// | Rule | Placement | Lifecycle | Resource state | Effect |
+    /// |---|---|---|---|---|
+    /// | W1 | Worker | idle | Prepared | E1 remain unattempted |
+    /// | W2 | Worker | terminal | Releasing | E2 release durably |
+    #[tokio::test]
+    async fn worker_placement_defers_live_effects_but_not_terminal_cleanup() {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        let worker_baseline = |id: &str, status: &str| {
+            let mut session = persisted(id, false, false, status);
+            let awaken_session_contract::SessionBaselineState::Frozen(baseline) =
+                &mut session.baseline
+            else {
+                unreachable!("fixture is frozen")
+            };
+            baseline.runtime_placement = SessionRuntimePlacement::Worker;
+            session
+        };
+
+        let mut live = worker_baseline("worker-live", "idle");
+        live.resources
+            .prepare("worker-live", file_resources("live"))
+            .expect("W1 prepared generation");
+        create(repo.as_ref(), live).await;
+
+        let mut terminal = worker_baseline("worker-terminal", "terminated");
+        terminal.resources =
+            awaken_session_contract::SessionResourceState::from_legacy(file_resources("terminal"));
+        terminal.resources.adopt_legacy_active("worker-terminal");
+        terminal
+            .resources
+            .begin_release()
+            .expect("W2 release intent");
+        create(repo.as_ref(), terminal).await;
+
+        let application = application_with_configuration(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+            SessionApplicationConfiguration {
+                execution_placement: SessionExecutionPlacement::RegisteredWorker,
+                ..Default::default()
+            },
+        );
+        let report = application.reconcile_resource_activations().await;
+        assert!(report.failures.is_empty(), "W1/W2: {:#?}", report.failures);
+        assert_eq!(report.settled.len(), 1, "W2/E2");
+
+        let live = repo.get("worker-live").await.expect("W1 durable truth");
+        assert!(live.resources.pending.is_some(), "W1/E1");
+        assert_eq!(live.resources.activations[0].attempts, 0, "W1/E1");
+        let terminal = repo.get("worker-terminal").await.expect("W2 durable truth");
+        assert!(
+            terminal
+                .resources
+                .activations
+                .iter()
+                .all(|activation| activation.state
+                    == awaken_session_contract::ActivationState::Released),
+            "W2/E2 durable={:?} settled={:?}",
+            terminal.resources.activations,
+            report.settled[0].resources.activations
+        );
+    }
+
     /// Cause/effect graph: C1 a baseline is frozen; C2 its explicit Runtime
     /// placement is Local or Worker; C3 a retained pre-placement row is marked
     /// LegacyUnspecified; C4 the process composition is local or registered;
@@ -857,6 +849,7 @@ mod tests {
             environments.clone(),
             SessionApplicationConfiguration {
                 execution_placement: SessionExecutionPlacement::LocalWorker,
+                ..Default::default()
             },
         );
         let registered = application_with_configuration(
@@ -864,6 +857,7 @@ mod tests {
             environments,
             SessionApplicationConfiguration {
                 execution_placement: SessionExecutionPlacement::RegisteredWorker,
+                ..Default::default()
             },
         );
 
@@ -1352,20 +1346,24 @@ mod tests {
     /// Activity-fence FMECA cause/effect graph. Causes: C1 the Session exists;
     /// C2 it is nonterminal; C3 the epoch can advance; C4 settlement presents
     /// the current epoch; C5 a later admission or terminal transition has
-    /// fenced that settlement. Effects: E1 admission commits `running` with one
-    /// unique monotonic epoch; E2 only the current completion commits `idle`;
-    /// E3 stale/terminal completions are no-ops; E4 missing, terminal-admission,
-    /// and exhausted-epoch failures do not mutate durable truth.
+    /// fenced that settlement; C6 initial realization is still preparing.
+    /// Effects: E1 an idle admission commits `running` with one unique monotonic
+    /// epoch; E2 only the current running completion commits `idle`; E3 stale or
+    /// terminal completions are no-ops; E4 missing, terminal-admission, and
+    /// exhausted-epoch failures do not mutate durable truth; E5 a queued first
+    /// turn advances its epoch without masking realization state.
     ///
-    /// | Rule | Exists | Terminal | Epoch available | Current settle | Fence | Effect |
+    /// | Rule | Exists | Status | Epoch available | Current settle | Fence | Effect |
     /// |---|---|---|---|---|---|---|
-    /// | A1 | yes | no | yes | n/a | concurrent admit | E1, distinct epochs |
-    /// | A2 | yes | no | n/a | no | newer epoch | E3, remains running |
-    /// | A3 | yes | no | n/a | yes | none | E2, idle |
-    /// | A4 | yes | yes | n/a | any | terminal | E3, terminal preserved |
-    /// | A5 | yes | yes | any | n/a | n/a | E4, reject admission |
-    /// | A6 | yes | no | no | n/a | n/a | E4, reject exhaustion |
+    /// | A1 | yes | idle | yes | n/a | concurrent admit | E1, distinct epochs |
+    /// | A2 | yes | running | n/a | no | newer epoch | E3, remains running |
+    /// | A3 | yes | running | n/a | yes | none | E2, idle |
+    /// | A4 | yes | terminal | n/a | any | terminal | E3, terminal preserved |
+    /// | A5 | yes | terminal | any | n/a | n/a | E4, reject admission |
+    /// | A6 | yes | idle | no | n/a | n/a | E4, reject exhaustion |
     /// | A7 | no | n/a | n/a | n/a | n/a | E4, not found |
+    /// | A8 | yes | preparing | yes | yes | realization pending | E5, preserve preparing |
+    /// | A9 | yes | activation_failed | n/a | any | realization failed | E3, preserve failed |
     #[tokio::test]
     async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() {
         let repo = Arc::new(
@@ -1453,6 +1451,42 @@ mod tests {
             Err(SessionActivityError::NotFound),
             "A7"
         );
+
+        create(
+            repo.as_ref(),
+            persisted("activity-preparing", false, false, "preparing"),
+        )
+        .await;
+        let preparing = app
+            .begin_activity("activity-preparing")
+            .await
+            .expect("A8 queued activity");
+        assert_eq!(preparing.activity_epoch, 1, "A8/E5");
+        assert_eq!(preparing.status, "preparing", "A8/E5");
+        let still_preparing = app
+            .settle_activity("activity-preparing", preparing.activity_epoch)
+            .await
+            .expect("A8 settlement");
+        assert_eq!(still_preparing.status, "preparing", "A8/E5");
+
+        let mut failed = still_preparing;
+        failed.status = "activation_failed".into();
+        let failed = app
+            .commit_session_snapshot(
+                "workspace",
+                failed,
+                "activity-test-realization-failed",
+                Vec::new(),
+            )
+            .await
+            .expect("A9 terminal realization");
+        assert_eq!(
+            app.settle_activity("activity-preparing", preparing.activity_epoch)
+                .await
+                .expect("A9 stale settlement"),
+            failed,
+            "A9/E3"
+        );
     }
 
     /// Update-admission authority graph. C1 durable status is idle; C2 durable
@@ -1524,17 +1558,19 @@ mod tests {
     /// lease; C2 the binding is new or an idempotent replay; C3 the same epoch
     /// has been renewed monotonically; C4 a replacement owner/epoch has fenced
     /// the Runtime. C1 permits the ordinary root CAS; C3 preserves in-flight
-    /// work admitted before renewal; C4 rejects before even an equal binding can
-    /// be treated as a replay.
+    /// work admitted before renewal; C4 rejects a binding change while an equal
+    /// durable binding remains a side-effect-free recovery replay.
     ///
     /// | Rule | Asserted lease | Binding | Effect |
     /// |---|---|---|---|
     /// | B1 | exact | new | persist once |
     /// | B2 | exact | equal | idempotent success |
     /// | B3 | shorter same-epoch assertion under live renewal | new/equal | authorized |
-    /// | B4 | stale owner/epoch | new/equal | fenced, no mutation |
-    /// | B5 | aggregate/assertion both absent | new/equal | legacy CAS path |
-    /// | B6 | current lease expired | new/equal | fenced, no mutation |
+    /// | B4 | stale owner/epoch | equal | idempotent success, no mutation |
+    /// | B5 | stale owner/epoch | different | fenced, no mutation |
+    /// | B6 | aggregate/assertion both absent | new/equal | legacy CAS path |
+    /// | B7 | current lease expired | equal | idempotent success, no mutation |
+    /// | B8 | current lease expired | different | fenced, no mutation |
     #[tokio::test]
     async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         let repo = Arc::new(
@@ -1582,18 +1618,27 @@ mod tests {
         .await;
         sink.persist("binding-unassigned", "sandbox-legacy", None)
             .await
-            .expect("B5");
+            .expect("B6");
         let stale = awaken_session_contract::SessionRealizationLease {
             owner: "runtime-b".into(),
             runtime_incarnation: "runtime-b/boot-1".into(),
             epoch: 4,
             expires_at_unix_ms: u64::MAX,
         };
-        let error = sink
-            .persist("binding-fence", "sandbox-a", Some(&stale))
+        let revision_before_stale_replay = repo.get("binding-fence").await.expect("B4").revision;
+        sink.persist("binding-fence", "sandbox-a", Some(&stale))
             .await
-            .expect_err("B4 stale replay is fenced");
-        assert_eq!(error.code, "session_realization_stale", "B4");
+            .expect("B4 stale replay of an equal binding is idempotent");
+        assert_eq!(
+            repo.get("binding-fence").await.expect("B4").revision,
+            revision_before_stale_replay,
+            "B4 must not write"
+        );
+        let error = sink
+            .persist("binding-fence", "sandbox-b", Some(&stale))
+            .await
+            .expect_err("B5 stale binding replacement is fenced");
+        assert_eq!(error.code, "session_realization_stale", "B5");
         let expired = awaken_session_contract::SessionRealizationLease {
             expires_at_unix_ms: 0,
             ..current.clone()
@@ -1617,16 +1662,19 @@ mod tests {
                 },
             )
             .await
-            .expect("B6 fixture mutation"),
+            .expect("B7 fixture mutation"),
             awaken_session_contract::SessionMutationResult::Applied { .. }
         ));
+        sink.persist("binding-fence", "sandbox-a", Some(&expired))
+            .await
+            .expect("B7 expired-lease replay of an equal binding is idempotent");
         assert_eq!(
-            sink.persist("binding-fence", "sandbox-a", Some(&expired))
+            sink.persist("binding-fence", "sandbox-b", Some(&expired))
                 .await
-                .expect_err("B6")
+                .expect_err("B8")
                 .code,
             "session_realization_stale",
-            "B6"
+            "B8"
         );
         assert_eq!(
             repo.get("binding-fence")
@@ -1634,7 +1682,7 @@ mod tests {
                 .and_then(|session| session.environment.binding().map(str::to_owned))
                 .as_deref(),
             Some("sandbox-a"),
-            "B4"
+            "B4/B5/B7/B8"
         );
     }
 

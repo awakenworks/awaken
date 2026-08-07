@@ -20,6 +20,24 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         lease: &awaken_session_contract::SessionRealizationLease,
         prepare_session: bool,
     ) -> Result<(), awaken_session_contract::RunError> {
+        let resolved_publication;
+        let published_snapshot = match self.published_snapshot {
+            Some(snapshot) => Some(snapshot),
+            None => {
+                resolved_publication = self
+                    .host
+                    .resolve_session_publication(
+                        session_id,
+                        Some(&projection.baseline.agent_id),
+                        None,
+                    )
+                    .map_err(|error| {
+                        awaken_session_contract::RunError::internal(error.to_string())
+                    })?
+                    .2;
+                resolved_publication.as_ref()
+            }
+        };
         // A claim authorizes live Resource revalidation. A preparation Stage
         // authorizes local realization. Lease-only MCP renewal has neither and
         // must reuse the already-resident Resource/Skill projection instead of
@@ -47,7 +65,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             })
             .unwrap_or(false);
         if self.requires_runtime_before_effects
-            && self.published_snapshot.is_none()
+            && published_snapshot.is_none()
             && !runtime_authority_resident
         {
             return Err(awaken_session_contract::RunError::classified(
@@ -57,7 +75,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         }
         let adopted = if environment_absent && let Some(binding) = projection.environment.binding()
         {
-            let published_snapshot = self.published_snapshot.ok_or_else(|| {
+            let published_snapshot = published_snapshot.ok_or_else(|| {
                 awaken_session_contract::RunError::classified(
                     "session_environment_recovery_authority_missing",
                     "a cold Worker needs the exact claimed Agent snapshot to adopt a durable Session Environment",
@@ -80,7 +98,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         // frozen projection and MCP effects. A first-use Environment has no
         // durable binding to adopt yet, but its stage still needs the exact Run
         // publication installed before it may realize sandbox stdio.
-        if let Some(published_snapshot) = self.published_snapshot
+        if let Some(published_snapshot) = published_snapshot
             && (has_environment_binding || self.requires_runtime_before_effects)
         {
             self.host
@@ -181,7 +199,11 @@ impl HostWorkerResolver {
             directive,
         )
         .await
-        .map_err(|error| Self::execution_error(error.to_string()))
+        // The canonical driver has already delivered `fail_session_realization`
+        // before returning an error, so this is the narrow absorbing failure
+        // class that the Run claim may terminalize immediately. Environment
+        // adoption and other resolver failures remain ordinary retryable errors.
+        .map_err(|error| Self::terminal_resolution_error(error.to_string()))
     }
 }
 

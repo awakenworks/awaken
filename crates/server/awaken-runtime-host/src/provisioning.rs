@@ -8,11 +8,10 @@ use std::sync::Arc;
 
 use crate::host::SharedHost;
 use awaken_provisioning_contract as pc;
+#[cfg(test)]
+use awaken_resource_contract::FileCatalogError;
 use awaken_resource_contract::FileStore;
-use awaken_resource_contract::{
-    FileCatalog, FileCatalogError, FileRecord, ResourceKind, ResourcePurgeError, ResourceReference,
-    ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
-};
+use awaken_resource_contract::{FileCatalog, FileRecord, ResourcePurgeError};
 use awaken_run_ingress::{Clock as _, DispatchQueue as _};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 
@@ -218,13 +217,6 @@ pub(crate) fn decode_session_runtime_envelope(
     ))
 }
 
-fn file_catalog_error(error: FileCatalogError) -> ResourcePurgeError {
-    match error {
-        FileCatalogError::Invalid(message) => ResourcePurgeError::Invalid(message),
-        FileCatalogError::Storage(message) => ResourcePurgeError::Storage(message),
-    }
-}
-
 fn mime_type_for_path(path: &str) -> &'static str {
     match std::path::Path::new(path)
         .extension()
@@ -395,108 +387,6 @@ impl SharedHost {
         &self,
     ) -> Option<Arc<dyn awaken_resource_contract::FileApplicationService>> {
         self.file_application.clone()
-    }
-
-    pub(crate) fn required_resource_lifecycle(
-        &self,
-    ) -> Result<&Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>, ResourcePurgeError>
-    {
-        self.resource_lifecycle.as_ref().ok_or_else(|| {
-            ResourcePurgeError::Storage(
-                "resource lifecycle repository is not configured by the composition root".into(),
-            )
-        })
-    }
-
-    pub async fn file_has_any_reference(&self, id: &str) -> Result<bool, ResourcePurgeError> {
-        Ok(!self
-            .required_resource_lifecycle()?
-            .references_for_resource(ResourceKind::File, id)
-            .await?
-            .is_empty())
-    }
-
-    pub(crate) async fn replace_session_references(
-        &self,
-        workspace: &str,
-        thread: &str,
-        resources: &awaken_session_contract::ResolvedSessionResources,
-    ) -> Result<(), ResourcePurgeError> {
-        use awaken_session_contract::ResolvedInputSource;
-
-        let reference = |target| ResourceReferenceRecord {
-            target,
-            reference: ResourceReference {
-                kind: ResourceReferenceKind::SessionBinding,
-                reference_id: thread.to_string(),
-            },
-        };
-        let mut records = Vec::with_capacity(
-            resources.inputs.len() + resources.skills.as_ref().map_or(0, Vec::len),
-        );
-        for input in &resources.inputs {
-            let target = match &input.source {
-                ResolvedInputSource::File { file_id } => ResourceTarget::new(
-                    workspace,
-                    ResourceKind::File,
-                    self.file_catalog
-                        .get_file(workspace, file_id.as_str(), false)
-                        .await
-                        .map_err(file_catalog_error)?
-                        .ok_or_else(|| {
-                            ResourcePurgeError::Invalid(format!(
-                                "file `{file_id}` was not found in this Workspace"
-                            ))
-                        })?
-                        .blob_id,
-                ),
-                ResolvedInputSource::MemoryStore {
-                    memory_store_id, ..
-                } => ResourceTarget::new(
-                    workspace,
-                    ResourceKind::MemoryStore,
-                    memory_store_id.as_str(),
-                ),
-                ResolvedInputSource::Repository { repository_id, .. } => {
-                    ResourceTarget::new(workspace, ResourceKind::Repository, repository_id.as_str())
-                }
-            };
-            records.push(reference(target));
-        }
-        if let Some(skills) = &resources.skills {
-            records.extend(
-                skills
-                    .iter()
-                    .filter(|skill| skill.kind == awaken_agent_contract::AgentSkillKind::Custom)
-                    .map(|skill| {
-                        reference(ResourceTarget::new(
-                            workspace,
-                            ResourceKind::Skill,
-                            &skill.skill_id,
-                        ))
-                    }),
-            );
-        }
-        if records.is_empty() && self.resource_lifecycle.is_none() {
-            return Ok(());
-        }
-        self.required_resource_lifecycle()?
-            .replace_references(ResourceReferenceKind::SessionBinding, thread, records)
-            .await
-    }
-
-    pub(crate) async fn clear_session_references(
-        &self,
-        thread: &str,
-    ) -> Result<(), ResourcePurgeError> {
-        match &self.resource_lifecycle {
-            Some(repository) => {
-                repository
-                    .replace_references(ResourceReferenceKind::SessionBinding, thread, Vec::new())
-                    .await
-            }
-            None => Ok(()),
-        }
     }
 
     /// Realize a thread's resolved Repository inputs into its freshly-created

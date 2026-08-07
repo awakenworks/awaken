@@ -10,17 +10,22 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { spawnProduction, stopServer, waitForPort, waitForValue } from './harness.mjs';
+import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import { sqliteExec, sqliteRows } from './sqlite.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38439);
 const WORKSPACE = `catalog-corruption-${process.pid}`;
+const AGENT = 'catalog-corruption-agent';
+const MODEL = 'catalog-corruption-model';
+const FAKE_KEY = 'sk-catalog-corruption-fake'; // awaken-allow: secret
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function start(directory) {
   return spawnProduction(directory, PORT, {
     workspace: WORKSPACE,
     controlSealKey: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
+    fields: { sandbox_tier: 'namespace' },
   });
 }
 
@@ -46,6 +51,33 @@ async function json(method, tail, body) {
   });
   const text = await response.text();
   return { status: response.status, body: text ? JSON.parse(text) : null };
+}
+
+async function authorModel(upstream) {
+  const provider = await json('POST', 'config/provider-connections', {
+    idempotency_key: 'catalog-corruption-provider',
+    workspace_id: WORKSPACE,
+    provider_id: 'anthropic',
+    display_name: 'Anthropic',
+    dialect: 'anthropic_messages',
+    base_url: `${upstream.url}/v1/`,
+    timeout_secs: 30,
+    secret: FAKE_KEY,
+  });
+  assert.equal(provider.status, 201, JSON.stringify(provider.body));
+  const agent = await json('PUT', `config/agents/${AGENT}`, {
+    name: AGENT, model: { id: MODEL }, system: 'catalog recovery', max_steps: 2,
+  });
+  assert.equal(agent.status, 200, JSON.stringify(agent.body));
+  const publication = await json('POST', `config/agents/${AGENT}/publish`);
+  assert.equal(publication.status, 200, JSON.stringify(publication.body));
+}
+
+async function driveSession(sessionId, text, expectedStatus) {
+  const response = await json('POST', `sessions/${sessionId}/events`, {
+    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
+  });
+  assert.equal(response.status, expectedStatus, JSON.stringify(response.body));
 }
 
 function seedRepository(root) {
@@ -138,11 +170,13 @@ function persistPreparedGeneration(database, sessionId) {
 
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-catalog-corruption-'));
+  const upstream = await startFakeAnthropic(FAKE_KEY, { models: [MODEL] });
   const resourceDatabase = path.join(directory, 'resources.db');
   const sessionsDatabase = path.join(directory, 'sessions.db');
   let server = start(directory);
   try {
     await ready(server);
+    await authorModel(upstream);
     const memory = await json('POST', 'memory_stores', {
       name: 'catalog-fail-closed',
       description: 'configuration must never be inferred',
@@ -151,7 +185,7 @@ async function main() {
 
     const repository = seedRepository(directory);
     const session = await json('POST', 'sessions', {
-      agent: 'assistant',
+      agent: AGENT,
       environment_id: 'env_local',
       resources: [{
         type: 'github_repository',
@@ -161,6 +195,23 @@ async function main() {
     });
     assert.equal(session.status, 200, JSON.stringify(session.body));
     const repositoryId = `managed:${session.body.id}:repository:0`;
+
+    // Demand/placement cause graph: a Session create freezes Resource intent
+    // but a registered Worker owns physical realization. The Namespace Worker
+    // satisfies the read-only placement requirement; only an actual Run claim
+    // may establish the Active baseline used by the corruption experiment.
+    //
+    // | Rule | Worker eligible | Run demand | Catalog valid | Effect |
+    // |---|---|---|---|---|
+    // | B1 | yes | no | yes | remain Prepared |
+    // | B2 | yes | yes | yes | Active baseline |
+    await driveSession(session.body.id, 'establish catalog baseline', 200);
+    await waitForValue(
+      () => sessionResources(sessionsDatabase, session.body.id),
+      (resources) => resources.pending === undefined
+        && resources.activations.some((activation) => activation.state === 'active'),
+      'initial catalog Resource generation did not become Active',
+    );
 
     await stop(server, 'SIGKILL');
     const memoryRecord = catalogRecord(resourceDatabase, 'memory_store', memory.body.id);
@@ -177,6 +228,14 @@ async function main() {
 
     server = start(directory);
     await ready(server);
+
+    // Corruption decision table: C1 exact pending generation; C2 immutable
+    // catalog history exists; C3 real Run demand. C1+!C2+C3 is rejected by the
+    // Coordinator binding verifier before enqueue, so attempts stays zero and
+    // no fabricated Worker error is recorded. Restoring C2 and redelivering C3
+    // performs the first real attempt and commits that same generation. Listener
+    // readiness alone performs no hidden Worker-owned effect.
+    await driveSession(session.body.id, 'observe corrupt catalog generation', 400);
 
     // Cause/effect boundary rule: missing internal catalog config can fail
     // resource lifecycle/binding, but cannot make removed HTTP routes reappear.
@@ -208,17 +267,14 @@ async function main() {
       () => sessionResources(sessionsDatabase, session.body.id),
       (resources) => resources.pending !== undefined
         && resources.activations.at(-1).state === 'prepared'
-        && resources.activations.at(-1).attempts === 1
-        && Boolean(resources.activations.at(-1).last_error),
-      'missing catalog config did not produce a durable failed activation receipt',
+        && resources.activations.at(-1).attempts === 0
+        && !resources.activations.at(-1).last_error,
+      'missing catalog config changed the unattempted pending generation',
     );
     assert.notEqual(deniedRepository.pending, undefined);
     assert.equal(deniedRepository.activations.at(-1).state, 'prepared');
-    assert.equal(deniedRepository.activations.at(-1).attempts, 1);
-    assert.match(
-      deniedRepository.activations.at(-1).last_error,
-      /current config version is missing/u,
-    );
+    assert.equal(deniedRepository.activations.at(-1).attempts, 0);
+    assert.equal(deniedRepository.activations.at(-1).last_error, undefined);
 
     // Repair only the missing immutable histories. The already-persisted Session
     // generation remains unchanged and must be the generation that later commits.
@@ -227,6 +283,7 @@ async function main() {
     writeCatalogRecord(resourceDatabase, 'repository', repositoryId, repositoryRecord);
     server = start(directory);
     await ready(server);
+    await driveSession(session.body.id, 'retry repaired catalog generation', 200);
 
     const recovered = await waitForValue(
       () => sessionResources(sessionsDatabase, session.body.id),
@@ -236,7 +293,7 @@ async function main() {
     );
     assert.equal(recovered.pending, undefined);
     assert.equal(recovered.activations.at(-1).state, 'active');
-    assert.equal(recovered.activations.at(-1).attempts, 2);
+    assert.equal(recovered.activations.at(-1).attempts, 1);
     assert.equal(recovered.activations.at(-1).last_error, undefined);
     assert.equal((await json('GET', `memory_stores/${memory.body.id}/config`)).status, 404);
 
@@ -244,7 +301,7 @@ async function main() {
     // must fail closed on a cold process without panicking or serving a partial
     // definition/config history. This drives the production collection API so
     // the storage failure remains distinguishable from an ordinary 404.
-    await stop(server, 'SIGKILL');
+    await stop(server);
     const memoryConfig = memoryRecord.configs['1'];
     const memoryCorruptions = [
       ['malformed-json', '{not-json'],
@@ -278,7 +335,7 @@ async function main() {
       assert.equal(denied.status, 500, `${name}: ${JSON.stringify(denied.body)}`);
       assert.match(JSON.stringify(denied.body), /resource catalog storage failure/u);
       assert.equal(server.exitCode, null, `${name}: catalog corruption crashed the process`);
-      await stop(server, 'SIGKILL');
+      await stop(server);
     }
     writeCatalogRecord(resourceDatabase, 'memory_store', memory.body.id, memoryRecord);
     server = start(directory);
@@ -317,34 +374,36 @@ async function main() {
       })],
     ];
     for (const [name, data] of repositoryCorruptions) {
-      await stop(server, 'SIGKILL');
+      await stop(server);
       writeCatalogRaw(resourceDatabase, 'repository', repositoryId, data);
       persistPreparedGeneration(sessionsDatabase, session.body.id);
       server = start(directory);
       await ready(server);
+      await driveSession(session.body.id, `reject ${name} Repository catalog`, 400);
 
       const denied = await waitForValue(
         () => sessionResources(sessionsDatabase, session.body.id),
         (resources) => resources.pending !== undefined
           && resources.activations.at(-1).state === 'prepared'
-          && resources.activations.at(-1).attempts === 1
-          && Boolean(resources.activations.at(-1).last_error),
-        `${name}: corruption did not produce a durable failed activation receipt`,
+          && resources.activations.at(-1).attempts === 0
+          && !resources.activations.at(-1).last_error,
+        `${name}: corruption changed an unattempted generation`,
       );
       assert.notEqual(denied.pending, undefined, `${name}: pending generation disappeared`);
       assert.equal(denied.activations.at(-1).state, 'prepared', name);
-      assert.equal(denied.activations.at(-1).attempts, 1, name);
-      assert.ok(denied.activations.at(-1).last_error, `${name}: missing durable error receipt`);
+      assert.equal(denied.activations.at(-1).attempts, 0, name);
+      assert.equal(denied.activations.at(-1).last_error, undefined, name);
       assert.equal(server.exitCode, null, `${name}: catalog corruption crashed the process`);
 
-      await stop(server, 'SIGKILL');
+      await stop(server);
       writeCatalogRecord(resourceDatabase, 'repository', repositoryId, repositoryRecord);
       server = start(directory);
       await ready(server);
+      await driveSession(session.body.id, `recover ${name} Repository catalog`, 200);
       // Cause/effect decision table for every corruption rule:
-      // corrupt catalog + HTTP ready => one failed Prepared attempt;
-      // restored catalog + HTTP ready => wait for that same generation to
-      // become Active; listener readiness alone is not a recovery receipt.
+      // corrupt catalog + Run demand => admission rejects before an attempt;
+      // restored catalog + Run demand => that same generation becomes Active;
+      // listener readiness alone is never a Worker recovery receipt.
       const repaired = await waitForValue(
         () => sessionResources(sessionsDatabase, session.body.id),
         (resources) => resources.pending === undefined
@@ -353,13 +412,14 @@ async function main() {
       );
       assert.equal(repaired.pending, undefined, `${name}: repaired generation did not commit`);
       assert.equal(repaired.activations.at(-1).state, 'active', name);
-      assert.equal(repaired.activations.at(-1).attempts, 2, name);
+      assert.equal(repaired.activations.at(-1).attempts, 1, name);
       assert.equal(repaired.activations.at(-1).last_error, undefined, name);
     }
 
     console.log('E2E PASS: corrupt Memory and Repository aggregates fail closed and the same snapshot later recovers.');
   } finally {
     await stop(server).catch(() => {});
+    await upstream.close();
     fs.rmSync(directory, { recursive: true, force: true });
   }
 }

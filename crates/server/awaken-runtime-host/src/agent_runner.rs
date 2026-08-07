@@ -129,7 +129,7 @@ impl awaken_runtime_contract::CredentialRealizationRecorder for ChildCredentialR
     }
 }
 
-fn child_attempt_executor(
+pub(crate) fn child_attempt_executor(
     runtime: Arc<awaken_runtime::Runtime>,
     snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
     adapters: &ChildExecutionAdapters,

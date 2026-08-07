@@ -80,7 +80,7 @@ log "1/10 build production roles and the protocol-only Provider fixture"
 if [ "${ADR71_REUSE_IMAGE:-0}" != "1" ]; then
   CONTROL_BIN=$(resolve_cargo_executable awaken-cli awaken-control)
   COORDINATOR_BIN=$(resolve_cargo_executable awaken-cli awaken-coordinator)
-  WORKER_BIN=$(resolve_cargo_executable awaken-worker awaken-worker)
+  WORKER_BIN=$(resolve_cargo_executable awaken-worker awaken-worker --features container-k8s)
   SCENARIO_BIN=$(resolve_cargo_executable awaken-scenario-host awaken-scenario-host)
   [ -n "$CONTROL_BIN" ] && [ -n "$COORDINATOR_BIN" ] && [ -n "$WORKER_BIN" ] && [ -n "$SCENARIO_BIN" ] \
     || { err "could not resolve executables"; exit 1; }
@@ -95,6 +95,7 @@ if [ "${ADR71_REUSE_IMAGE:-0}" != "1" ]; then
 fi
 
 log "2/10 create three K3S worker nodes and import immutable test images"
+"$REPO_ROOT/deploy/images/sandbox/build.sh" --ensure-hand awaken-sandbox:local ""
 if [ "${ADR71_REUSE_IMAGE:-0}" = "1" ]; then
   docker image inspect "$IMAGE" >/dev/null 2>&1 \
     || { err "ADR71_REUSE_IMAGE requires an existing $IMAGE"; exit 1; }
@@ -106,7 +107,7 @@ fi
 IMAGE_ID=$(docker image inspect "$IMAGE" --format '{{.Id}}')
 echo "using immutable test image $IMAGE_ID"
 k3d_create_cluster "$CLUSTER" 3 1
-k3d_import_images "$CLUSTER" "$IMAGE" postgres:16 nginx:1.27-alpine
+k3d_import_images "$CLUSTER" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
 # Cause/effect decision table: D1 one default CoreDNS replica + its node stops ->
 # replacement application Pods cannot resolve authority Services; D2 two replicas
 # + the built-in hostname spread constraint -> one node loss retains DNS; D3 fewer
@@ -119,6 +120,30 @@ DNS_NODES=$(kubectl -n kube-system get pod -l k8s-app=kube-dns \
 [ "$DNS_NODES" = "2" ] || { err "CoreDNS is not ready on two distinct nodes"; exit 1; }
 kubectl create namespace "$NS" >/dev/null 2>&1 || true
 
+# Kube-API egress cause/effect decision table: A1 a CNI evaluates the Service
+# ClusterIP before DNAT -> a ClusterIP rule may work but is not portable; A2 it
+# evaluates the backend after DNAT (K3S) -> that same rule silently blocks every
+# Session Pod operation; A3 the harness resolves the authoritative Endpoint and
+# admits only its exact IP/port -> the Worker K8s adapter can operate while all
+# other HTTPS egress remains denied. The namespace-scoped ServiceAccount remains
+# the independent authorization fence. Invalid coordinates fail before apply.
+KUBE_API_IP=$(kubectl get endpoints kubernetes -o jsonpath='{.subsets[0].addresses[0].ip}')
+KUBE_API_PORT=$(kubectl get endpoints kubernetes -o jsonpath='{.subsets[0].ports[0].port}')
+[[ "$KUBE_API_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] \
+  && [[ "$KUBE_API_PORT" =~ ^[0-9]+$ ]] \
+  || { err "invalid Kubernetes API endpoint ${KUBE_API_IP}:${KUBE_API_PORT}"; exit 1; }
+kubectl -n "$NS" apply -f - >/dev/null <<YAML
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: worker-kube-api }
+spec:
+  podSelector: { matchLabels: { app: worker } }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ ipBlock: { cidr: "${KUBE_API_IP}/32" } }]
+      ports: [{ protocol: TCP, port: ${KUBE_API_PORT} }]
+YAML
+
 log "3/10 deploy replicated authorities, real Workers, and PostgreSQL standby"
 # Cause/effect decision table:
 # K1 delayed primary Service + bounded base-backup reconnect -> standby retries
@@ -126,8 +151,9 @@ log "3/10 deploy replicated authorities, real Workers, and PostgreSQL standby"
 # K2 primary + streaming standby + bounded per-replica pools -> all four owner
 # databases migrate without exhausting the shared server connection budget;
 # K3 two anti-affined role replicas -> one Pod/node loss leaves an endpoint;
-# K4 Worker template + identity-specific signer + exact CSI-style projection ->
-# real Worker starts without seal key/DB and can resolve Credential/File/Memory/Skill;
+# K4 Worker template + identity-specific signer + namespace-scoped K8s runtime ->
+# real Worker starts without seal key/DB, creates an isolated Session Pod, and
+# resolves exact Credential/File/Memory/Skill projections there;
 # K5 one Ingress -> public paths route by owner and every private path stays absent.
 kubectl -n "$NS" apply -k "$DEPLOY_DIR/distributed-control" >/dev/null
 kubectl -n "$NS" rollout status statefulset/postgres-primary --timeout=180s
@@ -153,12 +179,35 @@ for pod in worker-0 worker-1; do
   kubectl -n "$NS" exec "$pod" -- /bin/sh -ec \
     '! grep -q ":1538 " /proc/net/tcp /proc/net/tcp6 2>/dev/null'
 done
-REALIZED=$(kubectl -n "$NS" exec worker-0 -- /bin/sh -ec \
-  "grep -R -l -E 'ADR71-(FILE|MEMORY|SKILL)-MATERIALIZED' /var/lib/awaken 2>/dev/null || true")
-REALIZED+=$(kubectl -n "$NS" exec worker-1 -- /bin/sh -ec \
-  "grep -R -l -E 'ADR71-(FILE|MEMORY|SKILL)-MATERIALIZED' /var/lib/awaken 2>/dev/null || true")
-[ -n "$REALIZED" ] || { err "no Worker sandbox contained the pinned Resource markers"; diagnostics; exit 1; }
-ok "Workers have no DB socket/config/seal and realized snapshot-pinned resources"
+# Materialization-location decision table: M1 a Managed File path is normalized
+# below the one live-input root; M2 a Memory mount is rooted below the container
+# workspace's `.mnt`; M3 an explicitly filesystem-backed Skill is projected into
+# the runtime-owned `.skills`; M4 an instruction-only Skill has no filesystem
+# effect and therefore cannot prove materialization. This fixture selects
+# M1+M2+M3 and probes each canonical path independently in the isolated Session
+# Pod. An absent path or content mismatch fails instead of accepting a marker
+# found in an unrelated Resource tree.
+SESSION_PODS=$(kubectl -n "$NS" get pods -l app=awaken-sandbox \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+[ -n "$SESSION_PODS" ] || { err "no isolated Session Pod realized the run"; diagnostics; exit 1; }
+while IFS='|' read -r kind path marker; do
+  found=0
+  while IFS= read -r pod; do
+    if kubectl -n "$NS" exec "$pod" -c agent -- /bin/sh -ec \
+      'test -f "$1" && grep -Fqx -- "$2" "$1"' \
+      awaken-materialization-probe "$path" "$marker"; then
+      found=1
+      break
+    fi
+  done <<<"$SESSION_PODS"
+  [ "$found" = "1" ] \
+    || { err "no Session Pod contained the pinned ${kind} marker"; diagnostics; exit 1; }
+done <<'MATERIALIZATION_CASES'
+FILE|/mnt/session/uploads/inputs/adr71-input.txt|ADR71-FILE-MATERIALIZED
+MEMORY|/workspace/.mnt/memory/fact.md|ADR71-MEMORY-MATERIALIZED
+SKILL|/workspace/.skills/adr71-skill/SKILL.md|ADR71-SKILL-MATERIALIZED
+MATERIALIZATION_CASES
+ok "Workers have no DB socket/config/seal; the Session Pod owns every exact Resource projection"
 
 log "6/10 remove the entire Coordinator tier, then recover the same publication"
 # C1 Coordinator unavailable -> public publication fails retryably and Workers
@@ -185,22 +234,31 @@ ok "Coordinator outage failed closed; RestartPolicy restored fresh Worker incarn
 
 log "7/10 inject single-Pod and in-flight Worker chaos"
 # Cause/effect decision table:
-# C1 one authority Pod removed -> the other replica serves the same durable IDs;
+# C1 one Control/Coordinator Pod removed -> the peer serves the same durable IDs;
 # C2 peer Coordinator commits a Run -> the request owner reads the canonical
 # recovery snapshot and projects exactly one assistant response (never idle-only);
-# C3 Worker dies after claims -> leases are reclaimed, old epochs are fenced, and
-# every accepted marker reaches one and only one terminal Provider response.
+# C3 both Provider replicas are stable + Worker dies after claims -> leases are
+# reclaimed, old epochs are fenced, and every accepted marker reaches one and
+# only one terminal Provider response;
+# C4 Worker recovery is complete + one Provider Pod is removed -> the surviving
+# Provider replica completes exactly one new turn. Ordering C3 before C4 is part
+# of the decision table: Pod readiness cannot erase an already-open/stale HTTP
+# connection in every surviving Worker pool, so reversing them silently creates
+# a compound Provider-transport + Worker fault while asserting single-fault
+# success. Compound dependency exhaustion has its own typed terminal semantics.
 kubectl -n "$NS" delete pod "$(kubectl -n "$NS" get pod -l app=control -o jsonpath='{.items[0].metadata.name}')" --grace-period=0 --force >/dev/null 2>&1
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-CONTROL-LOSS
 kubectl -n "$NS" delete pod "$(kubectl -n "$NS" get pod -l app=coordinator -o jsonpath='{.items[0].metadata.name}')" --grace-period=0 --force >/dev/null 2>&1
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-COORDINATOR-LOSS
-kubectl -n "$NS" delete pod "$(kubectl -n "$NS" get pod -l app=provider -o jsonpath='{.items[0].metadata.name}')" --grace-period=0 --force >/dev/null 2>&1
-node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-PROVIDER-LOSS
+wait_roles || { diagnostics; exit 1; }
 node "$DRIVER" batch "$API_URL" "$SESSION_ID" "$ENVIRONMENT_ID" ADR71-CHAOS-SLOW 12 &
 BATCH_PID=$!
 sleep 1
 kubectl -n "$NS" delete pod worker-0 --grace-period=0 --force >/dev/null 2>&1
 wait "$BATCH_PID"
+wait_roles || { diagnostics; exit 1; }
+kubectl -n "$NS" delete pod "$(kubectl -n "$NS" get pod -l app=provider -o jsonpath='{.items[0].metadata.name}')" --grace-period=0 --force >/dev/null 2>&1
+node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-PROVIDER-LOSS
 wait_roles || { diagnostics; exit 1; }
 ok "Pod loss and an in-flight Worker crash preserved exactly-once terminal responses"
 
@@ -208,9 +266,11 @@ log "8/10 stop one K3D agent node and verify public continuity"
 # Cause/effect decision table:
 # N1 hard node stop + Ready still True -> no business write during the detection window;
 # N2 Ready False/Unknown -> failed role endpoints are evicted; N2b a StatefulSet
-# Worker object can remain Terminating while its kubelet is unreachable, so after
-# the node fence proves that process cannot execute, force-removing only that stale
-# API object permits the same lease-fenced ordinal to restart on a healthy node;
+# Worker or Session-owned sandbox object can remain apparently Ready/Terminating
+# while its kubelet is unreachable, so after the physical node fence proves those
+# processes cannot execute, force-removing those stale API objects permits the same
+# lease-fenced Worker ordinal and durable Session environment to restart on a
+# healthy node;
 # N3 the surviving spread CoreDNS replica resolves replacement dependencies and
 # every application role becomes Ready again;
 # N4 stable public GETs -> issue the non-idempotent Event exactly once;
@@ -248,6 +308,17 @@ while read -r failed_worker failed_node; do
     --grace-period=0 --force >/dev/null 2>&1
 done < <(kubectl -n "$NS" get pod -l app=worker \
   -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeName --no-headers)
+# Session environments are deterministic, standalone Pods rather than a
+# Deployment/StatefulSet. A stopped kubelet cannot acknowledge their ordinary
+# deletion, and their stale Ready bit would otherwise make adoption repeatedly
+# exec into a process that is physically gone. Delete only Pods observed on the
+# already-fenced node; the durable Session binding and realization digest remain
+# the authority used to rebuild the exact environment on the next claim.
+while read -r failed_sandbox failed_node; do
+  [ "$failed_node" != "$STOPPED_NODE" ] || kubectl -n "$NS" delete pod "$failed_sandbox" \
+    --grace-period=0 --force >/dev/null 2>&1
+done < <(kubectl -n "$NS" get pod -l app=awaken-sandbox \
+  -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeName --no-headers)
 # Wait for that canonical Kubernetes state transition before reconnecting the
 # black-box client; the public API assertions below still use no private route.
 # `kubectl port-forward service/...` selects one backing Pod when it starts. If
@@ -274,8 +345,9 @@ kubectl wait --for=condition=Ready "node/$RESTORED_NODE" --timeout=180s
 
 log "9/10 promote the replayed PostgreSQL standby behind the stable service"
 # D1 standby has replayed the observed writer LSN -> promotion is lossless for
-# accepted durable facts; D2 writer Pod removed + Service atomically retargeted ->
-# clients reconnect through the same DB name; D3 API write/read -> no stale truth.
+# accepted durable facts; D2 writer Pod removed + promoted standby atomically
+# relabelled as the one primary -> the unchanged Service and NetworkPolicy both
+# retarget to the same new writer; D3 API write/read -> no stale truth.
 PRIMARY_LSN=$(kubectl -n "$NS" exec postgres-primary-0 -- psql -U postgres -d awaken -tAc 'SELECT pg_current_wal_lsn()' | tr -d '[:space:]')
 for _ in $(seq 1 120); do
   REPLAYED=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d awaken -tAc \
@@ -288,7 +360,7 @@ kubectl -n "$NS" scale statefulset/postgres-primary --replicas=0 >/dev/null
 kubectl -n "$NS" wait --for=delete pod/postgres-primary-0 --timeout=120s
 kubectl -n "$NS" exec postgres-standby-0 -- \
   gosu postgres pg_ctl promote -D /var/lib/postgresql/data/pgdata -w
-kubectl -n "$NS" patch service postgres --type merge -p '{"spec":{"selector":{"database-role":"standby"}}}' >/dev/null
+kubectl -n "$NS" label pod postgres-standby-0 database-role=primary --overwrite >/dev/null
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-DATABASE-FAILOVER
 
 log "10/10 run concurrent pressure through the same endpoint and audit final truth"

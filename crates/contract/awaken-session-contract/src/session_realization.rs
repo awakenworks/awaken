@@ -68,6 +68,13 @@ pub struct SessionRealizationTarget {
     /// clock alone cannot turn unrelated realization work into a renewal.
     #[serde(default)]
     pub renew_existing_lease: bool,
+    /// Explicitly replace a live lease owned by another logical Runtime.
+    /// Only a topology edge holding the current execution claim may set this;
+    /// ordinary application callers leave it false and therefore cannot steal
+    /// a live Session projection. Renewal and reassignment are mutually
+    /// exclusive operations.
+    #[serde(default)]
+    pub reassign_existing_lease: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]

@@ -164,34 +164,39 @@ async function main() {
     const lateGuardError = await upload('late-guard-error', 'late-guard-error.txt');
     const saveConflict = await upload('save-conflict', 'save-conflict.txt');
     const saveFailure = await upload('save-failure', 'save-failure.txt');
-    // Fault-injection identity decision table: File API calls use logical ids;
-    // lifecycle fences/references and blob triggers use the content-addressed
-    // physical id. Resolve that mapping once so no fault silently targets the
-    // wrong aggregate. Skill ids are already physical lifecycle identities.
-    const fileBlobs = new Map([
+    const filesUnderReclamation = [
       releaseFailure,
       contended,
       lateReference,
       durableBlockers,
       corruptReference,
       alreadyOwned,
-      fencedBinding,
       physicalFailure,
       combinedFailure,
       lateGuardError,
       saveConflict,
       saveFailure,
-    ].map((fileId) => [fileId, blobForFile(files, fileId)]));
+    ];
+    // Fault-injection identity decision table: File API calls use logical ids;
+    // lifecycle fences/references and blob triggers use the content-addressed
+    // physical id. Resolve that mapping once so no fault silently targets the
+    // wrong aggregate. Skill ids are already physical lifecycle identities.
+    const fileBlobs = new Map(
+      [...filesUnderReclamation, fencedBinding]
+        .map((fileId) => [fileId, blobForFile(files, fileId)]),
+    );
     const blob = (fileId) => fileBlobs.get(fileId);
     const skillId = `fault-skill-${process.pid}`;
     assert.equal((await json('POST', 'skills', {
       id: skillId,
       content: `---\nname: ${skillId}\ndescription: fault recovery\n---\nRecover safely.`,
     })).status, 200);
-    // Hold the Skill before logical deletion so the live reclaimer cannot win
-    // the race and physically purge its tombstone before the process is killed.
-    // After the crash this hold is atomically replaced by the foreign fence used
-    // by the fault campaign below.
+    // Fault-campaign admission table: C1 logical delete is durable; C2 the live
+    // reclaimer may race before fault installation; C3 a durable retention hold
+    // covers every target. C1+C2+!C3 can silently complete and invalidate the
+    // intended rule; C1+C2+C3 remains Pending. Remove the one common hold only
+    // after the crash and fault installation so every rule reaches its named
+    // fence/guard/storage/physical failure.
     sqlite(
       lifecycle,
       `INSERT INTO resource_lifecycle_references(
@@ -199,22 +204,16 @@ async function main() {
        ) VALUES (
          ${sqlQuote(WORKSPACE)}, 'skill', ${sqlQuote(skillId)},
          'retention_hold', 'fault-injection-hold'
-       );`,
+       );
+       INSERT INTO resource_lifecycle_references(
+         workspace_id, resource_kind, resource_id, reference_kind, reference_id
+       ) VALUES ${filesUnderReclamation.map((fileId) => `(
+         ${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(blob(fileId))},
+         'retention_hold', 'fault-injection-hold'
+       )`).join(',')};`,
     );
 
-    for (const fileId of [
-      releaseFailure,
-      contended,
-      lateReference,
-      durableBlockers,
-      corruptReference,
-      alreadyOwned,
-      physicalFailure,
-      combinedFailure,
-      lateGuardError,
-      saveConflict,
-      saveFailure,
-    ]) {
+    for (const fileId of filesUnderReclamation) {
       assert.equal((await json('DELETE', `files/${fileId}`)).status, 200);
     }
     assert.equal((await json('DELETE', `skills/${skillId}`)).status, 200);
@@ -243,6 +242,11 @@ async function main() {
           VALUES ('file', ${sqlQuote(blob(contended))}, 'external-reclaimer');
         DELETE FROM resource_lifecycle_references
           WHERE resource_kind = 'skill' AND resource_id = ${sqlQuote(skillId)}
+            AND reference_kind = 'retention_hold'
+            AND reference_id = 'fault-injection-hold';
+        DELETE FROM resource_lifecycle_references
+          WHERE resource_kind = 'file'
+            AND resource_id IN (${filesUnderReclamation.map((fileId) => sqlQuote(blob(fileId))).join(',')})
             AND reference_kind = 'retention_hold'
             AND reference_id = 'fault-injection-hold';
         INSERT INTO resource_lifecycle_reclamation_fences(resource_kind, resource_id, intent_id)

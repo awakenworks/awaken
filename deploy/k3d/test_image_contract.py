@@ -18,21 +18,29 @@ def main() -> None:
     mkdir = next(line for line in install.splitlines() if "mkdir -p" in line)
     for mount_point in ("/workspace", "/outputs"):
         assert mount_point in mkdir, f"K3D product image is missing mount point: {mount_point}"
-    # I3 Coordinator and Worker are separate deployables -> the combined
-    # black-box fixture image must copy those exact artifacts, not route either
-    # role through the management CLI auxiliary slot.
+    # I3 migrations, Coordinator and Worker are separate production deployables ->
+    # the combined black-box fixture image must copy those exact artifacts, not
+    # route any role through the management CLI auxiliary slot. The long-running
+    # Control Pod intentionally uses the scenario adapter asserted by I4 below so
+    # only its model-publication dependency is deterministic.
     assert "ARG AUXILIARY_EXECUTABLE=awaken-control" in dockerfile
     assert "COPY ${AUXILIARY_EXECUTABLE} /usr/local/bin/${AUXILIARY_EXECUTABLE}" in dockerfile
     assert "COPY awaken-coordinator /usr/local/bin/awaken-coordinator" in dockerfile
     assert "COPY awaken-worker /usr/local/bin/awaken-worker" in dockerfile
     resources = (Path(__file__).parent / "distributed-control" / "resources.yaml").read_text()
     assert '/usr/local/bin/awaken-control", "database", "migrate"' in resources
-    assert '/usr/local/bin/awaken-control", "--config"' in resources
+    assert 'command: ["/usr/local/bin/awaken-server"]' in resources
     assert '/usr/local/bin/awaken-coordinator", "database", "migrate"' in resources
     assert '/usr/local/bin/awaken-coordinator", "--config"' in resources
     assert '/usr/local/bin/awaken", "coordinator"' not in resources
     assert '/usr/local/bin/awaken", "database", "migrate"' not in resources
-    assert "AWAKEN_MODEL_MODE, value: distributed-control" not in resources
+    # I4 the deterministic Control fixture changes only the publication resolver:
+    # the scenario adapter consumes the deployment's one explicit Control config
+    # and assembles the canonical split-Control application. The former HOME
+    # config mirror would make the command and mounted source disagree.
+    assert "AWAKEN_MODEL_MODE, value: distributed-control" in resources
+    assert "AWAKEN_SCENARIO_CONFIG, value: /etc/awaken/control.toml" in resources
+    assert "/etc/awaken-home" not in resources
     worker_image = (
         Path(__file__).parent.parent / "images" / "worker" / "Dockerfile"
     ).read_text()

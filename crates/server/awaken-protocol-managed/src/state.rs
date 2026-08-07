@@ -182,6 +182,7 @@ mod tests {
             awaken_session_application::SessionApplicationConfiguration {
                 execution_placement:
                     awaken_session_application::SessionExecutionPlacement::RegisteredWorker,
+                ..Default::default()
             },
         );
         let state = ManagedState::from_application(application);
@@ -198,6 +199,11 @@ mod tests {
             .get(&created.id)
             .await
             .expect("P1 durable aggregate");
+
+        assert_eq!(
+            created.status, "preparing",
+            "P1 durable status owns wire status"
+        );
 
         assert!(
             persisted

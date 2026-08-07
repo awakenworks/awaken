@@ -9,17 +9,22 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { spawnProduction, stopServer, waitForPort, waitForValue } from './harness.mjs';
+import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import { sqliteExec, sqliteRows } from './sqlite.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38436);
 const WORKSPACE = `activation-recovery-${process.pid}`;
+const AGENT = 'activation-recovery-agent';
+const MODEL = 'activation-recovery-model';
+const FAKE_KEY = 'sk-activation-recovery-fake'; // awaken-allow: secret
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function start(directory) {
   return spawnProduction(directory, PORT, {
     workspace: WORKSPACE,
     controlSealKey: '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
+    fields: { sandbox_tier: 'namespace' },
   });
 }
 
@@ -45,6 +50,36 @@ async function json(method, url, body) {
   });
   const text = await response.text();
   return { status: response.status, body: text ? JSON.parse(text) : null };
+}
+
+async function authorModel(upstream) {
+  const provider = await json('POST', scoped('config/provider-connections'), {
+    idempotency_key: 'activation-recovery-provider',
+    workspace_id: WORKSPACE,
+    provider_id: 'anthropic',
+    display_name: 'Anthropic',
+    dialect: 'anthropic_messages',
+    base_url: `${upstream.url}/v1/`,
+    timeout_secs: 30,
+    secret: FAKE_KEY,
+  });
+  assert.equal(provider.status, 201, JSON.stringify(provider.body));
+  const agent = await json('PUT', scoped(`config/agents/${AGENT}`), {
+    name: AGENT, model: { id: MODEL }, system: 'resource recovery', max_steps: 2,
+  });
+  assert.equal(agent.status, 200, JSON.stringify(agent.body));
+  const publication = await json('POST', scoped(`config/agents/${AGENT}/publish`));
+  assert.equal(publication.status, 200, JSON.stringify(publication.body));
+}
+
+async function driveSession(sessionId, text) {
+  const response = await json('POST', scoped(`sessions/${sessionId}/events`), {
+    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
+  });
+  // Demand-driver decision rule: a published model + valid Run demand -> 200
+  // only after the Worker realizes the exact Resource generation and inference
+  // commits. Every error remains visible instead of being treated as recovery.
+  assert.equal(response.status, 200, JSON.stringify(response.body));
 }
 
 async function upload(content, filename) {
@@ -157,14 +192,21 @@ function persistLegacyManifest(database, sessionId) {
   assert.equal(row.status, 'idle');
   assert.equal(row.resources.pending, undefined);
   assert.ok(row.resources.active.inputs.length > 0);
-  // Exercise the retained one-way row decoder deliberately: legacy resource
-  // manifests exist only in retained columns, never inside aggregate_json.
-  // Use the shared in-process SQLite helper so this crash-window mutation has
-  // identical behavior on developer machines without an external sqlite3 CLI.
+  // Exercise the retained one-way row decoder deliberately: a genuine legacy
+  // row owns Agent, model, Environment, and resource facts in retained columns,
+  // never inside aggregate_json. A canonical-era row deliberately leaves those
+  // columns blank, so nulling only aggregate_json would fabricate storage
+  // corruption rather than a historical row. Preserve the complete legacy
+  // causes here so recovery tests the supported migration contract.
+  //
+  // Legacy-row decision rule: aggregate absent + retained identity complete =>
+  // decode and adopt once; aggregate absent + identity absent is corruption and
+  // must not be described as a successful legacy recovery.
   sqliteExec(
     database,
     `UPDATE managed_session
-       SET aggregate_json=NULL, status='idle', archived_at=NULL,
+       SET aggregate_json=NULL, agent_id=${sqlQuote(AGENT)}, model=${sqlQuote(MODEL)},
+           environment_id='env_local', status='idle', archived_at=NULL,
            effective_inputs_json=${sqlQuote(JSON.stringify(row.resources.active))}
        WHERE session_id=${sqlQuote(sessionId)}`,
   );
@@ -215,6 +257,7 @@ async function waitRepositoryReceipt(directory, resourceId) {
 
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-activation-recovery-'));
+  const upstream = await startFakeAnthropic(FAKE_KEY, { models: [MODEL] });
   const sessionsDatabase = path.join(directory, 'sessions.db');
   // Resource Catalog and lifecycle are independently migrated aggregates owned
   // by the one Resources component and persisted in its one database.
@@ -222,23 +265,24 @@ async function main() {
   let server = start(directory);
   try {
     await ready();
+    await authorModel(upstream);
 
     const malformed = await json('POST', scoped('sessions'), {
-      agent: 'assistant',
+      agent: AGENT,
       resources: [{ type: 'unsupported-resource' }],
     });
     assert.equal(malformed.status, 400);
 
     const fileId = await upload('recover this binding', 'recovery.txt');
     const recovering = await json('POST', scoped('sessions'), {
-      agent: 'assistant',
+      agent: AGENT,
       environment_id: 'env_local',
       resources: [{ type: 'file', file_id: fileId, mount_path: '/workspace/recovery.txt' }],
     });
     assert.equal(recovering.status, 200, JSON.stringify(recovering.body));
 
     const legacy = await json('POST', scoped('sessions'), {
-      agent: 'assistant',
+      agent: AGENT,
       environment_id: 'env_local',
       resources: [{ type: 'file', file_id: fileId, mount_path: '/workspace/legacy.txt' }],
     });
@@ -246,7 +290,7 @@ async function main() {
 
     const repository = seedRepository(directory);
     const terminating = await json('POST', scoped('sessions'), {
-      agent: 'assistant',
+      agent: AGENT,
       environment_id: 'env_local',
       resources: [{
         type: 'github_repository',
@@ -257,7 +301,7 @@ async function main() {
     assert.equal(terminating.status, 200, JSON.stringify(terminating.body));
 
     const inconsistent = await json('POST', scoped('sessions'), {
-      agent: 'assistant',
+      agent: AGENT,
       environment_id: 'env_local',
       resources: [{ type: 'file', file_id: fileId, mount_path: '/workspace/inconsistent.txt' }],
     });
@@ -266,7 +310,7 @@ async function main() {
     const cleanupCases = [];
     for (const name of ['catalog-read', 'purge-schedule', 'catalog-write', 'already-gone']) {
       const created = await json('POST', scoped('sessions'), {
-        agent: 'assistant',
+        agent: AGENT,
         environment_id: 'env_local',
         resources: [{
           type: 'github_repository',
@@ -281,6 +325,35 @@ async function main() {
         repositoryId: `managed:${created.body.id}:repository:0`,
       });
     }
+
+    // Initial-realization cause/effect table: C1 listener ready; C2 a real Run
+    // is claimed by the registered Worker; C3 every initial Resource generation
+    // is Active. C1 alone legitimately leaves a demand-driven remote projection
+    // `preparing`; only C1+C2+C3 is a valid baseline for injecting a later
+    // replacement/release crash window.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // |---|---|---|---|---|
+    // | B1 | yes | no | no | retain Prepared; no Coordinator-side effect |
+    // | B2 | yes | yes | yes | stable idle baseline; crash injection is valid |
+    const baselineSessionIds = [
+      recovering.body.id,
+      legacy.body.id,
+      terminating.body.id,
+      inconsistent.body.id,
+      ...cleanupCases.map((cleanup) => cleanup.sessionId),
+    ];
+    for (const sessionId of baselineSessionIds) {
+      await driveSession(sessionId, `establish active baseline for ${sessionId}`);
+    }
+    await waitForValue(
+      () => baselineSessionIds.map((sessionId) => sessionRow(sessionsDatabase, sessionId)),
+      (rows) => rows.every((row) => row.status === 'idle'
+        && row.resources.pending === undefined
+        && row.resources.activations.every((activation) => activation.state === 'active')),
+      'initial Resource generations did not converge before crash injection',
+      { timeoutMs: 45_000 },
+    );
 
     // Model process death after each first durable edge: Prepared for a live
     // replacement, and Releasing for a terminal Session. These are precisely
@@ -329,20 +402,29 @@ async function main() {
     server = start(directory);
     await ready();
 
-    // Cause/effect graph: listener readiness starts one authoritative background
-    // realization supervisor; it does not imply that durable recovery has
-    // completed. A Prepared generation (C1) therefore remains pending until the
-    // supervisor realizes it (E1), while a terminal Releasing generation (C2)
-    // remains fenced until teardown completes (E2).
+    // Recovery cause/effect graph: listener readiness starts the authoritative
+    // Coordinator supervisor but cannot perform Worker-owned physical effects.
+    // A Prepared remote generation (C1) therefore remains pending until a real
+    // Run demand is claimed (C2), then the Worker realizes that exact generation
+    // (E1). A terminal Releasing generation (C3) is Coordinator cleanup work and
+    // converges in the background (E2).
     //
     // Decision table:
-    // | Rule | durable state | HTTP ready | required observation             |
-    // | R1   | Prepared      | yes        | wait for Active + no pending     |
-    // | R2   | Releasing     | yes        | wait for Released                |
-    // | R3   | faulted edge  | yes        | remains Releasing until repaired |
+    // | Rule | durable state | HTTP ready | Run demand | required observation |
+    // | R1   | Prepared      | yes        | no | remains Prepared, no attempt |
+    // | R2   | Prepared      | yes        | yes | Active + no pending |
+    // | R3   | Releasing     | yes        | n/a | Released in background |
+    // | R4   | faulted edge  | yes        | n/a | remains Releasing until repaired |
     //
-    // The bounded durable-state waits cover R1/R2 without creating a second
-    // readiness contract or racing the sole supervisor.
+    await sleep(500);
+    const demandPending = sessionRow(sessionsDatabase, recovering.body.id);
+    assert.ok(demandPending.resources.pending, 'R1 retains the durable generation');
+    assert.equal(demandPending.resources.activations.at(-1).attempts, 0, 'R1 has no hidden effect');
+    await driveSession(recovering.body.id, 'recover prepared Resource generation');
+    await driveSession(legacy.body.id, 'adopt legacy Resource generation');
+
+    // The bounded durable-state waits cover R2/R3 without creating a second
+    // readiness contract or racing the sole supervisor/Worker claim path.
     const recovered = await waitForValue(
       () => sessionRow(sessionsDatabase, recovering.body.id),
       (row) => row.resources.pending === undefined
@@ -364,7 +446,7 @@ async function main() {
     // realizes that manifest, and upgrades it to the activation state machine.
     const legacyLookup = await json(
       'GET',
-      `http://127.0.0.1:${PORT}/v1/awaken/sessions/${legacy.body.id}/live-inbox`,
+      scoped(`awaken/sessions/${legacy.body.id}/live-inbox`),
     );
     assert.equal(legacyLookup.status, 200);
     const upgraded = sessionRow(sessionsDatabase, legacy.body.id);
@@ -459,6 +541,7 @@ async function main() {
     console.log('E2E PASS: prepared, legacy, inconsistent, and faulted terminal resource states recover after process death.');
   } finally {
     await stop(server).catch(() => {});
+    await upstream.close();
     fs.rmSync(directory, { recursive: true, force: true });
   }
 }

@@ -24,6 +24,19 @@
 // | U4 | present | malformed agent/header | invalid | 400, unchanged root |
 // | U5 | present | title change | If-Match: * | apply, new title |
 // | U6 | present | metadata null | none | clear all metadata keys |
+//
+// Terminal-lifecycle cause graph: C7 archive and delete are distinct terminal
+// commands; C8 a terminal aggregate cannot transition to another terminal
+// state. Effects: U7 archive retains a terminated tombstone; U8 delete removes
+// a live aggregate; U9 archive-then-delete is rejected without rewriting the
+// terminal fact. The family test therefore uses two independent live Sessions
+// instead of encoding the invalid `terminated -> deleted` transition as success.
+//
+// | Rule | Initial state | Command | Effect |
+// |---|---|---|---|
+// | U7 | live | archive | terminated tombstone with `archived_at` |
+// | U8 | live | delete | `session_deleted`; retrieve returns 404 |
+// | U9 | terminated | delete | 404; archived tombstone remains authoritative |
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
@@ -234,14 +247,28 @@ async function main() {
       // -- archive + delete --------------------------------------------------
       const archived = await client.beta.sessions.archive(session.id, { betas: BETAS });
       assert.ok(archived.archived_at, 'archived session carries archived_at');
+      await assert.rejects(
+        () => client.beta.sessions.delete(session.id, { betas: BETAS }),
+        (err) => err.status === 404,
+        'U9 cannot rewrite an archived terminal fact as deleted',
+      );
 
-      const del = await client.beta.sessions.delete(session.id, { betas: BETAS });
+      const deletionCandidate = await client.beta.sessions.create({
+        agent: 'assistant',
+        title: 'delete candidate',
+        betas: BETAS,
+      });
+      const del = await client.beta.sessions.delete(deletionCandidate.id, { betas: BETAS });
       assert.equal(del.type, 'session_deleted');
       await assert.rejects(
-        () => client.beta.sessions.retrieve(session.id, { betas: BETAS }),
+        () => client.beta.sessions.retrieve(deletionCandidate.id, { betas: BETAS }),
         (err) => err.status === 404,
       );
-      pass('beta.sessions.archive / delete -> DeletedSession; retrieve 404s after');
+      assert.ok(
+        (await client.beta.sessions.retrieve(session.id, { betas: BETAS })).archived_at,
+        'U9 rejected delete preserves the archived tombstone',
+      );
+      pass('U7-U9 archive/delete terminal decision table');
     });
 
     console.log('E2E PASS: the sessions family (update/list/delete/archive + threads + resources) round-trips through @anthropic-ai/sdk.');

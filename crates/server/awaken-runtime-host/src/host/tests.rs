@@ -7,7 +7,7 @@ use awaken_session_contract::SessionRuntime;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicUsize, Ordering},
 };
 
 fn native_credential_profile() -> awaken_runtime_contract::CredentialRealizationProfile {
@@ -56,7 +56,6 @@ pub(super) struct TestResourceLifecycle {
     intents: Mutex<BTreeMap<String, awaken_resource_contract::ResourcePurgeIntent>>,
     references: Mutex<BTreeSet<awaken_resource_contract::ResourceReferenceRecord>>,
     fences: Mutex<BTreeMap<(awaken_resource_contract::ResourceKind, String), String>>,
-    fail_replace: AtomicBool,
 }
 
 #[async_trait::async_trait]
@@ -141,11 +140,6 @@ impl awaken_resource_contract::ResourceReferenceIndex for TestResourceLifecycle 
         reference_id: &str,
         records: Vec<awaken_resource_contract::ResourceReferenceRecord>,
     ) -> Result<(), awaken_resource_contract::ResourcePurgeError> {
-        if self.fail_replace.load(Ordering::SeqCst) {
-            return Err(awaken_resource_contract::ResourcePurgeError::Storage(
-                "injected reference replacement failure".into(),
-            ));
-        }
         let mut references = self.references.lock().unwrap();
         references.retain(|record| {
             record.reference.kind != kind || record.reference.reference_id != reference_id
@@ -2377,84 +2371,6 @@ async fn applying_repository_detach_removes_the_resident_workdir_checkout() {
     );
 }
 
-/// Live replacement commit-failure decision table:
-/// | physical realization | reference/manifest commit | effect |
-/// |---|---|---|
-/// | succeeds | fails | old logical manifest remains; realized target is retryable |
-/// | succeeds again | succeeds | desired manifest commits exactly once |
-///
-/// Constraint: the persisted Session owns the pending generation and retries the
-/// complete replacement. Rule C1 proves Runtime ordering does not turn a transient
-/// commit failure into a permanently missing mount on that retry.
-#[tokio::test]
-async fn live_mount_realization_precedes_logical_commit_and_retry_converges() {
-    use awaken_session_contract::SessionRuntime;
-
-    let lifecycle = Arc::new(TestResourceLifecycle::default());
-    let mut raw_host =
-        SharedHost::new(Arc::new(OkModel), "stub").with_resource_lifecycle(lifecycle.clone());
-    raw_host.session_provider =
-        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
-            std::env::temp_dir().join(format!("awaken-hot-attach-retry-{}", std::process::id())),
-            false,
-        );
-    let host = Arc::new(raw_host);
-    let managed = managed_with_resource_source(host.clone());
-    host.run(
-        None,
-        "t-attach-retry",
-        vec![Message::text(MessageId("initial".into()), Role::User, "hi")],
-    )
-    .await
-    .expect("first turn");
-    let environment = host
-        .session_environment("t-attach-retry")
-        .await
-        .expect("live Namespace environment");
-    let file_id = host
-        .file_application()
-        .expect("test composition installs File application")
-        .create_uploaded_file(
-            host.local_workspace(),
-            "retry.txt".into(),
-            "text/plain".into(),
-            b"retry-safe",
-        )
-        .await
-        .expect("create File")
-        .id;
-    let desired = effective_resources(vec![TestInput {
-        kind: "file".into(),
-        id: file_id,
-        mount_path: "/retry.txt".into(),
-        access: awaken_resource_contract::ResourceAccess::ReadOnly,
-        instructions: None,
-        initial_branch: None,
-        initial_commit: None,
-    }]);
-
-    lifecycle.fail_replace.store(true, Ordering::SeqCst);
-    managed
-        .apply_session_inputs("t-attach-retry", host.local_workspace(), 1, &desired)
-        .await
-        .expect_err("injected logical commit failure");
-    assert!(host.sandbox_spec("t-attach-retry").mounts.is_empty());
-    assert_eq!(
-        environment
-            .list_files("/mnt/session/uploads")
-            .await
-            .unwrap(),
-        vec![("retry.txt".into(), b"retry-safe".to_vec())]
-    );
-
-    lifecycle.fail_replace.store(false, Ordering::SeqCst);
-    managed
-        .apply_session_inputs("t-attach-retry", host.local_workspace(), 1, &desired)
-        .await
-        .expect("idempotent retry");
-    assert_eq!(host.sandbox_spec("t-attach-retry").mounts.len(), 1);
-}
-
 /// Causes: a live Workdir environment exists and the replacement manifest adds
 /// a read-only File. Constraint: Workdir provides lexical containment but cannot
 /// enforce mount immutability. Effect/rule W1: reject before changing the staged
@@ -2963,6 +2879,66 @@ async fn on_tool_use_text_only_turn_keeps_the_environment_absent() {
     .await
     .unwrap();
     assert!(host.session_environment("deferred-text").await.is_none());
+}
+
+/// Delegation/provisioning cause-effect graph: C1=`on_tool_use`; C2=the exact
+/// publication contains a delegate; C3=this Host executes locally. Effects:
+/// E1=plain inference without C2 stays deferred; E2=C1+C2+C3 creates one
+/// Session Environment before the delegation service is exposed; E3=a
+/// Coordinator-only Host remains environment-free because the claimed Worker
+/// owns E2. Decision rows L1, L9, and D1 cover E1, E2, and E3 respectively.
+#[tokio::test]
+async fn on_tool_use_published_delegate_forces_one_eager_environment() {
+    use awaken_runtime_contract::StaticPublishedAgentSnapshots;
+    use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
+    use awaken_runtime_contract::snapshot::AgentId;
+    use awaken_session_contract::{SessionInit, SessionRuntime};
+
+    let child = awaken_runtime_contract::ExecutableAgentSnapshot::builder("child").build();
+    let parent = awaken_runtime_contract::ExecutableAgentSnapshot::builder("parent")
+        .agent_bindings(AgentBindings {
+            delegates: vec![AgentDelegateBinding {
+                agent_id: AgentId("child".into()),
+                source_revision: None,
+                recursive_self: false,
+            }],
+            ..Default::default()
+        })
+        .build();
+    let publications = StaticPublishedAgentSnapshots::try_new([parent, child])
+        .expect("one authoritative publication catalog");
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications)),
+    );
+    crate::ManagedHost::new(host.clone())
+        .prepare_session(
+            "deferred-delegate",
+            SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "parent".into(),
+                delegate_ids: vec!["child".into()],
+                toolsets: None,
+                resource_revision: 0,
+                resources: Default::default(),
+                model: None,
+                runtime: None,
+                environment: on_tool_use_environment(),
+            },
+        )
+        .await
+        .expect("prepare exact publication");
+
+    let context = host
+        .ctx_for("deferred-delegate", Some("parent"))
+        .await
+        .expect("L9 delegate context");
+    assert!(context.env.is_some(), "L9/E2 runtime environment");
+    assert!(
+        host.session_environment("deferred-delegate")
+            .await
+            .is_some(),
+        "L9/E2 single Session owner"
+    );
 }
 
 struct BrainSkillModel;
@@ -6425,15 +6401,15 @@ fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
 
 #[test]
 fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realization() {
-    // Cause/effect graph: C1 a Coordinator has installed the frozen Session
-    // runtime projection; C2 only a Resource manifest exists; C3 a child Run is
-    // parent-mediated. Effects: E1 the root dispatch names its own Session and
-    // the Worker enters Control realization; E2 an ordinary resource-bearing
-    // Run remains ordinary; E3 a child retains the parent Session pointer. C1
-    // and C2 are mutually exclusive test fixtures here; C3 is owned by
+    // Cause/effect graph: C1 the request entered the Session application port;
+    // C2 only a Resource manifest exists; C3 a child Run is parent-mediated.
+    // Effects: E1 the root dispatch names its own Session even before an
+    // Application contribution can freeze its Environment; E2 an ordinary
+    // resource-bearing Run remains ordinary; E3 a child retains the parent
+    // Session pointer. C1 and C2 are mutually exclusive test fixtures here; C3 is owned by
     // `child_dispatch_reuses_publication_pinned_model_candidates`.
     //
-    // | Rule | Frozen runtime | Resources only | Child | session_thread_id |
+    // | Rule | Session API | Resources only | Child | session_thread_id |
     // | R1   | yes            | any            | no    | root thread       |
     // | R2   | no             | yes            | no    | none              |
     // | R3   | n/a            | any            | yes   | parent thread     |
@@ -6442,14 +6418,8 @@ fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realization() 
     // existing child-dispatch test owns R3, avoiding a parallel child builder.
     let host = SharedHost::new(Arc::new(OkModel), "host-default");
     let thread = "prepared-root-session";
-    host.install_environment_projection(
-        thread,
-        &session_environment(
-            awaken_session_contract::SessionNetworkPolicy::Unrestricted,
-            serde_json::json!({}),
-        ),
-    )
-    .expect("install frozen Session runtime projection");
+    host.session_slots
+        .update(thread, |slot| slot.session_dispatch = true);
     let activation = awaken_runtime_contract::RunActivation::new(
         awaken_agent_contract::agent::run::Id("run-prepared-root-session".into()),
         awaken_agent_contract::agent::thread::Id(thread.into()),

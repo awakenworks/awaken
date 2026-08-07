@@ -4,11 +4,13 @@
 // authenticated Worker upstream and the result commits through the claim fence.
 //
 // Cause/effect decision table:
+// P0 ordinary dispatch + no Session pointer -> no realization-control lookup;
 // P1 exact recipient + live expiry + payload marker + target + claim -> one
 // provider call, one committed reply; P2 any changed envelope/target dimension
 // -> no provider call; P3 no authority DB/seal configuration -> Worker starts
 // and leaves no authority files; P4 stale/malformed publication pin -> fail
-// closed while the same Worker remains available for P1.
+// closed while the same Worker remains available for P1; a non-null Session
+// pointer is constrained to a real Managed Session and fails closed otherwise.
 
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -131,7 +133,13 @@ async function main() {
   const management = spawnServer(
     'management',
     CONFIG_PORT,
-    deploymentEnv(storage, { identityMode: 'no-login', controlSealKey: SEAL_KEY }),
+    {
+      ...deploymentEnv(storage, { identityMode: 'no-login', controlSealKey: SEAL_KEY }),
+      // spawnServer runs the scenario composition, whose one explicit fixture
+      // input is SESSION_DEPLOYMENT_STORAGE_DIR. HOME above configures the
+      // management stores; this value configures its Coordinator runtime.
+      SESSION_DEPLOYMENT_STORAGE_DIR: storage,
+    },
   ).server;
   const cell = spawnServer('echo', PORT, {
     SESSION_DEPLOYMENT_INGRESS: 'durable',
@@ -320,7 +328,7 @@ async function main() {
       const thread = `${THREAD}-invalid-${index}`;
       invalid.activation.run_id = `${claimed.request.activation.run_id}-invalid-${index}`;
       invalid.activation.thread_id = thread;
-      invalid.session_thread_id = thread;
+      invalid.session_thread_id = null;
       invalid.activation.snapshot.resolved_spec.model_binding = candidate;
       const invalidEnqueue = await request(
         'POST', '/v1/worker/dispatch/enqueue', { request: invalid }, seed.id,

@@ -217,6 +217,29 @@ impl ResourceReclamationFence for PostgresResourceStore {
         .execute(&mut *transaction)
         .await
         .map_err(|error| storage(error.to_string()))?;
+        // Recheck inside the same identity-locked transaction so a database
+        // trigger or storage-local hook cannot add a reference after the first
+        // scan and still let physical deletion proceed. Normal writers remain
+        // serialized by `lock_identity` and the durable fence.
+        let blockers =
+            references_for_identity(&mut transaction, target.kind, &target.resource_id).await?;
+        if !blockers.is_empty() {
+            sqlx::query(&format!(
+                "DELETE FROM {NS}_reclamation_fences
+                 WHERE resource_kind = $1 AND resource_id = $2 AND intent_id = $3"
+            ))
+            .bind(kind_name(target.kind))
+            .bind(&target.resource_id)
+            .bind(intent_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| storage(error.to_string()))?;
+            transaction
+                .commit()
+                .await
+                .map_err(|error| storage(error.to_string()))?;
+            return Ok(AcquireResourceReclamationOutcome::Blocked(blockers));
+        }
         transaction
             .commit()
             .await

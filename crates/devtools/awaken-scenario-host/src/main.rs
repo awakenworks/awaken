@@ -46,21 +46,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await;
     }
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:38080".to_string());
-    // Durability guard: refuse to boot a `typed durable ingress` ingress that would
-    // resolve to a volatile in-memory queue (durable + default sqlite backend + no
-    // DeploymentConfig::storage_dir) — such a queue silently drops every queued/crashed/scheduled
-    // run on restart, defeating the whole point of durable ingress (no-data-loss).
-    let deployment = awaken_scenario_host::scenario_deployment();
-    if let Some(error) = deployment.durable_needs_persistence_error(false) {
-        return Err(error.to_owned().into());
+    let model_mode = std::env::var("AWAKEN_MODEL_MODE");
+    if mode_uses_shared_scenario_runtime(model_mode.as_deref().ok()) {
+        // Durability guard: refuse to boot a `typed durable ingress` ingress that would
+        // resolve to a volatile in-memory queue (durable + default sqlite backend + no
+        // DeploymentConfig::storage_dir) — such a queue silently drops every queued/crashed/scheduled
+        // run on restart, defeating the whole point of durable ingress (no-data-loss).
+        let deployment = awaken_scenario_host::scenario_deployment();
+        if let Some(error) = deployment.durable_needs_persistence_error(false) {
+            return Err(error.to_owned().into());
+        }
+        // Host-backed scenarios share one explicit test-support runtime authority.
+        // AllInOne and split-Control modes assemble their own canonical authority;
+        // installing this one as well would create a redundant, unused owner.
+        let runtime_authority = awaken_coordinator::init_scenario_runtime(&deployment).await?;
+        awaken_scenario_host::install_scenario_runtime_authority(runtime_authority)?;
     }
-    // Scenario routers inject the explicit test-support WorkerDirectory owned by
-    // their Managed composition. Initialize only the selected shared runtime
-    // backends here; the production AllInOne modes below open their own durable
-    // WorkerDirectory through awaken-cli's canonical composition root.
-    let runtime_authority = awaken_coordinator::init_scenario_runtime(&deployment).await?;
-    awaken_scenario_host::install_scenario_runtime_authority(runtime_authority)?;
-    let app = match std::env::var("AWAKEN_MODEL_MODE").as_deref() {
+    let app = match model_mode.as_deref() {
         Ok("probe") => {
             awaken_scenario_host::build_router(Arc::new(awaken_scenario_host::ProbeModel), "probe")
         }
@@ -168,6 +170,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Flush any buffered spans (OTLP batch / trace-file) before exit.
     awaken_observability::shutdown();
     Ok(())
+}
+
+fn mode_uses_shared_scenario_runtime(mode: Option<&str>) -> bool {
+    !matches!(
+        mode,
+        Some(
+            "management"
+                | "management-agents"
+                | "management-providers"
+                | "management-skills"
+                | "distributed-control"
+                | "distributed-provider"
+        )
+    )
 }
 
 fn scenario_observability() -> awaken_observability::ObservabilityConfig {
@@ -278,6 +294,40 @@ mod dispatch_tests {
         .unwrap()
         .status()
             == StatusCode::OK
+    }
+
+    #[test]
+    fn only_host_backed_modes_install_the_shared_scenario_runtime() {
+        // Cause/effect decision table:
+        // C1 a Host-backed scenario consumes deployment::resource_host -> E1 install
+        // the single shared scenario authority (R1 default/ordinary mode).
+        // C2 an AllInOne composition owns its production authority -> E2 do not
+        // install an unused parallel authority (R2 every management mode).
+        // C3 split Control or protocol-only Provider owns no scenario Host -> E2
+        // (R3 both distributed modes). These rows fence authority duplication while
+        // preserving the durability guard for every mode that actually consumes it.
+        assert!(super::mode_uses_shared_scenario_runtime(None), "R1");
+        assert!(
+            super::mode_uses_shared_scenario_runtime(Some("probe")),
+            "R1"
+        );
+        for mode in [
+            "management",
+            "management-agents",
+            "management-providers",
+            "management-skills",
+        ] {
+            assert!(
+                !super::mode_uses_shared_scenario_runtime(Some(mode)),
+                "R2 {mode}"
+            );
+        }
+        for mode in ["distributed-control", "distributed-provider"] {
+            assert!(
+                !super::mode_uses_shared_scenario_runtime(Some(mode)),
+                "R3 {mode}"
+            );
+        }
     }
 
     #[tokio::test]

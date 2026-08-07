@@ -17,6 +17,7 @@ import {
 } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
+const BASE_PORT = Number(process.env.E2E_PORT);
 const clientFor = (baseURL) => new Anthropic({ apiKey: 'e2e-dummy', baseURL });
 
 async function createSession(client) {
@@ -215,13 +216,25 @@ async function recoverAfterJudgeCrash(port) {
 }
 
 async function main() {
-  await interruptAt(39541, 1, 'FINAL', 3, 'Worker');
-  await interruptAt(39542, 2, 'FINAL', 3, 'Judge');
-  await interruptAt(39543, 3, 'NEVER_PRESENT_TOKEN', 1, 'acknowledgment');
-  await judgeDecisionAndSchemaPaths(39544);
-  await executionFailurePath(39546, 'outcome-initial');
-  await executionFailurePath(39547, 'outcome-judge');
-  await recoverAfterJudgeCrash(39545);
+  // Port-ownership cause/effect table: C1 the harness assigns a process-local
+  // low port block; C2 an old fixed 39xxx port overlaps Linux's ephemeral
+  // client range; C3 recovery must restart on the exact same address. Effects:
+  // E1 every independent arm receives a stable non-ephemeral offset, E2 no
+  // preceding upstream connection can occupy the next server address, and E3
+  // the crash arm can still prove same-address recovery.
+  //
+  // | Rule | Address source | Reuse | Effect |
+  // |---|---|---|---|
+  // | P1 | harness base + unique offset | no | isolated scenario bind |
+  // | P2 | harness base + recovery offset | yes | exact restart bind |
+  // | P3 | fixed ephemeral-range neighbor | any | forbidden EADDRINUSE race |
+  await interruptAt(BASE_PORT + 1, 1, 'FINAL', 3, 'Worker');
+  await interruptAt(BASE_PORT + 2, 2, 'FINAL', 3, 'Judge');
+  await interruptAt(BASE_PORT + 3, 3, 'NEVER_PRESENT_TOKEN', 1, 'acknowledgment');
+  await judgeDecisionAndSchemaPaths(BASE_PORT + 4);
+  await executionFailurePath(BASE_PORT + 6, 'outcome-initial');
+  await executionFailurePath(BASE_PORT + 7, 'outcome-judge');
+  await recoverAfterJudgeCrash(BASE_PORT + 5);
   console.log('E2E PASS: Managed Outcome interruption, Judge failures, and crash recovery.');
 }
 

@@ -23,17 +23,23 @@ if (!slug) {
 }
 const CONSOLE = process.env.CONSOLE_URL ?? "http://127.0.0.1:3002";
 const BACKEND = process.env.BACKEND_URL ?? "http://127.0.0.1:38080";
-const SIZE = { width: 1600, height: 1000 };
+const SIZE = { width: 1600, height: 900 };
 const outDir = resolve(here, "out");
 const browserState = resolve(here, "../../.recording-awaken/browser-state.json");
 mkdirSync(outDir, { recursive: true });
 const rawDir = resolve(outDir, `.raw-${slug}`);
 rmSync(rawDir, { recursive: true, force: true });
-const recordStartedAt = Date.now();
+for (const artifact of [slug, `${slug}.failed`]) {
+  for (const extension of ["mp4", "webm", "captions.json", "vtt", "srt", "story.json", "png"]) {
+    rmSync(resolve(outDir, `${artifact}.${extension}`), { force: true });
+  }
+  rmSync(resolve(outDir, `${artifact}.mp4.tmp.mp4`), { force: true });
+}
 const captions = [];
 const MAX_VIDEO_MS = 180_000;
 const MAX_FLOW_MS = 172_000; // reserve time for the branded close and final mux-safe settle
 let activeStory;
+let failureReason;
 
 try {
   const response = await fetch(`${BACKEND}/readyz`, { signal: AbortSignal.timeout(4000) });
@@ -60,6 +66,7 @@ await ctx.addInitScript(() => {
   }
 });
 const page = await ctx.newPage();
+const videoStartedAt = Date.now();
 let introCount = 0;
 let checkpointCount = 0;
 let ahaCount = 0;
@@ -67,25 +74,27 @@ let ahaCount = 0;
 // Current local Awaken uses a one-time setup handoff and an HttpOnly browser
 // session. Exchange it into this context instead of injecting the long-lived
 // management service credential into page JavaScript.
-let catalog = await ctx.request.get(`${BACKEND}/v1/config/catalog`);
-if (catalog.status() === 401) {
-  const setupToken = process.env.AWAKEN_RECORD_SETUP_TOKEN?.trim();
-  if (!setupToken) {
-    throw new Error(
-      "backend requires local browser setup; set AWAKEN_RECORD_SETUP_TOKEN to the one-time token printed by `awaken serve`",
-    );
+async function authenticateBrowser() {
+  let catalog = await ctx.request.get(`${BACKEND}/v1/config/catalog`);
+  if (catalog.status() === 401) {
+    const setupToken = process.env.AWAKEN_RECORD_SETUP_TOKEN?.trim();
+    if (!setupToken) {
+      throw new Error(
+        "backend requires local browser setup; set AWAKEN_RECORD_SETUP_TOKEN to the one-time token printed by `awaken serve`",
+      );
+    }
+    const exchange = await ctx.request.post(`${BACKEND}/v1/auth/local/exchange`, {
+      data: { setup_token: setupToken },
+    });
+    if (!exchange.ok()) {
+      throw new Error(`local browser setup exchange failed: HTTP ${exchange.status()} ${await exchange.text()}`);
+    }
+    await ctx.storageState({ path: browserState });
+    catalog = await ctx.request.get(`${BACKEND}/v1/config/catalog`);
   }
-  const exchange = await ctx.request.post(`${BACKEND}/v1/auth/local/exchange`, {
-    data: { setup_token: setupToken },
-  });
-  if (!exchange.ok()) {
-    throw new Error(`local browser setup exchange failed: HTTP ${exchange.status()} ${await exchange.text()}`);
+  if (!catalog.ok()) {
+    throw new Error(`authenticated catalog preflight failed: HTTP ${catalog.status()} ${await catalog.text()}`);
   }
-  await ctx.storageState({ path: browserState });
-  catalog = await ctx.request.get(`${BACKEND}/v1/config/catalog`);
-}
-if (!catalog.ok()) {
-  throw new Error(`authenticated catalog preflight failed: HTTP ${catalog.status()} ${await catalog.text()}`);
 }
 
 // ---- injected demo chrome: caption bar + fake cursor (not product DOM) ----
@@ -98,12 +107,15 @@ async function installChrome() {
         box-shadow:0 8px 40px rgba(0,0,0,.5);backdrop-filter:blur(8px);text-align:center;
         opacity:0;transition:opacity .35s ease;pointer-events:none;letter-spacing:.2px}
       #rec-cap.on{opacity:1}
+      #rec-cap.top{top:36px;bottom:auto}
       #rec-proof{position:fixed;right:28px;top:72px;z-index:2147483646;max-width:520px;
         padding:9px 13px;border-radius:9px;font:600 14px/1.35 ui-sans-serif,system-ui;
         color:#dbe7ff;background:rgba(18,24,38,.92);border:1px solid rgba(122,162,255,.35);
         box-shadow:0 8px 30px rgba(0,0,0,.35);opacity:0;transform:translateY(-6px);
         transition:opacity .25s ease,transform .25s ease;pointer-events:none}
       #rec-proof.on{opacity:1;transform:translateY(0)}
+      #rec-proof.low{top:auto;bottom:72px;transform:translateY(6px)}
+      #rec-proof.low.on{transform:translateY(0)}
       #rec-proof.ok{color:#b8f7d0;border-color:rgba(80,220,140,.45)}
       #rec-proof.busy::before{content:"";display:inline-block;width:7px;height:7px;margin-right:8px;
         border-radius:50%;background:#7aa2ff;animation:rec-pulse 1s ease-in-out infinite}
@@ -149,6 +161,8 @@ const wait = (ms) => page.waitForTimeout(ms);
 /** Show a caption ("narration") and hold for reading time proportional to length. */
 async function say(text, holdMs) {
   await installChrome().catch(() => {});
+  await page.evaluate(() => document.getElementById("rec-cap")?.classList.remove("on"));
+  await wait(140);
   await page.evaluate((t) => {
     const c = document.getElementById("rec-cap");
     if (c) {
@@ -158,7 +172,7 @@ async function say(text, holdMs) {
   }, text);
   const readingMs = Math.min(4800, 850 + [...text].length * 28);
   const duration = Math.min(5200, Math.max(holdMs ?? 0, readingMs));
-  const startMs = Date.now() - recordStartedAt;
+  const startMs = Date.now() - videoStartedAt;
   captions.push({ start_ms: startMs, end_ms: startMs + duration, text });
   await wait(duration);
 }
@@ -173,6 +187,11 @@ async function focus(locator) {
   await locator.scrollIntoViewIfNeeded({ timeout: 3000 });
   await page.evaluate(() => document.querySelectorAll(".rec-focus").forEach((node) => node.classList.remove("rec-focus")));
   await locator.evaluate((node) => node.classList.add("rec-focus"));
+  const box = await locator.boundingBox();
+  await page.evaluate((targetIsLow) => {
+    document.getElementById("rec-cap")?.classList.toggle("top", targetIsLow);
+    document.getElementById("rec-proof")?.classList.toggle("low", targetIsLow);
+  }, Boolean(box && box.y + box.height / 2 > SIZE.height * 0.58));
   await cursorTo(locator);
 }
 
@@ -327,6 +346,7 @@ api.goto = goto;
 
 let failed = false;
 try {
+  await authenticateBrowser();
   const mod = await import(pathToFileURL(resolve(here, "flows", `${slug}.mjs`)).href);
   activeStory = validateStory(mod.story);
   await installChrome();
@@ -346,11 +366,15 @@ try {
   if (ahaCount !== 1) throw new Error(`story contract failed: expected exactly one AHA, got ${ahaCount}`);
   await say("awaken · configure, prove, and run agents — fully in the browser.", 3000);
   await clearCaption();
-  const elapsed = Date.now() - recordStartedAt;
+  const elapsed = Date.now() - videoStartedAt;
   if (elapsed > MAX_VIDEO_MS) throw new Error(`video is ${elapsed}ms; every story must close within 180000ms`);
 } catch (e) {
   failed = true;
-  console.error(`[record] flow ${slug} failed:`, e.message);
+  failureReason = e instanceof Error ? e.message : String(e);
+  console.error(`[record] flow ${slug} failed:`, failureReason);
+  await installChrome().catch(() => {});
+  await showProof(`✕ Recording stopped · ${failureReason}`, "", 1800).catch(() => {});
+  await page.screenshot({ path: resolve(outDir, `${slug}.failed.png`), fullPage: false }).catch(() => {});
 } finally {
   await wait(600);
   const video = page.video();
@@ -358,29 +382,44 @@ try {
   await browser.close();
   if (video) {
     const src = await video.path();
-    const artifact = failed ? `${slug}.failed` : slug;
-    writeCaptionArtifacts(artifact, captions);
-    writeFileSync(resolve(outDir, `${artifact}.story.json`), `${JSON.stringify({
-      ...activeStory,
-      duration_ms: Date.now() - recordStartedAt,
-      passed: !failed,
-    }, null, 2)}\n`);
-    const webm = resolve(outDir, `${artifact}.webm`);
+    let artifact = failed ? `${slug}.failed` : slug;
+    let webm = resolve(outDir, `${artifact}.webm`);
     if (existsSync(src)) renameSync(src, webm);
     rmSync(rawDir, { recursive: true, force: true });
-    // Mux to H.264 mp4 (YouTube-ready, faststart). Falls back to keeping the webm.
+    // Mux atomically so a partial MP4 can never masquerade as a successful run.
     try {
       const mp4 = resolve(outDir, `${artifact}.mp4`);
+      const temporaryMp4 = resolve(outDir, `${artifact}.mp4.tmp.mp4`);
       execFileSync(
         "ffmpeg",
         ["-y", "-i", webm, "-c:v", "libx264", "-crf", "18", "-preset", "medium",
-         "-pix_fmt", "yuv420p", "-movflags", "+faststart", mp4],
-        { stdio: "ignore" },
+         "-pix_fmt", "yuv420p", "-movflags", "+faststart", temporaryMp4],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
       );
+      renameSync(temporaryMp4, mp4);
+      if (process.env.AWAKEN_RECORD_KEEP_WEBM !== "1") rmSync(webm, { force: true });
       console.log(`[record] ✓ ${artifact}.mp4`);
     } catch (e) {
-      console.log(`[record] kept ${slug}.webm (ffmpeg failed: ${e.message})`);
+      const detail = String(e?.stderr ?? e?.message ?? e).trim().split("\n").slice(-4).join(" | ");
+      failureReason = `ffmpeg failed: ${detail}`;
+      if (!failed) {
+        const failedWebm = resolve(outDir, `${slug}.failed.webm`);
+        if (existsSync(webm)) renameSync(webm, failedWebm);
+        webm = failedWebm;
+        artifact = `${slug}.failed`;
+      }
+      failed = true;
+      rmSync(resolve(outDir, `${slug}.mp4.tmp.mp4`), { force: true });
+      rmSync(resolve(outDir, `${slug}.failed.mp4.tmp.mp4`), { force: true });
+      console.error(`[record] kept ${webm}; ${failureReason}`);
     }
+    writeCaptionArtifacts(artifact, captions);
+    writeFileSync(resolve(outDir, `${artifact}.story.json`), `${JSON.stringify({
+      ...activeStory,
+      duration_ms: Date.now() - videoStartedAt,
+      passed: !failed,
+      ...(failureReason ? { failure: failureReason } : {}),
+    }, null, 2)}\n`);
   }
 }
 

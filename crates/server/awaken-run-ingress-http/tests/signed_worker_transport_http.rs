@@ -532,6 +532,8 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | T12 | exact/live | renewal beyond registry lease | - | reject before control |
     // | T13 | exact/live | exact/live | frozen Session | resume without contribution |
     // | T14 | exact/live | exact/live | wrong Session | reject resume before control |
+    // | T15 | exact/live | exact/live | contribution/resume | mark claim-authorized reassignment |
+    // | T16 | exact/live | renew+reassign | - | reject contradictory authority before control |
     let client = WorkerControlClient::new(upstream.clone());
     let contribution = awaken_session_contract::ApplicationSessionContribution {
         session_id: "signed-thread".into(),
@@ -554,6 +556,11 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .expect("T13 frozen Session has a realization directive");
     assert_eq!(resumed.projection, receipt.contribution.projection, "T13");
     assert_eq!(contributions.contributions.lock().unwrap().len(), 1, "T13");
+    {
+        let begins = contributions.begins.lock().unwrap();
+        assert!(begins[0].target.reassign_existing_lease, "T15 contribution");
+        assert!(begins[1].target.reassign_existing_lease, "T15 resume");
+    }
     assert!(
         client
             .resume_application_session(&registered.snapshot.identity, &claim, "another-session",)
@@ -596,6 +603,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             runtime_incarnation: registered.snapshot.identity.lease_owner(),
             lease_expires_at_unix_ms: realization_lease.expires_at_unix_ms,
             renew_existing_lease: true,
+            reassign_existing_lease: false,
         },
     };
     client
@@ -616,12 +624,23 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     excessive.target.lease_expires_at_unix_ms = u64::MAX;
     assert!(
         client
-            .begin_session_realization(&registered.snapshot.identity, excessive)
+            .begin_session_realization(&registered.snapshot.identity, excessive.clone())
             .await
             .is_err(),
         "T12"
     );
     assert_eq!(contributions.begins.lock().unwrap().len(), 3, "T11/T12");
+    let mut contradictory = excessive;
+    contradictory.target.lease_expires_at_unix_ms = realization_lease.expires_at_unix_ms;
+    contradictory.target.reassign_existing_lease = true;
+    assert!(
+        client
+            .begin_session_realization(&registered.snapshot.identity, contradictory)
+            .await
+            .is_err(),
+        "T16"
+    );
+    assert_eq!(contributions.begins.lock().unwrap().len(), 3, "T16");
     client
         .activate_session_realization(
             &registered.snapshot.identity,

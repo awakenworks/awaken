@@ -83,6 +83,33 @@ async function expectStableStatus(
   assert.fail(`${method} ${route} did not remain at ${status} for ${consecutive} probes`);
 }
 
+async function awaitResponsiveCoordinatorSet(
+  base: string,
+  sessionIds: string[],
+  timeoutMs = 30_000,
+  maxReadMs = 2_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  let last = 'no probe completed';
+  while (Date.now() < deadline) {
+    // Use two reads per Session so the public edge opens enough upstream
+    // connections to exercise both replicated Coordinator pools without naming
+    // or calling a private Pod. Reads are repeatable and carry no business effect.
+    const probes = sessionIds.flatMap((sessionId) => [sessionId, sessionId]);
+    const results = await Promise.all(probes.map(async (sessionId) => {
+      const started = performance.now();
+      const response = await api(base, 'GET', `/v1/sessions/${sessionId}`);
+      return { ...response, elapsed: performance.now() - started };
+    }));
+    const slowest = Math.max(...results.map((result) => result.elapsed));
+    const statuses = [...new Set(results.map((result) => result.status))];
+    last = `statuses=${statuses.join(',')} slowest_ms=${slowest.toFixed(1)}`;
+    if (statuses.length === 1 && statuses[0] === 200 && slowest <= maxReadMs) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  assert.fail(`replicated Coordinator pools did not converge: ${last}`);
+}
+
 async function uploadFile(base: string, marker: string) {
   const form = new FormData();
   form.append('purpose', 'agent');
@@ -193,7 +220,7 @@ async function bootstrap(base: string) {
 
   const skill = await expectStatus(base, 'POST', '/v1/skills', 200, {
     id: 'adr71-skill',
-    content: '---\nname: adr71-skill\ndescription: distributed Worker skill proof\n---\nADR71-SKILL-MATERIALIZED',
+    content: '---\nname: adr71-skill\ndescription: distributed Worker skill proof\nenvironment: filesystem\n---\nADR71-SKILL-MATERIALIZED',
   });
 
   const agentId = 'adr71-agent';
@@ -351,16 +378,58 @@ async function batch(
 }
 
 async function load(base: string, environmentId: string) {
-  // L1 bounded concurrent writes below admission limits -> zero HTTP errors;
-  // L2 sustained admission across both Coordinator processes -> canonical Runtime
-  // Run ids remain unique; L3 dispatch across both Workers -> every marker completes;
-  // L4 completion history -> exactly-once outputs; L5 public API acknowledgements
-  // retain the configured p95 latency budget.
+  // Cause/effect graph: C1 a new Resource-bearing K8s Session has no reusable
+  // Pod because its projected mounts are Session-specific -> first execution
+  // includes bounded Pod/material cold start; C2 every Session has completed one
+  // cold start -> its live environment is resident; C3 bounded concurrent writes
+  // below admission limits -> zero HTTP errors; C4 active/active Coordinator and
+  // Worker dispatch -> unique Run ids and exactly-once outputs. Effects are E1 a
+  // separately bounded cold-start result and E2 the steady-state synchronous-turn
+  // p95. POST /events intentionally returns after Runtime execution and settlement;
+  // it is not a queue-admission acknowledgement. Mixing C1 into E2 made the
+  // steady-state contract depend on Kubelet image/sidecar startup, while calling
+  // E2 an acknowledgement invented a second API semantic that production does not
+  // implement.
+  //
+  // | Rule | Resource Pod resident | Concurrent load | Effect |
+  // |---|---|---|---|
+  // | L1 | no | one per Session | complete once within cold-start bound |
+  // | L2 | yes + DB failover pools not converged | read-only public probes |
+  // |    | expose recovery latency; never start the steady-state timer |
+  // | L3 | yes + every replica responsive | bounded synchronous turns | zero
+  // |    | errors and steady completion p95 <= configured limit |
+  // | L4 | yes | bounded + active/active | every marker exactly once |
   const count = Number(process.env.ADR71_LOAD_REQUESTS ?? 48);
   const concurrency = Number(process.env.ADR71_LOAD_CONCURRENCY ?? 12);
-  const p95Limit = Number(process.env.ADR71_LOAD_P95_MS ?? 5_000);
+  // Five seconds is a performance regression gate for the complete
+  // public->Coordinator->claim->Worker->Provider->commit round trip, not an
+  // admission SLO. The edge's separate 70-second correctness timeout remains the
+  // outer failure boundary for a non-idempotent command.
+  const p95Limit = Number(process.env.ADR71_TURN_P95_MS ?? 5_000);
+  const coldStartLimit = Number(process.env.ADR71_COLD_START_MAX_MS ?? 30_000);
   const markers = Array.from({ length: count }, (_, index) => `ADR71-LOAD-${Date.now()}-${index}`);
   const sessions = await createParallelSessions(base, environmentId, concurrency);
+  const coldStartedAt = performance.now();
+  const coldMarkers = sessions.map((_, index) => `ADR71-COLD-${Date.now()}-${index}`);
+  const coldResponses = await Promise.all(sessions.map((sessionId, index) => api(
+    base, 'POST', `/v1/sessions/${sessionId}/events`,
+    { events: [{ type: 'user.message', content: [{ type: 'text', text: coldMarkers[index] }] }] },
+  )));
+  coldResponses.forEach((response, index) => {
+    assert.equal(response.status, 200, `cold start ${coldMarkers[index]}: ${response.text}`);
+  });
+  const coldElapsed = performance.now() - coldStartedAt;
+  assert.ok(
+    coldElapsed <= coldStartLimit,
+    `parallel Resource Pod cold start ${coldElapsed.toFixed(1)}ms > ${coldStartLimit}ms`,
+  );
+  await Promise.all(sessions.map((sessionId, index) =>
+    waitForAgentMarkers(base, sessionId, [coldMarkers[index]], coldStartLimit)));
+  // The promoted standby preserves accepted facts, but each replicated SQLx pool
+  // discovers its old idle socket independently. Converge them with repeatable
+  // public reads before measuring the separate steady-state SLO; using one
+  // successful write here would warm only its randomly selected Coordinator.
+  await awaitResponsiveCoordinatorSet(base, sessions);
   const latencies: number[] = [];
   async function client(clientIndex: number) {
     for (let index = clientIndex; index < markers.length; index += concurrency) {
@@ -374,8 +443,14 @@ async function load(base: string, environmentId: string) {
   }
   await Promise.all(Array.from({ length: concurrency }, (_, index) => client(index)));
   latencies.sort((left, right) => left - right);
+  const p50 = latencies[Math.min(latencies.length - 1, Math.ceil(latencies.length * 0.50) - 1)];
   const p95 = latencies[Math.min(latencies.length - 1, Math.ceil(latencies.length * 0.95) - 1)];
-  assert.ok(p95 <= p95Limit, `public API p95 ${p95.toFixed(1)}ms > ${p95Limit}ms`);
+  const max = latencies[latencies.length - 1];
+  assert.ok(
+    p95 <= p95Limit,
+    `synchronous turn p95 ${p95.toFixed(1)}ms > ${p95Limit}ms `
+      + `(p50=${p50.toFixed(1)}ms max=${max.toFixed(1)}ms)`,
+  );
   const markersBySession = sessions.map(() => [] as string[]);
   markers.forEach((marker, index) => markersBySession[index % concurrency].push(marker));
   for (let index = 0; index < sessions.length; index += 1) {
@@ -385,7 +460,10 @@ async function load(base: string, environmentId: string) {
     for (const marker of markersBySession[index]) assertProviderResponseCount(rendered, marker);
     assertProviderResponsesAreUnique(rendered);
   }
-  console.log(`OK load requests=${count} concurrency=${concurrency} p95_ms=${p95.toFixed(1)}`);
+  console.log(
+    `OK load requests=${count} concurrency=${concurrency} cold_ms=${coldElapsed.toFixed(1)} `
+      + `turn_p50_ms=${p50.toFixed(1)} turn_p95_ms=${p95.toFixed(1)} turn_max_ms=${max.toFixed(1)}`,
+  );
 }
 
 async function main() {

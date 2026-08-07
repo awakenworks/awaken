@@ -84,17 +84,40 @@ impl ResourceStoreBackend {
         matches!(self, Self::Postgres(_))
     }
 
-    pub fn validate_runtime_shape(
+    pub(super) fn validate_dispatch_compatibility(
         &self,
-        shared_runtime: bool,
-        shared_resource_catalog: bool,
+        shared_dispatch: bool,
     ) -> Result<(), &'static str> {
-        if shared_runtime && !self.is_shared() {
-            Err("a shared Postgres runtime requires resource_database_url")
-        } else if shared_runtime && !shared_resource_catalog {
-            Err("a shared Postgres runtime requires admin_db to use Postgres")
+        if shared_dispatch && !self.is_shared() {
+            Err("a shared runtime requires resource_database_url to use Postgres")
         } else {
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_and_resource_backends_form_one_compatible_topology() {
+        // Causes: local/shared dispatch × embedded/shared Resources. Effects:
+        // accept both complete topologies and harmless shared Resources beside
+        // local dispatch; reject only shared claims with node-local Resources.
+        // S1 local+embedded=accept; S2 local+shared=accept;
+        // S3 shared+shared=accept; S4 shared+embedded=reject.
+        let embedded = ResourceStoreBackend::Embedded("/data".into());
+        let shared = ResourceStoreBackend::Postgres("postgres://resources".into());
+        assert!(
+            embedded.validate_dispatch_compatibility(false).is_ok(),
+            "S1"
+        );
+        assert!(shared.validate_dispatch_compatibility(false).is_ok(), "S2");
+        assert!(shared.validate_dispatch_compatibility(true).is_ok(), "S3");
+        assert!(
+            embedded.validate_dispatch_compatibility(true).is_err(),
+            "S4"
+        );
     }
 }

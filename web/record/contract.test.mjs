@@ -30,6 +30,32 @@ test("every recording has a hard sub-three-minute budget", () => {
   assert.match(harness, /runtime failed before the claimed effect/);
 });
 
+// Recording FMECA cause/effect graph:
+// C1=current flow passes, C2=FFmpeg succeeds, C3=a prior artifact exists,
+// C4=focused evidence is low in the viewport, C5=the recorded page exists.
+// E1=one atomic current MP4, E2=non-zero + diagnostic WebM, E3=no stale success,
+// E4=caption/proof move away from evidence, E5=captions share the video epoch.
+// Decision rules: 11***→E1; 10***→E2; **1**→E3; ***1*→E4; ****1→E5.
+test("recording publication fails closed and cannot reuse a stale success", () => {
+  const harness = readFileSync(resolve(here, "harness.mjs"), "utf8");
+  assert.match(harness, /for \(const artifact of \[slug, `\$\{slug\}\.failed`\]\)/);
+  assert.match(harness, /\.mp4\.tmp\.mp4/);
+  assert.match(harness, /renameSync\(temporaryMp4, mp4\)/);
+  assert.match(harness, /ffmpeg failed:/);
+  assert.match(harness, /failed = true;/);
+  assert.match(harness, /failure: failureReason/);
+});
+
+test("recording chrome shares the video timeline and avoids focused evidence", () => {
+  const harness = readFileSync(resolve(here, "harness.mjs"), "utf8");
+  assert.match(harness, /const SIZE = \{ width: 1600, height: 900 \}/);
+  assert.match(harness, /const videoStartedAt = Date\.now\(\)/);
+  assert.match(harness, /startMs = Date\.now\(\) - videoStartedAt/);
+  assert.match(harness, /classList\.toggle\("top", targetIsLow\)/);
+  assert.match(harness, /classList\.toggle\("low", targetIsLow\)/);
+  assert.match(harness, /Recording stopped/);
+});
+
 test("the recording browser uses the one-time local setup handoff, not a service credential", () => {
   const harness = readFileSync(resolve(here, "harness.mjs"), "utf8");
   const models = readFileSync(resolve(here, "support/models.mjs"), "utf8");

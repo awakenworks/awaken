@@ -313,11 +313,21 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
 }
 
 /// Reconciliation-index cause/effect rules: C1=Resource/MCP durable work is
-/// pending -> E1=index the Session; C2=that work is terminal -> E2=remove it;
-/// C3=only the durable Environment identity is resident -> E3=index it through
-/// the same aggregate scan for environment restoration. Constraint: this opaque
-/// binding is not Hand activity/process state; Hand inactivity remains solely in
-/// the Worker-local Runtime Host and adds no second repository predicate.
+/// pending -> E1=index the Session; C2=all work and retention references are
+/// terminal -> E2=remove it; C3=only the durable Environment identity is
+/// resident -> E3=index it through the same aggregate scan for environment
+/// restoration; C4=an active Resource manifest still owns retention references
+/// -> E4=keep it indexed even after MCP work becomes terminal, so a lost
+/// ResourceReference projection can be repaired. Constraint: this opaque binding
+/// is not Hand activity/process state; Hand inactivity remains solely in the
+/// Worker-local Runtime Host and adds no second repository predicate.
+///
+/// | Rule | Resource work | MCP work | References | Environment | Effect |
+/// |---|---|---|---|---|---|
+/// | I1 | pending | active | yes | absent | E1 indexed |
+/// | I2 | settled | failed | yes | absent | E4 indexed for reference repair |
+/// | I3 | terminal | failed | no | absent | E2 absent |
+/// | I4 | terminal | failed | no | resident | E3 indexed for restoration |
 async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepository>(r: &R) {
     let mut pending = session("sesn_pending", "pending");
     let desired = pending.resources.active.clone();
@@ -345,6 +355,20 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
 
     pending.mcp.attachments[0].state = awaken_session_contract::McpAttachmentState::Failed;
     pending = replace_session(r, "ws_a", pending, "test:mcp-failed", Vec::new()).await;
+    assert_eq!(
+        r.reconcilable_sessions().await,
+        vec![ScopedPersistedSession {
+            workspace_id: "ws_a".into(),
+            session: pending.clone(),
+        }],
+        "I2/E4: active Resource retention remains recoverable"
+    );
+
+    pending.status = "terminated".into();
+    pending
+        .resources
+        .complete_terminal_release("conformance cleanup");
+    pending = replace_session(r, "ws_a", pending, "test:resource-released", Vec::new()).await;
     assert!(r.reconcilable_sessions().await.is_empty());
 
     pending.environment.set_resident("worker-owned-binding");

@@ -27,13 +27,17 @@ pub(super) struct SessionRecord {
 
 impl SessionRecord {
     /// Project a Runtime lifecycle hint without allowing the disposable event
-    /// view to reverse the Session application's terminal transition. Runtime
-    /// feeds may be consumed after an archive CAS, but they are not a second
-    /// authority for Session lifecycle state.
+    /// view to reverse the Session application's realization, recovery, or
+    /// terminal transition. Runtime feeds may be consumed after any of those
+    /// CASes, but they are not a second authority for Session lifecycle state.
     pub(super) fn project_runtime_status(&mut self, status: &'static str) {
-        if self.session.status != "terminated" {
+        if Self::accepts_runtime_status(self.session.status) {
             self.session.status = status;
         }
+    }
+
+    fn accepts_runtime_status(status: &str) -> bool {
+        matches!(status, "idle" | "running")
     }
 
     /// IDs already lowered into tool-use events, plus the MCP subset needed to
@@ -88,5 +92,43 @@ impl SessionRecord {
             .map(|input| resolved_resource_dto(&session.id, input))
             .collect();
         session
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_status_projection_decision_table_preserves_application_authority() {
+        // Cause/effect graph: C1=the durable application status is an ordinary
+        // Runtime phase (idle/running); C2=it is a realization/recovery phase
+        // (preparing/activating/rescheduling); C3=it is terminal
+        // (failed/terminated); C4=a delayed Runtime lifecycle hint arrives.
+        // E1=the disposable wire status follows the Runtime hint; E2=the wire
+        // status retains the application's stronger state. Constraint: exactly
+        // one of C1/C2/C3 is true. Decision table:
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // | R1   | T  | F  | F  | T  | E1     |
+        // | R2   | F  | T  | F  | T  | E2     |
+        // | R3   | F  | F  | T  | T  | E2     |
+        for initial in ["idle", "running"] {
+            assert!(
+                SessionRecord::accepts_runtime_status(initial),
+                "R1/{initial}"
+            );
+        }
+        for initial in [
+            "preparing",
+            "activating",
+            "rescheduling",
+            "failed",
+            "terminated",
+        ] {
+            assert!(
+                !SessionRecord::accepts_runtime_status(initial),
+                "R2-R3/{initial}"
+            );
+        }
     }
 }

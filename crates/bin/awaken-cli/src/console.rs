@@ -263,9 +263,9 @@ pub fn parse_service_binary_command(
         return Ok(ServiceBinaryCommand::Help);
     }
     if args.first().is_some_and(|argument| argument == "database") {
-        return parse_database_args(&args[1..]).and_then(|command| match command {
+        return parse_database_args(&args[1..]).map(|command| match command {
             Command::DatabaseMigrate { config_path } => {
-                Ok(ServiceBinaryCommand::DatabaseMigrate { config_path })
+                ServiceBinaryCommand::DatabaseMigrate { config_path }
             }
             _ => unreachable!("database parser returns only migration"),
         });

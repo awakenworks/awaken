@@ -5,7 +5,7 @@
 //! [`K8sRuntime`]: a **Session-owned Pod** (PID 1 retains its namespaces while
 //! attempts run through attached exec, `restartPolicy: Never`), **native GC** (an
 //! `ownerReference` reaps orphans),
-//! memory stores realized as **memoryd sidecars + emptyDir**, managed input Files
+//! memory stores realized as authority-seeded **emptyDir** volumes, managed input Files
 //! exposed through a **read-only shared volume + isolated projector sidecar**, the
 //! untrusted agent
 //! **hardened** (no SA token, dropped caps) + labeled for a NetworkPolicy, and the
@@ -27,7 +27,7 @@ use k8s_openapi::api::core::v1::{
 #[cfg(test)]
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Status;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
-use kube::api::{AttachParams, DeleteParams, ListParams};
+use kube::api::{AttachParams, DeleteParams, ListParams, PostParams};
 use kube::{Api, Client};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -38,6 +38,7 @@ use crate::{
 
 mod error;
 mod live_inputs;
+mod memory;
 mod names;
 mod pod_projection;
 mod pod_security;
@@ -51,15 +52,14 @@ use pod_projection::{
     content_binds, credential_binds, credential_key,
 };
 use pod_security::{
-    egress_label, fuse_sidecar_security_context, hardened_security_context, pod_resources,
-    unenforceable_k8s_limit,
+    egress_label, hardened_security_context, pod_resources, unenforceable_k8s_limit,
 };
 #[cfg(test)]
 use process::k8s_exit_status;
 use process::{K8sExecProcess, K8sExecState, k8s_exec_argv, k8s_live_file_result};
 use realization::{
-    PodReadiness, await_pod_deleted, create_or_verify, pod_readiness, reap_terminal_pod,
-    stamp_realization,
+    PodReadiness, await_pod_deleted, create_or_verify, create_or_verify_with_status, pod_readiness,
+    reap_terminal_pod, stamp_pod_realization, stamp_realization,
 };
 
 pub use crate::k8s_package_image::K8sPackageImageProvisioner;
@@ -75,29 +75,13 @@ pub struct K8sRuntime {
     owner: Option<OwnerReference>,
     /// Process-incarnation fence used by the cross-restart orphan reaper.
     owner_id: String,
-    /// The image of the memoryd sidecar that FUSE-serves a memory store into the
-    /// shared volume the agent reads (ADR-0038 MemoryStore, in-pod realization).
-    memoryd_image: String,
     /// When set, the host binds this address as a **reverse-dial rendezvous**: the
     /// Pod dials *out* to it (no inbound, no Service, fully egress-fenced) and the
     /// address is injected into the agent as `AWAKEN_ACP_RENDEZVOUS`. When `None`,
     /// the host direct-dials `agent_addr` (a published Service) instead.
     rendezvous: Option<SocketAddr>,
-    /// Whether the memoryd sidecar FUSE-mounts the store (needs `SYS_ADMIN` +
-    /// `/dev/fuse` on the node). `false` (the default) runs the sidecar in **copy
-    /// mode** — unprivileged; it materializes the store into the shared volume and
-    /// harvests writes back on teardown (ADR-0053 D6) — so a cluster without FUSE
-    /// still works, just without live write-through.
-    memoryd_fuse: bool,
     image_pull_secrets: Vec<String>,
 }
-
-/// Default memoryd sidecar image (overridable via [`K8sRuntime::with_memoryd_image`]).
-/// The image is the execution-plane `awaken-sandbox` binary in its `memoryd` role
-/// (ENTRYPOINT `awaken-sandbox memoryd`, built with `--features memoryd`), packaged by
-/// `deploy/images/sandbox/Dockerfile.memoryd`. The sidecar sets no `command`, so the
-/// role reads the `AWAKEN_MEMORY_*` env this plan injects below.
-const DEFAULT_MEMORYD_IMAGE: &str = "ghcr.io/awaken/memoryd:latest";
 
 /// Select the process-wide provider before any kube client is built. Workspace
 /// feature unification can compile both rustls providers, so relying on rustls'
@@ -122,20 +106,9 @@ impl K8sRuntime {
             agent_addr,
             owner: None,
             owner_id: crate::runtime_owner_id(),
-            memoryd_image: DEFAULT_MEMORYD_IMAGE.to_string(),
             rendezvous: None,
-            memoryd_fuse: false,
             image_pull_secrets: Vec::new(),
         })
-    }
-
-    /// Run the memoryd sidecar in FUSE mode (grants it `SYS_ADMIN`). Off by default:
-    /// the portable, unprivileged **copy** fallback is used unless the cluster is
-    /// known to support FUSE.
-    #[must_use]
-    pub fn with_memoryd_fuse(mut self, fuse: bool) -> Self {
-        self.memoryd_fuse = fuse;
-        self
     }
 
     /// Set the GC owner (e.g. a Lease/ConfigMap) whose deletion reaps orphan Pods.
@@ -150,13 +123,6 @@ impl K8sRuntime {
     #[must_use]
     pub fn with_rendezvous(mut self, addr: SocketAddr) -> Self {
         self.rendezvous = Some(addr);
-        self
-    }
-
-    /// Override the memoryd sidecar image.
-    #[must_use]
-    pub fn with_memoryd_image(mut self, image: impl Into<String>) -> Self {
-        self.memoryd_image = image.into();
         self
     }
 
@@ -187,9 +153,7 @@ impl K8sRuntime {
             agent_addr,
             owner: None,
             owner_id: crate::runtime_owner_id(),
-            memoryd_image: DEFAULT_MEMORYD_IMAGE.to_string(),
             rendezvous: None,
-            memoryd_fuse: false,
             image_pull_secrets: Vec::new(),
         }
     }
@@ -234,9 +198,7 @@ impl K8sRuntime {
             id,
             plan,
             &self.owner,
-            &self.memoryd_image,
             rendezvous.as_deref(),
-            self.memoryd_fuse,
             &self.image_pull_secrets,
         );
         let labels = pod.metadata.labels.get_or_insert_with(Default::default);
@@ -254,9 +216,7 @@ fn build_pod(
     id: &str,
     plan: &ContainerPlan,
     owner: &Option<OwnerReference>,
-    memoryd_image: &str,
     rendezvous: Option<&str>,
-    memoryd_fuse: bool,
     image_pull_secrets: &[String],
 ) -> Pod {
     {
@@ -277,13 +237,16 @@ fn build_pod(
             });
         }
 
-        // Each memory store → a pod-scoped emptyDir + a memoryd sidecar that serves
-        // the store into it; the agent container mounts the same volume and reads it
-        // as files. The privileged FUSE lives in the minimal sidecar, never the agent.
+        // Each Memory store uses one authoritative host-side mounter. Its bounded
+        // snapshot is streamed by a runtime-only projector into a pod-scoped
+        // emptyDir before create returns; disposal reads that exact tree back and
+        // lets the retained mounter perform the canonical CAS harvest. The Pod
+        // receives neither a second Memory database nor Resource-authority credentials.
         let mut volumes: Vec<Volume> = Vec::new();
         let mut agent_mounts: Vec<VolumeMount> = Vec::new();
         let mut sidecars: Vec<Container> = Vec::new();
         let mut init_containers: Vec<Container> = Vec::new();
+        let mut memory_projector_mounts = Vec::new();
         for (i, mm) in plan.memory_mounts.iter().enumerate() {
             let vol = format!("mem-{i}");
             volumes.push(Volume {
@@ -291,27 +254,25 @@ fn build_pod(
                 empty_dir: Some(EmptyDirVolumeSource::default()),
                 ..Default::default()
             });
-            let mount = VolumeMount {
+            agent_mounts.push(VolumeMount {
                 name: vol.clone(),
                 mount_path: mm.mount_path.clone(),
+                read_only: Some(mm.access == pc::MountAccess::ReadOnly),
                 ..Default::default()
-            };
-            agent_mounts.push(mount.clone());
+            });
+            memory_projector_mounts.push(VolumeMount {
+                name: vol,
+                mount_path: format!("/memory/{i}"),
+                ..Default::default()
+            });
+        }
+        if !memory_projector_mounts.is_empty() {
             sidecars.push(Container {
-                name: format!("memoryd-{i}"),
-                image: Some(memoryd_image.to_string()),
-                args: Some(vec![
-                    "--store-id".into(),
-                    mm.store_id.clone(),
-                    "--mount-path".into(),
-                    mm.mount_path.clone(),
-                    "--mode".into(),
-                    if memoryd_fuse { "fuse" } else { "copy" }.into(),
-                ]),
-                volume_mounts: Some(vec![mount]),
-                // FUSE needs SYS_ADMIN; copy mode stays unprivileged (portable, so a
-                // cluster without /dev/fuse still serves the store, via copy+harvest).
-                security_context: memoryd_fuse.then(fuse_sidecar_security_context),
+                name: memory::PROJECTOR.into(),
+                image: Some(plan.image.clone()),
+                command: Some(crate::environment_keepalive_command()),
+                volume_mounts: Some(memory_projector_mounts),
+                security_context: Some(hardened_security_context()),
                 ..Default::default()
             });
         }
@@ -574,13 +535,42 @@ impl ContainerRuntime for K8sRuntime {
             create_or_verify(&secrets, &secret).await?;
         }
         let mut pod = self.pod(&runtime_id, plan);
-        stamp_realization(&mut pod)?;
-        let created = create_or_verify(&pods, &pod).await?;
+        stamp_pod_realization(&mut pod)?;
+        let outcome = create_or_verify_with_status(&pods, &pod).await?;
+        let was_created = outcome.created;
+        let mut created = outcome.object;
         let name = created
             .metadata
             .name
+            .clone()
             .ok_or_else(|| backend("created pod has no name"))?;
+        if created
+            .metadata
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.get(crate::REAPER_OWNER_LABEL))
+            != Some(&self.owner_id)
+        {
+            // The immutable digest already proved this is the same frozen Session
+            // realization. Transfer only the reaper lease with the observed
+            // resourceVersion as the optimistic-concurrency fence; a concurrent
+            // claimant gets 409 and must not steal a live Pod silently.
+            created
+                .metadata
+                .labels
+                .get_or_insert_with(Default::default)
+                .insert(crate::REAPER_OWNER_LABEL.to_string(), self.owner_id.clone());
+            pods.replace(&name, &PostParams::default(), &created)
+                .await
+                .map_err(backend)?;
+        }
         realization::await_pod_ready(&pods, &name).await?;
+        // Memory is mutable Session state. Seed a newly-created volume exactly
+        // once; an adopted Pod already contains the live writes that the new
+        // Worker must preserve and eventually harvest through the same mounter.
+        if was_created {
+            memory::project_snapshots(self, &name, plan).await?;
+        }
         // This is also the idempotent recovery path: an identical Pod realization
         // is adopted first, then the current Session manifest replaces its managed
         // files without changing the Pod or its realization digest.
@@ -1356,15 +1346,11 @@ mod tests {
     #[tokio::test]
     async fn builder_methods_set_every_field_and_pod_delegates_to_build_pod() {
         let rt = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap())
-            .with_memoryd_fuse(true)
             .with_owner(OwnerReference::default())
             .with_rendezvous("127.0.0.1:7000".parse().unwrap())
-            .with_memoryd_image("custom/memoryd:1")
             .with_image_pull_secrets(["registry-pull".into()]);
-        assert!(rt.memoryd_fuse);
         assert!(rt.owner.is_some());
         assert_eq!(rt.rendezvous, Some("127.0.0.1:7000".parse().unwrap()));
-        assert_eq!(rt.memoryd_image, "custom/memoryd:1");
         let labels = rt
             .pod("s1", &plan_with_memory(vec![]))
             .metadata
@@ -1477,65 +1463,78 @@ mod tests {
         }
     }
 
+    fn empty_memory_tar() -> Vec<u8> {
+        tar::Builder::new(Vec::new()).into_inner().unwrap()
+    }
+
     #[test]
-    fn build_pod_realizes_memory_mounts_as_sidecars_and_shared_volumes() {
+    fn build_pod_realizes_memory_mounts_from_one_authoritative_snapshot_path() {
+        /* Memory projection cause/effect decision table — KM1:
+         * C1 the canonical MemoryMounter produced a bounded snapshot; C2 access is
+         * read-only or read-write; C3 the Pod has no Resource-authority network
+         * credential. C1+C2+C3 => E1 one emptyDir per mount + one runtime-only
+         * projector, E2 Agent access matches C2, E3 no memoryd/second database,
+         * ConfigMap size ceiling, or network client exists in the Pod. Snapshot/harvest failures are covered
+         * by the provider lifecycle table and fail before success is published.
+         */
         let plan = plan_with_memory(vec![
             crate::MemoryMount {
                 store_id: "s1".into(),
                 mount_path: "/workspace/.mnt/a".into(),
+                access: pc::MountAccess::ReadOnly,
+                snapshot_tar: empty_memory_tar(),
             },
             crate::MemoryMount {
                 store_id: "s2".into(),
                 mount_path: "/workspace/.mnt/b".into(),
+                access: pc::MountAccess::ReadWrite,
+                snapshot_tar: empty_memory_tar(),
             },
         ]);
-        let pod = build_pod("run-1", &plan, &None, "memoryd:9", None, false, &[]);
+        let pod = build_pod("run-1", &plan, &None, None, &[]);
         let spec = pod.spec.unwrap();
 
-        // agent + one memoryd sidecar per memory store + the isolated input projector.
-        assert_eq!(spec.containers.len(), 4);
+        // Agent + Memory projector + isolated input projector; no second Memory implementation.
+        assert_eq!(spec.containers.len(), 3);
         assert_eq!(spec.containers[0].name, "agent");
-        assert_eq!(
-            spec.containers
-                .iter()
-                .filter(|c| c.name.starts_with("memoryd-"))
-                .count(),
-            2
-        );
-        // one pod-scoped emptyDir per store, the three writable-rootfs dirs
-        // (workspace, outputs, and /tmp), and the live read-only input tree.
+        assert_eq!(spec.containers[1].name, memory::PROJECTOR);
+        assert!(spec.init_containers.is_none());
+        // One emptyDir per store, the three writable-rootfs dirs, and the live
+        // read-only input tree. Large snapshots are streamed, not ConfigMaps.
         let volumes = spec.volumes.as_ref().unwrap();
         assert_eq!(volumes.len(), 2 + 3 + 1);
-        assert!(volumes.iter().all(|v| v.empty_dir.is_some()));
+        assert!(volumes.iter().all(|volume| volume.empty_dir.is_some()));
         // the agent mounts both memory volumes + writable dirs + live inputs.
         let agent = &spec.containers[0];
         assert_eq!(agent.volume_mounts.as_ref().unwrap().len(), 2 + 3 + 1);
-        assert!(agent.resources.is_some());
-        // The sidecar names store/mount/mode through explicit argv; no environment
-        // configuration path exists (the privilege lives only on this container).
-        let sc = spec
-            .containers
-            .iter()
-            .find(|c| c.name == "memoryd-0")
-            .unwrap();
-        assert_eq!(sc.image.as_deref(), Some("memoryd:9"));
+        let mounts = agent.volume_mounts.as_ref().unwrap();
         assert_eq!(
-            sc.args
-                .as_ref()
-                .unwrap()
+            mounts
                 .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            [
-                "--store-id",
-                "s1",
-                "--mount-path",
-                "/workspace/.mnt/a",
-                "--mode",
-                "copy",
-            ]
+                .find(|m| m.mount_path.ends_with("/a"))
+                .unwrap()
+                .read_only,
+            Some(true)
         );
-        assert!(sc.env.is_none());
+        assert_eq!(
+            mounts
+                .iter()
+                .find(|m| m.mount_path.ends_with("/b"))
+                .unwrap()
+                .read_only,
+            Some(false)
+        );
+        assert!(agent.resources.is_some());
+        assert!(
+            spec.containers
+                .iter()
+                .all(|container| !container.name.starts_with("memoryd-"))
+        );
+        assert_eq!(
+            spec.containers[1].volume_mounts.as_ref().unwrap().len(),
+            2,
+            "one projector owns only the writable sides of both Memory volumes"
+        );
     }
 
     #[test]
@@ -1581,9 +1580,7 @@ mod tests {
                 credential_file_path: None,
             },
         ];
-        let spec = build_pod("run-9", &plan, &None, "m", None, false, &[])
-            .spec
-            .unwrap();
+        let spec = build_pod("run-9", &plan, &None, None, &[]).spec.unwrap();
 
         // One ConfigMap volume (only the ordinary content bind), named cfg-1, plus the
         // 2 writable-rootfs emptyDirs. The ref-backed bind adds nothing on this tier.
@@ -1633,9 +1630,7 @@ mod tests {
             secret_writeback: false,
             credential_file_path: None,
         });
-        let spec = build_pod("run-pvc", &plan, &None, "m", None, false, &[])
-            .spec
-            .unwrap();
+        let spec = build_pod("run-pvc", &plan, &None, None, &[]).spec.unwrap();
         let volume = spec
             .volumes
             .as_ref()
@@ -1674,7 +1669,7 @@ mod tests {
             credential_file_path: Some("/acp-config/auth.json".into()),
         }];
 
-        let pod = build_pod("oauth", &plan, &None, "memoryd", None, false, &[]);
+        let pod = build_pod("oauth", &plan, &None, None, &[]);
         let spec = pod.spec.unwrap();
         let init = spec
             .init_containers
@@ -1735,9 +1730,7 @@ mod tests {
             credential_file_path: None,
         }];
 
-        let spec = build_pod("git", &plan, &None, "memoryd", None, false, &[])
-            .spec
-            .unwrap();
+        let spec = build_pod("git", &plan, &None, None, &[]).spec.unwrap();
         assert!(spec.init_containers.is_none());
         let secret = spec
             .volumes
@@ -1803,9 +1796,7 @@ mod tests {
             ("AWAKEN_ACP_GATEWAY_URL".into(), "http://gw.internal".into()),
             ("HTTPS_PROXY".into(), "http://gw.internal:8888".into()),
         ];
-        let spec = build_pod("r", &plan, &None, "m", None, false, &[])
-            .spec
-            .unwrap();
+        let spec = build_pod("r", &plan, &None, None, &[]).spec.unwrap();
         let env = spec.containers[0].env.clone().unwrap();
         assert!(env.iter().any(|e| e.name == "AWAKEN_ACP_GATEWAY_URL"));
         assert!(
@@ -1816,15 +1807,7 @@ mod tests {
 
     #[test]
     fn build_pod_without_memory_mounts_still_isolates_the_input_projector() {
-        let pod = build_pod(
-            "r",
-            &plan_with_memory(Vec::new()),
-            &None,
-            "m",
-            None,
-            false,
-            &[],
-        );
+        let pod = build_pod("r", &plan_with_memory(Vec::new()), &None, None, &[]);
         let spec = pod.spec.unwrap();
         // No memoryd sidecar; only the Agent and its runtime-owned input projector.
         // The Agent gets three writable-rootfs emptyDirs plus one read-only input tree.
@@ -1834,67 +1817,11 @@ mod tests {
         assert_eq!(spec.containers[0].volume_mounts.as_ref().unwrap().len(), 4);
     }
 
-    fn memoryd_sidecar(spec: &PodSpec) -> &Container {
-        spec.containers
-            .iter()
-            .find(|c| c.name == "memoryd-0")
-            .unwrap()
-    }
-
-    #[test]
-    fn memoryd_sidecar_copy_mode_is_the_unprivileged_default() {
-        // No-FUSE cluster: the sidecar runs copy mode with NO SYS_ADMIN, so a locked
-        // -down node still serves the store (materialize + harvest).
-        let plan = plan_with_memory(vec![crate::MemoryMount {
-            store_id: "s1".into(),
-            mount_path: "/workspace/.mnt/a".into(),
-        }]);
-        let spec = build_pod("r", &plan, &None, "m", None, false, &[])
-            .spec
-            .unwrap();
-        let sc = memoryd_sidecar(&spec);
-        assert!(sc.args.as_ref().unwrap().iter().any(|arg| arg == "copy"));
-        assert!(
-            sc.security_context.is_none(),
-            "copy-mode sidecar must be unprivileged (no /dev/fuse needed)"
-        );
-    }
-
-    #[test]
-    fn memoryd_sidecar_fuse_mode_grants_sys_admin() {
-        let plan = plan_with_memory(vec![crate::MemoryMount {
-            store_id: "s1".into(),
-            mount_path: "/workspace/.mnt/a".into(),
-        }]);
-        // FUSE opt-in: the sidecar is told fuse mode and granted SYS_ADMIN for /dev/fuse.
-        let spec = build_pod("r", &plan, &None, "m", None, true, &[])
-            .spec
-            .unwrap();
-        let sc = memoryd_sidecar(&spec);
-        assert!(sc.args.as_ref().unwrap().iter().any(|arg| arg == "fuse"));
-        let caps = sc
-            .security_context
-            .as_ref()
-            .unwrap()
-            .capabilities
-            .as_ref()
-            .unwrap();
-        assert_eq!(caps.add.as_deref(), Some(&["SYS_ADMIN".to_string()][..]));
-    }
-
     #[test]
     fn build_pod_hardens_the_untrusted_agent() {
-        let spec = build_pod(
-            "r",
-            &plan_with_memory(Vec::new()),
-            &None,
-            "m",
-            None,
-            false,
-            &[],
-        )
-        .spec
-        .unwrap();
+        let spec = build_pod("r", &plan_with_memory(Vec::new()), &None, None, &[])
+            .spec
+            .unwrap();
         // No SA token → the agent cannot reach the kube API.
         assert_eq!(spec.automount_service_account_token, Some(false));
         let sc = spec.containers[0].security_context.as_ref().unwrap();
@@ -1916,11 +1843,11 @@ mod tests {
     fn build_pod_injects_the_reverse_dial_rendezvous() {
         let plan = plan_with_memory(Vec::new());
         // Without a rendezvous, no such env.
-        let no_rv = build_pod("r", &plan, &None, "m", None, false, &[]);
+        let no_rv = build_pod("r", &plan, &None, None, &[]);
         let env0 = no_rv.spec.unwrap().containers[0].env.clone().unwrap();
         assert!(env0.iter().all(|e| e.name != "AWAKEN_ACP_RENDEZVOUS"));
         // With one, the agent is told where to dial out.
-        let with_rv = build_pod("r", &plan, &None, "m", Some("10.0.0.5:9000"), false, &[]);
+        let with_rv = build_pod("r", &plan, &None, Some("10.0.0.5:9000"), &[]);
         let env1 = with_rv.spec.unwrap().containers[0].env.clone().unwrap();
         assert!(
             env1.iter().any(|e| e.name == "AWAKEN_ACP_RENDEZVOUS"
@@ -1959,7 +1886,7 @@ mod tests {
         // capability remains false until an installed policy is verified.
         let mut plan = plan_with_memory(Vec::new());
         plan.network = crate::NetworkMode::None;
-        let pod = build_pod("r", &plan, &None, "m", None, false, &[]);
+        let pod = build_pod("r", &plan, &None, None, &[]);
         let labels = pod.metadata.labels.unwrap();
         assert_eq!(
             labels.get("awaken-egress").map(String::as_str),
@@ -1967,7 +1894,7 @@ mod tests {
         );
 
         plan.network = crate::NetworkMode::Open;
-        let open = build_pod("r", &plan, &None, "m", None, false, &[]);
+        let open = build_pod("r", &plan, &None, None, &[]);
         assert_eq!(
             open.metadata
                 .labels
@@ -1980,7 +1907,7 @@ mod tests {
         // No-network policy is also `restricted`, never `open` — a fail-open label
         // here would let a NetworkPolicy grant egress to a pod that asked for none.
         plan.network = crate::NetworkMode::None;
-        let denied = build_pod("r", &plan, &None, "m", None, false, &[]);
+        let denied = build_pod("r", &plan, &None, None, &[]);
         assert_eq!(
             denied
                 .metadata

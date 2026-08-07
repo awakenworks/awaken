@@ -104,6 +104,7 @@ struct WorkerFileConfig {
     sandbox_tier: Option<String>,
     sandbox_dir: Option<PathBuf>,
     sandbox_allow_local_fallback: Option<bool>,
+    k8s_namespace: Option<String>,
     acp_clis: Option<Vec<String>>,
     acp_default_cli: Option<String>,
     container_image: Option<String>,
@@ -162,6 +163,12 @@ impl WorkerDaemonConfig {
             .parse()?;
         runtime.sandbox_dir = file.sandbox_dir;
         runtime.sandbox.allow_local_fallback = file.sandbox_allow_local_fallback.unwrap_or(false);
+        if let Some(namespace) = file.k8s_namespace {
+            if namespace.trim().is_empty() {
+                return Err("k8s_namespace must not be empty".into());
+            }
+            runtime.sandbox.k8s_namespace = namespace;
+        }
         let acp_clis = file.acp_clis.unwrap_or_default();
         runtime.acp = (!acp_clis.is_empty())
             .then(|| awaken_runtime_host::AcpWorkerProfile::new(acp_clis, file.acp_default_cli))
@@ -322,6 +329,29 @@ mod tests {
                 .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
             "R1"
         );
+
+        // Sandbox configuration cause/effect decision table:
+        // S1 K8s tier + non-empty namespace + image -> preserve the exact
+        // namespace and Agent image for the canonical container provider; S2 an empty
+        // namespace -> reject before provider construction; S3 no namespace ->
+        // reuse the typed SandboxSettings default. These rules keep the strict
+        // database-less Worker boundary on the same K8s adapter as all-in-one.
+        write(&format!(
+            "role='worker'\nworker_server='http://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\nsandbox_tier='k8s'\nk8s_namespace='agents'\ncontainer_image='awaken-sandbox:local'\n",
+            credential.display()
+        ));
+        let k8s = WorkerDaemonConfig::load(&path, None).expect("S1");
+        assert_eq!(k8s.runtime.sandbox.k8s_namespace, "agents", "S1");
+        assert_eq!(
+            k8s.runtime.container_image.as_deref(),
+            Some("awaken-sandbox:local"),
+            "S1"
+        );
+
+        write(
+            "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='k8s'\nk8s_namespace='  '\n",
+        );
+        assert!(WorkerDaemonConfig::load(&path, None).is_err(), "S2");
         assert!(
             worker
                 .manifest()

@@ -1004,6 +1004,17 @@ impl ManagedState {
         session_id: &str,
     ) -> Result<(), StateError> {
         self.ensure_session(session_id).await?;
+        // Private Worker realization mutates the same durable Session application
+        // without passing through this protocol adapter. Refresh its disposable
+        // wire projection before reading runtime events so GET cannot retain a
+        // stale preparing/idle status as a parallel lifecycle authority.
+        let persisted = self
+            .application
+            .session_repository()
+            .get(session_id)
+            .await
+            .ok_or(StateError::NotFound)?;
+        self.refresh_cached_projection(&persisted)?;
         let initial_cursor = self
             .sessions
             .lock()

@@ -6,21 +6,27 @@
 // Run: (from e2e/)  node management_consent_e2e.mjs
 
 import assert from 'node:assert/strict';
-import { withScenarioServer, pass } from './harness.mjs';
+import { USER_PROFILES_BETA, withScenarioServer, pass } from './harness.mjs';
+
+const PROFILE_HEADERS = { 'anthropic-beta': USER_PROFILES_BETA };
 
 async function main() {
   await withScenarioServer('management', 'mcp', 38192, async (baseUrl) => {
     const id = 'dsub_consent_e2e';
 
-    // Unknown subject → 404 on read.
-    const missing = await fetch(`${baseUrl}/v1/user_profiles/${id}/consent`);
+    // Gate decision rule: missing beta => 400 before application effects;
+    // canonical beta + missing subject => domain 404; canonical beta + grant =>
+    // consent mutation. All domain assertions below therefore carry the gate.
+    const missing = await fetch(`${baseUrl}/v1/user_profiles/${id}/consent`, {
+      headers: PROFILE_HEADERS,
+    });
     assert.equal(missing.status, 404, `unknown subject status ${missing.status}`);
     pass('GET consent (unknown subject) -> 404');
 
     // Grant telemetry_content consent.
     const granted = await fetch(`${baseUrl}/v1/user_profiles/${id}/consent`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { ...PROFILE_HEADERS, 'content-type': 'application/json' },
       body: JSON.stringify({ purpose: 'telemetry_content', version: 'v1' }),
     });
     assert.equal(granted.status, 200, `grant status ${granted.status}`);
@@ -33,7 +39,9 @@ async function main() {
     pass('POST consent -> grant recorded, ceiling=full');
 
     // The grant persists and reads back.
-    const read = await fetch(`${baseUrl}/v1/user_profiles/${id}/consent`);
+    const read = await fetch(`${baseUrl}/v1/user_profiles/${id}/consent`, {
+      headers: PROFILE_HEADERS,
+    });
     assert.equal(read.status, 200);
     const rbody = await read.json();
     assert.equal(rbody.telemetry_content_ceiling, 'full', 'read-back ceiling=full');
@@ -44,10 +52,11 @@ async function main() {
     // ceiling drops back to structured.
     const erased = await fetch(`${baseUrl}/v1/user_profiles/${id}/erasure`, {
       method: 'POST',
+      headers: PROFILE_HEADERS,
     });
     assert.equal(erased.status, 200, `erasure status ${erased.status}`);
     const afterErase = await (
-      await fetch(`${baseUrl}/v1/user_profiles/${id}/consent`)
+      await fetch(`${baseUrl}/v1/user_profiles/${id}/consent`, { headers: PROFILE_HEADERS })
     ).json();
     assert.equal(afterErase.telemetry_content_ceiling, 'structured', 'consent withdrawn');
     assert.equal(afterErase.grants[0].status, 'withdrawn', 'grant retained as audit (withdrawn)');

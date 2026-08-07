@@ -117,7 +117,9 @@ pub awaken_sandbox_container::ManagedContainer::id: alloc::string::String
 pub awaken_sandbox_container::ManagedContainer::owned_by_current_runtime: bool
 pub awaken_sandbox_container::ManagedContainer::running: bool
 pub struct awaken_sandbox_container::MemoryMount
+pub awaken_sandbox_container::MemoryMount::access: awaken_provisioning_contract::vocab::MountAccess
 pub awaken_sandbox_container::MemoryMount::mount_path: alloc::string::String
+pub awaken_sandbox_container::MemoryMount::snapshot_tar: alloc::vec::Vec<u8>
 pub awaken_sandbox_container::MemoryMount::store_id: alloc::string::String
 pub struct awaken_sandbox_container::RuntimeAgentProcess
 pub awaken_sandbox_container::RuntimeAgentProcess::channel: alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>

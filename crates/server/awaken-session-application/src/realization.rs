@@ -38,6 +38,11 @@ fn validate_target(
             "Session id, Runtime owner/incarnation, and a future lease expiry are required".into(),
         ));
     }
+    if command.target.renew_existing_lease && command.target.reassign_existing_lease {
+        return Err(SessionRealizationControlFailure::Invalid(
+            "Session realization renewal and reassignment are mutually exclusive".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -255,10 +260,11 @@ impl SessionApplication {
             .begin_session_realization(BeginSessionRealization {
                 session_id: session_id.to_string(),
                 target: awaken_session_contract::SessionRealizationTarget {
-                    owner: self.runtime_incarnation().to_string(),
+                    owner: self.local_realization_owner().to_string(),
                     runtime_incarnation: self.runtime_incarnation().to_string(),
                     lease_expires_at_unix_ms,
                     renew_existing_lease: false,
+                    reassign_existing_lease: false,
                 },
             })
             .await
@@ -316,7 +322,7 @@ impl SessionApplication {
                 continue;
             };
             if scoped.session.status == "deleted"
-                || lease.owner != self.runtime_incarnation()
+                || lease.owner != self.local_realization_owner()
                 || lease.runtime_incarnation != self.runtime_incarnation()
                 || lease.expires_at_unix_ms > renew_before
                 || !scoped
@@ -336,6 +342,7 @@ impl SessionApplication {
                         runtime_incarnation: lease.runtime_incarnation,
                         lease_expires_at_unix_ms: requested_expiry,
                         renew_existing_lease: true,
+                        reassign_existing_lease: false,
                     },
                 })
                 .await
@@ -491,6 +498,12 @@ impl SessionApplication {
             .get(session_id)
             .await
             .ok_or(SessionRealizationControlFailure::NotFound)?;
+        // A failed initial realization is terminal. Treating its now-empty
+        // Stage/Publish sets as `Complete` would allow a retried Run claim to
+        // execute after silently dropping the failed MCP/Resource projection.
+        if session.is_terminal() {
+            return Err(SessionRealizationControlFailure::NotReady);
+        }
         if session.frozen_baseline().is_none() {
             return Err(SessionRealizationControlFailure::NotReady);
         }
@@ -523,7 +536,7 @@ impl SessionRealizationControl for SessionApplication {
             let same_incarnation = session.realization.as_ref().is_some_and(|lease| {
                 lease.runtime_incarnation == command.target.runtime_incarnation
             });
-            if existing_live && !same_owner {
+            if existing_live && !same_owner && !command.target.reassign_existing_lease {
                 return Err(SessionRealizationControlFailure::StaleOwnership);
             }
 
@@ -535,9 +548,12 @@ impl SessionRealizationControl for SessionApplication {
                 .map(|attachment| (attachment.attachment_id.clone(), attachment.generation))
                 .collect::<Vec<_>>();
             // One authenticated logical owner may immediately fence its prior
-            // process incarnation after restart. A different owner still waits
-            // for expiry or an explicit Control reassignment.
-            let needs_assignment = !existing_live || !same_incarnation;
+            // process incarnation after restart. A different owner can do so
+            // only when the claim-authenticated topology edge explicitly asks
+            // Control to reassign this otherwise independent Session lease.
+            let needs_assignment = !existing_live
+                || !same_incarnation
+                || (command.target.reassign_existing_lease && !same_owner);
             let renews_assignment = command.target.renew_existing_lease
                 && !needs_assignment
                 && session.realization.as_ref().is_some_and(|lease| {
@@ -742,7 +758,25 @@ impl SessionRealizationControl for SessionApplication {
             }
             Some(_) | None => false,
         };
+        let prepared_legacy_resources = if session.resources.pending.is_none()
+            && session.resources.activations.is_empty()
+            && !session.resources.active.inputs.is_empty()
+        {
+            match command.prepared_resource_revision {
+                Some(revision) if revision == session.resources.revision => true,
+                Some(_) => {
+                    return Err(SessionRealizationControlFailure::Invalid(
+                        "prepared legacy Resource generation does not match the active Session generation"
+                            .into(),
+                    ));
+                }
+                None => false,
+            }
+        } else {
+            false
+        };
         let needs_activation_commit = prepared_pending_resources
+            || prepared_legacy_resources
             || session
                 .mcp
                 .attachments
@@ -760,6 +794,9 @@ impl SessionRealizationControl for SessionApplication {
         }
         if prepared_pending_resources {
             session.resources.commit().map_err(unavailable)?;
+        }
+        if prepared_legacy_resources {
+            session.resources.adopt_legacy_active(&command.session_id);
         }
         for request in expected {
             let attachment = session
@@ -808,7 +845,7 @@ impl SessionRealizationControl for SessionApplication {
             session.status = "activating".into();
         }
         let session = self
-            .commit_session_snapshot(
+            .commit_resource_snapshot(
                 &owner_scope,
                 session,
                 "activate-session-realization",
@@ -955,6 +992,17 @@ impl SessionRealizationControl for SessionApplication {
                 "realization failure reason is empty".into(),
             ));
         }
+        // Failure delivery is idempotent even though activation_failed is
+        // terminal for every new phase command. Handle that exact replay before
+        // the common terminal guard used by begin/activate/acknowledge.
+        if self
+            .session_repository()
+            .get(&command.session_id)
+            .await
+            .is_some_and(|session| session.status == "activation_failed")
+        {
+            return Ok(());
+        }
         let (owner_scope, mut session) = self.session_for_realization(&command.session_id).await?;
         verify_lease(&session, &command.lease)?;
         if command.prepared_resource_revision.is_some_and(|revision| {
@@ -963,9 +1011,6 @@ impl SessionRealizationControl for SessionApplication {
             return Err(SessionRealizationControlFailure::Invalid(
                 "failed Resource generation does not match the pending Session generation".into(),
             ));
-        }
-        if session.status == "activation_failed" {
-            return Ok(());
         }
         let realizing = session
             .mcp

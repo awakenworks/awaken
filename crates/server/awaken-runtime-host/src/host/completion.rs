@@ -296,7 +296,11 @@ impl SharedHost {
         // the canonical Control-owned realization path before it constructs the
         // execution context. Resource manifests alone are deliberately
         // insufficient: ordinary Runs may carry one without being Sessions.
-        let is_session_dispatch = runtime_projection.is_some();
+        let is_session_dispatch = self
+            .session_slots
+            .read(&thread, |slot| slot.session_dispatch)
+            .unwrap_or(false)
+            || runtime_projection.is_some();
         let environment_snapshot = runtime_projection
             .as_ref()
             .map(|(environment, _, _)| environment);

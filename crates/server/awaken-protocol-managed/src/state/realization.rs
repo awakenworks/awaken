@@ -312,6 +312,7 @@ mod tests {
             runtime_incarnation: "worker-a/incarnation-1".into(),
             lease_expires_at_unix_ms: u64::MAX - 2,
             renew_existing_lease: false,
+            reassign_existing_lease: false,
         };
         let begin = BeginSessionRealization {
             session_id: "session-phase".into(),
@@ -560,6 +561,7 @@ mod tests {
                     runtime_incarnation: "worker-a/incarnation-1".into(),
                     lease_expires_at_unix_ms: u64::MAX - 1,
                     renew_existing_lease: true,
+                    reassign_existing_lease: false,
                 },
             })
             .await
@@ -664,6 +666,7 @@ mod tests {
                     runtime_incarnation: "worker-a/incarnation-1".into(),
                     lease_expires_at_unix_ms: u64::MAX,
                     renew_existing_lease: true,
+                    reassign_existing_lease: false,
                 },
             })
             .await
@@ -768,6 +771,7 @@ mod tests {
             runtime_incarnation: "worker-a/incarnation-1".into(),
             lease_expires_at_unix_ms: u64::MAX,
             renew_existing_lease: false,
+            reassign_existing_lease: false,
         };
         let first = state
             .application
@@ -845,6 +849,7 @@ mod tests {
         // | F2 | T | empty | activate+ack | idle, one commit per phase |
         // | F3 | T | Realizing | fail | Failed + activation_failed |
         // | F4 | T | Failed | same fail | replay/no revision |
+        // | F5 | any | Failed | later begin/retry | NotReady; never Complete |
         let mut baseline_only = persisted_session("session-baseline-only");
         baseline_only.resources = Default::default();
         baseline_only.mcp = SessionMcpAttachmentSet::default();
@@ -854,6 +859,7 @@ mod tests {
             runtime_incarnation: "worker-a/incarnation-1".into(),
             lease_expires_at_unix_ms: u64::MAX,
             renew_existing_lease: false,
+            reassign_existing_lease: false,
         };
         let baseline_stage = baseline_state
             .application
@@ -964,6 +970,23 @@ mod tests {
             failed_repo.get("session-failed").await.unwrap().revision,
             after_failure.revision,
             "F4"
+        );
+        assert_eq!(
+            failed_state
+                .application
+                .begin_session_realization(BeginSessionRealization {
+                    session_id: "session-failed".into(),
+                    target: awaken_session_contract::SessionRealizationTarget {
+                        owner: "worker-a".into(),
+                        runtime_incarnation: "worker-a/incarnation-2".into(),
+                        lease_expires_at_unix_ms: u64::MAX,
+                        renew_existing_lease: false,
+                        reassign_existing_lease: false,
+                    },
+                })
+                .await,
+            Err(SessionRealizationControlFailure::NotReady),
+            "F5"
         );
     }
 }
