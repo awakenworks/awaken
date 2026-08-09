@@ -27,8 +27,8 @@ pub use awaken_worker_registry::place
 pub use awaken_worker_registry::place_assignment
 pub struct awaken_worker_registry::PostgresWorkerDirectory
 impl awaken_worker_registry::PostgresWorkerDirectory
-pub async fn awaken_worker_registry::PostgresWorkerDirectory::connect(&str) -> core::result::Result<Self, awaken_worker_contract::RegistryError>
-pub async fn awaken_worker_registry::PostgresWorkerDirectory::connect_existing(&str) -> core::result::Result<Self, awaken_worker_contract::RegistryError>
+pub async fn awaken_worker_registry::PostgresWorkerDirectory::connect(&str, u32) -> core::result::Result<Self, awaken_worker_contract::RegistryError>
+pub async fn awaken_worker_registry::PostgresWorkerDirectory::connect_existing(&str, u32) -> core::result::Result<Self, awaken_worker_contract::RegistryError>
 pub fn awaken_worker_registry::PostgresWorkerDirectory::pool(&self) -> sqlx_postgres::PgPool
 pub async fn awaken_worker_registry::PostgresWorkerDirectory::with_existing_pool(sqlx_postgres::PgPool) -> core::result::Result<Self, awaken_worker_contract::RegistryError>
 pub async fn awaken_worker_registry::PostgresWorkerDirectory::with_pool(sqlx_postgres::PgPool) -> core::result::Result<Self, awaken_worker_contract::RegistryError>
