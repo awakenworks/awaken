@@ -14,6 +14,7 @@ import { execFileSync, execSync, spawn, type ChildProcess } from 'node:child_pro
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
+import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { deploymentEnv } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -82,7 +83,7 @@ function awakenBin(): string {
 }
 
 function start(bin: string, directory: string, databaseUrl: string): ChildProcess {
-  return spawn(bin, ['all-in-one', '--port', String(PORT)], {
+  return spawn(bin, automatedAllInOneArgs('--port', String(PORT)), {
     env: {
       ...process.env,
       ...deploymentEnv(directory, {

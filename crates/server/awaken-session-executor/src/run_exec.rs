@@ -416,9 +416,11 @@ impl SharedHost {
     /// Execute `activation`: the ACP executor when the session chose
     /// an ACP runtime, else the native ingress (direct / durable / superseding).
     ///
-    /// `sink`, when set, receives the engine's best-effort live progress — only
-    /// the in-process direct path wires it (the durable/ACP paths run elsewhere
-    /// and simply omit live events, degrading to the committed projection).
+    /// `sink`, when set, receives the engine's best-effort live progress. Direct
+    /// execution wires it into the attempt context; durable foreground execution
+    /// registers it with the Host relay installed on the Session worker. A Worker
+    /// in another process still degrades to the committed projection until the
+    /// authenticated Worker transport carries the same neutral stream port.
     async fn execute_activation(
         &self,
         ctx: &Arc<SessionCtx>,
@@ -437,12 +439,14 @@ impl SharedHost {
         if options.supersede {
             // Durable + superseding: enqueue (marking prior pending superseded) and
             // let the process pool drive it on this session's worker (O2).
-            self.submit_durable_foreground(ctx, activation, true).await
+            self.submit_durable_foreground(ctx, activation, true, options.sink)
+                .await
         } else if ctx.durable {
             // Durable: enqueue and await the pool driving it to a settled state. The
             // session's own worker must not claim (it would grab foreign threads'
             // runs on the shared queue); the pool is the sole claimer.
-            self.submit_durable_foreground(ctx, activation, false).await
+            self.submit_durable_foreground(ctx, activation, false, options.sink)
+                .await
         } else {
             // Native direct turn: the only path whose engine drains a live
             // inbox in-process, so it is the only path that opens one. The

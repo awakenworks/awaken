@@ -17,6 +17,7 @@ import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
 import { closeHttpServer } from './http_server.mjs';
+import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38513);
@@ -222,7 +223,7 @@ async function main() {
     'acp_clis = ["gemini"]',
     'acp_default_cli = "gemini"',
   ].join('\n'));
-  const server = spawn(binary, ['all-in-one', '--config', configPath, '--no-browser'], {
+  const server = spawn(binary, automatedAllInOneArgs('--config', configPath), {
     env: {
       ...environment,
       // Ambient values are discovery hints only. The published endpoint, model,

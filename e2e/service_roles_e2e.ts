@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, execSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 39418);
@@ -82,7 +83,7 @@ async function main() {
   assert.match(help.stdout, /coordinator/);
   assert.doesNotMatch(help.stdout, /AWAKEN_WEB_DIST/);
 
-  const allInOneHelp = spawnSync(bin, ['all-in-one', '--help'], { encoding: 'utf8' });
+  const allInOneHelp = spawnSync(bin, automatedAllInOneArgs('--help'), { encoding: 'utf8' });
   assert.equal(allInOneHelp.status, 0, allInOneHelp.stderr);
   assert.match(allInOneHelp.stdout, /USAGE/);
 
@@ -92,7 +93,7 @@ async function main() {
     assert.match(result.stderr, /unknown command/);
   }
 
-  const badArgs = spawnSync(bin, ['all-in-one', '--unknown-option'], { encoding: 'utf8' });
+  const badArgs = spawnSync(bin, automatedAllInOneArgs('--unknown-option'), { encoding: 'utf8' });
   assert.notEqual(badArgs.status, 0);
   assert.match(badArgs.stderr, /unexpected argument/);
 
@@ -129,7 +130,7 @@ async function main() {
   assert.notEqual(localControl.status, 0, 'K4b');
   assert.match(localControl.stderr, /requires mode = "server"/, 'K4b');
 
-  let server = spawn(bin, ['all-in-one', '--no-browser'], {
+  let server = spawn(bin, automatedAllInOneArgs(), {
     cwd: temp,
     env: {
       ...process.env,

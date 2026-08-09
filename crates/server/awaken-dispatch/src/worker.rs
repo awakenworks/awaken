@@ -238,6 +238,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         self
     }
 
+    /// Attach the claim-aware publisher used by a database-less worker to relay
+    /// live progress over its authenticated Coordinator transport.
+    #[must_use]
+    pub fn with_claimed_stream_publisher(
+        mut self,
+        publisher: Arc<dyn crate::ClaimedStreamPublisher>,
+    ) -> Self {
+        self.exec = self.exec.with_claimed_stream_publisher(publisher);
+        self
+    }
+
     /// Attach the durable interrupted-stream checkpoint store to every attempt, so
     /// a dispatch re-executed after a crash resumes its in-flight step (Phase 3).
     #[must_use]
@@ -328,7 +339,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// out-of-band commit such as a durable cancel.
     pub(crate) fn execution_context(&self) -> RuntimeRunContext {
         self.exec
-            .runtime_context(self.cancellation.clone().unwrap_or_default())
+            .runtime_context(self.cancellation.clone().unwrap_or_default(), None)
     }
 
     /// A run context for the attempt on `run_id` claimed under lease `epoch`, whose
@@ -358,7 +369,8 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             self.ownership_clock.clone(),
         );
         let mut ctx = self
-            .execution_context()
+            .exec
+            .runtime_context(self.cancellation.clone().unwrap_or_default(), Some(claim))
             .with_commit(fenced)
             .with_ownership(ownership);
         if !credential_bindings.is_empty() {

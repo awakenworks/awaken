@@ -11,6 +11,7 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
+import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 
 // The historical 38xxx defaults overlap Linux's ephemeral client-port range.
 // Assign each Node scenario a small, non-ephemeral block before the importing
@@ -216,7 +217,7 @@ export function spawnProduction(
   if (workspace) env.AWAKEN_SCENARIO_WORKSPACE = workspace;
   return trackSpawnedServer(
     port,
-    spawn(ensureProductionBuilt(), ['all-in-one', '--port', String(port)], {
+    spawn(ensureProductionBuilt(), automatedAllInOneArgs('--port', String(port)), {
       env,
       stdio: ['ignore', 'ignore', stderr],
     }),

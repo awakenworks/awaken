@@ -79,6 +79,32 @@ impl awaken_session_contract::SessionEnvironmentBindingSink for RepositoryEnviro
 }
 
 impl ManagedState {
+    pub(crate) async fn deployment_environment(
+        &self,
+        environment_id: &str,
+    ) -> Result<
+        Option<crate::env_registry::EnvItem>,
+        awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError,
+    > {
+        self.environments.get(environment_id).await
+    }
+
+    pub(crate) fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
+        self.config_source
+            .as_ref()
+            .is_some_and(|source| source.agent_unavailable_in(workspace_id, agent_id))
+    }
+
+    pub(crate) fn deployment_unavailable_delegate(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<String> {
+        self.config_source
+            .as_ref()
+            .and_then(|source| source.unavailable_delegate_in(workspace_id, agent_id))
+    }
+
     /// Resolve one exact executable Environment snapshot for a new Session.
     ///
     /// An explicit Session selection follows the current Environment revision;

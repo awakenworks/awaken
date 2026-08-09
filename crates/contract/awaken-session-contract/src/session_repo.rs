@@ -108,14 +108,25 @@ impl PersistedSession {
         )
     }
 
+    /// Whether the Resource convergence driver owns work for this Session.
+    ///
+    /// A running or rescheduling Session with an active manifest is deliberately
+    /// excluded: its resident Environment is live execution state, not terminal
+    /// cleanup work. Keeping this predicate beside [`Self::is_terminal`] prevents
+    /// reconcilers from recreating lifecycle status lists with string comparisons.
+    #[must_use]
+    pub fn needs_resource_reconciliation(&self) -> bool {
+        self.status == "deleted"
+            || self.resources.needs_reconciliation()
+            || (self.is_terminal() && self.resources.has_active())
+    }
+
     /// Whether this durable aggregate must be revisited by any Coordinator
     /// convergence driver. Keeping the union here prevents SQLite, Postgres,
     /// and future repositories from growing different recovery scans.
     #[must_use]
     pub fn needs_reconciliation(&self) -> bool {
-        self.status == "deleted"
-            || self.resources.needs_reconciliation()
-            || (self.status != "idle" && self.resources.has_active())
+        self.needs_resource_reconciliation()
             || self.mcp.needs_reconciliation()
             || !matches!(
                 self.environment,
@@ -468,28 +479,68 @@ mod mutation_tests {
         }
     }
 
-    /// Cause graph: lifecycle fact -> terminal classification -> realization
-    /// eligibility. Decision table:
+    /// Cause graph: lifecycle fact -> terminal classification -> realization and
+    /// Resource-cleanup eligibility. `pending` means the Resource aggregate owns
+    /// unfinished work; `active` means it has a resident manifest.
     ///
-    /// | Rule | status | Terminal |
-    /// |---|---|---|
-    /// | L1 | preparing | false |
-    /// | L2 | idle | false |
-    /// | L3 | terminated | true |
-    /// | L4 | deleted | true |
-    /// | L5 | activation_failed | true |
+    /// | Rule | status | pending | active | Terminal | Resource reconcile |
+    /// |---|---|---|---|---|---|
+    /// | L1 | preparing | false | true | false | false |
+    /// | L2 | running | false | true | false | false |
+    /// | L3 | rescheduling | false | true | false | false |
+    /// | L4 | idle | false | true | false | false |
+    /// | L5 | idle | true | any | false | true |
+    /// | L6 | terminated | false | true | true | true |
+    /// | L7 | terminated | false | false | true | false |
+    /// | L8 | deleted | false | false | true | true |
+    /// | L9 | activation_failed | false | true | true | true |
     #[test]
     fn terminal_lifecycle_classification_follows_the_decision_table() {
-        for (rule, status, terminal) in [
-            ("L1", "preparing", false),
-            ("L2", "idle", false),
-            ("L3", "terminated", true),
-            ("L4", "deleted", true),
-            ("L5", "activation_failed", true),
+        for (rule, status, pending, active, terminal, resource_reconcile) in [
+            ("L1", "preparing", false, true, false, false),
+            ("L2", "running", false, true, false, false),
+            ("L3", "rescheduling", false, true, false, false),
+            ("L4", "idle", false, true, false, false),
+            ("L5", "idle", true, false, false, true),
+            ("L6", "terminated", false, true, true, true),
+            ("L7", "terminated", false, false, true, false),
+            ("L8", "deleted", false, false, true, true),
+            ("L9", "activation_failed", false, true, true, true),
         ] {
             let mut value = session("session-1", SessionRevision(1));
             value.status = status.into();
+            let desired = crate::ResolvedSessionResources {
+                inputs: vec![crate::ResolvedInput {
+                    binding_id: awaken_resource_contract::BindingId::from("input-1"),
+                    mount_path: "input.txt".into(),
+                    access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                    source: crate::ResolvedInputSource::File {
+                        file_id: awaken_resource_contract::FileId::from("file-1"),
+                    },
+                    instructions: None,
+                }],
+                skills: Some(Vec::new()),
+            };
+            if active {
+                value
+                    .resources
+                    .prepare("session-1", desired.clone())
+                    .expect("active generation prepare");
+                value.resources.start_attempt().expect("active attempt");
+                value.resources.commit().expect("active commit");
+            }
+            if pending {
+                value
+                    .resources
+                    .prepare("session-1", desired)
+                    .expect("L5 pending generation");
+            }
             assert_eq!(value.is_terminal(), terminal, "{rule}");
+            assert_eq!(
+                value.needs_resource_reconciliation(),
+                resource_reconcile,
+                "{rule}"
+            );
         }
     }
 

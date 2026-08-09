@@ -26,6 +26,12 @@ pub enum UIStreamEvent {
     TextEnd {
         id: String,
     },
+    ReasoningStart {
+        id: String,
+    },
+    ReasoningEnd {
+        id: String,
+    },
     /// A tool call has begun streaming its input, before any argument bytes.
     /// `useChat` opens an `input-streaming` tool part on this frame.
     ToolInputStart {
@@ -51,6 +57,15 @@ pub enum UIStreamEvent {
         input: Value,
         #[serde(rename = "providerExecuted")]
         provider_executed: bool,
+    },
+    /// A server-side tool is paused at its permission gate. `approval_id` is
+    /// stable across stream/history reloads and intentionally reuses the
+    /// runtime's unique tool-call identity.
+    ToolApprovalRequest {
+        #[serde(rename = "approvalId")]
+        approval_id: String,
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
     },
     ToolOutputAvailable {
         #[serde(rename = "toolCallId")]

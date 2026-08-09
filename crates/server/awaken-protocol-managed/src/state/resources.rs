@@ -22,10 +22,7 @@ impl ManagedState {
         for record in pending {
             let owner_scope = record.workspace_id;
             let session = record.session;
-            if session.status != "deleted"
-                && !session.resources.needs_reconciliation()
-                && (session.status == "idle" || !session.resources.has_active())
-            {
+            if !session.needs_resource_reconciliation() {
                 continue;
             }
             match self

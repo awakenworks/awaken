@@ -11,11 +11,24 @@ pub(super) async fn spill_tool_output(
     run_id: &RunId,
     mut output: ToolOutput,
 ) -> Result<ToolOutput> {
+    let text_only = output
+        .content
+        .iter()
+        .all(|block| matches!(block, ContentBlock::Text { .. }));
+    // Empty successful process output is still a fact. Materialize it once at
+    // the neutral model-visible boundary so every provider receives a valid,
+    // truthful ToolResult and individual tools/adapters do not invent their own
+    // placeholders. The error row stays distinct so absence is never presented
+    // as success. Structured empty-looking blocks remain untouched.
+    if text_only && output.text().trim().is_empty() {
+        output.content = vec![ContentBlock::text(if output.is_error {
+            "Tool failed without an error message."
+        } else {
+            "Tool completed successfully without output."
+        })];
+    }
     if let Some(spiller) = &context.tool_output_spiller
-        && output
-            .content
-            .iter()
-            .all(|block| matches!(block, ContentBlock::Text { .. }))
+        && text_only
     {
         let text = output.text();
         output.content = vec![ContentBlock::text(
