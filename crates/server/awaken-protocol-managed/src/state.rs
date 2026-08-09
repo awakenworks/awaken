@@ -73,10 +73,10 @@ pub(crate) use resource::{
     resource_binding_id,
 };
 use session_record::SessionRecord;
-pub use types::{
-    AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
-    LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind,
-    SessionInit, SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
+pub(crate) use types::{
+    AgentCapabilities, CustomTool, DelegatedRun, LiveInboxError, LiveInboxSnapshot,
+    OutcomeIteration, OutcomeReport, RunError, RunErrorKind, SessionInit, SessionRuntime,
+    SessionUsage, StepOutcome, ToolPermissionDecision,
 };
 
 /// The adapter's in-memory session store plus the runtime port.
@@ -146,10 +146,9 @@ pub struct ManagedState {
 /// A sink for committed session lifecycle facts, projected to external consumers
 /// (webhooks). The Managed adapter calls it after a lifecycle transition commits,
 /// handing the session's persisted owner (S3) so the consumer can stamp tenancy.
-/// The port now lives in `awaken-session-contract` (a contract/ leaf); re-exported
-/// here so existing `awaken_protocol_managed::…` paths keep resolving. The fact
-/// catalog below (the projected wire event names) stays in this adapter.
-pub use awaken_session_contract::SessionLifecycleSink;
+/// The port lives in `awaken-session-contract`; the protocol adapter consumes it
+/// directly and publishes no compatibility alias.
+use awaken_session_contract::SessionLifecycleSink;
 
 /// Why a session operation failed (mapped to an HTTP status by the router).
 #[derive(Debug, thiserror::Error)]
@@ -1414,15 +1413,16 @@ mod tests {
         // | T2 | no durable row | Runtime default for transient projection |
         let state = ManagedState::new_with_mcp(RehydrateFake::default());
         let mut persisted = sample_persisted("sesn_1");
-        persisted.tools =
-            crate::project::session_tool_configuration(&[crate::types::agent::AgentTool::Custom {
+        persisted.tools = crate::project::session_tool_configuration(&[
+            awaken_session_contract::AgentTool::Custom {
                 name: "durable-tool".into(),
                 description: "Client-executed tool".into(),
-                input_schema: crate::types::agent::CustomToolInputSchema::from_value(
+                input_schema: awaken_session_contract::CustomToolInputSchema::from_value(
                     serde_json::json!({"type": "object"}),
                 )
                 .unwrap(),
-            }]);
+            },
+        ]);
         let session = state
             .rehydrated_session("sesn_1", Some(persisted))
             .expect("valid durable projection");
@@ -1440,7 +1440,7 @@ mod tests {
         );
         assert!(matches!(
             &session.agent.tools[..],
-            [crate::types::agent::AgentTool::Custom { name, .. }] if name == "durable-tool"
+            [awaken_session_contract::AgentTool::Custom { name, .. }] if name == "durable-tool"
         ));
         assert!(
             session.resources.is_empty(),

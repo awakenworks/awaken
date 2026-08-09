@@ -710,7 +710,7 @@ impl ManagedState {
             let toolset_names = tools
                 .iter()
                 .filter_map(|tool| match tool {
-                    crate::types::agent::AgentTool::McpToolset {
+                    awaken_session_contract::AgentTool::McpToolset {
                         mcp_server_name, ..
                     } => Some(mcp_server_name.as_str()),
                     _ => None,

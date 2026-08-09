@@ -13,7 +13,9 @@ pub(super) async fn control_component_for_process(
     model_publication_resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
     web_search_publication_resolver: Arc<dyn awaken_config_service::PluginPublicationResolver>,
     web_search_providers: &awaken_ext_builtin_tools::WebSearchProviderRegistry,
-    brokered_client: Option<Arc<awaken_server::brokered_inference::HttpBrokeredInferenceClient>>,
+    brokered_client: Option<
+        Arc<awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient>,
+    >,
     injected_brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
     model_supply: awaken_admin_config_api::ModelSupplyCapabilityView,
     local_acp_observations: &[awaken_acp_application::AcpHostObservation],
@@ -56,9 +58,9 @@ pub(super) async fn control_component_for_process(
         model_publication_resolver,
         plugin_publication_resolvers: vec![web_search_publication_resolver],
         credential_probe: Arc::new(credential_probe::GenaiProbe),
-        model_discovery: Arc::new(awaken_server::model_discovery::GenaiModelDiscovery::new(
-            control.secrets.clone(),
-        )),
+        model_discovery: Arc::new(
+            awaken_coordinator::model_discovery::GenaiModelDiscovery::new(control.secrets.clone()),
+        ),
         brokered_catalog: injected_brokered_catalog.or_else(|| {
             brokered_client
                 .map(|client| client as Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>)
@@ -144,7 +146,7 @@ pub(super) async fn assemble_control_process_router(
         });
     let runtimes = Arc::new(LiveRuntimeCapabilities {
         initial: assembly.local_acp_observations.clone(),
-        workers: awaken_server::worker_directory(),
+        workers: awaken_coordinator::worker_directory(),
         credentials: stores
             .control
             .as_ref()
@@ -184,7 +186,12 @@ pub(super) async fn assemble_control_process_router(
             ),
         ),
         environment_application,
-        awaken_protocol_managed::environment_authoring_router(environment_authoring),
+        awaken_protocol_managed::environment_authoring_router(environment_authoring.clone()).merge(
+            awaken_protocol_awaken::environment_extensions_router(
+                environment_authoring.application(),
+                environment_authoring.sandbox_policy_store(),
+            ),
+        ),
         coordinator_content_eraser.unwrap_or_else(test_coordinator_content_eraser),
         content_capture_ceiling,
         iam,
@@ -205,7 +212,7 @@ pub(super) async fn assemble_control_process_router(
     };
     let router = match assembly.control_service_token.as_deref() {
         Some(token) => component.router.merge(
-            awaken_server::control_service_boundary::router(
+            awaken_coordinator::control_service_boundary::router(
                 component.management_audit.clone(),
                 component.vault_state.clone(),
                 webhook_delivery,
@@ -216,7 +223,7 @@ pub(super) async fn assemble_control_process_router(
         ),
         None => component.router,
     };
-    let mcp_export = awaken_server::mcp_export::router(
+    let mcp_export = awaken_coordinator::mcp_export::router(
         awaken_admin_assistant::admin_tool_descriptors(),
         component.admin_tools,
         assembly.mcp_bearer_token,

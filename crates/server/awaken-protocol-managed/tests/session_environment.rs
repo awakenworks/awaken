@@ -8,9 +8,9 @@
 //! assert Sandbox realization, which is covered by Runtime Host provisioning tests.
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_protocol_managed::{
-    EnvironmentState, ManagedState, OutcomeReport, RunError, SessionInit, SessionRuntime,
-    StepOutcome, ToolPermissionDecision, router,
+use awaken_protocol_managed::{EnvironmentState, ManagedState, router};
+use awaken_session_contract::{
+    OutcomeReport, RunError, SessionInit, SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
 use axum::Router;
 use axum::body::Body;

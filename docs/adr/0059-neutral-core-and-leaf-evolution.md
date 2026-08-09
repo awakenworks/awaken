@@ -160,7 +160,7 @@ per-cut state (2026-07-18):
   moving it into `run-executor-acp` would violate that crate's documented
   *config-free* invariant.
 - **Per-plane routers** — already resolved. `files_router` / `models_router` (public,
-  self-contained) moved to `awaken-managed-routers`; `memory_stores_router` /
+  self-contained) moved to `awaken-protocol-managed-resources`; `memory_stores_router` /
   `skills_router` deliberately **stay** in the host, because they are the HTTP face of the
   host's private `MemoryStores` / `SkillCatalog` subsystems and moving them would leak the
   subsystems' method surface — worse encapsulation.

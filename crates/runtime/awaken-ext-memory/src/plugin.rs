@@ -30,16 +30,43 @@ use crate::select::{RecallSelector, manifest, query_from};
 
 /// Per-Agent memory behavior. Recall bounds shape request context; the two prompt
 /// fields shape the ordinary background extraction Agent owned by the host.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct MemoryConfig {
+    /// Enable request-only recall for this parent Agent.
+    pub recall_enabled: bool,
+    /// Enable terminal extraction when the bound store is writable.
+    pub extraction_enabled: bool,
     #[serde(flatten)]
     pub recall: RecallBounds,
+    /// Ordinary published Agent used for extraction. The stable built-in id is
+    /// used when omitted; publishing that id through the normal Agent API
+    /// replaces the built-in default without a Memory-specific registry.
+    pub agent_id: Option<String>,
     /// System instructions for the memory-extractor Agent. Blank/absent uses the
-    /// platform default taxonomy.
+    /// selected Agent's instructions (or the platform default taxonomy).
     pub instructions: Option<String>,
     /// User task appended to each completed step handed to the extractor.
     pub extraction_prompt: Option<String>,
+    /// Ordinary published Agent used for relevance selection during recall.
+    pub selector_agent_id: Option<String>,
+    /// Optional per-main-Agent system instruction override for the selector.
+    pub selector_instructions: Option<String>,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            recall_enabled: true,
+            extraction_enabled: true,
+            recall: RecallBounds::default(),
+            agent_id: None,
+            instructions: None,
+            extraction_prompt: None,
+            selector_agent_id: None,
+            selector_instructions: None,
+        }
+    }
 }
 
 impl MemoryConfig {
@@ -199,6 +226,14 @@ pub fn config_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
+            "recall_enabled": {
+                "type": "boolean",
+                "description": "Enable request-only Memory recall for this Agent."
+            },
+            "extraction_enabled": {
+                "type": "boolean",
+                "description": "Enable terminal Memory extraction for this Agent when the binding is writable."
+            },
             "per_entry_chars": {
                 "type": "integer", "minimum": 0,
                 "description": "Truncate each memory to this many characters (0 = unbounded)."
@@ -215,6 +250,11 @@ pub fn config_schema() -> serde_json::Value {
                 "type": "integer", "minimum": 0,
                 "description": "Use relevance selection once the store holds more than this many memories."
             },
+            "agent_id": {
+                "type": ["string", "null"],
+                "title": "Memory extraction Agent",
+                "description": "Published auxiliary Agent id. Null uses memory-extractor."
+            },
             "instructions": {
                 "type": ["string", "null"], "format": "textarea",
                 "title": "Memory extraction instructions",
@@ -224,6 +264,16 @@ pub fn config_schema() -> serde_json::Value {
                 "type": ["string", "null"], "format": "textarea",
                 "title": "Extraction task prompt",
                 "description": "Task prompt appended when a completed step is handed to the background memory extractor."
+            },
+            "selector_agent_id": {
+                "type": ["string", "null"],
+                "title": "Memory recall selector Agent",
+                "description": "Published auxiliary Agent id. Null uses memory-selector."
+            },
+            "selector_instructions": {
+                "type": ["string", "null"], "format": "textarea",
+                "title": "Recall selector instructions",
+                "description": "Per-Agent override for the selected recall Agent's system instructions."
             }
         },
         "additionalProperties": false
@@ -236,13 +286,26 @@ mod config_tests {
 
     #[test]
     fn memory_config_round_trips_per_agent_prompts_and_bounds() {
+        // Cause/effect rules: C1 partial per-Agent config -> unspecified flags
+        // keep safe compatibility defaults; C2 explicit recall flag/bounds/Agent
+        // ids/prompts -> each authored value survives independently.
         let config = MemoryConfig::from_value(Some(&serde_json::json!({
+            "recall_enabled": false,
             "max_entries": 7,
+            "agent_id": "team-memory-extractor",
             "instructions": "Save only durable user preferences.",
-            "extraction_prompt": "Review the completed work and persist useful facts."
+            "extraction_prompt": "Review the completed work and persist useful facts.",
+            "selector_agent_id": "team-memory-selector"
         })))
         .unwrap();
+        assert!(!config.recall_enabled);
+        assert!(config.extraction_enabled);
         assert_eq!(config.recall.max_entries, 7);
+        assert_eq!(config.agent_id.as_deref(), Some("team-memory-extractor"));
+        assert_eq!(
+            config.selector_agent_id.as_deref(),
+            Some("team-memory-selector")
+        );
         assert_eq!(
             config.instructions.as_deref(),
             Some("Save only durable user preferences.")
@@ -258,8 +321,12 @@ mod config_tests {
 
     #[test]
     fn schema_exposes_both_memory_prompts_to_generic_authoring_surfaces() {
+        // Coverage rationale: the generic Agent editor can author only fields in
+        // this schema, so both behavior flags and both online prompt surfaces
+        // must be discoverable here; no Memory-specific UI contract exists.
         let schema = config_schema();
         assert_eq!(schema["properties"]["instructions"]["format"], "textarea");
+        assert_eq!(schema["properties"]["recall_enabled"]["type"], "boolean");
         assert_eq!(
             schema["properties"]["extraction_prompt"]["format"],
             "textarea"

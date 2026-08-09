@@ -20,7 +20,7 @@ pub(super) fn bootstrap_admin_token(authz: &ManagementAuthz, dir: &Path, workspa
     let path = dir.join(ADMIN_TOKEN_FILE);
     write_owner_only(&path, &secret).expect("write the bootstrap admin-token file");
     eprintln!(
-        "awaken-server: EMBEDDED IAM BOOTSTRAP — minted the admin API token \
+        "awaken-coordinator: EMBEDDED IAM BOOTSTRAP — minted the admin API token \
          for principal `{BOOTSTRAP_PRINCIPAL}` in workspace `{workspace_id}`.\n\
          It is printed ONCE and written to {} (mode 0600).\n\
          ROTATE IT: anyone holding this token has full management authority.\n\

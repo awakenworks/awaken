@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Message;
 use awaken_protocol_a2a::router;
-use awaken_protocol_transport::{
-    DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
+use awaken_session_contract::{
+    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 use axum::Router;
 use axum::body::Body;
@@ -28,35 +28,37 @@ struct AwaitingRuntime {
 }
 
 #[async_trait]
-impl ProtocolRuntime for AwaitingRuntime {
+impl RunApplication for AwaitingRuntime {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         self.started.store(true, Ordering::SeqCst);
-        Ok(StepOutcome {
-            new_messages: Vec::new(),
-            terminal: Terminal::Awaiting {
-                pending: Some(pending()),
-            },
-        })
+        Ok(StepOutcome::awaiting(
+            Vec::new(),
+            Some(pending()),
+            false,
+            false,
+        ))
     }
 
     async fn resume(
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
-        if let Resume::Confirm { allow: false, .. } = resume {
+        resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        if let RunResume::Confirm { allow: false, .. } = resume {
             self.denied.store(true, Ordering::SeqCst);
         }
-        Ok(StepOutcome {
-            new_messages: Vec::new(),
-            terminal: Terminal::Finished,
-        })
+        Ok(StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
 
     async fn pending(&self, _thread: &str) -> Option<Pending> {
@@ -158,13 +160,13 @@ struct ClientToolRuntime {
 }
 
 #[async_trait]
-impl ProtocolRuntime for ClientToolRuntime {
+impl RunApplication for ClientToolRuntime {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!("the context is already awaiting, so send takes the resume branch")
     }
 
@@ -172,18 +174,20 @@ impl ProtocolRuntime for ClientToolRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
-        if let Resume::ClientResult { content, is_error } = resume {
+        resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        if let RunResume::ClientResult { content, is_error } = resume {
             assert!(!is_error, "a plain answer is not an error result");
             *self.delivered.lock().unwrap() = Some(extract_text(&content));
         } else {
             panic!("a client-executed tool must be resumed with a ClientResult, got {resume:?}");
         }
-        Ok(StepOutcome {
-            new_messages: Vec::new(),
-            terminal: Terminal::Finished,
-        })
+        Ok(StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
 
     async fn pending(&self, _thread: &str) -> Option<Pending> {

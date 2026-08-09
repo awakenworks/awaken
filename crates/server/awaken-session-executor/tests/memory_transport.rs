@@ -28,8 +28,6 @@ fn memory_input(
             config: MemoryStoreConfigVersion {
                 memory_store_id: store.into(),
                 version: ConfigVersion::INITIAL,
-                recall_policy: Default::default(),
-                extraction_policy: Default::default(),
                 retention_policy: Default::default(),
             },
         },
@@ -55,8 +53,6 @@ fn create_store(catalog: &awaken_resource_store::SqliteResourceStore, id: &str) 
             MemoryStoreConfigVersion {
                 memory_store_id: id.into(),
                 version: ConfigVersion::INITIAL,
-                recall_policy: Default::default(),
-                extraction_policy: Default::default(),
                 retention_policy: Default::default(),
             },
         )

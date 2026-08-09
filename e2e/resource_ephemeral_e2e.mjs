@@ -109,47 +109,16 @@ async function main() {
     const createdStore = await json('POST', WORKSPACE, 'memory_stores', { name: 'volatile' });
     assert.equal(createdStore.status, 200);
     const store = createdStore.body.id;
+    // Cause/effect boundary rule: formerly accepted behavior/config paths all
+    // terminate as 404; malformed payloads cannot create a hidden extension.
     assert.equal((await json('GET', WORKSPACE, 'memory_stores/missing/config')).status, 404);
-    assert.equal(
-      (await json('GET', WORKSPACE, `memory_stores/${store}/config_versions/not-a-number`)).status,
-      400,
-    );
-    assert.equal(
-      (await json('GET', WORKSPACE, `memory_stores/${store}/config_versions/99`)).status,
-      404,
-    );
-    assert.equal(
-      (await json('POST', WORKSPACE, `memory_stores/${store}/config`, {
-        recall_policy: { enabled: true },
-      })).status,
-      400,
-    );
+    assert.equal((await json('GET', WORKSPACE, `memory_stores/${store}/config_versions/not-a-number`)).status, 404);
     assert.equal(
       (await json('POST', WORKSPACE, `memory_stores/${store}/config`, {
         expected_config_version: 1,
       })).status,
-      400,
-    );
-    for (const invalidPolicy of [
-      { recall_policy: 'invalid' },
-      { extraction_policy: 'invalid' },
-      { retention_policy: 'invalid' },
-    ]) {
-      assert.equal(
-        (await json('POST', WORKSPACE, `memory_stores/${store}/config`, {
-          expected_config_version: 1,
-          ...invalidPolicy,
-        })).status,
-        400,
-      );
-    }
-    assert.equal(
-      (await json('POST', WORKSPACE, `memory_stores/${store}/config`, {
-        expected_config_version: Number.MAX_SAFE_INTEGER,
-        recall_policy: { enabled: true },
-      })).status,
-      409,
-      'a stale large CAS base conflicts without changing configuration',
+      404,
+      'the compatible surface has no resource behavior publication route',
     );
     for (const invalid of ['relative.md', '/', '/a/../b.md', '/a//b.md', '/a/./b.md']) {
       assert.equal(
@@ -245,25 +214,25 @@ async function main() {
     assert.equal(
       (await json('POST', WORKSPACE, `memory_stores/${store}/config`, {
         expected_config_version: 1,
-        recall_policy: { enabled: false },
       })).status,
-      409,
-      'an archived store cannot publish another behavior version',
+      404,
+      'archiving does not expose a removed behavior route',
     );
 
-    // Skill is an independently durable aggregate. Ephemeral ResourceComponent
-    // composition must not invent a parallel volatile Skill implementation.
+    // Cause/effect rule: the one ephemeral ResourceComponent deliberately owns
+    // all resource adapters, including its canonical InMemorySkillStore; a
+    // Skill write therefore succeeds through that same aggregate boundary.
     const skillId = `volatile-skill-${process.pid}`;
     const skill = await json('POST', WORKSPACE, 'skills', {
       id: skillId,
       content: `---\nname: ${skillId}\ndescription: ephemeral\n---\nUse safely.`,
     });
-    assert.equal(skill.status, 409, JSON.stringify(skill.body));
-    assert.match(skill.body.error, /no durable skill store/u);
+    assert.equal(skill.status, 200, JSON.stringify(skill.body));
+    assert.equal(skill.body.id, skillId);
 
     assert.equal((await json('DELETE', OTHER, `files/${otherWorkspaceFile.id}`)).status, 200);
     await sleep(5_500);
-    console.log('E2E PASS: ephemeral resource adapters are scoped, lifecycle-complete, and do not synthesize Skill durability.');
+    console.log('E2E PASS: ephemeral resource adapters are scoped and share one lifecycle-complete ResourceComponent.');
   } finally {
     await stop(server);
   }

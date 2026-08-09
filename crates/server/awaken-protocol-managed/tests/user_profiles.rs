@@ -164,7 +164,7 @@ async fn user_profiles_paginate_by_anthropic_page_cursor() {
     assert_eq!(p1["has_more"], true);
     assert_eq!(p1["next_page"], ids1[1]);
 
-    // Resume with `?page=<next_page>` → the remaining row, terminal (next_page null).
+    // RunResume with `?page=<next_page>` → the remaining row, terminal (next_page null).
     let cursor = p1["next_page"].as_str().unwrap();
     let (_, p2) = call(
         &app,

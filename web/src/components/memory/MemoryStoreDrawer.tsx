@@ -1,9 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type {
   MemoryEntry,
   MemoryStore,
-  MemoryStoreConfig,
   MemoryVersion,
   Page,
 } from "../../lib/api/types";
@@ -17,13 +16,11 @@ import {
   Pill,
   Segmented,
   SkeletonRows,
-  Switch,
-  TextField,
   useConfirm,
   useToast,
 } from "../ui";
 
-type Tab = "content" | "policies" | "history";
+type Tab = "content" | "history";
 
 function QueryError({ message, retry }: { message: string; retry: () => void }) {
   const app = useApp();
@@ -43,10 +40,6 @@ export default function MemoryStoreDrawer({ store, onClose }: { store: MemorySto
   const qc = useQueryClient();
   const [tab, setTab] = useState<Tab>("content");
   const base = ws(`/v1/memory_stores/${encodeURIComponent(store.id)}`);
-  const config = useQuery({
-    queryKey: ["memory-store-config", store.id],
-    queryFn: () => api.get<MemoryStoreConfig>(`${base}/config`),
-  });
   const memories = useQuery({
     queryKey: ["memory-store-entries", store.id],
     queryFn: () => api.get<Page<MemoryEntry>>(`${base}/memories?view=full&limit=100`),
@@ -58,39 +51,6 @@ export default function MemoryStoreDrawer({ store, onClose }: { store: MemorySto
     enabled: tab === "history",
   });
 
-  const [recallEnabled, setRecallEnabled] = useState(true);
-  const [maxResults, setMaxResults] = useState("10");
-  const [extractionEnabled, setExtractionEnabled] = useState(true);
-  const [retentionDays, setRetentionDays] = useState("");
-  useEffect(() => {
-    if (!config.data) return;
-    setRecallEnabled(config.data.recall_policy.enabled);
-    setMaxResults(String(config.data.recall_policy.max_results));
-    setExtractionEnabled(config.data.extraction_policy.enabled);
-    setRetentionDays(config.data.retention_policy.retention_days == null ? "" : String(config.data.retention_policy.retention_days));
-  }, [config.data]);
-
-  const policyDirty = !!config.data && (
-    recallEnabled !== config.data.recall_policy.enabled
-    || Number(maxResults) !== config.data.recall_policy.max_results
-    || extractionEnabled !== config.data.extraction_policy.enabled
-    || (retentionDays === "" ? null : Number(retentionDays)) !== (config.data.retention_policy.retention_days ?? null)
-  );
-  const policyValid = Number.isInteger(Number(maxResults)) && Number(maxResults) > 0
-    && (retentionDays === "" || (Number.isInteger(Number(retentionDays)) && Number(retentionDays) >= 0));
-  const savePolicies = useMutation({
-    mutationFn: () => api.post<MemoryStoreConfig>(`${base}/config`, {
-      expected_config_version: config.data?.version,
-      recall_policy: { enabled: recallEnabled, max_results: Number(maxResults) },
-      extraction_policy: { enabled: extractionEnabled },
-      retention_policy: { ...(retentionDays === "" ? {} : { retention_days: Number(retentionDays) }) },
-    }),
-    onSuccess: (next) => {
-      qc.setQueryData(["memory-store-config", store.id], next);
-      toast.ok(app.t(`Published policy version ${next.version}.`, `已发布策略版本 ${next.version}。`));
-    },
-    onError: (cause) => toast.err(cause instanceof Error ? cause.message : String(cause)),
-  });
   const redact = useMutation({
     mutationFn: (versionId: string) => api.post(`${base}/memory_versions/${encodeURIComponent(versionId)}/redact`),
     onSuccess: () => {
@@ -116,7 +76,6 @@ export default function MemoryStoreDrawer({ store, onClose }: { store: MemorySto
           onChange={setTab}
           options={[
             { value: "content", label: app.t("Content", "内容") },
-            { value: "policies", label: app.t("Policies", "策略") },
             { value: "history", label: app.t("History", "版本历史") },
           ]}
         />
@@ -150,37 +109,6 @@ export default function MemoryStoreDrawer({ store, onClose }: { store: MemorySto
               )}
             </table>
           </Card>
-        )}
-
-        {tab === "policies" && config.error instanceof Error && (
-          <QueryError message={config.error.message} retry={() => void config.refetch()} />
-        )}
-        {tab === "policies" && !config.error && config.isLoading && <Card>{app.t("Loading policies…", "正在加载策略…")}</Card>}
-        {tab === "policies" && config.data && (
-          <>
-            <Card>
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <div><strong>{app.t("Recall", "召回")}</strong><div className="mut">{app.t("Search this store before each run and add relevant memories to context.", "每次运行前检索该记忆库，并把相关记忆加入上下文。")}</div></div>
-                <Switch checked={recallEnabled} onChange={(event) => setRecallEnabled(event.target.checked)} aria-label={app.t("Recall enabled", "启用召回")} />
-              </div>
-              <TextField type="number" min={1} label={app.t("Maximum recalled memories", "最大召回条数")} value={maxResults} disabled={!recallEnabled} onChange={(event) => setMaxResults(event.target.value)} />
-            </Card>
-            <Card>
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <div><strong>{app.t("Automatic extraction", "自动提取")}</strong><div className="mut">{app.t("Extract durable memories from completed turns.", "从完成的对话轮次中提取持久记忆。")}</div></div>
-                <Switch checked={extractionEnabled} onChange={(event) => setExtractionEnabled(event.target.checked)} aria-label={app.t("Extraction enabled", "启用提取")} />
-              </div>
-              <div style={{ marginTop: 8 }}><Pill tone={extractionEnabled ? "ok" : "neutral"}>{extractionEnabled ? app.t("Extraction active", "提取已启用") : app.t("Extraction disabled", "提取已关闭")}</Pill></div>
-            </Card>
-            <Card>
-              <TextField type="number" min={0} label={app.t("Retention days", "保留天数")} hint={app.t("Leave blank to retain indefinitely. Used when a store is deleted.", "留空表示永久保留；删除记忆库时按此期限清理。") } value={retentionDays} onChange={(event) => setRetentionDays(event.target.value)} />
-            </Card>
-            <div className="row" style={{ justifyContent: "space-between" }}>
-              <span className="mut">{app.t(`Current policy version: ${config.data.version}`, `当前策略版本：${config.data.version}`)}</span>
-              <Button variant="primary" disabled={!policyDirty || !policyValid || savePolicies.isPending} onClick={() => savePolicies.mutate()}>{app.t("Publish policy update", "发布策略更新")}</Button>
-            </div>
-            {!policyValid && <div className="err">{app.t("Enter positive whole numbers for policy limits.", "策略限制必须是有效的非负整数。")}</div>}
-          </>
         )}
 
         {tab === "history" && versions.error instanceof Error && (

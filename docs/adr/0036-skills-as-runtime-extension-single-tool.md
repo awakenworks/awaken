@@ -147,7 +147,7 @@ path), not a skill-specific tool.
 
 ## Implementation slices
 
-**Landed** (all in `awaken-ext-skills`, wired by `awaken-server-local`; kernel
+**Landed** (all in `awaken-ext-skills`, wired by `awaken-coordinator-local`; kernel
 unchanged; every commit tested):
 
 - **Two-tool surface** — `Skill` + `list_skills`, catalog out of the descriptor,

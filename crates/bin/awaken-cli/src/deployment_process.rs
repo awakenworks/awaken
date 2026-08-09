@@ -62,7 +62,9 @@ pub(super) async fn build_runtime_process_assembly(
     let control_service = if role == config::Role::Coordinator {
         let (url, token) = deployment.control_service.coordinator_credentials()?;
         Some(ControlServicePorts::remote(Arc::new(
-            awaken_server::control_service_boundary::HttpControlServiceClient::new(url, token)?,
+            awaken_coordinator::control_service_boundary::HttpControlServiceClient::new(
+                url, token,
+            )?,
         )))
     } else {
         None
@@ -139,7 +141,7 @@ pub async fn migrate_deployment_schema(
         executable_environment_registration::migrate(deployment).await?;
     }
     if manifest.contains(&MigrationComponent::Coordinator) {
-        awaken_server::migrate_postgres_coordinator_schema(&deployment.runtime).await?;
+        awaken_coordinator::migrate_postgres_coordinator_schema(&deployment.runtime).await?;
     }
     Ok(())
 }

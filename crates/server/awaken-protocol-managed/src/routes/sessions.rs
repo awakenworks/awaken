@@ -21,7 +21,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 use tokio_stream::Stream;
 
-use crate::state::{LiveInboxError, ManagedState, RunError, RunErrorKind, StateError};
+use crate::state::{ManagedState, RunError, RunErrorKind, StateError};
 use crate::types::{
     DeletedSession, ErrorResponse, ListEventsResponse, Page, PageQuery, SendEventsRequest,
     SendEventsResponse, Session, SessionCreateParams, SessionThread,
@@ -482,9 +482,6 @@ pub fn router(state: Arc<ManagedState>) -> Router {
                 .delete(delete_resource),
         )
         .with_state(state.clone())
-        // The live-inbox is a separate Awaken protocol, not part of the
-        // managed-compatible surface; it merely rides the same host + state port.
-        .merge(crate::ext::live_inbox::live_inbox_router(state))
         // The tenant ownership guard (ADR-0051): a request whose resolved scope
         // does not own the addressed `/v1/sessions/{id}` is answered 404, before
         // any handler reads the session. Applied last so it wraps every id-scoped
@@ -572,20 +569,14 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
             RunErrorKind::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "api_error", e.message),
             RunErrorKind::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "api_error", e.message),
         },
-        // The live-inbox edit contract maps 1:1 onto HTTP: an id that no longer
-        // exists is 404; a stale reorder is 409 (re-GET and retry); an inactive
-        // queue is 410 (the attempt is gone — send a normal event instead).
-        err @ StateError::LiveInbox(LiveInboxError::UnknownMessage) => {
-            (StatusCode::NOT_FOUND, "not_found_error", err.to_string())
-        }
-        err @ StateError::LiveInbox(LiveInboxError::StaleOrder) => (
-            StatusCode::CONFLICT,
-            "invalid_request_error",
+        // No compatible route emits these errors. Keep the generic envelope for
+        // internal exhaustive mapping; awaken-protocol-awaken owns the extension's
+        // public status decision table.
+        err @ StateError::LiveInbox(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "api_error",
             err.to_string(),
         ),
-        err @ StateError::LiveInbox(LiveInboxError::Inactive) => {
-            (StatusCode::GONE, "invalid_request_error", err.to_string())
-        }
     };
     (status, Json(ErrorResponse::new(kind, message)))
 }
@@ -659,11 +650,7 @@ pub async fn enforce_managed_beta(
         )
             .into_response();
     }
-    if (is_family("/v1/dreams")
-        || is_family("/v1/dream_policies")
-        || is_family("/v1/dream_agent_configuration"))
-        && !has_beta(&req, super::dreams::DREAMING_BETA)
-    {
+    if is_family("/v1/dreams") && !has_beta(&req, super::dreams::DREAMING_BETA) {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
@@ -684,8 +671,6 @@ pub async fn enforce_managed_beta(
         "/v1/deployment_runs",
         "/v1/vaults",
         "/v1/dreams",
-        "/v1/dream_policies",
-        "/v1/dream_agent_configuration",
     ]
     .into_iter()
     .any(is_family);

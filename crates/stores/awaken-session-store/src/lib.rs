@@ -189,6 +189,11 @@ fn session_bundle() -> Result<MigrationBundle, MigrationError> {
                     data TEXT NOT NULL, \
                     PRIMARY KEY (workspace_id, memory_store_id))",
             )?,
+            Migration::new(
+                20,
+                "remove duplicate Workspace Dream Agent override authority",
+                "DROP TABLE {prefix}_dream_agent_override",
+            )?,
         ],
     )
 }
@@ -1458,14 +1463,16 @@ mod tests {
             1,
             1,
             Vec::new(),
-            awaken_ext_memory::MemoryExtractorSnapshot {
-                instructions: Some("extract durable facts".into()),
-                ..awaken_ext_memory::MemoryExtractorSnapshot::host_executor(
+            {
+                let mut extractor = awaken_ext_memory::MemoryExtractorSnapshot::host_executor(
                     "memory-agent",
                     "host",
                     "model-1",
                     "host",
-                )
+                );
+                extractor.agent.resolved_spec.instructions = "extract durable facts".into();
+                extractor.agent.recompute_fingerprint().unwrap();
+                extractor
             },
         )
         .unwrap()

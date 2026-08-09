@@ -75,59 +75,16 @@ async function main() {
       assert.ok(storeIds.includes(store.id));
       pass('beta.memoryStores.list -> PageCursor<BetaManagedAgentsMemoryStore>');
 
-      // -- Versioned resource behavior -------------------------------------
+      // Cause/effect boundary rule: C1 an Awaken-only MemoryStore behavior
+      // route is addressed on the compatible surface -> E1 404 regardless of
+      // method or payload. Recall/extraction now belong to ordinary Agent
+      // plugin configuration, not a second resource policy authority.
       const configRoute = `/v1/memory_stores/${store.id}/config`;
-      const initialConfig = await json(baseUrl, 'GET', configRoute);
-      assert.equal(initialConfig.status, 200);
-      assert.equal(initialConfig.body.version, 1);
-      assert.deepEqual(initialConfig.body.recall_policy, { enabled: true, max_results: 10 });
-
-      assert.equal((await json(baseUrl, 'POST', configRoute, { recall_policy: { enabled: false } })).status, 400);
-      assert.equal((await json(baseUrl, 'POST', configRoute, { expected_config_version: 1 })).status, 400);
-      assert.equal(
-        (
-          await json(baseUrl, 'POST', configRoute, {
-            expected_config_version: 1,
-            recall_policy: { enabled: 'not-a-boolean' },
-          })
-        ).status,
-        400,
-      );
-      const publishedConfig = await json(baseUrl, 'POST', configRoute, {
-        expected_config_version: 1,
-        recall_policy: { enabled: false, max_results: 3 },
-        extraction_policy: { enabled: false },
-        retention_policy: { retention_days: 7 },
-      });
-      assert.equal(publishedConfig.status, 200);
-      assert.equal(publishedConfig.body.version, 2);
-      assert.deepEqual(publishedConfig.body.recall_policy, { enabled: false, max_results: 3 });
-      assert.deepEqual(publishedConfig.body.extraction_policy, { enabled: false });
-      assert.deepEqual(publishedConfig.body.retention_policy, { retention_days: 7 });
-      assert.equal(
-        (
-          await json(baseUrl, 'POST', configRoute, {
-            expected_config_version: 1,
-            extraction_policy: { enabled: true },
-          })
-        ).status,
-        409,
-      );
-      assert.equal((await json(baseUrl, 'GET', configRoute)).body.version, 2);
-      assert.equal(
-        (await json(baseUrl, 'GET', `/v1/memory_stores/${store.id}/config_versions/1`)).body.version,
-        1,
-      );
-      assert.equal(
-        (await json(baseUrl, 'GET', `/v1/memory_stores/${store.id}/config_versions/not-an-int`)).status,
-        400,
-      );
-      assert.equal(
-        (await json(baseUrl, 'GET', `/v1/memory_stores/${store.id}/config_versions/404`)).status,
-        404,
-      );
+      assert.equal((await json(baseUrl, 'GET', configRoute)).status, 404);
+      assert.equal((await json(baseUrl, 'POST', configRoute, { expected_config_version: 1 })).status, 404);
+      assert.equal((await json(baseUrl, 'GET', `/v1/memory_stores/${store.id}/config_versions/1`)).status, 404);
       assert.equal((await json(baseUrl, 'GET', '/v1/memory_stores/missing/config')).status, 404);
-      pass('MemoryStore behavior publishes once with CAS and retains immutable config v1');
+      pass('non-compatible MemoryStore behavior routes remain absent');
 
       // -- Memories ----------------------------------------------------------
       const mem = await client.beta.memoryStores.memories.create(store.id, {
@@ -238,11 +195,10 @@ async function main() {
         (
           await json(baseUrl, 'POST', configRoute, {
             expected_config_version: 2,
-            extraction_policy: { enabled: true },
           })
         ).status,
-        409,
-        'a deleted resource cannot publish another configuration',
+        404,
+        'resource lifecycle cannot make a removed behavior route visible',
       );
       pass('beta.memoryStores.memories.delete / archive / delete');
     });

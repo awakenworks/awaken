@@ -2,7 +2,9 @@
 
 use super::application::agent_mcp_candidate;
 use super::*;
-use crate::types::agent::{AgentMcpServer, AgentTool};
+use awaken_session_contract::AgentTool;
+
+use crate::types::agent::AgentMcpServer;
 
 /// One application-layer Session update command compiled from the Managed wire.
 /// Keeping its fields together prevents the public endpoint and CAS retry path

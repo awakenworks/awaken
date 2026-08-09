@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_protocol_transport::{
-    DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
+use awaken_session_contract::{
+    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
@@ -15,25 +15,27 @@ use tower::ServiceExt;
 struct UsageRuntime;
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for UsageRuntime {
+impl RunApplication for UsageRuntime {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
-        Ok(StepOutcome {
-            new_messages: vec![Message::text(Id("a1".into()), Role::Assistant, "hi")],
-            terminal: Terminal::Finished,
-        })
+    ) -> Result<StepOutcome, RunApplicationError> {
+        Ok(StepOutcome::ended(
+            vec![Message::text(Id("a1".into()), Role::Assistant, "hi")],
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
 
     async fn resume(
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!()
     }
 
@@ -99,13 +101,13 @@ async fn the_finish_frame_carries_total_usage() {
 struct ResumeUsageRuntime;
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for ResumeUsageRuntime {
+impl RunApplication for ResumeUsageRuntime {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!("a resume-only request never calls run")
     }
 
@@ -113,13 +115,15 @@ impl ProtocolRuntime for ResumeUsageRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         // The resumed run finishes cleanly after answering the awaiting tool.
-        Ok(StepOutcome {
-            new_messages: vec![Message::text(Id("a2".into()), Role::Assistant, "done")],
-            terminal: Terminal::Finished,
-        })
+        Ok(StepOutcome::ended(
+            vec![Message::text(Id("a2".into()), Role::Assistant, "done")],
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
 
     async fn pending(&self, _thread: &str) -> Option<Pending> {

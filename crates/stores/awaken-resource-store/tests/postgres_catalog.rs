@@ -4,8 +4,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_resource_contract::{
-    ConfigVersion, ExtractionPolicy, MemoryStoreConfigVersion, MemoryStoreDefinition, RecallPolicy,
-    ResourceCatalog, ResourceConfigSource, ResourceState, RetentionPolicy,
+    ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
+    ResourceConfigSource, ResourceState, RetentionPolicy,
 };
 use awaken_resource_store::PostgresResourceStore;
 use sqlx::Executor;
@@ -59,8 +59,6 @@ fn memory() -> (MemoryStoreDefinition, MemoryStoreConfigVersion) {
         MemoryStoreConfigVersion {
             memory_store_id: "memory-1".into(),
             version: ConfigVersion::INITIAL,
-            recall_policy: RecallPolicy::default(),
-            extraction_policy: ExtractionPolicy::default(),
             retention_policy: RetentionPolicy::default(),
         },
     )
@@ -89,7 +87,7 @@ async fn resources_catalog_owns_schema_cas_and_restart_durability() {
         .expect("R1 read")
         .expect("R1 config");
     second.version = ConfigVersion(2);
-    second.recall_policy.max_results = 20;
+    second.retention_policy.retention_days = Some(20);
     assert!(
         store
             .publish_memory_config("other", ConfigVersion::INITIAL, second.clone())

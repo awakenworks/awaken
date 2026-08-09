@@ -69,7 +69,6 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/managed-dream.md` | Role owner | Required | self |
 | `design/managed-deployments.md` | Role owner | Required | self |
 | `design/web-ui.md` | Product/downstream mapping | Not required | n/a |
-| `design/awaken-server-local-overview.md` | Product/downstream mapping | Not required | n/a |
 | `design/credentials-and-vaults.md` | Product/downstream mapping | Not required | n/a |
 | `design/resources-memory-files-skills.md` | Role owner | Required | self |
 | `design/observability-eval-dataset-boundary.md` | Product/downstream mapping | Not required | n/a |

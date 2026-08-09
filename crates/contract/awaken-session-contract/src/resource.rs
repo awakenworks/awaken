@@ -400,8 +400,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use awaken_resource_contract::{
-        ClonePolicy, ConfigVersion, ExtractionPolicy, FileId, MemoryStoreId, RecallPolicy,
-        RepositoryId, ResourceCatalogError, ResourceConfigSource, RetentionPolicy,
+        ClonePolicy, ConfigVersion, FileId, MemoryStoreId, RepositoryId, ResourceCatalogError,
+        ResourceConfigSource, RetentionPolicy,
     };
 
     #[derive(Default)]
@@ -423,8 +423,6 @@ mod tests {
             Ok(MemoryStoreConfigVersion {
                 memory_store_id: id.into(),
                 version: ConfigVersion(4),
-                recall_policy: RecallPolicy::default(),
-                extraction_policy: ExtractionPolicy::default(),
                 retention_policy: RetentionPolicy::default(),
             })
         }

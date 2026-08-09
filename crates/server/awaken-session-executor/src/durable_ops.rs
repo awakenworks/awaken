@@ -133,7 +133,7 @@ impl SharedHost {
         Ok(run_id.0)
     }
 
-    /// Resume the thread's durable operator pause with text. The committed ticket
+    /// RunResume the thread's durable operator pause with text. The committed ticket
     /// is the authority: tool/auth waits are rejected here and must use their
     /// protocol-specific result/decision surface.
     pub(crate) async fn stage_manual_resume(
@@ -262,7 +262,7 @@ async fn pause(
     )
 }
 
-/// Resume exactly a committed `ManualPause` ticket with `{ text }`.
+/// RunResume exactly a committed `ManualPause` ticket with `{ text }`.
 async fn resume(
     State(host): State<Arc<SharedHost>>,
     Path(thread): Path<String>,

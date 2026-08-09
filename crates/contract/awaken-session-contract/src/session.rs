@@ -12,6 +12,7 @@ use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState
 /// The tool a run awaits: its id, model-visible name/input, and whether it is
 /// client-executed (projected as `agent.custom_tool_use`) or a built-in awaiting
 /// confirmation (`agent.tool_use{ask}`).
+#[derive(Debug, Clone, PartialEq)]
 pub struct Pending {
     pub tool_use_id: String,
     pub name: String,
@@ -34,8 +35,9 @@ pub struct DelegatedRun {
 /// `state` reuses the run's sole lifecycle authority instead of storing a second
 /// terminal classification. It is private: callers can construct only
 /// `Awaiting` or `Ended` outcomes, so `Running` cannot escape a step boundary.
+#[derive(Debug, Clone)]
 pub struct StepOutcome {
-    pub messages: Vec<Message>,
+    pub new_messages: Vec<Message>,
     state: RunState,
     pending: Option<Pending>,
     /// `true` when this turn folded its context — projected as an
@@ -57,7 +59,7 @@ impl StepOutcome {
         rescheduled: bool,
     ) -> Self {
         Self {
-            messages,
+            new_messages: messages,
             state: RunState::Awaiting,
             pending,
             compacted,
@@ -74,7 +76,7 @@ impl StepOutcome {
         rescheduled: bool,
     ) -> Self {
         Self {
-            messages,
+            new_messages: messages,
             state: RunState::Ended(cause),
             pending: None,
             compacted,
@@ -86,6 +88,17 @@ impl StepOutcome {
     #[must_use]
     pub fn state(&self) -> &RunState {
         &self.state
+    }
+
+    /// Neutral terminal fact derived from the authoritative Run state.
+    #[must_use]
+    pub fn terminal_event(&self) -> awaken_agent_contract::event::Fact {
+        awaken_agent_contract::event::terminal(
+            &self.state,
+            self.pending
+                .as_ref()
+                .map(|pending| (pending.tool_use_id.as_str(), pending.client_executed)),
+        )
     }
 
     #[must_use]
@@ -240,6 +253,54 @@ pub enum LiveInboxError {
     UnknownMessage,
     #[error("proposed order does not match the current queue")]
     StaleOrder,
+}
+
+/// Protocol-neutral application failure for the editable in-flight inbox.
+/// Wire adapters decide how these three domain outcomes map to their envelopes.
+#[derive(Debug, thiserror::Error)]
+pub enum LiveInboxApplicationError {
+    #[error("session not found")]
+    NotFound,
+    #[error(transparent)]
+    Edit(#[from] LiveInboxError),
+    #[error("live inbox unavailable: {0}")]
+    Unavailable(String),
+}
+
+/// Driving port for Awaken's live-inbox protocol. The Managed compatibility
+/// adapter may implement this port as part of its Session application state,
+/// but no protocol adapter depends on another protocol adapter.
+#[async_trait]
+pub trait LiveInboxApplication: Send + Sync {
+    async fn snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<LiveInboxSnapshot, LiveInboxApplicationError>;
+
+    async fn queue(
+        &self,
+        session_id: &str,
+        content: Vec<ContentBlock>,
+    ) -> Result<u64, LiveInboxApplicationError>;
+
+    async fn remove(
+        &self,
+        session_id: &str,
+        message_id: u64,
+    ) -> Result<(), LiveInboxApplicationError>;
+
+    async fn replace(
+        &self,
+        session_id: &str,
+        message_id: u64,
+        content: Vec<ContentBlock>,
+    ) -> Result<(), LiveInboxApplicationError>;
+
+    async fn reorder(
+        &self,
+        session_id: &str,
+        order: Vec<u64>,
+    ) -> Result<(), LiveInboxApplicationError>;
 }
 
 /// Public exact-generation realization port owned by the Session application
@@ -890,8 +951,8 @@ mod tests {
             .await
             .unwrap();
         // `StepOutcome` has no `PartialEq`; compare it field-by-field.
-        assert_eq!(streamed.messages.len(), direct.messages.len());
-        assert_eq!(streamed.messages, direct.messages);
+        assert_eq!(streamed.new_messages.len(), direct.new_messages.len());
+        assert_eq!(streamed.new_messages, direct.new_messages);
         assert_eq!(streamed.state(), direct.state());
         assert_eq!(
             streamed.pending().map(|p| &p.tool_use_id),

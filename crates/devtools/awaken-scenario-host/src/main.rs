@@ -1,4 +1,4 @@
-//! `awaken-server` binary: serve the Managed Agents runtime surface on one
+//! `awaken-coordinator` binary: serve the Managed Agents runtime surface on one
 //! machine. Binds `AWAKEN_HTTP_ADDR` (default `127.0.0.1:38080`). The model is
 //! deterministic so it runs without an API key: `AWAKEN_MODEL_MODE=echo` (default)
 //! replies with the user's text; `=probe` writes/reads a file so the HITL
@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     // The scenario host is a Local composition and therefore reuses the same
     // canonical Coordinator migrate-and-connect path as Local AllInOne.
-    awaken_server::init_postgres_coordinator(&deployment).await?;
+    awaken_coordinator::init_postgres_coordinator(&deployment).await?;
     let app = match std::env::var("AWAKEN_MODEL_MODE").as_deref() {
         Ok("probe") => {
             awaken_scenario_host::build_router(Arc::new(awaken_scenario_host::ProbeModel), "probe")
@@ -145,7 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // production `awaken` binary. Held for the process lifetime so the callback stays
     // live — without this the drain/metrics e2e see the gauge missing.
     let _active_streams_gauge = awaken_cli::register_active_streams_gauge(ctrl.clone());
-    let app = awaken_cli::with_brain_admin(app, ctrl);
+    let app = awaken_cli::with_process_admin(app, ctrl);
     // Root every request span in the ingress middleware (extracts the inbound
     // `traceparent`); the whole direct request→inference path nests under it.
     let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));
@@ -155,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         awaken_protocol_managed::enforce_managed_beta,
     ));
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    eprintln!("awaken-server listening on http://{addr}");
+    eprintln!("awaken-coordinator listening on http://{addr}");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;

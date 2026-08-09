@@ -312,7 +312,7 @@ impl DeploymentState {
         agent_id: &str,
     ) -> Result<usize, DeploymentRepositoryError> {
         self.refresh_repository_projection().await?;
-        let now = crate::cron::to_rfc3339(now_ms());
+        let now = awaken_session_contract::epoch_millis_to_rfc3339(now_ms());
         let candidates: Vec<(String, DeploymentRecord)> = self
             .deployments
             .lock()
@@ -412,7 +412,7 @@ impl DeploymentState {
         {
             deployment.status = "paused".into();
             deployment.paused_reason = Some(PausedReason::Error { error: reason });
-            deployment.updated_at = crate::cron::to_rfc3339(now_ms());
+            deployment.updated_at = awaken_session_contract::epoch_millis_to_rfc3339(now_ms());
             Some(deployment.clone())
         } else {
             None
@@ -538,11 +538,11 @@ impl DeploymentState {
                 }
                 let n = self.run_seq.fetch_add(1, Ordering::SeqCst);
                 let run_id = format!("drun_{n:016}");
-                let scheduled_at = crate::cron::to_rfc3339(cursor);
+                let scheduled_at = awaken_session_contract::epoch_millis_to_rfc3339(cursor);
                 runs.insert(
                     run_id.clone(),
                     RunRecord {
-                        created_at: crate::cron::to_rfc3339(now_ms),
+                        created_at: awaken_session_contract::epoch_millis_to_rfc3339(now_ms),
                         deployment_id: dep_id.clone(),
                         workspace_id: record.workspace_id.clone(),
                         agent: record.agent.clone(),

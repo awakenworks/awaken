@@ -45,8 +45,6 @@ fn resource_catalog_rules_define_one_backend_neutral_decision_table() {
     let config = MemoryStoreConfigVersion {
         memory_store_id: "memory-1".into(),
         version: ConfigVersion::INITIAL,
-        recall_policy: Default::default(),
-        extraction_policy: Default::default(),
         retention_policy: Default::default(),
     };
 

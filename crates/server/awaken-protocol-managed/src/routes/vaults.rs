@@ -92,10 +92,7 @@ fn apply_metadata_patch(
     }
 }
 
-// The live MCP-probe port + its status now live in `awaken-session-contract`
-// (a contract/ leaf), re-exported here so existing `awaken_protocol_managed::…` paths
-// keep resolving until consumers flip to the contract directly.
-pub use awaken_session_contract::{McpProbe, McpProbeStatus};
+pub(crate) use awaken_session_contract::{McpProbe, McpProbeStatus};
 
 // ---- State ------------------------------------------------------------------
 

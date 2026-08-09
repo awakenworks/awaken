@@ -1,18 +1,17 @@
-//! Relevance selection (optimization ③): when the store grows past a threshold,
-//! pick which memories are relevant to the user's message with a **single model
-//! call** — not a sub-agent. Cheap, structured-ish, and fail-open on error.
+//! Relevance-selection contract and deterministic wire helpers.
+//!
+//! This bounded context deliberately owns no model invocation. The embedding
+//! runtime implements [`RecallSelector`] through the same ordinary published
+//! Agent execution path used by every other auxiliary task.
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
-use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, LlmExecutor};
-use awaken_runtime_contract::resolved::ModelBinding;
 
 use crate::localfs::Entry;
 
 /// Selects which saved memories are relevant to a user's message. Implemented by
-/// the host — over a single model call or a `memory-selector` sub-agent — so the
-/// memory crate stays free of the aux-agent substrate (like goal's grader port).
+/// the host through one ordinary published Agent so the Memory bounded context
+/// remains free of both model adapters and the auxiliary-run substrate.
 #[async_trait]
 pub trait RecallSelector: Send + Sync {
     /// Return the indices (into the manifest) of the memories relevant to `query`,
@@ -39,12 +38,6 @@ pub fn query_from(conversation: &[Message]) -> String {
         .map(|m| m.text_content())
         .unwrap_or_default()
 }
-
-const SELECT_SYSTEM: &str = "\
-You select which of a user's saved memories are relevant to their current message. \
-Reply with ONLY the bracketed indices of the relevant memories (e.g. `[0], [3]`), \
-comma-separated, at most the requested count. If none are relevant, reply NONE. \
-Do not explain.";
 
 /// The one-line gist of a memory used in the selection manifest.
 fn gist(entry: &Entry) -> String {
@@ -106,78 +99,12 @@ pub fn select_input(query: &str, manifest: &[(usize, String)], max: usize) -> St
     )
 }
 
-/// Choose the memories relevant to `query`, returning their indices into `entries`.
-///
-/// Fail-open: if the store is small (`<= max`) or the model call errors, returns
-/// the newest `max` indices rather than losing memory. When the model runs and
-/// picks nothing, returns empty (trusting the "none relevant" signal).
-pub async fn select_relevant(
-    llm: &dyn LlmExecutor,
-    model: &ModelBinding,
-    query: &str,
-    entries: &[Entry],
-    max: usize,
-) -> Vec<usize> {
-    let newest_max = || (0..entries.len().min(max)).collect::<Vec<_>>();
-    if entries.len() <= max {
-        return (0..entries.len()).collect();
-    }
-    let manifest = entries
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (i, gist(e)))
-        .collect::<Vec<_>>();
-    let prompt = select_input(query, &manifest, max);
-    let request = ChatRequest {
-        model_binding: model.clone(),
-        inference: Default::default(),
-        messages: vec![
-            ChatMessage {
-                role: Role::System,
-                content: vec![ContentBlock::text(SELECT_SYSTEM)],
-            },
-            ChatMessage {
-                role: Role::User,
-                content: vec![ContentBlock::text(prompt)],
-            },
-        ],
-        tools: Vec::new(),
-    };
-    match llm.infer(request).await {
-        Ok(response) => parse_indices(&response.output.text_content(), entries.len(), max),
-        Err(_) => newest_max(), // network/backend error: don't lose memory
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use awaken_runtime_contract::llm::{AssistantOutput, ChatResponse, Result as LlmResult};
     use std::time::SystemTime;
 
     use crate::localfs::MemoryDir;
-
-    struct ReplyModel(&'static str);
-    #[async_trait]
-    impl LlmExecutor for ReplyModel {
-        async fn infer(&self, _r: ChatRequest) -> LlmResult<ChatResponse> {
-            Ok(ChatResponse {
-                output: AssistantOutput::text(self.0),
-                usage: None,
-                stop_reason: None,
-            })
-        }
-    }
-    struct ErrModel;
-    #[async_trait]
-    impl LlmExecutor for ErrModel {
-        async fn infer(&self, _r: ChatRequest) -> LlmResult<ChatResponse> {
-            Err(awaken_runtime_contract::llm::Error::InvalidRequest(
-                "boom".into(),
-            ))
-        }
-    }
 
     fn entries(n: usize) -> Vec<Entry> {
         let root = std::env::temp_dir().join(format!(
@@ -194,10 +121,6 @@ mod tests {
                 .unwrap();
         }
         store.entries()
-    }
-
-    fn model() -> ModelBinding {
-        ModelBinding::new("p", "m", "b")
     }
 
     #[test]
@@ -218,27 +141,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn small_store_selects_everything_without_a_model_call() {
-        let e = entries(3);
-        let picked = select_relevant(&ErrModel, &model(), "q", &e, 5).await;
-        assert_eq!(picked, vec![0, 1, 2]); // <= max, no call, all kept
-    }
-
-    #[tokio::test]
-    async fn model_choice_is_honored_when_over_threshold() {
-        let e = entries(20);
-        let picked = select_relevant(&ReplyModel("[2], [7]"), &model(), "q", &e, 5).await;
-        assert_eq!(picked, vec![2, 7]);
-    }
-
-    #[tokio::test]
-    async fn model_error_fails_open_to_newest_max() {
-        let e = entries(20);
-        let picked = select_relevant(&ErrModel, &model(), "q", &e, 3).await;
-        assert_eq!(picked, vec![0, 1, 2]); // newest `max`, memory not lost
-    }
-
     #[test]
     fn parse_indices_upper_bound_is_exclusive_and_multi_digit() {
         // index == n is out of range (exclusive); n-1 is in range.
@@ -246,15 +148,6 @@ mod tests {
         assert_eq!(parse_indices("[4]", 5, 10), vec![4]);
         // Multi-digit indices parse as whole numbers, not per-digit.
         assert_eq!(parse_indices("[10], [3]", 20, 10), vec![10, 3]);
-    }
-
-    #[tokio::test]
-    async fn store_exactly_at_max_selects_all_without_a_call() {
-        // entries.len() == max → the small-store shortcut keeps all, no model call.
-        // ErrModel would fail-open to newest-max; that it returns *all* proves no call.
-        let e = entries(5);
-        let picked = select_relevant(&ErrModel, &model(), "q", &e, 5).await;
-        assert_eq!(picked, vec![0, 1, 2, 3, 4]);
     }
 
     #[test]

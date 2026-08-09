@@ -8,7 +8,7 @@
   `SharedHost::with_tool_executor_provider` + `SessionCtx::context_for` (per-run
   `provide` overrides the session-wide `remote_hand`, wired into `execute_activation`
   for the ACP and native-direct paths); `ConfigToolExecutorProvider` + `PlacementEntry`
-  default in `awaken-server-local`; the served `remote-hand` mode is now the
+  default in `awaken-coordinator-local`; the served `remote-hand` mode is now the
   degenerate one-entry (catch-all) policy through the provider, so
   `managed_remote_hand_e2e.mjs` exercises the placement seam end to end.
 - Amended: 2026-07-09 — `provide` made **async** (G2) so a dynamic scheduling
@@ -43,7 +43,7 @@ out **which** executor a given run uses and **where** its hand lives:
 > ADR-0044 D5: *Where the hand process is placed and leased → a later ADR over
 > the existing `SandboxProvider`.*
 
-Today that selection is a **static branch in host wiring**: `awaken-server-local`
+Today that selection is a **static branch in host wiring**: `awaken-coordinator-local`
 reads the resolved snapshot and constructs either a `LocalToolExecutor` or a
 `RemoteToolExecutor` with a hardcoded plan (`AWAKEN_MODEL_MODE=remote-hand`). This
 is fine for a single fixed deployment, but there is no seam a host can implement
@@ -155,16 +155,16 @@ To keep one decision per ADR:
 
 | Required item | This ADR |
 |---|---|
-| Bounded context | Port in **Runtime Core** (`awaken-runtime-contract`); default impl in **Dispatch/Server** (`awaken-server-local`) |
+| Bounded context | Port in **Runtime Core** (`awaken-runtime-contract`); default impl in **Dispatch/Server** (`awaken-coordinator-local`) |
 | Model element | `ToolExecutorProvider` (port); `PlacementPolicy` (config value: named `ConnectionPlan`s + match rule); reuses `ToolExecutor`, `ConnectionPlan`, `RunActivation` |
 | Port / repository | `ToolExecutorProvider::provide(&RunActivation) -> Arc<dyn ToolExecutor>` |
-| Owning crate | port in `awaken-runtime-contract`; `ConfigToolExecutorProvider` default in `awaken-server-local` (composes `awaken-connection-plan` + `awaken-tool-relay`) |
+| Owning crate | port in `awaken-runtime-contract`; `ConfigToolExecutorProvider` default in `awaken-coordinator-local` (composes `awaken-connection-plan` + `awaken-tool-relay`) |
 | Guardrail + enforcer | **Reuses G33** (a provider-returned hand links no model/commit/store) and **G16** (the port carries no placement-mechanism/product vocabulary — enforced by the existing vocabulary deny-list + `check_crate_boundaries.py`). No new guardrail. |
 | First vertical slice | `ConfigToolExecutorProvider` reads a two-entry policy: unmatched runs → `LocalToolExecutor` (behaviour unchanged); a matched run → `RemoteToolExecutor` over a configured Unix/TCP `ConnectionPlan`. One e2e: two agents in one server, one placed local and one placed on a separate hand process, both commit identically. The `remote-hand` env mode becomes a one-entry policy expressed through this provider. |
 
 ## Consequences
 
-- The static wiring branch in `awaken-server-local` becomes one injected
+- The static wiring branch in `awaken-coordinator-local` becomes one injected
   `provide` call; the kernel is untouched (ADR-0034 preserved).
 - Self-hosting gains real brain–hand placement from config, with no fork: the
   open runtime is the seam's first and complete consumer.

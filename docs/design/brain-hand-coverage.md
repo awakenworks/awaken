@@ -28,7 +28,7 @@ The kernel seam file `awaken-runtime/src/engine/mod.rs` is **84.94 %**.
   `ToolExecutor` port, the framed wire, the `ConnectionPlan` value object,
   credential resolution, the channel factory. `cargo-llvm-cov` over the crates'
   own `tests/`.
-- **Served e2e** (`e2e/managed_remote_hand_e2e.mjs`): a real `awaken-server-local`
+- **Served e2e** (`e2e/managed_remote_hand_e2e.mjs`): a real `awaken-coordinator-local`
   run executes `bash` on an in-process hand over the framed channel — end to end
   through the product binary.
 - **Cluster e2e** (`e2e/k3d/topology_e2e.sh`): the Direct and Reverse topologies

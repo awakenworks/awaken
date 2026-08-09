@@ -837,20 +837,65 @@ impl SharedHost {
         // Seed with host-registered plugins (e.g. the tool state machine via
         // `with_state_machine`), then append the per-run memory/compact plugins.
         let mut plugin_ids: Vec<String> = self.plugin_ids.clone();
-        let recalled_memory = self
-            .memory_for_thread(thread)
-            .filter(|memory| memory.recall_enabled());
+        let authored_memory = installed
+            .as_ref()
+            .and_then(|snapshot| {
+                snapshot
+                    .resolved_spec
+                    .plugin_config
+                    .get(awaken_ext_memory::MEMORY_PLUGIN_ID)
+            })
+            .and_then(|value| awaken_ext_memory::MemoryConfig::from_value(Some(value)).ok())
+            .unwrap_or_default();
+        let memory_selected = installed.as_ref().is_none_or(|snapshot| {
+            snapshot
+                .resolved_spec
+                .plugin_ids
+                .iter()
+                .any(|id| id == awaken_ext_memory::MEMORY_PLUGIN_ID)
+        });
+        let recalled_memory = self.memory_for_thread(thread).filter(|memory| {
+            memory.recall_enabled() && memory_selected && authored_memory.recall_enabled
+        });
+        let memory_selector = recalled_memory.as_ref().map(|_| {
+            let agent_id = authored_memory
+                .selector_agent_id
+                .as_deref()
+                .unwrap_or(awaken_ext_memory::SELECTOR_AGENT_ID);
+            let fallback = awaken_ext_memory::default_selector_agent(
+                &self.model_ref,
+                authored_memory
+                    .selector_instructions
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or(awaken_ext_memory::DEFAULT_SELECTOR_INSTRUCTIONS),
+            );
+            let snapshot = crate::agent_catalog::resolve_auxiliary_snapshot(
+                self.agent_publications.as_deref(),
+                &workspace,
+                agent_id,
+                fallback,
+                authored_memory.selector_instructions.as_deref(),
+            );
+            Arc::new(crate::memory::AgentSelector::new(
+                self.llm.clone(),
+                snapshot,
+            )) as Arc<dyn awaken_ext_memory::RecallSelector>
+        });
         let acp_memory_recall = recalled_memory.as_ref().map(|mem| {
-            let recall = awaken_ext_memory::MemoryRecall::new(mem.store(), mem.bounds());
-            match &self.memory_selector {
+            let recall =
+                awaken_ext_memory::MemoryRecall::new(mem.store(), authored_memory.recall.clone());
+            match &memory_selector {
                 Some(selector) => recall.with_selector(selector.clone()),
                 None => recall,
             }
         });
         if let Some(mem) = recalled_memory {
-            let mut plugin =
-                awaken_ext_memory::MemoryPlugin::from_handle(mem.store(), mem.bounds());
-            if let Some(selector) = &self.memory_selector {
+            let mut plugin = awaken_ext_memory::MemoryPlugin::from_handle(
+                mem.store(),
+                authored_memory.recall.clone(),
+            );
+            if let Some(selector) = &memory_selector {
                 plugin = plugin.with_selector(selector.clone());
             }
             runtime = runtime.with_plugin(Arc::new(plugin));
@@ -861,11 +906,34 @@ impl SharedHost {
         // activates its matching Run-scoped window; before that history stays whole.
         let context_policy = match &self.compaction {
             Some(compaction) => {
-                let agent_tool =
-                    build_compact_runner(self.llm.clone(), &self.model_ref, commit.clone());
+                let compact_config = installed
+                    .as_ref()
+                    .and_then(|snapshot| {
+                        snapshot
+                            .resolved_spec
+                            .plugin_config
+                            .get(awaken_ext_compact::COMPACT_PLUGIN_ID)
+                    })
+                    .and_then(|value| serde_json::from_value(value.clone()).ok())
+                    .unwrap_or_else(|| compaction.config.clone());
+                let fallback = awaken_ext_compact::default_compact_agent(
+                    &self.model_ref,
+                    compact_config
+                        .agent_instructions
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or(awaken_ext_compact::DEFAULT_COMPACT_INSTRUCTIONS),
+                );
+                let snapshot = crate::agent_catalog::resolve_auxiliary_snapshot(
+                    self.agent_publications.as_deref(),
+                    &workspace,
+                    &compact_config.agent_id,
+                    fallback,
+                    compact_config.agent_instructions.as_deref(),
+                );
+                let agent_tool = build_compact_runner(self.llm.clone(), snapshot, commit.clone());
                 let backend = build_compact_backend(agent_tool, self.memory.background());
-                let plugin =
-                    CompactPlugin::new(compaction.config.clone()).with_backend(thread, backend);
+                let plugin = CompactPlugin::new(compact_config).with_backend(thread, backend);
                 runtime = runtime.with_plugin(Arc::new(plugin));
                 plugin_ids.push(awaken_ext_compact::COMPACT_PLUGIN_ID.to_string());
                 awaken_runtime_contract::resolved::ContextPolicy::KeepAll

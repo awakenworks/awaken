@@ -110,7 +110,7 @@ rule — and it matches our own precedent (`SandboxProvider` lives in
   `ResourceAddress`, `RealizedMount`, `ProvisionReceipt`, `content_fingerprint`,
   and the `SandboxProvider` seam. Near-leaf (no `Message`/truth types).
 - `FileStore` / `MemoryStore` ports co-locate with their local realizers (in
-  `awaken-server-local` now; a future `awaken-sandbox-*d` when split out).
+  `awaken-coordinator-local` now; a future `awaken-sandbox-*d` when split out).
 - `SkillStore` is the existing `awaken-ext-skills` registry, named as this family
   member (folding in `InMemorySkillRegistry`); skills materialize as a
   `SourceKind::Skill`/`Resource` mount (ADR-0036 D6), same as `awaken-next`'s

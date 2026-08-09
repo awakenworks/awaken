@@ -19,6 +19,13 @@ use serde::{Deserialize, Serialize};
 /// conversations, none of which the schema permits.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CompactConfig {
+    /// Ordinary published auxiliary Agent. Publishing this id through the normal
+    /// Agent API replaces the built-in default; Compact owns no Agent registry.
+    pub agent_id: String,
+    /// Optional per-main-Agent override for the selected compactor's system
+    /// instructions. Absent keeps the selected Agent publication unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_instructions: Option<String>,
     /// Message-count trigger (fallback when `max_tokens` is unset): compact once
     /// the conversation exceeds this many messages.
     pub threshold: usize,
@@ -45,6 +52,8 @@ pub struct CompactConfig {
 impl Default for CompactConfig {
     fn default() -> Self {
         Self {
+            agent_id: crate::COMPACT_AGENT_ID.to_string(),
+            agent_instructions: None,
             threshold: 40,
             keep_last: 8,
             max_tokens: None,
@@ -71,6 +80,8 @@ impl<'de> Deserialize<'de> for CompactConfig {
         #[derive(Deserialize)]
         #[serde(default)]
         struct Shadow {
+            agent_id: String,
+            agent_instructions: Option<String>,
             threshold: usize,
             keep_last: usize,
             max_tokens: Option<u32>,
@@ -83,6 +94,8 @@ impl<'de> Deserialize<'de> for CompactConfig {
             fn default() -> Self {
                 let d = CompactConfig::default();
                 Self {
+                    agent_id: d.agent_id,
+                    agent_instructions: d.agent_instructions,
                     threshold: d.threshold,
                     keep_last: d.keep_last,
                     max_tokens: d.max_tokens,
@@ -94,6 +107,12 @@ impl<'de> Deserialize<'de> for CompactConfig {
         }
 
         let s = Shadow::deserialize(deserializer)?;
+
+        if s.agent_id.trim().is_empty() {
+            return Err(serde::de::Error::custom(
+                "compact.agent_id must not be empty",
+            ));
+        }
 
         // `threshold` minimum 1 (a 0 folds every non-empty conversation).
         if s.threshold < 1 {
@@ -123,6 +142,8 @@ impl<'de> Deserialize<'de> for CompactConfig {
         }
 
         Ok(Self {
+            agent_id: s.agent_id,
+            agent_instructions: s.agent_instructions,
             threshold: s.threshold,
             keep_last: s.keep_last,
             max_tokens: s.max_tokens,
@@ -154,6 +175,7 @@ Blank uses the built-in default. `trigger_ratio`/`threshold` shape WHEN it fires
 /// A canonical config: token-aware at 80%, keep a short tail, task-preserving prompt.
 fn compact_example() -> serde_json::Value {
     serde_json::json!({
+        "agent_id": "team-compactor",
         "keep_last": 8,
         "trigger_ratio": 0.8,
         "prefetch_ratio": 0.75,
@@ -170,6 +192,16 @@ pub fn config_schema() -> serde_json::Value {
         "description": COMPACT_AUTHORING_GUIDE,
         "examples": [compact_example()],
         "properties": {
+            "agent_id": {
+                "type": "string", "minLength": 1,
+                "title": "Compaction Agent",
+                "description": "Published auxiliary Agent id. Defaults to compactor."
+            },
+            "agent_instructions": {
+                "type": ["string", "null"], "format": "textarea",
+                "title": "Compactor system instructions",
+                "description": "Per-main-Agent override for the selected compactor's system instructions."
+            },
             "threshold": {
                 "type": "integer", "minimum": 1,
                 "description": "Message-count trigger (fallback when max_tokens is unset)."
@@ -206,10 +238,35 @@ mod tests {
 
     #[test]
     fn partial_section_fills_defaults() {
+        // Cause/effect rule: C1 a partial parent-Agent compact section -> all
+        // missing auxiliary-Agent fields resolve to the stable ordinary default.
         let cfg: CompactConfig =
             serde_json::from_value(serde_json::json!({ "keep_last": 3 })).unwrap();
         assert_eq!(cfg.keep_last, 3);
         assert_eq!(cfg.threshold, CompactConfig::default().threshold);
+        assert_eq!(cfg.agent_id, crate::COMPACT_AGENT_ID);
+    }
+
+    #[test]
+    fn auxiliary_agent_selection_and_prompt_are_validated_and_round_trip() {
+        // Cause/effect decision table: C1 nonblank ordinary Agent id + online
+        // system prompt -> E1 preserve both; C2 blank id -> E2 reject before a
+        // Compact request can select an ambiguous fallback.
+        let config: CompactConfig = serde_json::from_value(serde_json::json!({
+            "agent_id": "team-compactor",
+            "agent_instructions": "Preserve open decisions and exact paths."
+        }))
+        .expect("R1");
+        assert_eq!(config.agent_id, "team-compactor", "R1");
+        assert_eq!(
+            config.agent_instructions.as_deref(),
+            Some("Preserve open decisions and exact paths."),
+            "R1"
+        );
+        assert!(
+            serde_json::from_value::<CompactConfig>(serde_json::json!({"agent_id": " "})).is_err(),
+            "R2"
+        );
     }
 
     #[test]

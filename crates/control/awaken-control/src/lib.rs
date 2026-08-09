@@ -8,11 +8,11 @@
 //! `ApiToken` guard (ADR-0042/0043 P1). [`control_router`] weaves them into one
 //! guarded management router.
 //!
-//! It is a sibling of the `awaken-server` **data plane** (session surface +
+//! It is a sibling of the `awaken-coordinator` **data plane** (session surface +
 //! protocol adapters + host): the two do NOT depend on each other. The single
 //! machine composition root (`awaken-cli`) builds the shared handles (stores,
 //! vault/env state, the config plane), asks this crate for the authoring router,
-//! asks `awaken-server` for the data-plane router, merges them, and applies the
+//! asks `awaken-coordinator` for the data-plane router, merges them, and applies the
 //! guard exactly where it applied before.
 
 pub mod admin_assistant;

@@ -56,7 +56,7 @@ versioned toolset bundles. So the adapter advertises them as a **single**
 ### D2: The permission gate and the advertisement are single-sourced
 
 The `always_ask`/omit split in D1 must equal what the permission gate actually
-does at call time, or the agent object lies. `awaken-server-local` derives both
+does at call time, or the agent object lies. `awaken-coordinator-local` derives both
 from one list, `AUTO_ALLOWED_HAND_TOOLS = [read, glob, grep]`: `server_policy()`
 builds the auto-allow rules from it, and `builtin_hand_tools()` sets each tool's
 `ask = !AUTO_ALLOWED_HAND_TOOLS.contains(id)` from the same list. Gate and
@@ -111,7 +111,7 @@ crate still depends only on `awaken-agent-contract`, not the runtime contract.
 
 - The created session's `agent` object matches the official wire: verified by
   golden Rust tests over both fakes (`awaken-protocol-managed`) and the real host
-  routers (`awaken-server-local`), and end-to-end by the official
+  routers (`awaken-coordinator-local`), and end-to-end by the official
   `@anthropic-ai/sdk@0.105.0` (`e2e/managed_capabilities_e2e.mjs`, wired into
   `npm test`) — the SDK deserializes the session, so a shape it can't place fails.
 - Gate/advertisement drift is structurally impossible (D2, one source list).

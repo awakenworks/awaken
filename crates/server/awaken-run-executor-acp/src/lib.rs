@@ -449,7 +449,7 @@ impl RunAttemptExecutor for AcpRunExecutor {
                     .filter(|value| !value.trim().is_empty())
                     .map(|value| format!(" Reason: {value}"))
                     .unwrap_or_default();
-                // Resume the loaded ACP session with a new, explicit continuation
+                // RunResume the loaded ACP session with a new, explicit continuation
                 // turn. Replaying the original user prompt could duplicate all work
                 // before the permission boundary; this asks the agent to continue
                 // and the one-shot resolver below answers the repeated tool ask.

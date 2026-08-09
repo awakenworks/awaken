@@ -56,7 +56,19 @@ pub fn default_memory_agent(
     model: ResolvedModelCandidate,
     instructions: &str,
 ) -> ExecutableAgentSnapshot {
-    ExecutableAgentSnapshot::builder(MEMORY_AGENT_ID)
+    memory_agent(MEMORY_AGENT_ID, model, instructions)
+}
+
+/// Build the complete legacy/default Memory Agent shape for `agent_id`. New
+/// configured agents arrive as published executable snapshots; this constructor
+/// is retained for the built-in default and decoding old durable extraction
+/// intents, not as a mutable parallel registry.
+pub fn memory_agent(
+    agent_id: &str,
+    model: ResolvedModelCandidate,
+    instructions: &str,
+) -> ExecutableAgentSnapshot {
+    ExecutableAgentSnapshot::builder(agent_id)
         .instructions(instructions)
         .resolved_model(model)
         .max_steps(6)
