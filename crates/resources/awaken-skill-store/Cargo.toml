@@ -40,6 +40,8 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 
 [features]
 default = []
+# Process-local Skill authority and private SQLite databases for tests/scenarios.
+test-support = []
 sqlite = ["dep:rusqlite", "dep:awaken-scoped-migration", "dep:awaken-scoped-migration-sqlite"]
 postgres = ["dep:sqlx", "dep:awaken-scoped-migration"]
 

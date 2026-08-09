@@ -23,5 +23,17 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # The sqlite backend tests open a temp on-disk database.
 tempfile = "3"
 
+[features]
+# Process-local reference registry and private SQLite databases for fixtures.
+test-support = []
+
+[[test]]
+name = "env_registry_conformance"
+required-features = ["test-support"]
+
+[[test]]
+name = "env_registry_properties"
+required-features = ["test-support"]
+
 [lints]
 workspace = true

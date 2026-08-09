@@ -1,5 +1,6 @@
 //! Durable SandboxExecutionPolicy versions.
 
+#[cfg(any(test, feature = "test-support"))]
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -47,16 +48,19 @@ fn validate(policy: &SandboxExecutionPolicy) -> Result<(), SandboxExecutionPolic
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct InMemoryState {
     policies: BTreeMap<String, BTreeMap<u64, SandboxExecutionPolicy>>,
     current: BTreeMap<String, u64>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct InMemorySandboxExecutionPolicyStore(Mutex<InMemoryState>);
 
 #[async_trait]
+#[cfg(any(test, feature = "test-support"))]
 impl SandboxExecutionPolicyStore for InMemorySandboxExecutionPolicyStore {
     async fn create(
         &self,

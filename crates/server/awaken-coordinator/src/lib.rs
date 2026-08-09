@@ -172,6 +172,7 @@ pub fn embedded_resources_application(
 }
 
 /// Hermetic in-memory Resources application for scenario composition.
+#[cfg(feature = "test-support")]
 pub fn ephemeral_resources_application() -> awaken_resource_application::ResourcesApplication {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
     let resources = Arc::new(
@@ -443,9 +444,15 @@ fn ephemeral_resource_catalog() -> Arc<dyn awaken_resource_contract::ResourceCat
     )
 }
 
+#[cfg(feature = "test-support")]
+fn ephemeral_dream_process_store() -> Arc<dyn awaken_session_contract::DreamProcessStore> {
+    Arc::new(awaken_dream_application::InMemoryDreamProcessStore::default())
+}
+
 /// Assemble the data plane with the same secret-free Resource Catalog used by
 /// the Managed Session ACL. Authorization remains an outer middleware concern;
 /// this only shares resource identity/configuration/lifecycle truth.
+#[cfg(feature = "test-support")]
 pub fn mount_with_managed_and_resource_catalog(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
@@ -454,9 +461,9 @@ pub fn mount_with_managed_and_resource_catalog(
     mount_with_managed_over(host, managed_state, resource_catalog, None).0
 }
 
-/// Assemble the production data plane with application credentials enforced on
-/// browser-facing AI SDK and AG-UI routes. Managed Agents remains the
-/// service-to-service API and is authorized independently by the composition root.
+/// Test-support data plane with application credentials enforced on browser-facing
+/// AI SDK and AG-UI routes. Product composition uses the full dependency constructor.
+#[cfg(feature = "test-support")]
 pub fn mount_with_managed_and_application_access(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
@@ -472,7 +479,8 @@ pub fn mount_with_managed_and_application_access(
     .0
 }
 
-/// Production data plane with a live executable model directory.
+/// Test-support data plane with a live executable model directory.
+#[cfg(feature = "test-support")]
 pub fn mount_with_managed_and_application_access_and_models(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
@@ -487,7 +495,7 @@ pub fn mount_with_managed_and_application_access_and_models(
         resource_catalog,
         Some(application_access),
         Some(model_directory),
-        None,
+        ephemeral_dream_process_store(),
         ManagedRoutingExtensions {
             resource_management_router: resources,
             worker_authenticator: Arc::new(
@@ -522,11 +530,12 @@ pub fn mount_with_managed_application_access_models_and_dreams(
         resource_catalog,
         Some(application_access),
         Some(model_directory),
-        Some(dream_process_store),
+        dream_process_store,
         routing,
     )
 }
 
+#[cfg(feature = "test-support")]
 fn mount_with_managed_over(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
@@ -540,7 +549,7 @@ fn mount_with_managed_over(
         resource_catalog,
         application_access,
         None,
-        None,
+        ephemeral_dream_process_store(),
         ManagedRoutingExtensions {
             resource_management_router: resources,
             worker_authenticator: Arc::new(
@@ -556,7 +565,7 @@ fn mount_with_managed_over_and_models(
     resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
     model_directory: Option<Arc<dyn awaken_protocol_managed_resources::ModelDirectory>>,
-    dream_process_store: Option<Arc<dyn awaken_session_contract::DreamProcessStore>>,
+    dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
     routing: ManagedRoutingExtensions,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
     let ManagedRoutingExtensions {
@@ -589,29 +598,10 @@ fn mount_with_managed_over_and_models(
         resource_catalog.clone(),
         dream_memory_stores,
     ));
-    let dream_application = match dream_process_store {
-        Some(repository) => Arc::new(
-            awaken_dream_application::DreamApplication::with_store(dream_worker, repository)
-                .expect("load durable Dream jobs"),
-        ),
-        None => match host.storage_dir() {
-            Some(root) => Arc::new(
-                awaken_dream_application::DreamApplication::with_store(
-                    dream_worker,
-                    Arc::new(
-                        awaken_session_store::SqliteManagedSessionRepository::open(
-                            &root.join("sessions.db").to_string_lossy(),
-                        )
-                        .expect("open durable Dream repository"),
-                    ),
-                )
-                .expect("load durable Dream jobs"),
-            ),
-            None => Arc::new(awaken_dream_application::DreamApplication::new(
-                dream_worker,
-            )),
-        },
-    };
+    let dream_application = Arc::new(
+        awaken_dream_application::DreamApplication::with_store(dream_worker, dream_process_store)
+            .expect("load durable Dream jobs"),
+    );
     dream_application.bind_session_source(managed_state.clone());
     dream_application.resume_incomplete();
     let dreams = awaken_protocol_managed::dreams_router(dream_application.clone());
@@ -707,6 +697,7 @@ fn mount_with_managed_over_and_models(
     (router, dream_application)
 }
 
+#[cfg(feature = "test-support")]
 fn resource_management_router_from_host(
     host: &Arc<SharedHost>,
     catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,

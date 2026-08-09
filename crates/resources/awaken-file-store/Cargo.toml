@@ -14,8 +14,8 @@ thiserror.workspace = true
 # so the same bytes get the same id on every backend (fs / postgres / s3).
 blake3 = "1"
 tokio = { workspace = true, features = ["fs", "io-util"] }
-# Network / durable relational backends over the same trait. Optional: default
-# build stays fs/in-mem only.
+# Network / durable relational backends over the same trait. Optional: the
+# default product build retains only the durable filesystem backend.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
 # Feature `sqlite`: embedded BLOB backend over the same `file_store` migration scope.
 rusqlite = { workspace = true, optional = true }
@@ -28,6 +28,8 @@ object_store = { version = "0.12", features = ["aws"], optional = true }
 futures = { version = "0.3", optional = true }
 
 [features]
+# Process-local File authority used only by unit/integration/scenario fixtures.
+test-support = []
 # Postgres bytea backend (idempotent INSERT ... ON CONFLICT). Compile-verified;
 # running needs a database.
 postgres = ["dep:sqlx", "dep:awaken-scoped-migration"]

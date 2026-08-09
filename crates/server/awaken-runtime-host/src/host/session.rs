@@ -1156,11 +1156,18 @@ impl SharedHost {
         // `RunIngress` rather than calling `runtime.start_run` directly. Direct
         // ingress runs inline on the same `runtime`; durable ingress queues the run
         // through a dispatch store first. Both share this thread's `runtime`/`commit`.
-        let terminal_observers: Vec<_> = self
-            .memory_terminal_observer(thread, &config, commit.clone())
-            .await
-            .into_iter()
-            .collect();
+        // A database-less Worker sends its terminal commit to the Coordinator.
+        // The Coordinator's HostCommitApplier owns post-commit observation so the
+        // durable extraction intent lands beside the authoritative Session. Local
+        // execution observes here because its commit authority is in this Host.
+        let terminal_observers: Vec<_> = if self.upstream.is_some() {
+            Vec::new()
+        } else {
+            self.memory_terminal_observer(thread, &config, commit.clone())
+                .await
+                .into_iter()
+                .collect()
+        };
         let tool_executor = if a2a_only {
             None
         } else if let Some(environment) = env.as_ref() {

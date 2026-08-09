@@ -1,9 +1,9 @@
 //! In-memory reference [`EnvRegistry`] backend.
 //!
-//! [`InMemoryEnvRegistry`] is the open-tier single-process default the environments
-//! routes wire when no durable backend is configured; it lives here beside the durable
-//! sqlite/postgres sibling. The neutral port + value objects (`EnvItem`/`EnvUpdate`)
-//! it operates on live inward in `awaken-session-contract`.
+//! [`InMemoryEnvRegistry`] is the single-process reference fixture. Product
+//! composition selects the durable SQLite/Postgres sibling explicitly. The neutral
+//! port + value objects (`EnvItem`/`EnvUpdate`) live inward in
+//! `awaken-environment-contract`.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;

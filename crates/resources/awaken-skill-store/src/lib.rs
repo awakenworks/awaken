@@ -267,13 +267,15 @@ pub(crate) fn remove_version_from(
     Ok(true)
 }
 
-/// In-memory [`SkillStore`] (tests / ephemeral single-process).
+/// In-memory [`SkillStore`] for tests and scenario fixtures.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct InMemorySkillStore {
     // workspace_id → (id → complete aggregate)
     inner: Mutex<BTreeMap<String, BTreeMap<SkillId, SkillAggregate>>>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl InMemorySkillStore {
     #[must_use]
     pub fn new() -> Self {
@@ -282,6 +284,7 @@ impl InMemorySkillStore {
 }
 
 #[async_trait]
+#[cfg(any(test, feature = "test-support"))]
 impl SkillStore for InMemorySkillStore {
     async fn create(
         &self,

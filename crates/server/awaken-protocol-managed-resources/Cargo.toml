@@ -19,8 +19,10 @@ serde_json.workspace = true
 
 [dev-dependencies]
 awaken-resource-application.workspace = true
-awaken-file-store.workspace = true
-awaken-resource-store.workspace = true
+awaken-file-store = { workspace = true, features = ["test-support"] }
+awaken-memory-store = { workspace = true, features = ["test-support"] }
+awaken-resource-store = { workspace = true, features = ["test-support"] }
+awaken-skill-store = { workspace = true, features = ["test-support"] }
 # Test-only ZIP construction drives the canonical Skill bundle ingestor.
 zip = { version = "8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tokio = { workspace = true, features = ["rt", "macros"] }

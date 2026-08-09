@@ -8,14 +8,24 @@
 //! optimistic concurrency**: [`MemoryRepository::update`] is a compare-and-swap on the base
 //! sha, so two writers never silently clobber each other.
 //!
-//! Backends: [`VolatileMemoryRepository`] for ephemeral execution and
+//! Backends: `VolatileMemoryRepository` behind explicit test support and
 //! feature-gated SQLite/Postgres transactional repositories for durable execution.
 //!
+#[cfg(any(test, feature = "test-support"))]
 use std::collections::BTreeMap;
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(any(
+    test,
+    feature = "test-support",
+    feature = "sqlite",
+    feature = "postgres"
+))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(any(test, feature = "test-support"))]
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
@@ -36,6 +46,12 @@ pub fn sha256_hex(content: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+#[cfg(any(
+    test,
+    feature = "test-support",
+    feature = "sqlite",
+    feature = "postgres"
+))]
 pub(crate) fn now_nanos() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -45,6 +61,12 @@ pub(crate) fn now_nanos() -> u128 {
 
 /// Validate a memory path: absolute, non-root, no `//`, no `.`/`..` segment, no
 /// control chars, ≤ [`MAX_PATH_BYTES`].
+#[cfg(any(
+    test,
+    feature = "test-support",
+    feature = "sqlite",
+    feature = "postgres"
+))]
 pub(crate) fn validate_path(path: &str) -> Result<(), MemErr> {
     let bad = |p: &str| MemErr::InvalidPath(p.to_string());
     if path.len() > MAX_PATH_BYTES
@@ -63,6 +85,12 @@ pub(crate) fn validate_path(path: &str) -> Result<(), MemErr> {
     Ok(())
 }
 
+#[cfg(any(
+    test,
+    feature = "test-support",
+    feature = "sqlite",
+    feature = "postgres"
+))]
 pub(crate) fn validate_size(content: &str) -> Result<(), MemErr> {
     if content.len() > MAX_MEMORY_BYTES {
         Err(MemErr::TooLarge)
@@ -72,6 +100,7 @@ pub(crate) fn validate_size(content: &str) -> Result<(), MemErr> {
 }
 
 /// The in-memory aggregate record.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone)]
 struct Record {
     id: String,
@@ -83,6 +112,7 @@ struct Record {
     updated: u128,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Record {
     fn to_memory(&self, with_content: bool) -> Memory {
         Memory {
@@ -108,6 +138,12 @@ impl Record {
     }
 }
 
+#[cfg(any(
+    test,
+    feature = "test-support",
+    feature = "sqlite",
+    feature = "postgres"
+))]
 pub(crate) fn under_prefix(path: &str, prefix: &str) -> bool {
     if prefix.is_empty() || prefix == "/" {
         return true;
@@ -120,8 +156,9 @@ pub(crate) fn under_prefix(path: &str, prefix: &str) -> bool {
 // In-memory backend
 // ---------------------------------------------------------------------------
 
-/// In-memory [`MemoryRepository`] (tests / ephemeral single-process). One lock guards the
-/// whole map, so every create/update/rename/delete is atomic and CAS is race-free.
+/// In-memory [`MemoryRepository`] for tests and scenario fixtures. One lock guards
+/// the whole map, so every create/update/rename/delete is atomic and CAS is race-free.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct VolatileMemoryRepository {
     inner: Mutex<InMemoryState>,
@@ -129,6 +166,7 @@ pub struct VolatileMemoryRepository {
     version_next: AtomicU64,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct InMemoryState {
     // store id → (path → record)
@@ -136,6 +174,7 @@ struct InMemoryState {
     versions: BTreeMap<String, Vec<MemoryVersion>>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl VolatileMemoryRepository {
     #[must_use]
     pub fn new() -> Self {
@@ -171,6 +210,7 @@ impl VolatileMemoryRepository {
 }
 
 #[async_trait]
+#[cfg(any(test, feature = "test-support"))]
 impl MemoryRepository for VolatileMemoryRepository {
     async fn snapshot_heads(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
         let guard = self.inner.lock().unwrap();

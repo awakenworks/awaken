@@ -109,9 +109,12 @@ url.workspace = true
 # Volatile composition helpers used by integration/scenario harnesses. The default
 # product library and binary cannot link the process-local WorkQueue backend.
 test-support = [
+    "awaken-env-store/test-support",
+    "awaken-sandbox-policy-store/test-support",
     "awaken-work-store/test-support",
     "awaken-protocol-managed/test-support",
     "awaken-coordinator/test-support",
+    "awaken-runtime-host/test-support",
 ]
 # Container ACP tiers (AWAKEN_SANDBOX_TIER=docker/podman/k8s): enable the backend a
 # deployment runs its agents on. Off by default — the namespace tier needs no feature.
@@ -120,6 +123,8 @@ container-podman = ["awaken-runtime-host/container-podman"]
 container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
+awaken-env-store = { workspace = true, features = ["test-support"] }
+awaken-sandbox-policy-store = { workspace = true, features = ["test-support"] }
 awaken-work-store = { workspace = true, features = ["test-support"] }
 awaken-protocol-managed = { workspace = true, features = ["test-support"] }
 # The management integration tests moved here from awaken-coordinator (they drive

@@ -1,9 +1,9 @@
 //! Durable memory persistence for the resources plane.
 //!
-//! The [`MemoryRepository`] port with pluggable ephemeral, SQLite, and Postgres
-//! backends. A store is addressed only by an opaque, globally unique id; workspace
-//! ownership and authorization deliberately remain outside this storage adapter in
-//! the resource catalog and authorization edge respectively.
+//! The [`MemoryRepository`] port with durable SQLite and Postgres backends plus an
+//! explicit `test-support` volatile backend. A store is addressed only by an opaque,
+//! globally unique id; workspace ownership and authorization deliberately remain
+//! outside this storage adapter in the resource catalog and authorization edge.
 //!
 //! Recall, extraction, API history, and mounts all use this same store-scoped
 //! aggregate; there is no Host-global extraction directory.
@@ -12,9 +12,11 @@
 /// FUSE mount projects.
 pub mod repository;
 
+#[cfg(any(test, feature = "test-support"))]
+pub use repository::VolatileMemoryRepository;
 pub use repository::{
     MAX_MEMORIES_PER_STORE, MAX_MEMORY_BYTES, MemErr, Memory, MemoryEntry, MemoryPurgeSummary,
-    MemoryRepository, MemoryVersion, MemoryVersionOperation, VolatileMemoryRepository, sha256_hex,
+    MemoryRepository, MemoryVersion, MemoryVersionOperation, sha256_hex,
 };
 
 #[cfg(feature = "postgres")]

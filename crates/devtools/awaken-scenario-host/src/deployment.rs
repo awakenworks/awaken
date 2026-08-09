@@ -82,10 +82,13 @@ pub(crate) fn resource_host_with_deployment(
     // resource application must preserve the caller's complete typed Deployment;
     // rebuilding through the convenience constructor here silently replaced an
     // explicit Local sandbox tier with the fail-closed Namespace default.
+    let extraction_repository =
+        SharedHost::test_memory_extraction_repository(deployment.storage_dir.as_deref());
     let host = SharedHost::new_with_resource_component_and_deployment(
         llm,
         model_ref,
         resources.ports(),
+        extraction_repository,
         deployment,
     )
     .with_file_application(resources.files());

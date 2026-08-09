@@ -6,7 +6,12 @@ license.workspace = true
 
 [features]
 # Ephemeral convenience constructors are intentionally absent from product builds.
-test-support = ["awaken-work-store/test-support"]
+test-support = [
+    "dep:awaken-env-store",
+    "awaken-env-store/test-support",
+    "awaken-work-store/test-support",
+    "awaken-dream-application/test-support",
+]
 
 [dependencies]
 awaken-agent-contract.workspace = true
@@ -29,7 +34,7 @@ awaken-resource-contract.workspace = true
 # Concrete stores used by explicit composition. Volatile convenience wiring is
 # available only through this crate's `test-support` feature.
 awaken-work-store.workspace = true
-awaken-env-store.workspace = true
+awaken-env-store = { workspace = true, optional = true }
 awaken-session-store.workspace = true
 # Tenancy as an edge aspect (ADR-0051): the opaque `ScopeId` the `ScopedRepo`
 # decorator binds so session persistence is tenant-isolable while the core stays
@@ -68,6 +73,10 @@ name = "adapter"
 required-features = ["test-support"]
 
 [[test]]
+name = "dreams"
+required-features = ["test-support"]
+
+[[test]]
 name = "environments"
 required-features = ["test-support"]
 
@@ -97,8 +106,9 @@ required-features = ["test-support"]
 
 [dev-dependencies]
 awaken-work-store = { workspace = true, features = ["test-support"] }
-awaken-sandbox-policy-store.workspace = true
-awaken-resource-store = { workspace = true, features = ["sqlite"] }
+awaken-env-store = { workspace = true, features = ["test-support"] }
+awaken-sandbox-policy-store = { workspace = true, features = ["test-support"] }
+awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
