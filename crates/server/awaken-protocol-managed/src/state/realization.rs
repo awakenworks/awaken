@@ -196,6 +196,7 @@ mod tests {
             mcp,
             resources,
             realization: None,
+            realization_progress: Default::default(),
             execution: SessionExecutionState::Preparing,
             disposition: Default::default(),
             terminal_cleanup: Default::default(),
@@ -665,6 +666,7 @@ mod tests {
                 session_id: "session-phase".into(),
                 lease: failed_renewal.lease,
                 prepared_resource_revision: None,
+                retryable: false,
                 reason: "MCP connection closed".into(),
             })
             .await
@@ -940,6 +942,7 @@ mod tests {
             session_id: "session-failed".into(),
             lease: staged.lease,
             prepared_resource_revision: Some(staged.projection.resource_revision),
+            retryable: false,
             reason: "stage failed".into(),
         };
         failed_state

@@ -34,6 +34,7 @@ fn plan(cmd: Vec<String>) -> ContainerPlan {
         binds: Vec::new(),
         outputs_volume: "/mnt/session/outputs".into(),
         network: NetworkMode::None,
+        requests: Default::default(),
         limits: Default::default(),
         memory_mounts: Vec::new(),
         rootfs: RootfsPlan::Image("busybox:latest".into()),

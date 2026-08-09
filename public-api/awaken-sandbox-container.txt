@@ -53,6 +53,7 @@ pub awaken_sandbox_container::ContainerPlan::memory_mounts: alloc::vec::Vec<awak
 pub awaken_sandbox_container::ContainerPlan::network: awaken_sandbox_container::NetworkMode
 pub awaken_sandbox_container::ContainerPlan::outputs_volume: alloc::string::String
 pub awaken_sandbox_container::ContainerPlan::packages: awaken_provisioning_contract::vocab::PackageRequirements
+pub awaken_sandbox_container::ContainerPlan::requests: awaken_provisioning_contract::vocab::ResourceRequests
 pub awaken_sandbox_container::ContainerPlan::rootfs: awaken_sandbox_container::RootfsPlan
 pub struct awaken_sandbox_container::ContainerProvider<R: awaken_sandbox_container::ContainerRuntime>
 impl<R: awaken_sandbox_container::ContainerRuntime + 'static> awaken_sandbox_container::ContainerProvider<R>

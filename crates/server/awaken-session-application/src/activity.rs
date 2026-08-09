@@ -11,6 +11,8 @@ pub enum SessionActivityError {
     NotFound,
     #[error("Session is terminal and cannot begin another activity")]
     Terminal,
+    #[error("Session is not ready for activity")]
+    NotReady,
     #[error("Session activity epoch is exhausted")]
     EpochExhausted,
     #[error("Session revision conflict")]
@@ -52,6 +54,12 @@ impl SessionApplication {
                 .map_err(SessionActivityError::mutation)?;
             if session.is_terminal() {
                 return Err(SessionActivityError::Terminal);
+            }
+            if matches!(
+                session.execution,
+                SessionExecutionState::Preparing | SessionExecutionState::Activating
+            ) {
+                return Err(SessionActivityError::NotReady);
             }
             session.activity_epoch = session
                 .activity_epoch

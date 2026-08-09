@@ -317,6 +317,7 @@ mod cgroup_host_config_tests {
             binds: Vec::new(),
             outputs_volume: "/mnt/session/outputs".into(),
             network: crate::NetworkMode::Open,
+            requests: pc::ResourceRequests::default(),
             limits: pc::ResourceLimits::default(),
             memory_mounts: Vec::new(),
             rootfs: crate::RootfsPlan::HostUserland,

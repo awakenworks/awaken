@@ -6,8 +6,8 @@
 
 use awaken_session_contract::{
     ApplicationContributionState, ApplicationSessionContributionFailure, IdempotencyRecord,
-    ManagedLifecycleFact, PersistedSession, RunError, SessionCreationIntent,
-    SessionMutationPayload, SessionToolConfiguration,
+    PersistedSession, RunError, SessionCreationIntent, SessionMutationPayload,
+    SessionToolConfiguration,
 };
 
 use super::{SessionApplication, SessionMutationError, SessionRealizationError};
@@ -20,9 +20,6 @@ pub struct CreateSessionCommand {
     pub title: Option<String>,
     pub metadata: std::collections::BTreeMap<String, String>,
     pub tools: SessionToolConfiguration,
-    /// Facts are already neutral durable values; protocol adapters may choose
-    /// which public lifecycle vocabulary, if any, they commit beside creation.
-    pub lifecycle_facts: Vec<ManagedLifecycleFact>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -83,7 +80,6 @@ impl SessionApplication {
             title,
             metadata,
             tools,
-            lifecycle_facts,
         } = command;
         let application_required =
             matches!(intent.application, ApplicationContributionState::Required);
@@ -148,7 +144,7 @@ impl SessionApplication {
                 } else {
                     "activate"
                 },
-                lifecycle_facts,
+                Vec::new(),
             )
             .await
             .map_err(SessionCreationError::mutation)?;

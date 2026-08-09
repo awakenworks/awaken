@@ -71,6 +71,46 @@ pub enum ResourceInput {
     },
 }
 
+impl ResourceInput {
+    /// One-way request-equivalence fingerprint. Repository credentials remain
+    /// absent from every persisted/projection DTO but still participate in
+    /// idempotency mismatch detection.
+    pub(crate) fn idempotency_fingerprint(&self) -> String {
+        match self {
+            Self::File {
+                file_id,
+                mount_path,
+            } => awaken_session_contract::stable_fingerprint(&("file", file_id, mount_path)),
+            Self::MemoryStore {
+                memory_store_id,
+                mount_path,
+                instructions,
+                access,
+            } => awaken_session_contract::stable_fingerprint(&(
+                "memory_store",
+                memory_store_id,
+                mount_path,
+                instructions,
+                access,
+            )),
+            Self::GithubRepository {
+                url,
+                authorization_token,
+                mount_path,
+                checkout,
+            } => awaken_session_contract::stable_fingerprint(&(
+                "github_repository",
+                url,
+                authorization_token
+                    .as_ref()
+                    .map(|token| token.0.expose_secret()),
+                mount_path,
+                checkout,
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RepositoryCheckout {
@@ -162,6 +202,29 @@ impl ResourceAddParams {
 #[serde(deny_unknown_fields)]
 pub struct ResourceUpdateParams {
     pub authorization_token: RepositoryAuthorizationToken,
+}
+
+/// Complete desired Resource set for one Session. Absence from this list is a
+/// removal; callers never need to sequence remote delete/add operations.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceManifestReplaceParams {
+    pub resources: Vec<ResourceInput>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceManifestPhase {
+    Active,
+    Applying,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SessionResourceManifest {
+    pub desired_revision: u64,
+    pub applied_revision: u64,
+    pub phase: ResourceManifestPhase,
+    pub resources: Vec<SessionResource>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

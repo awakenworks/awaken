@@ -528,6 +528,7 @@ pub(super) async fn assemble_runtime_process_router(
             awaken_session_application::SessionApplicationConfiguration {
                 execution_placement: session_execution_placement,
                 local_realization_owner: host.dispatch_owner().to_string(),
+                ..Default::default()
             },
         );
     let mut managed_state = ManagedState::from_application(session_application)

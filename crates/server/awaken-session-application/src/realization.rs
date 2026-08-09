@@ -4,10 +4,10 @@ use std::collections::BTreeSet;
 
 use awaken_session_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
-    FailSessionRealization, McpAttachmentState, McpGenerationRef, PersistedSession, RunError,
-    SessionExecutionState, SessionRealizationAction, SessionRealizationControl,
-    SessionRealizationControlFailure, SessionRealizationDirective, SessionRealizationLease,
-    SessionRepositoryError, SessionRuntime, StageMcpAttachment,
+    FailSessionRealization, ManagedLifecycleFact, McpAttachmentState, McpGenerationRef,
+    PersistedSession, RunError, SessionExecutionState, SessionRealizationAction,
+    SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
+    SessionRealizationLease, SessionRepositoryError, SessionRuntime, StageMcpAttachment,
 };
 
 use super::{SessionApplication, SessionMutationError};
@@ -18,6 +18,16 @@ fn now_unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or_default()
+}
+
+fn initial_idle_fact(owner_scope: &str, session_id: &str) -> ManagedLifecycleFact {
+    ManagedLifecycleFact {
+        id: format!("session:{session_id}:created"),
+        object_id: session_id.to_string(),
+        workspace_id: Some(owner_scope.to_string()),
+        event_type: "session.status_idled".to_string(),
+        timestamp: i64::try_from(now_unix_ms() / 1_000).unwrap_or(i64::MAX),
+    }
 }
 
 fn unavailable(error: impl std::fmt::Display) -> SessionRealizationControlFailure {
@@ -754,6 +764,23 @@ impl SessionRealizationControl for SessionApplication {
                     )
                     .map_err(unavailable)?;
             }
+            if needs_assignment
+                && matches!(
+                    session.execution,
+                    SessionExecutionState::Preparing | SessionExecutionState::Activating
+                )
+            {
+                session.realization_progress.attempts = session
+                    .realization_progress
+                    .attempts
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        SessionRealizationControlFailure::Invalid(
+                            "Session realization attempt counter is exhausted".into(),
+                        )
+                    })?;
+                session.realization_progress.last_error = None;
+            }
             session.realization = Some(lease);
             match self
                 .commit_session_snapshot(
@@ -1065,21 +1092,34 @@ impl SessionRealizationControl for SessionApplication {
                 .finish_drain(&generation.attachment_id, generation.generation)
                 .map_err(unavailable)?;
         }
+        let initial_ready =
+            session.activity_epoch == 0 && session.execution != SessionExecutionState::Idle;
         session
             .transition_execution(SessionExecutionState::Idle)
             .map_err(unavailable)?;
+        let ready_fact =
+            initial_ready.then(|| initial_idle_fact(&owner_scope, &command.session_id));
         let session = self
             .commit_session_snapshot(
                 &owner_scope,
                 session,
                 "acknowledge-session-realization",
-                Vec::new(),
+                ready_fact.iter().cloned().collect(),
             )
             .await
             .map_err(|error| match error {
                 SessionMutationError::Conflict => SessionRealizationControlFailure::Conflict,
                 error => unavailable(error),
             })?;
+        if let Some(fact) = &ready_fact {
+            self.emit_lifecycle_fact(
+                &fact.id,
+                &fact.object_id,
+                fact.workspace_id.as_deref(),
+                &fact.event_type,
+            )
+            .await;
+        }
         Self::realization_directive(
             owner_scope,
             &session,
@@ -1116,6 +1156,39 @@ impl SessionRealizationControl for SessionApplication {
                 "failed Resource generation does not match the pending Session generation".into(),
             ));
         }
+        if command.prepared_resource_revision == Some(session.resources.revision)
+            && session.resources.pending.is_some()
+        {
+            session
+                .resources
+                .note_retryable_failure(command.reason.clone())
+                .map_err(unavailable)?;
+        }
+        session.realization_progress.last_error = Some(command.reason.clone());
+        let initial_realization = session.execution != SessionExecutionState::Idle;
+        if command.retryable
+            && initial_realization
+            && session.realization_progress.attempts < self.realization_retry_budget()
+        {
+            // Retain the exact MCP/Resource generation for recovery, but expire
+            // this assignment immediately. The next fenced claim increments the
+            // lease epoch and the persisted attempt counter before any effect.
+            if let Some(lease) = &mut session.realization {
+                lease.expires_at_unix_ms = 0;
+            }
+            self.commit_session_snapshot(
+                &owner_scope,
+                session,
+                "retry-session-realization",
+                Vec::new(),
+            )
+            .await
+            .map_err(|error| match error {
+                SessionMutationError::Conflict => SessionRealizationControlFailure::Conflict,
+                error => unavailable(error),
+            })?;
+            return Ok(());
+        }
         let realizing = session
             .mcp
             .attachments
@@ -1143,14 +1216,6 @@ impl SessionRealizationControl for SessionApplication {
                         .ok_or(SessionRealizationControlFailure::NotReady)?,
                     command.reason.clone(),
                 )
-                .map_err(unavailable)?;
-        }
-        if command.prepared_resource_revision == Some(session.resources.revision)
-            && session.resources.pending.is_some()
-        {
-            session
-                .resources
-                .note_retryable_failure(command.reason.clone())
                 .map_err(unavailable)?;
         }
         if session.execution != SessionExecutionState::Idle {

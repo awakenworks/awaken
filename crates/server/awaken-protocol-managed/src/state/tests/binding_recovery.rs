@@ -357,25 +357,13 @@ fn persisted_session_rejects_corrupt_tools_before_rehydration() {
 
 #[tokio::test]
 async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
-    // Causal graph:
-    // durable Session -> one canonical projection preparation -> environment
-    // adoption -> MCP staging -> committed history + current client-tool wait -> readable
-    // in-memory Session with a resumable custom-tool event.
-    //
-    // Decision table:
-    // | MCP state            | resident binding | authoritative order                         |
-    // | needs reconciliation | present          | prepare -> adopt -> MCP stage, each once    |
-    // | needs reconciliation | absent           | prepare -> create environment -> MCP stage  |
-    // | already settled      | present          | prepare -> adopt, each once                 |
-    // | current client wait  | either           | Runtime Pending truth -> custom_tool_use    |
-    // Historical/non-current tool calls remain ordinary tool_use events; the
-    // project module's disposition table owns and tests that complementary rule.
-    // Every branch must converge before history. In particular, MCP staging
-    // cannot create a replacement sandbox before the durable binding is
-    // adopted; duplicate preparation can repeat mounts, runtime registration,
-    // and secret staging.
-    // A session created in one process is gone from a fresh process's cache,
-    // but the shared repo + committed transcript restore it faithfully.
+    // Cause/effect graph: C1 cache is cold; C2 durable Session and committed
+    // transcript exist; C3 Runtime projection is stale. Effects: E1 rebuild the
+    // HTTP/history/delegation read model; E2 perform no Environment, Resource,
+    // or MCP realization. Decision rule R1 C1+C2+C3 => E1+E2. Runtime recovery
+    // belongs to the explicit reconciler/run-admission tests below. FMECA:
+    // driving effects from GET can duplicate mounts/credentials or turn an
+    // outage into a read failure (S8/O5/D7), so cold reads remain pure.
     let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
     let mut persisted = sample_persisted("sesn_1");
     persisted.environment.set_resident("opaque-runtime-binding");
@@ -440,49 +428,30 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
             && thread.agent.id == "researcher"
             && thread.status == SessionThreadStatus::Idle
     }));
-    assert_eq!(
-        restored.lock().unwrap().as_slice(),
-        &[(
-            "sesn_1".to_string(),
-            DEFAULT_SCOPE.to_string(),
-            sample_inputs(),
-        )],
-        "restart replays the persisted manifest once without re-resolving it"
+    assert!(
+        restored.lock().unwrap().is_empty(),
+        "a read rebuilds no Runtime Resource projection"
     );
     assert_eq!(
         order.lock().unwrap().as_slice(),
-        &[
-            "resources",
-            "runtime",
-            "environment",
-            "mcp",
-            "history",
-            "delegations"
-        ],
-        "the durable environment must be adopted before MCP staging and history opening"
+        &["history", "delegations"],
+        "a read opens only read-side transcript/delegation projections"
     );
-    assert_eq!(
-        restored_runtimes.lock().unwrap().as_slice(),
-        &[(
-            "sesn_1".to_string(),
-            Some("acp:custom".to_string()),
-            1,
-            awaken_session_contract::SessionNetworkPolicy::None,
-            serde_json::json!({"isolation": "namespace"}),
-        )],
-        "the complete secret-free runtime pin is restored"
-    );
-    assert_eq!(
-        restored_environments.lock().unwrap().as_slice(),
-        &[(
-            "coder".to_string(),
-            "sesn_1".to_string(),
-            "opaque-runtime-binding".to_string(),
-        )],
-        "the runtime alone receives and interprets the opaque binding"
+    assert!(restored_runtimes.lock().unwrap().is_empty(), "read-only");
+    assert!(
+        restored_environments.lock().unwrap().is_empty(),
+        "read-only"
     );
     let durable = repo.get("sesn_1").await.unwrap();
-    assert_eq!(durable.resources.activations.len(), 1);
+    assert_eq!(
+        durable.resources.active,
+        sample_inputs(),
+        "read preserves truth"
+    );
+    assert!(
+        durable.resources.activations.is_empty(),
+        "read does not adopt a legacy activation"
+    );
     let events = restarted
         .list_events("sesn_1", None, None, false)
         .expect("list rehydrated events");
@@ -491,11 +460,6 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         encoded["data"].as_array().unwrap().iter().any(|event| {
             event["type"] == "agent.custom_tool_use" && event["id"] == "call-submit"
         })
-    );
-    assert_eq!(
-        durable.resources.activations[0].state,
-        awaken_session_contract::ActivationState::Active,
-        "the first recovery adopts a durable activation record for a legacy manifest"
     );
 }
 
@@ -629,7 +593,7 @@ async fn active_active_session_id_mint_is_collision_free() {
 }
 
 #[tokio::test]
-async fn ensure_session_retries_and_commits_a_crash_interrupted_activation() {
+async fn resource_reconciler_retries_and_commits_a_crash_interrupted_activation() {
     let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
     let mut pending = sample_persisted("sesn_pending");
     let desired = pending.resources.active.clone();
@@ -644,10 +608,8 @@ async fn ensure_session_retries_and_commits_a_crash_interrupted_activation() {
     let runtime = RehydrateFake::default();
     let restored = runtime.restored.clone();
     let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo.clone());
-    restarted
-        .ensure_session("sesn_pending")
-        .await
-        .expect("recover pending activation");
+    assert_eq!(restarted.reconcile_resource_activations().await, 1);
+    restarted.ensure_session("sesn_pending").await.unwrap();
 
     assert_eq!(restored.lock().unwrap().len(), 1);
     assert_eq!(restored.lock().unwrap()[0].2, desired);
@@ -761,8 +723,8 @@ async fn resource_reclaimer_never_tears_down_a_live_session_environment() {
 async fn cold_rehydrate_preserves_a_running_sessions_resource_generation() {
     // Cold-rehydrate cause/effect rule C1: a broad durable read finds a
     // running Session with active Resources and a resident Environment after
-    // process cache loss. E1 reinstalls the readable/runtime projection; E2
-    // performs neither Resource re-apply nor terminal environment teardown.
+    // process cache loss. E1 reinstalls only the readable projection; E2
+    // performs no Resource, Environment, or terminal teardown effect.
     // The terminal and pending branches are covered by the reclaimer table
     // above and `ensure_session_retries_and_commits_a_crash_interrupted_activation`.
     let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
@@ -789,7 +751,7 @@ async fn cold_rehydrate_preserves_a_running_sessions_resource_generation() {
         "E2 no Resource re-apply"
     );
     assert!(ended.lock().unwrap().is_empty(), "E2 no terminal teardown");
-    assert_eq!(restored_environment.lock().unwrap().len(), 1, "E1");
+    assert!(restored_environment.lock().unwrap().is_empty(), "E2");
     assert!(
         repo.get("sesn_running_rehydrate")
             .await

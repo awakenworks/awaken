@@ -1,14 +1,26 @@
 use super::*;
 
 #[tokio::test]
-async fn coordinator_only_creation_freezes_worker_placement_without_local_realization() {
+async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_worker_ack() {
+    // Cause/effect graph: C1 placement is a registered Worker; C2 the durable
+    // creation intent and WorkQueue dispatch succeed; C3 that queue has no
+    // physical-realization acknowledgement protocol. Effects: E1 create returns
+    // the truthful Preparing projection; E2 the durable aggregate records Worker
+    // placement; E3 no initial-idle lifecycle fact is fabricated; E4 Control only
+    // prepares the Thread identity. Decision table: R1 C1+C2+C3 => E1+E2+E3+E4.
+    // FMECA: treating enqueue as readiness could admit a Run before realization
+    // (severity 9, occurrence 5, detection 7), while waiting for an acknowledgement
+    // that cannot arrive times out every healthy split-process create (severity 8,
+    // occurrence 10, detection 3). The durable Preparing projection plus strict
+    // Run admission is the single protocol-supported boundary.
     let runtime = EndSessionRecorder::default();
     let prepared = runtime.prepared.clone();
     let runtime = Arc::new(runtime);
+    let repo = Arc::new(ephemeral_session_repo());
     let application = awaken_session_application::SessionApplication::new_with_configuration(
         runtime.clone(),
         Arc::new(mcp_attachment::UnsupportedMcpAttachmentRealizer),
-        Arc::new(ephemeral_session_repo()),
+        repo.clone(),
         crate::test_support::environment_components().1,
         awaken_session_application::SessionApplicationConfiguration {
             execution_placement:
@@ -23,35 +35,34 @@ async fn coordinator_only_creation_freezes_worker_placement_without_local_realiz
             None,
         )
         .await
-        .expect("P1 creates the durable Session");
-    let persisted = state
-        .application
-        .session(&created.id)
-        .await
-        .expect("P1 durable aggregate");
-
-    assert_eq!(
-        created.status,
-        SessionStatus::Preparing,
-        "P1 durable status owns wire status"
-    );
+        .expect("R1/E1 durable demand is accepted");
+    assert_eq!(created.status, SessionStatus::Preparing, "R1/E1");
+    let scan = repo.reconcilable_sessions().await.unwrap();
+    assert_eq!(scan.sessions.len(), 1, "R1/E2");
+    let persisted = &scan.sessions[0];
 
     assert!(
         persisted
+            .session
             .frozen_baseline()
             .is_some_and(|baseline| baseline.runtime_placement
                 == awaken_session_contract::SessionRuntimePlacement::Worker),
         "P1 freezes the Runtime placement fact"
     );
-    assert!(persisted.realization.is_none(), "P1/E2");
+    assert!(persisted.session.realization.is_none(), "P1/E2");
     assert!(
         matches!(
-            persisted.environment,
+            persisted.session.environment,
             awaken_session_contract::SessionEnvironmentState::Unmaterialized
         ),
         "P1/E3"
     );
-    assert_eq!(prepared.lock().unwrap().as_slice(), &[created.id], "P1/E1");
+    assert_eq!(
+        prepared.lock().unwrap().as_slice(),
+        std::slice::from_ref(&persisted.session.session_id),
+        "R1/E4 only prepares the thread identity"
+    );
+    assert!(repo.pending_lifecycle().await.unwrap().is_empty(), "R1/E3");
 }
 
 /// Cause graph: exact child -> runtime termination -> one terminal projection.
@@ -737,6 +748,7 @@ pub(in crate::state) fn sample_persisted(id: &str) -> PersistedSession {
         mcp,
         resources: awaken_session_contract::SessionResourceState::from_legacy(sample_inputs()),
         realization: None,
+        realization_progress: Default::default(),
         execution: SessionExecutionState::Idle,
         disposition: Default::default(),
         terminal_cleanup: Default::default(),

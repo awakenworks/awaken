@@ -253,14 +253,13 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
 }
 
 /// Activity-fence FMECA cause/effect graph. Causes: C1 the Session exists;
-/// C2 it is nonterminal; C3 the epoch can advance; C4 settlement presents
+/// C2 it is ready (idle/running/rescheduling); C3 the epoch can advance; C4 settlement presents
 /// the current epoch; C5 a later admission or terminal transition has
 /// fenced that settlement; C6 initial realization is still preparing.
 /// Effects: E1 an idle admission commits `running` with one unique monotonic
 /// epoch; E2 only the current running completion commits `idle`; E3 stale or
-/// terminal completions are no-ops; E4 missing, terminal-admission, and
-/// exhausted-epoch failures do not mutate durable truth; E5 a queued first
-/// turn advances its epoch without masking realization state.
+/// terminal completions are no-ops; E4 missing, terminal, not-ready, and
+/// exhausted-epoch admissions do not mutate durable truth.
 ///
 /// | Rule | Exists | Status | Epoch available | Current settle | Fence | Effect |
 /// |---|---|---|---|---|---|---|
@@ -271,7 +270,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
 /// | A5 | yes | terminal | any | n/a | n/a | E4, reject admission |
 /// | A6 | yes | idle | no | n/a | n/a | E4, reject exhaustion |
 /// | A7 | no | n/a | n/a | n/a | n/a | E4, not found |
-/// | A8 | yes | preparing | yes | yes | realization pending | E5, preserve preparing |
+/// | A8 | yes | preparing | yes | n/a | realization pending | E4, reject admission |
 /// | A9 | yes | activation_failed | n/a | any | realization failed | E3, preserve failed |
 #[tokio::test]
 async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() {
@@ -366,17 +365,14 @@ async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() 
         persisted("activity-preparing", false, false, "preparing"),
     )
     .await;
-    let preparing = app
-        .begin_activity("activity-preparing")
-        .await
-        .expect("A8 queued activity");
-    assert_eq!(preparing.activity_epoch, 1, "A8/E5");
-    assert_eq!(preparing.execution.as_str(), "preparing", "A8/E5");
-    let still_preparing = app
-        .settle_activity("activity-preparing", preparing.activity_epoch)
-        .await
-        .expect("A8 settlement");
-    assert_eq!(still_preparing.execution.as_str(), "preparing", "A8/E5");
+    assert_eq!(
+        app.begin_activity("activity-preparing").await,
+        Err(SessionActivityError::NotReady),
+        "A8/E4"
+    );
+    let still_preparing = repo.get("activity-preparing").await.expect("A8 durable");
+    assert_eq!(still_preparing.activity_epoch, 0, "A8/E4");
+    assert_eq!(still_preparing.execution.as_str(), "preparing", "A8/E4");
 
     let mut failed = still_preparing;
     failed.execution = SessionExecutionState::ActivationFailed;
@@ -390,7 +386,7 @@ async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() 
         .await
         .expect("A9 terminal realization");
     assert_eq!(
-        app.settle_activity("activity-preparing", preparing.activity_epoch)
+        app.settle_activity("activity-preparing", 0)
             .await
             .expect("A9 stale settlement"),
         failed,

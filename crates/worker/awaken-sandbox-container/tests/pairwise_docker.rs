@@ -428,6 +428,7 @@ async fn a_memory_cap_oom_kills_an_over_allocating_container() {
         packages: Default::default(),
         network: pc::NetworkPolicy::None,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: pc::ResourceRequests::default(),
         limits,
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({

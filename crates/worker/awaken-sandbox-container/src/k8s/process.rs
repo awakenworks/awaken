@@ -65,6 +65,13 @@ pub(super) fn k8s_live_file_result(
     }
 }
 
+pub(super) fn signal_effect_is_complete(
+    signal_status: &pc::ExitStatus,
+    process_status: Option<&pc::ExitStatus>,
+) -> bool {
+    signal_status.code == Some(0) || process_status.is_some()
+}
+
 pub(super) fn k8s_exec_argv(
     id: &str,
     command: pc::MaterializedCommand,
@@ -196,9 +203,13 @@ impl pc::ProcessHandle for K8sExecProcess {
         let mut ignored = Vec::new();
         let (read, status) = tokio::join!(stdout.read_to_end(&mut ignored), status);
         read.map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        if k8s_exit_status(status).code == Some(0) {
-            Ok(())
-        } else if self.poll().await?.is_some() {
+        let signal_status = k8s_exit_status(status);
+        let process_status = if signal_status.code == Some(0) {
+            None
+        } else {
+            self.poll().await?
+        };
+        if signal_effect_is_complete(&signal_status, process_status.as_ref()) {
             Ok(())
         } else {
             Err(pc::SandboxError::new("k8s exec signal failed"))
