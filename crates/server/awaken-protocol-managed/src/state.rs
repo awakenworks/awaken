@@ -50,6 +50,7 @@ mod activity;
 mod application;
 mod deployment_sessions;
 mod environment;
+mod error;
 mod events;
 mod helpers;
 #[path = "state/lifecycle_event.rs"]
@@ -68,6 +69,8 @@ mod sessions;
 mod threads;
 mod types;
 
+pub use error::StateError;
+
 pub(crate) use helpers::{content_text, lifecycle_fact, rubric_text, session_usage_value};
 use mcp_attachment::UnsupportedMcpAttachmentRealizer;
 pub(crate) use resource::{
@@ -76,9 +79,9 @@ pub(crate) use resource::{
 };
 use session_record::SessionRecord;
 pub(crate) use types::{
-    AgentCapabilities, CustomTool, DelegatedRun, LiveInboxError, LiveInboxSnapshot,
-    OutcomeIteration, OutcomeReport, RunError, RunErrorKind, SessionInit, SessionRuntime,
-    SessionUsage, StepOutcome, ToolPermissionDecision,
+    AgentCapabilities, CustomTool, DelegatedRun, LiveInboxSnapshot, OutcomeIteration,
+    OutcomeReport, RunError, RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepOutcome,
+    ToolPermissionDecision,
 };
 
 /// The adapter's in-memory session store plus the runtime port.
@@ -151,34 +154,6 @@ pub struct ManagedState {
 /// The port lives in `awaken-session-contract`; the protocol adapter consumes it
 /// directly and publishes no compatibility alias.
 use awaken_session_contract::SessionLifecycleSink;
-
-/// Why a session operation failed (mapped to an HTTP status by the router).
-#[derive(Debug, thiserror::Error)]
-pub enum StateError {
-    #[error("session not found")]
-    NotFound,
-    /// A write was sent to an archived (terminated, read-only) session; the router
-    /// maps it to 409 `invalid_request_error`.
-    #[error("session is archived and is read-only")]
-    Archived,
-    /// The root Session revision changed while a command was being compiled.
-    /// Callers re-read and retry the complete command; stale snapshots are never
-    /// merged or written back.
-    #[error("session changed concurrently; read the latest revision and retry")]
-    Conflict,
-    #[error("session idempotency key was reused with another request")]
-    IdempotencyMismatch,
-    /// A session create named a vault that does not exist (`vault_ids`); the
-    /// router maps it to the standard 404 envelope naming the vault id.
-    #[error("vault `{0}` not found")]
-    VaultNotFound(String),
-    #[error(transparent)]
-    Run(#[from] RunError),
-    /// A live-inbox operation was refused (inactive queue, unknown message,
-    /// or a stale reorder); the router maps each case to its own status.
-    #[error(transparent)]
-    LiveInbox(#[from] LiveInboxError),
-}
 
 impl ManagedState {
     pub(crate) async fn deployment_environment(
@@ -617,6 +592,7 @@ mod tests {
     struct EndSessionRecorder {
         ended: Arc<std::sync::Mutex<Vec<String>>>,
         interrupted: Arc<std::sync::Mutex<Vec<String>>>,
+        prepared: Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     #[async_trait]
@@ -647,6 +623,10 @@ mod tests {
             unreachable!()
         }
         async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+            Ok(())
+        }
+        async fn prepare_session(&self, thread: &str, _init: SessionInit) -> Result<(), RunError> {
+            self.prepared.lock().unwrap().push(thread.to_string());
             Ok(())
         }
         async fn define_outcome(
@@ -928,6 +908,31 @@ mod tests {
             vec![id],
             "a re-archive (idempotent) does not re-dispose"
         );
+    }
+
+    #[tokio::test]
+    async fn archive_session_rehydrates_after_process_restart() {
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+        let original =
+            ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
+        let id = original
+            .create_session(bare_create_params(), None)
+            .await
+            .expect("create")
+            .id;
+        drop(original);
+        let runtime = EndSessionRecorder::default();
+        let ended = runtime.ended.clone();
+        let prepared = runtime.prepared.clone();
+        let restarted = ManagedState::new(runtime).with_session_repo(repo.clone());
+        let archived = restarted
+            .archive_session(&id)
+            .await
+            .expect("archive durable Session after restart");
+        assert_eq!(archived.status, "terminated");
+        assert_eq!(*ended.lock().unwrap(), vec![id.clone()]);
+        assert!(prepared.lock().unwrap().is_empty());
+        assert_eq!(repo.get(&id).await.unwrap().status, "terminated");
     }
 
     #[tokio::test]
