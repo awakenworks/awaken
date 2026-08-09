@@ -16,8 +16,12 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_session_contract::work_queue::{
-    HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, WorkItem, WorkQueue,
+    HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, WorkItem, WorkQueue, WorkQueueError,
 };
+
+fn storage(error: impl std::fmt::Display) -> WorkQueueError {
+    WorkQueueError::Storage(error.to_string())
+}
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
@@ -127,11 +131,11 @@ impl WorkQueue for SqliteWorkQueue {
         self.insert(env_id, "healthcheck", None)
     }
 
-    async fn ensure_healthcheck(&self, env_id: &str) -> String {
-        let mut guard = self.conn.lock().expect("work queue mutex poisoned");
+    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
+        let mut guard = self.conn.lock().map_err(storage)?;
         let tx = guard
             .transaction_with_behavior(TransactionBehavior::Immediate)
-            .expect("begin immediate");
+            .map_err(storage)?;
         if let Some(id) = tx
             .query_row(
                 "SELECT work_id FROM work_queue_item WHERE environment_id = ?1 AND data_type = 'healthcheck' ORDER BY seq ASC LIMIT 1",
@@ -139,9 +143,10 @@ impl WorkQueue for SqliteWorkQueue {
                 |row| row.get(0),
             )
             .optional()
-            .expect("read existing healthcheck")
+            .map_err(storage)?
         {
-            return id;
+            tx.commit().map_err(storage)?;
+            return Ok(id);
         }
         let next: i64 = tx
             .query_row(
@@ -149,15 +154,15 @@ impl WorkQueue for SqliteWorkQueue {
                 [],
                 |row| row.get(0),
             )
-            .expect("next seq");
+            .map_err(storage)?;
         let work_id = format!("work_{next:016}");
         tx.execute(
             "INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state) VALUES (?1, ?2, ?3, 'healthcheck', ?1, '{}', 'queued')",
             params![work_id, next, env_id],
         )
-        .expect("insert healthcheck");
-        tx.commit().expect("commit healthcheck");
-        work_id
+        .map_err(storage)?;
+        tx.commit().map_err(storage)?;
+        Ok(work_id)
     }
 
     async fn list(&self, env_id: &str) -> Vec<WorkItem> {
@@ -398,16 +403,28 @@ impl WorkQueue for SqliteWorkQueue {
         }
     }
 
-    async fn remove_env(&self, env_id: &str) {
-        let ids: Vec<String> = self.list(env_id).await.into_iter().map(|w| w.id).collect();
-        let conn = self.conn.lock().expect("work queue mutex poisoned");
-        conn.execute(
+    async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError> {
+        let mut conn = self.conn.lock().map_err(storage)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let mut stmt = tx
+            .prepare("SELECT work_id FROM work_queue_item WHERE environment_id = ?1")
+            .map_err(storage)?;
+        let ids = stmt
+            .query_map(params![env_id], |row| row.get::<_, String>(0))
+            .map_err(storage)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage)?;
+        drop(stmt);
+        tx.execute(
             "DELETE FROM work_queue_item WHERE environment_id = ?1",
             params![env_id],
         )
-        .expect("purge env work");
-        drop(conn);
+        .map_err(storage)?;
+        tx.commit().map_err(storage)?;
         self.book.forget_env(env_id, &ids);
+        Ok(())
     }
 }
 
@@ -528,33 +545,34 @@ impl WorkQueue for PostgresWorkQueue {
         self.insert(env_id, "healthcheck", None).await
     }
 
-    async fn ensure_healthcheck(&self, env_id: &str) -> String {
-        let mut tx = self.pool.begin().await.expect("begin");
+    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
         sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
             .execute(&mut *tx)
             .await
-            .expect("lock healthcheck convergence");
+            .map_err(storage)?;
         if let Some(id) = sqlx::query_scalar::<_, String>(
             "SELECT work_id FROM work_queue_item WHERE environment_id = $1 AND data_type = 'healthcheck' ORDER BY seq ASC LIMIT 1",
         )
         .bind(env_id)
         .fetch_optional(&mut *tx)
         .await
-        .expect("read existing healthcheck")
+        .map_err(storage)?
         {
-            return id;
+            tx.commit().await.map_err(storage)?;
+            return Ok(id);
         }
         let next: i64 =
             sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
                 .fetch_one(&mut *tx)
                 .await
-                .expect("next seq");
+                .map_err(storage)?;
         let work_id = format!("work_{next:016}");
         sqlx::query("INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state) VALUES ($1, $2, $3, 'healthcheck', $1, '{}', 'queued')")
             .bind(&work_id).bind(next).bind(env_id)
-            .execute(&mut *tx).await.expect("insert healthcheck");
-        tx.commit().await.expect("commit healthcheck");
-        work_id
+            .execute(&mut *tx).await.map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
+        Ok(work_id)
     }
 
     async fn list(&self, env_id: &str) -> Vec<WorkItem> {
@@ -811,14 +829,27 @@ impl WorkQueue for PostgresWorkQueue {
         }
     }
 
-    async fn remove_env(&self, env_id: &str) {
-        let ids: Vec<String> = self.list(env_id).await.into_iter().map(|w| w.id).collect();
+    async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        let ids = sqlx::query_scalar::<_, String>(
+            "SELECT work_id FROM work_queue_item WHERE environment_id = $1",
+        )
+        .bind(env_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?;
         sqlx::query("DELETE FROM work_queue_item WHERE environment_id = $1")
             .bind(env_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
-            .expect("purge env work");
+            .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
         self.book.forget_env(env_id, &ids);
+        Ok(())
     }
 }
 
@@ -966,7 +997,7 @@ mod tests {
         let patch = BTreeMap::from([("k".to_string(), "v".to_string())]);
         let up = q.update_metadata("env_a", &s, patch).await.expect("patch");
         assert_eq!(up.metadata.get("k").map(String::as_str), Some("v"));
-        q.remove_env("env_a").await;
+        q.remove_env("env_a").await.unwrap();
         assert!(q.list("env_a").await.is_empty(), "env delete purges work");
     }
 
@@ -995,7 +1026,7 @@ mod tests {
         {
             let id = q.enqueue_healthcheck("cov_env").await;
             assert!(q.get("cov_env", &id).await.is_some());
-            q.remove_env("cov_env").await;
+            q.remove_env("cov_env").await.unwrap();
         }
     }
 
@@ -1078,7 +1109,7 @@ mod tests {
             Some("v")
         );
         assert!(q.stop("env_a", &hc).await.is_some());
-        q.remove_env("env_a").await;
+        q.remove_env("env_a").await.unwrap();
         assert!(q.list("env_a").await.is_empty(), "remove_env purges");
     }
 
@@ -1149,6 +1180,6 @@ mod tests {
             (0, 1),
             "the single-active cap holds: one active lease, nothing left queued"
         );
-        q.remove_env("env_a").await;
+        q.remove_env("env_a").await.unwrap();
     }
 }

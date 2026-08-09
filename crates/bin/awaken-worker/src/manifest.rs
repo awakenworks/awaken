@@ -154,7 +154,7 @@ pub(crate) struct StandardManifestInputs<'a> {
     pub(crate) credential_materializer: Option<CredentialMaterializerSupport>,
     /// An exact Worker-local observation/revalidation resolver is installed.
     /// This is independent of whether that resolver returns secret material.
-    pub(crate) worker_local_credentials: bool,
+    pub(crate) worker_local_credential_resolver_installed: bool,
     pub(crate) remote_credential_realization:
         Option<&'a awaken_runtime_contract::CredentialRealizationCapabilities>,
     pub(crate) sandbox_override:
@@ -205,7 +205,7 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
             capabilities.insert(REPOSITORY_CREDENTIALS_CAPABILITY.to_string());
         }
     }
-    if inputs.worker_local_credentials {
+    if inputs.worker_local_credential_resolver_installed {
         capabilities.insert(WORKER_LOCAL_CREDENTIALS_CAPABILITY.to_string());
     }
     capabilities.extend(inputs.application_capabilities);

@@ -488,7 +488,12 @@ async fn snapshot_normalizes_the_networking_policy() {
     )
     .await;
     assert_eq!(
-        state.snapshot(&limited, None).await.unwrap().network,
+        state
+            .snapshot(&limited, None)
+            .await
+            .unwrap()
+            .unwrap()
+            .network,
         awaken_session_contract::SessionNetworkPolicy::None,
         "empty limited allowlist canonicalizes to no network"
     );
@@ -499,19 +504,35 @@ async fn snapshot_normalizes_the_networking_policy() {
     )
     .await;
     assert_eq!(
-        state.snapshot(&unrestricted, None).await.unwrap().network,
+        state
+            .snapshot(&unrestricted, None)
+            .await
+            .unwrap()
+            .unwrap()
+            .network,
         awaken_session_contract::SessionNetworkPolicy::Unrestricted,
         "unrestricted keeps host network"
     );
 
     let self_hosted = make(&app, json!({ "type": "self_hosted" })).await;
     assert_eq!(
-        state.snapshot(&self_hosted, None).await.unwrap().network,
+        state
+            .snapshot(&self_hosted, None)
+            .await
+            .unwrap()
+            .unwrap()
+            .network,
         awaken_session_contract::SessionNetworkPolicy::Unrestricted,
         "absent networking keeps host network"
     );
 
-    assert!(state.snapshot("env_nonexistent", None).await.is_none());
+    assert!(
+        state
+            .snapshot("env_nonexistent", None)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]

@@ -28,6 +28,8 @@ pub enum EnvironmentApplicationError {
     Registration(#[from] ExecutableEnvironmentRegistrationError),
     #[error("Environment was not found")]
     NotFound,
+    #[error("Archived Environment definitions are immutable")]
+    Archived,
     #[error("Built-in Environment definitions are immutable")]
     BuiltinImmutable,
     #[error(transparent)]
@@ -163,12 +165,7 @@ impl EnvironmentApplication {
         environment_id: &str,
         patch: EnvUpdate,
     ) -> Result<EnvItem, EnvironmentApplicationError> {
-        self.ensure_mutable(environment_id)?;
-        let item = self
-            .envs
-            .update(environment_id, patch)
-            .await
-            .ok_or(EnvironmentApplicationError::NotFound)?;
+        let item = self.update_active(environment_id, patch).await?;
         self.publish(item).await
     }
 
@@ -201,7 +198,7 @@ impl EnvironmentApplication {
         environment_id: &str,
         reference: SandboxExecutionPolicyRef,
     ) -> Result<EnvItem, EnvironmentApplicationError> {
-        self.ensure_mutable(environment_id)?;
+        self.ensure_active(environment_id).await?;
         let store = self
             .sandbox_policies
             .as_ref()
@@ -212,12 +209,8 @@ impl EnvironmentApplication {
                 SandboxExecutionPolicyError::Disabled,
             ));
         }
-        if !self.envs.exists(environment_id).await {
-            return Err(EnvironmentApplicationError::NotFound);
-        }
         let item = self
-            .envs
-            .update(
+            .update_active(
                 environment_id,
                 EnvUpdate {
                     sandbox_policy: Some(Some(EnvironmentSandboxPolicyRef {
@@ -227,9 +220,34 @@ impl EnvironmentApplication {
                     ..Default::default()
                 },
             )
-            .await
-            .ok_or(EnvironmentApplicationError::NotFound)?;
+            .await?;
         self.publish(item).await
+    }
+
+    async fn update_active(
+        &self,
+        environment_id: &str,
+        patch: EnvUpdate,
+    ) -> Result<EnvItem, EnvironmentApplicationError> {
+        self.ensure_mutable(environment_id)?;
+        match self.envs.update(environment_id, patch).await {
+            Some(item) => Ok(item),
+            None => match self.envs.get(environment_id).await {
+                Some(item) if item.archived_at.is_some() => {
+                    Err(EnvironmentApplicationError::Archived)
+                }
+                _ => Err(EnvironmentApplicationError::NotFound),
+            },
+        }
+    }
+
+    async fn ensure_active(&self, environment_id: &str) -> Result<(), EnvironmentApplicationError> {
+        self.ensure_mutable(environment_id)?;
+        match self.envs.get(environment_id).await {
+            Some(item) if item.archived_at.is_some() => Err(EnvironmentApplicationError::Archived),
+            Some(_) => Ok(()),
+            None => Err(EnvironmentApplicationError::NotFound),
+        }
     }
 
     fn ensure_mutable(&self, environment_id: &str) -> Result<(), EnvironmentApplicationError> {
@@ -351,6 +369,40 @@ mod tests {
         withdrawals: Mutex<Vec<ExecutableEnvironmentWithdrawal>>,
     }
 
+    struct OnePolicy;
+
+    #[async_trait]
+    impl SandboxExecutionPolicyStore for OnePolicy {
+        async fn create(
+            &self,
+            _policy: awaken_provisioning_contract::SandboxExecutionPolicy,
+        ) -> Result<(), SandboxExecutionPolicyError> {
+            Ok(())
+        }
+
+        async fn publish(
+            &self,
+            _expected_current: SandboxExecutionPolicyVersion,
+            _policy: awaken_provisioning_contract::SandboxExecutionPolicy,
+        ) -> Result<(), SandboxExecutionPolicyError> {
+            Ok(())
+        }
+
+        async fn get_exact(
+            &self,
+            reference: &SandboxExecutionPolicyRef,
+        ) -> Result<awaken_provisioning_contract::SandboxExecutionPolicy, SandboxExecutionPolicyError>
+        {
+            Ok(awaken_provisioning_contract::SandboxExecutionPolicy {
+                id: reference.id.clone(),
+                version: reference.version,
+                config: Default::default(),
+                provisioning: Default::default(),
+                disabled: false,
+            })
+        }
+    }
+
     #[async_trait]
     impl ExecutableEnvironmentRegistrar for RecordingRegistrar {
         async fn register(
@@ -469,5 +521,75 @@ mod tests {
                 .any(|registration| registration.definition.name == "Retained"),
             "R2 exact retained revision"
         );
+    }
+
+    #[tokio::test]
+    async fn archive_is_terminal_for_every_environment_mutation_path() {
+        // Cause/effect graph: C1 an active definition can update/bind; C2 archive
+        // appends one tombstone and withdraws execution; C3 any later definition
+        // update; C4 any later sandbox-policy bind. Effects: E1 C3/C4 return the
+        // same typed lifecycle conflict, E2 no revision is appended, E3 no
+        // registration recreates current execution availability.
+        //
+        // | Rule | archived | mutation | result | revision/projection effect |
+        // | T1 | false | create | success | revision 1 + one registration |
+        // | T2 | false | archive | success | revision 2 + one withdrawal |
+        // | T3 | true | update | Archived | none |
+        // | T4 | true | bind policy | Archived | none |
+        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let registrar = Arc::new(RecordingRegistrar::default());
+        let application =
+            EnvironmentApplication::new(envs.clone(), registrar.clone(), Some(Arc::new(OnePolicy)));
+        let created = application
+            .create(CreateEnvironmentCommand {
+                command_id: "terminal-mutations".into(),
+                name: "terminal".into(),
+                description: String::new(),
+                metadata: Default::default(),
+                scope: None,
+                config: EnvironmentConfig::SelfHosted,
+            })
+            .await
+            .expect("T1");
+        application.archive(&created.id).await.expect("T2");
+
+        assert!(
+            matches!(
+                application
+                    .update(
+                        &created.id,
+                        EnvUpdate {
+                            name: Some("revived".into()),
+                            ..Default::default()
+                        }
+                    )
+                    .await,
+                Err(EnvironmentApplicationError::Archived)
+            ),
+            "T3"
+        );
+        assert!(
+            matches!(
+                application
+                    .bind_sandbox_policy(
+                        &created.id,
+                        SandboxExecutionPolicyRef {
+                            id: awaken_provisioning_contract::SandboxExecutionPolicyId(
+                                "policy".into(),
+                            ),
+                            version: SandboxExecutionPolicyVersion(1),
+                        }
+                    )
+                    .await,
+                Err(EnvironmentApplicationError::Archived)
+            ),
+            "T4"
+        );
+        let terminal = envs.get(&created.id).await.expect("terminal row");
+        assert_eq!(terminal.revision, EnvironmentRevision(2), "T3/T4");
+        assert_eq!(terminal.name, "terminal", "T3");
+        assert!(terminal.sandbox_policy.is_none(), "T4");
+        assert_eq!(registrar.registrations.lock().unwrap().len(), 1, "T3/T4");
+        assert_eq!(registrar.withdrawals.lock().unwrap().len(), 1, "T3/T4");
     }
 }

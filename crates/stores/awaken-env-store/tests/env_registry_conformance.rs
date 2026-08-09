@@ -81,7 +81,8 @@ async fn missing_id_fails_closed<R: EnvRegistry>(r: &R) {
 async fn revision_decision_table<R: EnvRegistry>(r: &R) {
     // Cause-effect graph:
     // C1 create -> E1 revision 1; C2 authored update -> E2 increment once;
-    // C3 first archive -> E3 increment once; C4 repeated archive -> E4 replay.
+    // C3 first archive -> E3 increment once; C4 repeated archive -> E4 replay;
+    // C5 update after archive -> E5 terminal denial with no new revision.
     // Missing targets produce no record and therefore no invented revision.
     //
     // | Rule | Trigger          | Exists | Already archived | Revision/result |
@@ -90,7 +91,8 @@ async fn revision_decision_table<R: EnvRegistry>(r: &R) {
     // | V2   | update           | T      | F                | 2               |
     // | V3   | archive          | T      | F                | 3               |
     // | V4   | archive replay   | T      | T                | 3               |
-    // | V5   | update missing   | F      | -                | None            |
+    // | V5   | update archived  | T      | T                | None; stays at 3|
+    // | V6   | update missing   | F      | -                | None            |
     let item = r
         .create(
             "versioned".into(),
@@ -140,10 +142,25 @@ async fn revision_decision_table<R: EnvRegistry>(r: &R) {
         "V4"
     );
     assert!(
+        r.update(
+            &item.id,
+            EnvUpdate {
+                name: Some("must-not-revive".into()),
+                ..Default::default()
+            }
+        )
+        .await
+        .is_none(),
+        "V5"
+    );
+    let terminal = r.get(&item.id).await.expect("V5 terminal row retained");
+    assert_eq!(terminal.revision, EnvironmentRevision(3), "V5");
+    assert_eq!(terminal.name, item.name, "V5");
+    assert!(
         r.update("env_missing", EnvUpdate::default())
             .await
             .is_none(),
-        "V5"
+        "V6"
     );
 }
 

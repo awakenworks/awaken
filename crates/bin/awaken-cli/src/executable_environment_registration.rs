@@ -215,3 +215,9 @@ pub(crate) async fn migrate(deployment: &ResolvedDeployment) -> Result<(), Strin
         .map(drop)
         .map_err(|error| format!("migrate Environment image-build jobs: {error}"))
 }
+
+#[cfg(test)]
+pub(crate) fn local_test_wiring() -> ExecutableEnvironmentWiring {
+    ExecutableEnvironmentWiring::local(Arc::new(awaken_work_store::InMemoryWorkQueue::new()))
+        .expect("compose test executable Environment wiring")
+}

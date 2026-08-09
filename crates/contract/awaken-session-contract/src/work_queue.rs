@@ -346,6 +346,12 @@ pub struct QueueStats {
     pub workers_polling: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum WorkQueueError {
+    #[error("work queue storage failure: {0}")]
+    Storage(String),
+}
+
 /// The port the environments work-queue routes drive. In-memory by default; a
 /// durable impl (sqlite / postgres) backs it at parity. Membership is enforced by
 /// the port: an operation on a `wid` that does not belong to `env_id` returns
@@ -359,7 +365,7 @@ pub trait WorkQueue: Send + Sync {
     /// Return the one healthcheck for an Environment, creating it when absent.
     /// This convergence operation is safe to replay after an Environment create
     /// committed but the caller lost the response.
-    async fn ensure_healthcheck(&self, env_id: &str) -> String;
+    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError>;
     /// All work items in `env_id`, ascending by id (enqueue order).
     async fn list(&self, env_id: &str) -> Vec<WorkItem>;
     /// The work item under `wid` when it belongs to `env_id`.
@@ -405,7 +411,7 @@ pub trait WorkQueue: Send + Sync {
     /// Queue stats for `env_id` as of `now_ms` (for the `workers_polling` window).
     async fn stats(&self, env_id: &str, now_ms: u64) -> QueueStats;
     /// Drop all work for `env_id` (on environment delete).
-    async fn remove_env(&self, env_id: &str);
+    async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError>;
 }
 
 #[cfg(test)]

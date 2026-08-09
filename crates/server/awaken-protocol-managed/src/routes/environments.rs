@@ -41,10 +41,11 @@ use awaken_work_store::InMemoryWorkQueue;
 use crate::work_queue::{HeartbeatResult, LeaseHeartbeat, WorkQueue};
 use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrar, ExecutableEnvironmentRegistration,
-    ExecutableEnvironmentRegistrationError, ExecutableEnvironmentRegistrationOutcome,
-    ExecutableEnvironmentRegistrationSource, ExecutableEnvironmentWithdrawal,
-    ExecutableEnvironmentWithdrawalOutcome,
+    ExecutableEnvironmentRegistrationError, ExecutableEnvironmentRegistrationSource,
 };
+
+mod registration;
+pub use registration::CoordinatorEnvironmentRegistrar;
 
 /// Control-owned Environment definitions, immutable revision history, policy
 /// versions, and publication application.
@@ -63,57 +64,16 @@ pub struct EnvironmentExecutionState {
         Option<Arc<dyn awaken_environment_realization_contract::EnvironmentImageReadiness>>,
 }
 
+pub(crate) struct ResolvedEnvironmentSnapshot {
+    pub(crate) snapshot: awaken_session_contract::EnvironmentSnapshot,
+    pub(crate) self_hosted: bool,
+}
+
 /// AllInOne/test composition facade. It contains no business behavior of its
 /// own and only combines the two canonical domain states.
 pub struct EnvironmentState {
     authoring: Arc<EnvironmentAuthoringState>,
     execution: Arc<EnvironmentExecutionState>,
-}
-
-/// Coordinator application adapter around the rebuildable catalog. Registration
-/// and WorkQueue healthcheck convergence share one idempotent boundary; Control
-/// sees only `ExecutableEnvironmentRegistrar` and cannot access the queue.
-pub struct CoordinatorEnvironmentRegistrar {
-    delegate: Arc<dyn ExecutableEnvironmentRegistrar>,
-    work: Arc<dyn WorkQueue>,
-}
-
-impl CoordinatorEnvironmentRegistrar {
-    #[must_use]
-    pub fn new(
-        delegate: Arc<dyn ExecutableEnvironmentRegistrar>,
-        work: Arc<dyn WorkQueue>,
-    ) -> Self {
-        Self { delegate, work }
-    }
-}
-
-#[async_trait::async_trait]
-impl ExecutableEnvironmentRegistrar for CoordinatorEnvironmentRegistrar {
-    async fn register(
-        &self,
-        registration: ExecutableEnvironmentRegistration,
-    ) -> Result<ExecutableEnvironmentRegistrationOutcome, ExecutableEnvironmentRegistrationError>
-    {
-        let environment_id = registration.definition.id.clone();
-        let self_hosted = registration.definition.is_self_hosted();
-        let outcome = self.delegate.register(registration).await?;
-        if self_hosted {
-            self.work.ensure_healthcheck(&environment_id).await;
-        }
-        Ok(outcome)
-    }
-
-    async fn withdraw(
-        &self,
-        withdrawal: ExecutableEnvironmentWithdrawal,
-    ) -> Result<ExecutableEnvironmentWithdrawalOutcome, ExecutableEnvironmentRegistrationError>
-    {
-        let environment_id = withdrawal.environment_id.clone();
-        let outcome = self.delegate.withdraw(withdrawal).await?;
-        self.work.remove_env(&environment_id).await;
-        Ok(outcome)
-    }
 }
 
 impl EnvironmentAuthoringState {
@@ -182,13 +142,14 @@ impl EnvironmentExecutionState {
 
     /// Read Coordinator's current executable definition projection. Archived or
     /// withdrawn definitions are unavailable even though exact history remains.
-    pub async fn get(&self, environment_id: &str) -> Option<EnvItem> {
+    pub async fn get(
+        &self,
+        environment_id: &str,
+    ) -> Result<Option<EnvItem>, ExecutableEnvironmentRegistrationError> {
         self.execution_source
             .current_registration(environment_id)
             .await
-            .ok()
-            .flatten()
-            .map(|registration| registration.definition)
+            .map(|registration| registration.map(|registration| registration.definition))
     }
 
     /// Compile the one immutable, normalized Environment snapshot consumed by a
@@ -197,11 +158,11 @@ impl EnvironmentExecutionState {
         &self,
         env_id: &str,
         runtime: Option<&str>,
-    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
-        self.snapshot_for_session(env_id, runtime, &[])
-            .await
-            .ok()
-            .flatten()
+    ) -> Result<
+        Option<awaken_session_contract::EnvironmentSnapshot>,
+        awaken_environment_realization_contract::EnvironmentImageBuildError,
+    > {
+        self.snapshot_for_session(env_id, runtime, &[]).await
     }
 
     /// Compile a Session-specific snapshot from the exact MCP desired set that
@@ -213,6 +174,21 @@ impl EnvironmentExecutionState {
         mcp_targets: &[awaken_session_contract::McpTarget],
     ) -> Result<
         Option<awaken_session_contract::EnvironmentSnapshot>,
+        awaken_environment_realization_contract::EnvironmentImageBuildError,
+    > {
+        Ok(self
+            .resolve_current_for_session(env_id, runtime, mcp_targets)
+            .await?
+            .map(|resolved| resolved.snapshot))
+    }
+
+    pub(crate) async fn resolve_current_for_session(
+        &self,
+        env_id: &str,
+        runtime: Option<&str>,
+        mcp_targets: &[awaken_session_contract::McpTarget],
+    ) -> Result<
+        Option<ResolvedEnvironmentSnapshot>,
         awaken_environment_realization_contract::EnvironmentImageBuildError,
     > {
         let registration = self
@@ -227,7 +203,7 @@ impl EnvironmentExecutionState {
         let Some(registration) = registration else {
             return Ok(None);
         };
-        snapshot_from_registration(
+        resolved_snapshot_from_registration(
             registration,
             runtime,
             mcp_targets,
@@ -241,11 +217,12 @@ impl EnvironmentExecutionState {
         env_id: &str,
         revision: u64,
         runtime: Option<&str>,
-    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+    ) -> Result<
+        Option<awaken_session_contract::EnvironmentSnapshot>,
+        awaken_environment_realization_contract::EnvironmentImageBuildError,
+    > {
         self.snapshot_exact_for_session(env_id, revision, runtime, &[])
             .await
-            .ok()
-            .flatten()
     }
 
     pub async fn snapshot_exact_for_session(
@@ -256,6 +233,22 @@ impl EnvironmentExecutionState {
         mcp_targets: &[awaken_session_contract::McpTarget],
     ) -> Result<
         Option<awaken_session_contract::EnvironmentSnapshot>,
+        awaken_environment_realization_contract::EnvironmentImageBuildError,
+    > {
+        Ok(self
+            .resolve_exact_for_session(env_id, revision, runtime, mcp_targets)
+            .await?
+            .map(|resolved| resolved.snapshot))
+    }
+
+    pub(crate) async fn resolve_exact_for_session(
+        &self,
+        env_id: &str,
+        revision: u64,
+        runtime: Option<&str>,
+        mcp_targets: &[awaken_session_contract::McpTarget],
+    ) -> Result<
+        Option<ResolvedEnvironmentSnapshot>,
         awaken_environment_realization_contract::EnvironmentImageBuildError,
     > {
         // Current availability is a live deny overlay. If Control withdrew the
@@ -288,7 +281,7 @@ impl EnvironmentExecutionState {
         let Some(registration) = registration else {
             return Ok(None);
         };
-        snapshot_from_registration(
+        resolved_snapshot_from_registration(
             registration,
             runtime,
             mcp_targets,
@@ -299,13 +292,16 @@ impl EnvironmentExecutionState {
 
     /// Whether `env_id` is a self-hosted environment. Sessions assigned to one are
     /// dispatched through the work queue for an external worker to run.
-    pub async fn is_self_hosted(&self, env_id: &str) -> bool {
+    pub async fn is_self_hosted(
+        &self,
+        env_id: &str,
+    ) -> Result<bool, ExecutableEnvironmentRegistrationError> {
         self.execution_source
             .current_registration(env_id)
             .await
-            .ok()
-            .flatten()
-            .is_some_and(|registration| registration.definition.is_self_hosted())
+            .map(|registration| {
+                registration.is_some_and(|registration| registration.definition.is_self_hosted())
+            })
     }
 
     /// Enqueue a `session` work item for `session_id` on `env_id`'s queue — the way
@@ -395,7 +391,10 @@ impl EnvironmentState {
         self.execution.clone()
     }
 
-    pub async fn get(&self, environment_id: &str) -> Option<EnvItem> {
+    pub async fn get(
+        &self,
+        environment_id: &str,
+    ) -> Result<Option<EnvItem>, ExecutableEnvironmentRegistrationError> {
         self.execution.get(environment_id).await
     }
 
@@ -403,7 +402,10 @@ impl EnvironmentState {
         &self,
         env_id: &str,
         runtime: Option<&str>,
-    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+    ) -> Result<
+        Option<awaken_session_contract::EnvironmentSnapshot>,
+        awaken_environment_realization_contract::EnvironmentImageBuildError,
+    > {
         self.execution.snapshot(env_id, runtime).await
     }
 
@@ -426,7 +428,10 @@ impl EnvironmentState {
         env_id: &str,
         revision: u64,
         runtime: Option<&str>,
-    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+    ) -> Result<
+        Option<awaken_session_contract::EnvironmentSnapshot>,
+        awaken_environment_realization_contract::EnvironmentImageBuildError,
+    > {
         self.execution
             .snapshot_exact(env_id, revision, runtime)
             .await
@@ -447,7 +452,10 @@ impl EnvironmentState {
             .await
     }
 
-    pub async fn is_self_hosted(&self, environment_id: &str) -> bool {
+    pub async fn is_self_hosted(
+        &self,
+        environment_id: &str,
+    ) -> Result<bool, ExecutableEnvironmentRegistrationError> {
         self.execution.is_self_hosted(environment_id).await
     }
 
@@ -587,6 +595,28 @@ async fn snapshot_from_registration(
     }))
 }
 
+async fn resolved_snapshot_from_registration(
+    registration: ExecutableEnvironmentRegistration,
+    runtime: Option<&str>,
+    mcp_targets: &[awaken_session_contract::McpTarget],
+    image_readiness: Option<
+        &Arc<dyn awaken_environment_realization_contract::EnvironmentImageReadiness>,
+    >,
+) -> Result<
+    Option<ResolvedEnvironmentSnapshot>,
+    awaken_environment_realization_contract::EnvironmentImageBuildError,
+> {
+    let self_hosted = registration.definition.is_self_hosted();
+    Ok(
+        snapshot_from_registration(registration, runtime, mcp_targets, image_readiness)
+            .await?
+            .map(|snapshot| ResolvedEnvironmentSnapshot {
+                snapshot,
+                self_hosted,
+            }),
+    )
+}
+
 /// Compile static Environment networking plus the exact Session MCP set into
 /// the dynamic frozen Session policy. Keeping this at the projection boundary
 /// prevents the Control aggregate from depending on Session/runtime types.
@@ -679,7 +709,7 @@ fn map_environment_application_error(error: EnvironmentApplicationError) -> Wire
             Json(ErrorResponse::new("conflict_error", message)),
         ),
         EnvironmentApplicationError::NotFound => not_found("environment"),
-        EnvironmentApplicationError::BuiltinImmutable => (
+        EnvironmentApplicationError::BuiltinImmutable | EnvironmentApplicationError::Archived => (
             StatusCode::CONFLICT,
             Json(ErrorResponse::new("conflict_error", message)),
         ),
@@ -982,14 +1012,17 @@ async fn archive_env(
 // ---- Work routes -----------------------------------------------------------
 
 async fn require_env(state: &EnvironmentExecutionState, id: &str) -> Result<(), WireError> {
-    if state
+    let registration = state
         .execution_source
         .current_registration(id)
         .await
-        .ok()
-        .flatten()
-        .is_some()
-    {
+        .map_err(|error| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse::new("api_error", error.to_string())),
+            )
+        })?;
+    if registration.is_some() {
         Ok(())
     } else {
         Err(not_found("environment"))
@@ -1231,6 +1264,32 @@ async fn stop_work(
 mod tests {
     use super::*;
 
+    struct FailingRegistrationSource;
+
+    #[async_trait::async_trait]
+    impl ExecutableEnvironmentRegistrationSource for FailingRegistrationSource {
+        async fn current_registration(
+            &self,
+            _environment_id: &str,
+        ) -> Result<Option<ExecutableEnvironmentRegistration>, ExecutableEnvironmentRegistrationError>
+        {
+            Err(ExecutableEnvironmentRegistrationError::Storage(
+                "injected catalog outage".into(),
+            ))
+        }
+
+        async fn registration_at_revision(
+            &self,
+            _environment_id: &str,
+            _revision: awaken_environment_contract::EnvironmentRevision,
+        ) -> Result<Option<ExecutableEnvironmentRegistration>, ExecutableEnvironmentRegistrationError>
+        {
+            Err(ExecutableEnvironmentRegistrationError::Storage(
+                "injected catalog outage".into(),
+            ))
+        }
+    }
+
     fn config(value: serde_json::Value) -> awaken_environment_contract::EnvironmentConfig {
         serde_json::from_value(value).expect("valid neutral Environment config")
     }
@@ -1276,6 +1335,41 @@ mod tests {
                 "{rule}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn catalog_outage_is_unavailable_not_missing_or_cloud() {
+        // Cause/effect graph: C1 the execution catalog is healthy/missing;
+        // C2 it returns a storage failure. Effects: E1 a missing id is 404; E2 a
+        // storage failure is 503; E3 self-hosted classification returns the typed
+        // failure rather than `false`, so callers cannot silently select Cloud.
+        //
+        // | Rule | catalog result | work route | self-hosted classification |
+        // | F1 | None | 404 | false |
+        // | F2 | Storage error | 503 | same typed error |
+        // F1 is covered by the route CRUD suite; this test owns F2/E2/E3.
+        use tower::ServiceExt as _;
+
+        let state = Arc::new(EnvironmentExecutionState::new(
+            Arc::new(InMemoryWorkQueue::new()),
+            Arc::new(FailingRegistrationSource),
+        ));
+        assert!(
+            matches!(
+                state.is_self_hosted("env-a").await,
+                Err(ExecutableEnvironmentRegistrationError::Storage(_))
+            ),
+            "F2/E3"
+        );
+        let response = environment_work_router(state)
+            .oneshot(
+                axum::http::Request::get("/v1/environments/env-a/work")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "F2/E2");
     }
 
     async fn create_definition(
@@ -1368,9 +1462,9 @@ mod tests {
             Arc::new(InMemoryWorkQueue::new()),
         );
         let e = create_definition(&state, "e", config(json!({ "type": "self_hosted" }))).await;
-        assert!(state.is_self_hosted(&e.id).await);
+        assert!(state.is_self_hosted(&e.id).await.unwrap());
         assert!(
-            !state.is_self_hosted("missing").await,
+            !state.is_self_hosted("missing").await.unwrap(),
             "unknown env is not self-hosted"
         );
     }
@@ -1403,7 +1497,7 @@ mod tests {
             })),
         )
         .await;
-        let native = state.snapshot(&item.id, None).await.expect("S1");
+        let native = state.snapshot(&item.id, None).await.unwrap().expect("S1");
         assert_eq!(
             native.network,
             awaken_session_contract::SessionNetworkPolicy::Allowlist {
@@ -1423,6 +1517,7 @@ mod tests {
         let acp = state
             .snapshot(&item.id, Some("acp:claude"))
             .await
+            .unwrap()
             .expect("S2");
         assert_eq!(
             acp.credential_realization.inference_holder.boundary,
@@ -1445,22 +1540,26 @@ mod tests {
             )
             .await
             .unwrap();
-        let changed = state.snapshot(&item.id, None).await.expect("S3");
+        let changed = state.snapshot(&item.id, None).await.unwrap().expect("S3");
         assert_ne!(changed.revision, native.revision, "S3 revision");
         assert_eq!(
             changed.config_fingerprint, native.config_fingerprint,
             "S3 irrelevant authoring metadata does not alter normalized config"
         );
         assert!(
-            state.snapshot("missing", None).await.is_none(),
+            state.snapshot("missing", None).await.unwrap().is_none(),
             "S4 missing"
         );
         state.application().archive(&item.id).await.unwrap();
         assert!(
-            state.snapshot(&item.id, None).await.is_none(),
+            state.snapshot(&item.id, None).await.unwrap().is_none(),
             "S4 archived"
         );
-        let local = state.snapshot("env_local", None).await.expect("S5");
+        let local = state
+            .snapshot("env_local", None)
+            .await
+            .unwrap()
+            .expect("S5");
         assert_eq!(
             local,
             snapshot_from_registration(default_environment_registration(), None, &[], None)
@@ -1472,6 +1571,7 @@ mod tests {
         let local_acp = state
             .snapshot("env_local", Some("acp:claude"))
             .await
+            .unwrap()
             .expect("S5 ACP");
         assert_eq!(
             local_acp,
@@ -1493,7 +1593,12 @@ mod tests {
         )
         .await;
         assert_eq!(
-            state.snapshot(&closed.id, None).await.expect("S6").network,
+            state
+                .snapshot(&closed.id, None)
+                .await
+                .unwrap()
+                .expect("S6")
+                .network,
             awaken_session_contract::SessionNetworkPolicy::None,
             "S6"
         );
@@ -1516,11 +1621,12 @@ mod tests {
             )
             .await
             .expect("official cloud config");
-        let exact = state.snapshot(&id, None).await.expect("snapshot");
+        let exact = state.snapshot(&id, None).await.unwrap().expect("snapshot");
         assert!(
             state
                 .snapshot_exact(&id, exact.revision.0, None)
                 .await
+                .unwrap()
                 .is_some(),
             "exact current revision"
         );
@@ -1539,6 +1645,7 @@ mod tests {
             state
                 .snapshot_exact(&id, exact.revision.0, None)
                 .await
+                .unwrap()
                 .is_some(),
             "R2 exact history remains executable while current is active"
         );
@@ -1621,7 +1728,11 @@ mod tests {
             .await
             .unwrap();
 
-        let snapshot = state.snapshot(&environment_id, None).await.unwrap();
+        let snapshot = state
+            .snapshot(&environment_id, None)
+            .await
+            .unwrap()
+            .unwrap();
         let frozen: SandboxOverride = serde_json::from_value(snapshot.sandbox).unwrap();
         assert_eq!(frozen.isolation, Some(IsolationClass::Namespace));
         assert_eq!(
@@ -1648,7 +1759,11 @@ mod tests {
             .author("timing", json!({"type": "self_hosted"}))
             .await
             .unwrap();
-        let eager = state.snapshot(&environment_id, None).await.unwrap();
+        let eager = state
+            .snapshot(&environment_id, None)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(eager.sandbox_provisioning, SandboxProvisioning::Eager);
 
         let policy = SandboxExecutionPolicy {
@@ -1669,7 +1784,11 @@ mod tests {
             .await
             .unwrap();
 
-        let lazy = state.snapshot(&environment_id, None).await.unwrap();
+        let lazy = state
+            .snapshot(&environment_id, None)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(lazy.sandbox_provisioning, SandboxProvisioning::OnToolUse);
         assert_ne!(lazy.config_fingerprint, eager.config_fingerprint);
         assert_eq!(reference.version, policy.version);
