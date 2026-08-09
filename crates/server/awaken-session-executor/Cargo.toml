@@ -12,6 +12,9 @@ awaken-runtime-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-runtime = { workspace = true }
+# Volatile commit/checkpoint reference adapters are available only to explicit
+# test/scenario compositions. Product builds do not link this backend.
+awaken-store-inmem = { workspace = true, optional = true }
 awaken-observability = { workspace = true }
 awaken-ext-builtin-tools = { workspace = true }
 awaken-ext-memory = { workspace = true }
@@ -83,6 +86,7 @@ uuid = { version = "1", features = ["v4"] }
 # Post-construction persistence overrides are restricted to tests. Product
 # composition selects every authority before constructing SharedHost.
 test-support = [
+    "dep:awaken-store-inmem",
     "awaken-file-store/test-support",
     "awaken-credential-vault/test-support",
     "awaken-memory-store/test-support",

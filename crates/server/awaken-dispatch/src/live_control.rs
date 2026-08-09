@@ -153,7 +153,6 @@ mod tests {
     use std::sync::Arc;
 
     use awaken_runtime::Runtime;
-    use awaken_runtime::memory::MemoryCommitCoordinator;
     use awaken_runtime_contract::activation::RunActivation;
     use awaken_runtime_contract::execution::{
         Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
@@ -162,6 +161,7 @@ mod tests {
     use awaken_runtime_contract::resume::ResumeCommand;
     use awaken_runtime_contract::runtime_context::RuntimeRunContext;
     use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
+    use awaken_store_inmem::MemoryCommitCoordinator;
     use tokio::sync::Notify;
 
     use crate::worker::DispatchWorker;

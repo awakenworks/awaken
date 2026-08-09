@@ -21,7 +21,6 @@ use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState
 use awaken_agent_contract::agent::state::{Command as StateCommand, Key, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::{MemoryCommitCoordinator, replay_state};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -36,6 +35,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
+use awaken_store_inmem::{MemoryCommitCoordinator, replay_state};
 
 /// Emits a single Step with the given tool calls, then ends with text.
 struct CallsThenEnd {

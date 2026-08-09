@@ -12,9 +12,6 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::{
-    MemoryCommitCoordinator, MemoryStreamCheckpointStore, MemoryStreamSink,
-};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -27,6 +24,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
+use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamCheckpointStore, MemoryStreamSink};
 
 /// Streams `first` then drops (retryable) on its first call; streams `rest` and
 /// succeeds on any later call. Continuation stitches `first + rest`.

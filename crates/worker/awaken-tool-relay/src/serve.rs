@@ -6,11 +6,10 @@
 //! session over a framed byte channel. The hand writes no durable runtime truth;
 //! it returns serializable data only. The brain commits the result.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use awaken_agent_channel::AgentChannel;
-use awaken_runtime_contract::tool::RawTool;
+use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolError, ToolExecutor};
 use futures_util::{SinkExt, StreamExt};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
@@ -22,7 +21,7 @@ use crate::{HandOperationLedger, LedgerAdmission};
 /// A registry entry is an ordinary [`RawTool`]; the hand does not know the
 /// runtime, only how to invoke a tool by id and return its serializable output.
 pub struct HandSession {
-    registry: HashMap<String, Arc<dyn RawTool>>,
+    registry: RawToolRegistry,
     catalog_fingerprint: Option<String>,
     ledger: Arc<dyn HandOperationLedger>,
 }
@@ -33,7 +32,7 @@ impl HandSession {
         tools: impl IntoIterator<Item = Arc<dyn RawTool>>,
         ledger: Arc<dyn HandOperationLedger>,
     ) -> Self {
-        let registry = tools.into_iter().map(|t| (t.id().to_string(), t)).collect();
+        let registry = RawToolRegistry::new(tools);
         Self {
             registry,
             catalog_fingerprint: None,
@@ -103,14 +102,12 @@ impl HandSession {
                 format!("catalog fingerprint mismatch: hand={expected} run={got}"),
             ));
         }
-        match self.registry.get(&request.call.tool_id) {
-            None => HandResult::err(HandError::unknown_tool(&request.call.tool_id)),
-            Some(tool) => match tool.invoke(request.call.clone()).await {
-                Ok(output) => HandResult::ok(output),
-                Err(err) => {
-                    HandResult::err(HandError::new(HandErrorKind::Execution, err.to_string()))
-                }
-            },
+        match self.registry.invoke(&request.call).await {
+            Ok(output) => HandResult::ok(output),
+            Err(ToolError::Unknown(tool_id)) => HandResult::err(HandError::unknown_tool(&tool_id)),
+            Err(error) => {
+                HandResult::err(HandError::new(HandErrorKind::Execution, error.to_string()))
+            }
         }
     }
 }

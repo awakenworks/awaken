@@ -11,13 +11,12 @@ pub(super) fn append_projection(
     volumes: &mut Vec<Volume>,
     agent_mounts: &mut Vec<VolumeMount>,
     sidecars: &mut Vec<Container>,
-    init_containers: &mut Vec<Container>,
 ) {
     // One Pod-owned input tree is mounted read-only into the untrusted Agent
-    // and read-write only into the runtime projector. Initial Files seed this
-    // same volume below; later File generations replace bytes through an exec
-    // into the projector, preserving OS-enforced read-only semantics without
-    // changing the Pod or Session identity.
+    // and read-write only into the runtime projector. Both initial Files and
+    // later generations are projected through that one runtime-owned channel,
+    // preserving OS-enforced read-only semantics without making mutable input
+    // membership part of the Pod realization identity.
     volumes.push(Volume {
         name: VOLUME.into(),
         empty_dir: Some(EmptyDirVolumeSource::default()),
@@ -42,48 +41,46 @@ pub(super) fn append_projection(
         security_context: Some(hardened_security_context()),
         ..Default::default()
     });
+}
 
-    // Every item remains backed by its immutable ConfigMap. Managed inputs seed
-    // the shared tree; other paths are mounted directly by the parent planner.
-    let mut seed_mounts = vec![VolumeMount {
-        name: VOLUME.into(),
-        mount_path: "/live".into(),
-        read_only: Some(false),
-        ..Default::default()
-    }];
-    let mut seed_argv = vec![
+pub(super) fn manages(bind: &BindPlan) -> bool {
+    bind.read_only && crate::live_input_relative_path(&bind.mount_path).is_some()
+}
+
+fn bytes(bind: &BindPlan) -> Option<&[u8]> {
+    bind.content
+        .as_deref()
+        .map(str::as_bytes)
+        .or(bind.content_bytes.as_deref())
+}
+
+async fn clear(runtime: &K8sRuntime, container_id: &str) -> Result<(), RuntimeError> {
+    let argv = vec![
         "/bin/sh".into(),
         "-c".into(),
-        "shift; while [ \"$#\" -gt 0 ]; do source=$1; target=$2; mkdir -p \"$(dirname -- \"$target\")\"; cp -- \"$source\" \"$target\"; chmod 0444 \"$target\"; shift 2; done".into(),
-        "awaken-input-seed".into(),
+        "root=$1; rm -rf -- \"$root\"/* \"$root\"/.[!.]* \"$root\"/..?*".into(),
+        "awaken-input-clear".into(),
+        crate::LIVE_INPUTS_ROOT.into(),
     ];
-    for (i, bind) in content_binds(plan).iter().enumerate() {
-        if !bind.read_only {
-            continue;
-        }
-        let Some(relative) = crate::live_input_relative_path(&bind.mount_path) else {
-            continue;
-        };
-        let seed_path = format!("/seed/{i}");
-        seed_mounts.push(VolumeMount {
-            name: format!("cfg-{i}"),
-            mount_path: seed_path.clone(),
-            read_only: Some(true),
-            ..Default::default()
-        });
-        seed_argv.push(format!("{seed_path}/{CONFIGMAP_KEY}"));
-        seed_argv.push(format!("/live/{relative}"));
+    exec(runtime, container_id, argv, None).await
+}
+
+pub(super) async fn project_manifest(
+    runtime: &K8sRuntime,
+    container_id: &str,
+    plan: &ContainerPlan,
+) -> Result<(), RuntimeError> {
+    // Environment creation/recovery is a consistency boundary: no attempt is
+    // released until this exact desired tree succeeds. Clearing first prevents a
+    // removed File from surviving a host restart; any partial failure is retryable
+    // against the same stable Pod and begins by clearing again.
+    clear(runtime, container_id).await?;
+    for bind in content_binds(plan).into_iter().filter(|bind| manages(bind)) {
+        let contents = bytes(bind)
+            .ok_or_else(|| backend("managed live input did not carry resolved bytes"))?;
+        project(runtime, container_id, &bind.mount_path, contents).await?;
     }
-    if seed_argv.len() > 4 {
-        init_containers.push(Container {
-            name: "input-seed".into(),
-            image: Some(plan.image.clone()),
-            command: Some(seed_argv),
-            volume_mounts: Some(seed_mounts),
-            security_context: Some(hardened_security_context()),
-            ..Default::default()
-        });
-    }
+    Ok(())
 }
 
 async fn exec(
@@ -160,9 +157,10 @@ pub(super) async fn remove(
     let argv = vec![
         "/bin/sh".into(),
         "-c".into(),
-        "rm -f -- \"$1\"".into(),
+        "target=$1; root=$2; rm -f -- \"$target\"; dir=$(dirname -- \"$target\"); while [ \"$dir\" != \"$root\" ] && [ \"${dir#\"$root\"/}\" != \"$dir\" ]; do rmdir -- \"$dir\" 2>/dev/null || break; dir=$(dirname -- \"$dir\"); done".into(),
         "awaken-input-remove".into(),
         path.into(),
+        crate::LIVE_INPUTS_ROOT.into(),
     ];
     exec(runtime, container_id, argv, None).await
 }
@@ -196,17 +194,37 @@ mod tests {
     }
 
     #[test]
-    fn managed_files_seed_the_same_read_only_tree_used_for_live_replacement() {
-        /* Cause/effect Pod projection table — KP1:
-         * C1 content targets /mnt/session/uploads; C2 it is read-only.
-         * C1+C2 => E1 ConfigMap seeds the shared emptyDir in init, E2 Agent mounts
-         * that tree read-only, E3 only the projector mounts it read-write, and E4
-         * no subPath shadows later replacement. A path outside C1 retains the
-         * existing exact ConfigMap subPath behavior in the parent planner tests.
+    fn managed_files_do_not_change_the_stable_pod_realization() {
+        /* Cause/effect Pod projection decision table — KP1/KP2:
+         * C1 a resolved, read-only input is below /mnt/session/uploads; C2 its
+         * membership/path/bytes are absent, A, or B; C3 the stable projector is
+         * present. C1+C3 => E1 Agent mounts the one tree read-only and E2 only the
+         * projector mounts it read-write. C1+C2+C3 => E3 every mutable manifest
+         * produces the exact same Pod spec, E4 no ConfigMap/init path duplicates
+         * projection. !C1 remains on the parent planner's ConfigMap path (KP3).
          */
-        let spec = build_pod("live", &plan(), &None, "m", None, false, &[])
+        let with_a = plan();
+        let mut with_b = plan();
+        with_b.binds[0].mount_path = "/mnt/session/uploads/awaken-design/current/other.html".into();
+        with_b.binds[0].content = Some("<h1>other generation</h1>".into());
+        let mut without = plan();
+        without.binds.clear();
+
+        let spec = build_pod("live", &with_a, &None, "m", None, false, &[])
             .spec
             .unwrap();
+        assert_eq!(
+            spec,
+            build_pod("live", &with_b, &None, "m", None, false, &[])
+                .spec
+                .unwrap()
+        );
+        assert_eq!(
+            spec,
+            build_pod("live", &without, &None, "m", None, false, &[])
+                .spec
+                .unwrap()
+        );
         let agent = spec
             .containers
             .iter()
@@ -239,25 +257,13 @@ mod tests {
             projector.volume_mounts.as_ref().unwrap()[0].read_only,
             Some(false)
         );
-        let seed = spec
-            .init_containers
-            .as_ref()
-            .unwrap()
-            .iter()
-            .find(|item| item.name == "input-seed")
-            .unwrap();
-        let command = seed.command.as_ref().unwrap();
         assert!(
-            command
-                .iter()
-                .any(|part| part == "/live/awaken-design/current/index.html")
-        );
-        assert!(
-            seed.volume_mounts
+            spec.volumes
                 .as_ref()
                 .unwrap()
                 .iter()
-                .any(|mount| mount.name == "cfg-0" && mount.mount_path == "/seed/0")
+                .all(|volume| volume.config_map.is_none())
         );
+        assert!(spec.init_containers.is_none());
     }
 }

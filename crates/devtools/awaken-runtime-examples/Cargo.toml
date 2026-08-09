@@ -9,6 +9,7 @@ publish = false
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-runtime = { workspace = true }
+awaken-store-inmem.workspace = true
 awaken-ext-permission = { workspace = true }
 async-trait.workspace = true
 serde_json.workspace = true

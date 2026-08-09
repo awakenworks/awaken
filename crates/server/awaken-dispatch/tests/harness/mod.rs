@@ -456,13 +456,13 @@ pub fn schedule_n_runtime(n: usize) -> (Arc<Runtime>, Arc<AtomicUsize>) {
 /// the dispatch un-settled for a later retry.
 #[derive(Clone)]
 pub struct FailingCommit {
-    inner: Arc<awaken_runtime::memory::MemoryCommitCoordinator>,
+    inner: Arc<awaken_store_inmem::MemoryCommitCoordinator>,
     fail: Arc<AtomicBool>,
 }
 
 impl FailingCommit {
     /// Wrap `inner`; commits fail immediately when `fail` is true.
-    pub fn new(inner: Arc<awaken_runtime::memory::MemoryCommitCoordinator>, fail: bool) -> Self {
+    pub fn new(inner: Arc<awaken_store_inmem::MemoryCommitCoordinator>, fail: bool) -> Self {
         Self {
             inner,
             fail: Arc::new(AtomicBool::new(fail)),

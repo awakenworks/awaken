@@ -14,7 +14,6 @@ use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy, 
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -28,6 +27,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 /// (step, committed message count, committed state) captured inside a step.
 type Observations = Arc<std::sync::Mutex<Vec<(usize, usize, Option<RunState>)>>>;

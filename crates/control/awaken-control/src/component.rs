@@ -143,6 +143,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     } = dependencies;
 
     recover_and_supervise_credentials(secrets.clone(), credentials.clone()).await;
+    recover_and_supervise_webhooks(secrets.clone(), webhook_store.clone()).await;
 
     let mut vault_state = VaultState::new(secrets.clone(), credentials.clone());
     if let Some(probe) = mcp_probe {
@@ -301,6 +302,47 @@ async fn report_credential_inventory(secrets: &dyn SecretStore, credentials: &dy
             report.missing_material
         ),
         Err(error) => eprintln!("credential inventory reconciliation failed: {error}"),
+        _ => {}
+    }
+}
+
+async fn recover_and_supervise_webhooks(
+    secrets: Arc<dyn SecretStore>,
+    webhooks: Arc<dyn WebhookStore>,
+) {
+    if let Err(error) =
+        awaken_webhook_managed::recover_webhook_mutations(webhooks.as_ref(), secrets.as_ref()).await
+    {
+        eprintln!("webhook material mutation recovery failed: {error}");
+    }
+    report_webhook_inventory(webhooks.as_ref(), secrets.as_ref()).await;
+
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(CREDENTIAL_RECONCILIATION_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if let Err(error) = awaken_webhook_managed::recover_webhook_mutations(
+                webhooks.as_ref(),
+                secrets.as_ref(),
+            )
+            .await
+            {
+                eprintln!("webhook material mutation reconciliation failed: {error}");
+            }
+            report_webhook_inventory(webhooks.as_ref(), secrets.as_ref()).await;
+        }
+    });
+}
+
+async fn report_webhook_inventory(webhooks: &dyn WebhookStore, secrets: &dyn SecretStore) {
+    match awaken_webhook_managed::reconcile_webhook_inventory(webhooks, secrets).await {
+        Ok(report) if !report.missing_material.is_empty() => eprintln!(
+            "webhook inventory is missing referenced material: {:?}",
+            report.missing_material
+        ),
+        Err(error) => eprintln!("webhook inventory reconciliation failed: {error}"),
         _ => {}
     }
 }

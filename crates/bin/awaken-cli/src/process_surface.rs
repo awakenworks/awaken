@@ -9,6 +9,7 @@ pub(crate) fn finish(
     mut flat: Router,
     mcp_export: Router,
     reconciler: Option<Arc<dyn awaken_config_service::PublicationBindingReconciler>>,
+    worker_observations: Arc<dyn awaken_coordinator::WorkerObservationSource>,
     platform_workspace: String,
     managed_rate_limiter: Arc<awaken_protocol_managed::ManagedRateLimiter>,
 ) -> Router {
@@ -21,8 +22,9 @@ pub(crate) fn finish(
         awaken_protocol_managed::enforce_managed_rate_limit,
     ));
     if let Some(reconciler) = reconciler {
-        let worker_observation_gate =
-            Arc::new(crate::observation_reconcile::WorkerObservationReconcileGate::default());
+        let worker_observation_gate = Arc::new(
+            crate::observation_reconcile::WorkerObservationReconcileGate::new(worker_observations),
+        );
         let reconcile_on_authority_change = axum::middleware::from_fn(
             move |req: axum::extract::Request, next: axum::middleware::Next| {
                 let reconciler = reconciler.clone();
@@ -88,6 +90,10 @@ mod tests {
         }
     }
 
+    fn worker_observations() -> Arc<dyn awaken_coordinator::WorkerObservationSource> {
+        awaken_coordinator::test_worker_directory()
+    }
+
     #[tokio::test]
     async fn successful_worker_heartbeat_enters_the_all_scope_reconcile_gate() {
         // Cause/effect decision table:
@@ -102,6 +108,7 @@ mod tests {
                 .route("/unrelated", post(|| async { StatusCode::OK })),
             Router::new(),
             Some(reconciler.clone()),
+            worker_observations(),
             "platform".into(),
             Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization("org_test")),
         );
@@ -131,6 +138,7 @@ mod tests {
             Router::new().route("/v1/sessions", post(|| async { StatusCode::OK })),
             Router::new(),
             Some(Arc::new(RecordingReconciler::default())),
+            worker_observations(),
             "platform".into(),
             Arc::new(awaken_protocol_managed::ManagedRateLimiter::with_limits(
                 "org_shared",

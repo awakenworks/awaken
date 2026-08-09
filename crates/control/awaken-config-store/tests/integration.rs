@@ -16,13 +16,13 @@ use awaken_config_store::{
     ScopedConfig, ScopedConfigRegistry, SqliteConfigStore, StoredPublication, compile_resolved,
 };
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 fn compile(
     config: &AgentConfig,

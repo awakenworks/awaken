@@ -24,6 +24,7 @@ awaken-scoped-migration-sqlite.workspace = true
 
 [dev-dependencies]
 awaken-runtime = { workspace = true }
+awaken-store-inmem.workspace = true
 awaken-store-sqlite = { workspace = true }
 
 [features]

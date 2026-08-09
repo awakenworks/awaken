@@ -26,7 +26,6 @@ use awaken_agent_contract::thread::commit::coordinator::{
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition, ThreadCommit};
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::delegation::{
     DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,
@@ -52,6 +51,7 @@ use awaken_runtime_contract::tool::{
 use awaken_runtime_contract::tool_batch::{
     ActiveToolBatch, ToolBatch, ToolBatchId, ToolBatchPhase, ToolCallPhase,
 };
+use awaken_store_inmem::MemoryCommitCoordinator;
 use serde::Serialize;
 
 const RUN_ID: &str = "formal-run";

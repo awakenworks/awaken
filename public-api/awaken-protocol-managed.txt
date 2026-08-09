@@ -1537,34 +1537,29 @@ pub fn awaken_protocol_managed::EnvironmentAuthoringState::new(alloc::sync::Arc<
 pub fn awaken_protocol_managed::EnvironmentAuthoringState::sandbox_policy_store(&self) -> core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>>
 pub struct awaken_protocol_managed::EnvironmentExecutionState
 impl awaken_protocol_managed::EnvironmentExecutionState
-pub async fn awaken_protocol_managed::EnvironmentExecutionState::enqueue_session_work(&self, &str, &str) -> alloc::string::String
-pub async fn awaken_protocol_managed::EnvironmentExecutionState::get(&self, &str) -> core::option::Option<awaken_environment_contract::EnvItem>
-pub async fn awaken_protocol_managed::EnvironmentExecutionState::is_self_hosted(&self, &str) -> bool
+pub async fn awaken_protocol_managed::EnvironmentExecutionState::enqueue_session_work(&self, &str, &str) -> core::result::Result<alloc::string::String, awaken_session_contract::work_queue::WorkQueueError>
+pub async fn awaken_protocol_managed::EnvironmentExecutionState::get(&self, &str) -> core::result::Result<core::option::Option<awaken_environment_contract::EnvItem>, awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError>
+pub async fn awaken_protocol_managed::EnvironmentExecutionState::is_self_hosted(&self, &str) -> core::result::Result<bool, awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError>
 pub fn awaken_protocol_managed::EnvironmentExecutionState::new(alloc::sync::Arc<dyn awaken_session_contract::work_queue::WorkQueue>, alloc::sync::Arc<dyn awaken_executable_environment_contract::ExecutableEnvironmentRegistrationSource>) -> Self
-pub async fn awaken_protocol_managed::EnvironmentExecutionState::snapshot(&self, &str, core::option::Option<&str>) -> core::option::Option<awaken_session_contract::baseline::EnvironmentSnapshot>
-pub async fn awaken_protocol_managed::EnvironmentExecutionState::snapshot_exact(&self, &str, u64, core::option::Option<&str>) -> core::option::Option<awaken_session_contract::baseline::EnvironmentSnapshot>
+pub async fn awaken_protocol_managed::EnvironmentExecutionState::snapshot(&self, &str, core::option::Option<&str>) -> core::result::Result<core::option::Option<awaken_session_contract::baseline::EnvironmentSnapshot>, awaken_environment_realization_contract::EnvironmentImageBuildError>
+pub async fn awaken_protocol_managed::EnvironmentExecutionState::snapshot_exact(&self, &str, u64, core::option::Option<&str>) -> core::result::Result<core::option::Option<awaken_session_contract::baseline::EnvironmentSnapshot>, awaken_environment_realization_contract::EnvironmentImageBuildError>
 pub async fn awaken_protocol_managed::EnvironmentExecutionState::snapshot_exact_for_session(&self, &str, u64, core::option::Option<&str>, &[awaken_agent_contract::mcp_target::McpTarget]) -> core::result::Result<core::option::Option<awaken_session_contract::baseline::EnvironmentSnapshot>, awaken_environment_realization_contract::EnvironmentImageBuildError>
 pub async fn awaken_protocol_managed::EnvironmentExecutionState::snapshot_for_session(&self, &str, core::option::Option<&str>, &[awaken_agent_contract::mcp_target::McpTarget]) -> core::result::Result<core::option::Option<awaken_session_contract::baseline::EnvironmentSnapshot>, awaken_environment_realization_contract::EnvironmentImageBuildError>
 pub fn awaken_protocol_managed::EnvironmentExecutionState::with_image_readiness(self, alloc::sync::Arc<dyn awaken_environment_realization_contract::EnvironmentImageReadiness>) -> Self
-impl core::default::Default for awaken_protocol_managed::EnvironmentExecutionState
-pub fn awaken_protocol_managed::EnvironmentExecutionState::default() -> Self
 pub struct awaken_protocol_managed::EnvironmentState
 impl awaken_protocol_managed::EnvironmentState
 pub fn awaken_protocol_managed::EnvironmentState::application(&self) -> alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>
 pub fn awaken_protocol_managed::EnvironmentState::authoring(&self) -> alloc::sync::Arc<awaken_protocol_managed::EnvironmentAuthoringState>
-pub async fn awaken_protocol_managed::EnvironmentState::enqueue_session_work(&self, &str, &str) -> alloc::string::String
+pub async fn awaken_protocol_managed::EnvironmentState::enqueue_session_work(&self, &str, &str) -> core::result::Result<alloc::string::String, awaken_session_contract::work_queue::WorkQueueError>
 pub fn awaken_protocol_managed::EnvironmentState::execution(&self) -> alloc::sync::Arc<awaken_protocol_managed::EnvironmentExecutionState>
-pub async fn awaken_protocol_managed::EnvironmentState::get(&self, &str) -> core::option::Option<awaken_environment_contract::EnvItem>
-pub async fn awaken_protocol_managed::EnvironmentState::is_self_hosted(&self, &str) -> bool
-pub fn awaken_protocol_managed::EnvironmentState::new() -> Self
-pub async fn awaken_protocol_managed::EnvironmentState::snapshot(&self, &str, core::option::Option<&str>) -> core::option::Option<awaken_session_contract::baseline::EnvironmentSnapshot>
-pub async fn awaken_protocol_managed::EnvironmentState::snapshot_exact(&self, &str, u64, core::option::Option<&str>) -> core::option::Option<awaken_session_contract::baseline::EnvironmentSnapshot>
+pub async fn awaken_protocol_managed::EnvironmentState::get(&self, &str) -> core::result::Result<core::option::Option<awaken_environment_contract::EnvItem>, awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError>
+pub async fn awaken_protocol_managed::EnvironmentState::is_self_hosted(&self, &str) -> core::result::Result<bool, awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError>
+pub async fn awaken_protocol_managed::EnvironmentState::snapshot(&self, &str, core::option::Option<&str>) -> core::result::Result<core::option::Option<awaken_session_contract::baseline::EnvironmentSnapshot>, awaken_environment_realization_contract::EnvironmentImageBuildError>
+pub async fn awaken_protocol_managed::EnvironmentState::snapshot_exact(&self, &str, u64, core::option::Option<&str>) -> core::result::Result<core::option::Option<awaken_session_contract::baseline::EnvironmentSnapshot>, awaken_environment_realization_contract::EnvironmentImageBuildError>
 pub async fn awaken_protocol_managed::EnvironmentState::snapshot_exact_for_session(&self, &str, u64, core::option::Option<&str>, &[awaken_agent_contract::mcp_target::McpTarget]) -> core::result::Result<core::option::Option<awaken_session_contract::baseline::EnvironmentSnapshot>, awaken_environment_realization_contract::EnvironmentImageBuildError>
 pub async fn awaken_protocol_managed::EnvironmentState::snapshot_for_session(&self, &str, core::option::Option<&str>, &[awaken_agent_contract::mcp_target::McpTarget]) -> core::result::Result<core::option::Option<awaken_session_contract::baseline::EnvironmentSnapshot>, awaken_environment_realization_contract::EnvironmentImageBuildError>
 pub fn awaken_protocol_managed::EnvironmentState::with_sandbox_policies(self, alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>) -> Self
 pub fn awaken_protocol_managed::EnvironmentState::with_stores(alloc::sync::Arc<dyn awaken_environment_contract::EnvRegistry>, alloc::sync::Arc<dyn awaken_session_contract::work_queue::WorkQueue>) -> Self
-impl core::default::Default for awaken_protocol_managed::EnvironmentState
-pub fn awaken_protocol_managed::EnvironmentState::default() -> Self
 pub struct awaken_protocol_managed::LocalDeploymentSessionLauncher(_)
 impl awaken_protocol_managed::LocalDeploymentSessionLauncher
 pub fn awaken_protocol_managed::LocalDeploymentSessionLauncher::new(alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> Self
@@ -1594,7 +1589,6 @@ pub fn awaken_protocol_managed::ManagedState::list_sessions(&self) -> alloc::vec
 pub fn awaken_protocol_managed::ManagedState::list_sessions_scoped(&self, &str) -> alloc::vec::Vec<awaken_protocol_managed::types::Session>
 pub fn awaken_protocol_managed::ManagedState::owner_scope(&self, &str) -> core::option::Option<alloc::string::String>
 pub async fn awaken_protocol_managed::ManagedState::prepare_protocol_session(&self, &str, &str, &str) -> core::result::Result<(), awaken_protocol_managed::StateError>
-pub async fn awaken_protocol_managed::ManagedState::reconcile_resource_activations(&self) -> usize
 pub async fn awaken_protocol_managed::ManagedState::resolve_owner(&self, &str) -> core::option::Option<alloc::string::String>
 pub async fn awaken_protocol_managed::ManagedState::session_revision(&self, &str) -> core::result::Result<awaken_session_contract::session_repo::SessionRevision, awaken_protocol_managed::StateError>
 pub fn awaken_protocol_managed::ManagedState::validate_dream_agent(&self, &str, &str) -> core::result::Result<(), awaken_protocol_managed::StateError>
@@ -1610,9 +1604,20 @@ pub async fn awaken_protocol_managed::ManagedState::create_resource(&self, &str,
 pub async fn awaken_protocol_managed::ManagedState::delete_resource(&self, &str, &str) -> core::result::Result<(), awaken_protocol_managed::StateError>
 pub fn awaken_protocol_managed::ManagedState::get_resource(&self, &str, &str) -> core::result::Result<awaken_protocol_managed::types::resource::SessionResource, awaken_protocol_managed::StateError>
 pub fn awaken_protocol_managed::ManagedState::list_resources(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_protocol_managed::types::resource::SessionResource>, awaken_protocol_managed::StateError>
+pub async fn awaken_protocol_managed::ManagedState::reconcile_resource_activations(&self) -> usize
 pub async fn awaken_protocol_managed::ManagedState::update_resource(&self, &str, &str, awaken_protocol_managed::types::resource::ResourceUpdateParams) -> core::result::Result<awaken_protocol_managed::types::resource::SessionResource, awaken_protocol_managed::StateError>
 impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::create_session_with_initial_events_idempotent(&alloc::sync::Arc<Self>, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
+impl awaken_protocol_managed::ManagedState
+pub fn awaken_protocol_managed::ManagedState::from_required_ports(impl awaken_session_contract::session::SessionRuntime + 'static, alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>, alloc::sync::Arc<awaken_protocol_managed::EnvironmentExecutionState>) -> Self
+pub fn awaken_protocol_managed::ManagedState::from_required_ports_with_mcp<R>(R, alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>, alloc::sync::Arc<awaken_protocol_managed::EnvironmentExecutionState>) -> Self where R: awaken_session_contract::session::SessionRuntime + awaken_session_contract::session::McpAttachmentRealizer + 'static
+pub fn awaken_protocol_managed::ManagedState::with_config_source(self, alloc::sync::Arc<dyn awaken_executable_agent_contract::session_profile::ExecutableAgentProfileSource>) -> Self
+pub fn awaken_protocol_managed::ManagedState::with_credential_source(self, alloc::sync::Arc<dyn awaken_protocol_managed::SessionCredentialSource>) -> Self
+pub fn awaken_protocol_managed::ManagedState::with_lifecycle_sink(self, alloc::sync::Arc<dyn awaken_session_contract::lifecycle::SessionLifecycleSink>) -> Self
+pub fn awaken_protocol_managed::ManagedState::with_repository_credential_ingress(self, alloc::sync::Arc<dyn awaken_protocol_managed::routes::vaults::RepositoryCredentialIngress>) -> Self
+pub fn awaken_protocol_managed::ManagedState::with_resource_catalog(self, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>) -> Self
+pub fn awaken_protocol_managed::ManagedState::with_resource_purge_scheduler(self, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>) -> Self
+pub fn awaken_protocol_managed::ManagedState::with_vaults(self, alloc::sync::Arc<awaken_protocol_managed::VaultState>) -> Self
 impl awaken_protocol_managed::ManagedState
 pub fn awaken_protocol_managed::ManagedState::list_events(&self, &str, core::option::Option<&str>, core::option::Option<usize>) -> core::result::Result<awaken_protocol_managed::types::ListEventsResponse, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::live_inbox_queue(&self, &str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> core::result::Result<u64, awaken_protocol_managed::StateError>
@@ -1622,23 +1627,13 @@ pub async fn awaken_protocol_managed::ManagedState::live_inbox_replace(&self, &s
 pub async fn awaken_protocol_managed::ManagedState::live_inbox_snapshot(&self, &str) -> core::result::Result<awaken_session_contract::session::LiveInboxSnapshot, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::send_events(&self, &str, awaken_protocol_managed::types::SendEventsRequest) -> core::result::Result<awaken_protocol_managed::types::SendEventsResponse, awaken_protocol_managed::StateError>
 impl awaken_protocol_managed::ManagedState
-pub fn awaken_protocol_managed::ManagedState::new(impl awaken_session_contract::session::SessionRuntime + 'static) -> Self
-pub fn awaken_protocol_managed::ManagedState::new_with_mcp<R>(R) -> Self where R: awaken_session_contract::session::SessionRuntime + awaken_session_contract::session::McpAttachmentRealizer + 'static
-pub fn awaken_protocol_managed::ManagedState::with_config_source(self, alloc::sync::Arc<dyn awaken_executable_agent_contract::session_profile::ExecutableAgentProfileSource>) -> Self
-pub fn awaken_protocol_managed::ManagedState::with_credential_source(self, alloc::sync::Arc<dyn awaken_protocol_managed::SessionCredentialSource>) -> Self
-pub fn awaken_protocol_managed::ManagedState::with_environments(self, alloc::sync::Arc<awaken_protocol_managed::EnvironmentExecutionState>) -> Self
-pub fn awaken_protocol_managed::ManagedState::with_lifecycle_sink(self, alloc::sync::Arc<dyn awaken_session_contract::lifecycle::SessionLifecycleSink>) -> Self
-pub fn awaken_protocol_managed::ManagedState::with_repository_credential_ingress(self, alloc::sync::Arc<dyn awaken_protocol_managed::routes::vaults::RepositoryCredentialIngress>) -> Self
-pub fn awaken_protocol_managed::ManagedState::with_resource_catalog(self, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>) -> Self
-pub fn awaken_protocol_managed::ManagedState::with_resource_purge_scheduler(self, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>) -> Self
-pub fn awaken_protocol_managed::ManagedState::with_session_repo(self, alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>) -> Self
-pub fn awaken_protocol_managed::ManagedState::with_vaults(self, alloc::sync::Arc<awaken_protocol_managed::VaultState>) -> Self
-impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::realize_application_session(&self, &str) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::renew_due_session_realizations(&self, u64) -> core::result::Result<usize, awaken_protocol_managed::StateError>
 pub fn awaken_protocol_managed::ManagedState::spawn_realization_lease_supervisor(&alloc::sync::Arc<Self>) -> core::option::Option<tokio::runtime::task::join::JoinHandle<()>>
 impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::reconcile_mcp_attachments(&self) -> usize
+impl awaken_protocol_managed::ManagedState
+pub async fn awaken_protocol_managed::ManagedState::reconcile_work_dispatches(&self) -> usize
 impl awaken_protocol_managed::ManagedState
 pub fn awaken_protocol_managed::ManagedState::stream_subscribe(&self, &str) -> core::result::Result<(alloc::vec::Vec<awaken_protocol_managed::types::Event>, tokio::sync::broadcast::Receiver<awaken_protocol_managed::types::StreamFrame>), awaken_protocol_managed::StateError>
 impl awaken_dream_application::DreamSessionSource for awaken_protocol_managed::ManagedState

@@ -9,7 +9,6 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_state};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{Error, RunExecutor};
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
@@ -20,6 +19,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
+use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_state};
 
 /// A deterministic provider that always answers with fixed text.
 struct TextLlm(&'static str);

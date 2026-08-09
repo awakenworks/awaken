@@ -119,14 +119,22 @@ pub(super) async fn assemble_control_process_router(
     );
     let model_supply = assembly.model_supply.clone();
     let cloud_models_enabled = model_supply.cloud_models_enabled;
+    let worker_observations = assembly
+        .worker_observations
+        .expect("Control process requires explicit Worker observation wiring")
+        .source;
     let brokered_client = brokered_inference_client(
         cloud_models_enabled,
         remote_iam.as_ref(),
         assembly.cloud_api_base_url.as_deref(),
         &execution_workspace,
     );
-    let model_assembly =
-        publication_model_assembly(model_composition, &stores, cloud_models_enabled);
+    let model_assembly = publication_model_assembly(
+        model_composition,
+        &stores,
+        cloud_models_enabled,
+        worker_observations.clone(),
+    );
     let web_search_providers = assembly
         .web_search_providers
         .unwrap_or_else(awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins);
@@ -138,7 +146,7 @@ pub(super) async fn assemble_control_process_router(
         });
     let runtimes = Arc::new(LiveRuntimeCapabilities {
         initial: assembly.local_acp_observations.clone(),
-        workers: awaken_coordinator::worker_directory(),
+        workers: worker_observations.clone(),
         credentials: stores
             .control
             .as_ref()
@@ -216,6 +224,15 @@ pub(super) async fn assemble_control_process_router(
         ),
         None => component.router,
     };
+    std::sync::Arc::new(
+        crate::observation_reconcile::WorkerObservationReconcileGate::new(
+            worker_observations.clone(),
+        ),
+    )
+    .spawn_periodic(
+        component.publication_reconciler.clone(),
+        std::time::Duration::from_secs(5),
+    );
     let mcp_export = awaken_coordinator::mcp_export::router(
         awaken_admin_assistant::admin_tool_descriptors(),
         component.admin_tools,
@@ -226,6 +243,7 @@ pub(super) async fn assemble_control_process_router(
             router,
             mcp_export,
             Some(component.publication_reconciler),
+            worker_observations,
             execution_workspace,
             Arc::new(
                 awaken_protocol_managed::ManagedRateLimiter::for_organization(
@@ -265,6 +283,9 @@ async fn standalone_control_uses_the_authored_capture_ceiling() {
             executable_agent_wiring: Some(
                 executable_agent_registration::ExecutableAgentWiring::local(),
             ),
+            worker_observations: Some(worker_observation_wiring::WorkerObservationWiring::local(
+                awaken_coordinator::test_worker_directory(),
+            )),
             ..Default::default()
         },
     )
@@ -328,6 +349,11 @@ async fn standalone_control_projects_the_exact_model_supply_posture() {
                 executable_agent_wiring: Some(
                     executable_agent_registration::ExecutableAgentWiring::local(),
                 ),
+                worker_observations: Some(
+                    worker_observation_wiring::WorkerObservationWiring::local(
+                        awaken_coordinator::test_worker_directory(),
+                    ),
+                ),
                 ..Default::default()
             },
         )
@@ -372,6 +398,9 @@ async fn standalone_control_rejects_missing_environment_registration_wiring() {
             executable_agent_wiring: Some(
                 executable_agent_registration::ExecutableAgentWiring::local(),
             ),
+            worker_observations: Some(worker_observation_wiring::WorkerObservationWiring::local(
+                awaken_coordinator::test_worker_directory(),
+            )),
             ..Default::default()
         },
     )

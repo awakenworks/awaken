@@ -17,12 +17,12 @@ mod signing;
 mod url_guard;
 
 pub use dispatch::{
-    DispatchReport, ReqwestSender, ResolvedSubscription, SubscriptionSource, WebhookDispatcher,
-    WebhookSender,
+    DispatchError, DispatchReport, ReqwestSender, ResolvedSubscription, SubscriptionFailureState,
+    SubscriptionSource, WebhookDispatcher, WebhookSender,
 };
 pub use event::{WebhookEvent, WebhookEventData};
 pub use signing::{
-    DEFAULT_TOLERANCE_SECS, SECRET_PREFIX, SignError, generate_secret, sign_bytes,
-    signature_header, timestamp_within_tolerance, verify, verify_fresh,
+    DEFAULT_TOLERANCE_SECS, SECRET_PREFIX, SignError, generate_secret, generate_secret_reference,
+    sign_bytes, signature_header, timestamp_within_tolerance, verify, verify_fresh,
 };
 pub use url_guard::{UrlRejected, validate_endpoint_url};

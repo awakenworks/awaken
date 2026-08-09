@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use awaken_ext_builtin_tools::{AUXILIARY_AGENT, AuxiliaryAgentInput};
 use awaken_ext_skills::{
-    ActiveSkillTools, CompositeSkillRegistry, InMemorySkillRegistry, ListSkillsTool,
-    PathActivations, RecordingGate, SkillAllowedToolsGate, SkillEnvironment, SkillFile,
-    SkillProvenance, SkillRegistry, SkillSource, SkillSpec, SkillTool, SourceSkillRegistry,
+    ActiveSkillTools, CompositeSkillRegistry, FixedSkillRegistry, ListSkillsTool, PathActivations,
+    RecordingGate, SkillAllowedToolsGate, SkillEnvironment, SkillFile, SkillProvenance,
+    SkillRegistry, SkillSource, SkillSpec, SkillTool, SourceSkillRegistry,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::permission::ToolGateHook;
@@ -114,6 +114,7 @@ struct ForkAgentTool {
     /// The parent agent's sandbox, shared with the fork by default.
     sandbox: Arc<crate::session_environment::SessionEnvironment>,
     placement: SkillForkPlacement,
+    execution: Arc<crate::store::HostCommit>,
 }
 
 #[async_trait::async_trait]
@@ -145,7 +146,11 @@ impl RawTool for ForkAgentTool {
                 model_ref: &self.model_ref,
                 delegates: &delegates,
                 run_delegation: None,
-                context: None,
+                context: Some(
+                    awaken_runtime_contract::RuntimeRunContext::new()
+                        .with_commit(self.execution.clone())
+                        .with_reader(self.execution.clone()),
+                ),
                 #[cfg(test)]
                 scheduler: None,
             },
@@ -186,6 +191,7 @@ pub(crate) async fn wire_skills(
     fork_base: PathBuf,
     placement: SkillForkPlacement,
     skills_subdir: &str,
+    execution: Arc<crate::store::HostCommit>,
 ) -> Result<Option<SkillWiring>, String> {
     // Store availability is not a capability grant. Offer the tools only when
     // this exact Session has a static, external, or delivered Skill. A later Run
@@ -219,7 +225,7 @@ pub(crate) async fn wire_skills(
     // duplicate id.
     let mut registries: Vec<Arc<dyn SkillRegistry>> = Vec::new();
     if !configured.is_empty() {
-        registries.push(Arc::new(InMemorySkillRegistry::from_specs(
+        registries.push(Arc::new(FixedSkillRegistry::from_specs(
             configured.iter().cloned(),
         )));
     }
@@ -318,6 +324,7 @@ pub(crate) async fn wire_skills(
             provider: LocalProvider::new(fork_base),
             sandbox: env,
             placement,
+            execution,
         });
         activate = activate.with_agent_tool(agent_tool);
     }

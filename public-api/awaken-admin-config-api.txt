@@ -1,12 +1,6 @@
 pub mod awaken_admin_config_api
-pub use awaken_admin_config_api::AgentInputBindingRepository
 pub use awaken_admin_config_api::ExecutableModelOption
 pub use awaken_admin_config_api::ExecutableModelReadiness
-pub use awaken_admin_config_api::InMemoryAgentInputBindingRepository
-pub use awaken_admin_config_api::InMemoryProfileStore
-pub use awaken_admin_config_api::InMemoryWebhookStore
-pub use awaken_admin_config_api::InferenceProfileStore
-pub use awaken_admin_config_api::WebhookStore
 pub use awaken_admin_config_api::project_executable_models
 pub mod awaken_admin_config_api::schema
 pub const awaken_admin_config_api::schema::BUNDLE_ID: &str

@@ -14,7 +14,6 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory, bind_unix};
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -28,6 +27,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolExecutionTarget, ToolOutput};
+use awaken_store_inmem::MemoryCommitCoordinator;
 use awaken_tool_relay::{HandSession, RemoteToolExecutor, serve_hand};
 
 /// First inference asks for `echo`; the second ends with text.

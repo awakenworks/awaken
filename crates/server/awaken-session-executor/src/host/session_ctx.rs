@@ -45,7 +45,7 @@ pub(crate) struct SessionCtx {
         Vec<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>,
     /// This thread's interrupted-stream checkpoint store (Phase 3), wired into
     /// every run context so an inference drop flushes durably at its boundary.
-    pub(crate) stream_checkpoint: Arc<dyn StreamCheckpointStore>,
+    pub(crate) stream_checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
     /// Session lifetime for the ACP-facing projection of the configured
     /// WebSearch RawTool. Native sessions leave this empty.
     pub(crate) _web_search_mcp: Option<crate::AcpToolExport>,
@@ -113,12 +113,16 @@ impl SessionCtx {
         // and `finish_step` reads it to report `session.status_rescheduled`.
         let reschedule = Arc::new(std::sync::atomic::AtomicU32::new(0));
         *self.reschedule.lock().expect("reschedule mutex poisoned") = Some(reschedule.clone());
-        self.attempt_context
+        let context = self
+            .attempt_context
             .clone()
             .with_commit(self.commit.clone())
             .with_reader(self.commit.clone())
-            .with_stream_checkpoint(self.stream_checkpoint.clone())
             .with_cancellation(token)
-            .with_reschedules(reschedule)
+            .with_reschedules(reschedule);
+        match &self.stream_checkpoint {
+            Some(checkpoint) => context.with_stream_checkpoint(checkpoint.clone()),
+            None => context,
+        }
     }
 }

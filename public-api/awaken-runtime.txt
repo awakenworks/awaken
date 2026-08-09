@@ -1,6 +1,4 @@
 pub mod awaken_runtime
-pub mod awaken_runtime::memory
-pub use awaken_runtime::memory::<<awaken_store_inmem::*>>
 pub struct awaken_runtime::CircuitBreakerConfig
 pub awaken_runtime::CircuitBreakerConfig::cooldown: core::time::Duration
 pub awaken_runtime::CircuitBreakerConfig::failure_threshold: u32

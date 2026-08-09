@@ -1,9 +1,10 @@
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerRegistration,
+    WorkerIdentity, WorkerObservationSource, WorkerRegistration,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
@@ -15,7 +16,7 @@ pub struct SqliteWorkerDirectory {
 }
 
 impl SqliteWorkerDirectory {
-    pub fn open(path: &str) -> Result<Self, RegistryError> {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, RegistryError> {
         Self::from_connection(Connection::open(path).map_err(persist)?)
     }
 
@@ -101,6 +102,27 @@ fn persist(error: impl std::fmt::Display) -> RegistryError {
 }
 
 #[async_trait]
+impl WorkerObservationSource for SqliteWorkerDirectory {
+    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?;
+        let mut stmt = conn
+            .prepare("SELECT record_json FROM worker_registry_worker ORDER BY worker_id")
+            .map_err(persist)?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(persist)?;
+        rows.map(|row| {
+            let encoded = row.map_err(persist)?;
+            serde_json::from_str(&encoded).map_err(persist)
+        })
+        .collect()
+    }
+}
+
+#[async_trait]
 impl WorkerDirectory for SqliteWorkerDirectory {
     async fn register(
         &self,
@@ -171,24 +193,6 @@ impl WorkerDirectory for SqliteWorkerDirectory {
             .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?;
         let tx = conn.transaction().map_err(persist)?;
         Self::read(&tx, worker_id)
-    }
-
-    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?;
-        let mut stmt = conn
-            .prepare("SELECT record_json FROM worker_registry_worker ORDER BY worker_id")
-            .map_err(persist)?;
-        let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(persist)?;
-        rows.map(|row| {
-            let encoded = row.map_err(persist)?;
-            serde_json::from_str(&encoded).map_err(persist)
-        })
-        .collect()
     }
 
     async fn expire(&self, now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {

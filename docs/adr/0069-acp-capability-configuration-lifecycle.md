@@ -895,9 +895,11 @@ Implemented consolidation evidence:
   atomic, expiring heartbeat batch; it retains the prior deadlines on a hard
   refresh failure and does not store the changing fingerprint in the immutable
   Worker manifest;
-- successful heartbeats feed one observation-fingerprint gate; changes invoke
-  the existing policy publication reconciler across scope-bound aggregates,
-  while failures leave the fence unchanged for heartbeat retry;
+- successful AllInOne heartbeats feed one observation-fingerprint gate; split
+  Control reads the same Coordinator authority through its authenticated private
+  service boundary and polls that gate every five seconds; changes invoke the
+  existing policy publication reconciler across scope-bound aggregates, while
+  source/reconcile failures leave the fence unchanged for the next clock;
 - `CredentialObservationSource` and `WorkerLocalReferenceRevalidator` are
   segregated from `CredentialMaterialResolver`;
 - `CredentialPool::selection_order_at` owns `RotateSpread`,

@@ -50,7 +50,7 @@ pub struct CatalogModelPublicationResolver {
     credentials: Arc<dyn CredentialRepo>,
     profiles: Option<Arc<dyn InferenceProfileStore>>,
     brokered_access_enabled: bool,
-    workers: Option<Arc<dyn awaken_worker_registry::WorkerDirectory>>,
+    workers: Option<Arc<dyn awaken_worker_registry::WorkerObservationSource>>,
     a2a_cards: Arc<dyn A2aCardDiscovery>,
     executor_capabilities: Arc<Vec<ExecutorModelCapability>>,
     credential_selection_sequences: Arc<Mutex<HashMap<String, u64>>>,
@@ -1370,7 +1370,7 @@ mod tests {
         // P1 provider Target + ACP -> Provider/Vault on exact ACP backend
         // P2 BackendExact          -> BackendOwned/CLI login
         // P3 unqualified Target    -> canonical native provider binding
-        let resolver = resolver(&["primary"]).await.with_worker_directory(
+        let resolver = resolver(&["primary"]).await.with_worker_observations(
             verified_acp_worker("provider-managed", "acp:codex", "sha256:codex-provider").await,
         );
         let managed = resolver
@@ -1411,7 +1411,7 @@ mod tests {
         let workers = verified_acp_worker(&local.id.0, "acp:codex", "sha256:codex-test").await;
         let backend_owned =
             CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials)
-                .with_worker_directory(workers)
+                .with_worker_observations(workers)
                 .resolve_models(
                     &ScopeId::from("workspace-a"),
                     &ModelSelection::BackendExact {
@@ -1487,7 +1487,7 @@ mod tests {
                 }],
             }],
         };
-        let resolver = resolver(&["primary"]).await.with_worker_directory(
+        let resolver = resolver(&["primary"]).await.with_worker_observations(
             verified_acp_worker_with_negotiated(
                 "provider-managed",
                 "acp:codex",
@@ -1602,7 +1602,7 @@ mod tests {
         .await
         .unwrap();
         let resolver = CatalogModelPublicationResolver::new(catalog, credentials)
-            .with_worker_directory(
+            .with_worker_observations(
                 verified_acp_worker("provider-managed", "acp:claude", "sha256:claude-provider")
                     .await,
             );
@@ -1808,7 +1808,7 @@ mod tests {
         let workers = verified_acp_worker(&codex.id.0, "acp:codex", "sha256:codex-test").await;
         let resolver =
             CatalogModelPublicationResolver::new(ProviderCatalog::default(), credentials.clone())
-                .with_worker_directory(workers);
+                .with_worker_observations(workers);
 
         let default = resolver
             .resolve_models(
@@ -1915,7 +1915,7 @@ mod tests {
             verified_acp_worker(&secondary.id.0, "acp:codex", "sha256:codex-test").await;
         let exact_resolver =
             CatalogModelPublicationResolver::new(ProviderCatalog::default(), credentials.clone())
-                .with_worker_directory(secondary_workers);
+                .with_worker_observations(secondary_workers);
         let selected = exact_resolver
             .resolve_models(
                 &ScopeId::from("workspace-a"),

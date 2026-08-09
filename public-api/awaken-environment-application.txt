@@ -1,5 +1,6 @@
 pub mod awaken_environment_application
 pub enum awaken_environment_application::EnvironmentApplicationError
+pub awaken_environment_application::EnvironmentApplicationError::Archived
 pub awaken_environment_application::EnvironmentApplicationError::BuiltinImmutable
 pub awaken_environment_application::EnvironmentApplicationError::Create(awaken_environment_contract::CreateEnvironmentError)
 pub awaken_environment_application::EnvironmentApplicationError::NotFound

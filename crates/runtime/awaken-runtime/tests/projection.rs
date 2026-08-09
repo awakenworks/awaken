@@ -10,9 +10,6 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::{
-    CommittedThread, MemoryCommitCoordinator, MemoryStreamSink, replay_latest_state,
-};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
@@ -22,6 +19,9 @@ use awaken_runtime_contract::resolved::{
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
+};
+use awaken_store_inmem::{
+    CommittedThread, MemoryCommitCoordinator, MemoryStreamSink, replay_latest_state,
 };
 
 struct TextLlm;

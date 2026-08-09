@@ -1160,6 +1160,14 @@ pub awaken_runtime_contract::tool::ToolRecoveryMode::NeverReplay
 pub awaken_runtime_contract::tool::ToolRecoveryMode::ReplaySafe
 impl awaken_runtime_contract::tool::ToolRecoveryMode
 pub const fn awaken_runtime_contract::tool::ToolRecoveryMode::is_supported_by(self, awaken_runtime_contract::tool::ToolRecoveryCapability) -> bool
+pub struct awaken_runtime_contract::tool::RawToolRegistry
+impl awaken_runtime_contract::tool::RawToolRegistry
+pub fn awaken_runtime_contract::tool::RawToolRegistry::get(&self, &str) -> core::option::Option<&alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
+pub fn awaken_runtime_contract::tool::RawToolRegistry::insert(&mut self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> bool
+pub fn awaken_runtime_contract::tool::RawToolRegistry::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self
+impl awaken_runtime_contract::tool::ToolExecutor for awaken_runtime_contract::tool::RawToolRegistry
+pub fn awaken_runtime_contract::tool::RawToolRegistry::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::tool::RawToolRegistry::recovery_capability(&self, &str) -> awaken_runtime_contract::tool::ToolRecoveryCapability
 pub struct awaken_runtime_contract::tool::ToolCall
 pub awaken_runtime_contract::tool::ToolCall::arguments: serde_json::value::Value
 pub awaken_runtime_contract::tool::ToolCall::call_id: alloc::string::String
@@ -1203,6 +1211,9 @@ pub fn awaken_runtime_contract::tool::Tool::recovery_capability(&self) -> awaken
 pub trait awaken_runtime_contract::tool::ToolExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::tool::ToolExecutor::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::tool::ToolExecutor::recovery_capability(&self, &str) -> awaken_runtime_contract::tool::ToolRecoveryCapability
+impl awaken_runtime_contract::tool::ToolExecutor for awaken_runtime_contract::tool::RawToolRegistry
+pub fn awaken_runtime_contract::tool::RawToolRegistry::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::tool::RawToolRegistry::recovery_capability(&self, &str) -> awaken_runtime_contract::tool::ToolRecoveryCapability
 pub trait awaken_runtime_contract::tool::ToolOutputSpiller: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::tool::ToolOutputSpiller::spill<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 str, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::tool::current_tool_operation_context() -> core::option::Option<awaken_runtime_contract::tool::ToolOperationContext>
@@ -1703,6 +1714,14 @@ pub awaken_runtime_contract::PluginManifest::bound: awaken_runtime_contract::Cap
 pub awaken_runtime_contract::PluginManifest::config_sections: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::PluginManifest::id: alloc::string::String
 pub awaken_runtime_contract::PluginManifest::requires: alloc::vec::Vec<alloc::string::String>
+pub struct awaken_runtime_contract::RawToolRegistry
+impl awaken_runtime_contract::tool::RawToolRegistry
+pub fn awaken_runtime_contract::tool::RawToolRegistry::get(&self, &str) -> core::option::Option<&alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
+pub fn awaken_runtime_contract::tool::RawToolRegistry::insert(&mut self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> bool
+pub fn awaken_runtime_contract::tool::RawToolRegistry::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self
+impl awaken_runtime_contract::tool::ToolExecutor for awaken_runtime_contract::tool::RawToolRegistry
+pub fn awaken_runtime_contract::tool::RawToolRegistry::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::tool::RawToolRegistry::recovery_capability(&self, &str) -> awaken_runtime_contract::tool::ToolRecoveryCapability
 pub struct awaken_runtime_contract::ResolutionManifest
 pub awaken_runtime_contract::ResolutionManifest::inputs: alloc::vec::Vec<awaken_runtime_contract::resolution::ResolvedInputRef>
 impl awaken_runtime_contract::resolution::ResolutionManifest
@@ -1968,6 +1987,9 @@ pub fn awaken_runtime_contract::Tool::recovery_capability(&self) -> awaken_runti
 pub trait awaken_runtime_contract::ToolExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::ToolExecutor::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::ToolExecutor::recovery_capability(&self, &str) -> awaken_runtime_contract::tool::ToolRecoveryCapability
+impl awaken_runtime_contract::tool::ToolExecutor for awaken_runtime_contract::tool::RawToolRegistry
+pub fn awaken_runtime_contract::tool::RawToolRegistry::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_contract::tool::RawToolRegistry::recovery_capability(&self, &str) -> awaken_runtime_contract::tool::ToolRecoveryCapability
 pub trait awaken_runtime_contract::ToolGateHook: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::ToolGateHook::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::ToolGateHook::id(&self) -> &str
