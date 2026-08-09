@@ -586,13 +586,42 @@ impl SharedHost {
 
     /// The run ids currently dead-lettered on `thread` (ADR-0015, slice E).
     pub async fn dead_letters(&self, thread: &str) -> Result<Vec<String>, HostError> {
-        let ids = self
-            .durable_ingress(thread)
-            .await?
-            .dead_letters()
+        let rows = self
+            .dispatch_store()?
+            .list_dispatches()
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
-        Ok(ids.into_iter().map(|id| id.0).collect())
+        Ok(rows
+            .into_iter()
+            .filter(|row| {
+                row.thread_id.0 == thread
+                    && row.state == awaken_run_ingress::DispatchState::DeadLetter
+            })
+            .map(|row| row.run_id.0)
+            .collect())
+    }
+
+    /// Return one dead-lettered run to the durable queue with a fresh retry
+    /// budget after the operator has repaired the external failure.
+    pub async fn requeue_dead_letter(&self, thread: &str, run_id: &str) -> Result<bool, HostError> {
+        let store = self.dispatch_store()?;
+        let belongs_to_thread = store
+            .list_dispatches()
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?
+            .into_iter()
+            .any(|row| {
+                row.run_id.0 == run_id
+                    && row.thread_id.0 == thread
+                    && row.state == awaken_run_ingress::DispatchState::DeadLetter
+            });
+        if !belongs_to_thread {
+            return Ok(false);
+        }
+        store
+            .requeue(&RunId(run_id.to_owned()))
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))
     }
 
     /// Operator GC: purge every dead-lettered dispatch on `thread` (ADR-0015,
@@ -612,13 +641,13 @@ impl SharedHost {
         thread: &str,
     ) -> Result<Vec<(String, String, u64, bool)>, HostError> {
         let rows = self
-            .durable_ingress(thread)
-            .await?
+            .dispatch_store()?
             .list_dispatches()
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
         Ok(rows
             .into_iter()
+            .filter(|row| row.thread_id.0 == thread)
             .map(|d| {
                 (
                     d.run_id.0,
@@ -633,13 +662,19 @@ impl SharedHost {
     /// The run ids superseded by a newer submission on `thread` (ADR-0022,
     /// slice E).
     pub async fn superseded(&self, thread: &str) -> Result<Vec<String>, HostError> {
-        let ids = self
-            .durable_ingress(thread)
-            .await?
-            .superseded()
+        let rows = self
+            .dispatch_store()?
+            .list_dispatches()
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
-        Ok(ids.into_iter().map(|id| id.0).collect())
+        Ok(rows
+            .into_iter()
+            .filter(|row| {
+                row.thread_id.0 == thread
+                    && row.state == awaken_run_ingress::DispatchState::Superseded
+            })
+            .map(|row| row.run_id.0)
+            .collect())
     }
 
     /// Enqueue a run for the process dispatch pool to drive autonomously (ADR-0011,

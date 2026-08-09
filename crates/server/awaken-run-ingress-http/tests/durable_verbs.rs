@@ -2,7 +2,8 @@
 //!
 //! The store-level dispatch state machine (reap / dead-letter / supersede) is proven
 //! in `awaken-run-ingress`; this pins the **host routing layer** — that
-//! `SharedHost::{list_dispatches, reap, dead_letters, purge_dead_letters, superseded}`
+//! `SharedHost::{list_dispatches, reap, dead_letters, requeue_dead_letter,
+//! purge_dead_letters, superseded}`
 //! reach the process-shared dispatch queue and project it onto the wire shape the
 //! `durable_ops_router` returns.
 //!
@@ -32,7 +33,7 @@ use awaken_runtime_host::SharedHost;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 /// A model that never actually runs — the operational verbs don't infer.
@@ -155,18 +156,70 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
         "one crashed dispatch dead-lettered: {v}"
     );
 
-    // dead-letters lists it; purge removes it; then the list is empty.
+    // dead-letters lists it; an operator can requeue the exact repaired run
+    // with a fresh retry budget.
     let (_, v) = call(&router, "GET", &format!("{base}/dead-letters")).await;
     assert!(
         contains_id(&v, "dead_letters", "run-A"),
         "dead-letters: {v}"
     );
+    let (s, v) = call(
+        &router,
+        "POST",
+        "/v1/durable/threads/a-different-thread/dead-letters/run-A/requeue",
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert!(
+        v["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("not dead-lettered")),
+        "a run cannot be recovered through another Thread: {v}"
+    );
+    let (s, v) = call(
+        &router,
+        "POST",
+        &format!("{base}/dead-letters/run-A/requeue"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v, json!({ "run_id": "run-A", "requeued": true }));
+    assert!(
+        mem.claim("worker", 1, 1000, &Default::default())
+            .await
+            .unwrap()
+            .is_some(),
+        "the requeued run is claimable with a fresh budget"
+    );
+    let (_, v) = call(
+        &router,
+        "POST",
+        &format!("{base}/reap?max_attempts=0&now_ms=2000"),
+    )
+    .await;
+    assert_eq!(v["dead_lettered"], 1);
+
+    // Purge removes the newly dead-lettered row; then the list is empty.
     let (_, v) = call(&router, "POST", &format!("{base}/dead-letters/purge")).await;
     assert_eq!(v["purged"], 1, "purged the dead-letter: {v}");
     let (_, v) = call(&router, "GET", &format!("{base}/dead-letters")).await;
     assert!(
         v["dead_letters"].as_array().unwrap().is_empty(),
         "dead-letters empty after purge: {v}"
+    );
+
+    // The process queue is shared, but a Thread-addressed operations route must
+    // never project another Thread's rows into its monitoring response.
+    mem.enqueue(RunDispatch::new(activation("run-other", "other-thread")))
+        .await
+        .unwrap();
+    let (s, v) = call(&router, "GET", &format!("{base}/dispatches")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        v["dispatches"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().all(|row| row["run_id"] != "run-other")),
+        "Thread monitoring leaked a row from another Thread: {v}"
     );
 
     // ── supersede → superseded ───────────────────────────────────────────────

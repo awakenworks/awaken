@@ -813,7 +813,40 @@ impl AcpRunExecutor {
                 }
             };
 
-            // Some opaque adapters collapse an upstream provider failure into a
+            // Some opaque adapters render a structured provider error as an
+            // ordinary Agent message and then report a clean ACP end_turn. Keep
+            // the streamed diagnostic for audit, but do not let it masquerade as
+            // a successful model response whose downstream output contract then
+            // hides the real provider failure.
+            if matches!(reason, TerminationReason::NaturalEnd)
+                && let Some(detail) = opaque_provider_failure(&appender.messages)
+            {
+                let failure = classify_error(Stage::Prompt, &RawAcpError::message(detail));
+                committed.extend(appender.messages);
+                committed.push(Message::text(
+                    acp_message_id(&run_id, format_args!("err-{}", committed.len() + 1)),
+                    Role::Assistant,
+                    failure.prompt(),
+                ));
+                let disposition = RunDisposition::ended(run_id.clone(), failure_cause(&failure));
+                let state = disposition.state();
+                commit(
+                    &context,
+                    &activation.thread_id,
+                    disposition,
+                    committed,
+                    run_state(
+                        &run_usage,
+                        &model_ref,
+                        &backend_ref,
+                        acp_session_id.as_deref(),
+                    ),
+                )
+                .await?;
+                return Ok(state);
+            }
+
+            // Other opaque adapters collapse an upstream provider failure into a
             // clean ACP end_turn with no projected output. Accepting that as a
             // NaturalEnd silently turns quota/auth/provider failures into an empty
             // assistant response. A conversational turn must produce at least one
@@ -926,6 +959,38 @@ impl AcpRunExecutor {
             }
         }
     }
+}
+
+/// Extract one provider-owned error envelope that an opaque ACP adapter printed
+/// as ordinary assistant text. A leading warning banner is tolerated, but any
+/// other prose or a JSON value without provider error discriminators stays model
+/// output. This keeps the boundary fail-closed without classifying arbitrary
+/// assistant discussion of errors as an execution failure.
+fn opaque_provider_failure(messages: &[Message]) -> Option<String> {
+    let text = messages
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::Assistant)?
+        .text_content();
+    let json_start = text.find('{')?;
+    let prefix = text[..json_start].trim();
+    if !prefix.is_empty()
+        && !prefix
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .all(|line| line.starts_with("Warning:"))
+    {
+        return None;
+    }
+    let envelope = serde_json::from_str::<serde_json::Value>(text[json_start..].trim()).ok()?;
+    let error = envelope.as_object()?.get("error")?.as_object()?;
+    let message = error.get("message")?.as_str()?.trim();
+    let discriminated = ["type", "code"]
+        .into_iter()
+        .filter_map(|key| error.get(key))
+        .any(|value| !value.is_null());
+    (!message.is_empty() && discriminated).then(|| message.to_owned())
 }
 
 /// A transport retry is side-effect safe only while the official ACP handshake has
@@ -1379,9 +1444,9 @@ mod subprocess;
 pub use acp_cli::{
     AcpAcquisition, AcpCli, AcpImageRequirement, BackendModelInterface, CredentialArtifactCodec,
     CredentialArtifactRequirement, CredentialArtifactSpec, ManagedCredentialDelivery,
-    ManagedModelInterface, ManagedProviderConfigDelivery, McpDelivery, McpInterface, ModelDelivery,
-    ProcessSecretRequirement, ResolvedModel, SessionKey, SessionPersistence, acp_cli,
-    image_runtime_contract_json, known_acp_clis,
+    ManagedModelInterface, ManagedProviderConfigCodec, ManagedProviderConfigDelivery, McpDelivery,
+    McpInterface, ModelDelivery, ProcessSecretRequirement, ResolvedModel, SessionKey,
+    SessionPersistence, acp_cli, image_runtime_contract_json, known_acp_clis,
 };
 pub use awaken_runtime_contract::resolved::{
     AcpMcpServer as McpServerConfig, AcpMcpTransport as McpTransport,

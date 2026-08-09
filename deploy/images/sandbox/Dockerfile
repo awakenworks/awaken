@@ -14,7 +14,18 @@
 # The bridge binary is built on the worker host and copied in below. Trixie's glibc
 # is new enough for binaries built on current Linux distributions (including Ubuntu
 # 24.04/glibc 2.39); bookworm's 2.36 made the container exit before opening ACP.
+FROM rust:1.96-bookworm AS rust-toolchain
+RUN rustup component add clippy rustfmt
+
 FROM node:22-trixie-slim
+
+# Keep one pinned, complete Rust toolchain in the sandbox base. Debian's `cargo`
+# package does not include rustup components such as Clippy, which makes a
+# dynamically composed native/desktop Environment unable to honor ordinary
+# repository quality gates. Environment layers extend this base with system
+# libraries; they must not have to repair its language toolchains.
+COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
+COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
 
 # Agent tooling most CLIs assume on PATH (curl for service readiness, git for
 # repo work, rg for search), plus the six package-manager runtimes supported by
@@ -23,16 +34,18 @@ FROM node:22-trixie-slim
 # Debian's externally-managed system interpreter.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-      ca-certificates cargo curl git golang-go python3 python3-venv ripgrep ruby tini \
+      ca-certificates curl git golang-go python3 python3-venv ripgrep ruby tini \
     && python3 -m venv /opt/awaken-python \
     && rm -rf /var/lib/apt/lists/*
-ENV HOME="/home/agent" \
-    PATH="/opt/awaken-python/bin:${PATH}"
+ENV CARGO_HOME="/usr/local/cargo" \
+    HOME="/home/agent" \
+    PATH="/usr/local/cargo/bin:/opt/awaken-python/bin:${PATH}" \
+    RUSTUP_HOME="/usr/local/rustup"
 
 # The E2E harness checks this capability label before reusing a locally cached
 # base image, preventing an older image without the package runtimes from being
 # mistaken for a complete Environment base.
-LABEL org.awaken.environment-packages="1" \
+LABEL org.awaken.environment-packages="2" \
       org.awaken.acp-runtime-contract="1"
 
 # Pre-bake every catalogued ACP adapter/native CLI from one immutable contract.

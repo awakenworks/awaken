@@ -135,11 +135,11 @@ pub trait AcpCapabilityObservationSource: Send + Sync {
 /// Canonical executable-capability fingerprint shared by discovery, publication
 /// and launch-time handshake verification.
 ///
-/// Session defaults and config-option catalogues are intentionally excluded:
-/// an ACP may derive them from the provisioned provider/model route, so the
-/// secret-free Worker probe and the realized Session can legitimately differ.
-/// Every requested mode/config selection is still checked against the realized
-/// Session before it is sent. Sorting makes adapter response order irrelevant.
+/// Session modes, defaults, and config-option catalogues are intentionally
+/// excluded: an ACP may derive them from the provisioned provider/model route,
+/// so the secret-free Worker probe and the realized Session can legitimately
+/// differ. Every requested mode/config selection is still checked against the
+/// realized Session before it is sent.
 #[must_use]
 pub fn capability_fingerprint(
     adapter_id: &str,
@@ -160,11 +160,6 @@ pub fn capability_fingerprint(
         capabilities.session_list,
     ] {
         hash.update([u8::from(flag)]);
-    }
-    let mut modes = capabilities.modes.iter().collect::<Vec<_>>();
-    modes.sort_by_key(|mode| &mode.native_id);
-    for mode in modes {
-        hash_value(&mut hash, &mode.native_id);
     }
     format!("{:x}", hash.finalize())
 }
@@ -231,15 +226,15 @@ mod tests {
     #[test]
     fn capability_fingerprint_decision_table_is_canonical_and_route_stable() {
         // Causes: C1 response order differs; C2 adapter identity differs; C3 a
-        // negotiated flag differs; C4 an executable mode differs; C5 provider
-        // routing changes defaults/config catalogues. Effects: E1 order and
-        // route-local state are normalized; E2-E4 executable changes differ.
+        // negotiated flag differs; C4 a route-local mode catalogue differs; C5
+        // provider routing changes defaults/config catalogues. Effects: E1
+        // route-local state is normalized; E2-E3 executable changes differ.
         //
         // | Rule | C1 | C2 | C3 | C4 | Effect |
         // | R1   | T  | F  | F  | F  | E1 same fingerprint |
         // | R2   | F  | T  | F  | F  | E2 different |
         // | R3   | F  | F  | T  | F  | E3 different |
-        // | R4   | F  | F  | F  | T  | E4 different |
+        // | R4   | F  | F  | F  | T  | E1 same fingerprint |
         // | R5 provider/session defaults differ | E1 same fingerprint |
         let original = capabilities();
         let expected = capability_fingerprint("codex", "1.0", &original);
@@ -266,7 +261,7 @@ mod tests {
         );
         let mut changed_mode = original.clone();
         changed_mode.modes[0].native_id = "audit".into();
-        assert_ne!(
+        assert_eq!(
             capability_fingerprint("codex", "1.0", &changed_mode),
             expected,
             "R4"

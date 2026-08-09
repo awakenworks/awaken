@@ -191,7 +191,11 @@ pub async fn discover_model_ids(
     Ok(ids.into_iter().collect())
 }
 
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+// One model turn can contain a long reasoning prelude followed by a large typed
+// tool call. Keep that complete-turn budget independent from the per-event
+// silence bound: using the same 120-second value for both made healthy streams
+// from reasoning models fail while they were still emitting progress.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
 /// How long the stream may go silent between events before the turn fails as
 /// a retryable timeout. `timeout` independently bounds the complete streaming
 /// inference, including opening and consuming the response; without both bounds,
@@ -202,6 +206,16 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 // misclassified as a stalled transport. Tests and specialized hosts can still
 // choose a tighter bound with `with_idle_timeout`.
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
+#[cfg(test)]
+mod default_timeout_tests {
+    use super::{DEFAULT_IDLE_TIMEOUT, DEFAULT_TIMEOUT};
+
+    #[test]
+    fn complete_reasoning_turn_has_a_larger_budget_than_transport_silence() {
+        assert!(DEFAULT_TIMEOUT >= DEFAULT_IDLE_TIMEOUT * 5);
+    }
+}
 
 fn normalize_provider_base_url(adapter: AdapterKind, base_url: Option<String>) -> Option<String> {
     base_url.map(|base_url| {

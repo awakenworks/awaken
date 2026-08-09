@@ -35,6 +35,10 @@ pub fn durable_ops_router(application: Arc<dyn DurableRunOperations>) -> Router 
             get(dead_letters),
         )
         .route(
+            "/v1/durable/threads/{thread}/dead-letters/{run_id}/requeue",
+            post(requeue_dead_letter),
+        )
+        .route(
             "/v1/durable/threads/{thread}/dead-letters/purge",
             post(purge),
         )
@@ -286,6 +290,26 @@ async fn dead_letters(
             .dead_letters(&thread)
             .await
             .map(|ids| json!({ "dead_letters": ids })),
+    )
+}
+
+async fn requeue_dead_letter(
+    State(application): State<Arc<dyn DurableRunOperations>>,
+    Path((thread, run_id)): Path<(String, String)>,
+) -> (StatusCode, Json<Value>) {
+    respond(
+        application
+            .requeue_dead_letter(&thread, &run_id)
+            .await
+            .and_then(|requeued| {
+                requeued
+                    .then(|| json!({ "run_id": run_id, "requeued": true }))
+                    .ok_or_else(|| {
+                        ApplicationError::conflict(
+                            "the run is not dead-lettered in the requested thread",
+                        )
+                    })
+            }),
     )
 }
 

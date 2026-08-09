@@ -661,6 +661,51 @@ async fn an_empty_natural_end_is_a_provider_failure() {
 }
 
 #[tokio::test]
+async fn a_structured_provider_error_message_cannot_end_as_success() {
+    // Cause/effect decision table:
+    // | terminal assistant content                     | end_turn result |
+    // | provider error envelope after a warning banner | provider error  |
+    // | ordinary JSON containing an error-like field   | natural end     |
+    let provider_error = exec(vec![
+        serde_json::json!({
+            "type": "message",
+            "text": "Warning: fallback metadata\n\n{\"error\":{\"message\":\"selected model is unavailable\",\"type\":\"invalid_request_error\",\"code\":\"invalid_request_error\"}}"
+        })
+        .to_string(),
+        r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+    ]);
+    let provider_coordinator = Arc::new(RecordingCoordinator::default());
+    let state = provider_error
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(provider_coordinator.clone()),
+        )
+        .await
+        .unwrap();
+    let RunState::Ended(EndCause::Error(failure)) = state else {
+        panic!("provider envelope must end as an execution failure");
+    };
+    assert!(failure.message().contains("selected model is unavailable"));
+
+    let ordinary_output = exec(vec![
+        serde_json::json!({
+            "type": "message",
+            "text": "Result: {\"error\":{\"message\":\"documented example\",\"type\":\"example\"}}"
+        })
+        .to_string(),
+        r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+    ]);
+    let ordinary_state = ordinary_output
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(Arc::new(RecordingCoordinator::default())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ordinary_state, RunState::Ended(EndCause::NaturalEnd));
+}
+
+#[tokio::test]
 async fn acp_delivers_the_same_post_commit_terminal_extension_contract() {
     let e = exec(vec![
         r#"{"type":"message","text":"done"}"#.into(),
