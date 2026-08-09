@@ -210,21 +210,16 @@ pub enum SandboxStatus {
 
 /// Isolation strength, ordered `Workdir < Namespace < Container`. A provider
 /// admits a spec only when its class is `>=` the requested one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IsolationClass {
     /// Working-directory selection only; no OS isolation (dev/CI/trusted).
+    #[default]
     Workdir,
     /// OS-namespace isolation (bubblewrap / sandbox-exec).
     Namespace,
     /// Full container/VM isolation.
     Container,
-}
-
-impl Default for IsolationClass {
-    fn default() -> Self {
-        Self::Workdir
-    }
 }
 
 /// Minimum enforceable Sandbox properties required before a workload may be

@@ -56,10 +56,24 @@ impl ConfigService {
             }
         }
 
-        let mut publications = registry
+        let publications = registry
             .list_published_scoped(configuration_scope)
             .await
             .map_err(|error| error.to_string())?;
+        // The store contract is oldest-first. Older releases allowed an exact
+        // dependency rotation to persist a second fingerprint at the same
+        // authored revision before executable registration rejected it. Keep
+        // that immutable history durable, but converge the rebuildable catalog
+        // on the last persisted snapshot for each source revision. New writes
+        // are fenced before they can create this legacy shape.
+        let mut latest_per_source_revision = std::collections::BTreeMap::new();
+        for publication in publications {
+            latest_per_source_revision.insert(
+                (publication.agent_id.clone(), publication.source_revision),
+                publication,
+            );
+        }
+        let mut publications = latest_per_source_revision.into_values().collect::<Vec<_>>();
         // Newest first is required: historical rows may lack an old defaults
         // value, but they must never transiently become current during recovery.
         publications.sort_by(|left, right| {

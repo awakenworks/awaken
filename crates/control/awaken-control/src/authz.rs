@@ -1807,6 +1807,9 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 #[cfg(test)]
+#[path = "authz_management_profile_tests.rs"]
+mod management_profile_tests;
+#[cfg(test)]
 #[path = "authz/model_supply_tests.rs"]
 mod model_supply_tests;
 #[cfg(test)]
