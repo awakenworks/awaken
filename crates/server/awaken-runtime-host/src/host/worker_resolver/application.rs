@@ -96,10 +96,13 @@ pub(super) async fn install_claimed_session_projection(
         }
         HostWorkerResolver::realize_application_session(
             host,
-            control,
+            control.as_ref(),
             &thread_id.0,
             directive,
             Some(&claim),
+            Some(&claimed.request.activation.snapshot),
+            claimed.request.placement.recovery
+                == awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
         )
         .await?;
     } else {
@@ -151,10 +154,13 @@ pub(super) async fn install_claimed_session_projection(
         }
         HostWorkerResolver::realize_application_session(
             host,
-            control,
+            control.as_ref(),
             &thread_id.0,
             receipt.realization,
             Some(&claim),
+            Some(&claimed.request.activation.snapshot),
+            claimed.request.placement.recovery
+                == awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
         )
         .await?;
     }

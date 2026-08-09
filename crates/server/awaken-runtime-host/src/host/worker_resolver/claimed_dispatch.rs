@@ -1,57 +1,7 @@
 //! Claim-bound dispatch realization and worker selection.
 
+use super::session_realization::WorkerMcpEffects;
 use super::*;
-
-pub(super) struct WorkerProjectionSynchronizer<'a> {
-    pub(super) host: &'a SharedHost,
-    pub(super) claim: Option<&'a awaken_run_ingress::RunClaim>,
-}
-
-#[async_trait::async_trait]
-impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjectionSynchronizer<'_> {
-    async fn synchronize_session_projection(
-        &self,
-        session_id: &str,
-        projection: &awaken_session_contract::FrozenSessionProjection,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        _prepare_session: bool,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        self.host
-            .install_frozen_session_projection(session_id, projection.clone(), self.claim)
-            .await
-            .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
-        self.host
-            .install_session_realization_lease(session_id, lease.clone());
-        Ok(())
-    }
-}
-
-pub(super) struct WorkerMcpEffects<'a>(pub(super) &'a SharedHost);
-
-#[async_trait::async_trait]
-impl awaken_session_contract::McpAttachmentRealizer for WorkerMcpEffects<'_> {
-    async fn stage_mcp_attachment(
-        &self,
-        request: awaken_session_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_contract::McpRealizationReceipt, awaken_session_contract::RunError>
-    {
-        self.0.stage_dispatched_mcp(request).await
-    }
-
-    async fn publish_mcp_generation(
-        &self,
-        generation: awaken_session_contract::McpGenerationRef,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        self.0.publish_dispatched_mcp(generation).await
-    }
-
-    async fn drain_mcp_generation(
-        &self,
-        generation: awaken_session_contract::McpGenerationRef,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        self.0.drain_dispatched_mcp(generation).await
-    }
-}
 
 pub(super) async fn adopt_bound_sandbox(
     host: &SharedHost,
@@ -232,6 +182,15 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             mcp_stages
         } else {
             None
+        };
+        // Application Sessions realize MCP exclusively through Control's frozen
+        // directive below. The dispatch envelope remains a compatibility carrier
+        // for ordinary Sessions; replaying its MCP stages as well would advance a
+        // second process-local lease fence outside the canonical phase protocol.
+        let dispatched_mcp_stages = if host.application_session_control.is_some() {
+            None
+        } else {
+            dispatched_mcp_stages
         };
         install_claimed_session_projection(
             &host,

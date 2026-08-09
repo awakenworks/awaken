@@ -4,10 +4,10 @@
 use super::*;
 mod application;
 mod claimed_dispatch;
+mod session_realization;
 #[cfg(test)]
 pub(super) mod test_support;
 use application::install_claimed_session_projection;
-use claimed_dispatch::{WorkerMcpEffects, WorkerProjectionSynchronizer};
 
 /// Routes a claimed run to the worker that owns its thread, opening (or reusing)
 /// the session through the host. Holds a `Weak` back-reference so the pool's tasks
@@ -28,24 +28,6 @@ impl HostWorkerResolver {
         self.host
             .upgrade()
             .ok_or_else(|| Self::execution_error("host dropped; pool idling"))
-    }
-
-    pub(crate) async fn realize_application_session(
-        host: &SharedHost,
-        control: &Arc<dyn awaken_run_ingress_contract::ClaimedSessionControl>,
-        session_id: &str,
-        directive: awaken_session_contract::SessionRealizationDirective,
-        claim: Option<&awaken_run_ingress::RunClaim>,
-    ) -> Result<(), awaken_run_ingress::Error> {
-        awaken_session_contract::drive_session_realization(
-            session_id,
-            control.as_ref(),
-            &WorkerProjectionSynchronizer { host, claim },
-            &WorkerMcpEffects(host),
-            directive,
-        )
-        .await
-        .map_err(|error| Self::execution_error(error.to_string()))
     }
 
     async fn resolve(
@@ -425,6 +407,31 @@ mod tests {
         required_runtime: Option<(std::sync::Weak<SharedHost>, String)>,
     }
 
+    fn recording_environment() -> awaken_session_contract::EnvironmentSnapshot {
+        let holder = awaken_runtime_contract::PlaintextHolder::new(
+            awaken_runtime_contract::PlaintextBoundary::Worker,
+            "test.worker",
+        );
+        awaken_session_contract::EnvironmentSnapshot {
+            environment_id: "env".into(),
+            revision: awaken_session_contract::EnvironmentRevision(1),
+            self_hosted: false,
+            config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+                "env-fingerprint".into(),
+            ),
+            sandbox: serde_json::json!({}),
+            sandbox_provisioning: Default::default(),
+            packages: Default::default(),
+            prepared_image: None,
+            network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+            credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
+                inference_holder: holder.clone(),
+                mcp_holder: holder.clone(),
+                resource_holder: holder,
+            },
+        }
+    }
+
     #[async_trait::async_trait]
     impl awaken_session_contract::McpAttachmentRealizer for RecordingMcpRealizer {
         async fn stage_mcp_attachment(
@@ -609,32 +616,10 @@ mod tests {
         > {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.phases.lock().unwrap().push("contribute");
-            let holder = awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Worker,
-                "test.worker",
-            );
             let input = contribution.input;
             let baseline = awaken_session_contract::SessionBaseline::compile(
                 awaken_session_contract::SessionBaselineInputs {
-                    environment: awaken_session_contract::EnvironmentSnapshot {
-                        environment_id: "env".into(),
-                        revision: awaken_session_contract::EnvironmentRevision(1),
-                        self_hosted: false,
-                        config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
-                            "env-fingerprint".into(),
-                        ),
-                        sandbox: serde_json::json!({}),
-                        sandbox_provisioning: Default::default(),
-                        packages: Default::default(),
-                        prepared_image: None,
-                        network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
-                        credential_realization:
-                            awaken_runtime_contract::CredentialRealizationProfile {
-                                inference_holder: holder.clone(),
-                                mcp_holder: holder.clone(),
-                                resource_holder: holder,
-                            },
-                    },
+                    environment: recording_environment(),
                     runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                     mcp_authoring: Default::default(),
                     // The Control projection and the claimed publication name
@@ -679,6 +664,7 @@ mod tests {
                 workspace_id: "workspace".into(),
                 revision: awaken_session_contract::SessionRevision(2),
                 baseline,
+                environment: Default::default(),
                 resource_revision: 0,
                 resources: Default::default(),
                 mcp,
@@ -891,6 +877,7 @@ mod tests {
             workspace_id: "workspace".into(),
             revision: awaken_session_contract::SessionRevision(2),
             baseline,
+            environment: Default::default(),
             resource_revision: 0,
             resources: Default::default(),
             toolsets: Vec::new(),
@@ -988,10 +975,10 @@ mod tests {
         // | W1 | T | success | installed, exact Agent | receipt then environment |
         // | W2 | T | success | missing | reject before environment |
         // | W3 | F | - | any | reject before provisioner |
-        // | W4 | T | success + initial MCP | installed | stage/activate/publish/ack |
+        // | W4 | T | success + initial MCP + legacy dispatch copy | installed | Control alone stages/activates/publishes/acks, then renews |
         // | W5 | T | initial MCP stage fails | installed | fail; no publish/environment |
         // | W6 | T | active MCP lease due | installed | same canonical driver renews generation |
-        // | W7 | T | renewal loses Session authority | installed | revoke only that Session; Worker remains healthy |
+        // | W7 | T | renewal loses Session authority | installed | revoke local projection, preserve durable Environment; Worker remains healthy |
         // | W8 | T | Session already frozen | installed | resume projection; refresh only indirect material |
         for (rule, install_contributor, with_initial_mcp, fail_mcp_stage) in [
             ("W1", true, false, false),
@@ -1050,6 +1037,7 @@ mod tests {
                     selected_plaintext_holder: None,
                 }
             });
+            let dispatched_mcp_stage = mcp_stage.clone();
             let host = if install_contributor {
                 host.with_application_session_control(Arc::new(RecordingContributor {
                     calls: contribution_calls.clone(),
@@ -1067,12 +1055,18 @@ mod tests {
             drop(managed);
             let thread = format!("thread-application-{rule}");
             let run = format!("run-application-{rule}");
-            dispatch
-                .enqueue(awaken_run_ingress::RunDispatch::new(test_activation(
-                    &thread, &run,
-                )))
-                .await
-                .expect("enqueue");
+            let mut run_dispatch =
+                awaken_run_ingress::RunDispatch::new(test_activation(&thread, &run));
+            if let Some(stage) = dispatched_mcp_stage {
+                let runtime = crate::provisioning::encode_session_runtime_envelope(
+                    recording_environment(),
+                    Some(Vec::new()),
+                    vec![stage],
+                )
+                .expect("legacy application runtime envelope");
+                run_dispatch = run_dispatch.with_session_runtime(runtime);
+            }
+            dispatch.enqueue(run_dispatch).await.expect("enqueue");
             let now = awaken_run_ingress::SystemClock.now_ms();
             let claimed = dispatch
                 .claim("worker-a", 30_000, now, &Default::default())
@@ -1105,6 +1099,12 @@ mod tests {
                     1,
                     "W6"
                 );
+                let durable_environment = host
+                    .session_environment_handle(&thread)
+                    .await
+                    .expect("W7 durable Environment before revocation");
+                let durable_binding = serde_json::to_string(&durable_environment)
+                    .expect("W7 durable Environment binding");
                 fail_begin.store(true, Ordering::SeqCst);
                 assert_eq!(
                     host.renew_due_session_realizations(
@@ -1117,6 +1117,21 @@ mod tests {
                     "W7"
                 );
                 assert!(!host.session_slots.contains(&thread), "W7");
+                let (adopted, rebuild) = host
+                    .adopt_bound_session_environment(
+                        &thread,
+                        Some(&durable_binding),
+                        &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+                        false,
+                    )
+                    .await
+                    .expect("W7 preserved Environment remains adoptable");
+                assert!(!rebuild, "W7");
+                assert_eq!(
+                    adopted.expect("W7 adopted Environment").handle(),
+                    durable_environment,
+                    "W7"
+                );
             }
 
             assert_eq!(
