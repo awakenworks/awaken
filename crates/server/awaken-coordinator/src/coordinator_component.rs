@@ -119,8 +119,10 @@ pub async fn build_coordinator_component(
         application_access.clone(),
         model_directory,
         dream_process_store,
-        resource_management_router,
-        worker_authenticator,
+        crate::ManagedRoutingExtensions {
+            resource_management_router,
+            worker_authenticator,
+        },
     );
     let data = data.merge(registration_router);
     let management_router = awaken_protocol_managed::deployments_router(deployment_state.clone())

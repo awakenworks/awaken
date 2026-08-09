@@ -107,13 +107,12 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         scope: &ScopeId,
         config: &AgentConfig,
     ) -> Result<(), ConfigStoreError> {
-        // The `ON CONFLICT … WHERE` guard makes a cross-scope write a no-op, so a
-        // workspace cannot clobber another's agent by id.
+        // Agent identity is `(scope_id, id)`: portable Agent ids may be reused
+        // across scopes without allowing either owner to clobber the other.
         sqlx::query(&format!(
             "INSERT INTO {NS}_agent (id, data, scope_id, generation) VALUES ($1, $2, $3, 1) \
-             ON CONFLICT (id) DO UPDATE SET data = excluded.data, \
-             generation = {NS}_agent.generation + 1 \
-             WHERE {NS}_agent.scope_id = excluded.scope_id"
+             ON CONFLICT (scope_id, id) DO UPDATE SET data = excluded.data, \
+             generation = {NS}_agent.generation + 1"
         ))
         .bind(&config.id)
         .bind(Json(config))
@@ -165,8 +164,8 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         }
         let changed = sqlx::query(&format!(
             "INSERT INTO {NS}_agent (id, data, scope_id, generation) VALUES ($1, $2, $3, 1) \
-             ON CONFLICT (id) DO UPDATE SET data = excluded.data, \
-             generation = {NS}_agent.generation + 1 WHERE {NS}_agent.scope_id = excluded.scope_id"
+             ON CONFLICT (scope_id, id) DO UPDATE SET data = excluded.data, \
+             generation = {NS}_agent.generation + 1"
         ))
         .bind(&config.id)
         .bind(Json(config))
@@ -271,9 +270,8 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         }
         let changed = sqlx::query(&format!(
             "INSERT INTO {NS}_agent (id, data, scope_id, generation) VALUES ($1, $2, $3, 1) \
-             ON CONFLICT (id) DO UPDATE SET data = excluded.data, \
-             generation = {NS}_agent.generation + 1 \
-             WHERE {NS}_agent.scope_id = excluded.scope_id"
+             ON CONFLICT (scope_id, id) DO UPDATE SET data = excluded.data, \
+             generation = {NS}_agent.generation + 1"
         ))
         .bind(&config.id)
         .bind(Json(config))
@@ -439,10 +437,9 @@ impl ScopedConfigRegistry for PostgresConfigStore {
     ) -> Result<ConfigWrite, ConfigStoreError> {
         let applied = sqlx::query_scalar::<_, i64>(&format!(
             "INSERT INTO {NS}_agent (id, data, scope_id, generation) VALUES ($1, $2, $3, 1) \
-             ON CONFLICT (id) DO UPDATE SET data = excluded.data, \
+             ON CONFLICT (scope_id, id) DO UPDATE SET data = excluded.data, \
              generation = {NS}_agent.generation + 1 \
-             WHERE {NS}_agent.scope_id = excluded.scope_id \
-             AND {NS}_agent.generation = $4 RETURNING generation"
+             WHERE {NS}_agent.generation = $4 RETURNING generation"
         ))
         .bind(&config.id)
         .bind(Json(config))
@@ -568,7 +565,8 @@ impl ScopedConfigRegistry for PostgresConfigStore {
     ) -> Result<(), ConfigStoreError> {
         sqlx::query(&format!(
             "INSERT INTO {NS}_publication (fingerprint, agent_id, state, record, scope_id) \
-             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (fingerprint) DO NOTHING"
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (scope_id, fingerprint) DO NOTHING"
         ))
         .bind(&publication.fingerprint)
         .bind(&publication.agent_id)
@@ -603,7 +601,8 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         }
         sqlx::query(&format!(
             "INSERT INTO {NS}_publication (fingerprint, agent_id, state, record, scope_id) \
-             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (fingerprint) DO NOTHING"
+             VALUES ($1, $2, $3, $4, $5) \
+             ON CONFLICT (scope_id, fingerprint) DO NOTHING"
         ))
         .bind(&publication.fingerprint)
         .bind(&publication.agent_id)

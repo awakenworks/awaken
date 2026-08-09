@@ -1282,6 +1282,10 @@ mod process_role_surface_tests {
         assert_eq!(session.status(), StatusCode::NOT_FOUND);
 
         let (coordinator_stores, control_service) = in_memory_split_coordinator();
+        let coordinator_data = tempfile::tempdir().expect("coordinator test data");
+        let mut coordinator_deployment =
+            config::local_test_deployment(coordinator_data.path().to_owned());
+        coordinator_deployment.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
         let app = assemble_runtime_process_router(
             coordinator_stores,
             None,
@@ -1296,6 +1300,7 @@ mod process_role_surface_tests {
                     ),
                 ),
                 control_service: Some(control_service),
+                deployment: Some(coordinator_deployment.runtime),
                 ..Default::default()
             },
             None,

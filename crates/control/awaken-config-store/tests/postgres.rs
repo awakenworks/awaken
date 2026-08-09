@@ -100,18 +100,20 @@ async fn postgres_audit_and_config_commit_are_atomic_replay_safe_and_scope_fence
         .record_management_audit_scoped(&other, &other_audit)
         .await
         .unwrap();
-    assert!(
+    assert_eq!(
         store
             .put_config_with_audit_scoped(&other, &config, &other_audit)
             .await
-            .is_err()
+            .unwrap(),
+        AuditedConfigWrite::Applied
     );
-    assert!(
+    assert_eq!(
         store
             .get_config_scoped(&other, &config.id)
             .await
             .unwrap()
-            .is_none()
+            .as_ref(),
+        Some(&config)
     );
 }
 
@@ -279,6 +281,10 @@ async fn postgres_list_published_reloads_published_rows_of_the_scope() {
         .await
         .expect("p_compiled");
     store.put_publication_scoped(&b, &p_b).await.expect("p_b");
+    store
+        .put_publication_scoped(&b, &p1)
+        .await
+        .expect("the same fingerprint is independently owned by b");
 
     let a_ids: Vec<String> = store
         .list_published_scoped(&a)
@@ -295,8 +301,17 @@ async fn postgres_list_published_reloads_published_rows_of_the_scope() {
 
     // Scope isolation on the list path.
     let b_list = store.list_published_scoped(&b).await.expect("list b");
-    assert_eq!(b_list.len(), 1);
-    assert_eq!(b_list[0].fingerprint, p_b.fingerprint);
+    assert_eq!(b_list.len(), 2);
+    assert!(
+        b_list
+            .iter()
+            .any(|entry| entry.fingerprint == p_b.fingerprint)
+    );
+    assert!(
+        b_list
+            .iter()
+            .any(|entry| entry.fingerprint == p1.fingerprint)
+    );
 }
 
 /// TASK 1 (pg equivalent): multiple publications for the SAME agent id. SQLite orders

@@ -480,10 +480,20 @@ pub fn mount_with_managed_and_application_access_and_models(
         Some(application_access),
         Some(model_directory),
         None,
-        resources,
-        Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator),
+        ManagedRoutingExtensions {
+            resource_management_router: resources,
+            worker_authenticator: Arc::new(
+                awaken_worker_transport_security::HeaderWorkerAuthenticator,
+            ),
+        },
     )
     .0
+}
+
+/// Router-owned services that must move together into the managed data plane.
+pub struct ManagedRoutingExtensions {
+    pub resource_management_router: Router,
+    pub worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
 }
 
 /// Production data plane with the live model directory and the exact Dream state
@@ -496,8 +506,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
     application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
     model_directory: Arc<dyn awaken_protocol_managed_resources::ModelDirectory>,
     dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
-    resource_management_router: Router,
-    worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
+    routing: ManagedRoutingExtensions,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
     mount_with_managed_over_and_models(
         host,
@@ -506,8 +515,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
         Some(application_access),
         Some(model_directory),
         Some(dream_process_store),
-        resource_management_router,
-        worker_authenticator,
+        routing,
     )
 }
 
@@ -525,8 +533,12 @@ fn mount_with_managed_over(
         application_access,
         None,
         None,
-        resources,
-        Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator),
+        ManagedRoutingExtensions {
+            resource_management_router: resources,
+            worker_authenticator: Arc::new(
+                awaken_worker_transport_security::HeaderWorkerAuthenticator,
+            ),
+        },
     )
 }
 
@@ -537,9 +549,12 @@ fn mount_with_managed_over_and_models(
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
     model_directory: Option<Arc<dyn awaken_protocol_managed_resources::ModelDirectory>>,
     dream_process_store: Option<Arc<dyn awaken_session_contract::DreamProcessStore>>,
-    resource_management_router: Router,
-    worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
+    routing: ManagedRoutingExtensions,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
+    let ManagedRoutingExtensions {
+        resource_management_router,
+        worker_authenticator,
+    } = routing;
     install_platform_memory_data_plane(&host);
     // Spawn the process-level dispatch pool once when durable ingress is enabled
     // (O2): it is the sole claimer of the shared queue and drives every session's

@@ -556,12 +556,18 @@ fn hand_result_serializes_with_an_internally_tagged_snake_case_status() {
     // lossless ContentBlock array; E2=typed error payload; E3=tag only. Decision
     // rows R1/R2/R3 below lock the canonical ToolOutput wire rather than reviving
     // the retired scalar-content compatibility shape.
-    let ok = serde_json::to_value(HandResult::ok(ToolOutput::ok("c1", "hi"))).unwrap();
+    let expected_ok = HandResult::ok(ToolOutput::ok("c1", "hi"));
+    let ok = serde_json::to_value(&expected_ok).unwrap();
     assert_eq!(ok["status"], "ok", "R1 status");
     assert_eq!(
         ok["output"]["content"],
         serde_json::json!([{"type": "text", "text": "hi"}]),
         "R1 content"
+    );
+    assert_eq!(
+        serde_json::from_value::<HandResult>(ok).unwrap(),
+        expected_ok,
+        "the brain-hand wire must round-trip structured tool output"
     );
 
     let err = serde_json::to_value(HandResult::err(HandError::new(

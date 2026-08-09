@@ -73,24 +73,25 @@ pub(crate) fn resource_host_with_deployment(
     model_ref: impl Into<String>,
     deployment: awaken_runtime_host::DeploymentConfig,
 ) -> SharedHost {
+    let durable_resources = deployment.storage_dir.is_some();
     let resources = deployment.storage_dir.clone().map_or_else(
         awaken_coordinator::ephemeral_resources_application,
         |storage_dir| awaken_coordinator::embedded_resources_application(&storage_dir),
     );
-    let host = if deployment.storage_dir.is_some() {
-        let host = SharedHost::new_with_resource_component_and_deployment(
-            llm,
-            model_ref,
-            resources.ports(),
-            deployment,
-        )
-        .with_file_application(resources.files());
+    // Resource durability and runtime policy are orthogonal. Even an ephemeral
+    // resource application must preserve the caller's complete typed Deployment;
+    // rebuilding through the convenience constructor here silently replaced an
+    // explicit Local sandbox tier with the fail-closed Namespace default.
+    let host = SharedHost::new_with_resource_component_and_deployment(
+        llm,
+        model_ref,
+        resources.ports(),
+        deployment,
+    )
+    .with_file_application(resources.files());
+    if durable_resources {
         awaken_coordinator::install_platform_memory_data_plane(&host);
-        host
-    } else {
-        SharedHost::new_with_resource_component(llm, model_ref, resources.ports())
-            .with_file_application(resources.files())
-    };
+    }
     let scenario_workspace = std::env::var("AWAKEN_SCENARIO_WORKSPACE")
         .ok()
         .filter(|workspace| !workspace.trim().is_empty());

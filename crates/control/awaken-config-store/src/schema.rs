@@ -68,7 +68,7 @@ pub fn config_bundle() -> Result<MigrationBundle, MigrationError> {
         // SQLite orders by its built-in `rowid`; nothing to add. A harmless,
         // idempotent index on the existing `created_at` column stands in as an
         // inert body (a migration body may not be blank).
-        "CREATE INDEX IF NOT EXISTS {prefix}_publication_created_at_idx \
+        "CREATE INDEX {prefix}_publication_created_at_idx \
          ON {prefix}_publication (created_at)",
     )?);
     migrations.push(Migration::new(
@@ -106,42 +106,131 @@ pub fn config_bundle() -> Result<MigrationBundle, MigrationError> {
             data {json} NOT NULL, created_at {timestamptz} NOT NULL DEFAULT {now}, \
             PRIMARY KEY (scope_id, id, generation)); \
          INSERT INTO {prefix}_agent_revision (scope_id, id, generation, data) \
-            SELECT scope_id, id, generation, data FROM {prefix}_agent \
-            ON CONFLICT (scope_id, id, generation) DO NOTHING; \
-         CREATE OR REPLACE FUNCTION {prefix}_capture_agent_revision() RETURNS TRIGGER AS $$ \
+            SELECT scope_id, id, generation, data FROM {prefix}_agent; \
+         CREATE FUNCTION {prefix}_capture_agent_revision() RETURNS TRIGGER AS $$ \
             BEGIN INSERT INTO {prefix}_agent_revision (scope_id, id, generation, data) \
-              VALUES (NEW.scope_id, NEW.id, NEW.generation, NEW.data) \
-              ON CONFLICT (scope_id, id, generation) DO NOTHING; RETURN NEW; END; \
+              VALUES (NEW.scope_id, NEW.id, NEW.generation, NEW.data); RETURN NEW; END; \
             $$ LANGUAGE plpgsql; \
-         CREATE TRIGGER {prefix}_agent_revision_capture AFTER INSERT OR UPDATE ON {prefix}_agent \
-            FOR EACH ROW EXECUTE FUNCTION {prefix}_capture_agent_revision()",
+         CREATE TRIGGER {prefix}_agent_revision_insert AFTER INSERT ON {prefix}_agent \
+            FOR EACH ROW EXECUTE FUNCTION {prefix}_capture_agent_revision(); \
+         CREATE TRIGGER {prefix}_agent_revision_update AFTER UPDATE ON {prefix}_agent \
+            FOR EACH ROW WHEN (OLD.generation IS DISTINCT FROM NEW.generation) \
+            EXECUTE FUNCTION {prefix}_capture_agent_revision()",
         "CREATE TABLE {prefix}_agent_revision (\
             scope_id TEXT NOT NULL, id TEXT NOT NULL, generation BIGINT NOT NULL, \
             data TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, \
             PRIMARY KEY (scope_id, id, generation)); \
-         INSERT OR IGNORE INTO {prefix}_agent_revision (scope_id, id, generation, data) \
+         INSERT INTO {prefix}_agent_revision (scope_id, id, generation, data) \
             SELECT scope_id, id, generation, data FROM {prefix}_agent; \
          CREATE TRIGGER {prefix}_agent_revision_insert AFTER INSERT ON {prefix}_agent BEGIN \
-            INSERT OR IGNORE INTO {prefix}_agent_revision (scope_id, id, generation, data) \
+            INSERT INTO {prefix}_agent_revision (scope_id, id, generation, data) \
               VALUES (NEW.scope_id, NEW.id, NEW.generation, NEW.data); END; \
-         CREATE TRIGGER {prefix}_agent_revision_update AFTER UPDATE ON {prefix}_agent BEGIN \
-            INSERT OR IGNORE INTO {prefix}_agent_revision (scope_id, id, generation, data) \
+         CREATE TRIGGER {prefix}_agent_revision_update AFTER UPDATE ON {prefix}_agent \
+            WHEN OLD.generation <> NEW.generation BEGIN \
+            INSERT INTO {prefix}_agent_revision (scope_id, id, generation, data) \
               VALUES (NEW.scope_id, NEW.id, NEW.generation, NEW.data); END",
+    )?);
+    migrations.push(Migration::per_dialect(
+        10,
+        "agent configs and publications: identity is scoped, not globally first-writer-owned",
+        "ALTER TABLE {prefix}_agent DROP CONSTRAINT {prefix}_agent_pkey; \
+         ALTER TABLE {prefix}_agent ADD PRIMARY KEY (scope_id, id); \
+         ALTER TABLE {prefix}_publication DROP CONSTRAINT {prefix}_publication_pkey; \
+         ALTER TABLE {prefix}_publication ADD PRIMARY KEY (scope_id, fingerprint)",
+        "DROP TRIGGER {prefix}_agent_revision_insert; \
+         DROP TRIGGER {prefix}_agent_revision_update; \
+         ALTER TABLE {prefix}_agent RENAME TO {prefix}_agent_unscoped; \
+         CREATE TABLE {prefix}_agent (\
+            id TEXT NOT NULL, data TEXT NOT NULL, \
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, \
+            scope_id TEXT NOT NULL DEFAULT 'default', \
+            generation BIGINT NOT NULL DEFAULT 1, \
+            PRIMARY KEY (scope_id, id)); \
+         INSERT INTO {prefix}_agent (id, data, created_at, scope_id, generation) \
+            SELECT id, data, created_at, scope_id, generation \
+            FROM {prefix}_agent_unscoped ORDER BY rowid; \
+         DROP TABLE {prefix}_agent_unscoped; \
+         CREATE TRIGGER {prefix}_agent_revision_insert AFTER INSERT ON {prefix}_agent BEGIN \
+            INSERT INTO {prefix}_agent_revision (scope_id, id, generation, data) \
+              VALUES (NEW.scope_id, NEW.id, NEW.generation, NEW.data); END; \
+         CREATE TRIGGER {prefix}_agent_revision_update AFTER UPDATE ON {prefix}_agent \
+            WHEN OLD.generation <> NEW.generation BEGIN \
+            INSERT INTO {prefix}_agent_revision (scope_id, id, generation, data) \
+              VALUES (NEW.scope_id, NEW.id, NEW.generation, NEW.data); END; \
+         ALTER TABLE {prefix}_publication RENAME TO {prefix}_publication_unscoped; \
+         CREATE TABLE {prefix}_publication (\
+            fingerprint TEXT NOT NULL, agent_id TEXT NOT NULL, state TEXT NOT NULL, \
+            record TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, \
+            scope_id TEXT NOT NULL DEFAULT 'default', \
+            PRIMARY KEY (scope_id, fingerprint)); \
+         INSERT INTO {prefix}_publication \
+            (fingerprint, agent_id, state, record, created_at, scope_id) \
+            SELECT fingerprint, agent_id, state, record, created_at, scope_id \
+            FROM {prefix}_publication_unscoped ORDER BY rowid; \
+         DROP TABLE {prefix}_publication_unscoped; \
+         CREATE INDEX {prefix}_publication_created_at_idx \
+            ON {prefix}_publication (created_at)",
     )?);
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::BTreeMap;
+
+    use awaken_scoped_migration::{Dialect, plan};
+
+    use super::config_bundle;
 
     #[test]
-    fn config_bundle_preserves_published_migration_bodies() {
-        // Cause/effect decision table: an exact historical conditional body with
-        // its published checksum remains loadable; a changed/new conditional body
-        // is rejected by migration fitness; later migrations use the ledger as
-        // their only idempotency guard. All nine historical versions must remain.
-        let bundle = config_bundle().expect("deterministic config bundle");
-        assert_eq!(bundle.migrations().len(), 9);
+    fn deployed_sqlite_v9_ledger_upgrades_without_historical_checksum_drift() {
+        let applied = BTreeMap::from([
+            (
+                1,
+                "3134e209014343fdb07c7e57bedbdd42a27fab4017e9b2c6a7a69f3d68dcf588".into(),
+            ),
+            (
+                2,
+                "76f0182f64e73c863acb737c25f3507d0e81ec01d5c6967331dc3c9ef3a9aab6".into(),
+            ),
+            (
+                3,
+                "fe8e6854ed3e22e3f8940cf64f2c1064b4a856bba57e6a38e2972c92f8340851".into(),
+            ),
+            (
+                4,
+                "5f7faf0e50e577be972afdf0f32dc1140f6cf00edf2c7db8b5808fd27179d22f".into(),
+            ),
+            (
+                5,
+                "3811e84d319e0dd8d4f0f16d75fb2b7a73b5d76acb759f05518468b76682acd5".into(),
+            ),
+            (
+                6,
+                "00dec487869e300b97c26a44898b0fb7af0da0d438eff69afe7c177b7f8d7a0d".into(),
+            ),
+            (
+                7,
+                "ca632a2fcd446c6f0fde5f581f7d4be2be0ed4bea94e9d80646ed712200d97c9".into(),
+            ),
+            (
+                8,
+                "c5729c8a7e39fc422fed94bdc1892ad9b1e5e652595e89e2e0cc9903ea2427c8".into(),
+            ),
+            (
+                9,
+                "9957a1bf1c53dfa318e927883f34f4200fe00f5db1853a272d63389022a96814".into(),
+            ),
+        ]);
+
+        let bundle = config_bundle().unwrap();
+        let pending = plan(&bundle, &applied, Dialect::Sqlite).unwrap();
+        assert_eq!(
+            pending
+                .into_iter()
+                .map(awaken_scoped_migration::Migration::version)
+                .collect::<Vec<_>>(),
+            vec![10]
+        );
     }
 }

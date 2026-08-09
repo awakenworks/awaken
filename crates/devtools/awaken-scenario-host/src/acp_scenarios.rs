@@ -405,6 +405,15 @@ const SANDBOXED_FAKE_ACP_SCRIPT: &str = "read _p; net=''; \
 /// `AWAKEN_MODEL_MODE=acp-sandboxed`; the sandbox roots live under
 /// `AWAKEN_SANDBOX_DIR` (a per-process temp dir when unset).
 pub async fn build_acp_sandboxed_router() -> Router {
+    build_acp_sandboxed_router_with_deployment(scenario_deployment()).await
+}
+
+/// Typed-deployment variant used by embedders and hermetic tests. The ordinary
+/// scenario entry point above remains fail-closed when its requested namespace
+/// cannot be created; callers must explicitly select `Local` to run unsandboxed.
+pub async fn build_acp_sandboxed_router_with_deployment(
+    mut deployment: awaken_runtime_host::DeploymentConfig,
+) -> Router {
     // The launch env is the ONLY env projected into the agent command; the probe
     // port (when the e2e sets one) must cross into the sandbox explicitly.
     let mut env = Vec::new();
@@ -426,7 +435,6 @@ pub async fn build_acp_sandboxed_router() -> Router {
         .unwrap_or_else(|| {
             std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
         });
-    let mut deployment = scenario_deployment();
     deployment.storage_dir = Some(base.clone());
     deployment.sandbox_dir = Some(base.join("sandboxes"));
     let host = resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment)

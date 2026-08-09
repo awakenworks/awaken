@@ -15,8 +15,8 @@
 //! that proves the factory wired the intended model/host.
 
 use awaken_scenario_host::{
-    build_acp_sandboxed_router, build_config_router, build_custom_router, build_delegation_router,
-    build_echo_router, build_vision_router, build_worker_router,
+    build_acp_sandboxed_router_with_deployment, build_config_router, build_custom_router,
+    build_delegation_router, build_echo_router, build_vision_router, build_worker_router,
 };
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
@@ -150,8 +150,14 @@ async fn acp_sandboxed_factory_also_mounts_the_environments_surface() {
     // Extracting its composition into `acp_scenarios` introduces no new branch or
     // effect, so no new decision table applies; this end-to-end route observation
     // is the regression coverage for the structural move.
+    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
     assert_eq!(
-        get_status(build_acp_sandboxed_router().await, "/v1/environments").await,
+        get_status(
+            build_acp_sandboxed_router_with_deployment(deployment).await,
+            "/v1/environments",
+        )
+        .await,
         StatusCode::OK,
     );
 }

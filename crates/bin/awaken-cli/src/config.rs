@@ -9,8 +9,6 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-#[cfg(test)]
-use std::path::Path;
 use std::path::PathBuf;
 
 use awaken_runtime_host::{AcpWorkerProfile, DeploymentConfig, DispatchBackend, StoreKind};
