@@ -25,15 +25,28 @@ impl DeploymentSessionLauncher for LocalDeploymentSessionLauncher {
                 },
             };
         }
-        if request.environment_id != "env_local"
-            && let Some(environment) = self.0.deployment_environment(&request.environment_id).await
-            && environment.is_none()
-        {
-            return DeploymentLaunchOutcome::Failed {
-                error: RunError::EnvironmentNotFoundError {
-                    message: format!("environment `{}` no longer exists", request.environment_id),
-                },
-            };
+        if request.environment_id != "env_local" {
+            match self.0.deployment_environment(&request.environment_id).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return DeploymentLaunchOutcome::Failed {
+                        error: RunError::EnvironmentNotFoundError {
+                            message: format!(
+                                "environment `{}` no longer exists",
+                                request.environment_id
+                            ),
+                        },
+                    };
+                }
+                Err(error) => {
+                    return DeploymentLaunchOutcome::Unavailable {
+                        message: format!(
+                            "environment catalog is unavailable while resolving `{}`: {error}",
+                            request.environment_id
+                        ),
+                    };
+                }
+            }
         }
         if self
             .0

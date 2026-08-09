@@ -44,6 +44,11 @@ impl ExecutableEnvironmentRegistration {
                 "revision must be non-zero".into(),
             ));
         }
+        if self.definition.archived_at.is_some() {
+            return Err(ExecutableEnvironmentRegistrationError::Invalid(
+                "archived definitions must be withdrawn, not registered".into(),
+            ));
+        }
         let expected = Self::new(self.definition.clone(), self.sandbox_policy.clone());
         if self.fingerprint.is_empty() || self.fingerprint != expected.fingerprint {
             return Err(ExecutableEnvironmentRegistrationError::Invalid(
@@ -151,11 +156,26 @@ mod tests {
     fn decision_table_validates_exact_registration_identity() {
         // Cause/effect design:
         // C1 exact facts + derived fingerprint -> E1 valid;
-        // C2 any fact changes without recomputing the fingerprint -> E2 invalid.
+        // C2 any fact changes without recomputing the fingerprint -> E2 invalid;
+        // C3 an archived definition, even with a matching fingerprint -> E3
+        // invalid because lifecycle tombstones use the withdrawal command.
+        //
+        // | Rule | fingerprint | archived | effect |
+        // | R1 | exact | false | valid registration |
+        // | R2 | stale | false | invalid registration |
+        // | R3 | exact | true | invalid; withdrawal required |
         let valid = ExecutableEnvironmentRegistration::new(definition(), None);
-        assert!(valid.validate().is_ok(), "E1");
-        let mut changed = valid;
+        assert!(valid.validate().is_ok(), "R1");
+        let mut changed = valid.clone();
         changed.definition.name = "changed".into();
-        assert!(changed.validate().is_err(), "E2");
+        assert!(changed.validate().is_err(), "R2");
+        let mut archived = valid.definition;
+        archived.archived_at = Some("2026-01-01T00:00:00Z".into());
+        assert!(
+            ExecutableEnvironmentRegistration::new(archived, None)
+                .validate()
+                .is_err(),
+            "R3"
+        );
     }
 }

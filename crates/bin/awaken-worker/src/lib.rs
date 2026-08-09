@@ -478,7 +478,8 @@ impl WorkerNodeBuilder {
                         .credential_materializer
                         .as_ref()
                         .map(CredentialMaterializerSupport::from),
-                    worker_local_credentials: credential_observation_resolver.is_some(),
+                    worker_local_credential_resolver_installed: credential_observation_resolver
+                        .is_some(),
                     remote_credential_realization: self
                         .remote_attempt
                         .as_ref()
