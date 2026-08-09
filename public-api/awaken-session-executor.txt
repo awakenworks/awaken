@@ -99,6 +99,21 @@ pub awaken_session_executor::CacheVolumeWarmup::location: awaken_provisioning_co
 impl awaken_session_executor::CacheVolumeWarmup
 pub fn awaken_session_executor::CacheVolumeWarmup::host_path(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_session_executor::CacheVolumeWarmup::new(impl core::convert::Into<alloc::string::String>, awaken_provisioning_contract::vocab::CacheVolumeLocation) -> Self
+pub struct awaken_session_executor::CommittedStepReceipt
+pub awaken_session_executor::CommittedStepReceipt::compacted: bool
+pub awaken_session_executor::CommittedStepReceipt::delegated_runs: alloc::vec::Vec<awaken_session_contract::session::DelegatedRun>
+pub awaken_session_executor::CommittedStepReceipt::new_messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_session_executor::CommittedStepReceipt::pending: core::option::Option<awaken_session_executor::PendingTool>
+pub awaken_session_executor::CommittedStepReceipt::rescheduled: bool
+pub awaken_session_executor::CommittedStepReceipt::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_session_executor::CommittedStepReceipt::state: awaken_agent_contract::agent::run::RunState
+impl awaken_session_executor::CommittedStepReceipt
+pub fn awaken_session_executor::CommittedStepReceipt::commit_sequence(&self) -> u64
+pub fn awaken_session_executor::CommittedStepReceipt::first_message_id(&self) -> core::option::Option<&awaken_agent_contract::agent::message::Id>
+pub fn awaken_session_executor::CommittedStepReceipt::last_message_id(&self) -> core::option::Option<&awaken_agent_contract::agent::message::Id>
+pub fn awaken_session_executor::CommittedStepReceipt::operation_ordinal(&self) -> u64
+pub fn awaken_session_executor::CommittedStepReceipt::store_cursor(&self) -> u64
+pub fn awaken_session_executor::CommittedStepReceipt::thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
 pub struct awaken_session_executor::ContentCaptureSettings
 pub awaken_session_executor::ContentCaptureSettings::level: awaken_runtime_contract::capture::ContentCapture
 pub awaken_session_executor::ContentCaptureSettings::redaction: awaken_session_executor::ContentRedaction
@@ -251,14 +266,6 @@ pub fn awaken_session_executor::RunApplicationHost::resume<'life0, 'life1, 'life
 pub fn awaken_session_executor::RunApplicationHost::run<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_executor::RunApplicationHost::run_streaming<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_executor::RunApplicationHost::usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(u64, u64), awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub struct awaken_session_executor::RunResult
-pub awaken_session_executor::RunResult::compacted: bool
-pub awaken_session_executor::RunResult::delegated_runs: alloc::vec::Vec<awaken_session_contract::session::DelegatedRun>
-pub awaken_session_executor::RunResult::new_messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub awaken_session_executor::RunResult::pending: core::option::Option<awaken_session_executor::PendingTool>
-pub awaken_session_executor::RunResult::rescheduled: bool
-pub awaken_session_executor::RunResult::run_id: awaken_agent_contract::agent::run::Id
-pub awaken_session_executor::RunResult::state: awaken_agent_contract::agent::run::RunState
 pub struct awaken_session_executor::SandboxSettings
 pub awaken_session_executor::SandboxSettings::allow_local_fallback: bool
 pub awaken_session_executor::SandboxSettings::container_forward_proxy: core::option::Option<alloc::string::String>
@@ -310,13 +317,13 @@ pub async fn awaken_session_executor::SharedHost::quiesce_terminal_delegations(&
 pub async fn awaken_session_executor::SharedHost::reap(&self, &str, u64, u64) -> core::result::Result<usize, awaken_session_executor::HostError>
 pub async fn awaken_session_executor::SharedHost::reconcile(&self, &str) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_session_executor::HostError>
 pub async fn awaken_session_executor::SharedHost::requeue_dead_letter(&self, &str, &str) -> core::result::Result<bool, awaken_session_executor::HostError>
-pub async fn awaken_session_executor::SharedHost::resume(&self, &str, &str, awaken_session_executor::HostResume) -> core::result::Result<awaken_session_executor::RunResult, awaken_session_executor::HostError>
-pub async fn awaken_session_executor::SharedHost::run(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<awaken_session_executor::RunResult, awaken_session_executor::HostError>
-pub async fn awaken_session_executor::SharedHost::run_attributed(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, core::option::Option<awaken_runtime_contract::data_subject::DataSubjectId>) -> core::result::Result<awaken_session_executor::RunResult, awaken_session_executor::HostError>
-pub async fn awaken_session_executor::SharedHost::run_streaming(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::result::Result<awaken_session_executor::RunResult, awaken_session_executor::HostError>
-pub async fn awaken_session_executor::SharedHost::run_streaming_attributed(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>, core::option::Option<awaken_runtime_contract::data_subject::DataSubjectId>) -> core::result::Result<awaken_session_executor::RunResult, awaken_session_executor::HostError>
+pub async fn awaken_session_executor::SharedHost::resume(&self, &str, &str, awaken_session_executor::HostResume) -> core::result::Result<awaken_session_executor::CommittedStepReceipt, awaken_session_executor::HostError>
+pub async fn awaken_session_executor::SharedHost::run(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<awaken_session_executor::CommittedStepReceipt, awaken_session_executor::HostError>
+pub async fn awaken_session_executor::SharedHost::run_attributed(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, core::option::Option<awaken_runtime_contract::data_subject::DataSubjectId>) -> core::result::Result<awaken_session_executor::CommittedStepReceipt, awaken_session_executor::HostError>
+pub async fn awaken_session_executor::SharedHost::run_streaming(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::result::Result<awaken_session_executor::CommittedStepReceipt, awaken_session_executor::HostError>
+pub async fn awaken_session_executor::SharedHost::run_streaming_attributed(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>, core::option::Option<awaken_runtime_contract::data_subject::DataSubjectId>) -> core::result::Result<awaken_session_executor::CommittedStepReceipt, awaken_session_executor::HostError>
 pub async fn awaken_session_executor::SharedHost::submit_background_async(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<alloc::string::String, awaken_session_executor::HostError>
-pub async fn awaken_session_executor::SharedHost::supersede_run(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<awaken_session_executor::RunResult, awaken_session_executor::HostError>
+pub async fn awaken_session_executor::SharedHost::supersede_run(&self, core::option::Option<&str>, &str, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<awaken_session_executor::CommittedStepReceipt, awaken_session_executor::HostError>
 pub async fn awaken_session_executor::SharedHost::superseded(&self, &str) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_session_executor::HostError>
 pub async fn awaken_session_executor::SharedHost::thread_usage(&self, &str) -> awaken_runtime_contract::llm::ThreadUsage
 impl awaken_session_executor::SharedHost

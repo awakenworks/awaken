@@ -85,7 +85,7 @@ pub use crate::authority::{
     CredentialRefreshFactory, LocalCommit, ProjectedLocalCommit, RuntimeAuthority,
     RuntimeAuthorityError,
 };
-pub use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
+pub use crate::host::{CommittedStepReceipt, HostError, HostErrorKind, PendingTool};
 pub use crate::worker_http::respond as respond_host_http;
 
 // The neutral session substrate and its resume vocabulary.
@@ -405,7 +405,7 @@ impl ManagedHost {
     async fn finish_step(
         &self,
         _thread: &str,
-        result: Result<RunResult, HostError>,
+        result: Result<CommittedStepReceipt, HostError>,
     ) -> Result<StepOutcome, RunError> {
         result
             .map_err(to_run_error)

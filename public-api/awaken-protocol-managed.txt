@@ -412,6 +412,9 @@ pub awaken_protocol_managed::types::resource::ResourceInput::MemoryStore::access
 pub awaken_protocol_managed::types::resource::ResourceInput::MemoryStore::instructions: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::resource::ResourceInput::MemoryStore::memory_store_id: alloc::string::String
 pub awaken_protocol_managed::types::resource::ResourceInput::MemoryStore::mount_path: core::option::Option<alloc::string::String>
+pub enum awaken_protocol_managed::types::resource::ResourceManifestPhase
+pub awaken_protocol_managed::types::resource::ResourceManifestPhase::Active
+pub awaken_protocol_managed::types::resource::ResourceManifestPhase::Applying
 pub enum awaken_protocol_managed::types::resource::SessionResource
 pub awaken_protocol_managed::types::resource::SessionResource::File
 pub awaken_protocol_managed::types::resource::SessionResource::File::created_at: &'static str
@@ -445,8 +448,15 @@ pub struct awaken_protocol_managed::types::resource::ResourceAddParams
 pub awaken_protocol_managed::types::resource::ResourceAddParams::file_id: alloc::string::String
 pub awaken_protocol_managed::types::resource::ResourceAddParams::kind: awaken_protocol_managed::types::resource::FileResourceKind
 pub awaken_protocol_managed::types::resource::ResourceAddParams::mount_path: core::option::Option<alloc::string::String>
+pub struct awaken_protocol_managed::types::resource::ResourceManifestReplaceParams
+pub awaken_protocol_managed::types::resource::ResourceManifestReplaceParams::resources: alloc::vec::Vec<awaken_protocol_managed::types::resource::ResourceInput>
 pub struct awaken_protocol_managed::types::resource::ResourceUpdateParams
 pub awaken_protocol_managed::types::resource::ResourceUpdateParams::authorization_token: awaken_protocol_managed::types::resource::RepositoryAuthorizationToken
+pub struct awaken_protocol_managed::types::resource::SessionResourceManifest
+pub awaken_protocol_managed::types::resource::SessionResourceManifest::applied_revision: u64
+pub awaken_protocol_managed::types::resource::SessionResourceManifest::desired_revision: u64
+pub awaken_protocol_managed::types::resource::SessionResourceManifest::phase: awaken_protocol_managed::types::resource::ResourceManifestPhase
+pub awaken_protocol_managed::types::resource::SessionResourceManifest::resources: alloc::vec::Vec<awaken_protocol_managed::types::resource::SessionResource>
 pub mod awaken_protocol_managed::types::session
 pub enum awaken_protocol_managed::types::session::AgentRef
 pub awaken_protocol_managed::types::session::AgentRef::Id(alloc::string::String)
@@ -1494,6 +1504,7 @@ pub async fn awaken_protocol_managed::ManagedState::delete_resource(&self, &str,
 pub fn awaken_protocol_managed::ManagedState::get_resource(&self, &str, &str) -> core::result::Result<awaken_protocol_managed::types::resource::SessionResource, awaken_protocol_managed::StateError>
 pub fn awaken_protocol_managed::ManagedState::list_resources(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_protocol_managed::types::resource::SessionResource>, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::reconcile_resource_activations(&self) -> usize
+pub async fn awaken_protocol_managed::ManagedState::replace_resource_manifest(&self, &str, awaken_protocol_managed::types::resource::ResourceManifestReplaceParams, core::option::Option<alloc::string::String>, core::option::Option<awaken_session_contract::session_repo::SessionRevision>, alloc::string::String) -> core::result::Result<(awaken_protocol_managed::types::resource::SessionResourceManifest, awaken_session_contract::session_repo::SessionRevision), awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::update_resource(&self, &str, &str, awaken_protocol_managed::types::resource::ResourceUpdateParams) -> core::result::Result<awaken_protocol_managed::types::resource::SessionResource, awaken_protocol_managed::StateError>
 impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::create_session_with_initial_events_idempotent(&alloc::sync::Arc<Self>, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
@@ -1578,6 +1589,7 @@ pub fn awaken_protocol_managed::files_router(alloc::sync::Arc<dyn awaken_resourc
 pub fn awaken_protocol_managed::memory_stores_router(alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>) -> axum::routing::Router
 pub fn awaken_protocol_managed::models_router(alloc::sync::Arc<alloc::vec::Vec<awaken_protocol_managed::ModelEntry>>) -> axum::routing::Router
 pub fn awaken_protocol_managed::models_router_with_directory(alloc::sync::Arc<dyn awaken_protocol_managed::ModelDirectory>) -> axum::routing::Router
+pub async fn awaken_protocol_managed::replace_resource_manifest(axum::extract::state::State<alloc::sync::Arc<awaken_protocol_managed::ManagedState>>, axum::extract::path::Path<alloc::string::String>, core::option::Option<axum::extension::Extension<awaken_tenancy::WorkspaceScope>>, http::header::map::HeaderMap, axum::json::Json<awaken_protocol_managed::types::resource::ResourceManifestReplaceParams>) -> core::result::Result<(http::header::map::HeaderMap, axum::json::Json<awaken_protocol_managed::types::resource::SessionResourceManifest>), (http::status::StatusCode, axum::json::Json<awaken_protocol_managed::types::ErrorResponse>)>
 pub fn awaken_protocol_managed::resources_router(awaken_protocol_managed::ResourcesRouterInput) -> axum::routing::Router
 pub fn awaken_protocol_managed::router(alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> axum::routing::Router
 pub fn awaken_protocol_managed::skills_router(core::option::Option<alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>) -> axum::routing::Router

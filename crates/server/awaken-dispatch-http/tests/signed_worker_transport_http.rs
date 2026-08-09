@@ -730,6 +730,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 session_id: "signed-thread".into(),
                 lease: realization_lease,
                 prepared_resource_revision: None,
+                retryable: false,
                 reason: "test failure".into(),
             },
         )

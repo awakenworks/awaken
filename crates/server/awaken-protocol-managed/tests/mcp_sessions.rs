@@ -880,7 +880,11 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
     // Cause/effect decision table: R1 permanent internal preparation failure
     // maps to 500/api_error; R2 caller-invalid preparation maps to
     // 400/invalid_request_error; R3 transient Environment image readiness maps
-    // to 503/api_error. Every failure keeps the durable intent non-live.
+    // to 503/api_error while retaining a queryable Preparing intent for fenced
+    // retry. Permanent failures are hidden activation_failed records. FMECA:
+    // classifying every outage as permanent loses recovery; exposing a permanent
+    // failure as live admits Runs without a Runtime. The error kind and persisted
+    // budget distinguish those outcomes at the same realization boundary.
     for (kind, status, error_type) in [
         (
             RunErrorKind::Internal,
@@ -922,19 +926,36 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
             .expect("durable intent observed before Runtime I/O")
             .session_id
             .clone();
-        let (s, _) = call(&h.app, "GET", &format!("/v1/sessions/{failed_id}"), None).await;
-        assert_eq!(s, StatusCode::NOT_FOUND, "no half-provisioned session");
+        let (read_status, read) =
+            call(&h.app, "GET", &format!("/v1/sessions/{failed_id}"), None).await;
         let failed = h
             .repo
             .get(&failed_id)
             .await
             .expect("recoverable failed intent");
-        assert_eq!(
-            failed.mcp.attachments[0].state,
-            awaken_session_contract::McpAttachmentState::Failed,
-            "A2: {kind:?}"
-        );
-        assert!(failed.visible_mcp_servers().is_empty(), "A2: {kind:?}");
+        if kind == RunErrorKind::Unavailable {
+            assert_eq!(read_status, StatusCode::OK, "R3 queryable retry");
+            assert_eq!(read["status"], "preparing", "R3");
+            assert_eq!(failed.execution, SessionExecutionState::Preparing, "R3");
+            assert_eq!(failed.realization_progress.attempts, 1, "R3");
+            assert_eq!(
+                failed.mcp.attachments[0].state,
+                awaken_session_contract::McpAttachmentState::Realizing,
+                "R3"
+            );
+        } else {
+            assert_eq!(
+                read_status,
+                StatusCode::NOT_FOUND,
+                "R1/R2 no half-provisioned session"
+            );
+            assert_eq!(
+                failed.mcp.attachments[0].state,
+                awaken_session_contract::McpAttachmentState::Failed,
+                "R1/R2: {kind:?}"
+            );
+            assert!(failed.visible_mcp_servers().is_empty(), "R1/R2: {kind:?}");
+        }
     }
 }
 

@@ -2,3 +2,4 @@ pub mod awaken_protocol_awaken
 pub fn awaken_protocol_awaken::dream_policy_router(alloc::sync::Arc<dyn awaken_session_contract::dream::DreamPolicyApplication>) -> axum::routing::Router
 pub fn awaken_protocol_awaken::environment_extensions_router(alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>, core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>>) -> axum::routing::Router
 pub fn awaken_protocol_awaken::live_inbox_router(alloc::sync::Arc<dyn awaken_session_contract::session::LiveInboxApplication>) -> axum::routing::Router
+pub fn awaken_protocol_awaken::session_resource_manifest_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static

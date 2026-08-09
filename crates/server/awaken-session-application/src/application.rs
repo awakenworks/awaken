@@ -33,6 +33,9 @@ pub struct SessionApplicationConfiguration {
     /// incarnation remains separate so a restart can fence its predecessor
     /// without impersonating a different owner.
     pub local_realization_owner: String,
+    /// Maximum fenced assignments allowed for initial Environment
+    /// realization before the aggregate enters `activation_failed`.
+    pub realization_retry_budget: u32,
 }
 
 impl Default for SessionApplicationConfiguration {
@@ -40,6 +43,7 @@ impl Default for SessionApplicationConfiguration {
         Self {
             execution_placement: SessionExecutionPlacement::default(),
             local_realization_owner: "local-runtime".into(),
+            realization_retry_budget: 3,
         }
     }
 }
@@ -67,6 +71,10 @@ pub struct SessionApplication {
 static APPLICATION_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
 
 impl SessionApplication {
+    pub(crate) fn realization_retry_budget(&self) -> u32 {
+        self.configuration.realization_retry_budget.max(1)
+    }
+
     #[must_use]
     pub fn new(
         runtime: Arc<dyn SessionRuntime>,

@@ -1,4 +1,165 @@
 use super::*;
+use awaken_session_contract::SessionRealizationControl;
+
+#[tokio::test]
+async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
+    // Cause/effect graph: C1 Session Running/Idle; C2 valid complete desired
+    // manifest; C3 no prior pending attempt. Effects: E1 Running commits pending
+    // with attempts=0 and preserves active; E2 the later Idle reconciler fences
+    // one attempt and commits pending to active. Decision rules M1
+    // Running+C2+C3=>E1; M2 Idle+pending=>E2. FMECA: mutating mounts during a
+    // turn can invalidate files observed by the Run (S9/O5/D6); deferring only
+    // the effect, not the intent, preserves both execution safety and visibility.
+    let repo: Arc<dyn ManagedSessionRepository> =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    create(
+        repo.as_ref(),
+        persisted("running-manifest", false, false, "running"),
+    )
+    .await;
+    let app = application(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let desired = file_resources("safe-boundary");
+    let outcome = app
+        .replace_session_resource_manifest(
+            "running-manifest",
+            ReplaceSessionResourceManifest {
+                resources: desired.clone(),
+                expected_session_revision: None,
+                idempotency_key: Some("manifest-safe-boundary".into()),
+                request_fingerprint: "manifest-safe-boundary-hash".into(),
+            },
+        )
+        .await
+        .expect("M1 intent accepted");
+    assert!(outcome.session.resources.active.inputs.is_empty(), "M1/E1");
+    assert_eq!(
+        outcome.session.resources.pending.as_ref(),
+        Some(&desired),
+        "M1/E1"
+    );
+    assert!(
+        outcome
+            .session
+            .resources
+            .activations
+            .iter()
+            .all(|activation| activation.attempts == 0),
+        "M1/E1"
+    );
+
+    let mut idle = outcome.session;
+    idle.execution = SessionExecutionState::Idle;
+    app.commit_session_snapshot("workspace", idle, "test-safe-boundary", Vec::new())
+        .await
+        .unwrap();
+    let reconciliation = app.reconcile_resource_activations().await;
+    assert!(reconciliation.failures.is_empty(), "M2/E2");
+    let committed = repo.get("running-manifest").await.unwrap();
+    assert!(committed.resources.pending.is_none(), "M2/E2");
+    assert_eq!(committed.resources.active, desired, "M2/E2");
+}
+
+#[tokio::test]
+async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
+    // Cause/effect graph: C1 failure retryable/permanent; C2 persisted attempts
+    // below/at budget; C3 asserted lease exact/stale. Effects: E1 retryable below
+    // budget keeps Preparing and expires the lease; E2 the next assignment
+    // advances epoch and attempts; E3 retryable at budget or permanent enters
+    // activation_failed; E4 stale delivery mutates nothing. Decision rules
+    // covered: R1 retryable+attempt1<2+exact => E1; R2 next exact claim => E2;
+    // R3 retryable+attempt2=2+exact => E3; stale ownership is covered by the
+    // realization authority table. FMECA: an unbounded retry can strand create
+    // forever (S8/O5/D6), while immediate terminal failure loses recoverability
+    // (S8/O4/D4); persisted attempts plus lease expiry bound both modes.
+    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    create(
+        repo.as_ref(),
+        persisted("retry-budget", false, false, "preparing"),
+    )
+    .await;
+    let app = application_with_configuration(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+        SessionApplicationConfiguration {
+            realization_retry_budget: 2,
+            ..Default::default()
+        },
+    );
+    let target = |incarnation: &str| awaken_session_contract::SessionRealizationTarget {
+        owner: "worker".into(),
+        runtime_incarnation: incarnation.into(),
+        lease_expires_at_unix_ms: u64::MAX,
+        renew_existing_lease: false,
+        reassign_existing_lease: false,
+    };
+
+    let first = app
+        .begin_session_realization(awaken_session_contract::BeginSessionRealization {
+            session_id: "retry-budget".into(),
+            target: target("worker/1"),
+        })
+        .await
+        .expect("R1 begin");
+    app.fail_session_realization(awaken_session_contract::FailSessionRealization {
+        session_id: "retry-budget".into(),
+        lease: first.lease,
+        prepared_resource_revision: None,
+        retryable: true,
+        reason: "worker unavailable".into(),
+    })
+    .await
+    .expect("R1 retryable failure");
+    let after_first = repo.get("retry-budget").await.unwrap();
+    assert_eq!(
+        after_first.execution,
+        SessionExecutionState::Preparing,
+        "R1/E1"
+    );
+    assert_eq!(after_first.realization_progress.attempts, 1, "R1/E1");
+    assert_eq!(
+        after_first.realization.as_ref().unwrap().expires_at_unix_ms,
+        0,
+        "R1/E1"
+    );
+
+    let second = app
+        .begin_session_realization(awaken_session_contract::BeginSessionRealization {
+            session_id: "retry-budget".into(),
+            target: target("worker/2"),
+        })
+        .await
+        .expect("R2 reclaim");
+    assert_eq!(second.lease.epoch, 2, "R2/E2");
+    assert_eq!(
+        repo.get("retry-budget")
+            .await
+            .unwrap()
+            .realization_progress
+            .attempts,
+        2,
+        "R2/E2"
+    );
+    app.fail_session_realization(awaken_session_contract::FailSessionRealization {
+        session_id: "retry-budget".into(),
+        lease: second.lease,
+        prepared_resource_revision: None,
+        retryable: true,
+        reason: "worker unavailable again".into(),
+    })
+    .await
+    .expect("R3 exhausted");
+    assert_eq!(
+        repo.get("retry-budget").await.unwrap().execution,
+        SessionExecutionState::ActivationFailed,
+        "R3/E3"
+    );
+}
 
 #[tokio::test]
 async fn local_realization_uses_stable_owner_and_process_incarnation() {
@@ -14,6 +175,7 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
     let configured = |owner: &str| SessionApplicationConfiguration {
         execution_placement: SessionExecutionPlacement::LocalWorker,
         local_realization_owner: owner.into(),
+        ..Default::default()
     };
 
     let first = application_with_configuration(

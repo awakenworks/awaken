@@ -86,7 +86,7 @@ impl SessionRecord {
         let mut session = self.session.clone();
         session.resources = self
             .resource_state
-            .active
+            .desired()
             .inputs
             .iter()
             .map(|input| resolved_resource_dto(&session.id, input))

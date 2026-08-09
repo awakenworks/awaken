@@ -249,6 +249,10 @@ pub struct PersistedSession {
     /// Continuing Session projection ownership; no process-local slot is an
     /// authority for this lease.
     pub realization: Option<SessionRealizationLease>,
+    /// Initial Environment realization retry state. Kept inside the Session
+    /// root so a reclaimed Worker claim cannot reset the failure budget.
+    #[serde(default)]
+    pub realization_progress: crate::SessionRealizationProgress,
     /// The only durable execution-state authority. The retained serialized key
     /// keeps historical aggregate JSON readable through the store codec.
     #[serde(rename = "status", alias = "lifecycle")]
@@ -286,6 +290,7 @@ impl PersistedSession {
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
+            realization_progress: Default::default(),
             execution: SessionExecutionState::Preparing,
             disposition: Default::default(),
             terminal_cleanup: Default::default(),
@@ -815,6 +820,7 @@ mod mutation_tests {
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
+            realization_progress: Default::default(),
             execution: SessionExecutionState::Idle,
             disposition: SessionDisposition::Active,
             terminal_cleanup: Default::default(),
@@ -869,6 +875,12 @@ mod mutation_tests {
 
     #[test]
     fn execution_state_preserves_the_historical_key_and_rejects_unknown_truth() {
+        // Compatibility causes/effects: C1 current `status`; C2 legacy
+        // `lifecycle`; C3 unknown execution value; C4 row predates persisted
+        // realization progress. Effects: E1 C1/C2 decode the exact state; E2 C3
+        // fails closed; E3 C4 defaults to zero attempts/no error. Decision rules
+        // S1=C1=>E1, S2=C2=>E1, S3=C3=>E2, S4=C4=>E3. FMECA: rejecting C4 would
+        // quarantine every existing Session during rollout (S9/O10/D2).
         let value = serde_json::to_value(session("session-1", SessionRevision(1))).unwrap();
         assert_eq!(value.get("status"), Some(&serde_json::json!("idle")));
         assert!(value.get("lifecycle").is_none());
@@ -876,6 +888,19 @@ mod mutation_tests {
         let mut unknown = value.clone();
         unknown["status"] = serde_json::json!("legacy-unknown");
         assert!(serde_json::from_value::<PersistedSession>(unknown).is_err());
+
+        let mut legacy_progress = value.clone();
+        legacy_progress
+            .as_object_mut()
+            .unwrap()
+            .remove("realization_progress");
+        assert_eq!(
+            serde_json::from_value::<PersistedSession>(legacy_progress)
+                .unwrap()
+                .realization_progress,
+            crate::SessionRealizationProgress::default(),
+            "S4/E3"
+        );
 
         let mut aliased = value;
         let status = aliased.as_object_mut().unwrap().remove("status").unwrap();

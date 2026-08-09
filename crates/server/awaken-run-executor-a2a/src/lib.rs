@@ -575,31 +575,33 @@ async fn commit_boundary(
     messages: Vec<Message>,
     state: Vec<StateCommand>,
 ) -> Result<()> {
-    if let Some(coordinator) = &context.commit {
-        let terminal_cause = match disposition.state() {
-            RunState::Ended(cause) => Some(cause),
-            RunState::Running | RunState::Awaiting => None,
-        };
-        awaken_agent_contract::thread::commit::commit_run(
-            coordinator.as_ref(),
-            &activation.thread_id,
-            disposition,
-            messages,
-            state,
-        )
-        .await
-        .map_err(|error| Error::Commit(error.to_string()))?;
+    let coordinator = context
+        .commit
+        .as_ref()
+        .ok_or_else(|| Error::Commit("A2A execution requires a CommitCoordinator".to_string()))?;
+    let terminal_cause = match disposition.state() {
+        RunState::Ended(cause) => Some(cause),
+        RunState::Running | RunState::Awaiting => None,
+    };
+    awaken_agent_contract::thread::commit::commit_run(
+        coordinator.as_ref(),
+        &activation.thread_id,
+        disposition,
+        messages,
+        state,
+    )
+    .await
+    .map_err(|error| Error::Commit(error.to_string()))?;
 
-        if let Some(cause) = terminal_cause {
-            let terminal = CommittedTerminalRun {
-                run_id: activation.run_id.clone(),
-                thread_id: activation.thread_id.clone(),
-                cause,
-            };
-            // The shared helper isolates observer failures from the committed
-            // remote Run result and permits recovery redelivery.
-            let _ = deliver_committed_terminal(&context.terminal_observers, &terminal).await;
-        }
+    if let Some(cause) = terminal_cause {
+        let terminal = CommittedTerminalRun {
+            run_id: activation.run_id.clone(),
+            thread_id: activation.thread_id.clone(),
+            cause,
+        };
+        // The shared helper isolates observer failures from the committed
+        // remote Run result and permits recovery redelivery.
+        let _ = deliver_committed_terminal(&context.terminal_observers, &terminal).await;
     }
     Ok(())
 }
@@ -1276,20 +1278,25 @@ mod tests {
         ));
     }
 
-    /// With no commit coordinator on the context, `execute` still returns the
-    /// terminal state (the commit boundary is a no-op, not a failure).
+    /// FMECA / cause-effect design for the external commit capability:
+    /// C1=A2A returns a terminal task; C2=CommitCoordinator is absent/present.
+    /// E1=no terminal state escapes; E2=input/output/state commit atomically.
+    /// Constraint: an A2A result is external and can never be an ephemeral Run.
+    /// Decision table: R1 C1+!C2=>E1/commit error; R2 C1+C2=>E2/success (covered
+    /// by `a_completed_task_commits_reply_and_end`). This test owns R1 and guards
+    /// against reintroducing the former optional no-op path.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_missing_commit_coordinator_still_returns_the_terminal_phase() {
+    async fn a_missing_commit_coordinator_fails_before_reporting_terminal() {
         let backend = serve(
             r#"{"task":{"kind":"task","id":"t","contextId":"c","status":{"state":"completed","message":{"kind":"message","messageId":"m","role":"agent","parts":[{"kind":"text","text":"ok"}]}}}}"#,
         )
         .await;
         // RuntimeRunContext::new() carries no commit coordinator.
-        let state = A2aRunExecutor::over_http()
+        let error = A2aRunExecutor::over_http()
             .execute(activation(&backend), RuntimeRunContext::new())
             .await
-            .unwrap();
-        assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+            .expect_err("R1/E1");
+        assert!(error.to_string().contains("requires a CommitCoordinator"));
     }
 
     /// A remote task returned in the `failed` state is an execution fault, not a

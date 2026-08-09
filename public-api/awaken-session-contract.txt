@@ -593,6 +593,7 @@ pub struct awaken_session_contract::FailSessionRealization
 pub awaken_session_contract::FailSessionRealization::lease: awaken_session_contract::SessionRealizationLease
 pub awaken_session_contract::FailSessionRealization::prepared_resource_revision: core::option::Option<u64>
 pub awaken_session_contract::FailSessionRealization::reason: alloc::string::String
+pub awaken_session_contract::FailSessionRealization::retryable: bool
 pub awaken_session_contract::FailSessionRealization::session_id: alloc::string::String
 pub struct awaken_session_contract::FrozenSessionProjection
 pub awaken_session_contract::FrozenSessionProjection::baseline: awaken_session_contract::SessionBaseline
@@ -688,6 +689,7 @@ pub awaken_session_contract::PersistedSession::execution: awaken_session_contrac
 pub awaken_session_contract::PersistedSession::mcp: awaken_session_contract::SessionMcpAttachmentSet
 pub awaken_session_contract::PersistedSession::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_session_contract::PersistedSession::realization: core::option::Option<awaken_session_contract::SessionRealizationLease>
+pub awaken_session_contract::PersistedSession::realization_progress: awaken_session_contract::SessionRealizationProgress
 pub awaken_session_contract::PersistedSession::resources: awaken_session_contract::SessionResourceState
 pub awaken_session_contract::PersistedSession::revision: awaken_session_contract::SessionRevision
 pub awaken_session_contract::PersistedSession::session_id: alloc::string::String
@@ -730,6 +732,7 @@ impl awaken_session_contract::ResolvedSessionResources
 pub fn awaken_session_contract::ResolvedSessionResources::attach(&self, awaken_session_contract::ResolvedInput) -> core::result::Result<Self, awaken_session_contract::SessionInputError>
 pub fn awaken_session_contract::ResolvedSessionResources::detach(&self, &awaken_resource_contract::input::BindingId) -> core::result::Result<(Self, awaken_session_contract::ResolvedInput), awaken_session_contract::SessionInputError>
 pub fn awaken_session_contract::ResolvedSessionResources::replace(&self, awaken_session_contract::ResolvedInput) -> core::result::Result<Self, awaken_session_contract::SessionInputError>
+pub fn awaken_session_contract::ResolvedSessionResources::validate(&self) -> core::result::Result<(), awaken_session_contract::SessionInputError>
 pub fn awaken_session_contract::ResolvedSessionResources::validate_new_binding(&self, &awaken_resource_contract::input::BindingId, &str) -> core::result::Result<(), awaken_session_contract::SessionInputError>
 pub struct awaken_session_contract::ResolvedSkillBinding
 pub awaken_session_contract::ResolvedSkillBinding::bundle_sha256: alloc::string::String
@@ -873,6 +876,9 @@ pub awaken_session_contract::SessionRealizationLease::epoch: u64
 pub awaken_session_contract::SessionRealizationLease::expires_at_unix_ms: u64
 pub awaken_session_contract::SessionRealizationLease::owner: alloc::string::String
 pub awaken_session_contract::SessionRealizationLease::runtime_incarnation: alloc::string::String
+pub struct awaken_session_contract::SessionRealizationProgress
+pub awaken_session_contract::SessionRealizationProgress::attempts: u32
+pub awaken_session_contract::SessionRealizationProgress::last_error: core::option::Option<alloc::string::String>
 pub struct awaken_session_contract::SessionRealizationTarget
 pub awaken_session_contract::SessionRealizationTarget::lease_expires_at_unix_ms: u64
 pub awaken_session_contract::SessionRealizationTarget::owner: alloc::string::String

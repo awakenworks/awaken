@@ -16,7 +16,7 @@ impl ManagedState {
         // ordering. Managed only rebuilds its disposable wire cache afterward.
         let recovered = self
             .application
-            .recover_session_projection(id, None)
+            .read_session_projection(id, None)
             .await
             .map_err(|error| match error {
                 awaken_session_application::SessionProjectionRecoveryError::NotFound => {
@@ -114,16 +114,16 @@ mod tests {
         // independently, the durable lease owner is absent, local, Worker-live,
         // or Worker-expired and cannot change placement; C6 MCP projection is
         // settled or requires recovery; C7 Resource projection is stable or pending.
-        // Effects: E1 frozen projection/history become readable; E2 only an
-        // locally realized Session may call local physical adoption; E3 either
-        // Worker-owned path leaves adoption, MCP staging, and Resource projection
-        // to claimed-dispatch recovery; E4 both background Coordinator reconcilers
-        // skip it.
+        // Effects: E1 frozen projection/history become readable without physical
+        // effects; E2 execution admission/reconciliation (not this read) may
+        // realize a local Session; E3 either Worker-owned path leaves adoption,
+        // MCP staging, and Resource projection to claimed-dispatch recovery; E4
+        // both background Coordinator reconcilers skip Worker-owned rows.
         //
         // | Rule | ownership | lease | MCP | Resource | local effects | read |
-        // | R1 | local | absent/local | settled/required | stable/pending | canonical local effects | yes |
+        // | R1 | local | absent/local | settled/required | stable/pending | none on read | yes |
         // | R2 | application | any | settled/required | stable/pending | none | yes |
-        // | R3 | Environment WorkQueue only | any | settled/required | stable/pending | canonical local effects | yes |
+        // | R3 | Environment WorkQueue only | any | settled/required | stable/pending | none on read | yes |
         // | R4 | deployment-frozen Worker Runtime | any | settled/required | stable/pending | none | yes |
         // | R5 | any | any | any | any | no adopt if no binding | yes |
         // | R6 | legacy + registered process | any | settled/required | stable/pending | none | yes |
@@ -284,6 +284,6 @@ mod tests {
         }
         assert!(restored_environments.lock().unwrap().is_empty(), "R2-R6/E3");
         assert!(restored_inputs.lock().unwrap().is_empty(), "R2-R6/E3");
-        assert_eq!(restored_runtimes.lock().unwrap().len(), 48, "R2-R6/E1");
+        assert!(restored_runtimes.lock().unwrap().is_empty(), "R2-R6/E1");
     }
 }

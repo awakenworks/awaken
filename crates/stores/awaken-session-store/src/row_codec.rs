@@ -342,6 +342,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         mcp,
         resources,
         realization: None,
+        realization_progress: Default::default(),
         execution,
         disposition,
         terminal_cleanup: Default::default(),

@@ -356,8 +356,11 @@ async fn ai_sdk_malformed_body_returns_stream_error() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ai_sdk_driver_error_returns_stream_error() {
-    // Empty messages on a fresh thread is a resume with no awaiting run — a driver
-    // error, which must also stream as an AI SDK error frame.
+    // SSE failure FMECA/decision rule: C1 the driver cannot produce a committed
+    // receipt; E1 emit an error frame, E2 emit finish(error), E3 never emit the
+    // normal finish(stop), and E4 close with exactly one transport sentinel.
+    // Empty messages on a fresh thread fault-injects C1 at the admission/driver
+    // boundary without inventing a second protocol-only completion path.
     let app = build_echo_router();
     let (status, body) = call(
         &app,
@@ -367,10 +370,24 @@ async fn ai_sdk_driver_error_returns_stream_error() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    let events = sse_events(&body);
     assert!(
-        sse_events(&body).iter().any(|e| e["type"] == "error"),
+        events.iter().any(|e| e["type"] == "error"),
         "driver error → stream error frame: {body}"
     );
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "finish" && e["finishReason"] == "error"),
+        "driver error → finish(error): {body}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e["type"] == "finish" && e["finishReason"] == "stop"),
+        "driver error must never report normal stop: {body}"
+    );
+    assert_eq!(body.matches("data: [DONE]").count(), 1, "one SSE sentinel");
 }
 
 #[tokio::test(flavor = "multi_thread")]

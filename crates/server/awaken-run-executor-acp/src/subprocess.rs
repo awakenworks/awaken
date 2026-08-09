@@ -683,7 +683,7 @@ mod tests {
     #[cfg(unix)]
     use awaken_agent_contract::agent::run::{EndCause, RunState};
     #[cfg(unix)]
-    use awaken_runtime_contract::execution::RunExecutor;
+    use awaken_runtime_contract::{RuntimeRunContext, execution::RunExecutor};
 
     // Reuse the fixture activation from the crate tests.
     #[cfg(unix)]
@@ -1047,6 +1047,20 @@ mod tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn drives_a_real_subprocess_acp_agent_end_to_end() {
+        use awaken_agent_contract::thread::commit::coordinator::{
+            Coordinator, Error as CommitError,
+        };
+        use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
+
+        struct Commit;
+
+        #[async_trait]
+        impl Coordinator for Commit {
+            async fn commit(&self, _commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
+                Ok(CommitRecord { sequence: 1 })
+            }
+        }
+
         // A tiny ACP agent in shell: read the prompt line, emit a message + turn_end.
         let script = "read _prompt; \
              printf '%s\\n' '{\"type\":\"message\",\"text\":\"from subprocess\"}'; \
@@ -1057,7 +1071,10 @@ mod tests {
         );
         let exec = AcpRunExecutor::new(Arc::new(SubprocessChannelSource::new(launch)));
         let state = exec
-            .execute(activation(), Default::default())
+            .execute(
+                activation(),
+                RuntimeRunContext::new().with_commit(Arc::new(Commit)),
+            )
             .await
             .unwrap();
         assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));

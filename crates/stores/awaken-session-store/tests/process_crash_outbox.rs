@@ -62,6 +62,7 @@ fn session() -> PersistedSession {
         mcp: Default::default(),
         resources: Default::default(),
         realization: None,
+        realization_progress: Default::default(),
         execution: SessionExecutionState::Idle,
         disposition: Default::default(),
         terminal_cleanup: Default::default(),

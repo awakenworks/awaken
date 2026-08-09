@@ -368,8 +368,12 @@ async function waitForFile(file: string, expected: Buffer | undefined, timeoutMs
 }
 
 async function enqueueAndAwait(request: any, seedWorkerId: string): Promise<void> {
+  // Cause/effect rule: ordinary resource requests deliberately omit the
+  // Session-realization discriminator, while dispatch settlement is keyed by
+  // the activation's authoritative Thread id. Waiting on session_thread_id
+  // would poll `undefined` and never observe the already-settled dispatch.
   await post('/v1/worker/dispatch/enqueue', { request }, seedWorkerId);
-  await waitUntilSettled(request.session_thread_id);
+  await waitUntilSettled(request.activation.thread_id);
 }
 
 async function main(): Promise<void> {
