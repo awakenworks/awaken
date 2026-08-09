@@ -29,6 +29,12 @@ pub struct FrozenSessionProjection {
     pub workspace_id: String,
     pub revision: SessionRevision,
     pub baseline: SessionBaseline,
+    /// Exact durable Environment realization state. The opaque binding is
+    /// interpreted only by the Runtime provider that produced it; carrying it
+    /// here lets local and remote realization adapters recover the same
+    /// Session-owned environment without reopening mutable Agent publication.
+    #[serde(default)]
+    pub environment: crate::SessionEnvironmentState,
     /// Exact generation owned by `SessionResourceState`. This is distinct from
     /// the Session root revision above and must survive Control-to-Worker
     /// realization so a new Run never reconstructs its resource envelope at the

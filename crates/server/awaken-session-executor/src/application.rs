@@ -391,7 +391,13 @@ impl crate::SharedHost {
                     .await
                     .map_err(|error| crate::HostError::internal(error.to_string()))?;
                 crate::host::HostWorkerResolver::realize_application_session(
-                    self, control, session_id, directive, None,
+                    self,
+                    control.as_ref(),
+                    session_id,
+                    directive,
+                    None,
+                    None,
+                    false,
                 )
                 .await
                 .map_err(|error| crate::HostError::internal(error.to_string()))
@@ -403,45 +409,61 @@ impl crate::SharedHost {
                     eprintln!(
                         "Session realization renewal lost authority for `{session_id}`; revoking only that Session: {error}"
                     );
-                    self.end_session(session_id).await.map_err(|revoke_error| {
-                        crate::HostError::internal(format!(
-                            "Session realization renewal failed ({error}) and local revocation failed: {revoke_error}"
-                        ))
-                    })?;
+                    let _ = self.interrupt(session_id).await;
+                    self.revoke_session_realization(session_id).await;
                 }
             }
         }
         Ok(renewed)
     }
 
+    /// Remove one process-local realization after its continuing authority is
+    /// no longer provable. This is not a terminal Session edge: preserve the
+    /// durable Sandbox so the next authorized Worker can adopt it, while local
+    /// processes, routes, credentials, and runtime references are discarded.
+    async fn revoke_session_realization(&self, session_id: &str) -> bool {
+        let Some(lifecycle) = self
+            .session_slots
+            .read(session_id, |slot| slot.lifecycle.clone())
+        else {
+            return false;
+        };
+        let _lifecycle = lifecycle.lock().await;
+        self.stop_session_mcp_processes(session_id).await;
+        let Some(slot) = self.session_slots.remove(session_id) else {
+            return false;
+        };
+        if let Some(environment) = slot
+            .environment
+            .or_else(|| slot.runtime.and_then(|runtime| runtime.env.clone()))
+        {
+            environment.stop_bound_processes().await;
+        }
+        if let Some(relay) = self.mcp_relay.get() {
+            relay.remove_routes(session_id);
+        }
+        true
+    }
+
     /// Revoke every process-local Session projection after Worker authority is
-    /// no longer provable. Visibility is removed and environments/routes are
-    /// disposed through the same terminal Host path; no credential-bearing
-    /// projection remains available while Control ownership is unknown.
+    /// no longer provable. Durable Session environments remain available for
+    /// adoption; only terminal Session lifecycle commands may dispose them.
     pub async fn revoke_all_session_realizations(&self) -> Result<usize, crate::HostError> {
         let session_ids = self.session_slots.session_ids();
         let mut revoked = 0;
-        let mut first_error = None;
         for session_id in session_ids {
-            match self.end_session(&session_id).await {
-                Ok(()) => revoked += 1,
-                Err(error) if first_error.is_none() => first_error = Some(error),
-                Err(_) => {}
+            if self.revoke_session_realization(&session_id).await {
+                revoked += 1;
             }
         }
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(revoked),
-        }
+        Ok(revoked)
     }
 
     /// Cancel every run currently backed by a process-local Session projection.
     ///
-    /// Worker authority loss must stop in-flight tool processes before terminal
-    /// Session disposal removes their workspaces. Otherwise a native process (or
-    /// a nested container bind-mounted from that workspace) can continue writing
-    /// while [`Self::revoke_all_session_realizations`] recursively reaps the same
-    /// directory, leaving a partially deleted checkout behind.
+    /// Worker authority loss must stop in-flight tool processes before local
+    /// realization revocation detaches their process bindings. Otherwise a native
+    /// process can continue writing after this Worker has dropped authority.
     pub async fn interrupt_all_session_runs(&self) -> usize {
         let session_ids = self.session_slots.session_ids();
         let mut interrupted = 0;

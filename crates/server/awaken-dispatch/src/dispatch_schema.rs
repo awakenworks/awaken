@@ -115,6 +115,59 @@ const FILES: &[(&str, &str)] = &[
     ),
 ];
 
+/// Exact receipt aliases from the briefly published expanded V15..V24 stream.
+/// Both streams end in the same schema: expanded V15 creates and V16 drops the
+/// retired delegation table, then carries the canonical V15..V22 effects at
+/// V17..V24. Aliases verify those already-written receipts without executing a
+/// second SQL body; V23/V24 below close the canonical stream with no-op receipts.
+const EXPANDED_NUMBERING_ALIASES: &[(i64, &str, &str)] = &[
+    (
+        15,
+        "e835f0eaae0017589eda70e1f1049fc1d2e428e7ade63f42defdc2366c737a90",
+        "7bd1db97f64a971e72ccc3505bedf1c8929577e6616eec092911e393cbb21e36",
+    ),
+    (
+        16,
+        "545591fc3352db71247bf94a31dc195a06b32ca4e1d3b52052601d463afd3a2c",
+        "b69507cd88429793df7d48d30bf84246ff61873687be7938cd737a602776db6b",
+    ),
+    (
+        17,
+        "557e6d23c5f135df6932dd96d61f1fa997e84a686f9b48ceb264fa0e65d9a716",
+        "29ca0a829096c3d059e9dfa8cfe819f19d1c9d049b3c73de55d62cd5a4884ea2",
+    ),
+    (
+        18,
+        "d1ab5678a30aa454ca8ba01de23511dc9e9d99f7c6f654b3d64841e4eeb2d72b",
+        "d435f47b492c776b2daf777686f839abe556d1fbf29a072bbc4a79540006fe5a",
+    ),
+    (
+        19,
+        "378d530aacb8236ef6bc385615720b0ac74f66b6579e498b939d816cd48d6e4d",
+        "e4c40d80876ed3748886d9a7c97f606bf73c5d8970a11825af81c78466b6ef47",
+    ),
+    (
+        20,
+        "19ea60ea79d9c80ec872cccbb9bb810458cf3b446d1b5581d208d1da7868a36a",
+        "7b0f9f1fb51a4d3b48bd51f459dd40676ed1df82c669c606aa400a2bdd6692c1",
+    ),
+    (
+        21,
+        "75178da4f1b5e3c8ec83550ae11cc13efd26cb66cd16ea20459ec19d8586399b",
+        "b22b633dadd0e98c8586446efa0173dc01352092eab7f2b0bcf88a9829e27f41",
+    ),
+    (
+        22,
+        "e609358db6e3dc1fd1e1548ecf6a9b3072510e33a0c28234d910f028b7720246",
+        "50d0d9f9ab0fcfe9061949c716f3aceabd6047471f826f5edc4b2fa81c9e650f",
+    ),
+];
+
+const EXPANDED_V23_CHECKSUM: &str =
+    "1b51301f97d66b7ec7f206fffd37aa76ef8e1fabdeafca73bca76f1d32c949ae";
+const EXPANDED_V24_CHECKSUM: &str =
+    "a50d68aa5d72ff56b02970db76982f817ff6fba7523f0028dbaa6ed33ae488f3";
+
 /// Parse the version from a `Vnnnn__slug.sql` file name (`V0004__…` ⇒ 4). A name
 /// that does not carry a positive version yields `0`, which [`Migration::new`]
 /// rejects — so a mis-named file fails the bundle build loudly.
@@ -139,15 +192,42 @@ fn description_of(name: &str, contents: &str) -> String {
 
 /// Build the dispatch-schema migration bundle from the embedded `.sql` files.
 pub fn dispatch_bundle() -> Result<MigrationBundle, MigrationError> {
-    let migrations = FILES
+    let mut migrations = FILES
         .iter()
         .map(|(name, contents)| {
             let version = version_of(name);
             let description = description_of(name, contents);
             let sql = contents.trim();
-            Migration::new(version, description, sql)
+            if let Some((_, expected, alias)) = EXPANDED_NUMBERING_ALIASES
+                .iter()
+                .find(|(published_version, _, _)| *published_version == version)
+            {
+                Migration::published_legacy_with_aliases(
+                    version,
+                    description,
+                    sql,
+                    *expected,
+                    [*alias],
+                )
+            } else {
+                Migration::new(version, description, sql)
+            }
         })
         .collect::<Result<Vec<_>, _>>()?;
+    migrations.push(Migration::published_legacy_with_aliases(
+        23,
+        "converge the published expanded dispatch numbering track",
+        "SELECT 1",
+        "97ed3e2d59266fadc3c1c326e933a93de56258d0543aabd0b1a184b545fb892b",
+        [EXPANDED_V23_CHECKSUM],
+    )?);
+    migrations.push(Migration::published_legacy_with_aliases(
+        24,
+        "seal the converged dispatch migration history",
+        "SELECT 1",
+        "20f5655bfa2b46c96897d26777b8c0642d790f6e7b4eee64f728fdeda2ae3175",
+        [EXPANDED_V24_CHECKSUM],
+    )?);
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
@@ -162,7 +242,8 @@ mod tests {
 
     #[test]
     fn dispatch_bundle_lints_clean() {
-        // Cause/effect rule: deterministic V1..V22 bodies plus a valid scoped
+        // Cause/effect rule: deterministic V1..V22 bodies, two convergence
+        // receipts, and a valid scoped
         // receipt contract produce a lint-clean bundle; conditional DDL or a
         // malformed migration fails before either database runner executes it.
         let bundle = dispatch_bundle().expect("bundle builds");
@@ -172,59 +253,65 @@ mod tests {
     #[test]
     fn versions_parse_from_file_names() {
         let bundle = dispatch_bundle().expect("bundle builds");
-        // Cause/effect decision table: empty ledgers apply the immutable V1..V22
+        // Cause/effect decision table: empty ledgers apply one immutable V1..V24
         // stream and any published prefix applies only the missing suffix.
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, (1..=22).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=24).collect::<Vec<_>>());
     }
 
     #[test]
-    fn deployed_dispatch_receipts_remain_the_canonical_history() {
+    fn published_dispatch_numbering_tracks_converge_once() {
         use std::collections::BTreeMap;
 
         use awaken_scoped_migration::{Dialect, plan};
 
-        // These exact receipts were written by released V15..V22. Inserting two
-        // transient migrations before them and renumbering their effects is not
-        // a forward migration: it makes every deployed database fail startup.
-        let applied = BTreeMap::from([
-            (
-                15,
-                "e835f0eaae0017589eda70e1f1049fc1d2e428e7ade63f42defdc2366c737a90".into(),
-            ),
-            (
-                16,
-                "545591fc3352db71247bf94a31dc195a06b32ca4e1d3b52052601d463afd3a2c".into(),
-            ),
-            (
-                17,
-                "557e6d23c5f135df6932dd96d61f1fa997e84a686f9b48ceb264fa0e65d9a716".into(),
-            ),
-            (
-                18,
-                "d1ab5678a30aa454ca8ba01de23511dc9e9d99f7c6f654b3d64841e4eeb2d72b".into(),
-            ),
-            (
-                19,
-                "378d530aacb8236ef6bc385615720b0ac74f66b6579e498b939d816cd48d6e4d".into(),
-            ),
-            (
-                20,
-                "19ea60ea79d9c80ec872cccbb9bb810458cf3b446d1b5581d208d1da7868a36a".into(),
-            ),
-            (
-                21,
-                "75178da4f1b5e3c8ec83550ae11cc13efd26cb66cd16ea20459ec19d8586399b".into(),
-            ),
-            (
-                22,
-                "e609358db6e3dc1fd1e1548ecf6a9b3072510e33a0c28234d910f028b7720246".into(),
-            ),
-        ]);
-
+        /* Published-history cause/effect decision table. Causes: C1 an empty
+         * ledger; C2 the canonical compressed V1..V22 ledger; C3 the expanded
+         * V1..V24 ledger whose V15/V16 net effect is empty; C4 an unrecognized
+         * receipt. Effects: E1 execute only canonical SQL; E2 append only V23/V24
+         * convergence receipts; E3 accept the expanded terminal ledger without
+         * replay; E4 fail closed. Rules: H1 C1=>E1; H2 C2=>E2; H3 C3=>E3;
+         * H4 C4=>E4. Constraint: both published tracks must already have the
+         * same terminal schema; aliases verify receipts and never select SQL. */
         let bundle = dispatch_bundle().expect("bundle builds");
-        let pending = plan(&bundle, &applied, Dialect::Sqlite).expect("deployed receipts verify");
-        assert!(pending.iter().all(|migration| migration.version() < 15));
+        let canonical = bundle
+            .migrations()
+            .iter()
+            .take(22)
+            .map(|migration| (migration.version(), migration.checksum_for(Dialect::Sqlite)))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            plan(&bundle, &canonical, Dialect::Sqlite)
+                .expect("H2 canonical ledger")
+                .iter()
+                .map(|migration| migration.version())
+                .collect::<Vec<_>>(),
+            [23, 24]
+        );
+
+        let mut expanded = canonical
+            .iter()
+            .filter(|(version, _)| **version < 15)
+            .map(|(version, checksum)| (*version, checksum.clone()))
+            .collect::<BTreeMap<_, _>>();
+        expanded.extend(
+            EXPANDED_NUMBERING_ALIASES
+                .iter()
+                .map(|(version, _, alias)| (*version, (*alias).to_string())),
+        );
+        expanded.insert(23, EXPANDED_V23_CHECKSUM.into());
+        expanded.insert(24, EXPANDED_V24_CHECKSUM.into());
+        assert!(
+            plan(&bundle, &expanded, Dialect::Sqlite)
+                .expect("H3 expanded ledger")
+                .is_empty()
+        );
+
+        expanded.insert(23, "unknown-receipt".into());
+        assert!(matches!(
+            plan(&bundle, &expanded, Dialect::Sqlite).unwrap_err(),
+            awaken_scoped_migration::MigrationError::ChecksumMismatch { version: 23, .. }
+        ));
     }
 
     #[test]
@@ -236,7 +323,8 @@ mod tests {
         // CE-TM10 decision rules:
         // R1 published V1..V21 + non-negative millis -> V22 preserves the value;
         // R2 published V1..V21 + legacy negative millis -> V22 maps it to i64::MAX;
-        // R3 current V1..V22 ledger -> reopening applies nothing (runner idempotency).
+        // R3 current V1..V22 ledger -> reopening appends only the convergence
+        // receipts; the normalization itself is never replayed.
         let conn = Connection::open_in_memory().expect("open sqlite");
         let full = dispatch_bundle().expect("bundle builds");
         let published = MigrationBundle::new(BUNDLE_ID, full.migrations()[..21].to_vec())
@@ -260,9 +348,14 @@ mod tests {
         )
         .expect("seed legacy rows");
 
-        let applied = runner.run_bundle(&conn, &full).expect("apply V22");
-        assert_eq!(applied.len(), 1);
-        assert_eq!(applied[0].version, 22);
+        let applied = runner.run_bundle(&conn, &full).expect("apply V22-V24");
+        assert_eq!(
+            applied
+                .iter()
+                .map(|migration| migration.version)
+                .collect::<Vec<_>>(),
+            [22, 23, 24]
+        );
         let maximum = i64::MAX;
         assert_eq!(
             conn.query_row(

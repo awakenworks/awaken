@@ -28,6 +28,7 @@ impl SessionApplication {
             workspace_id: owner_scope,
             revision: session.revision,
             baseline,
+            environment: session.environment.clone(),
             resource_revision: session.resources.revision,
             resources,
             toolsets: session.tools.toolsets.clone(),
