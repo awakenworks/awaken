@@ -324,6 +324,7 @@ impl SharedHost {
                 .with_session_resources(envelope);
         }
         if let Some((environment, toolsets, mcp_stages)) = runtime_projection {
+            let preferred_shape = environment.runtime_shape_fingerprint().0;
             let envelope = crate::provisioning::encode_session_runtime_envelope(
                 environment,
                 toolsets,
@@ -332,7 +333,9 @@ impl SharedHost {
             .map_err(|error| {
                 HostError::internal(format!("serialize Session runtime projection: {error}"))
             })?;
-            request = request.with_session_runtime(envelope);
+            request = request
+                .with_session_runtime(envelope)
+                .with_preferred_environment_shape(preferred_shape);
         }
         if let Some(placement) = placement {
             request = request.with_placement(placement);

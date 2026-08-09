@@ -10,10 +10,11 @@
 // | any       | true            | cleanup observes the existing exit |
 
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stopServer, waitForPort } from './harness.mjs';
+import { cargoExecutable } from './cargo_binary.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38815);
@@ -22,31 +23,11 @@ const TOKEN = 'mcp-ts-demo-token'; // awaken-allow: secret
 const VERSION = '2025-11-25';
 
 function buildDemo(): string {
-  const output = execFileSync(
-    'cargo',
-    [
-      'build',
-      '--quiet',
-      '--message-format=json',
-      '-p',
-      'awaken-protocol-mcp',
-      '--bin',
-      'awaken-mcp-stdio-demo',
-    ],
-    { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-  );
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken-mcp-stdio-demo') {
-        return message.executable;
-      }
-    } catch {
-      // Ignore non-artifact diagnostics.
-    }
-  }
-  throw new Error('could not resolve awaken-mcp-stdio-demo');
+  return cargoExecutable({
+    cwd: ROOT,
+    packageName: 'awaken-protocol-mcp',
+    targetName: 'awaken-mcp-stdio-demo',
+  });
 }
 
 function headers(extra: Record<string, string> = {}): Record<string, string> {

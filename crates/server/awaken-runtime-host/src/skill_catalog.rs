@@ -14,7 +14,7 @@ use awaken_ext_skills::SkillSpec;
 use awaken_session_contract::ResolvedSkillBinding;
 use awaken_skill_store::{SkillDefinition, SkillStore, SkillStoreError, SkillVersion};
 
-use crate::skill_bundle_transport::{SkillBundleSource, StoreSkillBundleSource};
+use awaken_resource_worker_http::{SkillBundleSource, StoreSkillBundleSource};
 
 fn anthropic_skill(id: &str) -> Option<SkillVersion> {
     let description = match id {

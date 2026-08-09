@@ -156,7 +156,7 @@ Verified state after the 2026-08-04 cut:
   Its collaborators are private and reached through explicit application operations/ports;
   `awaken-protocol-managed::ManagedState` has no `Deref` compatibility path and owns only
   wire projections, event ids, and SSE channels.
-- **Coordinator runtime interface** — `awaken-coordinator-runtime` owns durable-operation
+- **Coordinator runtime interface** — `awaken-run-ingress-http` owns durable-operation
   HTTP routing. Neutral durable-control methods remain on `SharedHost` as its application API.
 - **Worker runtime interface** — `awaken-worker-runtime` owns registration, heartbeat,
   drain, and claim-fenced Session-control clients. `awaken-runtime-host` no longer exports

@@ -1418,8 +1418,9 @@ mod tests {
         let provider = Arc::new(FakeContainerProvider::default());
         let factory =
             ScriptedHandFactory::new([ScriptedHandOutcome::Success, ScriptedHandOutcome::Success]);
-        let environment = SessionEnvironmentProvider::container_with_hand_idle(
+        let environment = SessionEnvironmentProvider::container_with_capacity_and_hand_idle(
             provider.clone(),
+            None,
             Vec::new(),
             factory.clone(),
             "/usr/local/bin/awaken-sandbox",
@@ -1493,8 +1494,9 @@ mod tests {
             .lock()
             .unwrap()
             .insert("__unreapable_hand".into(), Vec::new());
-        let failed = SessionEnvironmentProvider::container_with_hand_idle(
+        let failed = SessionEnvironmentProvider::container_with_capacity_and_hand_idle(
             failed_provider.clone(),
+            None,
             Vec::new(),
             ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
             "/usr/local/bin/awaken-sandbox",
@@ -1530,8 +1532,9 @@ mod tests {
         let provider = Arc::new(FakeContainerProvider::default());
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
-        let environment = SessionEnvironmentProvider::container_with_hand_idle(
+        let environment = SessionEnvironmentProvider::container_with_capacity_and_hand_idle(
             provider.clone(),
+            None,
             Vec::new(),
             Arc::new(BlockingHandFactory {
                 started: started.clone(),

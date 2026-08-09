@@ -13,7 +13,7 @@ use awaken_runtime_contract::snapshot::{
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-pub(super) struct AdoptionModel;
+pub(crate) struct AdoptionModel;
 
 #[async_trait::async_trait]
 impl LlmExecutor for AdoptionModel {
@@ -122,7 +122,7 @@ impl awaken_session_contract::SessionEnvironmentBindingSink for ToggleBindingSin
     }
 }
 
-pub(super) async fn claim(
+pub(crate) async fn claim(
     store: &awaken_run_ingress::AnyDispatchStore,
     thread: &str,
     run: &str,

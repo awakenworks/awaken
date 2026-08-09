@@ -156,14 +156,14 @@ awaken-resource-application = { path = "crates/resources/awaken-resource-applica
 awaken-sandbox-local = { path = "crates/worker/awaken-sandbox-local" }
 awaken-sandbox-memoryd = { path = "crates/worker/awaken-sandbox-memoryd" }
 awaken-sandbox-container = { path = "crates/worker/awaken-sandbox-container" }
-awaken-sandbox-manager = { path = "crates/worker/awaken-sandbox-manager" }
 awaken-runtime-examples = { path = "crates/devtools/awaken-runtime-examples" }
 awaken-run-ingress-contract = { path = "crates/server/awaken-run-ingress-contract" }
 awaken-run-ingress = { path = "crates/server/awaken-run-ingress" }
 awaken-run-ingress-testkit = { path = "crates/server/awaken-run-ingress-testkit" }
 awaken-worker-transport-security = { path = "crates/server/awaken-worker-transport-security" }
 awaken-runtime-host = { path = "crates/server/awaken-runtime-host" }
-awaken-coordinator-runtime = { path = "crates/server/awaken-coordinator-runtime" }
+awaken-run-ingress-http = { path = "crates/server/awaken-run-ingress-http" }
+awaken-resource-worker-http = { path = "crates/resources/awaken-resource-worker-http" }
 awaken-worker-runtime = { path = "crates/server/awaken-worker-runtime" }
 awaken-admin-assistant = { path = "crates/control/awaken-admin-assistant" }
 awaken-coordinator = { path = "crates/server/awaken-coordinator" }

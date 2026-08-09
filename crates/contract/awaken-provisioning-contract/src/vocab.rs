@@ -81,6 +81,10 @@ pub enum MountSource {
         host_path: String,
         /// The caller's reuse key, opaque to awaken (never interpreted here).
         key: String,
+        /// Existing namespace-local Kubernetes PVC carrying the same disposable
+        /// cache identity. Container engines use `host_path`; Kubernetes requires
+        /// this claim and never falls back to a node hostPath mount.
+        persistent_volume_claim: Option<String>,
     },
     /// A file-materialized credential (ADR-0041 amendment). The provider writes the
     /// broker-resolved secret to `mount_path`, honoring the requirement's
@@ -151,6 +155,8 @@ enum KnownMountSource {
         host_path: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        persistent_volume_claim: Option<String>,
     },
     Secret {
         reference: String,
@@ -205,9 +211,15 @@ impl From<KnownMountSource> for MountSource {
                 materialization_reference,
                 write_consistency,
             },
-            KnownMountSource::CacheVolume { host_path, key } => {
-                MountSource::CacheVolume { host_path, key }
-            }
+            KnownMountSource::CacheVolume {
+                host_path,
+                key,
+                persistent_volume_claim,
+            } => MountSource::CacheVolume {
+                host_path,
+                key,
+                persistent_volume_claim,
+            },
             KnownMountSource::Secret {
                 reference,
                 content_hash,
@@ -255,9 +267,14 @@ impl MountSource {
                 materialization_reference: materialization_reference.clone(),
                 write_consistency: *write_consistency,
             },
-            MountSource::CacheVolume { host_path, key } => KnownMountSource::CacheVolume {
+            MountSource::CacheVolume {
+                host_path,
+                key,
+                persistent_volume_claim,
+            } => KnownMountSource::CacheVolume {
                 host_path: host_path.clone(),
                 key: key.clone(),
+                persistent_volume_claim: persistent_volume_claim.clone(),
             },
             MountSource::Secret {
                 reference,
@@ -551,22 +568,27 @@ mod tests {
 
     #[test]
     fn cache_volume_round_trips_and_omits_an_empty_key() {
-        // ADR-0056 §3: the Cache Volume is a first-class mount kind on the wire
-        // (`kind: cache_volume`), carrying the caller-owned host path; an empty reuse
-        // key is omitted (skip_serializing_if) so an unkeyed cache volume is compact.
+        // FMECA: F1 older payload without PVC stops decoding (S7 O5 D2, RPN70);
+        // F2 PVC identity is dropped in transport (S8 O3 D3, RPN72). Cause graph:
+        // C1=PVC present, C2=legacy omission, C3=empty key. Effects E1=exact
+        // round-trip, E2=None default, E3=key omitted. Decision table:
+        // V1 C1&&!C3 -> E1; V2 C2 -> E2; V3 C2&&C3 -> E2,E3.
         let keyed = MountSource::CacheVolume {
             host_path: "/var/cache/awaken/proj-42".into(),
             key: "proj-42".into(),
+            persistent_volume_claim: Some("proj-42-cache".into()),
         };
         let wire = serde_json::to_string(&keyed).unwrap();
         assert!(wire.contains("\"kind\":\"cache_volume\""), "{wire}");
         assert!(wire.contains("/var/cache/awaken/proj-42"));
         assert!(wire.contains("proj-42"));
+        assert!(wire.contains("proj-42-cache"), "V1");
         assert_eq!(serde_json::from_str::<MountSource>(&wire).unwrap(), keyed);
 
         let unkeyed = MountSource::CacheVolume {
             host_path: "/tmp/warm".into(),
             key: String::new(),
+            persistent_volume_claim: None,
         };
         let wire = serde_json::to_string(&unkeyed).unwrap();
         assert!(!wire.contains("\"key\""), "an empty key is omitted: {wire}");

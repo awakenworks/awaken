@@ -196,8 +196,13 @@ impl SandboxTier {
 pub struct SandboxSettings {
     /// Permit an unavailable Namespace provider to degrade to unsandboxed Workdir.
     pub allow_local_fallback: bool,
-    /// Number of ready container environments retained by the warm pool.
+    /// Startup and steady-state target of ready, never-used containers per exact
+    /// mount-less Session shape. Zero disables warm capacity.
     pub warm_pool_size: usize,
+    /// Global cap across all exact Environment shapes.
+    pub warm_pool_total_size: usize,
+    /// Opportunistic expiry for unused shapes; desired-state removal is immediate.
+    pub warm_pool_idle_ttl_secs: u64,
     /// Optional HTTP(S) proxy used by the container provider.
     pub container_forward_proxy: Option<String>,
     /// Kubernetes namespace used by the K8s container adapter.
@@ -247,6 +252,8 @@ impl Default for SandboxSettings {
         Self {
             allow_local_fallback: false,
             warm_pool_size: 0,
+            warm_pool_total_size: 16,
+            warm_pool_idle_ttl_secs: 300,
             container_forward_proxy: None,
             k8s_namespace: "default".to_owned(),
             k8s_image_pull_secrets: Vec::new(),

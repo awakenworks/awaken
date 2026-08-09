@@ -9,8 +9,9 @@
   environment bindings support restart adoption and competing-adopter fencing;
   Docker/Podman crash GC and Kubernetes owner references close substrate-specific
   reclamation. Native, ACP, and delegated child attempts use the same
-  Session-owned environment. The generic `SandboxManager` remains the reusable
-  port-level lease/reconciliation component; it is not a second Session owner.
+  Session-owned environment. The unused generic `SandboxManager` was removed:
+  its private in-memory registry duplicated the Session Environment owner without
+  participating in any production call path.
 - Builds on: the `pc::Sandbox`/`SandboxProvider`/`SandboxHandle` port and the
   never-downgrade `select_provider` / fail-closed `prepare_environment` gates
   (`awaken-provisioning-contract::sandbox`); the already-written-but-uncalled
@@ -147,27 +148,54 @@ carried back; that is exactly what makes it a *cache*.
 ### 4. Awaken owns Sandbox-instance reuse: wire the decision functions, pool only the expensive tier.
 
 The awaken worker plane owns everything about the **isolation** lifecycle, because
-isolation is awaken's declared job (the provisioning-contract header). A
-`SandboxManager` in the worker plane:
+isolation is awaken's declared job (the provisioning-contract header). It has one
+owner per lifecycle instead of a generic manager beside the production path:
 
-- **Wires the existing pure decisions** — the reap/renew loop *calls*
-  `reconcile_adoption` for orphan/idle decisions and `LeaseLiveness` for
-  renew-vs-reap. Credential lifetime is governed by the credential realization
-  authority, not by the sandbox lease contract. The manager contributes control flow only; every judgement stays in the
-  already-tested pure functions.
-- **Pools only when creation is expensive.** Workdir and Namespace tiers create
-  in milliseconds and are **not pooled** — they are created per run and disposed.
-  Only the **Container tier** gets a warm pool (release-awaits / dispose-stops),
-  mirroring DeerFlow's AIO container pool. This keeps the pool where it earns its
-  cost and nowhere else.
-- **Adopts operational hardening from DeerFlow**: deterministic instance id,
-  readiness-probe-before-adopt (dead → drop and recreate; failed health check →
-  *unknown*, not dead), startup orphan reconciliation via platform labels /
-  Kubernetes `ownerReference`, and a graceful `shutdown()` drain.
-- **Completes the ports it needs**: `adopt(handle)` + `process(pid)` reattach on
-  the Container tier so a host restart reconnects a still-running instance; local
-  tiers keep honest `Unsupported` (a local sandbox dies with its owner) and say so
-  in `capabilities()`.
+- `SessionEnvironmentProvider` creates/adopts the one active environment retained
+  by a Session slot and disposes it at the terminal Session boundary.
+- `WarmContainerPool` owns only never-used, mount-less, exact-shape container
+  capacity. A container leaves the pool permanently when bound to a Session; used
+  containers are never returned.
+- `SandboxReaper` owns only cross-restart garbage collection for prior runtime
+  owners. It never competes with the current process's Session or warm capacity.
+- `awaken-provisioning-contract::lease` remains the pure decision vocabulary. It
+  does not gain an I/O orchestrator merely to create a nominal caller.
+
+Workdir and Namespace remain unpooled. The Container tier probes every eagerly
+created candidate for `Ready`, exposes capacity through the separate
+`ContainerEnvironmentCapacity` lifecycle, and drains unused capacity after Worker
+claim drain and before deregistration.
+
+### 4.1 Three-stage warmup is one pipeline with three different owners.
+
+| Stage | Authoritative owner | Key / boundary | Production trigger | Failure result |
+|---|---|---|---|---|
+| Immutable Environment image | `awaken-environment-image-build` | Environment build digest | Environment registration enqueues one build demand; execution readiness waits for its receipt | Environment remains unready; no alternate image builder |
+| Never-used container environment | `WarmContainerPool` through `ContainerEnvironmentCapacity` | normalized mount-less `SandboxSpec` shape | Worker startup, before the first Ready heartbeat; adaptive replenish after a hit | log and retain cold create; selected isolation never downgrades |
+| Cache Volume bytes/path | product-side `CacheVolumePrewarmer` in `awaken-runtime-host` with an injected `CacheVolumeInitializer` | caller `(key, host_path)` | explicit eager call or automatically before Session provider creation | Session creation fails; failed preparation is removed and may retry |
+
+Static dependency direction:
+
+```text
+Environment registration -> image-build coordinator -> immutable image receipt
+Worker composition -> SessionEnvironmentProvider -> WarmContainerPool capacity
+Session creation -> product CacheVolumePrewarmer -> opaque CacheVolume mount -> provider
+```
+
+Dynamic startup/use/shutdown sequence:
+
+```text
+register Worker as Starting
+  -> compose provider + capacity from the same backend
+  -> prewarm canonical empty shape to configured target
+  -> publish Ready -> claim Session
+  -> prepare each CacheVolume (single-flight) -> create/adopt Session environment
+  -> drain claims/in-flight work -> shutdown unused capacity -> deregister
+```
+
+The three stages deliberately do not share a "warm manager": their keys,
+consistency boundaries, failure meaning, and owners are different. They share only
+the ordered composition above.
 
 ### 5. Isolation floor is a policy input, not a hardcoded default — one mechanism, two trust models.
 
@@ -215,17 +243,13 @@ single-user host). Building all of it now is gold-plating.
 
 **Resolution — scenario-gated, slice-first delivery.**
 
-1. **Ship the minimal vertical slice first** (§ First vertical slice): the
-   Cache-Volume *seam* + `SandboxManager` over the Workdir tier + host
-   `session_artifacts` on `pc::Sandbox`. Zero new isolation risk, proves the
-   split end to end.
-2. **Every deferred element requires a driving scenario test before it may
-   merge.** `SandboxPool` (Container reuse) and `IsolationPolicy::
-   DegradeWithConsent` land only when a failing test for real container hosting /
-   real multi-tenant degradation exists. This is enforced (see guardrail G-Y).
-3. The two-axis *separation* itself is not deferred and not gold-plating — it
-   removes an existing conflation that already produces the `attach`/`renew_lease`
-   gaps. Splitting genuinely different lifecycles is simplification, not addition.
+1. The Cache-Volume seam, Session-owned environment, exact-shape Container warm
+   capacity, restart reaper, and three-stage wiring are implemented and scenario
+   tested.
+2. `IsolationPolicy::DegradeWithConsent`, cross-node CacheVolume scheduling, and
+   idle cache GC remain scenario-gated. None is implied by warmup.
+3. The two-axis separation is retained: storage warmth and isolation capacity do
+   not acquire a shared manager or synchronized duplicate state.
 
 ### Tension B — pure decision core vs orchestration (simple design: decision/IO split)
 
@@ -244,9 +268,9 @@ are half-built. Keep the two cleanly separated.
   dedicated `awaken-provisioning-kernel` if it needs to be depended on without the
   rest of the contract) and are **self-contained to awaken** — no external product
   is a design input.
-- **The impure orchestration:** the pool, the reaper/renew loop, the Cache-Volume
-  provisioner. Awaken builds its own `SandboxManager`; it contributes control flow
-  only and delegates every judgement to the pure kernel.
+- **The impure orchestration:** Session slots, the never-used container pool, the
+  cross-restart reaper, and the product Cache-Volume initializer. Each has a
+  bounded lifecycle; no generic `SandboxManager` mirrors their state.
 - The boundary is mechanically enforced (guardrail G-K): the kernel crate may
   export pure functions and value types only — no `async`, no I/O, no product
   types — so orchestration can never leak into the decision core.
@@ -266,9 +290,9 @@ The rule in one line: **keep the judgement pure, the machinery separate.**
   `tokio`, no product DTO — so orchestration cannot leak into the decision core.
   Enforcer: a crate-lint that rejects `async`/IO deps in that crate's `Cargo.toml`
   and a symbol check.
-- **G-Y (YAGNI scenario gate).** `SandboxPool` (Container reuse) and
-  `IsolationPolicy::DegradeWithConsent` may not merge without an accompanying
-  failing driving-scenario test (container hosting / multi-tenant degradation).
+- **G-Y (YAGNI scenario gate).** New reuse beyond never-used exact-shape Container
+  capacity and `IsolationPolicy::DegradeWithConsent` may not merge without an
+  accompanying failing driving-scenario test.
   Enforcer: CI checks the PR touches a scenario test under `crates/bin/
   awaken-scenario-host` when it touches those symbols.
 - **G-Lang (mount vocabulary).** "Cache Volume" is the only name for the RW,
@@ -281,9 +305,8 @@ The rule in one line: **keep the judgement pure, the machinery separate.**
   + run marker. Enforcer: existing `select_provider` test + a degradation-emits-
   audit test.
 - **G-Pure (decision/IO split).** Reuse judgements stay in pure functions
-  (`reconcile_adoption`/`LeaseLiveness`); `SandboxManager` contributes control
-  flow only. Enforcer: the pure functions carry no `async`/provider deps (already
-  true); a manager test drives them with a fake clock + fake provider.
+  (`reconcile_adoption`/`LeaseLiveness`); Session/pool/reaper orchestration owns
+  I/O without copying those decisions into another state registry.
 
 ## Consequences
 
@@ -299,33 +322,24 @@ The rule in one line: **keep the judgement pure, the machinery separate.**
 - Awaken stops carrying application domain knowledge ("this is a code project"):
   the worker contract stays a neutral isolation substrate, and warmth is a
   product-plane concern reached only through the opaque mount seam.
-- The uncalled decision functions finally get a caller, closing the most glaring
-  gap (`reconcile_adoption` with no orchestrator) without re-deriving any
-  judgement.
+- The unused generic lifecycle registry is gone; production call paths expose one
+  active Session owner, one unused-capacity owner, and one crash-GC owner.
 
 **Negative / accepted costs.**
 
-- The Container tier's pool and reattach are real work deferred behind scenario
-  gates; until then, container hosting on a bare host degrades to the Workdir
-  floor unless a daemon is present (honest, `probe_ready`-gated, never silent).
+- Warm capacity consumes resources before demand and supports only mount-less
+  exact shapes; mounted or different-shape Sessions retain the cold path.
 - "Volume" enters the ubiquitous language and must be policed against overloading
   `Mount` (guardrail G-Lang).
 
-## First vertical slice
+## Implemented vertical slice
 
-The smallest end-to-end proof of the split, zero new isolation risk:
-
-1. Generalize `SandboxSpec` to accept a caller-supplied **opaque Cache-Volume
-   path** (extend the existing `IsolatedRoot`/`AWAKEN_PROJECT_DIR` mechanism);
-   awaken mounts it and treats warmth as opaque.
-2. Introduce `SandboxManager` in the worker plane over the **Workdir tier only**,
-   with a reaper loop that *calls* `reconcile_adoption`/`LeaseLiveness` (fake
-   clock + `LocalProvider` in tests).
-3. Migrate host `session_artifacts` from the deprecated `Environment` to
-   `pc::Sandbox::artifacts()`, leaving the rest of the legacy path under
-   `#[cfg(test)]` until later slices.
-4. Keep the pure decision kernel (decision fns + `SandboxHandle`) cleanly separated
-   and point the manager at it; add guardrails G-Own, G-K.
-
-No Container pool, no `DegradeWithConsent`, no reattach in this slice — those
-arrive only with their driving scenarios (G-Y).
+1. `SandboxSpec::CacheVolume` is the opaque storage seam; local namespace and
+   container adapters mount it without harvesting.
+2. `CacheVolumePrewarmer` single-flights the caller key, retries failures, and is
+   invoked by the one Session environment creation helper.
+3. `WarmContainerPool` eagerly reaches a ready target, verifies readiness, never
+   pools mounted specs, and fences in-flight creates during shutdown.
+4. Worker lifecycle warms before Ready and drains unused capacity after claims.
+5. Environment image registration/build/readiness continues through the one
+   `awaken-environment-image-build` demand path.

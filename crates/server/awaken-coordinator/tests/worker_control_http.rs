@@ -4,11 +4,11 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
-use awaken_coordinator_runtime::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_run_ingress::{
     DispatchQueue, MemoryDispatchStore, PlacementRequirements, RunDispatch,
     WORKER_LOCAL_CREDENTIALS_CAPABILITY,
 };
+use awaken_run_ingress_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{
@@ -75,6 +75,7 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
                     sequence: 1,
                     ready: true,
                     in_flight: 1,
+                    warm_environment_shapes: Default::default(),
                     credential_observations: std::collections::BTreeSet::from([
                         observation.clone(),
                     ]),
@@ -121,6 +122,7 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
                 sequence: 2,
                 ready: true,
                 in_flight: 0,
+                warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
             },
@@ -258,6 +260,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
                 sequence: 1,
                 ready: true,
                 in_flight: 0,
+                warm_environment_shapes: Default::default(),
                 credential_observations: Default::default(),
                 acp_capability_observations: Default::default(),
             },
@@ -383,6 +386,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
                     sequence: 1,
                     ready: true,
                     in_flight: 0,
+                    warm_environment_shapes: Default::default(),
                     credential_observations: [WorkerCredentialObservation::available(
                         credential, 100, 130,
                     )]
@@ -437,6 +441,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
                     sequence: 2,
                     ready: true,
                     in_flight: 0,
+                    warm_environment_shapes: Default::default(),
                     credential_observations: [WorkerCredentialObservation::available(
                         WorkerCredentialRevision {
                             id: "credential-source-worker-private".to_string(),

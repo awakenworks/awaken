@@ -16,12 +16,13 @@
 //   T3    N   -   Y   fail closed; E3
 
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
+import { cargoExecutable } from './cargo_binary.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38813);
@@ -35,29 +36,12 @@ const THREAD = 'secretless-gateway-worker';
 const REVALIDATION_THREAD = 'secretless-gateway-worker-revalidation';
 
 function buildGatewayWorker(): string {
-  const output = execFileSync(
-    'cargo',
-    [
-      'build',
-      '--quiet',
-      '--message-format=json',
-      '-p',
-      'awaken-cli',
-      '--example',
-      'credential_reference_worker',
-    ],
-    { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-  );
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'credential_reference_worker') return message.executable;
-    } catch {
-      // Only Cargo artifact records are relevant.
-    }
-  }
-  throw new Error('could not resolve credential_reference_worker example');
+  return cargoExecutable({
+    cwd: ROOT,
+    packageName: 'awaken-cli',
+    targetName: 'credential_reference_worker',
+    targetKind: 'example',
+  });
 }
 
 async function post(pathname: string, body: unknown, worker?: string): Promise<any> {

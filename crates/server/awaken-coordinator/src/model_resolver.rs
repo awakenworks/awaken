@@ -642,6 +642,7 @@ mod tests {
                     sequence: 1,
                     ready: true,
                     in_flight: 0,
+                    warm_environment_shapes: Default::default(),
                     credential_observations: [WorkerCredentialObservation::available(
                         WorkerCredentialRevision {
                             id: credential_id.into(),

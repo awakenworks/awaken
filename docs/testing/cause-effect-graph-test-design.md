@@ -548,7 +548,7 @@ C67 → E59     (C68∧~C74) → E60     C69 → ~E61(暖) → 恒新建/非池�
 
 ## 模块 M9 · 租约 / 回收 / 中毒 / 令牌(Lease · Reap · Poison · Token)
 
-`awaken-sandbox-manager`、`awaken-connection-plan`、`awaken-tool-relay`
+`awaken-provisioning-contract::lease`、`awaken-sandbox-container::reaper`、`awaken-connection-plan`、`awaken-tool-relay`
 
 ### 因(C74–C77)
 
@@ -1144,7 +1144,7 @@ M1–M15 判定表为唯一测试设计来源。
 | `awaken-local-process` | env/file secret 生命周期错误 → 子进程泄漏 | typed last-mile、scoped file/env、dispose；直接，M5 | 5/1/1/5 |
 | `awaken-sandbox-container` | Docker/Podman/K8s 能力虚报，或 live gate 把宿主运行时故障当产品回归 → 隔离/no-bypass 虚证或测试假红 | provider-specific caps、fail-closed、strict substrate tests；Podman info×raw OCI 独立前提；直接，M8/M32/EF11 | 5/2/2/20 |
 | `awaken-sandbox-local` | namespace/FUSE 不可用却降级 → 隔离不足 | capability probe、policy-controlled reject/degrade；直接，M8 | 5/1/1/5 |
-| `awaken-sandbox-manager` | lease/pool/reap 竞态 → 复用污染或泄漏 | lease state、poison、shape key、reaper；直接，M9 | 5/1/1/5 |
+| `awaken-sandbox-container` warm/reaper lifecycle | warm-capacity/shutdown/reap 竞态 → 复用污染或泄漏 | shape key、never-used capacity、shutdown fence、cross-restart reaper；直接，M9 | 5/1/1/5 |
 | `awaken-sandbox-memoryd` | mount/writeback 丢失或越权 → 数据丢失/跨域 | scoped mount token、hash/teardown harvest；直接，M8 | 5/1/2/10 |
 | `awaken-tool-relay` | token 重放/撤销后调用，或重复 tool id 选错实现 → 未授权/错误工具执行 | opaque scoped token、lease/revoke；复用唯一 `RawToolRegistry` 且 duplicate ambiguous；直接，M9/M31 | 5/1/1/5 |
 

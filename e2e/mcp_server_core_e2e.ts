@@ -5,10 +5,11 @@
 // and proves the extracted server core still powers awaken_protocol_mcp's facade.
 
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cargoExecutable } from './cargo_binary.mjs';
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Message = { jsonrpc?: string; id?: Json; method?: string; params?: any; result?: any; error?: any };
@@ -16,31 +17,11 @@ type Message = { jsonrpc?: string; id?: Json; method?: string; params?: any; res
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function buildDemo(): string {
-  const output = execFileSync(
-    'cargo',
-    [
-      'build',
-      '--quiet',
-      '--message-format=json',
-      '-p',
-      'awaken-protocol-mcp',
-      '--bin',
-      'awaken-mcp-stdio-demo',
-    ],
-    { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-  );
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken-mcp-stdio-demo') {
-        return message.executable;
-      }
-    } catch {
-      // Cargo can interleave human diagnostics; only JSON artifact lines matter.
-    }
-  }
-  throw new Error('could not resolve awaken-mcp-stdio-demo');
+  return cargoExecutable({
+    cwd: ROOT,
+    packageName: 'awaken-protocol-mcp',
+    targetName: 'awaken-mcp-stdio-demo',
+  });
 }
 
 class Peer {

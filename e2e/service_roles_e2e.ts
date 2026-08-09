@@ -10,29 +10,23 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, execSync, spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
+// @ts-expect-error The shared Cargo artifact resolver is intentionally JavaScript.
+import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 39418);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function awakenBin() {
-  const output = execSync(
-    'cargo build --quiet --message-format=json -p awaken-cli --bin awaken',
-    { cwd: REPO_ROOT, maxBuffer: 64 * 1024 * 1024 },
-  ).toString();
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken') return message.executable;
-    } catch {
-      // Cargo may interleave non-JSON diagnostics.
-    }
-  }
-  throw new Error('could not resolve the awaken binary path');
+  return cargoExecutable({
+    cwd: REPO_ROOT,
+    packageName: 'awaken-cli',
+    targetName: 'awaken',
+    prebuiltEnvironmentName: AWAKEN_BIN_ENV,
+  });
 }
 
 function waitForPort(port, server, timeoutMs = 180_000) {

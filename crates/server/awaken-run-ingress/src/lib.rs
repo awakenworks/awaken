@@ -15,6 +15,7 @@
 //! through the commit boundary's `ThreadReader`/`RunStore` ports.
 
 mod any;
+mod application;
 mod capability;
 mod claimed_stream;
 mod clock;
@@ -38,6 +39,10 @@ mod worker;
 mod worker_context;
 
 pub use any::{AnyDispatchStore, DispatchEnqueue};
+pub use application::{
+    ApplicationError, ApplicationErrorKind, ClaimedCommitApplier, ClaimedCommitService,
+    DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult,
+};
 pub use capability::RunIngressCapabilities;
 // The database-less worker's HTTP dispatch client (drives claim/settle over the wire
 // to the Coordinator's registered Worker router), extracted from awaken-runtime-host.
@@ -47,14 +52,14 @@ pub use awaken_run_ingress_contract::operational::{
 };
 pub use awaken_run_ingress_contract::{
     AssignmentRejection, ClaimedCommitCommand, ExecutionLocation, ExecutionScopeRef,
-    HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
-    PlacementContext, PlacementError, PlacementPolicy, PlacementRequirements,
-    REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RegisteredWorker, RegistryError,
-    RegistryMutation, RunDispatch, SESSION_RESOURCES_CAPABILITY, SessionResourceEnvelope,
-    SessionRuntimeEnvelope, WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAcpCapabilityObservation,
-    WorkerAcpCapabilityRequirement, WorkerAssignment, WorkerCredentialObservation,
-    WorkerCredentialRevision, WorkerCredentialState, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRecoveryMode,
+    HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy, PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE,
+    PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext, PlacementError, PlacementPolicy,
+    PlacementRequirements, REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RegisteredWorker,
+    RegistryError, RegistryMutation, RunDispatch, SESSION_RESOURCES_CAPABILITY,
+    SessionResourceEnvelope, SessionRuntimeEnvelope, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
+    WorkerAcpCapabilityObservation, WorkerAcpCapabilityRequirement, WorkerAssignment,
+    WorkerCredentialObservation, WorkerCredentialRevision, WorkerCredentialState, WorkerDirectory,
+    WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRecoveryMode,
     WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
     place_assignment, worker_credential_realization_capabilities,
 };
@@ -133,7 +138,18 @@ pub(crate) fn policy_selects_requester(
         previous_worker: attempt
             .previous
             .map(|assignment| assignment.identity.clone()),
-        attributes: Default::default(),
+        attributes: request
+            .preferred_environment_shape
+            .as_ref()
+            .map(|shape| {
+                [(
+                    PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE.to_string(),
+                    shape.clone(),
+                )]
+                .into_iter()
+                .collect()
+            })
+            .unwrap_or_default(),
     };
     match place_assignment(
         policy,

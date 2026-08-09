@@ -7017,3 +7017,58 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         "P2 rejection precedes every projection mutation"
     );
 }
+
+/// Cause/effect design:
+/// C1=Session spec declares CacheVolume, C2=no eager preparation exists,
+/// C3=initializer succeeds, C4=the same identity is explicitly prewarmed later.
+/// E1=initialization precedes provider creation, E2=Session creation succeeds,
+/// E3=explicit and implicit entry points reuse one successful preparation.
+/// Decision rules: (C1,C2,C3)->(E1,E2); (C1,C3,C4)->E3.
+#[tokio::test]
+async fn session_creation_and_explicit_cache_warmup_share_one_preparation_path() {
+    struct RecordingInitializer(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl crate::CacheVolumeInitializer for RecordingInitializer {
+        async fn initialize(&self, _volume: &crate::CacheVolumeWarmup) -> Result<(), String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    let initializer = Arc::new(RecordingInitializer(AtomicUsize::new(0)));
+    let host = SharedHost::new(Arc::new(OkModel), "stub")
+        .with_cache_volume_initializer(initializer.clone());
+    let mut spec = crate::provisioning::agent_run_sandbox_spec("cache-wiring");
+    spec.mounts
+        .push(awaken_provisioning_contract::MountRequirement {
+            mount_id: "build-cache".into(),
+            source: awaken_provisioning_contract::MountSource::CacheVolume {
+                host_path: "/tmp/awaken-cache-volume-wiring".into(),
+                key: "build-cache-v1".into(),
+                persistent_volume_claim: None,
+            },
+            mount_path: "cache-placeholder".into(),
+            access: awaken_provisioning_contract::MountAccess::ReadWrite,
+            lifetime: awaken_provisioning_contract::MountLifetime::Durable,
+            // Workdir cannot bind a host directory; the wiring fixture keeps the
+            // provider effect optional. Real bind behavior is covered by the
+            // container/namespace substrate tests.
+            required: false,
+        });
+
+    let environment = host
+        .create_session_environment(&host.session_provider, &spec)
+        .await
+        .expect("cache preparation precedes Session environment creation");
+    assert_eq!(initializer.0.load(Ordering::SeqCst), 1, "E1/E2");
+
+    host.prewarm_cache_volume("build-cache-v1", "/tmp/awaken-cache-volume-wiring")
+        .await
+        .expect("same identity is already prepared");
+    assert_eq!(initializer.0.load(Ordering::SeqCst), 1, "E3");
+    environment
+        .dispose()
+        .await
+        .expect("dispose fixture environment");
+}

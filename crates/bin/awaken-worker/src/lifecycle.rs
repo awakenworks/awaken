@@ -1,6 +1,7 @@
 //! Worker registry authority, heartbeat, and local admission lifecycle.
 
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, RwLock};
 
 use awaken_runtime_host::SharedHost;
 use awaken_worker_contract::{RegistryMutation, WorkerHeartbeat, WorkerIdentity};
@@ -29,6 +30,8 @@ pub(crate) struct WorkerLifecycle {
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     pub(crate) observations: Arc<WorkerObservationCache>,
     pub(crate) observation_ttl: std::time::Duration,
+    pub(crate) warm_environments:
+        Arc<RwLock<BTreeMap<String, awaken_session_contract::EnvironmentSnapshot>>>,
 }
 
 impl WorkerLifecycle {
@@ -57,6 +60,87 @@ impl WorkerLifecycle {
                 self.observation_ttl,
             )
             .await
+    }
+
+    pub(crate) fn warm_environment_shapes(&self) -> BTreeSet<String> {
+        self.warm_environments
+            .read()
+            .expect("warm Environment receipt lock")
+            .iter()
+            .filter(|(_, snapshot)| self.host.ready_environment_snapshot_capacity(snapshot) > 0)
+            .map(|(shape, _)| shape.clone())
+            .collect()
+    }
+
+    /// Reconcile derived desired state from Coordinator into the canonical Host
+    /// capacity path. A failed refresh leaves the previous receipts untouched;
+    /// a successful refresh drops shapes no longer present in the current catalog.
+    pub(crate) async fn reconcile_environment_warmups(&self) -> Result<usize, String> {
+        let desired = self
+            .control
+            .current_environment_warmups(&self.identity)
+            .await?;
+        let (per_shape, total) = self.host.environment_warmup_limits();
+        let mut remaining = total;
+        let mut desired_with_targets = BTreeMap::new();
+        // Coordinator returns a stable Environment-id/revision order. Preserve it
+        // while selecting a bounded subset so a catalog larger than local capacity
+        // does not rotate LRU entries and recreate containers every reconciliation.
+        for snapshot in desired {
+            let shape = snapshot.runtime_shape_fingerprint().0;
+            if desired_with_targets.contains_key(&shape) {
+                continue;
+            }
+            let target = per_shape.min(remaining);
+            if target == 0 {
+                break;
+            }
+            remaining -= target;
+            desired_with_targets.insert(shape, (snapshot, target));
+        }
+        let previous = self
+            .warm_environments
+            .read()
+            .expect("warm Environment receipt lock")
+            .clone();
+        // Free shapes outside the deterministic selected set before adding their
+        // replacements. This lets the pool remain bounded without eviction churn.
+        for (shape, snapshot) in &previous {
+            if !desired_with_targets.contains_key(shape) {
+                self.host
+                    .discard_environment_snapshot_capacity(snapshot)
+                    .await;
+            }
+        }
+        let mut next = previous
+            .into_iter()
+            .filter(|(shape, _)| desired_with_targets.contains_key(shape))
+            .collect::<BTreeMap<_, _>>();
+        for (shape, (snapshot, target)) in &desired_with_targets {
+            match self
+                .host
+                .prewarm_environment_snapshot(snapshot, *target)
+                .await
+            {
+                Ok(ready) if ready > 0 => {
+                    next.insert(shape.clone(), snapshot.clone());
+                }
+                Ok(_) => {
+                    next.remove(shape);
+                }
+                Err(error) => {
+                    eprintln!(
+                        "Environment shape prewarm failed for {}@{}; cold path retained: {error}",
+                        snapshot.environment_id, snapshot.revision.0
+                    );
+                }
+            }
+        }
+        *self
+            .warm_environments
+            .write()
+            .expect("warm Environment receipt lock") = next;
+        Ok(self.warm_environment_shapes().len())
     }
 }
 
@@ -90,6 +174,7 @@ pub(crate) fn spawn_heartbeat(
                         sequence,
                         ready: lifecycle.host.pool_accepting_work(),
                         in_flight: lifecycle.host.pool_in_flight(),
+                        warm_environment_shapes: lifecycle.warm_environment_shapes(),
                         credential_observations: lifecycle.observations.credential_snapshot(),
                         acp_capability_observations: lifecycle
                             .observations
@@ -130,6 +215,23 @@ pub(crate) fn spawn_heartbeat(
                     revoke_worker_session_authority(&lifecycle).await;
                     break;
                 }
+            }
+        }
+    })
+}
+
+pub(crate) fn spawn_environment_warmup_reconciliation(
+    lifecycle: Arc<WorkerLifecycle>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if let Err(error) = lifecycle.reconcile_environment_warmups().await {
+                eprintln!(
+                    "Environment warmup reconciliation failed; prior receipts retained: {error}"
+                );
             }
         }
     })

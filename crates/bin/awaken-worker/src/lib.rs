@@ -27,8 +27,8 @@ mod manifest;
 
 use credential_liveness::WorkerObservationCache;
 use lifecycle::{
-    WorkerLifecycle, grace_window, new_incarnation_id, spawn_heartbeat, wait_for_in_flight,
-    wall_clock_ms,
+    WorkerLifecycle, grace_window, new_incarnation_id, spawn_environment_warmup_reconciliation,
+    spawn_heartbeat, wait_for_in_flight, wall_clock_ms,
 };
 use manifest::{
     CredentialMaterializerSupport, ManifestSelection, ManifestSource, ResourceManifestSupport,
@@ -348,13 +348,26 @@ impl WorkerNodeBuilder {
     /// substitution/no-bypass implementations; it does not add a credential port.
     #[must_use]
     pub fn with_session_container_provider(
+        self,
+        backend: impl Into<String>,
+        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+    ) -> Self {
+        self.with_session_container_provider_and_capacity(backend, provider, None)
+    }
+
+    /// Install a Session container provider together with the capacity lifecycle
+    /// produced by the same downstream composition.
+    #[must_use]
+    pub fn with_session_container_provider_and_capacity(
         mut self,
         backend: impl Into<String>,
         provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+        capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
     ) -> Self {
         self.session_container_provider = Some(InstalledSessionContainerProvider {
             backend: backend.into(),
             provider,
+            capacity,
         });
         self
     }
@@ -576,6 +589,7 @@ pub struct WorkerNode {
 struct InstalledSessionContainerProvider {
     backend: String,
     provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+    capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
 }
 
 struct InstalledSandboxBoundary {
@@ -867,13 +881,13 @@ impl WorkerNode {
         );
 
         let managed_credential_materializer = self.credential_materializer.clone();
-        let remote_memory = Arc::new(awaken_runtime_host::HttpMemoryRepository::new(
+        let remote_memory = Arc::new(awaken_resource_worker_http::HttpMemoryRepository::new(
             upstream.clone(),
         ));
         let remote_files = Arc::new(awaken_worker_runtime::HttpFileContentSource::new(
             upstream.clone(),
         ));
-        let remote_skills = Arc::new(awaken_runtime_host::HttpSkillBundleSource::new(
+        let remote_skills = Arc::new(awaken_resource_worker_http::HttpSkillBundleSource::new(
             upstream.clone(),
         ));
         let remote_repositories = Arc::new(
@@ -928,7 +942,11 @@ impl WorkerNode {
                 .hand_executor_factory
                 .clone()
                 .expect("container provider was validated with a hand factory");
-            host = host.with_session_container_provider(installed.provider, hand_factory);
+            host = host.with_session_container_provider_and_capacity(
+                installed.provider,
+                installed.capacity,
+                hand_factory,
+            );
         }
         // Serve only the ACP CLI capability this worker advertises. The run's snapshot
         // selects the matching backend and supplies its published provider access.
@@ -937,6 +955,21 @@ impl WorkerNode {
             .await
             .with_acp_from_deployment(self.credential_materializer)
             .await;
+
+        // Pay the canonical empty-container cold start before publishing Ready.
+        // Warmup is an optimization: failure degrades to the existing cold-create
+        // path and is observable, but never weakens the selected isolation tier.
+        match host.prewarm_environment_capacity().await {
+            Ok(ready) if ready > 0 => {
+                eprintln!("awaken-worker prewarmed {ready} Session environments")
+            }
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!(
+                    "awaken-worker Session environment prewarm failed; cold path retained: {error}"
+                )
+            }
+        }
 
         let host = Arc::new(host);
         let acp_capability_observation_source = match self.acp_capability_observation_source {
@@ -965,6 +998,7 @@ impl WorkerNode {
             acp_capability_observation_source,
             observations,
             observation_ttl: self.credential_observation_ttl,
+            warm_environments: Default::default(),
         });
         // Publish Ready before starting the pull loop. Starting the pool while the
         // directory still says Starting creates a tight claim/reject race; publishing
@@ -982,6 +1016,15 @@ impl WorkerNode {
         {
             eprintln!("worker_observation_probe_failed: {error}; publishing no dynamic evidence");
         }
+        match lifecycle.reconcile_environment_warmups().await {
+            Ok(ready) if ready > 0 => {
+                eprintln!("awaken-worker reconciled {ready} current Environment shapes")
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!(
+                "initial Environment warmup reconciliation failed; cold path retained: {error}"
+            ),
+        }
         let initial = control
             .heartbeat(
                 &lifecycle.identity,
@@ -989,6 +1032,7 @@ impl WorkerNode {
                     sequence: 1,
                     ready: true,
                     in_flight: 0,
+                    warm_environment_shapes: lifecycle.warm_environment_shapes(),
                     credential_observations: lifecycle.observations.credential_snapshot(),
                     acp_capability_observations: lifecycle.observations.acp_capability_snapshot(),
                 },
@@ -1016,6 +1060,7 @@ impl WorkerNode {
             self.credential_probe_interval,
             self.credential_observation_ttl,
         );
+        let environment_warmups = spawn_environment_warmup_reconciliation(lifecycle.clone());
         let mut heartbeat = spawn_heartbeat(lifecycle.clone(), 2);
         eprintln!("awaken-worker registered with {upstream_url}");
 
@@ -1081,9 +1126,11 @@ impl WorkerNode {
         }
         heartbeat.abort();
         credential_probe.abort();
+        environment_warmups.abort();
         if let Some(admin_task) = admin_task {
             admin_task.abort();
         }
+        host.shutdown_environment_capacity().await;
         if host.pool_in_flight() == 0 {
             let _ = control.mark_quiesced(&lifecycle.identity).await;
         }

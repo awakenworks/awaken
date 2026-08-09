@@ -5,7 +5,7 @@ use super::*;
 mod application;
 mod claimed_dispatch;
 #[cfg(test)]
-mod test_support;
+pub(super) mod test_support;
 use application::install_claimed_session_projection;
 use claimed_dispatch::{WorkerMcpEffects, WorkerProjectionSynchronizer};
 
@@ -82,114 +82,6 @@ mod tests {
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
     use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-    /// Cause/effect decision table for Host-wide legacy reconciliation:
-    ///
-    /// | Rule | Host role | Dispatch | Thread commit | Expected effect |
-    /// |------|-----------|----------|---------------|-----------------|
-    /// | R0 | local pool | any | any | no duplicate coordinator daemon |
-    /// | R1 | coordinator-only | Awaiting | no terminal Run | preserve row and Session state |
-    /// | R2 | coordinator-only | Awaiting | exact Run Ended | environment-free fenced Done |
-    /// | R3 | coordinator-only + R2 | exact settlement | exact terminal | completion tombstone, no Sandbox |
-    ///
-    /// Constraints: each row is read through its own Thread commit boundary;
-    /// neither queue metadata nor environment availability can prove outcome.
-    #[tokio::test]
-    async fn host_reconciles_only_exact_committed_terminals_without_opening_sessions() {
-        use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
-        use awaken_run_ingress::{Clock, DispatchQueue};
-
-        let mut local_pool = SharedHost::new(Arc::new(AdoptionModel), "stub");
-        local_pool.deployment.durable = true;
-        local_pool.deployment.disable_local_pool = false;
-        assert!(
-            !Arc::new(local_pool).ensure_terminal_dispatch_reconciliation(),
-            "R0"
-        );
-
-        let storage = tempfile::tempdir().expect("storage");
-        let now = awaken_run_ingress::SystemClock.now_ms();
-        let store = Arc::new(
-            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
-        );
-        let mut coordinator = SharedHost::new(Arc::new(AdoptionModel), "stub")
-            .with_store_dir(storage.path())
-            .with_dispatch_store(store.clone());
-        coordinator.deployment.durable = true;
-        coordinator.deployment.disable_local_pool = true;
-        let host = Arc::new(coordinator);
-
-        let control = claim(&store, "thread-control", "run-control", "setup", now).await;
-        store
-            .settle(
-                &control.lease.run_id,
-                control.lease.epoch,
-                awaken_run_ingress::DispatchOutcome::Awaiting,
-                &[],
-            )
-            .await
-            .expect("quiesce control");
-        let terminal = claim(&store, "thread-terminal", "run-terminal", "setup", now).await;
-        store
-            .settle(
-                &terminal.lease.run_id,
-                terminal.lease.epoch,
-                awaken_run_ingress::DispatchOutcome::Awaiting,
-                &[],
-            )
-            .await
-            .expect("quiesce terminal candidate");
-
-        let commit = host
-            .build_commit("thread-terminal")
-            .await
-            .expect("terminal Thread commit");
-        commit_run(
-            &commit,
-            &ThreadId("thread-terminal".to_string()),
-            RunDisposition::ended(RunId("run-terminal".to_string()), EndCause::NaturalEnd),
-            Vec::new(),
-            Vec::new(),
-        )
-        .await
-        .expect("record exact terminal truth");
-
-        assert!(host.ensure_terminal_dispatch_reconciliation());
-        assert!(
-            !host.ensure_terminal_dispatch_reconciliation(),
-            "one coordinator daemon"
-        );
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if store
-                    .list_dispatches()
-                    .await
-                    .expect("reconciliation rows")
-                    .len()
-                    == 1
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("R2 coordinator daemon reconciles immediately");
-        let rows = store.list_dispatches().await.expect("remaining dispatches");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].run_id, RunId("run-control".to_string()), "R1");
-        assert!(host.session_environment("thread-control").await.is_none());
-        assert!(
-            host.session_environment("thread-terminal").await.is_none(),
-            "R3"
-        );
-        let completions = store
-            .completion_events_after(0, 10)
-            .await
-            .expect("completion tombstone");
-        assert_eq!(completions.len(), 1);
-        assert_eq!(completions[0].run_id, RunId("run-terminal".to_string()));
-    }
 
     /// C1-C3: a cold Worker must derive eager-vs-deferred provisioning only from
     /// the immutable dispatch envelope. Legacy absence remains eager, an exact
@@ -530,6 +422,7 @@ mod tests {
     struct RecordingMcpRealizer {
         calls: std::sync::Mutex<Vec<&'static str>>,
         fail_stage: std::sync::atomic::AtomicBool,
+        required_runtime: Option<(std::sync::Weak<SharedHost>, String)>,
     }
 
     #[async_trait::async_trait]
@@ -540,6 +433,19 @@ mod tests {
         ) -> Result<awaken_session_contract::McpRealizationReceipt, awaken_session_contract::RunError>
         {
             self.calls.lock().unwrap().push("stage");
+            if let Some((host, thread)) = &self.required_runtime {
+                let resident = host.upgrade().is_some_and(|host| {
+                    host.session_slots
+                        .read(thread, |slot| slot.runtime.is_some())
+                        .unwrap_or(false)
+                });
+                if !resident {
+                    return Err(awaken_session_contract::RunError::classified(
+                        "test_session_runtime_missing",
+                        "claimed MCP stage ran before its immutable Agent snapshot opened the Session",
+                    ));
+                }
+            }
             if self.fail_stage.load(Ordering::SeqCst) {
                 return Err(awaken_session_contract::RunError::classified(
                     "test_mcp_stage_failed",
@@ -570,6 +476,103 @@ mod tests {
             self.calls.lock().unwrap().push("drain");
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() {
+        use awaken_run_ingress::{Clock, DispatchQueue};
+
+        /* Claimed sandbox-stdio recovery cause/effect decision table. Causes:
+         * C1 a cold Worker has no process-local Agent publication; C2 the durable
+         * Run carries its exact immutable snapshot and non-default backend
+         * projection; C3 its Session runtime envelope contains a sandbox-stdio
+         * MCP stage; C4 the Session has no resident Runtime/Environment. Effects:
+         * E1 open the canonical Session Runtime from the claimed snapshot before
+         * MCP staging; E2 stage and publish the exact MCP generation; E3 rebuild
+         * the Runtime after publication invalidates its pre-stage projection;
+         * E4 never consult or synthesize a second publication source. Rule S1:
+         * C1+C2+C3+C4=>E1+E2+E3+E4. The adjacent malformed-envelope and stale-
+         * claim rules retain fail-closed coverage for invalid authority. */
+        let store = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+        );
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
+        );
+        let thread = "cold-stdio-recovery";
+        let realizer = Arc::new(RecordingMcpRealizer {
+            required_runtime: Some((Arc::downgrade(&host), thread.into())),
+            ..Default::default()
+        });
+        let managed =
+            crate::ManagedHost::new(host.clone()).with_mcp_attachment_realizer(realizer.clone());
+        drop(managed);
+        let stage = awaken_session_contract::StageMcpAttachment {
+            workspace_id: host.local_workspace().into(),
+            generation: awaken_session_contract::McpGenerationRef {
+                session_id: thread.into(),
+                attachment_id: awaken_session_contract::McpAttachmentId("browser".into()),
+                generation: awaken_session_contract::McpGeneration(1),
+                runtime_incarnation: "worker-a".into(),
+                lease_epoch: 1,
+                lease_expires_at_unix_ms: u64::MAX,
+            },
+            realization_id: "realize-browser-1".into(),
+            stage_idempotency_key: "stage-browser-1".into(),
+            name: "browser".into(),
+            target: awaken_session_contract::McpTarget::sandbox_stdio(
+                "playwright-mcp",
+                vec!["--headless".into()],
+            )
+            .expect("sandbox stdio target"),
+            prompts_as_skills: false,
+            credential: None,
+            selected_plaintext_holder: None,
+        };
+        let runtime = crate::provisioning::encode_session_runtime_envelope(
+            deferred_environment(),
+            Some(Vec::new()),
+            vec![stage],
+        )
+        .expect("runtime envelope");
+        store
+            .enqueue(
+                awaken_run_ingress::RunDispatch::new(test_activation(
+                    thread,
+                    "run-cold-stdio-recovery",
+                ))
+                .with_session_runtime(runtime),
+            )
+            .await
+            .expect("enqueue");
+        let claimed = store
+            .claim(
+                "worker-a",
+                30_000,
+                awaken_run_ingress::SystemClock.now_ms(),
+                &Default::default(),
+            )
+            .await
+            .expect("claim")
+            .expect("claimed Run");
+
+        HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        }
+        .worker_for_claimed(&claimed)
+        .await
+        .expect("S1 cold stdio recovery");
+
+        assert_eq!(
+            realizer.calls.lock().unwrap().as_slice(),
+            ["stage", "publish"]
+        );
+        assert!(
+            host.session_slots
+                .read(thread, |slot| slot.runtime.is_some())
+                .unwrap_or(false),
+            "S1/E3"
+        );
     }
 
     #[async_trait::async_trait]

@@ -19,7 +19,7 @@ use awaken_session_contract::ManagedSessionRepository;
 use awaken_worker_transport_security::WorkerRequestAuthenticator;
 use axum::Router;
 
-use crate::SharedHost;
+use crate::{SharedHost, WorkerTransportBuildError};
 
 /// Coordinator-owned ports and already-built sibling components.
 ///
@@ -68,7 +68,7 @@ pub enum CoordinatorBuildError {
     #[error("restore Deployment state: {0}")]
     DeploymentRestore(String),
     #[error("build registered Worker transport: {0}")]
-    WorkerTransport(#[from] awaken_coordinator_runtime::RegisteredWorkerTransportBuildError),
+    WorkerTransport(#[from] WorkerTransportBuildError),
 }
 
 pub async fn restore_deployment_application(
@@ -116,6 +116,11 @@ pub async fn build_coordinator_component(
             .with_rate_limiter(rate_limiter),
     ));
 
+    let environment_warmups = awaken_run_ingress_http::worker_environment_warmup_router(
+        environments.clone(),
+        worker_directory.clone(),
+        worker_authenticator.clone(),
+    );
     let (data, dream_application) = crate::mount_with_managed_application_access_models_and_dreams(
         host,
         managed_state,
@@ -129,7 +134,7 @@ pub async fn build_coordinator_component(
             worker_directory,
         },
     )?;
-    let data = data.merge(registration_router);
+    let data = data.merge(registration_router).merge(environment_warmups);
     let management_router =
         awaken_protocol_managed::deployments_router(deployment_application.clone())
             .merge(awaken_protocol_awaken::dream_policy_router(

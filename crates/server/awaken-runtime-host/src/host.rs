@@ -180,6 +180,9 @@ pub struct SharedHost {
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.
     pub(crate) session_provider: crate::session_environment::SessionEnvironmentProvider,
+    /// Product-plane single-flight preparation for caller-owned CacheVolume
+    /// paths. The selected Sandbox provider remains an opaque-path consumer.
+    pub(crate) cache_volume_prewarmer: crate::cache_volume::CacheVolumePrewarmer,
     /// Trusted-host environment selected only for BackendOwned provisioning.
     /// It is a policy branch over the same Session owner, not a second executor.
     pub(crate) backend_owned_session_provider:

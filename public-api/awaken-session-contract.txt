@@ -493,6 +493,8 @@ pub awaken_session_contract::EnvironmentSnapshot::revision: awaken_environment_c
 pub awaken_session_contract::EnvironmentSnapshot::sandbox: serde_json::value::Value
 pub awaken_session_contract::EnvironmentSnapshot::sandbox_provisioning: awaken_session_contract::SandboxProvisioning
 pub awaken_session_contract::EnvironmentSnapshot::self_hosted: bool
+impl awaken_session_contract::EnvironmentSnapshot
+pub fn awaken_session_contract::EnvironmentSnapshot::runtime_shape_fingerprint(&self) -> awaken_session_contract::EnvironmentFingerprint
 pub struct awaken_session_contract::EventForwardingSink
 impl awaken_session_contract::EventForwardingSink
 pub fn awaken_session_contract::EventForwardingSink::new(impl core::ops::function::Fn(awaken_agent_contract::event::agent::AgentEvent) -> core::result::Result<(), awaken_agent_contract::stream::sink::Error> + core::marker::Send + core::marker::Sync + 'static) -> Self
@@ -859,6 +861,8 @@ pub fn awaken_session_contract::DreamProcessStore::compare_and_swap_dream_policy
 pub fn awaken_session_contract::DreamProcessStore::compare_and_swap_dream_process(&self, core::option::Option<&awaken_session_contract::DreamProcessRecord>, awaken_session_contract::DreamProcessRecord) -> core::result::Result<bool, awaken_session_contract::DreamProcessStoreError>
 pub fn awaken_session_contract::DreamProcessStore::dream_policies(&self) -> core::result::Result<alloc::vec::Vec<awaken_session_contract::DreamPolicyRecord>, awaken_session_contract::DreamProcessStoreError>
 pub fn awaken_session_contract::DreamProcessStore::dream_processes(&self) -> core::result::Result<alloc::vec::Vec<awaken_session_contract::DreamProcessRecord>, awaken_session_contract::DreamProcessStoreError>
+pub trait awaken_session_contract::EnvironmentWarmupSource: core::marker::Send + core::marker::Sync
+pub fn awaken_session_contract::EnvironmentWarmupSource::current_environment_warmups<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_session_contract::EnvironmentSnapshot>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_session_contract::LiveInboxApplication: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::LiveInboxApplication::queue<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<u64, awaken_session_contract::LiveInboxApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::LiveInboxApplication::remove<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::LiveInboxApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

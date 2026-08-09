@@ -127,6 +127,20 @@ impl WorkerControlClient {
         .await
     }
 
+    pub async fn current_environment_warmups(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<Vec<awaken_session_contract::EnvironmentSnapshot>, String> {
+        let body = self
+            .post(
+                "/v1/worker/environment/warmups",
+                json!({ "identity": identity }),
+            )
+            .await?;
+        serde_json::from_value(body.get("warmups").cloned().unwrap_or(Value::Null))
+            .map_err(|error| format!("Environment warmup response decode: {error}"))
+    }
+
     pub async fn begin_drain(
         &self,
         identity: &WorkerIdentity,

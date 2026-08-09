@@ -348,7 +348,10 @@ const HERMES: AcpCli = AcpCli {
     container_probe_argv: Some(&[
         "/usr/bin/env",
         "DEEPSEEK_API_KEY=awaken-capability-probe",
-        "DEEPSEEK_BASE_URL=https://api.deepseek.com/v1",
+        // Capability discovery is prompt-free and credential-free. Point live
+        // model-list discovery at a closed local port so a fresh or egress-
+        // fenced Worker falls back to the image-owned catalog immediately.
+        "DEEPSEEK_BASE_URL=http://127.0.0.1:9/v1",
         "HERMES_MODEL=deepseek-v4-flash",
         "hermes-acp",
     ]),
@@ -371,7 +374,7 @@ const HERMES: AcpCli = AcpCli {
     memory_entrypoint: "AGENTS.md",
     session_export_excludes: &[".env"],
     session_persistence: SessionPersistence::None,
-    context_window_env: None,
+    context_window_env: Some("HERMES_CONTEXT_WINDOW"),
     env: &[],
 };
 

@@ -31,11 +31,12 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { execSync, spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
+import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 
 if (process.env.CODEX_ACP_LIVE !== '1') {
   throw new Error('set CODEX_ACP_LIVE=1 to confirm this test may invoke the real Codex ACP adapter');
@@ -64,20 +65,12 @@ function managedContainerIds() {
 }
 
 function awakenBin() {
-  const output = execSync(
-    'cargo build --quiet --message-format=json -p awaken-cli --bin awaken',
-    { cwd: ROOT, maxBuffer: 128 * 1024 * 1024 },
-  ).toString();
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken') return message.executable;
-    } catch {
-      // Cargo diagnostic.
-    }
-  }
-  throw new Error('could not resolve the awaken binary');
+  return cargoExecutable({
+    cwd: ROOT,
+    packageName: 'awaken-cli',
+    targetName: 'awaken',
+    prebuiltEnvironmentName: AWAKEN_BIN_ENV,
+  });
 }
 
 async function availablePort() {

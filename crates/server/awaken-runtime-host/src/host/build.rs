@@ -285,13 +285,15 @@ impl SharedHost {
             .unwrap_or_else(|| {
                 file_application.as_ref().map_or_else(
                     || {
-                        Arc::new(crate::file_content_transport::UnavailableFileContentSource)
+                        Arc::new(awaken_resource_worker_http::UnavailableFileContentSource)
                             as Arc<dyn crate::FileContentSource>
                     },
                     |application| {
-                        Arc::new(crate::ApplicationFileContentSource::new(
-                            application.clone(),
-                        ))
+                        Arc::new(
+                            awaken_resource_worker_http::ApplicationFileContentSource::new(
+                                application.clone(),
+                            ),
+                        )
                     },
                 )
             });
@@ -313,6 +315,7 @@ impl SharedHost {
             session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
                 sandbox_root.clone(),
             ),
+            cache_volume_prewarmer: crate::cache_volume::CacheVolumePrewarmer::default(),
             backend_owned_session_provider: None,
             session_provider_explicit: false,
             judge_snapshot: None,
@@ -517,9 +520,9 @@ impl SharedHost {
                 repository.clone(),
             ))
                 as Arc<dyn awaken_resource_contract::FileApplicationService>;
-            self.file_content_source = Arc::new(crate::ApplicationFileContentSource::new(
-                application.clone(),
-            ));
+            self.file_content_source = Arc::new(
+                awaken_resource_worker_http::ApplicationFileContentSource::new(application.clone()),
+            );
             self.file_application = Some(application);
         }
         self.resource_lifecycle = Some(repository);
@@ -533,9 +536,9 @@ impl SharedHost {
         mut self,
         application: Arc<dyn awaken_resource_contract::FileApplicationService>,
     ) -> Self {
-        self.file_content_source = Arc::new(crate::ApplicationFileContentSource::new(
-            application.clone(),
-        ));
+        self.file_content_source = Arc::new(
+            awaken_resource_worker_http::ApplicationFileContentSource::new(application.clone()),
+        );
         self.file_application = Some(application);
         self
     }
@@ -814,7 +817,10 @@ impl SharedHost {
 
     /// Install only the exact immutable custom-Skill read port used by an
     /// execution Worker. This does not grant authoring or catalog access.
-    pub fn with_skill_bundle_source(mut self, source: Arc<dyn crate::SkillBundleSource>) -> Self {
+    pub fn with_skill_bundle_source(
+        mut self,
+        source: Arc<dyn awaken_resource_worker_http::SkillBundleSource>,
+    ) -> Self {
         self.skills.set_bundle_source(source);
         self
     }
@@ -954,14 +960,28 @@ impl SharedHost {
     /// on the authoritative environment path.
     #[must_use]
     pub fn with_session_container_provider(
-        mut self,
+        self,
         provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
         hand_factory: Arc<dyn crate::HandExecutorFactory>,
     ) -> Self {
+        self.with_session_container_provider_and_capacity(provider, None, hand_factory)
+    }
+
+    /// Install one container provider and its optional never-used-capacity owner.
+    /// Keeping both handles from the same composition prevents provider erasure
+    /// from orphaning startup warmup and shutdown drain.
+    #[must_use]
+    pub fn with_session_container_provider_and_capacity(
+        mut self,
+        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+        capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
+        hand_factory: Arc<dyn crate::HandExecutorFactory>,
+    ) -> Self {
         let hand_bin = self.deployment.sandbox.container_hand_bin.clone();
-        self.session_provider =
-            crate::session_environment::SessionEnvironmentProvider::container_with_hand_idle(
+        self.session_provider = crate::session_environment::SessionEnvironmentProvider::
+            container_with_capacity_and_hand_idle(
                 provider,
+                capacity,
                 Vec::new(),
                 hand_factory,
                 hand_bin,
@@ -972,6 +992,116 @@ impl SharedHost {
             self.session_provider.install_memory_mounter(mounter);
         }
         self
+    }
+
+    /// Replace the default directory-only CacheVolume preparation with one
+    /// product-specific initializer. Explicit warmup and Session creation keep
+    /// sharing the same single-flight owner.
+    #[must_use]
+    pub fn with_cache_volume_initializer(
+        mut self,
+        initializer: Arc<dyn crate::CacheVolumeInitializer>,
+    ) -> Self {
+        self.cache_volume_prewarmer = crate::cache_volume::CacheVolumePrewarmer::new(initializer);
+        self
+    }
+
+    /// Eagerly prepare one caller-owned CacheVolume. The same `(key, host_path)`
+    /// is a no-op when Session realization later requests it.
+    pub async fn prewarm_cache_volume(
+        &self,
+        key: impl Into<String>,
+        host_path: impl Into<std::path::PathBuf>,
+    ) -> Result<(), String> {
+        self.cache_volume_prewarmer
+            .prewarm(crate::CacheVolumeWarmup::new(key, host_path))
+            .await
+    }
+
+    /// Warm the deployment's canonical empty Session shape to its configured
+    /// target. The Worker calls this before publishing Ready. Shape normalization
+    /// is shared with ordinary Session creation, so warmup cannot drift into a
+    /// parallel creation path.
+    pub async fn prewarm_environment_capacity(
+        &self,
+    ) -> Result<usize, awaken_provisioning_contract::SandboxError> {
+        if self.deployment.disable_local_pool || self.deployment.sandbox.warm_pool_size == 0 {
+            return Ok(0);
+        }
+        self.session_provider
+            .prewarm(
+                &crate::provisioning::agent_run_sandbox_spec("environment-warmup"),
+                self.deployment.sandbox.warm_pool_size,
+            )
+            .await
+    }
+
+    /// Reconcile one current executable Environment into the exact mount-less
+    /// shape ordinary Session creation requests. Docker, Podman and Kubernetes
+    /// all enter through the installed provider/capacity pair.
+    pub async fn prewarm_environment_snapshot(
+        &self,
+        environment: &awaken_session_contract::EnvironmentSnapshot,
+        target: usize,
+    ) -> Result<usize, awaken_provisioning_contract::SandboxError> {
+        if self.deployment.disable_local_pool
+            || self.deployment.sandbox.warm_pool_size == 0
+            || target == 0
+            || environment.self_hosted
+        {
+            return Ok(0);
+        }
+        let spec = crate::provisioning::environment_capacity_spec(
+            environment,
+            self.session_provider.capabilities().network_isolation,
+        );
+        self.session_provider.prewarm(&spec, target).await
+    }
+
+    /// Per-shape target and total ready-capacity budget used to select a stable
+    /// deterministic subset when the catalog is larger than local capacity.
+    #[must_use]
+    pub fn environment_warmup_limits(&self) -> (usize, usize) {
+        if self.deployment.disable_local_pool || self.deployment.sandbox.warm_pool_size == 0 {
+            return (0, 0);
+        }
+        (
+            self.deployment.sandbox.warm_pool_size,
+            self.deployment.sandbox.warm_pool_total_size,
+        )
+    }
+
+    /// Observe actual ready capacity instead of trusting the last reconciliation
+    /// result; checkout and global eviction may change it between heartbeats.
+    #[must_use]
+    pub fn ready_environment_snapshot_capacity(
+        &self,
+        environment: &awaken_session_contract::EnvironmentSnapshot,
+    ) -> usize {
+        let spec = crate::provisioning::environment_capacity_spec(
+            environment,
+            self.session_provider.capabilities().network_isolation,
+        );
+        self.session_provider.ready_capacity(&spec)
+    }
+
+    /// Drop unused capacity for an Environment shape removed from current
+    /// desired state. Active Sessions are unaffected.
+    pub async fn discard_environment_snapshot_capacity(
+        &self,
+        environment: &awaken_session_contract::EnvironmentSnapshot,
+    ) {
+        let spec = crate::provisioning::environment_capacity_spec(
+            environment,
+            self.session_provider.capabilities().network_isolation,
+        );
+        self.session_provider.discard_capacity(&spec).await;
+    }
+
+    /// Dispose never-used warm capacity after claim admission and in-flight work
+    /// have drained. Active Session environments remain owned by their slots.
+    pub async fn shutdown_environment_capacity(&self) {
+        self.session_provider.shutdown_capacity().await;
     }
 
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first turn.

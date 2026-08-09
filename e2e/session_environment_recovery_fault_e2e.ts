@@ -6,7 +6,7 @@
 // Session through the same public API. No test-only runtime hook is involved.
 
 import assert from 'node:assert/strict';
-import { execFileSync, execSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -15,6 +15,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { REPO_ROOT, stopServer, waitForPort } from './harness.mjs';
 // @ts-ignore -- shared JavaScript SQLite fixture intentionally serves TS scenarios.
 import { sqliteRun, sqliteScalar } from './sqlite.mjs';
+// @ts-ignore -- shared Cargo artifact resolver intentionally serves TS scenarios.
+import { cargoExecutable } from './cargo_binary.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 39774);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -31,20 +33,12 @@ type Binding = {
 };
 
 function buildBrain(): string {
-  const output = execSync(
-    'cargo build --quiet --message-format=json -p awaken-scenario-host --bin awaken-scenario-host --features container-docker',
-    { cwd: REPO_ROOT, maxBuffer: 128 * 1024 * 1024 },
-  ).toString();
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken-scenario-host') return message.executable;
-    } catch {
-      // Cargo may interleave a non-JSON diagnostic with JSON compiler messages.
-    }
-  }
-  throw new Error('could not resolve the container-enabled scenario host');
+  return cargoExecutable({
+    cwd: REPO_ROOT,
+    packageName: 'awaken-scenario-host',
+    targetName: 'awaken-scenario-host',
+    features: ['container-docker'],
+  });
 }
 
 function ensureImage(): void {

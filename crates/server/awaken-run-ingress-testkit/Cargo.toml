@@ -14,7 +14,10 @@ description = "Reusable conformance suite for DispatchQueue implementations and 
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-run-ingress-contract.workspace = true
+async-trait.workspace = true
+axum.workspace = true
 serde_json.workspace = true
+tokio = { workspace = true, features = ["net", "rt"] }
 
 [lints]
 workspace = true

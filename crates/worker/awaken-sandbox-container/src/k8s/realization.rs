@@ -7,7 +7,7 @@ use kube::{Api, Resource, ResourceExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::{api_conflict, api_not_found, backend};
+use super::error::{api_conflict, api_not_found, backend};
 use crate::RuntimeError;
 
 const REALIZATION_DIGEST_ANNOTATION: &str = "awaken.dev/realization-digest";
