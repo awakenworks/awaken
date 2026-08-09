@@ -206,16 +206,12 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                     claimed.lease.run_id.0
                 )));
             }
-            Some(
-                crate::provisioning::decode_session_resource_envelope(envelope).map_err(
-                    |error| {
-                        Self::execution_error(format!(
-                            "run {} has an invalid Session resource manifest: {error}",
-                            claimed.lease.run_id.0
-                        ))
-                    },
-                )?,
-            )
+            Some(envelope.decode_manifest().map_err(|error| {
+                Self::execution_error(format!(
+                    "run {} has an invalid Session resource manifest: {error}",
+                    claimed.lease.run_id.0
+                ))
+            })?)
         } else {
             None
         };

@@ -859,10 +859,16 @@ mod tests {
     #[derive(serde::Deserialize)]
     struct ImageRuntime {
         id: String,
-        manager: String,
-        requirement: String,
+        requirements: Vec<ImageRequirement>,
+        executables: Vec<String>,
         probe_argv: Vec<String>,
         auth_method_id: Option<String>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct ImageRequirement {
+        manager: String,
+        requirement: String,
     }
 
     #[test]
@@ -899,15 +905,25 @@ mod tests {
                 "I2: {}",
                 cli.id
             );
-            assert!(matches!(image.manager.as_str(), "npm" | "pip"));
-            assert!(
-                !image.requirement.contains("@latest") && !image.requirement.ends_with("=="),
-                "I2: {} image requirement must be exact",
-                cli.id
-            );
+            assert!(!image.executables.is_empty(), "I2: {}", cli.id);
+            assert!(!image.requirements.is_empty(), "I2: {}", cli.id);
+            for requirement in &image.requirements {
+                assert!(matches!(requirement.manager.as_str(), "npm" | "pip"));
+                assert!(
+                    !requirement.requirement.contains("@latest")
+                        && !requirement.requirement.ends_with("=="),
+                    "I2: {} image requirement must be exact",
+                    cli.id
+                );
+            }
             if let AcpAcquisition::PinnedNpmWrapper { package, .. } = cli.acquisition {
-                assert_eq!(image.manager, "npm", "I3: {}", cli.id);
-                assert_eq!(image.requirement, package, "I3: {}", cli.id);
+                assert!(
+                    image.requirements.iter().any(|requirement| {
+                        requirement.manager == "npm" && requirement.requirement == package
+                    }),
+                    "I3: {}",
+                    cli.id
+                );
             }
         }
     }

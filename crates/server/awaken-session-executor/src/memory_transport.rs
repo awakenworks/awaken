@@ -262,7 +262,7 @@ fn manifest_allows(
         .session_resources
         .as_ref()
         .filter(|envelope| envelope.workspace_id == reference.workspace_id)
-        .and_then(|envelope| crate::provisioning::decode_session_resource_envelope(envelope).ok())
+        .and_then(|envelope| envelope.decode_manifest().ok())
         .is_some_and(|manifest| {
             manifest.resources.inputs.iter().any(|input| {
                 matches!(

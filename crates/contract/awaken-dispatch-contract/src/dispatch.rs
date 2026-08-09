@@ -423,6 +423,22 @@ pub trait DispatchQueue: Send + Sync {
         capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError>;
 
+    /// Reap expired claims that exhausted their crash-retry budget, then claim
+    /// one runnable dispatch using the same authoritative time. Remote worker
+    /// transports override this command so the reap executes beside the durable
+    /// queue instead of crossing the worker boundary as a server-local verb.
+    async fn reap_and_claim(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+        capabilities: &CredentialRealizationCapabilities,
+        max_attempts: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        self.reap(max_attempts, now_ms).await?;
+        self.claim(owner, lease_ms, now_ms, capabilities).await
+    }
+
     /// Atomically claim only work compatible with the registered worker snapshot.
     /// Implementations must evaluate the shared compatibility kernel before the
     /// lease transition and persist the resulting assignment with that transition.
