@@ -11,10 +11,12 @@ import {
   suiteNavigationQuery,
 } from "../../lib/suite-navigation";
 import { Button, Card } from "../ui";
+import { useApp } from "../../lib/app-state";
 
 type State = "checking" | "ready" | "setup" | "unavailable";
 
 export default function LocalSetupGate({ children }: { children: ReactNode }) {
+  const app = useApp();
   const queryClient = useQueryClient();
   const [state, setState] = useState<State>("checking");
   const [token, setToken] = useState("");
@@ -65,33 +67,48 @@ export default function LocalSetupGate({ children }: { children: ReactNode }) {
       setToken("");
       setState("ready");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "The setup token is invalid, expired, or already used.");
+      setError(
+        cause instanceof ApiClientError && [400, 401, 403].includes(cause.status)
+          ? app.t(
+              "This setup token is invalid, expired, or already used. Copy the current token from the terminal and try again.",
+              "此 Setup Token 无效、已过期或已使用。请从终端复制当前 Token 后重试。",
+            )
+          : cause instanceof Error
+            ? cause.message
+            : app.t(
+                "Awaken could not authorize this browser. Try again with the current setup token.",
+                "Awaken 无法授权此浏览器。请使用当前 Setup Token 重试。",
+              ),
+      );
     }
   }
 
   if (state === "ready") return children;
-  if (state === "checking") return <div className="local-setup-loading">Opening Awaken…</div>;
+  if (state === "checking") return <div className="local-setup-loading" role="status">{app.t("Checking access to Awaken…", "正在检查 Awaken 访问权限…")}</div>;
   if (state === "unavailable") return (
     <main className="local-setup-page">
       <Card>
-        <p className="eyebrow">ACCESS UNAVAILABLE</p>
-        <h1>Awaken could not verify this browser entry</h1>
-        <p className="hint">Retry when the deployment is reachable. No local or Cloud sign-in mode was guessed.</p>
+        <p className="eyebrow">{app.t("CONNECTION FAILED", "连接失败")}</p>
+        <h1>{app.t("Awaken is not reachable", "无法连接 Awaken")}</h1>
+        <p className="hint">{app.t("Check that the Awaken service is running and that this address is correct, then try again.", "请确认 Awaken 服务正在运行且当前地址正确，然后重试。")}</p>
         <Button variant="primary" onClick={() => {
           setState("checking");
           setAttempt((current) => current + 1);
-        }}>Try again</Button>
+        }}>{app.t("Try again", "重试")}</Button>
       </Card>
     </main>
   );
   return (
     <main className="local-setup-page">
       <Card>
-        <p className="eyebrow">LOCAL ACCESS</p>
-        <h1>Connect this browser</h1>
-        <p className="hint">Paste the one-time setup token shown by the Awaken CLI. It expires after five minutes and is never stored by this browser.</p>
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          <p className="eyebrow">{app.t("LOCAL SIGN-IN", "本地登录")}</p>
+          <Button variant="ghost" type="button" onClick={app.toggleLocale}>{app.locale === "en" ? "中文" : "EN"}</Button>
+        </div>
+        <h1>{app.t("Authorize this browser", "授权此浏览器")}</h1>
+        <p className="hint">{app.t("Copy the one-time setup token from the terminal that started Awaken. The token expires after five minutes and is used only to authorize this browser.", "复制启动 Awaken 的终端中显示的一次性 Setup Token。它会在五分钟后过期，仅用于授权当前浏览器。")}</p>
         <form onSubmit={submit}>
-          <label htmlFor="local-setup-token">Setup token</label>
+          <label htmlFor="local-setup-token">{app.t("Setup token", "Setup Token")}</label>
           <input
             id="local-setup-token"
             autoFocus
@@ -99,8 +116,8 @@ export default function LocalSetupGate({ children }: { children: ReactNode }) {
             value={token}
             onChange={(event) => setToken(event.target.value)}
           />
-          {error && <p className="error">{error}</p>}
-          <Button variant="primary" type="submit" disabled={!token.trim()}>Connect</Button>
+          {error && <p className="error" role="alert">{error}</p>}
+          <Button variant="primary" type="submit" disabled={!token.trim()}>{app.t("Continue to Awaken", "进入 Awaken")}</Button>
         </form>
       </Card>
     </main>

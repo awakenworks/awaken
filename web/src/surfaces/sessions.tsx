@@ -7,8 +7,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
-import { Button, Card, CopyButton, Modal, Pill, Segmented, TextField, useConfirm, useToast } from "../components/ui";
-import { api, getWorkspace, ws } from "../lib/api/client";
+import { Button, Card, Modal, Pill, Segmented, TextField, useConfirm, useToast } from "../components/ui";
+import { api, ws } from "../lib/api/client";
 import type {
   AgentConfigList,
   CreateSessionRequest,
@@ -16,8 +16,10 @@ import type {
   ListSessionsResponse,
   Page,
   Session,
+  Vault,
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import { visibleAgents } from "../lib/visible-agents";
 import EnvironmentsSurface from "./environments";
 import AgentsSurface from "./agents";
 
@@ -34,7 +36,7 @@ export function StatusPill({ session }: { session: Session }) {
       </span>
     );
   }
-  return <Pill tone="ok">idle</Pill>;
+  return <Pill tone="ok">{app.t("idle", "空闲")}</Pill>;
 }
 
 function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void }) {
@@ -43,7 +45,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
   const [agent, setAgent] = useState("");
   const [environmentId, setEnvironmentId] = useState("");
   const [title, setTitle] = useState("");
-  const [vaultIds, setVaultIds] = useState("");
+  const [vaultIds, setVaultIds] = useState<string[]>([]);
   const [mcp, setMcp] = useState<{ name: string; url: string; prompts_as_skills: boolean }[]>([]);
   const [manage, setManage] = useState<"agents" | "environments" | null>(null);
   // Inline pickers over the config plane (published agents) + environments.
@@ -55,6 +57,10 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
     queryKey: ["environments", wsId],
     queryFn: () => api.get<Page<Environment>>(ws("/v1/environments")),
   });
+  const vaults = useQuery({
+    queryKey: ["vaults", wsId],
+    queryFn: () => api.get<Page<Vault>>(ws("/v1/vaults")),
+  });
   const create = useMutation({
     mutationFn: (body: CreateSessionRequest) =>
       api.post<Session>(ws("/v1/sessions"), body),
@@ -62,6 +68,10 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
       nav(`/w/${wsId}/sessions/${session.id}`);
     },
   });
+  const selectedEnvironment = (envs.data?.data ?? []).find((environment) => environment.id === environmentId);
+  const selectedEnvironmentHasPackages = selectedEnvironment?.config.packages
+    && Object.entries(selectedEnvironment.config.packages)
+      .some(([key, packages]) => key !== "type" && Array.isArray(packages) && packages.length > 0);
   return (
     <>
       <Modal title={<>{app.t("New session", "新建会话")} · {wsId}</>} onClose={onClose}>
@@ -72,14 +82,17 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
               {app.t("Manage ↗", "管理 ↗")}
             </button>
           </label>
-          <select className="input mono" value={agent} onChange={(e) => setAgent(e.target.value)}>
-            <option value="">{app.t("— select an agent —", "— 选择 agent —")}</option>
-            {(agents.data?.data ?? []).filter((a) => a.published).map((a) => (
+          <select className="input mono" aria-label="Agent" value={agent} onChange={(e) => setAgent(e.target.value)}>
+            <option value="">{app.t("Select a published Agent…", "选择已发布的 Agent…")}</option>
+            {visibleAgents(agents.data?.data).filter((a) => a.published).map((a) => (
               <option key={a.id} value={a.id}>
-                {a.id}
+                {a.name || a.id}{a.name ? ` · ${a.id}` : ""}
               </option>
             ))}
           </select>
+          {!agents.isLoading && visibleAgents(agents.data?.data).filter((a) => a.published).length === 0 && (
+            <div className="banner warn"><span>→</span><span>{app.t("No published Agent is available. Create and publish an Agent before starting a Session.", "没有可用的已发布 Agent。请先创建并发布 Agent，再启动会话。")}</span></div>
+          )}
         </div>
         <div className="field">
           <label className="row" style={{ justifyContent: "space-between" }}>
@@ -90,31 +103,46 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
           </label>
           <select
             className="input mono"
+            aria-label={app.t("Environment", "运行环境")}
             value={environmentId}
             onChange={(e) => setEnvironmentId(e.target.value)}
           >
-            <option value="">{app.t("— default —", "— 默认 —")}</option>
-            {(envs.data?.data ?? []).map((e) => (
+            <option value="">{app.t("Default Environment", "默认运行环境")}</option>
+            {(envs.data?.data ?? []).filter((environment) => !environment.archived_at).map((e) => (
               <option key={e.id} value={e.id}>
                 {e.name} · {e.id}
               </option>
             ))}
           </select>
+          {selectedEnvironmentHasPackages && <div className="banner info"><span>ⓘ</span><span>{app.t(
+            "This Environment requires package installation. Use it only with a package-capable Environment provider.",
+            "此 Environment 需要安装 Package；请仅在具备 Package 安装能力的 Environment Provider 上使用。",
+          )}</span></div>}
         </div>
         <TextField
-          label={app.t("Title", "标题")}
+          label={app.t("Session title · optional", "会话标题 · 可选")}
+          hint={app.t("Use a task or customer reference that will make this run easy to find later.", "填写任务或客户标识，便于之后找到这次运行。")}
           value={title}
           onChange={(e) => setTitle(e.target.value)}
         />
-        <TextField
-          label={app.t("Vault ids (comma separated)", "Vault id(逗号分隔)")}
-          mono
-          placeholder="vlt_…"
-          value={vaultIds}
-          onChange={(e) => setVaultIds(e.target.value)}
-        />
-        <div className="field">
-          <label>{app.t("Inline MCP servers", "内联 MCP 服务器")}</label>
+        <details>
+          <summary>{app.t("Advanced runtime overrides", "高级运行覆盖")}</summary>
+          <p className="mut">{app.t("Usually leave these empty. The Agent's published MCP and resource configuration is included automatically.", "通常无需设置。Agent 已发布的 MCP 与资源配置会自动包含。")}</p>
+          <div className="field">
+            <label>{app.t("Runtime Secret Vaults for this Session", "本次会话使用的运行时凭证 Vault")}</label>
+            <span className="mut">{app.t("Select only Vaults whose tools or processes are needed for this run.", "只选择本次运行所需工具或进程对应的 Vault。")}</span>
+            <div className="check-picker">
+              {(vaults.data?.data ?? []).filter((vault) => !vault.archived_at).map((vault) => (
+                <label key={vault.id} className="check-row">
+                  <input type="checkbox" checked={vaultIds.includes(vault.id)} onChange={(event) => setVaultIds(event.target.checked ? [...vaultIds, vault.id] : vaultIds.filter((id) => id !== vault.id))} />
+                  <span style={{ display: "flex", flexDirection: "column" }}>{vault.display_name || app.t("Unnamed Vault", "未命名 Vault")}<small className="mono mut">{vault.id}</small></span>
+                </label>
+              ))}
+              {!vaults.isLoading && (vaults.data?.data ?? []).filter((vault) => !vault.archived_at).length === 0 && <span className="mut">{app.t("No Runtime Secret Vaults are available.", "没有可用的运行时凭证 Vault。")}</span>}
+            </div>
+          </div>
+          <div className="field">
+          <label>{app.t("Temporary MCP servers for this Session", "仅用于本次会话的临时 MCP 服务器")}</label>
           {mcp.map((m, i) => (
             <div className="row" key={i}>
               <input
@@ -146,10 +174,11 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
             </div>
           ))}
           <Button variant="ghost" onClick={() => setMcp([...mcp, { name: "", url: "", prompts_as_skills: false }])}>
-            + {app.t("add inline server", "添加内联服务器")}
+            + {app.t("Add temporary server", "添加临时服务器")}
           </Button>
-          <span className="mut">{app.t("MCP servers declared by the Agent are included automatically.", "Agent 声明的 MCP 服务器会自动包含。")}</span>
-        </div>
+          <span className="mut">{app.t("Use this only for a one-off override. Add reusable MCP servers to the Agent instead.", "此处仅用于一次性覆盖。可复用 MCP 服务器应添加到 Agent。")}</span>
+          </div>
+        </details>
         {create.error instanceof Error && <div className="err">{create.error.message}</div>}
         <div className="row" style={{ justifyContent: "flex-end" }}>
           <Button onClick={onClose}>
@@ -163,10 +192,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
                 agent,
                 environment_id: environmentId || undefined,
                 title: title || undefined,
-                vault_ids: vaultIds
-                  .split(",")
-                  .map((s) => s.trim())
-                  .filter(Boolean),
+                vault_ids: vaultIds,
                 mcp_servers: mcp.filter((m) => m.name && m.url),
               });
             }}
@@ -233,8 +259,7 @@ export default function SessionsSurface() {
   return (
     <>
       <div className="row" style={{ justifyContent: "space-between" }}>
-        <span className="row">
-          <Segmented
+        <Segmented
             value={filter}
             onChange={setFilter}
             options={[
@@ -243,18 +268,6 @@ export default function SessionsSurface() {
               { value: "archived", label: app.t("Archived", "已归档") },
             ]}
           />
-          <span className="mut">
-            baseURL <code>{getWorkspace() ? `/v1/workspaces/${getWorkspace()}` : "/ (default scope)"}</code>
-            <CopyButton
-              value={
-                getWorkspace()
-                  ? `${location.origin}/v1/workspaces/${getWorkspace()}`
-                  : location.origin
-              }
-              className="sessions-base-url-copy"
-            />
-          </span>
-        </span>
         <Button variant="primary" onClick={() => setCreating(true)}>
           + {app.t("New session", "新建会话")}
         </Button>
@@ -313,21 +326,13 @@ export default function SessionsSurface() {
           </tbody>
         </table>
       </Card>
-      <div className="row">
-        <input
-          className="input mono"
-          style={{ width: 320 }}
-          placeholder="sesn_…"
-          value={openId}
-          onChange={(e) => setOpenId(e.target.value)}
-        />
-        <Button
-          disabled={!openId.trim()}
-          onClick={() => nav(`/w/${wsId}/sessions/${openId.trim()}`)}
-        >
-          {app.t("Open by id", "按 id 打开")}
-        </Button>
-      </div>
+      <details>
+        <summary>{app.t("Open a Session by ID", "按 ID 打开会话")}</summary>
+        <div className="row" style={{ marginTop: 8 }}>
+          <input className="input mono" aria-label={app.t("Session ID", "会话 ID")} style={{ width: 320 }} placeholder="sesn_…" value={openId} onChange={(e) => setOpenId(e.target.value)} />
+          <Button disabled={!openId.trim()} onClick={() => nav(`/w/${wsId}/sessions/${openId.trim()}`)}>{app.t("Open Session", "打开会话")}</Button>
+        </div>
+      </details>
       {creating && <NewSessionModal wsId={wsId} onClose={() => setCreating(false)} />}
     </>
   );

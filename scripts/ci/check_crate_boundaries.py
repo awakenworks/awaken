@@ -1042,7 +1042,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-protocol-awaken": {
         "awaken-agent-contract", "awaken-environment-application",
         "awaken-provisioning-contract",
-        "awaken-session-contract", "axum", "serde",
+        # Request-local scope was already authorized and stamped by the edge;
+        # the adapter consumes the opaque tenancy value but owns no IAM policy.
+        "awaken-session-contract", "awaken-tenancy", "axum", "serde",
     },
     # Goal / outcome extension: goal vocabulary, a deterministic grader, and a
     # run-end continuation guard that drives the grade→revise loop inside the

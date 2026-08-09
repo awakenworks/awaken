@@ -45,6 +45,8 @@ const LABELS: Record<string, string> = {
   tool_overrides: "Tool presentation",
   mcp_servers: "MCP servers",
   skills: "Skills",
+  multiagent: "Auxiliary Agents",
+  delegation_limits: "Delegation safety budget",
 };
 
 export function labelForPath(path: string): string {
@@ -59,6 +61,6 @@ export function sectionForPath(path: string): EditorSection {
   const top = path.split(".")[0];
   if (top === "tools" || top === "tool_overrides") return "tools";
   if (top === "plugins" || top === "plugin_config" || top === "context_policy") return "behavior";
-  if (["mcp_servers", "skills", "multiagent", "metadata"].includes(top)) return "integrations";
+  if (["mcp_servers", "skills", "multiagent", "delegation_limits", "metadata"].includes(top)) return "integrations";
   return "overview"; // model / system / max_steps / name / description / whole-config
 }

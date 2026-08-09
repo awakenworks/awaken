@@ -56,7 +56,7 @@ describe("sectionForPath", () => {
     expect(sectionForPath("context_policy")).toBe("behavior");
   });
   it("routes managed Agent integrations to Integrations", () => {
-    for (const path of ["mcp_servers", "skills", "multiagent", "metadata.owner"]) {
+    for (const path of ["mcp_servers", "skills", "multiagent", "delegation_limits", "metadata.owner"]) {
       expect(sectionForPath(path)).toBe("integrations");
     }
   });

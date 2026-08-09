@@ -4,7 +4,7 @@
 //! neutral `ChatRequest`/`ChatResponse` onto `genai` types and routes on the
 //! selected `ModelBinding.model_ref` — it never picks a different model (G22).
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{ContentBlock, ImageSource, extract_text};
@@ -193,8 +193,9 @@ pub async fn discover_model_ids(
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long the stream may go silent between events before the turn fails as
-/// a retryable timeout. The overall `timeout` only guards opening the call;
-/// without this, a provider that stalls mid-stream would hang the run forever.
+/// a retryable timeout. `timeout` independently bounds the complete streaming
+/// inference, including opening and consuming the response; without both bounds,
+/// either a silent stream or an endless stream of no-op events could hang a run.
 // Strong reasoning models can legitimately produce no SSE event for more than
 // one minute before their first visible token. Keep the default aligned with
 // the call-open timeout so that this valid prefill/reasoning interval is not
@@ -418,6 +419,7 @@ impl LlmExecutor for GenaiExecutor {
             // extended-thinking folds into a `Thinking` block (→ `agent.thinking`).
             .with_capture_reasoning_content(true);
 
+        let started = Instant::now();
         let stream_response = tokio::time::timeout(
             self.timeout,
             self.client
@@ -442,13 +444,27 @@ impl LlmExecutor for GenaiExecutor {
         // deltas (`ToolCallDelta`); no downstream ever diffs again.
         let mut tool_sent: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
+        let deadline = started + self.timeout;
 
         loop {
-            // Bound the wait for each event: a stream that goes silent without
-            // closing must fail as a retryable stall, not hang the run.
-            let event = match tokio::time::timeout(self.idle_timeout, stream.next()).await {
+            // Two independent bounds share the one configured call timeout:
+            // the fixed deadline catches providers that emit no-op/heartbeat
+            // events forever, while the idle window catches a silent connection.
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::Timeout(
+                    "model stream exceeded total timeout".to_string(),
+                ));
+            }
+            let wait = self.idle_timeout.min(remaining);
+            let event = match tokio::time::timeout(wait, stream.next()).await {
                 Ok(Some(event)) => event,
                 Ok(None) => break,
+                Err(_) if Instant::now() >= deadline => {
+                    return Err(Error::Timeout(
+                        "model stream exceeded total timeout".to_string(),
+                    ));
+                }
                 Err(_) => {
                     return Err(Error::Timeout(format!(
                         "model stream stalled: no event within {:?}",

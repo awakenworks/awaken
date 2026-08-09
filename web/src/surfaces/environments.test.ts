@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDeferredSandboxPolicy, buildEnvironmentConfig, isolationLabel } from "./environments";
+import { buildDeferredSandboxPolicy, buildEnvironmentConfig, buildEnvironmentUpdateConfig, isolationLabel, networkingLabel } from "./environments";
 
 describe("buildEnvironmentConfig", () => {
   it("emits only the official cloud union fields", () => {
@@ -9,8 +9,19 @@ describe("buildEnvironmentConfig", () => {
         type: "limited",
         allowed_hosts: ["api.example.com", "*.example.org"],
         allow_mcp_servers: true,
+        allow_package_managers: true,
       },
     });
+  });
+
+  it("omits empty package requirements on create and clears them explicitly on update", () => {
+    expect(buildEnvironmentConfig("cloud", "unrestricted", "")).not.toHaveProperty("packages");
+    expect(buildEnvironmentUpdateConfig("cloud", "unrestricted", "")).toMatchObject({ packages: null });
+  });
+
+  it("keeps non-empty package requirements", () => {
+    expect(buildEnvironmentConfig("cloud", "unrestricted", "", { apt: "", cargo: "", gem: "", go: "", npm: "", pip: "httpx==0.28" }))
+      .toMatchObject({ packages: { pip: ["httpx==0.28"] } });
   });
 
   it("emits the exact self-hosted variant without private runtime or sandbox fields", () => {
@@ -51,5 +62,10 @@ describe("buildDeferredSandboxPolicy", () => {
 describe("isolationLabel", () => {
   it("shows official environment networking", () => {
     expect(isolationLabel({ type: "cloud", networking: { type: "unrestricted" } })).toBe("unrestricted");
+  });
+
+  it("presents networking values as readable UI copy", () => {
+    expect(networkingLabel({ type: "cloud", networking: { type: "limited" } })).toBe("Allowlist");
+    expect(networkingLabel({ type: "self_hosted" }, true)).toBe("由 Provider 决定");
   });
 });

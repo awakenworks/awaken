@@ -62,14 +62,15 @@ export default function AgentPublicationModals({
           <div className="banner info">
             <span>ⓘ</span>
             <span>{app.t(
-              "This explicit checkpoint saves and validates the draft, publishes an immutable snapshot, creates a durable Session, and sends the first task.",
-              "此确认会保存并校验草稿、发布不可变快照、创建持久 Session，并发送首次任务。",
+              "Awaken will check your draft, publish this reviewed version, create a Session, and send the first task. Later edits will not change this Session.",
+              "Awaken 将检查草稿、发布当前审阅版本、创建 Session 并发送首次任务。后续编辑不会改变本次 Session。",
             )}</span>
           </div>
           <PublicationSnapshotSummary
             sourceRevision={config.generation}
             resourceRevision={resourceRevision}
             resources={resources}
+            config={config}
           />
           <Card style={{ marginTop: 12 }}>
             <div><strong>{app.t("Environment", "Environment")}</strong> · <code>{quickRunIntent.environmentId ?? "default"}</code></div>
@@ -101,14 +102,15 @@ export default function AgentPublicationModals({
           <div className="banner ok">
             <span>✓</span>
             <span>{app.t(
-              "Draft compiled successfully. Publishing is the explicit live checkpoint.",
-              "草稿已通过编译。发布是明确的上线检查点。",
+              "The draft passed all checks. Review the changes below before making this version available for new Sessions.",
+              "草稿已通过全部检查。请在下方审阅改动，再将此版本用于新的 Session。",
             )}</span>
           </div>
           <PublicationSnapshotSummary
             sourceRevision={config.generation}
             resourceRevision={resourceRevision}
             resources={resources}
+            config={config}
           />
           <div style={{ marginTop: 16 }}>
             <strong>{app.t("Agent configuration changes", "Agent 配置差异")}</strong>

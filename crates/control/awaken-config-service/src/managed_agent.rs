@@ -81,7 +81,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         Some(value) => serde_json::from_value(value).map_err(|error| error.to_string())?,
         None => Vec::new(),
     };
-    let metadata = body
+    let metadata: std::collections::BTreeMap<String, String> = body
         .get("metadata")
         .and_then(Value::as_object)
         .map(|object| {
@@ -104,13 +104,22 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         .into_iter()
         .map(|value| serde_json::from_value(value).map_err(|error| error.to_string()))
         .collect::<Result<Vec<_>, _>>()?;
-    let multiagent = body
-        .get("multiagent")
+    let multiagent = match body.get("multiagent") {
+        Some(value) if value.is_null() => None,
+        Some(value) => Some(
+            serde_json::from_value::<MultiagentConfig>(value.clone())
+                .map_err(|error| format!("invalid multiagent roster: {error}"))?,
+        ),
+        None => None,
+    };
+    let delegation_limits = body
+        .get("delegation_limits")
         .filter(|value| !value.is_null())
         .cloned()
-        .map(serde_json::from_value::<MultiagentConfig>)
+        .map(serde_json::from_value)
         .transpose()
-        .map_err(|error| format!("invalid multiagent roster: {error}"))?;
+        .map_err(|error| format!("invalid delegation limits: {error}"))?
+        .unwrap_or_default();
     let tools = array("tools");
     let client_tools = tools
         .iter()
@@ -130,7 +139,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         id,
         instructions: string("system").unwrap_or_default(),
         max_steps: body.get("max_steps").and_then(Value::as_u64).unwrap_or(8) as usize,
-        delegation_limits: Default::default(),
+        delegation_limits,
         model_binding,
         inference: Default::default(),
         tool_ids: tools.iter().filter_map(managed_tool_id).collect(),
@@ -361,6 +370,7 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
         "mcp_servers": config.mcp_servers,
         "skills": config.skills,
         "multiagent": config.multiagent,
+        "delegation_limits": config.delegation_limits,
         "disabled_at": config.disabled_at,
         "archived_at": config.archived_at,
         "max_steps": config.max_steps,
@@ -598,5 +608,66 @@ mod tests {
         let projected = managed_from_agent_config(&config, false);
         assert_eq!(projected["compaction"]["window"], json!(32000));
         assert_eq!(projected["compaction"]["keep_recent"], json!(12));
+    }
+
+    #[test]
+    fn multiagent_and_delegation_limits_round_trip_together() {
+        let body = json!({
+            "system": "coordinate specialists",
+            "multiagent": {
+                "type": "coordinator",
+                "agents": [
+                    "researcher",
+                    { "type": "agent", "id": "coder", "version": 7 },
+                    { "type": "self" }
+                ]
+            },
+            "delegation_limits": {
+                "max_depth": 3,
+                "max_parallel": 4,
+                "max_total": 16
+            }
+        });
+        let config = agent_config_from_managed("coordinator".into(), &body)
+            .expect("typed collaboration config parses");
+        assert_eq!(config.delegation_limits.max_depth, 3);
+        assert_eq!(config.delegation_limits.max_parallel, 4);
+        assert_eq!(config.delegation_limits.max_total, 16);
+
+        let projected = managed_from_agent_config(&config, false);
+        assert_eq!(projected["multiagent"], body["multiagent"]);
+        assert_eq!(projected["delegation_limits"], body["delegation_limits"]);
+    }
+
+    #[test]
+    fn malformed_delegation_limits_fail_closed() {
+        assert!(
+            agent_config_from_managed(
+                "a".into(),
+                &json!({ "delegation_limits": { "max_depth": "many" } }),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn attached_auxiliaries_and_explicit_opt_out_do_not_gain_a_roster() {
+        let auxiliary = agent_config_from_managed(
+            "lead--research".into(),
+            &json!({
+                "system": "research",
+                "metadata": {
+                    "awaken.parent_agent_id": "lead",
+                    "awaken.agent_role": "auxiliary"
+                }
+            }),
+        )
+        .expect("attached auxiliary");
+        assert!(auxiliary.multiagent.is_none());
+
+        let explicitly_disabled =
+            agent_config_from_managed("manual".into(), &json!({ "multiagent": null }))
+                .expect("explicit opt-out");
+        assert!(explicitly_disabled.multiagent.is_none());
     }
 }

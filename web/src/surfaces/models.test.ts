@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { ProviderDriverDescriptor } from "../lib/api/types";
+import type { CredentialSource, ProviderDriverDescriptor } from "../lib/api/types";
 import { cloudModelUiState, modelCatalogPresentation } from "./model-cloud-capability";
+import { modelTestAgentConfig, modelTestAgentId } from "./models";
 import {
   providerConfigurationDefaults,
   providerDraftDefaults,
+  credentialReusableForProvider,
 } from "./provider-connection-panel";
+import { visibleAgents } from "../lib/visible-agents";
 
 // UI cause/effect rules kept beside the executable tests:
 // T1: C1 descriptor has a preferred endpoint -> E1 form uses its protocol and URL;
@@ -79,6 +82,26 @@ describe("providerDraftDefaults", () => {
   });
 });
 
+describe("provider credential compatibility", () => {
+  const credential = (kind: CredentialSource["kind"], provider_id: string | null = "openai") => ({
+    id: "cred_1",
+    workspace_id: "workspace",
+    kind,
+    provider_id,
+    status: "active",
+    version: 1,
+  }) as CredentialSource;
+
+  it("offers only materializable credentials supported by the selected provider", () => {
+    expect(credentialReusableForProvider(credential("vault"), openai)).toBe(true);
+    expect(credentialReusableForProvider(credential("worker_local"), openai)).toBe(false);
+    expect(credentialReusableForProvider(credential("env"), openai)).toBe(false);
+    expect(credentialReusableForProvider(credential("oauth"), openai)).toBe(false);
+    expect(credentialReusableForProvider(credential("vault", "anthropic"), openai)).toBe(false);
+    expect(credentialReusableForProvider(credential("vault", null), openai)).toBe(false);
+  });
+});
+
 describe("cloud model capability state", () => {
   const capabilities = (cloudModels: boolean, authenticated: boolean) => ({
     identity: {
@@ -124,5 +147,24 @@ describe("cloud model capability state", () => {
         allowSessionTest: true,
       });
     }
+  });
+});
+
+describe("live model test publication", () => {
+  it("creates a deterministic hidden Agent pinned to the selected model", () => {
+    expect(modelTestAgentId("deepseek-e2e")).toBe(modelTestAgentId("deepseek-e2e"));
+    expect(modelTestAgentId("deepseek-e2e")).not.toBe(modelTestAgentId("other"));
+    expect(modelTestAgentConfig("deepseek-e2e")).toMatchObject({
+      id: modelTestAgentId("deepseek-e2e"),
+      model: { id: "deepseek-e2e" },
+      metadata: { "awaken.internal": "model-test" },
+    });
+  });
+
+  it("does not expose internal model-test publications in Agent choices", () => {
+    expect(visibleAgents([
+      modelTestAgentConfig("deepseek-e2e"),
+      { ...modelTestAgentConfig("other"), id: "human-agent", metadata: {} },
+    ])).toHaveLength(1);
   });
 });

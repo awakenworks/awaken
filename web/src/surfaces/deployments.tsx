@@ -9,6 +9,7 @@ import { Button, Card, Modal, Pill, SelectField, TextAreaField, TextField, useCo
 import { api, ws } from "../lib/api/client";
 import type { AgentConfigList, Deployment, DeploymentRun, Environment, Page } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import { visibleAgents } from "../lib/visible-agents";
 
 function CreateModal({ onClose }: { onClose: () => void }) {
   const app = useApp();
@@ -57,7 +58,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
         />
         <SelectField label={app.t("Agent", "智能体")} value={agentId} onChange={(e) => setAgentId(e.target.value)}>
           <option value="">{app.t("Select an agent…", "选择智能体…")}</option>
-          {(agents.data?.data ?? [])
+          {visibleAgents(agents.data?.data)
             .filter((a) => a.published)
             .map((a) => (
               <option key={a.id} value={a.id}>
@@ -142,12 +143,7 @@ export default function DeploymentsSurface() {
   return (
     <>
       <div className="row" style={{ justifyContent: "space-between" }}>
-        <span className="mut">
-          {app.t(
-            "A deployment runs an agent on a cron schedule; each firing creates a session.",
-            "部署按 cron 计划运行智能体;每次触发创建一个会话。",
-          )}
-        </span>
+        <span />
         <Button variant="primary" onClick={() => setCreating(true)}>
           + {app.t("New deployment", "新建部署")}
         </Button>
@@ -157,9 +153,9 @@ export default function DeploymentsSurface() {
         <div className="banner info">
           <span>✓</span>
           <span>
-            {app.t("Deployment run created", "Deployment run 已创建")} · <code>{lastRun.id}</code>
+            {app.t("Run created", "运行已创建")} · <code>{lastRun.id}</code>
             {lastRun.session_id ? <>
-              {" · session "}
+              {` · ${app.t("Session", "会话")} `}
               <Link to={`/w/${wsId}/sessions/${lastRun.session_id}`}><code>{lastRun.session_id}</code></Link>
             </> : null}
             {lastRun.error ? <span className="err"> · {lastRun.error.message ?? lastRun.error.type}</span> : null}

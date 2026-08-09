@@ -1560,7 +1560,7 @@ pub(crate) mod resource_prompt_tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["valid"], json!(true));
+        assert_eq!(body["valid"], json!(true), "{body}");
     }
 
     #[tokio::test]

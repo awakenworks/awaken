@@ -3,11 +3,13 @@
 // Common shapes get compact controls; the full Agent JSON view remains the lossless
 // editor for less common SDK union variants.
 
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
-import type { AgentConfig, CredentialSource } from "../../lib/api/types";
+import type { AgentConfig, CredentialSource, Page, Skill } from "../../lib/api/types";
+import { api, ws } from "../../lib/api/client";
 import { useApp } from "../../lib/app-state";
 import { Button, Card, TextAreaField, TextField } from "../ui";
+import AgentCollaborationEditor from "./AgentCollaborationEditor";
 
 type JsonObject = Record<string, unknown>;
 
@@ -29,6 +31,10 @@ function credentialValue(value: unknown): string {
     : "";
 }
 
+function mcpCredentialLabel(credential: CredentialSource, t: (en: string, zh: string) => string) {
+  return `${t("MCP runtime credential", "MCP 运行时凭证")} · •••${credential.id.slice(-8)} · v${credential.version}`;
+}
+
 export default function AgentIntegrationsEditor({
   config,
   credentials,
@@ -46,15 +52,16 @@ export default function AgentIntegrationsEditor({
   const servers = config.mcp_servers ?? [];
   const skills = config.skills ?? [];
   const metadata = config.metadata ?? {};
-  const activeCredentials = credentials.filter((credential) => credential.status === "active");
-  const [multiagentText, setMultiagentText] = useState(() =>
-    config.multiagent == null ? "" : JSON.stringify(config.multiagent, null, 2));
-  const [multiagentError, setMultiagentError] = useState("");
-
-  useEffect(() => {
-    setMultiagentText(config.multiagent == null ? "" : JSON.stringify(config.multiagent, null, 2));
-  }, [config.multiagent]);
-
+  const skillCatalog = useQuery({
+    queryKey: ["skills", app.workspaceId],
+    queryFn: () => api.get<Page<Skill>>(ws("/v1/skills")),
+  });
+  const activeCredentials = credentials.filter((credential) =>
+    credential.status === "active"
+    && credential.kind !== "worker_local"
+    && !credential.provider_id
+    && !credential.env_key,
+  );
   const setServer = (index: number, patch: JsonObject) =>
     onChange({ mcp_servers: servers.map((server, i) => i === index ? { ...objectOf(server), ...patch } : server) });
   const replaceServer = (index: number, replacement: JsonObject) =>
@@ -70,17 +77,17 @@ export default function AgentIntegrationsEditor({
         <h2>{app.t("Direct MCP servers", "直接 MCP 服务器")}</h2>
         <p className="hint">
           {app.t(
-            "MCP endpoints belong to this Agent draft and are frozen into its publication. Runtime tools are discovered when the server connects; policy and presentation remain under Tools.",
-            "MCP endpoint 属于当前 Agent 草稿，并固化到发布版本中。运行时工具在服务器连接时发现；策略与呈现仍在 Tools 中配置。",
+            "Add the MCP servers this Agent may connect to. Their tools become available after a successful connection; configure tool permissions and labels under Tools.",
+            "添加此 Agent 可以连接的 MCP 服务器。连接成功后即可使用其工具；工具权限和名称在“工具”中配置。",
           )}
         </p>
         <div className="banner info">
           <span>ⓘ</span>
           <span>{app.t(
-            "Credentials are exact secret-free references validated at publication. Session Vault ids remain a separate run-scoped mechanism.",
-            "凭据是不含秘密的精确引用，并在发布时校验。Session Vault id 仍是独立的运行级机制。",
+            "Only MCP runtime credentials are listed here; model keys and worker credentials are excluded. You can also choose a categorized Vault when starting a Session.",
+            "这里只列出 MCP 运行时凭证，模型 Key 和 Worker 凭证不会混入。启动 Session 时也可以选择已分类的 Vault。",
           )}{" "}
-            <Link to={`/w/${app.workspaceId}/credentials`}>{app.t("Manage credential sources ↗", "管理凭据来源 ↗")}</Link>
+            <Link to={`/w/${app.workspaceId}/vaults`}>{app.t("Manage Runtime Secrets ↗", "管理运行时凭证 ↗")}</Link>
           </span>
         </div>
         {servers.map((server, index) => {
@@ -168,7 +175,7 @@ export default function AgentIntegrationsEditor({
                       key={`${credential.id}@${credential.version}`}
                       value={`${credential.id}@${credential.version}`}
                     >
-                      {credential.id}@{credential.version} · {credential.kind}
+                      {mcpCredentialLabel(credential, app.t)}
                     </option>
                   ))}
                 </select>
@@ -198,27 +205,40 @@ export default function AgentIntegrationsEditor({
             "绑定持久化 Managed Skills，让操作者只需说明目标。MCP Prompt Skills 保持远程且仅含指令；请在对应 MCP 服务器上启用“Prompt 作为 Skill”，不要创建虚假的本地文件。",
           )}
         </p>
-        {skills.map((skill, index) => (
+        {skills.map((skill, index) => {
+          const selectedId = referenceId(skill);
+          const catalog = skillCatalog.data?.data ?? [];
+          return (
           <div className="agent-integration-row" key={index}>
-            <TextField
-              label="Skill id"
-              mono
-              value={referenceId(skill)}
-              onChange={(event) => setSkill(index, event.target.value)}
-            />
+            <label className="field">
+              <span>{app.t("Skill", "Skill")}</span>
+              <select className="input" value={selectedId} onChange={(event) => setSkill(index, event.target.value)}>
+                <option value="">{app.t("Choose a published Skill…", "选择已发布 Skill…")}</option>
+                {selectedId && !catalog.some((candidate) => candidate.id === selectedId) && <option value={selectedId}>{selectedId}</option>}
+                {catalog.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {candidate.display_title ?? candidate.name ?? candidate.display_name ?? candidate.id} · v{candidate.latest_version ?? "—"}
+                  </option>
+                ))}
+              </select>
+            </label>
             <Button variant="ghost" onClick={() => onChange({ skills: skills.filter((_, i) => i !== index) })}>✕</Button>
           </div>
-        ))}
+          );
+        })}
+        {skillCatalog.error instanceof Error && <div className="err">{app.t("Skills could not load. Existing bindings are unchanged.", "无法加载 Skill；已有绑定未发生变化。")}</div>}
         <Button onClick={() => onChange({ skills: [...skills, { id: "" }] })}>+ Skill</Button>
       </Card>
       </>
       )}
 
       {(section === "topology" || section === "all") && (
+      <>
+      <AgentCollaborationEditor config={config} onChange={onChange} onValidityChange={onValidityChange} />
       <Card className="agent-config-card">
-        <h2>{app.t("Metadata & multi-agent topology", "元数据与多 Agent 拓扑")}</h2>
+        <h2>{app.t("Metadata", "元数据")}</h2>
         <p className="hint">
-          {app.t("Metadata is editable as key/value pairs. Multi-agent stays JSON because the Managed Agents field is an open union.", "元数据按键值编辑。multiagent 是 Managed Agents 的开放联合类型，因此保留 JSON 编辑。")}
+          {app.t("Attach searchable labels and ownership information. Runtime behavior belongs in the typed controls above, not in metadata.", "添加便于搜索的标签与归属信息。运行时行为应使用上方结构化控件，不应放入元数据。")}
         </p>
         {Object.entries(metadata).map(([key, value], index) => (
           <div className="agent-integration-row" key={`${key}-${index}`}>
@@ -244,27 +264,8 @@ export default function AgentIntegrationsEditor({
         <Button onClick={() => onChange({ metadata: { ...metadata, [`key_${Object.keys(metadata).length + 1}`]: "" } })}>
           + {app.t("metadata", "元数据")}
         </Button>
-        <TextAreaField
-          label="multiagent JSON"
-          mono
-          rows={6}
-          placeholder='{"agents":[...]}'
-          value={multiagentText}
-          onChange={(event) => {
-            const raw = event.target.value;
-            setMultiagentText(raw);
-            try {
-              onChange({ multiagent: raw.trim() ? JSON.parse(raw) : undefined });
-              onValidityChange(true);
-              setMultiagentError("");
-            } catch {
-              onValidityChange(false);
-              setMultiagentError(app.t("Invalid JSON — not applied.", "JSON 非法——未应用。"));
-            }
-          }}
-        />
-        {multiagentError && <span className="err" role="alert">{multiagentError}</span>}
       </Card>
+      </>
       )}
     </div>
   );

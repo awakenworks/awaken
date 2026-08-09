@@ -2,7 +2,7 @@ import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, ws } from "../lib/api/client";
 import { useApp } from "../lib/app-state";
-import { Button, Card } from "../components/ui";
+import { Button, Card, TextField } from "../components/ui";
 
 export default function A2aSurface() {
   const app = useApp();
@@ -15,12 +15,12 @@ export default function A2aSurface() {
       <Card>
         <h2>{app.t("Delegate card lookup", "委托卡查询")}</h2>
         <p className="hint">
-          {app.t("Inspect a remote A2A delegate's agent card.", "查看远程 A2A 委托的 agent card。")}
+          {app.t("Enter a configured delegate ID to inspect what the remote Agent advertises before using it.", "输入已配置的委托 ID，在使用前查看远程 Agent 声明的能力。")}
         </p>
         <div className="row">
-          <input className="input mono" style={{ width: 280 }} placeholder="agent id" value={agentId} onChange={(e) => setAgentId(e.target.value)} />
+          <TextField label={app.t("Delegate ID", "委托 ID")} mono style={{ width: 280 }} placeholder="research-partner" value={agentId} onChange={(e) => setAgentId(e.target.value)} />
           <Button variant="primary" disabled={!agentId.trim() || card.isPending} onClick={() => card.mutate(agentId.trim())}>
-            {card.isPending ? app.t("Fetching…", "正在获取…") : app.t("Fetch card", "获取")}
+            {card.isPending ? app.t("Loading…", "正在加载…") : app.t("View capabilities", "查看能力")}
           </Button>
         </div>
         {card.data && (
@@ -34,8 +34,8 @@ export default function A2aSurface() {
         <h2>{app.t("This Awaken server is already an A2A agent", "当前 Awaken 服务已是 A2A Agent")}</h2>
         <p className="hint">
           {app.t(
-            "Use the well-known card for discovery, then send or stream a message. Tasks, cancellation, subscriptions and push notification configs share the same runtime.",
-            "通过 well-known card 发现服务，再发送或流式发送消息。任务、取消、订阅和推送通知配置共享同一运行时。",
+            "Other A2A clients can discover this server from the public card, then send or stream messages. Task status, cancellation, subscriptions, and notifications remain attached to the same Session.",
+            "其他 A2A 客户端可通过公开卡片发现此服务，再发送或流式发送消息。任务状态、取消、订阅和通知都归属于同一个 Session。",
           )}
         </p>
         <div className="stack" style={{ gap: 6 }}>

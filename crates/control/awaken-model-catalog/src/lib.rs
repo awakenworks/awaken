@@ -1335,7 +1335,7 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_descriptor_uses_its_native_openai_compatible_identity() {
+    fn deepseek_descriptor_exposes_both_documented_compatible_interfaces() {
         // Cause graph / decision table: DeepSeek selected -> DeepSeek card,
         // shared /models discovery, and two distinct compatible inference
         // surfaces; it must not masquerade as OpenAI or advertise Responses.

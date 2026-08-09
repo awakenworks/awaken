@@ -167,7 +167,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     }
     let config_service = Arc::new(config_service);
     let config_plane = ConfigPlane::new(config_service, config_store, tool_catalog);
-    if let Some(selection) = assistant_model_selection
+    if let Some(selection) = assistant_model_selection.clone()
         && let Err(error) =
             seed_admin_assistant(&config_plane, &execution_workspace, selection).await
     {
@@ -235,6 +235,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         agent_repository: agent_repository.clone(),
         agent_archive_cascade,
         plane: config_plane.clone(),
+        assistant_model_selection,
         global_tools,
         plugins: platform_plugins,
         runtimes,

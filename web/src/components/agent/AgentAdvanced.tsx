@@ -164,6 +164,7 @@ export default function AgentAdvanced({
             sourceRevision={config.generation}
             resourceRevision={resourceRevision}
             resources={resources}
+            config={config}
           />
           <div style={{ marginTop: 16 }}>
             <strong>{app.t("Configuration changes", "配置差异")}</strong>
