@@ -1,6 +1,8 @@
 // Navigation SSOT. Workspace is the only public scope; groups follow the
 // operator's job rather than internal implementation layers.
 
+import type { ConfigCapabilitiesView } from "../api/types";
+
 export type NavGroup = "workspace" | "author" | "run" | "connect" | "govern";
 
 export interface NavItem {
@@ -12,13 +14,14 @@ export interface NavItem {
   agentBadge?: boolean;
   sectionLabel?: string;
   sectionLabelZh?: string;
+  surface?: keyof ConfigCapabilitiesView["surfaces"];
 }
 
 export const NAV: NavItem[] = [
   { key: "overview", label: "Overview", labelZh: "概览", group: "workspace", path: "/w/:ws/overview" },
 
   { key: "agents", label: "Agents", labelZh: "Agents", group: "author", path: "/w/:ws/agents", agentBadge: true },
-  { key: "skills", label: "Skills", labelZh: "技能", group: "author", path: "/w/:ws/skills" },
+  { key: "skills", label: "Skills", labelZh: "技能", group: "author", path: "/w/:ws/skills", surface: "managed_runtime" },
   {
     key: "files",
     label: "Files",
@@ -27,34 +30,24 @@ export const NAV: NavItem[] = [
     path: "/w/:ws/files",
     sectionLabel: "Resources",
     sectionLabelZh: "资源",
+    surface: "managed_runtime",
   },
-  { key: "memory", label: "Memory", labelZh: "记忆", group: "author", path: "/w/:ws/memory" },
+  { key: "memory", label: "Memory", labelZh: "记忆", group: "author", path: "/w/:ws/memory", surface: "managed_runtime" },
 
-  { key: "sessions", label: "Sessions", labelZh: "会话", group: "run", path: "/w/:ws/sessions" },
-  { key: "deployments", label: "Deployments", labelZh: "部署", group: "run", path: "/w/:ws/deployments" },
-  { key: "artifacts", label: "Artifacts", labelZh: "产物", group: "run", path: "/w/:ws/artifacts" },
-  { key: "environments", label: "Environments", labelZh: "运行环境", group: "run", path: "/w/:ws/environments" },
+  { key: "sessions", label: "Sessions", labelZh: "会话", group: "run", path: "/w/:ws/sessions", surface: "managed_runtime" },
+  { key: "deployments", label: "Deployments", labelZh: "部署", group: "run", path: "/w/:ws/deployments", surface: "managed_runtime" },
+  { key: "artifacts", label: "Artifacts", labelZh: "产物", group: "run", path: "/w/:ws/artifacts", surface: "managed_runtime" },
+  { key: "environments", label: "Environments", labelZh: "运行环境", group: "run", path: "/w/:ws/environments", surface: "managed_runtime" },
 
   { key: "models", label: "Models & providers", labelZh: "模型与供应商", group: "connect", path: "/w/:ws/models" },
-  { key: "mcp", label: "MCP overview", labelZh: "MCP 概览", group: "connect", path: "/w/:ws/mcp" },
-  { key: "protocols", label: "API & protocols", labelZh: "API 与协议", group: "connect", path: "/w/:ws/protocols" },
-  { key: "a2a", label: "A2A federation", labelZh: "A2A 联邦", group: "connect", path: "/w/:ws/a2a-servers" },
+  { key: "mcp", label: "MCP overview", labelZh: "MCP 概览", group: "connect", path: "/w/:ws/mcp", surface: "managed_runtime" },
+  { key: "protocols", label: "API & protocols", labelZh: "API 与协议", group: "connect", path: "/w/:ws/protocols", surface: "managed_runtime" },
+  { key: "a2a", label: "A2A federation", labelZh: "A2A 联邦", group: "connect", path: "/w/:ws/a2a-servers", surface: "managed_runtime" },
 
-  { key: "access", label: "Access", labelZh: "访问控制", group: "govern", path: "/w/:ws/access" },
-  { key: "vaults", label: "Runtime secrets", labelZh: "运行秘密", group: "govern", path: "/w/:ws/vaults" },
+  { key: "access", label: "Access", labelZh: "访问控制", group: "govern", path: "/w/:ws/access", surface: "access_management" },
+  { key: "vaults", label: "Runtime secrets", labelZh: "运行秘密", group: "govern", path: "/w/:ws/vaults", surface: "managed_runtime" },
   { key: "settings", label: "Settings", labelZh: "设置", group: "govern", path: "/w/:ws/settings" },
 ];
-
-/** Capability-derived navigation projection. The backend remains the security
- * boundary; this removes deployment-inapplicable tasks without creating a
- * second Cloud/local mode flag in the browser. */
-export function visibleNavigation(byokEnabled: boolean): NavItem[] {
-  return NAV.map((item) =>
-    !byokEnabled && item.key === "models"
-      ? { ...item, label: "Models", labelZh: "模型", group: "author" }
-      : item,
-  );
-}
 
 export interface WorkspaceJourneyStep {
   readonly number: string;
@@ -80,6 +73,29 @@ export const WORKSPACE_JOURNEY: readonly WorkspaceJourneyStep[] = [
   { number: "03", label: "Run", labelZh: "运行", detail: "A Session on the reviewed Agent version", detailZh: "基于已审阅 Agent 版本的 Session", destination: primarySurface("sessions") },
   { number: "04", label: "Observe", labelZh: "观察", detail: "Committed events, artifacts, and usage", detailZh: "已提交事件、产物与用量", destination: primarySurface("artifacts") },
 ];
+
+/** Capability-derived navigation projection. The backend remains the security
+ * boundary. The current information architecture already has no parallel
+ * credential navigation item, so deployment posture changes only the canonical
+ * model-supply label and never creates a second route registry. */
+export function hasSurface(
+  capabilities: ConfigCapabilitiesView | undefined,
+  surface: keyof ConfigCapabilitiesView["surfaces"],
+): boolean {
+  // During a rolling image replacement, an older backend can briefly serve a
+  // newer static bundle. Missing discovery fails closed instead of crashing or
+  // guessing that an unmounted API exists.
+  return capabilities?.surfaces?.[surface] === true;
+}
+
+export function visibleNavigation(capabilities: ConfigCapabilitiesView | undefined): NavItem[] {
+  const byokEnabled = capabilities?.models.byok_enabled === true;
+  return NAV.filter((item) => !item.surface || hasSurface(capabilities, item.surface)).map((item) =>
+    !byokEnabled && item.key === "models"
+      ? { ...item, label: "Models", labelZh: "模型", group: "author" }
+      : item,
+  );
+}
 
 export function navPath(item: NavItem, workspaceId: string): string {
   return item.path.replace(":ws", workspaceId || "default");

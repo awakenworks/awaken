@@ -115,6 +115,10 @@ describe("cloud model capability state", () => {
       cloud_models_enabled: cloudModels,
       profile_authoring_enabled: true,
     },
+    surfaces: {
+      managed_runtime: true,
+      access_management: true,
+    },
   });
 
   it("fails closed while capabilities are unknown or Cloud models are disabled", () => {

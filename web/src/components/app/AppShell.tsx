@@ -6,7 +6,8 @@ import {
 } from "@awaken/ui";
 import { Outlet, useLocation, useNavigate } from "react-router";
 import { useApp } from "../../lib/app-state";
-import { NAV, navPath } from "../../lib/navigation/paths";
+import { navPath, visibleNavigation } from "../../lib/navigation/paths";
+import { useConfigCapabilities } from "../../lib/useConfigCapabilities";
 import { ConfirmProvider } from "../ui/Confirm";
 import { ToastProvider } from "../ui/Toast";
 import AssistantFab from "./AssistantFab";
@@ -18,10 +19,11 @@ import TopChrome from "./TopChrome";
 function CommandPalette() {
   const app = useApp();
   const nav = useNavigate();
+  const capabilities = useConfigCapabilities();
   const [open, setOpen] = useState(false);
   const palette = useCommandPalette({
     open,
-    items: NAV,
+    items: visibleNavigation(capabilities.data),
     filterItems: (items, query) =>
       items
         .filter(

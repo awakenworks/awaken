@@ -191,6 +191,7 @@ pub(super) async fn assemble_runtime_process_router(
                 brokered_client.clone(),
                 injected_brokered_catalog,
                 model_supply,
+                role.exposes_managed_runtime(),
                 &assembly.local_acp_observations,
                 live_runtime_capabilities
                     .clone()

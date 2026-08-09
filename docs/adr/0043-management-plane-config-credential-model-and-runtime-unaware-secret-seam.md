@@ -416,3 +416,25 @@ stay at the resolved boundary the runtime consumes. No existing type is renamed
   proxy — swappable at the composition root; the runtime is blind to the choice.
 - The credential/vault/model data model is owned by the three design docs and can
   churn without reopening this ADR.
+### 2026-08-03 amendment — the console projects composed product surfaces
+
+`ConfigCapabilitiesView` is also the sole browser discovery contract for
+process-owned product surfaces. The composition root projects whether the
+same-origin server owns Managed runtime/resources; the control plane projects
+whether its configured IAM adapter owns access-token administration. The
+browser derives its rail, command palette, settings links, assistant entry, and
+direct-route recovery from those facts.
+
+A split `Control` process therefore exposes Agent/model authoring but does not
+advertise Session, Environment, Deployment, Skill, Memory, File, Artifact,
+Vault, protocol, A2A, or runtime-assistant surfaces owned by
+`Coordinator`/`AllInOne`. A local `AllInOne` process continues to advertise
+them. Remote Cloud IAM does not advertise the embedded-IAM token-management
+page. A hidden page is not an authorization decision: every mounted backend
+route retains its existing PEP.
+
+This capability projection replaces two invalid alternatives: presenting
+known-unmounted pages until their requests return `404`, and adding a Cloud
+proxy that imitates the open Managed APIs over HostedRun. Cloud may link to its
+own Hosted execution product, but it does not become a second implementation of
+Awaken Sessions or resources.

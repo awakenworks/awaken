@@ -17,11 +17,17 @@ export type ModelSelection =
   | {
       backend_ref: string;
       configuration?: AcpSessionConfiguration;
-      mode: "backend_default";
+      mode: "target";
+      target: ModelTarget;
     }
   | {
       backend_ref: string;
       configuration?: AcpSessionConfiguration;
+      mode: "backend_default";
+    }
+  | {
+      backend_ref: string;
+      configuration?: AcpSessionConfiguration2;
       mode: "backend_exact";
       model_ref: string;
     }
@@ -33,13 +39,43 @@ export type ModelSelection =
     };
 
 /**
- * Adapter-native ACP Session intent frozen with one BackendOwned candidate.
- * Omission preserves backend defaults; no discovered schema is copied here.
+ * Adapter-native ACP Session intent attached to an Agent model selection.
+ *
+ * Values remain strings because the selected ACP runtime's negotiated
+ * capability descriptor is the authority that validates supported modes and
+ * option values at publication time.
  */
 export interface AcpSessionConfiguration {
   mode?: string | null;
   options?: {
     [k: string]: string;
   };
+}
+/**
+ * Stable authoring identity used to select one catalog Offering.
+ *
+ * `endpoint_name` is the human qualifier used by public model ids. Resolution
+ * maps it to a concrete endpoint after dialect negotiation. Exact config and
+ * profile authoring may instead use `protocol_endpoint_id`; admission rejects
+ * a target containing both.
+ */
+export interface ModelTarget {
+  endpoint_name?: string | null;
+  model_id: string;
+  protocol_endpoint_id?: string | null;
+  provider_id?: string | null;
   [k: string]: unknown;
+}
+/**
+ * Adapter-native ACP Session intent attached to an Agent model selection.
+ *
+ * Values remain strings because the selected ACP runtime's negotiated
+ * capability descriptor is the authority that validates supported modes and
+ * option values at publication time.
+ */
+export interface AcpSessionConfiguration2 {
+  mode?: string | null;
+  options?: {
+    [k: string]: string;
+  };
 }

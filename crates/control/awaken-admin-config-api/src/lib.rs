@@ -33,11 +33,11 @@ pub use router::{
     AdminState, BrokeredCatalogDiscovery, ConfigCapabilitiesView, CooldownRequest, CredentialProbe,
     CredentialSourceView, CredentialValidation, EnterCredentialRequest, ExecutableModelOption,
     ExecutableModelReadiness, IdentityCapabilityView, ModelSupplyCapabilityView, PoolEligibleView,
-    ProbeStatus, ProviderConnectionStatus, ProviderConnectionSummary, ProviderConnectionView,
-    PutModelAttributesRequest, ResolveProfileRequest, ResolveRequest, ResolvedCandidatesView,
-    ResolvedInferenceView, RotateCredentialRequest, SaveProviderConnectionRequest,
-    ValidateCredentialRequest, admin_router, admin_router_with_capabilities,
-    project_executable_models, reconcile_brokered_catalog,
+    ProbeStatus, ProductSurfaceCapabilityView, ProviderConnectionStatus, ProviderConnectionSummary,
+    ProviderConnectionView, PutModelAttributesRequest, ResolveProfileRequest, ResolveRequest,
+    ResolvedCandidatesView, ResolvedInferenceView, RotateCredentialRequest,
+    SaveProviderConnectionRequest, ValidateCredentialRequest, admin_router,
+    admin_router_with_capabilities, project_executable_models, reconcile_brokered_catalog,
 };
 
 /// The API surface version this crate serves.

@@ -2,16 +2,20 @@ import { useNavigate } from "react-router";
 import { useApp } from "../../lib/app-state";
 import { useWorkspaceReadiness } from "../../lib/readiness";
 import { Card, Pill, Skeleton } from "../ui";
+import { useConfigCapabilities } from "../../lib/useConfigCapabilities";
+import { hasSurface } from "../../lib/navigation/paths";
 
 export default function ReadinessPanel({ compact = false }: { compact?: boolean }) {
   const app = useApp();
   const nav = useNavigate();
+  const capabilities = useConfigCapabilities();
+  const managedRuntime = hasSurface(capabilities.data, "managed_runtime");
   const readiness = useWorkspaceReadiness();
   return (
     <Card className="readiness-panel">
       <div className="readiness-head">
         <span>
-          <h2>{app.t("Ready to run", "运行就绪")}</h2>
+          <h2>{managedRuntime ? app.t("Ready to run", "运行就绪") : app.t("Workspace readiness", "工作区就绪状态")}</h2>
           <p className="hint">
             {app.t(
               "Check whether a model, a published Agent, and an execution Environment are ready before starting a Session.",

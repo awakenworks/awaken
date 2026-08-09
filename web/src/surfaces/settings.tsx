@@ -2,6 +2,7 @@ import { useNavigate, useParams } from "react-router";
 import { useApp } from "../lib/app-state";
 import { Card } from "../components/ui";
 import { useConfigCapabilities } from "../lib/useConfigCapabilities";
+import { hasSurface } from "../lib/navigation/paths";
 
 export default function SettingsSurface() {
   const app = useApp();
@@ -10,6 +11,7 @@ export default function SettingsSurface() {
   const base = `/w/${wsId}`;
   const capabilities = useConfigCapabilities();
   const byokEnabled = capabilities.data?.models.byok_enabled === true;
+  const managedRuntime = hasSurface(capabilities.data, "managed_runtime");
   const link = (label: string, to: string, hint: string) => (
     <button className="settings-link" onClick={() => nav(to)}>
       <span>
@@ -39,8 +41,8 @@ export default function SettingsSurface() {
             ),
           )}
           {byokEnabled && link(app.t("Inference credentials", "推理凭证"), `${base}/credentials`, app.t("Secret-free source status and Claude setup token", "无秘密状态及 Claude setup token"))}
-          {link(app.t("Environments", "运行环境"), `${base}/environments`, app.t("Packages, placement, networking, limits, and Sandbox timing", "软件包、运行位置、网络、资源限制和 Sandbox 时机"))}
-          {link(app.t("Runtime secrets", "运行秘密"), `${base}/vaults`, app.t("Tool and integration secrets; not model credentials", "工具与集成秘密，不含模型凭证"))}
+          {managedRuntime && link(app.t("Environments", "运行环境"), `${base}/environments`, app.t("Packages, placement, networking, limits, and Sandbox timing", "软件包、运行位置、网络、资源限制和 Sandbox 时机"))}
+          {managedRuntime && link(app.t("Runtime secrets", "运行秘密"), `${base}/vaults`, app.t("Tool and integration secrets; not model credentials", "工具与集成秘密，不含模型凭证"))}
         </Card>
       </div>
     </>

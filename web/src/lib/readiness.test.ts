@@ -9,7 +9,9 @@ import { deriveReadiness, runtimeStatus } from "./readiness";
 // R2 Provider+Agent+native -> all ready; R3 ACP+Agent only -> all ready without
 // inventing Provider/Environment requirements; R4 detected ACP without login ->
 // not ready, while an available login is ready; R5 managed Cloud without a
-// catalogue is attention (an Operations fault), never a tenant setup action.
+// catalogue is attention (an Operations fault), never a tenant setup action;
+// R6 split Control without Managed runtime -> omit the execution row and never
+// probe or suggest an unmounted Environment surface.
 describe("Workspace readiness decision table", () => {
   const empty = {
     workspace: "default",
@@ -20,6 +22,7 @@ describe("Workspace readiness decision table", () => {
     environments: 0,
     nativeRuntime: false,
     managedModels: false,
+    managedRuntime: true,
   };
 
   it("R1 exposes the owning remediation for every missing fact", () => {
@@ -56,5 +59,12 @@ describe("Workspace readiness decision table", () => {
       detail: "2 Cloud-managed models available",
       status: "ready",
     });
+  });
+
+  it("R6 omits execution readiness when the process does not own Managed runtime", () => {
+    expect(deriveReadiness({ ...empty, managedRuntime: false }).map((item) => item.id)).toEqual([
+      "supply",
+      "agent",
+    ]);
   });
 });
