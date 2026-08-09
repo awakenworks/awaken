@@ -58,6 +58,14 @@ pub use baseline::{
     SessionCreationFinalizeError, SessionCreationIntent, SessionMcpAuthoringContext,
     SessionNetworkPolicy, SessionRuntimePlacement,
 };
+
+/// Rebuildable desired Environment capacity exported by Coordinator. The
+/// executable Environment catalog remains the sole source of desired state;
+/// implementations must not persist a parallel warmup queue.
+#[async_trait::async_trait]
+pub trait EnvironmentWarmupSource: Send + Sync {
+    async fn current_environment_warmups(&self) -> Result<Vec<EnvironmentSnapshot>, String>;
+}
 pub use dream::{
     DREAM_MAX_INSTRUCTIONS_CHARS, DREAM_MAX_SESSIONS, DREAM_SUPPORTED_MODELS, Dream,
     DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig, DreamModelInput,

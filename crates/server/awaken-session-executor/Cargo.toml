@@ -16,6 +16,7 @@ awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-resource-contract.workspace = true
+awaken-resource-worker-http.workspace = true
 awaken-runtime = { workspace = true }
 # Volatile commit/checkpoint reference adapters are available only to explicit
 # test/scenario compositions. Product builds do not link this backend.

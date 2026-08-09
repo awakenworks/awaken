@@ -20,10 +20,9 @@ fn package_requirements(demand: &EnvironmentImageBuildDemand) -> PackageRequirem
             .filter(|(_, packages)| !packages.is_empty())
             .map(|(manager, packages)| (manager.to_owned(), packages.to_vec()))
             .collect(),
-        resolution_id: Some(format!(
-            "{}:{}",
-            demand.environment_id, demand.source_revision.0
-        )),
+        // Unpinned dependency refresh is frozen by the authoritative recipe,
+        // not by metadata-only Environment revisions.
+        resolution_id: Some(demand.build_key.clone()),
     }
 }
 
@@ -209,7 +208,7 @@ mod tests {
         );
         assert_eq!(
             packages.resolution_id.as_deref(),
-            Some("env-browser:7"),
+            Some(demand.build_key.as_str()),
             "R1"
         );
         assert!(

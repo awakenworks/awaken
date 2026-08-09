@@ -20,6 +20,7 @@ use awaken_provisioning_contract as pc;
 use awaken_resource_contract::content_id as content_fingerprint;
 use std::sync::Arc;
 
+mod cache_volume;
 mod environment_owned;
 use environment_owned::EnvironmentOwnedProcess;
 mod cgroup;
@@ -638,21 +639,16 @@ async fn resolve_blob(
     Ok(None)
 }
 
-/// Resolve + materialize every mount's bytes for the container. Self-contained content
-/// (`Inline` / `InlineBytes` / `Other{content}`, captured on the bind at plan time) ships as-is;
-/// `File` / `Resource` / `Secret` resolve their bytes by id through [`resolve_blob`] and
-/// are hash-verified; a `CacheVolume` binds its caller-owned host path in place. Resolved
-/// bytes are written to a private host staging file (bound by docker/podman) and, when
-/// UTF-8, recorded as the bind's `content` so the k8s tier projects them as a ConfigMap
-/// (binary bytes use ConfigMap `binaryData` on Kubernetes).
-/// A required mount that resolves to nothing fails closed. Returns the staging guard (kept
-/// alive by the sandbox for the container's lifetime), or `None` when nothing was staged.
+/// Resolve + materialize every mount's bytes for the container. Self-contained
+/// content ships as-is; reference sources resolve through [`resolve_blob`]. Bytes
+/// are staged for Docker/Podman or Kubernetes; required misses fail closed.
 async fn resolve_and_stage(
     spec: &pc::SandboxSpec,
     binds: &mut [BindPlan],
     seed: &std::collections::HashMap<String, Vec<u8>>,
     store: &Option<Arc<dyn pc::BlobSource>>,
     secret_broker: &Option<Arc<dyn pc::SecretBroker>>,
+    persistent_volume_claims: bool,
 ) -> Result<StagedMounts, pc::SandboxError> {
     use std::collections::HashMap;
     let by_path: HashMap<&str, &pc::MountRequirement> = spec
@@ -678,12 +674,16 @@ async fn resolve_and_stage(
             let Some(mount) = by_path.get(bind.mount_path.as_str()).copied() else {
                 continue;
             };
+            if let Some(source_ref) = cache_volume::bind_source_ref(
+                &mount.source,
+                &bind.mount_path,
+                persistent_volume_claims,
+            ) {
+                bind.source_ref =
+                    source_ref.map_err(|message| err(RuntimeError::Backend(message)))?;
+                continue;
+            }
             match &mount.source {
-                // A Cache Volume is already a host path — bind it in place (never harvested).
-                pc::MountSource::CacheVolume { host_path, .. } => {
-                    bind.source_ref = host_path.clone();
-                    continue;
-                }
                 pc::MountSource::File { .. }
                 | pc::MountSource::Resource { .. }
                 | pc::MountSource::Secret { .. } => {
@@ -1028,6 +1028,10 @@ pub trait ContainerRuntime: Send + Sync {
         false
     }
 
+    fn uses_persistent_volume_claims(&self) -> bool {
+        false
+    }
+
     /// Whether a host-staged writable Secret remains readable after the process exits,
     /// allowing the provider to commit a CLI-refreshed credential back to its broker.
     /// Docker/Podman do; the Kubernetes ConfigMap projection does not.
@@ -1364,6 +1368,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             &self.blobs,
             &self.file_store,
             &secret_broker,
+            self.runtime.uses_persistent_volume_claims(),
         )
         .await?;
         if self.runtime.uses_host_live_input_bind() {
@@ -1743,6 +1748,39 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         &self,
         handle: &pc::SandboxHandle,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
+}
+
+/// Backend-erased lifecycle for never-used container capacity.
+///
+/// This is deliberately separate from [`ContainerEnvironmentProvider`]: every
+/// container backend can create a Session environment, while only a deployment
+/// that opted into a warm pool owns pre-created capacity. A composition root keeps
+/// this handle long enough to prewarm before advertising readiness and to drain the
+/// unused capacity during shutdown.
+#[async_trait]
+pub trait ContainerEnvironmentCapacity: Send + Sync {
+    /// Ensure at least `target` ready, never-used containers exist for `spec`'s
+    /// exact creation shape. Returns the resulting ready count. Non-poolable specs
+    /// (currently any spec with mounts) return zero without creating anything.
+    async fn prewarm_to(
+        &self,
+        spec: &pc::SandboxSpec,
+        target: usize,
+    ) -> Result<usize, pc::SandboxError>;
+
+    /// Current ready, never-used capacity for one exact shape. Receipts are
+    /// derived from this value so an eviction or Session checkout cannot leave a
+    /// stale positive placement hint.
+    fn ready_capacity(&self, spec: &pc::SandboxSpec) -> usize;
+
+    /// Dispose unused capacity for one exact shape. This is used when the
+    /// authoritative current Environment catalog no longer desires an older
+    /// revision; active Session environments have already left capacity.
+    async fn discard_shape(&self, spec: &pc::SandboxSpec);
+
+    /// Stop replenishment and dispose all never-used capacity. Active Session
+    /// environments have already left the pool and are not affected.
+    async fn shutdown_capacity(&self);
 }
 
 struct ContainerLifecycle {

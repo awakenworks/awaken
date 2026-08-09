@@ -18,6 +18,7 @@ import {
   waitForPort,
   waitForValue,
 } from './harness.mjs';
+import { cargoExecutable } from './cargo_binary.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38817);
@@ -73,31 +74,12 @@ async function postgres(): Promise<{ container?: string; url: string }> {
 }
 
 function buildWorker(): string {
-  const output = execFileSync(
-    'cargo',
-    [
-      'build',
-      '--quiet',
-      '--message-format=json',
-      '-p',
-      'awaken-cli',
-      '--example',
-      'credential_reference_worker',
-    ],
-    { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-  );
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'credential_reference_worker') {
-        return message.executable;
-      }
-    } catch {
-      // Only Cargo artifact records are relevant.
-    }
-  }
-  throw new Error('could not resolve credential_reference_worker example');
+  return cargoExecutable({
+    cwd: ROOT,
+    packageName: 'awaken-cli',
+    targetName: 'credential_reference_worker',
+    targetKind: 'example',
+  });
 }
 
 async function post(pathname: string, body: unknown, worker?: string): Promise<any> {

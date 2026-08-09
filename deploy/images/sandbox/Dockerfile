@@ -46,6 +46,13 @@ RUN /usr/bin/python3 /tmp/install-acp-runtimes.py \
       /usr/local/share/awaken/acp-runtimes.json "${ACP_RUNTIME_IDS}" \
     && rm -f /tmp/install-acp-runtimes.py \
     && npm cache clean --force
+COPY deploy/images/sandbox/hermes-acp-bootstrap.py /tmp/hermes-acp-bootstrap.py
+RUN if [ -x /opt/awaken-python/bin/hermes-acp ]; then \
+      mv /opt/awaken-python/bin/hermes-acp /opt/awaken-python/bin/hermes-acp.real \
+      && install -m 0755 /tmp/hermes-acp-bootstrap.py /opt/awaken-python/bin/hermes-acp \
+      && /opt/awaken-python/bin/hermes-acp --self-test; \
+    fi \
+    && rm -f /tmp/hermes-acp-bootstrap.py
 COPY deploy/images/sandbox/verify-acp-runtimes.py /usr/local/bin/awaken-verify-acp-runtimes
 RUN chmod 0755 /usr/local/bin/awaken-verify-acp-runtimes
 

@@ -19,7 +19,10 @@ use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::{ToolError, ToolExecutor};
 use awaken_sandbox_container::k8s::K8sRuntime;
-use awaken_sandbox_container::{ContainerProvider, ContainerSandbox, command_of};
+use awaken_sandbox_container::{
+    ContainerEnvironmentProvider, ContainerProvider, ContainerRuntime, ContainerSandbox,
+    ContainerState, WarmContainerPool, command_of,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Default)]
@@ -322,6 +325,66 @@ fn cleanup_credential_pod(pod: &str) {
         "--ignore-not-found",
         "--wait=true",
     ]);
+}
+
+/// Kubernetes warm-capacity cause/effect design:
+/// C1=reachable cluster, C2=mount-less exact shape, C3=target one, C4=Session
+/// consumes the warm Pod, C5=capacity shutdown runs. E1=prewarm returns only
+/// after the Pod is Ready, E2=Session receives that Pod without a cold create,
+/// E3=shutdown deletes only unused capacity, E4=the active Session Pod remains
+/// live until its own dispose, then reaches Gone.
+/// Decision rule: (C1,C2,C3,C4,C5)->(E1,E2,E3,E4).
+#[tokio::test]
+async fn k8s_warm_capacity_reaches_ready_hands_out_and_drains_without_killing_session() {
+    if !require_live_cluster() {
+        return;
+    }
+    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
+    let runtime = Arc::new(
+        K8sRuntime::connect(&namespace, "127.0.0.1:1".parse().unwrap())
+            .await
+            .expect("connect to Kubernetes"),
+    );
+    let provider = Arc::new(ContainerProvider::new(runtime.clone(), fixture_image()));
+    let pool = WarmContainerPool::new(provider, 1);
+    let session_spec = spec(&format!("k8s-warm-capacity-{}", std::process::id()));
+
+    assert_eq!(pool.prewarm(&session_spec, 1).await.unwrap(), 1, "E1");
+    assert_eq!(pool.ready_len(&session_spec), 1);
+    let environment = ContainerEnvironmentProvider::create_environment(&pool, &session_spec)
+        .await
+        .expect("E2 bind one Ready warm Pod to the Session");
+    assert_eq!(pool.ready_len(&session_spec), 0, "E2 consumed capacity");
+    assert_eq!(
+        environment.status().await.unwrap(),
+        pc::SandboxStatus::Ready
+    );
+    let pod = environment
+        .handle()
+        .extra
+        .as_ref()
+        .and_then(|extra| extra.get("container_id"))
+        .and_then(serde_json::Value::as_str)
+        .expect("warm Session owns an exact Pod")
+        .to_string();
+
+    pool.shutdown().await;
+    assert_eq!(pool.ready_len(&session_spec), 0, "E3");
+    assert_eq!(
+        runtime.inspect(&pod).await.unwrap(),
+        ContainerState::Running,
+        "E3"
+    );
+
+    environment
+        .dispose()
+        .await
+        .expect("dispose active Session Pod");
+    assert_eq!(
+        runtime.inspect(&pod).await.unwrap(),
+        ContainerState::Gone,
+        "E4"
+    );
 }
 
 #[tokio::test]

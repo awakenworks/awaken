@@ -7,11 +7,16 @@
 import net from 'node:net';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
+import {
+  AWAKEN_BIN_ENV,
+  SCENARIO_HOST_BIN_ENV,
+  cargoExecutable,
+} from './cargo_binary.mjs';
 
 // The historical 38xxx defaults overlap Linux's ephemeral client-port range.
 // Assign each Node scenario a small, non-ephemeral block before the importing
@@ -103,48 +108,6 @@ function untrackSpawnedServer(server) {
   spawnedServerPorts.delete(server);
 }
 
-function buildCargoBinary(packageName, binaryName) {
-  // Cause/effect decision table: R1 successful compiler artifact with an
-  // executable => return that exact path; R2 structured compiler failure =>
-  // surface every rendered diagnostic (Cargo writes these to JSON stdout);
-  // R3 successful command without the requested artifact => fail explicitly.
-  let output;
-  try {
-    output = execFileSync(
-      'cargo',
-      ['build', '--quiet', '--message-format=json', '-p', packageName, '--bin', binaryName],
-      { cwd: REPO_ROOT, maxBuffer: 64 * 1024 * 1024 },
-    ).toString();
-  } catch (error) {
-    const diagnostics = String(error.stdout ?? '')
-      .split('\n')
-      .filter(Boolean)
-      .flatMap((line) => {
-        try {
-          const message = JSON.parse(line);
-          return message.reason === 'compiler-message' && message.message?.rendered
-            ? [message.message.rendered.trimEnd()]
-            : [];
-        } catch {
-          return [];
-        }
-      });
-    const fallback = String(error.stderr ?? '').trim();
-    throw new Error(
-      `cargo build failed for ${packageName}/${binaryName}\n${diagnostics.join('\n') || fallback}`,
-      { cause: error },
-    );
-  }
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === binaryName) return message.executable;
-    } catch { /* non-JSON Cargo output cannot identify an artifact */ }
-  }
-  throw new Error(`could not resolve the ${packageName}/${binaryName} binary path`);
-}
-
 // Cause graph: inherited/fixture environment may contain an old listen
 // address; the address selected for this process is the sole cause of its bind
 // address. Decision table:
@@ -175,13 +138,23 @@ function serverProcessEnv(addr, configured = {}) {
 
 function ensureBuilt() {
   if (serverBin) return serverBin;
-  serverBin = buildCargoBinary('awaken-scenario-host', 'awaken-scenario-host');
+  serverBin = cargoExecutable({
+    cwd: REPO_ROOT,
+    packageName: 'awaken-scenario-host',
+    targetName: 'awaken-scenario-host',
+    prebuiltEnvironmentName: SCENARIO_HOST_BIN_ENV,
+  });
   return serverBin;
 }
 
 export function ensureProductionBuilt() {
   if (productionBin) return productionBin;
-  productionBin = buildCargoBinary('awaken-cli', 'awaken');
+  productionBin = cargoExecutable({
+    cwd: REPO_ROOT,
+    packageName: 'awaken-cli',
+    targetName: 'awaken',
+    prebuiltEnvironmentName: AWAKEN_BIN_ENV,
+  });
   return productionBin;
 }
 

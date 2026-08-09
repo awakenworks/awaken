@@ -18,6 +18,7 @@ import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
 import { closeHttpServer } from './http_server.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
+import { cargoExecutable } from './cargo_binary.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38513);
@@ -79,31 +80,12 @@ done
 }
 
 function awakenBin() {
-  const output = execFileSync(
-    'cargo',
-    [
-      'build',
-      '--quiet',
-      '--message-format=json',
-      '-p',
-      'awaken-cli',
-      '--bin',
-      'awaken',
-      '--features',
-      'container-docker',
-    ],
-    { cwd: ROOT, maxBuffer: 128 * 1024 * 1024 },
-  ).toString();
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken') return message.executable;
-    } catch {
-      // Cargo diagnostic.
-    }
-  }
-  throw new Error('could not resolve the container-enabled awaken binary');
+  return cargoExecutable({
+    cwd: ROOT,
+    packageName: 'awaken-cli',
+    targetName: 'awaken',
+    features: ['container-docker'],
+  });
 }
 
 async function ready(child) {

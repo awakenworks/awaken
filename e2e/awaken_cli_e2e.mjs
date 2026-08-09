@@ -18,12 +18,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import readline from 'node:readline';
-import { spawn, execFileSync, execSync } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
+import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38411);
@@ -37,21 +38,12 @@ const MODEL = 'fake-haiku';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function awakenBin() {
-  const out = execSync(
-    'cargo build --quiet --message-format=json -p awaken-cli --bin awaken',
-    { cwd: REPO_ROOT, maxBuffer: 64 * 1024 * 1024 },
-  ).toString();
-  for (const line of out.split('\n')) {
-    if (!line.trim()) continue;
-    let msg;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (msg.executable && msg.target?.name === 'awaken') return msg.executable;
-  }
-  throw new Error('could not resolve the awaken binary path');
+  return cargoExecutable({
+    cwd: REPO_ROOT,
+    packageName: 'awaken-cli',
+    targetName: 'awaken',
+    prebuiltEnvironmentName: AWAKEN_BIN_ENV,
+  });
 }
 
 function startAwaken(bin, port, configPath, extraEnv = {}) {

@@ -254,6 +254,24 @@ impl SharedHost {
         Ok(true)
     }
 
+    /// One physical Session-environment creation path. CacheVolume preparation
+    /// happens before either the authoritative or BackendOwned provider binds the
+    /// mount, so eager warmup and first-use realization cannot diverge.
+    pub(crate) async fn create_session_environment(
+        &self,
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+        spec: &awaken_provisioning_contract::SandboxSpec,
+    ) -> Result<crate::session_environment::SessionEnvironment, HostError> {
+        self.cache_volume_prewarmer
+            .prepare_mounts(&spec.mounts)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        provider
+            .create(spec)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))
+    }
+
     /// Materialize the deferred environment at the first Sandbox-target tool.
     /// The same lifecycle mutex used by context construction guarantees one
     /// creator, and publication follows resource realization + durable binding.
@@ -273,10 +291,8 @@ impl SharedHost {
             return Ok(environment);
         }
         let environment = Arc::new(
-            self.session_provider
-                .create(&self.sandbox_spec(thread))
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?,
+            self.create_session_environment(&self.session_provider, &self.sandbox_spec(thread))
+                .await?,
         );
         if let Err(error) = self
             .realize_thread_repositories(thread, environment.as_ref())
@@ -671,10 +687,11 @@ impl SharedHost {
             (None, None) if a2a_only || deferred => (None, false, false),
             (None, None) => (
                 Some(Arc::new(
-                    environment_provider
-                        .create(&self.sandbox_spec(thread))
-                        .await
-                        .map_err(|e| HostError::internal(e.to_string()))?,
+                    self.create_session_environment(
+                        environment_provider,
+                        &self.sandbox_spec(thread),
+                    )
+                    .await?,
                 )),
                 true,
                 true,
