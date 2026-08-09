@@ -267,7 +267,9 @@ impl SharedHost {
         let resource_lifecycle =
             resource_lifecycle.or_else(|| Some(super::tests::test_resource_lifecycle()));
         #[cfg(not(test))]
-        let file_application = None;
+        let file_application: Option<
+            Arc<dyn awaken_resource_contract::FileApplicationService>,
+        > = None;
         #[cfg(test)]
         let file_application = resource_lifecycle.as_ref().map(|lifecycle| {
             Arc::new(awaken_file_application::FileApplication::new(
@@ -281,10 +283,17 @@ impl SharedHost {
             .as_ref()
             .map(|(source, _)| source.clone())
             .unwrap_or_else(|| {
-                Arc::new(crate::StoreFileContentSource::new(
-                    file_catalog.clone(),
-                    file_store.clone(),
-                ))
+                file_application.as_ref().map_or_else(
+                    || {
+                        Arc::new(crate::file_content_transport::UnavailableFileContentSource)
+                            as Arc<dyn crate::FileContentSource>
+                    },
+                    |application| {
+                        Arc::new(crate::ApplicationFileContentSource::new(
+                            application.clone(),
+                        ))
+                    },
+                )
             });
         let capture_decision = crate::redact::capture_decision(deployment.content_capture, false);
         Self {
@@ -502,11 +511,16 @@ impl SharedHost {
     ) -> Self {
         #[cfg(test)]
         {
-            self.file_application = Some(Arc::new(awaken_file_application::FileApplication::new(
+            let application = Arc::new(awaken_file_application::FileApplication::new(
                 self.file_store.clone(),
                 self.file_catalog.clone(),
                 repository.clone(),
-            )));
+            ))
+                as Arc<dyn awaken_resource_contract::FileApplicationService>;
+            self.file_content_source = Arc::new(crate::ApplicationFileContentSource::new(
+                application.clone(),
+            ));
+            self.file_application = Some(application);
         }
         self.resource_lifecycle = Some(repository);
         self
@@ -519,6 +533,9 @@ impl SharedHost {
         mut self,
         application: Arc<dyn awaken_resource_contract::FileApplicationService>,
     ) -> Self {
+        self.file_content_source = Arc::new(crate::ApplicationFileContentSource::new(
+            application.clone(),
+        ));
         self.file_application = Some(application);
         self
     }

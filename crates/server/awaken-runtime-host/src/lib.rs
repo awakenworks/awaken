@@ -96,10 +96,7 @@ pub use crate::dispatch_backend::{
     init_shared_postgres_dispatch_existing_with_config, init_shared_postgres_dispatch_with_config,
     migrate_postgres_dispatch_schema,
 };
-pub use crate::file_content_transport::{
-    FileContentSource, FileContentSourceError, HttpFileContentSource, StoreFileContentSource,
-    WorkerFileContentService, worker_file_content_router,
-};
+pub use crate::file_content_transport::ApplicationFileContentSource;
 pub use crate::host::{
     AttemptExecutorDecorator, HostResume, RemoteAttemptInstallation, SharedHost,
     remote_worker_placement, self_hosted_inference_holder,
@@ -109,11 +106,7 @@ pub use crate::memory_transport::{
     memory_materialization_reference, worker_memory_router,
 };
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
-pub use crate::repository_transport::{
-    CatalogRepositoryBindingVerifier, HttpRepositoryBindingVerifier, RepositoryBindingVerifier,
-    RepositoryBindingVerifierError, WorkerRepositoryBindingService,
-    worker_repository_binding_router,
-};
+pub use crate::repository_transport::CatalogRepositoryBindingVerifier;
 pub use crate::run_application_host::{
     RunApplicationHost, SessionDefaultsPreparationError, SessionDefaultsPreparer,
 };
@@ -122,6 +115,11 @@ pub use crate::skill_bundle_transport::{
     WorkerSkillBundleService, worker_skill_bundle_router,
 };
 use awaken_credential_materializer::PinnedCredentialMaterializer;
+#[cfg(test)]
+use awaken_run_ingress_contract::FileContentSourceError;
+#[cfg(test)]
+use awaken_run_ingress_contract::RepositoryBindingVerifierError;
+use awaken_run_ingress_contract::{FileContentSource, RepositoryBindingVerifier};
 // ACP launch projection consumes the Session environment selected by the host.
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::redact::PiiRedactor;

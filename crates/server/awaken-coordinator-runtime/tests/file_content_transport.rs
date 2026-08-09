@@ -1,18 +1,18 @@
-//! File Resource boundary tests over real HTTP.
+//! File Resource Coordinator boundary tests over real HTTP.
 
 mod support;
 
 use std::sync::Arc;
 
+use awaken_coordinator_runtime::{WorkerFileContentService, worker_file_content_router};
 use awaken_file_store::FileStore as _;
 use awaken_resource_contract::FileCatalog as _;
 use awaken_run_ingress::{
     DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };
-use awaken_runtime_host::{
-    FileContentSource as _, HttpFileContentSource, StoreFileContentSource,
-    WorkerFileContentService, worker_file_content_router,
-};
+use awaken_run_ingress_contract::FileContentSource as _;
+use awaken_runtime_host::ApplicationFileContentSource;
+use awaken_worker_runtime::HttpFileContentSource;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 fn resources(file_id: &str) -> awaken_session_contract::ResolvedSessionResources {
@@ -35,7 +35,7 @@ async fn claimed_dispatch(
     file_id: &str,
     owner: &str,
 ) -> RunClaim {
-    let request = RunDispatch::new(support::activation("file"))
+    let request = RunDispatch::new(support::activation(file_id))
         .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
             awaken_tenancy::ScopeId::from("workspace-file"),
         ))
@@ -53,7 +53,7 @@ async fn claimed_dispatch(
 }
 
 /// Cause/effect decision table:
-/// | Rule | Worker auth | live exact claim | Workspace/File frozen | stored digest | Effect |
+/// | Rule | Worker auth | live exact claim | Workspace/File frozen | content state | Effect |
 /// |---|---|---|---|---|---|
 /// | F1 | valid | yes | yes | exact | return immutable bytes and digest |
 /// | F2 | valid | yes | another File | any | deny before File source |
@@ -61,6 +61,9 @@ async fn claimed_dispatch(
 /// | F4 | valid | stale | yes | any | reject without content |
 /// | F5 | valid | yes | yes | substituted response | Worker rejects bytes |
 /// | F6 | stale incarnation | yes | yes | exact | deny before File source |
+/// | F7 | transport-only | supplied | supplied | digest header missing | Worker rejects response |
+/// | F8 | valid | yes | yes | logical File absent | return not-found without bytes |
+/// | F9 | valid | yes | yes | record references absent blob | surface unavailable; no partial bytes |
 #[tokio::test]
 async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
     let store = Arc::new(awaken_file_store::InMemoryFileStore::new());
@@ -85,7 +88,13 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
     let (directory, identity) = support::ready_worker("worker-file").await;
     let dispatch = Arc::new(MemoryDispatchStore::new());
     let claim = claimed_dispatch(&dispatch, "file-public", &identity.lease_owner()).await;
-    let source = Arc::new(StoreFileContentSource::new(store.clone(), store));
+    let lifecycle = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+    let application = Arc::new(awaken_file_application::FileApplication::new(
+        store.clone(),
+        store.clone(),
+        lifecycle,
+    ));
+    let source = Arc::new(ApplicationFileContentSource::new(application));
     let service = Arc::new(
         WorkerFileContentService::new(
             source,
@@ -131,6 +140,17 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
         "F3"
     );
 
+    let stale_source =
+        HttpFileContentSource::new(
+            WorkerUpstream::new(format!("http://{address}"))
+                .with_worker_identity(WorkerIdentity::new("worker-file", "worker-file-stale", 2)),
+        );
+    let stale_identity = stale_source
+        .read("workspace-file", "file-public", Some(&claim))
+        .await
+        .expect_err("F6 stale incarnation must be denied");
+    assert!(stale_identity.to_string().contains("403"), "F6");
+
     dispatch
         .settle(
             &claim.run_id,
@@ -167,16 +187,68 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
         "F5"
     );
 
-    let stale_source =
-        HttpFileContentSource::new(
-            WorkerUpstream::new(format!("http://{address}"))
-                .with_worker_identity(WorkerIdentity::new("worker-file", "worker-file-stale", 2)),
-        );
-    let stale_identity = stale_source
+    let missing_digest = axum::Router::new().route(
+        "/v1/worker/resources/files/content",
+        axum::routing::post(|| async { b"unidentified-file".to_vec() }),
+    );
+    let missing_digest_address = support::serve(missing_digest).await;
+    let missing_digest_source = HttpFileContentSource::new(
+        WorkerUpstream::new(format!("http://{missing_digest_address}"))
+            .with_worker_id("worker-file"),
+    );
+    let missing_digest_error = missing_digest_source
         .read("workspace-file", "file-public", Some(&claim))
         .await
-        .expect_err("F6 stale incarnation must be denied");
-    assert!(stale_identity.to_string().contains("403"), "F6");
+        .expect_err("F7 digest header is mandatory");
+    assert!(
+        missing_digest_error
+            .to_string()
+            .contains("no content digest"),
+        "F7: {missing_digest_error}"
+    );
+
+    let missing_claim = claimed_dispatch(&dispatch, "file-missing", &identity.lease_owner()).await;
+    assert_eq!(
+        source
+            .read("workspace-file", "file-missing", Some(&missing_claim))
+            .await
+            .expect("F8 not-found response"),
+        None,
+        "F8"
+    );
+    dispatch
+        .settle(
+            &missing_claim.run_id,
+            missing_claim.epoch,
+            awaken_run_ingress::DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .unwrap();
+
+    store
+        .create_file(awaken_resource_contract::FileRecord {
+            id: "file-broken".into(),
+            workspace_id: "workspace-file".into(),
+            blob_id: awaken_resource_contract::content_id(b"missing-blob"),
+            filename: "broken.txt".into(),
+            mime_type: "text/plain".into(),
+            size_bytes: 12,
+            created_at: "2026-07-30T00:00:00Z".into(),
+            downloadable: false,
+            scope_id: None,
+            logical_path: None,
+            harvest_key: None,
+            deleted: false,
+        })
+        .await
+        .unwrap();
+    let broken_claim = claimed_dispatch(&dispatch, "file-broken", &identity.lease_owner()).await;
+    let broken = source
+        .read("workspace-file", "file-broken", Some(&broken_claim))
+        .await
+        .expect_err("F9 missing blob must fail closed");
+    assert!(broken.to_string().contains("503"), "F9: {broken}");
 }
 
 /// Cause/effect rationale: a remote source without the exact claim has no
@@ -190,4 +262,15 @@ async fn remote_file_source_requires_claim() {
         .await
         .expect_err("claim is mandatory");
     assert!(error.to_string().contains("requires a dispatch claim"));
+
+    let claim = RunClaim {
+        run_id: awaken_agent_contract::agent::run::Id("run-unused".into()),
+        owner: "worker-unused".into(),
+        epoch: 1,
+    };
+    let empty = source
+        .read("", "file-public", Some(&claim))
+        .await
+        .expect_err("empty Workspace is rejected locally");
+    assert!(empty.to_string().contains("must not be empty"));
 }

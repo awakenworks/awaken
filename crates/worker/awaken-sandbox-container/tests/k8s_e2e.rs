@@ -326,6 +326,12 @@ fn cleanup_credential_pod(pod: &str) {
 
 #[tokio::test]
 async fn a_k8s_pod_rotates_and_persists_a_native_credential_file() {
+    /* Credential-disposal FMECA rule KCF1. Causes: C1 a durable writable
+     * credential is projected; C2 the agent replaces it; C3 remote read and
+     * broker write both succeed. C1+C2+C3 => E1 persist the exact replacement,
+     * E2 delete the Pod and projected Secret only after persistence. KCF2/KCF3
+     * below cover each failed dependency and require preservation for retry.
+     */
     if !require_live_cluster() {
         return;
     }
@@ -678,6 +684,12 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
 
 #[tokio::test]
 async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
+    /* Mount-realization FMECA rule KMR1. C1 inline UTF-8 bytes and a read-only
+     * path are valid; C2 the Pod reaches Running. C1+C2 => E1 one ConfigMap
+     * contains the exact text, E2 the agent reads it at the requested path,
+     * E3 disposal reaps both Pod and ConfigMap. Invalid paths and create
+     * rollback are owned by the pure realization decision table.
+     */
     if !require_live_cluster() {
         return;
     }
@@ -753,6 +765,12 @@ async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
 
 #[tokio::test]
 async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
+    /* By-reference mount FMECA rule KMR2. C1 the File id exists in the injected
+     * BlobSource; C2 its bytes are UTF-8; C3 the Pod becomes runnable.
+     * C1+C2+C3 => E1 resolve once through the canonical BlobSource, E2 project
+     * the exact bytes, E3 make them readable only at the requested path. Missing
+     * and corrupt content are covered at the provider boundary before mutation.
+     */
     if !require_live_cluster() {
         return;
     }
@@ -804,6 +822,11 @@ async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
 
 #[tokio::test]
 async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
+    /* Binary mount FMECA rule KMR3. C1 the File id resolves; C2 bytes are not
+     * valid UTF-8 but contain an exact marker; C3 the Pod becomes runnable.
+     * C1+C2+C3 => E1 select ConfigMap binaryData rather than lossy text, E2
+     * preserve all bytes, E3 expose the marker to the agent at the exact path.
+     */
     if !require_live_cluster() {
         return;
     }

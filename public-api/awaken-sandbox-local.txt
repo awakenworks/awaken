@@ -1,5 +1,6 @@
 pub mod awaken_sandbox_local
 pub use awaken_sandbox_local::LocalProcess
+pub use awaken_sandbox_local::content_fingerprint
 pub struct awaken_sandbox_local::BlobLru
 impl awaken_sandbox_local::BlobLru
 pub fn awaken_sandbox_local::BlobLru::new(usize) -> Self
@@ -123,6 +124,5 @@ pub fn awaken_sandbox_local::HandTool::id(&self) -> &str
 pub fn awaken_sandbox_local::HandTool::run<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_sandbox_local::HandOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_sandbox_local::bubblewrap_argv(&awaken_sandbox_local::namespace::RenderInput<'_>) -> alloc::vec::Vec<alloc::string::String>
 pub fn awaken_sandbox_local::clone_repo_bundle(&str, core::option::Option<&str>, core::option::Option<&str>, core::option::Option<&awaken_provisioning_contract::sandbox::RepositoryHttpBasicCredential>) -> core::result::Result<alloc::vec::Vec<u8>, awaken_provisioning_contract::sandbox::SandboxError>
-pub fn awaken_sandbox_local::content_fingerprint(&[u8]) -> alloc::string::String
 pub fn awaken_sandbox_local::push_repo_bundle(&[u8], &str, core::option::Option<&awaken_provisioning_contract::sandbox::RepositoryHttpBasicCredential>) -> core::result::Result<bool, awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::sandbox_exec_argv(&awaken_sandbox_local::namespace::RenderInput<'_>) -> alloc::vec::Vec<alloc::string::String>

@@ -870,14 +870,14 @@ impl WorkerNode {
         let remote_memory = Arc::new(awaken_runtime_host::HttpMemoryRepository::new(
             upstream.clone(),
         ));
-        let remote_files = Arc::new(awaken_runtime_host::HttpFileContentSource::new(
+        let remote_files = Arc::new(awaken_worker_runtime::HttpFileContentSource::new(
             upstream.clone(),
         ));
         let remote_skills = Arc::new(awaken_runtime_host::HttpSkillBundleSource::new(
             upstream.clone(),
         ));
         let remote_repositories = Arc::new(
-            awaken_runtime_host::HttpRepositoryBindingVerifier::new(upstream.clone()),
+            awaken_worker_runtime::HttpRepositoryBindingVerifier::new(upstream.clone()),
         );
         let mut host = SharedHost::new_worker_with_deployment(
             Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),

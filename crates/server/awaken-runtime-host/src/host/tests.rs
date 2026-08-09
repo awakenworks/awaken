@@ -3492,6 +3492,9 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
 
 #[tokio::test]
 async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
+    // Cause/effect decision rule D1: the authoritative File application returns
+    // bytes whose canonical digest differs from the logical record's blob id ->
+    // staging fails closed before a Sandbox mount is published.
     use awaken_file_store::{FileStore, FileStoreError};
     use awaken_session_contract::SessionRuntime;
 
@@ -3520,10 +3523,14 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
     let corrupt_store = Arc::new(CorruptFileStore);
     raw_host.file_store = corrupt_store.clone();
-    raw_host.file_content_source = Arc::new(crate::StoreFileContentSource::new(
-        raw_host.file_catalog.clone(),
+    let application = Arc::new(awaken_file_application::FileApplication::new(
         corrupt_store,
+        raw_host.file_catalog.clone(),
+        raw_host
+            .resource_lifecycle()
+            .expect("test lifecycle repository"),
     ));
+    raw_host = raw_host.with_file_application(application);
     let host = Arc::new(raw_host);
     let public_id = "file_corrupt".to_string();
     host.file_catalog()

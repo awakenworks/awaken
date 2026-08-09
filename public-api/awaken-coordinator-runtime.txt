@@ -18,7 +18,18 @@ pub fn awaken_coordinator_runtime::WorkerDispatchService::with_placement_policy(
 pub fn awaken_coordinator_runtime::WorkerDispatchService::with_recovery_source(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>) -> Self
 pub fn awaken_coordinator_runtime::WorkerDispatchService::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
 pub fn awaken_coordinator_runtime::WorkerDispatchService::with_worker_directory(self, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>, u64) -> Self
+pub struct awaken_coordinator_runtime::WorkerFileContentService
+impl awaken_coordinator_runtime::WorkerFileContentService
+pub fn awaken_coordinator_runtime::WorkerFileContentService::new(alloc::sync::Arc<dyn awaken_run_ingress_contract::file_content::FileContentSource>, alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>) -> Self
+pub fn awaken_coordinator_runtime::WorkerFileContentService::with_worker_directory(self, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>) -> Self
+pub struct awaken_coordinator_runtime::WorkerRepositoryBindingService
+impl awaken_coordinator_runtime::WorkerRepositoryBindingService
+pub fn awaken_coordinator_runtime::WorkerRepositoryBindingService::new(alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceBindingValidator>, alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>) -> Self
+pub fn awaken_coordinator_runtime::WorkerRepositoryBindingService::with_worker_directory(self, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>) -> Self
+pub fn awaken_coordinator_runtime::claimed_commit_router(alloc::sync::Arc<awaken_runtime_host::commit_ingest::ClaimedCommitService>) -> axum::routing::Router
 pub fn awaken_coordinator_runtime::dispatch_transport_router_with_service(alloc::sync::Arc<awaken_coordinator_runtime::WorkerDispatchService>) -> axum::routing::Router
 pub fn awaken_coordinator_runtime::durable_ops_router(alloc::sync::Arc<awaken_runtime_host::host::SharedHost>) -> axum::routing::Router
 pub fn awaken_coordinator_runtime::registered_worker_transport_router(alloc::sync::Arc<awaken_runtime_host::host::SharedHost>, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>, alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>, alloc::sync::Arc<dyn awaken_session_contract::session_realization::ApplicationSessionControl>, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceBindingValidator>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>) -> core::result::Result<axum::routing::Router, awaken_coordinator_runtime::RegisteredWorkerTransportBuildError>
 pub fn awaken_coordinator_runtime::registered_worker_transport_router_with_services(axum::routing::Router, alloc::sync::Arc<awaken_runtime_host::commit_ingest::ClaimedCommitService>) -> axum::routing::Router
+pub fn awaken_coordinator_runtime::worker_file_content_router(alloc::sync::Arc<awaken_coordinator_runtime::WorkerFileContentService>) -> axum::routing::Router
+pub fn awaken_coordinator_runtime::worker_repository_binding_router(alloc::sync::Arc<awaken_coordinator_runtime::WorkerRepositoryBindingService>) -> axum::routing::Router
