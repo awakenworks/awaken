@@ -21,6 +21,7 @@
 //! No variant has two producers, so a consumer never has to ask whether a given
 //! `RunFinished` is best-effort or authoritative — it can only be a `Fact`.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::agent::content::ContentBlock;
@@ -28,7 +29,8 @@ use crate::agent::content::ContentBlock;
 /// How a tool call was dispatched, as seen at fold time. The only place the "who
 /// runs the tool" distinction is carried; each transcoder maps it to its own
 /// tool-part shape.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolDisposition {
     /// The tool ran server-side; a [`Fact::ToolResult`] follows.
     Executed,
@@ -41,7 +43,8 @@ pub enum ToolDisposition {
 
 /// One neutral event, tagged by its producer-authority tier. Carries no protocol
 /// vocabulary.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "tier", content = "event", rename_all = "snake_case")]
 pub enum AgentEvent {
     /// A discrete complete event — something that definitively happened, folded
     /// from committed truth.
@@ -52,7 +55,8 @@ pub enum AgentEvent {
 
 /// The discrete-event tier: whole units and run lifecycle. Only the fold produces
 /// these. Every protocol transcoder handles every variant (exhaustive).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Fact {
     /// The run began (a run boundary).
     RunStarted,
@@ -95,7 +99,8 @@ pub enum Fact {
 /// The streaming-fragment tier: fine-grained content increments. Only the live
 /// stream produces these. A protocol renders only the fragments it cares about
 /// (opt-in).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Delta {
     /// A fragment of assistant text.
     TextDelta { delta: String },

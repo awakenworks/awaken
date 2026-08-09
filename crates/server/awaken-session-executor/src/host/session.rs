@@ -493,6 +493,10 @@ impl SharedHost {
             inference_materializer,
         )
         .with_context(run_context);
+        ingress = match &self.worker_stream_publisher {
+            Some(publisher) => ingress.with_claimed_stream_publisher(publisher.clone()),
+            None => ingress.with_stream_sink(self.completion.clone()),
+        };
         if let Some(capabilities) = local_credential_capabilities {
             ingress = ingress.with_local_credential_capabilities(capabilities);
         }

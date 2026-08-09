@@ -32,6 +32,7 @@ import path from 'node:path';
 import { execSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
+import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 39418);
@@ -188,7 +189,7 @@ function localEnvironment() {
 }
 
 function start(binary, config) {
-  const child = spawn(binary, ['all-in-one', '--config', config], {
+  const child = spawn(binary, automatedAllInOneArgs('--config', config), {
     env: localEnvironment(),
     stdio: ['ignore', 'ignore', 'inherit'],
   });

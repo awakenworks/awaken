@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import {
   deploymentEnv,
   ensureProductionBuilt,
@@ -22,7 +23,7 @@ async function main() {
   const env = deploymentEnv(directory, {
     fields: { mode: 'server', bind: `127.0.0.1:${PORT}` },
   });
-  const server = spawn(ensureProductionBuilt(), ['all-in-one', '--config', path.join(env.HOME, '.awaken', 'config.toml')], {
+  const server = spawn(ensureProductionBuilt(), automatedAllInOneArgs('--config', path.join(env.HOME, '.awaken', 'config.toml')), {
     env: {
       ...process.env,
       ...env,

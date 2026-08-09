@@ -17,6 +17,11 @@ use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use tokio_util::sync::CancellationToken;
 
+use crate::RunClaim;
+use crate::claimed_stream::{
+    ClaimBoundStreamSink, ClaimedStreamPublisher, LocalClaimedStreamPublisher,
+};
+
 /// Materializes the activation's admission-pinned inference access. A worker
 /// receives the complete activation and opaque access value; it neither selects a
 /// model nor distinguishes deployment topology.
@@ -42,6 +47,7 @@ pub(crate) struct WorkerContext {
     /// placement, capture, observability, and retry accounting stay identical to
     /// a directly admitted Run.
     context: RuntimeRunContext,
+    stream_publisher: Option<Arc<dyn ClaimedStreamPublisher>>,
     /// Runtime-only materialization. Absent preserves an explicitly composed host
     /// executor; once installed, rejecting pinned access fails the run closed.
     inference_materializer: Option<InferenceMaterializerFn>,
@@ -54,6 +60,7 @@ impl WorkerContext {
             commit,
             reader: None,
             context: RuntimeRunContext::new(),
+            stream_publisher: None,
             inference_materializer: None,
         }
     }
@@ -112,7 +119,18 @@ impl WorkerContext {
     /// Attach a best-effort live stream sink (live progress is never truth).
     #[must_use]
     pub(crate) fn with_stream_sink(mut self, sink: Arc<dyn StreamSink>) -> Self {
-        self.context = self.context.with_stream_sink(sink);
+        self.stream_publisher = Some(Arc::new(LocalClaimedStreamPublisher::new(sink)));
+        self
+    }
+
+    /// Attach the durable worker's claim-aware live publisher. Remote workers use
+    /// this boundary to authenticate and fence each event at the Coordinator.
+    #[must_use]
+    pub(crate) fn with_claimed_stream_publisher(
+        mut self,
+        publisher: Arc<dyn ClaimedStreamPublisher>,
+    ) -> Self {
+        self.stream_publisher = Some(publisher);
         self
     }
 
@@ -127,7 +145,11 @@ impl WorkerContext {
 
     /// Build the runtime-facing context for one attempt, carrying the supplied
     /// cancellation token so the host can steer an in-flight run.
-    pub(crate) fn runtime_context(&self, cancel: CancellationToken) -> RuntimeRunContext {
+    pub(crate) fn runtime_context(
+        &self,
+        cancel: CancellationToken,
+        claim: Option<&RunClaim>,
+    ) -> RuntimeRunContext {
         let mut context = self
             .context
             .clone()
@@ -138,6 +160,12 @@ impl WorkerContext {
             .with_pause(PauseSignal::new());
         if let Some(reader) = &self.reader {
             context = context.with_reader(reader.clone());
+        }
+        if let (Some(publisher), Some(claim)) = (&self.stream_publisher, claim) {
+            context = context.with_stream_sink(Arc::new(ClaimBoundStreamSink::new(
+                claim.clone(),
+                publisher.clone(),
+            )));
         }
         context
     }
