@@ -55,6 +55,8 @@ import {
 } from "../lib/agent-collaboration";
 import { useApp } from "../lib/app-state";
 import { useCapabilities } from "../lib/useCapabilities";
+import { useConfigCapabilities } from "../lib/useConfigCapabilities";
+import { hasSurface } from "../lib/navigation/paths";
 import { useModels } from "../lib/useModels";
 import { useUnsavedGuard } from "../lib/useUnsavedGuard";
 import ModelsSurface from "./models";
@@ -66,6 +68,8 @@ export default function AgentEditorSurface() {
   const nav = useNavigate();
   const qc = useQueryClient();
   const toast = useToast();
+  const deploymentCapabilities = useConfigCapabilities();
+  const managedRuntime = hasSurface(deploymentCapabilities.data, "managed_runtime");
   const { ws: wsId = "default", id = "new" } = useParams();
   const [searchParams] = useSearchParams();
   const parentAgentId = searchParams.get("parent")?.trim() ?? "";
@@ -506,6 +510,7 @@ export default function AgentEditorSurface() {
         stage={stage}
         changed={stageChanged}
         onChange={setStage}
+        canTry={managedRuntime}
         onTry={() => setShowSandbox(true)}
       />
       <AgentValidationIssues issues={issues} onOpen={routeIssue} />
@@ -515,7 +520,7 @@ export default function AgentEditorSurface() {
           stage={stage} builderSection={builderSection} advancedSection={advancedSection}
           config={cfg} baseline={baseline} resources={resourceInputs} resourcesError={resourcesError}
           resourceRevision={resourceRevision} isNew={isNew} published={existing.data?.published === true}
-          canRun={canSave && modelIsRunnable} runPending={quickRun.isPending} publishPending={publish.isPending}
+          canRun={managedRuntime && canSave && modelIsRunnable} runPending={quickRun.isPending} publishPending={publish.isPending}
           readyModels={models} allModels={allModels} runtimes={caps.data?.runtimes ?? []}
           tools={caps.data?.tools ?? []} plugins={caps.data?.plugins ?? []} policies={caps.data?.policies ?? []}
           credentials={credentials.data ?? []} changed={changed} onPatch={patch} onRawChange={replaceRaw}
@@ -540,7 +545,7 @@ export default function AgentEditorSurface() {
           <ModelsSurface />
         </Drawer>
       )}
-      {showSandbox && (
+      {managedRuntime && showSandbox && (
         <Drawer title={app.t("Try current draft", "试运行当前草稿")} onClose={() => setShowSandbox(false)}>
           <SandboxPane
             draft={body()}

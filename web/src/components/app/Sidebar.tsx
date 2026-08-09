@@ -30,8 +30,7 @@ function SidebarItem({ item }: { item: NavItem }) {
 export default function Sidebar() {
   const app = useApp();
   const capabilities = useConfigCapabilities();
-  const byokEnabled = capabilities.data?.models.byok_enabled === true;
-  const navigation = visibleNavigation(byokEnabled);
+  const navigation = visibleNavigation(capabilities.data);
   const groups: NavGroup[] = ["workspace", "author", "run", "connect", "govern"];
   return (
     <aside className="sidebar" aria-label={app.t("Workspace navigation", "工作区导航")}>

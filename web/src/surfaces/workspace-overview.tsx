@@ -7,7 +7,8 @@ import { useNavigate, useParams } from "react-router";
 import { api, ws } from "../lib/api/client";
 import type { ListSessionsResponse } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { WORKSPACE_JOURNEY, navPath } from "../lib/navigation/paths";
+import { WORKSPACE_JOURNEY, hasSurface, navPath } from "../lib/navigation/paths";
+import { useConfigCapabilities } from "../lib/useConfigCapabilities";
 import { StatusPill } from "./sessions";
 import { Button, Card } from "../components/ui";
 import ReadinessPanel from "../components/app/ReadinessPanel";
@@ -16,10 +17,16 @@ export default function WorkspaceOverviewSurface() {
   const app = useApp();
   const nav = useNavigate();
   const { ws: wsId = "default" } = useParams();
+  const capabilities = useConfigCapabilities();
+  const managedRuntime = hasSurface(capabilities.data, "managed_runtime");
+  const byokEnabled = capabilities.data?.models.byok_enabled === true;
+  const journey = WORKSPACE_JOURNEY.filter((step) =>
+    !step.destination.surface || hasSurface(capabilities.data, step.destination.surface));
   const sessions = useQuery({
     queryKey: ["sessions", wsId],
     queryFn: () => api.get<ListSessionsResponse>(ws("/v1/sessions")),
     refetchInterval: 15_000,
+    enabled: managedRuntime,
   });
   const rows = sessions.data?.data ?? [];
   const active = rows.filter((s) => !s.archived_at);
@@ -31,15 +38,15 @@ export default function WorkspaceOverviewSurface() {
       <div className="page-intro workspace-overview__intro">
         <span><strong>{app.t("Choose where to continue", "选择下一步")}</strong><p className="mut">{app.t("Readiness checks below show what is already usable and what still needs setup.", "下方就绪检查会说明哪些能力已可用、哪些仍需配置。")}</p></span>
         <span className="row">
-          <Button onClick={() => nav(`/w/${wsId}/models`)}>{app.t("Connect provider", "连接供应商")}</Button>
+          <Button onClick={() => nav(`/w/${wsId}/models`)}>{app.t(byokEnabled ? "Connect provider" : "Browse models", byokEnabled ? "连接供应商" : "浏览模型")}</Button>
           <Button onClick={() => nav(`/w/${wsId}/agents/new`)}>{app.t("Create Agent", "创建 Agent")}</Button>
-          <Button variant="primary" onClick={() => nav(`/w/${wsId}/sessions`)}>
+          {managedRuntime && <Button variant="primary" onClick={() => nav(`/w/${wsId}/sessions`)}>
             {app.t("Start real run", "开始真实运行")}
-          </Button>
+          </Button>}
         </span>
       </div>
       <nav className="execution-path" aria-label={app.t("Agent proof journey", "Agent 验证路径")}>
-        {WORKSPACE_JOURNEY.map((step) => (
+        {journey.map((step) => (
           <button key={step.number} type="button" onClick={() => nav(navPath(step.destination, wsId))}>
             <span>{step.number}</span>
             <strong>{app.t(step.label, step.labelZh)}</strong>
@@ -48,13 +55,13 @@ export default function WorkspaceOverviewSurface() {
         ))}
       </nav>
       <ReadinessPanel />
-      {sessions.error instanceof Error && (
+      {managedRuntime && sessions.error instanceof Error && (
         <div className="banner err">
           <span>{sessions.error.message}</span>
           <Button variant="ghost" onClick={() => void sessions.refetch()}>{app.t("Try again", "重试")}</Button>
         </div>
       )}
-      <div className="kpis">
+      {managedRuntime && <><div className="kpis">
         <button className="kpi" onClick={() => nav(`/w/${wsId}/sessions`)}>
           <span className="val">{sessions.data ? active.length : "—"}</span>
           <span className="label">{app.t("Active sessions", "活跃会话")}</span>
@@ -96,7 +103,7 @@ export default function WorkspaceOverviewSurface() {
             )}
           </tbody>
         </table>
-      </Card>
+      </Card></>}
     </div>
   );
 }

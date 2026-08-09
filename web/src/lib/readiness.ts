@@ -12,6 +12,7 @@ import type {
 import { useApp } from "./app-state";
 import { useModels } from "./useModels";
 import { useConfigCapabilities } from "./useConfigCapabilities";
+import { hasSurface } from "./navigation/paths";
 
 export type ReadinessStatus = "ready" | "action" | "attention";
 
@@ -32,13 +33,14 @@ export interface ReadinessFacts {
   environments: number;
   nativeRuntime: boolean;
   managedModels: boolean;
+  managedRuntime: boolean;
 }
 
 export function deriveReadiness(facts: ReadinessFacts, zh = false): ReadinessItem[] {
   const supplyReady = facts.models > 0 || facts.acp > 0;
   const executionReady = facts.nativeRuntime || facts.acp > 0 || facts.environments > 0;
   const base = `/w/${facts.workspace}`;
-  return [
+  const items: ReadinessItem[] = [
     {
       id: "supply",
       label: facts.managedModels
@@ -65,7 +67,8 @@ export function deriveReadiness(facts: ReadinessFacts, zh = false): ReadinessIte
       status: facts.publishedAgents ? "ready" : "action",
       href: `${base}/agents`,
     },
-    {
+  ];
+  if (facts.managedRuntime) items.push({
       id: "execution",
       label: zh ? "运行环境" : "Execution environments",
       detail: executionReady
@@ -73,8 +76,8 @@ export function deriveReadiness(facts: ReadinessFacts, zh = false): ReadinessIte
         : zh ? "当前没有可执行的 Runtime 或 Environment" : "No executable runtime or Environment is available",
       status: executionReady ? "ready" : "attention",
       href: `${base}/environments`,
-    },
-  ];
+    });
+  return items;
 }
 
 export function runtimeStatus(runtime: RuntimeCap): "ready" | "login_required" | "not_detected" {
@@ -91,6 +94,7 @@ export function useWorkspaceReadiness() {
   const models = useModels();
   const configCapabilities = useConfigCapabilities();
   const byokEnabled = configCapabilities.data?.models.byok_enabled === true;
+  const managedRuntime = hasSurface(configCapabilities.data, "managed_runtime");
   const connections = useQuery({
     queryKey: ["provider-connections", workspace],
     queryFn: () =>
@@ -108,6 +112,7 @@ export function useWorkspaceReadiness() {
   const capabilities = useQuery({
     queryKey: ["capabilities", workspace],
     queryFn: () => api.get<Capabilities>(ws("/v1/capabilities")),
+    enabled: managedRuntime,
   });
   const agents = useQuery({
     queryKey: ["config-agents", workspace],
@@ -116,6 +121,7 @@ export function useWorkspaceReadiness() {
   const environments = useQuery({
     queryKey: ["environments", workspace],
     queryFn: () => api.get<Page<Environment>>(ws("/v1/environments")),
+    enabled: managedRuntime,
   });
 
   const readyConnections = (connections.data ?? []).filter((item) => item.status === "ready");
@@ -144,6 +150,7 @@ export function useWorkspaceReadiness() {
     environments: activeEnvironments.length,
     nativeRuntime: nativeReady,
     managedModels: configCapabilities.data?.models.byok_enabled === false,
+    managedRuntime,
   }, app.locale === "zh");
 
   return {

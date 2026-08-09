@@ -30,6 +30,12 @@ impl Role {
             Self::Worker => "worker",
         }
     }
+
+    /// The browser surface is served by Control/AllInOne. Only AllInOne also
+    /// owns the same-origin Managed runtime and resource routers.
+    pub fn exposes_managed_runtime(self) -> bool {
+        self == Self::AllInOne
+    }
 }
 
 #[cfg(test)]
@@ -56,6 +62,26 @@ mod tests {
         // scaling or credential isolation justifies its transport boundary.
         for retired in ["serve", "server", "management", "resources"] {
             assert!(Role::parse(retired).is_err(), "R2 {retired}");
+        }
+    }
+
+    #[test]
+    fn only_all_in_one_advertises_the_managed_runtime_surface() {
+        // Cause/effect decision table:
+        // | role        | serves browser | owns Managed runtime | projection |
+        // | all-in-one  | yes            | yes                  | true       |
+        // | control     | yes            | no                   | false      |
+        // | coordinator | no             | yes                  | false      |
+        // | worker      | no             | no                   | false      |
+        // Coordinator's private ownership cannot be advertised by a separate
+        // Control origin, and Worker never owns a browser surface.
+        for (role, expected) in [
+            (Role::AllInOne, true),
+            (Role::Control, false),
+            (Role::Coordinator, false),
+            (Role::Worker, false),
+        ] {
+            assert_eq!(role.exposes_managed_runtime(), expected, "{role:?}");
         }
     }
 }
