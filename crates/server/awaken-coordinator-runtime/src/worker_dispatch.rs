@@ -312,8 +312,8 @@ pub fn registered_worker_transport_router(
         application_session_control,
         authenticator.clone(),
     );
-    let file_content = awaken_session_executor::worker_file_content_router(Arc::new(
-        awaken_session_executor::WorkerFileContentService::new(
+    let file_content = crate::worker_file_content_router(Arc::new(
+        crate::WorkerFileContentService::new(
             host.worker_file_content_source(),
             dispatch.clone() as Arc<dyn DispatchQueue>,
             authenticator.clone(),
@@ -329,8 +329,8 @@ pub fn registered_worker_transport_router(
             directory.clone(),
         ),
     ));
-    let repositories = awaken_session_executor::worker_repository_binding_router(Arc::new(
-        awaken_session_executor::WorkerRepositoryBindingService::new(
+    let repositories = crate::worker_repository_binding_router(Arc::new(
+        crate::WorkerRepositoryBindingService::new(
             resource_validator,
             dispatch.clone() as Arc<dyn DispatchQueue>,
             authenticator.clone(),
