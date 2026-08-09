@@ -59,6 +59,7 @@ ROUTE_OWNER_FILES = (
     "crates/server/awaken-protocol-ai-sdk/src/router.rs",
     "crates/server/awaken-protocol-awaken/src/dream_policies.rs",
     "crates/server/awaken-protocol-awaken/src/live_inbox.rs",
+    "crates/server/awaken-protocol-awaken/src/resource_manifests.rs",
     "crates/server/awaken-protocol-awaken/src/sandbox_policies.rs",
     "crates/server/awaken-protocol-managed/src/rate_limit.rs",
     "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",

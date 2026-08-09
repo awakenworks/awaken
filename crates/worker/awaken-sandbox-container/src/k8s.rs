@@ -54,9 +54,9 @@ use pod_projection::{
 use pod_security::{
     egress_label, hardened_security_context, pod_resources, unenforceable_k8s_limit,
 };
-#[cfg(test)]
-use process::k8s_exit_status;
 use process::{K8sExecProcess, K8sExecState, k8s_exec_argv, k8s_live_file_result};
+#[cfg(test)]
+use process::{k8s_exit_status, signal_effect_is_complete};
 use realization::{
     PodReadiness, await_pod_deleted, create_or_verify, create_or_verify_with_status, pod_readiness,
     reap_terminal_pod, stamp_pod_realization, stamp_realization,
@@ -1168,6 +1168,40 @@ mod tests {
             ),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn signal_completion_uses_one_authoritative_success_rule() {
+        // Cause/effect graph: C1 signal command exits zero/non-zero; C2 target
+        // process is unfinished/finished. Effect E1 accepts the signal effect
+        // when C1 is zero OR C2 is finished; E2 rejects it only when neither is
+        // true. Decision table: R1 zero+unfinished=>E1, R2 zero+finished=>E1,
+        // R3 non-zero+finished=>E1, R4 non-zero+unfinished=>E2. FMECA: parallel
+        // success branches can drift and turn a harmless exit race into a false
+        // failure (S4/O3/D4); this predicate is the sole owner of the rule.
+        let success = pc::ExitStatus {
+            code: Some(0),
+            signaled: false,
+        };
+        let failure = pc::ExitStatus {
+            code: Some(1),
+            signaled: false,
+        };
+        let finished = pc::ExitStatus {
+            code: Some(143),
+            signaled: true,
+        };
+
+        assert!(signal_effect_is_complete(&success, None), "R1/E1");
+        assert!(
+            signal_effect_is_complete(&success, Some(&finished)),
+            "R2/E1"
+        );
+        assert!(
+            signal_effect_is_complete(&failure, Some(&finished)),
+            "R3/E1"
+        );
+        assert!(!signal_effect_is_complete(&failure, None), "R4/E2");
     }
 
     #[tokio::test]

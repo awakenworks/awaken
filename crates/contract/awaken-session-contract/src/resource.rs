@@ -174,6 +174,15 @@ impl SessionResourceManifest {
 }
 
 impl ResolvedSessionResources {
+    /// Validate a complete already-resolved manifest before it becomes the
+    /// Session's desired generation. This is the whole-set counterpart to
+    /// [`Self::validate_new_binding`]; callers must not validate entries one at
+    /// a time because collisions can occur between two new entries.
+    pub fn validate(&self) -> Result<(), SessionInputError> {
+        let mut inputs = self.inputs.clone();
+        validate_resolved_inputs(&mut inputs)
+    }
+
     /// Validate identity and mount invariants before an adapter performs any
     /// resource-specific side effect such as sealing a credential or creating a
     /// catalog definition.

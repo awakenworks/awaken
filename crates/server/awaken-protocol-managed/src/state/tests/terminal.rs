@@ -1,57 +1,77 @@
 use super::*;
 
 #[tokio::test]
-async fn coordinator_only_creation_freezes_worker_placement_without_local_realization() {
+async fn coordinator_only_creation_does_not_report_success_before_worker_acknowledgement() {
+    // Cause/effect graph: C1 placement is a registered Worker; C2 the durable
+    // creation intent and dispatch succeed; C3 no Worker acknowledges before
+    // the readiness deadline. Effects: E1 the public create fails unavailable;
+    // E2 the durable aggregate remains Preparing with Worker placement; E3 no
+    // initial-idle lifecycle fact exists; E4 Control performs no local
+    // realization. Decision table: R1 C1+C2+C3 => E1+E2+E3+E4. FMECA: the old
+    // Preparing-as-200 path could advertise readiness while no Worker owned the
+    // demand (severity 9, occurrence 5, detection 7); the readiness barrier
+    // makes that state observable as a retryable failure instead of success.
     let runtime = EndSessionRecorder::default();
     let prepared = runtime.prepared.clone();
     let runtime = Arc::new(runtime);
+    let repo = Arc::new(ephemeral_session_repo());
     let application = awaken_session_application::SessionApplication::new_with_configuration(
         runtime.clone(),
         Arc::new(mcp_attachment::UnsupportedMcpAttachmentRealizer),
-        Arc::new(ephemeral_session_repo()),
+        repo.clone(),
         crate::test_support::environment_components().1,
         awaken_session_application::SessionApplicationConfiguration {
             execution_placement:
                 awaken_session_application::SessionExecutionPlacement::RegisteredWorker,
+            create_readiness_timeout: std::time::Duration::from_millis(20),
+            create_readiness_poll_interval: std::time::Duration::from_millis(1),
             ..Default::default()
         },
     );
     let state = ManagedState::from_application(application);
-    let created = state
+    let error = state
         .create_session(
             serde_json::from_value(serde_json::json!({ "agent": "assistant" })).unwrap(),
             None,
         )
         .await
-        .expect("P1 creates the durable Session");
-    let persisted = state
-        .application
-        .session(&created.id)
-        .await
-        .expect("P1 durable aggregate");
-
-    assert_eq!(
-        created.status,
-        SessionStatus::Preparing,
-        "P1 durable status owns wire status"
+        .expect_err("R1/E1 readiness is not acknowledged");
+    assert!(
+        matches!(
+            error,
+            StateError::Run(RunError {
+                kind: awaken_session_contract::RunErrorKind::Unavailable,
+                ..
+            })
+        ),
+        "R1/E1: {error}"
     );
+    let scan = repo.reconcilable_sessions().await.unwrap();
+    assert_eq!(scan.sessions.len(), 1, "R1/E2");
+    let persisted = &scan.sessions[0];
 
     assert!(
         persisted
+            .session
             .frozen_baseline()
             .is_some_and(|baseline| baseline.runtime_placement
                 == awaken_session_contract::SessionRuntimePlacement::Worker),
         "P1 freezes the Runtime placement fact"
     );
-    assert!(persisted.realization.is_none(), "P1/E2");
+    assert!(persisted.session.realization.is_none(), "P1/E2");
     assert!(
         matches!(
-            persisted.environment,
+            persisted.session.environment,
             awaken_session_contract::SessionEnvironmentState::Unmaterialized
         ),
         "P1/E3"
     );
-    assert_eq!(prepared.lock().unwrap().as_slice(), &[created.id], "P1/E1");
+    assert_eq!(
+        prepared.lock().unwrap().as_slice(),
+        std::slice::from_ref(&persisted.session.session_id),
+        "R1/E4 only prepares the thread identity"
+    );
+    assert!(repo.pending_lifecycle().await.unwrap().is_empty(), "R1/E3");
 }
 
 /// Cause graph: exact child -> runtime termination -> one terminal projection.
@@ -737,6 +757,7 @@ pub(in crate::state) fn sample_persisted(id: &str) -> PersistedSession {
         mcp,
         resources: awaken_session_contract::SessionResourceState::from_legacy(sample_inputs()),
         realization: None,
+        realization_progress: Default::default(),
         execution: SessionExecutionState::Idle,
         disposition: Default::default(),
         terminal_cleanup: Default::default(),

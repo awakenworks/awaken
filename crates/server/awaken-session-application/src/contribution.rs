@@ -124,7 +124,7 @@ impl SessionApplication {
             .credential_realization
             .mcp_holder
             .clone();
-        for input in session.resources.active.inputs.iter().cloned() {
+        for input in session.resources.desired().inputs.iter().cloned() {
             if compiled
                 .initial_resources
                 .inputs
@@ -139,14 +139,17 @@ impl SessionApplication {
                 })?;
         }
         if compiled.initial_resources.skills.is_none() {
-            compiled.initial_resources.skills = session.resources.active.skills.clone();
+            compiled.initial_resources.skills = session.resources.desired().skills.clone();
         }
         let mut resources = session.resources.clone();
-        resources
-            .prepare(&session.session_id, compiled.initial_resources)
-            .map_err(|error| {
-                ApplicationSessionContributionFailure::Unavailable(error.to_string())
-            })?;
+        let result = if resources.pending.is_some() {
+            resources.revise_unattempted_pending(&session.session_id, compiled.initial_resources)
+        } else {
+            resources.prepare(&session.session_id, compiled.initial_resources)
+        };
+        result.map_err(|error| {
+            ApplicationSessionContributionFailure::Unavailable(error.to_string())
+        })?;
         let mcp = SessionMcpAttachmentSet::from_initial(compiled.initial_mcp, Some(holder))
             .map_err(|error| {
                 ApplicationSessionContributionFailure::Unavailable(error.to_string())

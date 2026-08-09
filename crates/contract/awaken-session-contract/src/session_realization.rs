@@ -114,6 +114,17 @@ pub struct BeginSessionRealization {
     pub target: SessionRealizationTarget,
 }
 
+/// Persisted initial-realization retry budget state. Runtime leases fence who
+/// may act; this value records how many distinct fenced assignments attempted
+/// the initial Environment so retry policy survives process and Worker loss.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionRealizationProgress {
+    #[serde(default)]
+    pub attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ActivateSessionRealization {
     pub session_id: String,
@@ -146,6 +157,11 @@ pub struct FailSessionRealization {
     /// Resource work untouched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepared_resource_revision: Option<u64>,
+    /// Retryable effects retain desired state and expire this lease. Permanent
+    /// failures, or retryable failures after the persisted budget is exhausted,
+    /// enter the existing terminal failure path.
+    #[serde(default)]
+    pub retryable: bool,
     pub reason: String,
 }
 
@@ -283,6 +299,7 @@ pub async fn drive_session_realization(
                     lease: directive.lease,
                     prepared_resource_revision: prepare_session
                         .then_some(directive.projection.resource_revision),
+                    retryable: error.kind == crate::RunErrorKind::Unavailable,
                     reason: error.to_string(),
                 })
                 .await;
@@ -318,6 +335,7 @@ pub async fn drive_session_realization(
                             lease: directive.lease,
                             prepared_resource_revision: prepare_session
                                 .then_some(directive.projection.resource_revision),
+                            retryable: error.kind == crate::RunErrorKind::Unavailable,
                             reason: error.to_string(),
                         })
                         .await;
@@ -359,6 +377,7 @@ pub async fn drive_session_realization(
                             session_id: session_id.to_string(),
                             lease: directive.lease,
                             prepared_resource_revision: None,
+                            retryable: error.kind == crate::RunErrorKind::Unavailable,
                             reason: error.to_string(),
                         })
                         .await;

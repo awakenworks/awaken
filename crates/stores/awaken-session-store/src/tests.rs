@@ -269,6 +269,7 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
             .unwrap(),
         ),
         realization: None,
+        realization_progress: Default::default(),
         execution: SessionExecutionState::Idle,
         disposition: Default::default(),
         terminal_cleanup: Default::default(),

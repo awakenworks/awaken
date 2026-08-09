@@ -174,7 +174,7 @@ fn memory_mount_component(label: &str) -> String {
     }
 }
 
-fn unique_memory_mount_path(
+pub(crate) fn unique_memory_mount_path(
     display_name: &str,
     memory_store_id: &str,
     used_mounts: &std::collections::BTreeSet<String>,

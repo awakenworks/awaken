@@ -1063,22 +1063,24 @@ async fn commit(
         }),
         RunState::Running | RunState::Awaiting => None,
     };
-    if let Some(coordinator) = &context.commit {
-        awaken_agent_contract::thread::commit::commit_run(
-            coordinator.as_ref(),
-            thread_id,
-            disposition,
-            messages,
-            state,
-        )
-        .await
-        .map_err(|e| Error::Commit(e.to_string()))?;
+    let coordinator = context
+        .commit
+        .as_ref()
+        .ok_or_else(|| Error::Commit("ACP execution requires a CommitCoordinator".to_string()))?;
+    awaken_agent_contract::thread::commit::commit_run(
+        coordinator.as_ref(),
+        thread_id,
+        disposition,
+        messages,
+        state,
+    )
+    .await
+    .map_err(|e| Error::Commit(e.to_string()))?;
 
-        if let Some(terminal) = &terminal {
-            // Observation is post-commit and failure-isolated by the shared
-            // runtime-contract helper. Stable-id recovery may redeliver.
-            let _ = deliver_committed_terminal(&context.terminal_observers, terminal).await;
-        }
+    if let Some(terminal) = &terminal {
+        // Observation is post-commit and failure-isolated by the shared
+        // runtime-contract helper. Stable-id recovery may redeliver.
+        let _ = deliver_committed_terminal(&context.terminal_observers, terminal).await;
     }
     Ok(())
 }

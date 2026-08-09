@@ -220,6 +220,7 @@ mod tests {
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
+            realization_progress: Default::default(),
             execution: SessionExecutionState::Preparing,
             disposition: Default::default(),
             terminal_cleanup: Default::default(),
@@ -431,6 +432,13 @@ mod tests {
 
     #[tokio::test]
     async fn contribution_preserves_a_file_attached_while_session_is_preparing() {
+        // Cause/effect graph: C1 application contribution is still required;
+        // C2 a complete Resource desired generation was accepted before claim;
+        // C3 that generation has no realization attempt. Effect E1 claim freezes
+        // the baseline and revises the same pending generation with application
+        // defaults; E2 the accepted File remains present with no second Resource
+        // generation. Decision rule A1 C1+C2+C3 => E1+E2. FMECA: calling prepare
+        // again creates a competing pending path and strands the claim (S8/O6/D5).
         let state = ManagedState::new(NoopRuntime);
         let session = state
             .create_session(

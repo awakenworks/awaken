@@ -1036,6 +1036,7 @@ mod runtime_session_store_tests {
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
+            realization_progress: Default::default(),
             execution: awaken_session_contract::SessionExecutionState::Idle,
             disposition: Default::default(),
             terminal_cleanup: Default::default(),

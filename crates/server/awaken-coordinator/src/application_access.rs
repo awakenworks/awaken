@@ -422,6 +422,7 @@ mod tests {
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
+            realization_progress: Default::default(),
             execution: status.parse().expect("fixture execution state"),
             disposition: Default::default(),
             terminal_cleanup: Default::default(),

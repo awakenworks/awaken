@@ -1,5 +1,6 @@
 //! Post-creation session-resource CRUD (`/v1/sessions/{id}/resources`) mirrors the
-//! Managed Agents contract: only `file` attaches to a live Session;
+//! Managed Agents contract, while whole-manifest replacement is explicitly owned
+//! by `/v1/awaken/sessions/{id}/resources`: only `file` attaches to a live Session;
 //! `github_repository` and `memory_store` bind in the create-time snapshot.
 //! Repository tokens use the official write-only create/update fields and are
 //! sealed into the canonical Vault before a Session snapshot is persisted.
@@ -13,7 +14,7 @@ use awaken_credential_vault::repo::CredentialRepo;
 use awaken_executable_agent_contract::{
     ExecutableAgentProfileSource, ExecutableAgentSessionProfile,
 };
-use awaken_protocol_managed::{ManagedState, router};
+use awaken_protocol_managed::{ManagedState, router as managed_router};
 use awaken_resource_contract::{
     BindingId, ClonePolicy, ConfigVersion, FileId, InputBinding, InputResourceId,
     MemoryStoreConfigVersion, MemoryStoreDefinition, MemoryStoreId, RepositoryConfigVersion,
@@ -32,6 +33,15 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use support::ScheduledConflictRepository;
 use tower::ServiceExt;
+
+fn router(state: std::sync::Arc<ManagedState>) -> Router {
+    managed_router(state.clone()).merge(
+        awaken_protocol_awaken::session_resource_manifest_router(
+            awaken_protocol_managed::replace_resource_manifest,
+        )
+        .with_state(state),
+    )
+}
 
 fn input(
     id: &str,
@@ -743,7 +753,21 @@ impl awaken_session_contract::McpAttachmentRealizer for AcceptingFake {
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+    let (status, _, value) = call_with_headers(app, method, uri, body, &[]).await;
+    (status, value)
+}
+
+async fn call_with_headers(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+    headers: &[(&str, &str)],
+) -> (StatusCode, axum::http::HeaderMap, Value) {
     let mut b = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        b = b.header(*name, *value);
+    }
     let body = match body {
         Some(v) => {
             b = b.header("content-type", "application/json");
@@ -753,13 +777,14 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
     };
     let resp = app.clone().oneshot(b.body(body).unwrap()).await.unwrap();
     let status = resp.status();
+    let headers = resp.headers().clone();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let value = if bytes.is_empty() {
         Value::Null
     } else {
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
-    (status, value)
+    (status, headers, value)
 }
 
 #[tokio::test]
@@ -1773,38 +1798,44 @@ async fn failed_activation_and_failed_compensation_remain_durably_retryable() {
 enum ResourceCasRule {
     NoConflict,
     PrepareConflictOnce,
+    AttemptConflictOnce,
     SettlementConflictOnce,
+    AttemptConflictsExhausted,
     SettlementConflictsExhausted,
     RollbackSettlementConflictOnce,
-    ConcurrentResourceChange,
+    ConcurrentUnattemptedResourceChange,
 }
 
 /// Resource commands use the repository root CAS as their only serializer.
 /// The cases are generated from this cause graph:
 ///
 /// unchanged Resource state + prepare CAS conflict -> reload/rebase before I/O;
-/// durable Prepared + runtime effect + root-only conflict -> settle the same
-/// Resource revision on the latest aggregate; a changed/exhausted fence leaves
-/// durable pending work for recovery. Runtime failure follows the same settlement
-/// path, but records rollback rather than Active.
+/// durable Prepared + attempt fence + runtime effect + root-only conflict ->
+/// settle the same Resource revision on the latest aggregate; a changed or
+/// exhausted fence leaves durable pending work for recovery. Runtime failure
+/// follows the same settlement path, but records rollback rather than Active.
 ///
-/// | Rule | Runtime | Prepare CAS | Settlement CAS | Result | Runtime applies | Durable Resource |
-/// |------|---------|-------------|----------------|--------|-----------------|------------------|
-/// | C1 | success | apply | apply | success | 1 | Active |
-/// | C2 | success | conflict once | apply | success | 1 | Active |
-/// | C3 | success | apply | conflict once | success | 1 | Active |
-/// | C4 | success | apply | conflict x3 | conflict | 1 | Prepared/recoverable |
-/// | C5 | fail then rollback | apply | conflict once | runtime error | 2 | Failed/no pending |
-/// | C6 | success | another Resource wins | - | conflict | 0 | other intent preserved |
+/// | Rule | Runtime | Intent CAS | Attempt CAS | Settlement CAS | Result | Runtime applies | Durable Resource |
+/// |------|---------|------------|-------------|----------------|--------|-----------------|------------------|
+/// | C1 | success | apply | apply | apply | success | 1 | Active |
+/// | C2 | success | conflict once | apply | apply | success | 1 | Active |
+/// | C3 | success | apply | conflict once | apply | success | 1 | Active |
+/// | C4 | success | apply | apply | conflict once | success | 1 | Active |
+/// | C5 | success | apply | conflict x3 | - | conflict | 0 | unattempted pending |
+/// | C6 | success | apply | apply | conflict x3 | conflict | 1 | attempted pending |
+/// | C7 | fail then rollback | apply | apply | conflict once | runtime error | 2 | Failed/no pending |
+/// | C8 | success | another unattempted intent wins | revise same generation | apply | success | 1 | requested Active |
 #[tokio::test]
 async fn resource_root_cas_cases_follow_the_decision_table_without_a_process_lock() {
     for (index, rule) in [
         ResourceCasRule::NoConflict,
         ResourceCasRule::PrepareConflictOnce,
+        ResourceCasRule::AttemptConflictOnce,
         ResourceCasRule::SettlementConflictOnce,
+        ResourceCasRule::AttemptConflictsExhausted,
         ResourceCasRule::SettlementConflictsExhausted,
         ResourceCasRule::RollbackSettlementConflictOnce,
-        ResourceCasRule::ConcurrentResourceChange,
+        ResourceCasRule::ConcurrentUnattemptedResourceChange,
     ]
     .into_iter()
     .enumerate()
@@ -1825,15 +1856,19 @@ async fn resource_root_cas_cases_follow_the_decision_table_without_a_process_loc
         match rule {
             ResourceCasRule::NoConflict => {}
             ResourceCasRule::PrepareConflictOnce => repo.conflict_on_next(1),
-            ResourceCasRule::SettlementConflictOnce => repo.conflict_on_next(2),
-            ResourceCasRule::SettlementConflictsExhausted => {
+            ResourceCasRule::AttemptConflictOnce => repo.conflict_on_next(2),
+            ResourceCasRule::SettlementConflictOnce => repo.conflict_on_next(3),
+            ResourceCasRule::AttemptConflictsExhausted => {
                 repo.conflicts_on_next(&[2, 3, 4]);
+            }
+            ResourceCasRule::SettlementConflictsExhausted => {
+                repo.conflicts_on_next(&[3, 4, 5]);
             }
             ResourceCasRule::RollbackSettlementConflictOnce => {
                 fail_next.store(true, std::sync::atomic::Ordering::SeqCst);
-                repo.conflict_on_next(2);
+                repo.conflict_on_next(3);
             }
-            ResourceCasRule::ConcurrentResourceChange => repo.resource_change_on_next(1),
+            ResourceCasRule::ConcurrentUnattemptedResourceChange => repo.resource_change_on_next(1),
         }
 
         let result = state
@@ -1853,42 +1888,50 @@ async fn resource_root_cas_cases_follow_the_decision_table_without_a_process_loc
         match rule {
             ResourceCasRule::NoConflict
             | ResourceCasRule::PrepareConflictOnce
+            | ResourceCasRule::AttemptConflictOnce
             | ResourceCasRule::SettlementConflictOnce => {
                 assert!(result.is_ok(), "C{}: {result:?}", index + 1);
                 assert_eq!(apply_count, 1, "C{}", index + 1);
                 assert!(durable.resources.pending.is_none(), "C{}", index + 1);
                 assert_eq!(durable.resources.active.inputs.len(), 1, "C{}", index + 1);
             }
-            ResourceCasRule::SettlementConflictsExhausted => {
+            ResourceCasRule::AttemptConflictsExhausted => {
                 assert!(
                     matches!(result, Err(awaken_protocol_managed::StateError::Conflict)),
-                    "C4: {result:?}"
+                    "C5: {result:?}"
                 );
-                assert_eq!(apply_count, 1, "C4");
-                assert!(durable.resources.pending.is_some(), "C4");
-                assert!(durable.resources.needs_reconciliation(), "C4");
+                assert_eq!(apply_count, 0, "C5");
+                assert!(durable.resources.pending.is_some(), "C5");
+                assert!(durable.resources.needs_reconciliation(), "C5");
             }
-            ResourceCasRule::RollbackSettlementConflictOnce => {
-                assert!(
-                    format!("{result:?}").contains("injected activation failure"),
-                    "C5"
-                );
-                assert_eq!(apply_count, 2, "C5");
-                assert!(durable.resources.pending.is_none(), "C5");
-                assert_eq!(
-                    durable.resources.activations.last().unwrap().state,
-                    awaken_session_contract::ActivationState::Failed,
-                    "C5"
-                );
-            }
-            ResourceCasRule::ConcurrentResourceChange => {
+            ResourceCasRule::SettlementConflictsExhausted => {
                 assert!(
                     matches!(result, Err(awaken_protocol_managed::StateError::Conflict)),
                     "C6: {result:?}"
                 );
-                assert_eq!(apply_count, 0, "C6");
+                assert_eq!(apply_count, 1, "C6");
                 assert!(durable.resources.pending.is_some(), "C6");
-                assert_eq!(durable.resources.revision, 2, "C6");
+                assert!(durable.resources.needs_reconciliation(), "C6");
+            }
+            ResourceCasRule::RollbackSettlementConflictOnce => {
+                assert!(
+                    format!("{result:?}").contains("injected activation failure"),
+                    "C7"
+                );
+                assert_eq!(apply_count, 2, "C7");
+                assert!(durable.resources.pending.is_none(), "C7");
+                assert_eq!(
+                    durable.resources.activations.last().unwrap().state,
+                    awaken_session_contract::ActivationState::Failed,
+                    "C7"
+                );
+            }
+            ResourceCasRule::ConcurrentUnattemptedResourceChange => {
+                assert!(result.is_ok(), "C8: {result:?}");
+                assert_eq!(apply_count, 1, "C8");
+                assert!(durable.resources.pending.is_none(), "C8");
+                assert_eq!(durable.resources.revision, 2, "C8 same generation");
+                assert_eq!(durable.resources.active.inputs.len(), 1, "C8");
             }
         }
     }
@@ -1952,6 +1995,209 @@ async fn a_file_resource_can_be_detached_from_a_live_session() {
     let (s, listed) = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None).await;
     assert_eq!(s, StatusCode::OK);
     assert!(listed["data"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn complete_manifest_is_atomic_idempotent_and_queryable() {
+    // Cause/effect graph: C1 complete manifest valid/invalid; C2 key
+    // absent/same/different payload; C3 If-Match current/stale; C4 Runtime
+    // realization succeeds. Effects: E1 one desired generation is persisted;
+    // E2 Runtime receives the whole set once; E3 exact replay returns the
+    // original command revision; E4 key mismatch or stale CAS is 409; E5 a
+    // collision fails before Runtime. Decision table exercised here: M1
+    // valid+new-key+current+C4 => E1+E2; M2 same-key+same-payload => E3 and no
+    // generation; M3 same-key+different => E4; M4 duplicate mount => E5; M0
+    // PUT on the Anthropic-compatible collection => 405, because only the
+    // explicitly namespaced Awaken extension owns complete replacement.
+    // FMECA: sequenced delete/add could expose partial sets or duplicate mounts
+    // (severity 8, occurrence 6, detection 5); one root CAS plus whole-manifest
+    // validation eliminates both intermediate states.
+    let runtime = AcceptingFake::default();
+    let applied = runtime.applied.clone();
+    let app = router(std::sync::Arc::new(
+        ManagedState::new(runtime).with_resource_catalog(resource_catalog()),
+    ));
+    let (_, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
+    let id = session["id"].as_str().unwrap();
+    let uri = format!("/v1/awaken/sessions/{id}/resources");
+    let compatibility_uri = format!("/v1/sessions/{id}/resources");
+    let manifest = json!({
+        "resources": [
+            { "type": "file", "file_id": "file-a", "mount_path": "/a" },
+            { "type": "file", "file_id": "file-b", "mount_path": "/b" }
+        ]
+    });
+    let before = applied.lock().unwrap().len();
+    let (status, _, rejected) = call_with_headers(
+        &app,
+        "PUT",
+        &compatibility_uri,
+        Some(manifest.clone()),
+        &[("idempotency-key", "wrong-protocol-owner")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED, "M0: {rejected}");
+    let (status, first_headers, first) = call_with_headers(
+        &app,
+        "PUT",
+        &uri,
+        Some(manifest.clone()),
+        &[("idempotency-key", "manifest-1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "M1: {first}");
+    assert_eq!(first["phase"], "active", "M1/E1");
+    assert_eq!(first["resources"].as_array().unwrap().len(), 2, "M1/E1");
+    let first_etag = first_headers["etag"].to_str().unwrap().to_string();
+    assert_eq!(applied.lock().unwrap().len(), before + 1, "M1/E2");
+
+    let (status, replay_headers, replay) = call_with_headers(
+        &app,
+        "PUT",
+        &uri,
+        Some(manifest),
+        &[("idempotency-key", "manifest-1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "M2: {replay}");
+    assert_eq!(replay_headers["etag"], first_etag, "M2/E3");
+    assert_eq!(applied.lock().unwrap().len(), before + 1, "M2/E3");
+
+    let (status, _, mismatch) = call_with_headers(
+        &app,
+        "PUT",
+        &uri,
+        Some(json!({ "resources": [] })),
+        &[("idempotency-key", "manifest-1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "M3/E4: {mismatch}");
+
+    let (status, _, collision) = call_with_headers(
+        &app,
+        "PUT",
+        &uri,
+        Some(json!({ "resources": [
+            { "type": "file", "file_id": "x", "mount_path": "/same" },
+            { "type": "file", "file_id": "y", "mount_path": "same" }
+        ] })),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "M4/E5: {collision}");
+    assert_eq!(applied.lock().unwrap().len(), before + 1, "M4/E5");
+
+    let (status, listed) = call(&app, "GET", &compatibility_uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["data"].as_array().unwrap().len(), 2, "M1/E1");
+}
+
+#[tokio::test]
+async fn failed_manifest_realization_keeps_active_and_exposes_durable_desired() {
+    // Cause/effect rule F1: valid intent commits, desired apply fails, prior
+    // manifest compensation succeeds => request reports an effect error, active
+    // stays unchanged, and no pending remains. Rule F2: both desired apply and
+    // compensation fail => request reports an error, active stays unchanged,
+    // pending desired remains queryable and retryable. FMECA: hiding F2 makes a
+    // client repeat add against an accepted mount (S7/O7/D7); GET projects
+    // `desired()` so accepted intent remains visible without a second store.
+    let runtime = AcceptingFake::default();
+    runtime
+        .fail_apply_remaining
+        .store(2, std::sync::atomic::Ordering::SeqCst);
+    let repo = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
+    );
+    let app = router(std::sync::Arc::new(
+        ManagedState::new(runtime)
+            .with_session_repo(repo.clone())
+            .with_resource_catalog(resource_catalog()),
+    ));
+    let (_, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
+    let id = session["id"].as_str().unwrap();
+    let uri = format!("/v1/awaken/sessions/{id}/resources");
+    let (status, error) = call(
+        &app,
+        "PUT",
+        &uri,
+        Some(json!({ "resources": [
+            { "type": "file", "file_id": "accepted", "mount_path": "/accepted" }
+        ] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "F2: {error}");
+    let durable = repo.get(id).await.unwrap();
+    assert!(durable.resources.active.inputs.is_empty(), "F2 active");
+    assert!(durable.resources.pending.is_some(), "F2 desired");
+
+    let (status, listed) = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let resources = listed["data"].as_array().unwrap();
+    assert_eq!(resources.len(), 1, "F2 desired is queryable");
+    assert_eq!(resources[0]["mount_path"], "/accepted", "F2 desired");
+}
+
+#[tokio::test]
+async fn retained_repository_manifest_inherits_binding_without_resubmitting_secret() {
+    // Cause/effect: C1 desired Repository has the same mount/url/checkout as the
+    // current desired input; C2 the replacement omits the write-only token.
+    // Effect E1 preserve binding_id, Repository definition, and credential pin;
+    // E2 never echo credential material. Decision rule K1 C1+C2 => E1+E2.
+    // FMECA: reconfiguring retained entries would either demand plaintext again
+    // or silently clear authentication (S9/O5/D6); semantic reuse keeps the
+    // existing secret-free pin under the Session aggregate.
+    let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
+        std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+        std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+    ));
+    let repo = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
+    );
+    let app = router(std::sync::Arc::new(
+        ManagedState::new(AcceptingFake::default())
+            .with_session_repo(repo.clone())
+            .with_vaults(vaults)
+            .with_resource_catalog(resource_catalog()),
+    ));
+    let (_, session) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "a",
+            "resources": [{
+                "type": "github_repository",
+                "url": "https://github.com/acme/private.git",
+                "authorization_token": "top-secret", // awaken-allow: secret
+                "mount_path": "/workspace/private",
+                "checkout": { "type": "branch", "name": "main" }
+            }]
+        })),
+    )
+    .await;
+    let id = session["id"].as_str().unwrap();
+    let before = repo.get(id).await.unwrap();
+    let old = before.resources.desired().inputs[0].clone();
+    let (status, response) = call(
+        &app,
+        "PUT",
+        &format!("/v1/awaken/sessions/{id}/resources"),
+        Some(json!({ "resources": [{
+            "type": "github_repository",
+            "url": "https://github.com/acme/private.git",
+            "mount_path": "/workspace/private",
+            "checkout": { "type": "branch", "name": "main" }
+        }] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "K1: {response}");
+    let after = repo.get(id).await.unwrap();
+    let retained = &after.resources.desired().inputs[0];
+    assert_eq!(retained.binding_id, old.binding_id, "K1/E1");
+    assert_eq!(retained.source, old.source, "K1/E1 credential pin");
+    let wire = response.to_string();
+    assert!(!wire.contains("top-secret"), "K1/E2");
+    assert!(!wire.contains("credential"), "K1/E2");
 }
 
 #[tokio::test]

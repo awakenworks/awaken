@@ -23,6 +23,7 @@ fn plan(cmd: &[&str]) -> ContainerPlan {
         binds: Vec::new(),
         outputs_volume: "/mnt/session/outputs".into(),
         network: NetworkMode::Open,
+        requests: pc::ResourceRequests::default(),
         limits: pc::ResourceLimits::default(),
         memory_mounts: Vec::new(),
         rootfs: RootfsPlan::HostUserland,

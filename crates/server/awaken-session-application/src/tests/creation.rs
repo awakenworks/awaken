@@ -80,19 +80,22 @@ fn creation_command(
         title: None,
         metadata: Default::default(),
         tools: Default::default(),
-        lifecycle_facts: Vec::new(),
     }
 }
 
 #[tokio::test]
 async fn creation_driver_owns_finalize_realize_and_activation_order() {
     // Cause/effect graph: C1 contribution is absent or required; C2 the frozen
-    // placement is local; C3 durable insertion succeeds. Effects: E1 absent is
-    // finalized before realization and becomes Idle; E2 required remains a
-    // Preparing intent and performs no realization; E3 both identities have one
-    // owner in the same repository. Decision table: R1 !C1-required+C2+C3 =>
-    // E1+E3; R2 C1-required+C2+C3 => E2+E3. This proves protocols cannot reorder
-    // the shared post-intent creation sequence.
+    // placement is local; C3 durable insertion succeeds; C4 realization is
+    // acknowledged. Effects: E1 absent is finalized before realization and
+    // becomes Idle; E2 required remains a Preparing intent and performs no
+    // realization; E3 both identities have one owner in the same repository;
+    // E4 only the acknowledged Session owns the durable initial-idle fact.
+    // Decision table: R1 !C1-required+C2+C3+C4 => E1+E3+E4; R2
+    // C1-required+C2+C3 => E2+E3+!E4. FMECA: emitting E4 at intent insertion
+    // creates a false-ready fact if realization later fails, severity 9,
+    // occurrence 4, detection 7; the acknowledgement boundary removes that
+    // failure mode. This proves protocols cannot reorder the shared sequence.
     let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("test repository"),
@@ -145,6 +148,10 @@ async fn creation_driver_owns_finalize_realize_and_activation_order() {
         "workspace",
         "R2/E3"
     );
+    let pending = repository.pending_lifecycle().await.unwrap();
+    assert_eq!(pending.len(), 1, "R1/E4 + R2/!E4");
+    assert_eq!(pending[0].object_id, "active", "R1/E4");
+    assert_eq!(pending[0].event_type, "session.status_idled", "R1/E4");
 }
 
 #[tokio::test]

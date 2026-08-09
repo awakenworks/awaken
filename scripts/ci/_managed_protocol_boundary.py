@@ -103,6 +103,7 @@ AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
         ("PUT", "/v1/awaken/sessions/{}/live-inbox/order"),
         ("PUT", "/v1/awaken/sessions/{}/live-inbox/{}"),
         ("DELETE", "/v1/awaken/sessions/{}/live-inbox/{}"),
+        ("PUT", "/v1/awaken/sessions/{}/resources"),
         ("POST", "/v1/awaken/sandbox-execution-policies"),
         ("POST", "/v1/awaken/sandbox-execution-policies/{}/versions"),
         ("GET", "/v1/awaken/sandbox-execution-policies/{}/versions/{}"),

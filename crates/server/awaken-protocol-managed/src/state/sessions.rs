@@ -565,14 +565,6 @@ impl ManagedState {
                 awaken_session_contract::ApplicationContributionState::Absent
             },
         };
-        let created_fact = (!application_required).then(|| {
-            lifecycle_fact(
-                format!("session:{id}:created"),
-                &id,
-                workspace_id.clone(),
-                lifecycle_event::SESSION_IDLED,
-            )
-        });
         // The adapter has finished lowering wire policy. The Session application
         // now exclusively orders every durable mutation and external projection.
         let persisted = self
@@ -584,7 +576,6 @@ impl ManagedState {
                 title: req.title.clone(),
                 metadata: req.metadata.clone(),
                 tools: effective_tools.clone(),
-                lifecycle_facts: created_fact.iter().cloned().collect(),
             })
             .await
             .map_err(Self::map_creation_error)?;
@@ -666,21 +657,6 @@ impl ManagedState {
         );
         let session = record.session_projection();
         self.sessions.lock().unwrap().insert(id.clone(), record);
-        // Project the committed create as a lifecycle fact: a fresh session is idle,
-        // so fan out `session.status_idled` (the webhook catalog name — past-tense
-        // fact, distinct from the SSE `session.status_idle` transition) to any
-        // workspace-scoped subscribers. The owning workspace comes from the edge (the
-        // aspect), passed in — never read back from the core record. Out-of-band.
-        if let Some(created_fact) = &created_fact {
-            self.application
-                .emit_lifecycle_fact(
-                    &created_fact.id,
-                    &id,
-                    workspace_id.as_deref(),
-                    lifecycle_event::SESSION_IDLED,
-                )
-                .await;
-        }
         Ok(session)
     }
 

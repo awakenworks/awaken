@@ -18,6 +18,9 @@ impl ManagedState {
         match error {
             awaken_session_application::SessionActivityError::NotFound => StateError::NotFound,
             awaken_session_application::SessionActivityError::Terminal => StateError::Archived,
+            awaken_session_application::SessionActivityError::NotReady => StateError::Run(
+                RunError::classified("session_not_ready", "Session realization has not completed"),
+            ),
             awaken_session_application::SessionActivityError::Conflict => StateError::Conflict,
             awaken_session_application::SessionActivityError::EpochExhausted => {
                 StateError::Run(RunError::internal("Session activity epoch is exhausted"))

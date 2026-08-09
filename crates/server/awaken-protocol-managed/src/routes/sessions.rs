@@ -505,28 +505,38 @@ pub async fn session_scope_guard(
     request: Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    if let Some(id) = session_id_from_path(request.uri().path()) {
-        let request_scope = request
-            .extensions()
-            .get::<WorkspaceScope>()
-            .map(|w| w.0.clone())
-            .unwrap_or_else(|| crate::state::DEFAULT_SCOPE.to_string());
-        match state.resolve_owner(&id).await {
-            Ok(Some(owner)) if owner != request_scope => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(ErrorResponse::new(
-                        "not_found_error",
-                        format!("session `{id}` not found"),
-                    )),
-                )
-                    .into_response();
-            }
-            Err(error) => return error_response(error).into_response(),
-            Ok(Some(_)) | Ok(None) => {}
-        }
+    if let Some(id) = session_id_from_path(request.uri().path())
+        && let Err(error) = ensure_session_scope(
+            state.as_ref(),
+            &id,
+            request.extensions().get::<WorkspaceScope>(),
+        )
+        .await
+    {
+        return error.into_response();
     }
     next.run(request).await
+}
+
+async fn ensure_session_scope(
+    state: &ManagedState,
+    id: &str,
+    workspace: Option<&WorkspaceScope>,
+) -> Result<(), WireErr> {
+    let request_scope = workspace
+        .map(|workspace| workspace.0.clone())
+        .unwrap_or_else(|| crate::state::DEFAULT_SCOPE.to_string());
+    match state.resolve_owner(id).await {
+        Ok(Some(owner)) if owner != request_scope => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse::new(
+                "not_found_error",
+                format!("session `{id}` not found"),
+            )),
+        )),
+        Err(error) => Err(error_response(error)),
+        Ok(Some(_)) | Ok(None) => Ok(()),
+    }
 }
 
 /// The `{id}` from a `/v1/sessions/{id}[/...]` path, or `None` for the collection
@@ -758,6 +768,35 @@ fn parse_idempotency_key(headers: &HeaderMap) -> Result<Option<String>, WireErr>
     Ok(key)
 }
 
+fn parse_if_match(
+    headers: &HeaderMap,
+) -> Result<Option<awaken_session_contract::SessionRevision>, WireErr> {
+    headers
+        .get(header::IF_MATCH)
+        .map(|value| {
+            let raw = value.to_str().map_err(|_| {
+                error_response(StateError::Run(RunError::bad_request(
+                    "If-Match must be a quoted Session revision",
+                )))
+            })?;
+            if raw == "*" {
+                return Ok(None);
+            }
+            let revision = raw
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or_else(|| {
+                    error_response(StateError::Run(RunError::bad_request(
+                        "If-Match must be `*` or a quoted Session revision",
+                    )))
+                })?;
+            Ok(Some(awaken_session_contract::SessionRevision(revision)))
+        })
+        .transpose()
+        .map(Option::flatten)
+}
+
 async fn retrieve_session(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
@@ -847,30 +886,7 @@ async fn update_session(
     let request_fingerprint =
         awaken_session_contract::stable_fingerprint(&(&title, &metadata, &tools, &mcp_servers));
     let idempotency_key = parse_idempotency_key(&headers)?;
-    let if_match = headers
-        .get(header::IF_MATCH)
-        .map(|value| {
-            let raw = value.to_str().map_err(|_| {
-                error_response(StateError::Run(RunError::bad_request(
-                    "If-Match must be a quoted Session revision",
-                )))
-            })?;
-            if raw == "*" {
-                return Ok(None);
-            }
-            let revision = raw
-                .strip_prefix('"')
-                .and_then(|value| value.strip_suffix('"'))
-                .and_then(|value| value.parse::<u64>().ok())
-                .ok_or_else(|| {
-                    error_response(StateError::Run(RunError::bad_request(
-                        "If-Match must be `*` or a quoted Session revision",
-                    )))
-                })?;
-            Ok(Some(awaken_session_contract::SessionRevision(revision)))
-        })
-        .transpose()?
-        .flatten();
+    let if_match = parse_if_match(&headers)?;
     let operation_id = idempotency_key
         .as_deref()
         .map(|key| ManagedState::update_operation_id(&id, key));
@@ -1159,6 +1175,58 @@ async fn stream_thread_events(
 
 // -- Resources --
 
+/// Lower the Awaken Resource Manifest wire request into the canonical Session
+/// application command. The explicitly namespaced protocol crate owns the HTTP
+/// method/path and injects this one handler rather than duplicating the lowering.
+pub async fn replace_resource_manifest(
+    State(state): State<Arc<ManagedState>>,
+    Path(id): Path<String>,
+    workspace: Option<axum::Extension<WorkspaceScope>>,
+    headers: HeaderMap,
+    Json(body): Json<crate::types::resource::ResourceManifestReplaceParams>,
+) -> Result<
+    (
+        HeaderMap,
+        Json<crate::types::resource::SessionResourceManifest>,
+    ),
+    (StatusCode, Json<ErrorResponse>),
+> {
+    ensure_session_scope(
+        state.as_ref(),
+        &id,
+        workspace.as_ref().map(|scope| &scope.0),
+    )
+    .await?;
+    let idempotency_key = parse_idempotency_key(&headers)?;
+    let if_match = parse_if_match(&headers)?;
+    let fingerprints = body
+        .resources
+        .iter()
+        .map(crate::types::resource::ResourceInput::idempotency_fingerprint)
+        .collect::<Vec<_>>();
+    let request_fingerprint = awaken_session_contract::stable_fingerprint(&fingerprints);
+    let operation_id = idempotency_key.as_deref().map(|key| {
+        awaken_session_application::SessionApplication::resource_manifest_operation_id(&id, key)
+    });
+    let (manifest, command_revision) = state
+        .replace_resource_manifest(&id, body, idempotency_key, if_match, request_fingerprint)
+        .await
+        .map_err(error_response)?;
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(&format!("\"{}\"", command_revision.0))
+            .expect("numeric Session revision is a valid ETag"),
+    );
+    if let Some(operation_id) = operation_id {
+        response_headers.insert(
+            "x-awaken-operation-id",
+            HeaderValue::from_str(&operation_id).expect("fingerprint is a valid header value"),
+        );
+    }
+    Ok((response_headers, Json(manifest)))
+}
+
 async fn create_resource(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
@@ -1176,6 +1244,10 @@ async fn list_resources(
     Path(id): Path<String>,
 ) -> Result<Json<Page<crate::types::resource::SessionResource>>, WireErr> {
     state
+        .refresh_committed_events(&id)
+        .await
+        .map_err(error_response)?;
+    state
         .list_resources(&id)
         .map(Page::single)
         .map(Json)
@@ -1186,6 +1258,10 @@ async fn get_resource(
     State(state): State<Arc<ManagedState>>,
     Path((id, rid)): Path<(String, String)>,
 ) -> Result<Json<crate::types::resource::SessionResource>, WireErr> {
+    state
+        .refresh_committed_events(&id)
+        .await
+        .map_err(error_response)?;
     state
         .get_resource(&id, &rid)
         .map(Json)

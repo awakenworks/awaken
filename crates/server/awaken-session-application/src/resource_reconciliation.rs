@@ -7,9 +7,10 @@ use awaken_resource_contract::{
     ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
 use awaken_session_contract::{
-    ActivationState, ManagedLifecycleFact, PersistedSession, ResolvedInputSource, RunError,
-    SessionExecutionState, SessionMutation, SessionMutationPayload, SessionMutationResult,
-    SessionRevision, SessionTombstone,
+    ActivationState, IdempotencyRecord, ManagedLifecycleFact, PersistedSession,
+    ResolvedInputSource, ResolvedSessionResources, RunError, SessionExecutionState,
+    SessionMutation, SessionMutationPayload, SessionMutationResult, SessionRevision,
+    SessionTombstone, stable_fingerprint,
 };
 
 use super::{
@@ -22,6 +23,61 @@ enum ResourceSettlement {
     Commit,
     Rollback(String),
     RetryableFailure(String),
+}
+
+/// Protocol-neutral whole-manifest command. The interface owns request
+/// canonicalization; the Session application owns desired-state persistence,
+/// idempotency, and realization ordering.
+#[derive(Clone, Debug)]
+pub struct ReplaceSessionResourceManifest {
+    pub resources: ResolvedSessionResources,
+    pub expected_session_revision: Option<SessionRevision>,
+    pub idempotency_key: Option<String>,
+    pub request_fingerprint: String,
+}
+
+/// Durable command receipt plus the latest aggregate projection. The command
+/// revision is stable across replay even if realization advances the root CAS.
+#[derive(Clone, Debug)]
+pub struct SessionResourceManifestOutcome {
+    pub session: PersistedSession,
+    pub command_revision: SessionRevision,
+    pub command_applied: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SessionResourceManifestError {
+    #[error("Session was not found")]
+    NotFound,
+    #[error("Session is terminal")]
+    Terminal,
+    #[error("Session revision conflict")]
+    Conflict,
+    #[error("Session idempotency key was reused with another manifest")]
+    IdempotencyMismatch,
+    #[error("Session resource manifest was rejected: {0}")]
+    Rejected(#[source] RunError),
+    /// Desired truth already committed; a retry/reconciler may repair the
+    /// disposable Runtime projection without accepting another generation.
+    #[error("Session resource realization failed after commit: {source}")]
+    ProjectionAfterCommit {
+        outcome: Box<SessionResourceManifestOutcome>,
+        #[source]
+        source: SessionPreparationError,
+    },
+    #[error("Session resource persistence is unavailable: {0}")]
+    Unavailable(String),
+}
+
+impl SessionResourceManifestError {
+    fn mutation(error: SessionMutationError) -> Self {
+        match error {
+            SessionMutationError::NotFound => Self::NotFound,
+            SessionMutationError::Conflict => Self::Conflict,
+            SessionMutationError::IdempotencyMismatch => Self::IdempotencyMismatch,
+            SessionMutationError::Unavailable(message) => Self::Unavailable(message),
+        }
+    }
 }
 
 async fn resource_targets(
@@ -159,6 +215,22 @@ pub(crate) fn internal(error: impl std::fmt::Display) -> SessionPreparationError
     SessionPreparationError::Rejected(RunError::internal(error.to_string()))
 }
 
+fn resource_manifest_preparation(error: SessionResourceManifestError) -> SessionPreparationError {
+    match error {
+        SessionResourceManifestError::NotFound => SessionPreparationError::NotFound,
+        SessionResourceManifestError::Conflict
+        | SessionResourceManifestError::IdempotencyMismatch => SessionPreparationError::Conflict,
+        SessionResourceManifestError::Terminal => SessionPreparationError::Rejected(
+            RunError::bad_request("terminal Session resources cannot be replaced"),
+        ),
+        SessionResourceManifestError::Rejected(error) => SessionPreparationError::Rejected(error),
+        SessionResourceManifestError::ProjectionAfterCommit { source, .. } => source,
+        SessionResourceManifestError::Unavailable(message) => {
+            SessionPreparationError::Unavailable(message)
+        }
+    }
+}
+
 fn deleted_lifecycle_fact(session_id: &str, owner_scope: &str) -> ManagedLifecycleFact {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -238,6 +310,29 @@ impl SessionApplication {
         }
     }
 
+    async fn commit_resource_snapshot_with_record(
+        &self,
+        owner_scope: &str,
+        candidate: PersistedSession,
+        idempotency: IdempotencyRecord,
+    ) -> Result<(PersistedSession, bool), SessionMutationError> {
+        let session_id = candidate.session_id.clone();
+        self.synchronize_resource_references(owner_scope, &candidate)
+            .await
+            .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
+        match self
+            .commit_session_snapshot_with_record(owner_scope, candidate, idempotency, Vec::new())
+            .await
+        {
+            Ok(committed) => Ok(committed),
+            Err(error) => {
+                self.repair_resource_references(owner_scope, &session_id)
+                    .await;
+                Err(error)
+            }
+        }
+    }
+
     pub(crate) async fn repair_resource_references(&self, owner_scope: &str, session_id: &str) {
         let authoritative = self.session_repository().get(session_id).await;
         let repair = match authoritative {
@@ -270,12 +365,255 @@ impl SessionApplication {
         }
     }
 
-    /// Attach one already-resolved neutral input and converge the Runtime before
-    /// returning the committed aggregate.
+    #[must_use]
+    pub fn resource_manifest_operation_id(session_id: &str, idempotency_key: &str) -> String {
+        stable_fingerprint(&(session_id, idempotency_key))
+    }
+
+    fn resource_manifest_idempotency_record(
+        session_id: &str,
+        idempotency_key: &str,
+        request_fingerprint: &str,
+    ) -> IdempotencyRecord {
+        IdempotencyRecord {
+            key: format!(
+                "managed:resource-manifest-command:{session_id}:{}",
+                Self::resource_manifest_operation_id(session_id, idempotency_key)
+            ),
+            payload_hash: request_fingerprint.to_string(),
+        }
+    }
+
+    /// Resolve an exact command replay before an interface performs lowering
+    /// side effects such as Repository/Vault configuration. The main command
+    /// repeats this check to close the race with a concurrent first writer.
+    pub async fn replay_session_resource_manifest(
+        &self,
+        session_id: &str,
+        idempotency_key: &str,
+        request_fingerprint: &str,
+    ) -> Result<Option<SessionResourceManifestOutcome>, SessionResourceManifestError> {
+        let record = Self::resource_manifest_idempotency_record(
+            session_id,
+            idempotency_key,
+            request_fingerprint,
+        );
+        let Some(receipt) = self
+            .session_repository()
+            .idempotency_receipt(session_id, &record.key)
+            .await
+            .map_err(repository_failure)
+            .map_err(SessionResourceManifestError::mutation)?
+        else {
+            return Ok(None);
+        };
+        if receipt.payload_hash != record.payload_hash {
+            return Err(SessionResourceManifestError::IdempotencyMismatch);
+        }
+        let session = self
+            .session_repository()
+            .get(session_id)
+            .await
+            .map_err(repository_failure)
+            .map_err(SessionResourceManifestError::mutation)?;
+        self.converge_resource_manifest(SessionResourceManifestOutcome {
+            session,
+            command_revision: receipt.committed_revision,
+            command_applied: false,
+        })
+        .await
+        .map(Some)
+    }
+
+    /// Persist one complete desired Resource manifest through the Session root
+    /// CAS, then ask the existing local reconciler or WorkQueue projection to
+    /// realize that exact generation. No external effect runs before this
+    /// method has a durable, queryable desired manifest.
+    pub async fn replace_session_resource_manifest(
+        &self,
+        session_id: &str,
+        command: ReplaceSessionResourceManifest,
+    ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError> {
+        command.resources.validate().map_err(|error| {
+            SessionResourceManifestError::Rejected(RunError::bad_request(error.to_string()))
+        })?;
+        let command_record = command.idempotency_key.as_ref().map(|key| {
+            Self::resource_manifest_idempotency_record(
+                session_id,
+                key,
+                &command.request_fingerprint,
+            )
+        });
+
+        if let Some(key) = &command.idempotency_key
+            && let Some(outcome) = self
+                .replay_session_resource_manifest(session_id, key, &command.request_fingerprint)
+                .await?
+        {
+            return Ok(outcome);
+        }
+
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            match self
+                .replace_session_resource_manifest_once(
+                    session_id,
+                    &command,
+                    command_record.clone(),
+                )
+                .await
+            {
+                Err(SessionResourceManifestError::Conflict)
+                    if command.expected_session_revision.is_none()
+                        && attempt + 1 < Self::ROOT_CAS_ATTEMPTS =>
+                {
+                    continue;
+                }
+                Ok(outcome) => return self.converge_resource_manifest(outcome).await,
+                result => return result,
+            }
+        }
+        Err(SessionResourceManifestError::Conflict)
+    }
+
+    async fn replace_session_resource_manifest_once(
+        &self,
+        session_id: &str,
+        command: &ReplaceSessionResourceManifest,
+        command_record: Option<IdempotencyRecord>,
+    ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError> {
+        let owner_scope = self
+            .owner(session_id)
+            .await
+            .map_err(SessionResourceManifestError::mutation)?;
+        let mut session = self
+            .session_repository()
+            .get(session_id)
+            .await
+            .map_err(repository_failure)
+            .map_err(SessionResourceManifestError::mutation)?;
+        if session.is_terminal() {
+            return Err(SessionResourceManifestError::Terminal);
+        }
+        if command
+            .expected_session_revision
+            .is_some_and(|expected| expected != session.revision)
+        {
+            return Err(SessionResourceManifestError::Conflict);
+        }
+
+        let unchanged = session.resources.desired() == &command.resources;
+        if !unchanged {
+            let result = if session.resources.pending.is_some() {
+                session
+                    .resources
+                    .revise_unattempted_pending(&session.session_id, command.resources.clone())
+            } else {
+                session
+                    .resources
+                    .prepare(&session.session_id, command.resources.clone())
+            };
+            result.map_err(|error| match error {
+                awaken_session_contract::ResourceActivationError::Pending => {
+                    SessionResourceManifestError::Conflict
+                }
+                error => {
+                    SessionResourceManifestError::Rejected(RunError::bad_request(error.to_string()))
+                }
+            })?;
+        }
+
+        let command_receipt_key = command_record.as_ref().map(|record| record.key.clone());
+        let (session, command_applied) = match command_record {
+            Some(record) => self
+                .commit_resource_snapshot_with_record(&owner_scope, session, record)
+                .await
+                .map_err(SessionResourceManifestError::mutation)?,
+            None if unchanged => {
+                let revision = session.revision;
+                return Ok(SessionResourceManifestOutcome {
+                    session,
+                    command_revision: revision,
+                    command_applied: false,
+                });
+            }
+            None => (
+                self.commit_resource_snapshot(
+                    &owner_scope,
+                    session,
+                    "resource-manifest-intent",
+                    Vec::new(),
+                )
+                .await
+                .map_err(SessionResourceManifestError::mutation)?,
+                true,
+            ),
+        };
+        let command_revision = if command_applied {
+            session.revision
+        } else {
+            let key = command_receipt_key.ok_or_else(|| {
+                SessionResourceManifestError::Unavailable(
+                    "replayed Resource manifest has no idempotency key".into(),
+                )
+            })?;
+            self.session_repository()
+                .idempotency_receipt(session_id, &key)
+                .await
+                .map_err(repository_failure)
+                .map_err(SessionResourceManifestError::mutation)?
+                .ok_or_else(|| {
+                    SessionResourceManifestError::Unavailable(
+                        "replayed Resource manifest has no idempotency receipt".into(),
+                    )
+                })?
+                .committed_revision
+        };
+        Ok(SessionResourceManifestOutcome {
+            session,
+            command_revision,
+            command_applied,
+        })
+    }
+
+    async fn converge_resource_manifest(
+        &self,
+        mut outcome: SessionResourceManifestOutcome,
+    ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError> {
+        if outcome.session.resources.pending.is_none() {
+            return Ok(outcome);
+        }
+        let owner_scope = self
+            .owner(&outcome.session.session_id)
+            .await
+            .map_err(SessionResourceManifestError::mutation)?;
+        let convergence = if self.requires_external_realization(&outcome.session) {
+            self.dispatch_session_work(&outcome.session)
+                .await
+                .map(|_| outcome.session.clone())
+                .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))
+        } else if outcome.session.execution == SessionExecutionState::Idle {
+            self.reconcile_persisted_resources(&owner_scope, outcome.session.clone())
+                .await
+        } else {
+            Ok(outcome.session.clone())
+        };
+        match convergence {
+            Ok(session) => {
+                outcome.session = session;
+                Ok(outcome)
+            }
+            Err(source) => Err(SessionResourceManifestError::ProjectionAfterCommit {
+                outcome: Box::new(outcome),
+                source,
+            }),
+        }
+    }
+
+    /// Compatibility item command compiled into the same whole-manifest owner.
     pub async fn attach_session_input(
         &self,
         session_id: &str,
-        owner_scope: &str,
+        _owner_scope: &str,
         input: awaken_session_contract::ResolvedInput,
     ) -> Result<PersistedSession, SessionPreparationError> {
         let persisted = self
@@ -290,13 +628,19 @@ impl SessionApplication {
             .map_err(|error| {
                 SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
             })?;
-        if persisted.resources.pending.is_some() {
-            return self
-                .revise_pending_resource_transition(owner_scope, persisted, desired)
-                .await;
-        }
-        self.activate_session_inputs(persisted, owner_scope, desired)
-            .await
+        let fingerprint = stable_fingerprint(&desired);
+        self.replace_session_resource_manifest(
+            session_id,
+            ReplaceSessionResourceManifest {
+                resources: desired,
+                expected_session_revision: None,
+                idempotency_key: None,
+                request_fingerprint: fingerprint,
+            },
+        )
+        .await
+        .map(|outcome| outcome.session)
+        .map_err(resource_manifest_preparation)
     }
 
     /// Detach one neutral binding and converge the Runtime. Repository
@@ -320,14 +664,28 @@ impl SessionApplication {
                 .map_err(|error| {
                     SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
                 })?;
-        let committed = if persisted.resources.pending.is_some() {
-            self.revise_pending_resource_transition(owner_scope, persisted, desired)
-                .await?
-        } else {
-            self.activate_session_inputs(persisted, owner_scope, desired)
-                .await?
-        };
+        let fingerprint = stable_fingerprint(&desired);
+        let committed = self
+            .replace_session_resource_manifest(
+                session_id,
+                ReplaceSessionResourceManifest {
+                    resources: desired,
+                    expected_session_revision: None,
+                    idempotency_key: None,
+                    request_fingerprint: fingerprint,
+                },
+            )
+            .await
+            .map(|outcome| outcome.session)
+            .map_err(resource_manifest_preparation)?;
         if let ResolvedInputSource::Repository { repository_id, .. } = removed.source
+            && committed.resources.active.inputs.iter().all(|input| {
+                !matches!(
+                    &input.source,
+                    ResolvedInputSource::Repository { repository_id: active, .. }
+                        if active == &repository_id
+                )
+            })
             && !self
                 .retire_repository(owner_scope, repository_id.as_str())
                 .await
@@ -424,88 +782,15 @@ impl SessionApplication {
         Err(SessionPreparationError::Conflict)
     }
 
-    async fn prepare_resource_transition(
-        &self,
-        owner_scope: &str,
-        mut current: PersistedSession,
-        desired: &awaken_session_contract::ResolvedSessionResources,
-    ) -> Result<PersistedSession, SessionPreparationError> {
-        let unchanged_resources = current.resources.clone();
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            if current.resources != unchanged_resources {
-                return Err(SessionPreparationError::Conflict);
-            }
-            let mut candidate = current.clone();
-            candidate
-                .resources
-                .prepare(&candidate.session_id, desired.clone())
-                .map_err(|error| {
-                    SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
-                })?;
-            candidate.resources.start_attempt().map_err(internal)?;
-            match self
-                .commit_resource_snapshot(owner_scope, candidate, "resource-prepare", Vec::new())
-                .await
-            {
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
-                    current = self
-                        .session_repository()
-                        .get(&current.session_id)
-                        .await
-                        .map_err(repository_preparation)?;
-                }
-                result => return result.map_err(mutation_failure),
-            }
-        }
-        Err(SessionPreparationError::Conflict)
-    }
-
-    async fn revise_pending_resource_transition(
-        &self,
-        owner_scope: &str,
-        mut current: PersistedSession,
-        desired: awaken_session_contract::ResolvedSessionResources,
-    ) -> Result<PersistedSession, SessionPreparationError> {
-        let unchanged_resources = current.resources.clone();
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            if current.resources != unchanged_resources {
-                return Err(SessionPreparationError::Conflict);
-            }
-            let mut candidate = current.clone();
-            candidate
-                .resources
-                .revise_unattempted_pending(&candidate.session_id, desired.clone())
-                .map_err(|error| {
-                    SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
-                })?;
-            match self
-                .commit_resource_snapshot(
-                    owner_scope,
-                    candidate,
-                    "resource-revise-pending",
-                    Vec::new(),
-                )
-                .await
-            {
-                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
-                    current = self
-                        .session_repository()
-                        .get(&current.session_id)
-                        .await
-                        .map_err(repository_preparation)?;
-                }
-                result => return result.map_err(mutation_failure),
-            }
-        }
-        Err(SessionPreparationError::Conflict)
-    }
-
-    async fn settle_resource_transition(
+    /// Settle the one canonical reconciliation attempt against its exact
+    /// Resource generation. Root-only concurrent mutations are rebased; a
+    /// competing Resource generation is never merged.
+    async fn settle_resource_reconciliation(
         &self,
         owner_scope: &str,
         session_id: &str,
         resource_revision: u64,
-        desired: &awaken_session_contract::ResolvedSessionResources,
+        desired: &ResolvedSessionResources,
         settlement: ResourceSettlement,
     ) -> Result<PersistedSession, SessionPreparationError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
@@ -522,21 +807,21 @@ impl SessionApplication {
             let operation = match &settlement {
                 ResourceSettlement::Commit => {
                     current.resources.commit().map_err(internal)?;
-                    "resource-activate"
+                    "resource-reconcile-active"
                 }
                 ResourceSettlement::Rollback(error) => {
                     current
                         .resources
                         .rollback(error.clone())
                         .map_err(internal)?;
-                    "resource-rollback"
+                    "resource-reconcile-rollback"
                 }
                 ResourceSettlement::RetryableFailure(error) => {
                     current
                         .resources
                         .note_retryable_failure(error.clone())
                         .map_err(internal)?;
-                    "resource-retryable-failure"
+                    "resource-reconcile-failed"
                 }
             };
             match self
@@ -552,58 +837,42 @@ impl SessionApplication {
         Err(SessionPreparationError::Conflict)
     }
 
-    /// Apply one live Resource replacement through the same durable phase
-    /// protocol consumed by recovery.
-    pub async fn activate_session_inputs(
+    async fn start_resource_reconciliation(
         &self,
-        persisted: PersistedSession,
         owner_scope: &str,
-        desired: awaken_session_contract::ResolvedSessionResources,
+        mut session: PersistedSession,
+        desired: &ResolvedSessionResources,
     ) -> Result<PersistedSession, SessionPreparationError> {
-        let session_id = persisted.session_id.clone();
-        let previous = persisted.resources.active.clone();
-        let persisted = self
-            .prepare_resource_transition(owner_scope, persisted, &desired)
-            .await?;
-        let resource_revision = persisted.resources.revision;
-        if let Err(error) = self
-            .runtime()
-            .apply_session_inputs(&session_id, owner_scope, resource_revision, &desired)
-            .await
-        {
-            let settlement = match self
-                .runtime()
-                .apply_session_inputs(
-                    &session_id,
+        let resource_revision = session.resources.revision;
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            if session.resources.revision != resource_revision
+                || session.resources.pending.as_ref() != Some(desired)
+            {
+                return Err(SessionPreparationError::Conflict);
+            }
+            let mut candidate = session.clone();
+            candidate.resources.start_attempt().map_err(internal)?;
+            match self
+                .commit_resource_snapshot(
                     owner_scope,
-                    resource_revision.saturating_sub(1),
-                    &previous,
+                    candidate,
+                    "resource-reconcile-attempt",
+                    Vec::new(),
                 )
                 .await
             {
-                Ok(()) => ResourceSettlement::Rollback(error.to_string()),
-                Err(rollback_error) => ResourceSettlement::RetryableFailure(format!(
-                    "activation failed: {error}; rollback failed: {rollback_error}"
-                )),
-            };
-            self.settle_resource_transition(
-                owner_scope,
-                &session_id,
-                resource_revision,
-                &desired,
-                settlement,
-            )
-            .await?;
-            return Err(SessionPreparationError::Rejected(error));
+                Ok(committed) => return Ok(committed),
+                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                    session = self
+                        .session_repository()
+                        .get(&session.session_id)
+                        .await
+                        .map_err(repository_preparation)?;
+                }
+                Err(error) => return Err(mutation_failure(error)),
+            }
         }
-        self.settle_resource_transition(
-            owner_scope,
-            &session_id,
-            resource_revision,
-            &desired,
-            ResourceSettlement::Commit,
-        )
-        .await
+        Err(SessionPreparationError::Conflict)
     }
 
     /// Commit the terminal delete tombstone through the canonical Session CAS.
@@ -712,16 +981,11 @@ impl SessionApplication {
         }
         if session.execution == SessionExecutionState::Idle && !session.is_terminal() {
             if let Some(desired) = session.resources.pending.clone() {
-                session.resources.start_attempt().map_err(internal)?;
+                let previous = session.resources.active.clone();
+                let previous_revision = session.resources.active_revision();
                 session = self
-                    .commit_resource_snapshot(
-                        owner_scope,
-                        session,
-                        "resource-reconcile-attempt",
-                        Vec::new(),
-                    )
-                    .await
-                    .map_err(mutation_failure)?;
+                    .start_resource_reconciliation(owner_scope, session, &desired)
+                    .await?;
                 if let Err(error) = self
                     .runtime()
                     .apply_session_inputs(
@@ -732,30 +996,40 @@ impl SessionApplication {
                     )
                     .await
                 {
-                    session
-                        .resources
-                        .note_retryable_failure(error.to_string())
-                        .map_err(internal)?;
-                    self.commit_resource_snapshot(
+                    let settlement = match self
+                        .runtime()
+                        .apply_session_inputs(
+                            &session_id,
+                            owner_scope,
+                            previous_revision,
+                            &previous,
+                        )
+                        .await
+                    {
+                        Ok(()) => ResourceSettlement::Rollback(error.to_string()),
+                        Err(rollback_error) => ResourceSettlement::RetryableFailure(format!(
+                            "activation failed: {error}; rollback failed: {rollback_error}"
+                        )),
+                    };
+                    self.settle_resource_reconciliation(
                         owner_scope,
-                        session,
-                        "resource-reconcile-failed",
-                        Vec::new(),
+                        &session_id,
+                        session.resources.revision,
+                        &desired,
+                        settlement,
                     )
-                    .await
-                    .map_err(mutation_failure)?;
+                    .await?;
                     return Err(SessionPreparationError::Rejected(error));
                 }
-                session.resources.commit().map_err(internal)?;
                 return self
-                    .commit_resource_snapshot(
+                    .settle_resource_reconciliation(
                         owner_scope,
-                        session,
-                        "resource-reconcile-active",
-                        Vec::new(),
+                        &session_id,
+                        session.resources.revision,
+                        &desired,
+                        ResourceSettlement::Commit,
                     )
-                    .await
-                    .map_err(mutation_failure);
+                    .await;
             }
 
             if session

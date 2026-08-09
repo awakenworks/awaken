@@ -43,7 +43,10 @@ pub use mcp::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
 pub use realization::{
     SessionRealizationError, SessionReconciliation, SessionReconciliationFailure,
 };
-pub use resource_reconciliation::SessionResourcePurgeGuard;
+pub use resource_reconciliation::{
+    ReplaceSessionResourceManifest, SessionResourceManifestError, SessionResourceManifestOutcome,
+    SessionResourcePurgeGuard,
+};
 pub use run_admission::{
     AdmittedRunApplication, RecoveredSessionProjection, SessionProjectionRecoveryError,
     SessionRunAdmission,

@@ -498,6 +498,7 @@ fn local_managed_state_over(
         awaken_session_application::SessionApplicationConfiguration {
             execution_placement,
             local_realization_owner,
+            ..Default::default()
         },
     );
     let managed = ManagedState::from_application(application);
@@ -847,9 +848,16 @@ fn mount_with_managed_over_and_models(
     }
     dream_application.resume_incomplete();
     let dreams = awaken_protocol_managed::dreams_router(dream_application.clone());
-    let managed = router(managed_state.clone()).merge(dreams).merge(
-        awaken_protocol_awaken::live_inbox_router(managed_state.session_application()),
-    );
+    let resource_manifests = awaken_protocol_awaken::session_resource_manifest_router(
+        awaken_protocol_managed::replace_resource_manifest,
+    )
+    .with_state(managed_state.clone());
+    let managed = router(managed_state.clone())
+        .merge(dreams)
+        .merge(awaken_protocol_awaken::live_inbox_router(
+            managed_state.session_application(),
+        ))
+        .merge(resource_manifests);
     // One neutral port impl behind the three wire adapters (each `router` takes
     // `Arc<dyn RunApplication>`), so they share the host with no per-protocol twin.
     let raw_port: Arc<dyn RunApplication> = Arc::new(RunApplicationHost::new(host.clone()));

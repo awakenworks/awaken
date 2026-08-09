@@ -1038,6 +1038,7 @@ mod tests {
             binds: vec![],
             outputs_volume: "/out".into(),
             network: NetworkMode::None,
+            requests: pc::ResourceRequests::default(),
             limits: pc::ResourceLimits::default(),
             memory_mounts: vec![],
             rootfs: RootfsPlan::Image("img:latest".into()),
@@ -1498,16 +1499,78 @@ mod tests {
 
     #[tokio::test]
     async fn detached_exec_process_fails_closed_and_signal_propagates_status() {
+        // Cause/effect graph: C1 process handle attached/detached; C2 signal CLI
+        // exits zero/non-zero/cannot spawn. Effects: E1 detached handles reject
+        // every lifecycle operation; E2 attached+zero accepts; E3 attached with
+        // non-zero or spawn failure rejects while the child remains observable.
+        // Decision rules P1 detached=>E1; P2 attached+zero=>E2; P3
+        // attached+non-zero=>E3; P4 attached+spawn-failure=>E3. FMECA: using a
+        // detached fixture to test CLI status bypasses the authoritative child
+        // state and can hide fail-open signaling (S6/O3/D5).
         let detached = exec_process(None, "true");
         assert!(detached.wait().await.is_err());
         assert!(detached.poll().await.is_err());
-        detached.signal(pc::Signal::Term).await.unwrap();
+        assert!(detached.signal(pc::Signal::Term).await.is_err(), "P1/E1");
 
-        let failing_signal = exec_process(None, "false");
-        assert!(failing_signal.signal(pc::Signal::Int).await.is_err());
+        let child = OsCommand::new("sh")
+            .args(["-c", "sleep 10"])
+            .spawn()
+            .expect("spawn success fixture");
+        let successful_signal = exec_process(Some(child), "true");
+        successful_signal
+            .signal(pc::Signal::Term)
+            .await
+            .expect("P2/E2");
+        successful_signal
+            .state
+            .lock()
+            .await
+            .child
+            .as_mut()
+            .unwrap()
+            .start_kill()
+            .unwrap();
+        successful_signal.wait().await.unwrap();
 
-        let missing_binary = exec_process(None, "/definitely/missing/podman");
-        assert!(missing_binary.signal(pc::Signal::Kill).await.is_err());
+        let child = OsCommand::new("sh")
+            .args(["-c", "sleep 10"])
+            .spawn()
+            .expect("spawn failure fixture");
+        let failing_signal = exec_process(Some(child), "false");
+        assert!(
+            failing_signal.signal(pc::Signal::Int).await.is_err(),
+            "P3/E3"
+        );
+        failing_signal
+            .state
+            .lock()
+            .await
+            .child
+            .as_mut()
+            .unwrap()
+            .start_kill()
+            .unwrap();
+        failing_signal.wait().await.unwrap();
+
+        let child = OsCommand::new("sh")
+            .args(["-c", "sleep 10"])
+            .spawn()
+            .expect("spawn missing-binary fixture");
+        let missing_binary = exec_process(Some(child), "/definitely/missing/podman");
+        assert!(
+            missing_binary.signal(pc::Signal::Kill).await.is_err(),
+            "P4/E3"
+        );
+        missing_binary
+            .state
+            .lock()
+            .await
+            .child
+            .as_mut()
+            .unwrap()
+            .start_kill()
+            .unwrap();
+        missing_binary.wait().await.unwrap();
     }
 
     #[tokio::test]
@@ -1574,31 +1637,11 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn process_secret_is_forwarded_by_alias_without_entering_podman_argv() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let script = std::env::temp_dir().join(format!(
-            "awaken-podman-secret-check-{}-{}",
-            std::process::id(),
-            EXEC_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::write(
-            &script,
-            "#!/bin/sh\n\
-case \" $* \" in *podman-secret*) exit 91;; esac\n\
-[ -z \"${TOKEN-}\" ] || exit 92\n\
-alias_name=\n\
-previous=\n\
-for argument in \"$@\"; do\n\
-  if [ \"$previous\" = --env ]; then alias_name=$argument; break; fi\n\
-  previous=$argument\n\
-done\n\
-case \"$alias_name\" in AWAKEN_PODMAN_EXEC_SECRET_*) ;; *) exit 93;; esac\n\
-eval \"alias_value=\\${$alias_name-}\"\n\
-[ \"$alias_value\" = podman-secret ] || exit 94\n\
-exit 0\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // A committed read-only fixture avoids the ETXTBSY race created by
+        // writing and executing a temporary script while tests spawn commands
+        // concurrently; that race confounds D1 with fixture failure (S3/O4/D2).
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/podman-secret-check.sh");
 
         let (mut rt, _) = runtime_with(9000, |_| ok(""));
         rt.bin = script.to_string_lossy().into_owned();
@@ -1617,7 +1660,5 @@ exit 0\n",
             .unwrap();
         let process = rt.spawn("cid", command).await.unwrap();
         assert_eq!(process.wait().await.unwrap().code, Some(0));
-
-        std::fs::remove_file(script).unwrap();
     }
 }

@@ -36,6 +36,29 @@ fn terminal_business_outcome_is_not_rewritten_by_cleanup_failure() {
     assert_eq!(outcome.unwrap(), TerminationReason::NaturalEnd);
 }
 
+#[tokio::test]
+async fn managed_acp_terminal_cannot_escape_without_commit_capability() {
+    // Cause/effect graph: C1 ACP produces a terminal disposition; C2 commit
+    // capability present/absent. Effects: E1 atomically commit messages+state;
+    // E2 fail before the terminal outcome escapes. Decision table: A1 C1+C2 =>
+    // E1 (covered by the executor success cases); A2 C1+!C2 => E2. FMECA: a
+    // natural end without ThreadCommit creates false success and empty history
+    // (severity 10, occurrence 4, detection 8), so Managed ACP fails closed.
+    let error = commit(
+        &RuntimeRunContext::new(),
+        &ThreadId("thread-no-commit".into()),
+        RunDisposition::ended(RunId("run-no-commit".into()), EndCause::NaturalEnd),
+        Vec::new(),
+        Vec::new(),
+    )
+    .await
+    .expect_err("A2 missing capability");
+    assert!(
+        error.to_string().contains("requires a CommitCoordinator"),
+        "A2/E2: {error}"
+    );
+}
+
 struct SpillProbe {
     fail: bool,
     seen: Arc<Mutex<Vec<(String, String, String)>>>,
@@ -569,9 +592,12 @@ async fn observer_starts_at_launch_after_startup_acquisition() {
     }))
     .with_launch_observer(observer.clone());
 
-    e.execute(activation(), RuntimeRunContext::new())
-        .await
-        .unwrap();
+    e.execute(
+        activation(),
+        RuntimeRunContext::new().with_commit(Arc::new(RecordingCoordinator::default())),
+    )
+    .await
+    .unwrap();
 
     let stages = observer.stages.lock().unwrap().clone();
     assert_eq!(
@@ -1160,9 +1186,12 @@ async fn a_local_dir_session_home_is_restored_before_and_harvested_after() {
     }))
     .with_session_home(recorder.clone());
 
-    e.execute(activation(), RuntimeRunContext::new())
-        .await
-        .unwrap();
+    e.execute(
+        activation(),
+        RuntimeRunContext::new().with_commit(Arc::new(RecordingCoordinator::default())),
+    )
+    .await
+    .unwrap();
 
     let calls = recorder.calls.lock().unwrap();
     let seq: Vec<&str> = calls.iter().map(|(c, _, _)| c.as_str()).collect();
@@ -1724,7 +1753,10 @@ async fn a_launch_fault_classifies_at_initialize_and_commits_a_prompt() {
 async fn refusal_maps_to_stopped() {
     let e = exec(vec![r#"{"type":"turn_end","reason":"refusal"}"#.into()]);
     let state = e
-        .execute(activation(), RuntimeRunContext::new())
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(Arc::new(RecordingCoordinator::default())),
+        )
         .await
         .unwrap();
     assert!(matches!(state, RunState::Ended(EndCause::Stopped(_))));
@@ -1831,7 +1863,10 @@ async fn a_clean_error_turn_end_maps_to_error_not_natural_end() {
 async fn a_timed_out_turn_end_maps_to_stopped_not_natural_end() {
     let e = exec(vec![r#"{"type":"turn_end","reason":"timed_out"}"#.into()]);
     let state = e
-        .execute(activation(), RuntimeRunContext::new())
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(Arc::new(RecordingCoordinator::default())),
+        )
         .await
         .unwrap();
     assert!(
@@ -1933,10 +1968,14 @@ async fn acp_relaunches_the_cli_every_turn_so_a_model_switch_takes_effect() {
 
     // Two turns → two launches: an ACP thread relaunches its CLI each turn, which
     // is how a re-staged model takes effect (R7).
-    exec.execute(activation(), RuntimeRunContext::new())
-        .await
-        .unwrap();
-    exec.execute(activation(), RuntimeRunContext::new())
+    let commit = Arc::new(RecordingCoordinator::default());
+    exec.execute(
+        activation(),
+        RuntimeRunContext::new().with_commit(commit.clone()),
+    )
+    .await
+    .unwrap();
+    exec.execute(activation(), RuntimeRunContext::new().with_commit(commit))
         .await
         .unwrap();
     assert_eq!(opens.load(Ordering::SeqCst), 2);

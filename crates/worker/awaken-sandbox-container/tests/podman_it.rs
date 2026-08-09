@@ -67,6 +67,7 @@ fn plan(cmd: &[&str], rootfs: RootfsPlan) -> ContainerPlan {
         binds: Vec::new(),
         outputs_volume: "/mnt/session/outputs".into(),
         network: NetworkMode::Open,
+        requests: pc::ResourceRequests::default(),
         limits: pc::ResourceLimits {
             memory_bytes: Some(256 * 1024 * 1024),
             ..Default::default()

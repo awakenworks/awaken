@@ -186,6 +186,7 @@ mod tests {
             }],
             outputs_volume: "/mnt/session/outputs".into(),
             network: crate::NetworkMode::Open,
+            requests: pc::ResourceRequests::default(),
             limits: Default::default(),
             memory_mounts: Vec::new(),
             rootfs: crate::RootfsPlan::HostUserland,

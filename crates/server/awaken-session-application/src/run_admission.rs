@@ -84,10 +84,12 @@ fn creation_error(error: SessionCreationError) -> RunError {
 }
 
 impl SessionApplication {
-    /// Reconstruct the one durable Session projection used by every protocol.
+    /// Read the one durable Session projection used by every protocol without
+    /// driving Runtime effects. Queries must remain projections; realization is
+    /// owned by create, run admission, Worker claims, and reconciliation.
     /// `Ok(None)` means no Session aggregate exists; callers with a separate
     /// Thread read model may still project that Thread without inventing one.
-    pub async fn recover_session_projection(
+    pub async fn read_session_projection(
         &self,
         thread_id: &str,
         expected_owner: Option<&str>,
@@ -121,16 +123,33 @@ impl SessionApplication {
                 "Session is awaiting its application contribution".into(),
             ));
         }
+        Ok(Some(RecoveredSessionProjection {
+            owner_scope: owner,
+            session,
+        }))
+    }
+
+    /// Rebuild the disposable Runtime projection at an execution admission
+    /// boundary. This is deliberately separate from [`Self::read_session_projection`].
+    pub async fn recover_session_projection(
+        &self,
+        thread_id: &str,
+        expected_owner: Option<&str>,
+    ) -> Result<Option<RecoveredSessionProjection>, SessionProjectionRecoveryError> {
+        let Some(recovered) = self
+            .read_session_projection(thread_id, expected_owner)
+            .await?
+        else {
+            return Ok(None);
+        };
         // Archived Sessions remain readable projections but deny every new
         // effect. Recovery must not reacquire a realization lease for them.
-        if session.is_terminal() {
-            return Ok(Some(RecoveredSessionProjection {
-                owner_scope: owner,
-                session,
-            }));
+        if recovered.session.is_terminal() {
+            return Ok(Some(recovered));
         }
+        let owner = recovered.owner_scope;
         let session = self
-            .reconcile_persisted_resources(&owner, session)
+            .reconcile_persisted_resources(&owner, recovered.session)
             .await
             .map_err(|error| SessionProjectionRecoveryError::Rejected(preparation_error(error)))?;
         let session = if self.requires_external_realization(&session) {
@@ -172,6 +191,15 @@ impl SessionApplication {
             .ok_or_else(|| RunError::bad_request("Session was not found"))?;
         if recovered.session.is_terminal() {
             return Err(RunError::bad_request("Session no longer accepts new Runs"));
+        }
+        if recovered.session.execution != awaken_session_contract::SessionExecutionState::Idle {
+            return Err(RunError::unavailable_classified(
+                "session_not_ready",
+                format!(
+                    "Session realization has not completed; current state is `{}`",
+                    recovered.session.execution
+                ),
+            ));
         }
         Ok(())
     }
@@ -307,7 +335,6 @@ impl SessionApplication {
             title: None,
             metadata: Default::default(),
             tools,
-            lifecycle_facts: Vec::new(),
         })
         .await
         .map_err(creation_error)?;
