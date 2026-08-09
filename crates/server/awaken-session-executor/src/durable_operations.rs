@@ -12,6 +12,7 @@ fn map_error(error: HostError) -> ApplicationError {
         HostErrorKind::BadRequest => ApplicationError::invalid(error.message),
         HostErrorKind::Conflict => ApplicationError::conflict(error.message),
         HostErrorKind::Internal => ApplicationError::internal(error.message),
+        HostErrorKind::Unavailable => ApplicationError::unavailable(error.message),
     }
 }
 
@@ -68,7 +69,7 @@ impl DurableRunOperations for SharedHost {
     }
 
     async fn messages(&self, thread: &str) -> Result<Vec<Message>, ApplicationError> {
-        Ok(self.committed_messages(thread).await)
+        self.committed_messages(thread).await.map_err(map_error)
     }
 
     async fn superseded(&self, thread: &str) -> Result<Vec<String>, ApplicationError> {

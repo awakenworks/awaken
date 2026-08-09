@@ -464,14 +464,34 @@ pub(crate) async fn connect_materialized(
             Some(refresh) => builder.refresher(refresh.0.clone()),
             None => builder,
         };
-        let transport = builder.connect_streaming().await.map_err(|e| {
-            HostError::internal(format!("mcp server `{}` at {}: {e}", server.name, url))
-        })?;
+        let transport = builder
+            .connect_streaming()
+            .await
+            .map_err(|error| mcp_transport_error(&server.name, url, error))?;
         let list_changed = transport.subscribe_list_changed();
         let transport: Arc<dyn awaken_ext_mcp::transport::McpToolTransport> = Arc::new(transport);
         append_connected(&mut wiring, server, transport, list_changed).await?;
     }
     Ok(wiring)
+}
+
+fn mcp_transport_error(
+    server_name: &str,
+    target: &str,
+    error: awaken_ext_mcp::McpTransportError,
+) -> HostError {
+    use awaken_ext_mcp::McpTransportError;
+
+    let message = format!("mcp server `{server_name}` at {target}: {error}");
+    match error {
+        McpTransportError::ServerError(ref detail) if detail.starts_with("auth challenge:") => {
+            HostError::classified("mcp_authentication_failed", message)
+        }
+        McpTransportError::TransportError(_) | McpTransportError::Timeout(_) => {
+            HostError::unavailable_classified("mcp_connection_failed", message)
+        }
+        _ => HostError::classified("mcp_protocol_failed", message),
+    }
 }
 
 /// Bind a sandbox-attached MCP process to the Native Runtime. Process ownership
@@ -545,6 +565,7 @@ async fn append_connected(
 #[cfg(test)]
 mod acp_projection_tests {
     use super::*;
+    use crate::HostErrorKind;
     use awaken_agent_contract::RedactedString;
 
     fn prepared(bearer: Option<&str>) -> McpTransportMaterial {
@@ -567,6 +588,46 @@ mod acp_projection_tests {
             runtime_incarnation: "runtime-1".into(),
             lease_epoch: 2,
             lease_expires_at_unix_ms: u64::MAX,
+        }
+    }
+
+    #[test]
+    fn mcp_transport_faults_have_stable_origin_classification() {
+        // Cause/effect decision table: R1 auth challenge => permanent classified
+        // authentication failure; R2 network transport and R3 timeout => retryable
+        // connection failure; R4 protocol/server payload fault => permanent MCP
+        // protocol failure. Human-readable server text never chooses the class.
+        use awaken_ext_mcp::McpTransportError;
+
+        for (rule, source, kind, code) in [
+            (
+                "R1",
+                McpTransportError::ServerError("auth challenge: bearer".into()),
+                HostErrorKind::Internal,
+                "mcp_authentication_failed",
+            ),
+            (
+                "R2",
+                McpTransportError::TransportError("connection refused".into()),
+                HostErrorKind::Unavailable,
+                "mcp_connection_failed",
+            ),
+            (
+                "R3",
+                McpTransportError::Timeout("30s".into()),
+                HostErrorKind::Unavailable,
+                "mcp_connection_failed",
+            ),
+            (
+                "R4",
+                McpTransportError::ProtocolError("bad frame".into()),
+                HostErrorKind::Internal,
+                "mcp_protocol_failed",
+            ),
+        ] {
+            let error = mcp_transport_error("docs", "https://mcp.example", source);
+            assert_eq!(error.kind, kind, "{rule}");
+            assert_eq!(error.code, code, "{rule}");
         }
     }
 

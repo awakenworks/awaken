@@ -14,6 +14,52 @@ use awaken_dispatch::RunClaim;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{ExecutorCapabilities, RunAttemptExecutor};
 
+fn realization_renewal_is_retired(
+    error: &awaken_session_contract::SessionRealizationControlFailure,
+) -> bool {
+    use awaken_session_contract::SessionRealizationControlFailure;
+
+    match error {
+        SessionRealizationControlFailure::NotFound | SessionRealizationControlFailure::NotReady => {
+            true
+        }
+        // The authenticated Worker HTTP transport predates typed error bodies.
+        // Preserve its exact terminal replies until that wire can carry the
+        // closed failure enum without classifying a completed Session as an
+        // unavailable control plane.
+        SessionRealizationControlFailure::Unavailable(detail) => {
+            detail == &SessionRealizationControlFailure::NotFound.to_string()
+                || detail == &SessionRealizationControlFailure::NotReady.to_string()
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod realization_renewal_tests {
+    use super::*;
+    use awaken_session_contract::SessionRealizationControlFailure;
+
+    #[test]
+    fn terminal_session_replies_retire_only_the_stale_local_projection() {
+        for error in [
+            SessionRealizationControlFailure::NotFound,
+            SessionRealizationControlFailure::NotReady,
+            SessionRealizationControlFailure::Unavailable(
+                SessionRealizationControlFailure::NotReady.to_string(),
+            ),
+        ] {
+            assert!(realization_renewal_is_retired(&error));
+        }
+        assert!(!realization_renewal_is_retired(
+            &SessionRealizationControlFailure::StaleOwnership,
+        ));
+        assert!(!realization_renewal_is_retired(
+            &SessionRealizationControlFailure::Unavailable("network unavailable".into()),
+        ));
+    }
+}
+
 /// The single Session-baseline prompt projection boundary for foreground,
 /// durable, Native, ACP, and A2A attempts.
 ///
@@ -396,13 +442,34 @@ mod acp_context_tests {
 }
 
 impl crate::SharedHost {
+    pub(crate) fn install_expected_environment_binding(
+        &self,
+        session_id: &str,
+        binding: Option<String>,
+    ) -> Result<(), crate::HostError> {
+        self.session_slots.update(session_id, |slot| {
+            if let (Some(existing), Some(asserted)) = (&slot.expected_environment_binding, &binding)
+                && existing != asserted
+            {
+                return Err(crate::HostError::internal(format!(
+                    "Session {session_id} is already bound to a different durable environment"
+                )));
+            }
+            slot.expected_environment_binding = binding;
+            Ok(())
+        })
+    }
+
     pub(crate) fn install_session_realization_lease(
         &self,
         session_id: &str,
         lease: awaken_session_contract::SessionRealizationLease,
     ) {
-        self.session_slots
-            .update(session_id, |slot| slot.realization_lease = Some(lease));
+        let changed = self.session_slots.update(session_id, |slot| {
+            slot.realization_lease = Some(lease);
+            slot.realization_changed.clone()
+        });
+        changed.notify_waiters();
     }
 
     /// Authorize an MCP effect admitted before a same-epoch lease extension.
@@ -463,7 +530,7 @@ impl crate::SharedHost {
         let mut renewed = 0;
         for (session_id, lease) in &due {
             let renewal = async {
-                let directive = control
+                let directive = match control
                     .begin_session_realization(awaken_session_contract::BeginSessionRealization {
                         session_id: session_id.clone(),
                         target: awaken_session_contract::SessionRealizationTarget {
@@ -475,7 +542,11 @@ impl crate::SharedHost {
                         },
                     })
                     .await
-                    .map_err(|error| crate::HostError::internal(error.to_string()))?;
+                {
+                    Ok(directive) => directive,
+                    Err(error) if realization_renewal_is_retired(&error) => return Ok(false),
+                    Err(error) => return Err(crate::HostError::internal(error.to_string())),
+                };
                 let realization = self.session_slots.realization_lock(session_id);
                 let Ok(_realization) = realization.try_lock() else {
                     // Control has extended only the same owner/incarnation/epoch.
@@ -502,7 +573,10 @@ impl crate::SharedHost {
             .await;
             match renewal {
                 Ok(true) => renewed += 1,
-                Ok(false) => {}
+                Ok(false) => {
+                    let _ = self.interrupt(session_id).await;
+                    self.revoke_session_realization(session_id).await;
+                }
                 Err(error) => {
                     eprintln!(
                         "Session realization renewal lost authority for `{session_id}`; revoking only that Session: {error}"
@@ -620,6 +694,7 @@ impl crate::SharedHost {
                     | awaken_session_contract::McpAttachmentState::Failed
             )
         });
+        let expected_environment_binding = projection.environment.binding().map(str::to_owned);
         let baseline = decode_baseline_projection(&projection.baseline)?;
         let init = projection.session_init();
 
@@ -633,6 +708,10 @@ impl crate::SharedHost {
                     "thread {thread} is already bound to a different frozen Session baseline"
                 )));
             }
+            self.install_expected_environment_binding(
+                thread,
+                expected_environment_binding.clone(),
+            )?;
             // The baseline is immutable, but a remote Resource verification is
             // authorized by the current dispatch claim. Re-stage the exact
             // manifest on every claimed replay so Repository checks never retain
@@ -672,6 +751,7 @@ impl crate::SharedHost {
         }
 
         validate_baseline_projection(&baseline, &built_in_mounts)?;
+        self.install_expected_environment_binding(thread, expected_environment_binding)?;
         self.project_session_init(thread, &init)?;
         if !synchronize_resources
             && projection.resources != awaken_session_contract::ResolvedSessionResources::default()

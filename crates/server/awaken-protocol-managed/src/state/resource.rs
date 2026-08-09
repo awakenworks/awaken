@@ -83,19 +83,10 @@ impl ManagedState {
                 let ParsedInputTarget::MemoryStore(memory_store_id) = &resource.target else {
                     unreachable!("only MemoryStore inputs derive a Managed mount path")
                 };
-                let catalog = self.application.resource_catalog().ok_or_else(|| {
-                    StateError::Run(RunError::bad_request(
-                        "memory resources require a configured Resource Catalog",
-                    ))
-                })?;
-                let definition = catalog
-                    .memory_store(owner_scope, memory_store_id.as_str())
-                    .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?
-                    .ok_or_else(|| {
-                        StateError::Run(RunError::bad_request(format!(
-                            "MemoryStore `{memory_store_id}` not found in this workspace"
-                        )))
-                    })?;
+                let definition = self
+                    .application
+                    .session_memory_store(owner_scope, memory_store_id.as_str())
+                    .map_err(StateError::Run)?;
                 resource.mount_path = unique_memory_mount_path(
                     &definition.name,
                     memory_store_id.as_str(),
@@ -109,68 +100,26 @@ impl ManagedState {
                 initial_commit,
             } = &resource.target
             {
-                let catalog = self.application.resource_catalog().ok_or_else(|| {
-                    StateError::Run(RunError::bad_request(
-                        "repository resources require a configured Resource Catalog",
-                    ))
-                })?;
                 let repository_id = format!("managed:{session_id}:repository:{index}");
-                let credential_binding = match authorization_token.clone() {
-                    Some(token) => {
-                        let ingress = self.application.repository_credential_ingress().ok_or_else(|| {
-                            StateError::Run(RunError::bad_request(
-                                "repository authorization requires a configured credential Vault",
-                            ))
-                        })?;
-                        Some(
-                            ingress
-                                .enter_repository_token(
-                                    awaken_credential_contract::CredentialSourceId(format!(
-                                        "managed:{session_id}:repository:{index}:credential"
-                                    )),
-                                    owner_scope,
-                                    token.into_redacted(),
-                                )
-                                .await
-                                .map_err(|error| {
-                                    StateError::Run(RunError::bad_request(format!(
-                                        "repository authorization could not be sealed: {error}"
-                                    )))
-                                })?
-                                .0,
+                Some(
+                    self.application
+                        .configure_session_repository(
+                            awaken_session_application::SessionRepositoryResourceInput {
+                                id: repository_id,
+                                workspace_id: owner_scope.to_string(),
+                                name: format!("Session repository {index}"),
+                                description: "Managed compatibility Session input".into(),
+                                remote_url: remote_url.clone(),
+                                authorization_token: authorization_token
+                                    .clone()
+                                    .map(|token| token.into_redacted()),
+                                initial_branch: initial_branch.clone(),
+                                initial_commit: initial_commit.clone(),
+                            },
                         )
-                    }
-                    None => None,
-                };
-                catalog
-                    .create_repository(
-                        awaken_resource_contract::RepositoryDefinition {
-                            id: repository_id.clone().into(),
-                            workspace_id: owner_scope.to_string(),
-                            name: format!("Session repository {index}"),
-                            description: "Managed compatibility Session input".into(),
-                            metadata: Default::default(),
-                            state: awaken_resource_contract::ResourceState::Active,
-                            current_config_version:
-                                awaken_resource_contract::ConfigVersion::INITIAL,
-                            timestamps: Default::default(),
-                        },
-                        awaken_resource_contract::RepositoryConfigVersion {
-                            repository_id: repository_id.clone().into(),
-                            version: awaken_resource_contract::ConfigVersion::INITIAL,
-                            remote_url: remote_url.clone(),
-                            credential_binding,
-                            initial_branch: initial_branch.clone(),
-                            initial_commit: initial_commit.clone(),
-                            clone_policy: awaken_resource_contract::ClonePolicy::default(),
-                        },
-                    )
-                    .map_err(|error| {
-                        StateError::Run(RunError::bad_request(format!(
-                            "repository resource could not be configured: {error}"
-                        )))
-                    })?;
-                Some(awaken_resource_contract::RepositoryId::from(repository_id))
+                        .await
+                        .map_err(StateError::Run)?,
+                )
             } else {
                 None
             };

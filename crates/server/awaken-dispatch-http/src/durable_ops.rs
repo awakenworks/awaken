@@ -340,6 +340,7 @@ fn respond(result: Result<Value, ApplicationError>) -> (StatusCode, Json<Value>)
                 ApplicationErrorKind::InvalidRequest => StatusCode::BAD_REQUEST,
                 ApplicationErrorKind::Conflict => StatusCode::CONFLICT,
                 ApplicationErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+                ApplicationErrorKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             };
             (status, Json(json!({ "error": error.message })))
         }

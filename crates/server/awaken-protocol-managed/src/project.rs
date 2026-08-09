@@ -75,7 +75,7 @@ fn first_forbidden_schema_key(v: &serde_json::Value) -> Option<&'static str> {
 }
 
 use awaken_session_contract::{
-    AGENT_TOOLSET_TOOL_IDS, AgentTool, CustomToolInputSchema, resolved_toolsets, toolset_policies,
+    AgentTool, CustomToolInputSchema, resolved_toolsets, toolset_policies,
 };
 
 /// Lower the Managed tool union into the Session's one neutral durable owner.
@@ -130,56 +130,7 @@ pub fn resolved_tools(tools: &[AgentTool]) -> Vec<AgentTool> {
 /// register and mark the confirmation-gated ones `always_ask`; each client tool
 /// becomes a `custom` tool definition.
 pub fn agent_tools(caps: &AgentCapabilities) -> Vec<AgentTool> {
-    use awaken_agent_contract::{
-        ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
-        ToolsetSource,
-    };
-    let mut tools = Vec::new();
-    if !caps.builtin_tools.is_empty() {
-        // Each entry is the tool's *resolved* config — the SDK's
-        // `BetaManagedAgentsAgentToolConfig` requires all of {name, enabled,
-        // permission_policy}. Only deviations from `default_config` are listed;
-        // an auto-allowed registered tool matches the default and is omitted.
-        let mut overrides = Vec::new();
-        for name in AGENT_TOOLSET_TOOL_IDS {
-            match caps.builtin_tools.iter().find(|t| t.name == name) {
-                None => overrides.push(ToolPolicyOverride {
-                    name: name.to_string(),
-                    policy: ToolExecutionPolicy {
-                        enabled: false,
-                        permission: ToolPermissionRequirement::AlwaysAllow,
-                    },
-                }),
-                Some(tool) if tool.ask => overrides.push(ToolPolicyOverride {
-                    name: name.to_string(),
-                    policy: ToolExecutionPolicy {
-                        enabled: true,
-                        permission: ToolPermissionRequirement::AlwaysAsk,
-                    },
-                }),
-                Some(_) => {} // registered + auto-allowed → matches default_config
-            }
-        }
-        // `configs` and `default_config` are both required on the toolset object.
-        // `default_config` is the resolved baseline every non-overridden tool
-        // inherits: enabled and auto-allowed.
-        let policy = ToolsetPolicy {
-            source: ToolsetSource::Agent,
-            default: ToolExecutionPolicy::default(),
-            overrides,
-        };
-        tools.extend(resolved_toolsets(&[policy]));
-    }
-    for tool in &caps.custom_tools {
-        let input_schema = CustomToolInputSchema::from_value(tool.input_schema.clone())
-            .expect("runtime custom-tool schemas were validated as object schemas at publication");
-        tools.push(AgentTool::Custom {
-            name: tool.name.clone(),
-            description: tool.description.clone(),
-            input_schema,
-        });
-    }
-    tools
+    managed_tools(&awaken_session_contract::SessionToolConfiguration::from_capabilities(caps))
 }
 
 /// Project exact client-owned descriptors from a published Agent snapshot. This

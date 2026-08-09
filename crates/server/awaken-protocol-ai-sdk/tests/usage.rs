@@ -39,20 +39,20 @@ impl RunApplication for UsageRuntime {
         unreachable!()
     }
 
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        None
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
 
     fn model(&self) -> String {
         "test".into()
     }
 
-    async fn usage(&self, _thread: &str) -> (u64, u64) {
-        (10, 20)
+    async fn usage(&self, _thread: &str) -> Result<(u64, u64), RunApplicationError> {
+        Ok((10, 20))
     }
 }
 
@@ -126,25 +126,25 @@ impl RunApplication for ResumeUsageRuntime {
         ))
     }
 
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        Some(Pending {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(Some(Pending {
             tool_use_id: "c1".into(),
             name: "submit_answer".into(),
             input: serde_json::Value::Null,
             client_executed: true,
-        })
+        }))
     }
 
-    async fn history(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
 
     fn model(&self) -> String {
         "resume".into()
     }
 
-    async fn usage(&self, _thread: &str) -> (u64, u64) {
-        (7, 11)
+    async fn usage(&self, _thread: &str) -> Result<(u64, u64), RunApplicationError> {
+        Ok((7, 11))
     }
 }
 

@@ -41,12 +41,12 @@ impl RunApplication for NoAwaitingRuntime {
     }
 
     // No run is ever awaiting.
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        None
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
 
     fn model(&self) -> String {
@@ -203,17 +203,17 @@ impl RunApplication for AwaitingRuntime {
         ))
     }
 
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        Some(Pending {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(Some(Pending {
             tool_use_id: "c1".into(),
             name: "write".into(),
             input: Value::Null,
             client_executed: false,
-        })
+        }))
     }
 
-    async fn history(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
 
     fn model(&self) -> String {
@@ -279,17 +279,17 @@ impl RunApplication for ExactResumeRuntime {
         ))
     }
 
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        Some(Pending {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(Some(Pending {
             tool_use_id: "c1".into(),
             name: "write".into(),
             input: Value::Null,
             client_executed: false,
-        })
+        }))
     }
 
-    async fn history(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
 
     fn model(&self) -> String {
@@ -371,12 +371,12 @@ impl RunApplication for AdmissionRecordingRuntime {
         unreachable!("unsupported fresh input must fail before resume")
     }
 
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        None
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
 
     fn model(&self) -> String {
@@ -487,16 +487,16 @@ impl RunApplication for DenyRecordingRuntime {
             false,
         ))
     }
-    async fn pending(&self, _t: &str) -> Option<Pending> {
-        Some(Pending {
+    async fn pending(&self, _t: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(Some(Pending {
             tool_use_id: "c1".into(),
             name: "write".into(),
             input: Value::Null,
             client_executed: false,
-        })
+        }))
     }
-    async fn history(&self, _t: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _t: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
     fn model(&self) -> String {
         "test".into()
@@ -550,12 +550,12 @@ impl RunApplication for ClassifiedFailureRuntime {
         unreachable!()
     }
 
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        None
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
 
     fn model(&self) -> String {
@@ -608,11 +608,11 @@ impl RunApplication for AgUiPanickingRuntime {
     ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!()
     }
-    async fn pending(&self, _t: &str) -> Option<Pending> {
-        None
+    async fn pending(&self, _t: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(None)
     }
-    async fn history(&self, _t: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _t: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
     fn model(&self) -> String {
         "test".into()

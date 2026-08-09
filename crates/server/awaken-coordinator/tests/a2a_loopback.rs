@@ -181,6 +181,7 @@ async fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
     let reply = host
         .committed_messages("thread")
         .await
+        .expect("committed history remains readable")
         .iter()
         .rev()
         .find(|message| {
@@ -303,6 +304,7 @@ async fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
     let reply = host
         .committed_messages("authenticated-thread")
         .await
+        .expect("committed history remains readable")
         .iter()
         .rev()
         .find(|message| {

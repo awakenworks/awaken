@@ -118,6 +118,8 @@ pub struct SessionReconciliationFailure {
 pub struct SessionReconciliation {
     pub settled: Vec<PersistedSession>,
     pub failures: Vec<SessionReconciliationFailure>,
+    pub quarantined: Vec<awaken_session_contract::SessionRecoveryQuarantine>,
+    pub pending: usize,
 }
 
 struct LocalProjectionSynchronizer<'a> {
@@ -138,6 +140,10 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
         }
         self.runtime
             .install_session_realization_lease(session_id, lease.clone());
+        self.runtime.install_expected_environment_binding(
+            session_id,
+            projection.environment.binding().map(str::to_owned),
+        )?;
         self.runtime
             .prepare_session(session_id, projection.session_init())
             .await?;
@@ -151,8 +157,11 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
 }
 
 impl SessionApplication {
-    async fn reconcile_pending_session_state(&self) {
+    async fn reconcile_pending_session_state(&self) -> SessionRecoveryCycle {
         let resources = self.reconcile_resource_activations().await;
+        let resource_failure_count = resources.failures.len();
+        let pending = resources.pending;
+        let quarantined = resources.quarantined.len();
         for failure in resources.failures {
             tracing::warn!(
                 session = %failure.session_id,
@@ -166,19 +175,36 @@ impl SessionApplication {
                 "reconciled durable Session Resource activations"
             );
         }
-        let mcp = self.reconcile_mcp_attachments().await;
-        for failure in mcp.failures {
+        for isolation in resources.quarantined {
+            tracing::error!(
+                session = %isolation.session_id,
+                reason = %isolation.reason,
+                "corrupt durable Session remains quarantined"
+            );
+        }
+        let realizations = self.reconcile_session_realizations().await;
+        let realization_failure_count = realizations.failures.len();
+        for failure in realizations.failures {
             tracing::warn!(
                 session = %failure.session_id,
                 error = %failure.message,
-                "Session MCP reconciliation remains pending"
+                "Session realization reconciliation remains pending"
             );
         }
-        if !mcp.settled.is_empty() {
+        if !realizations.settled.is_empty() {
             tracing::info!(
-                reconciled_mcp = mcp.settled.len(),
-                "reconciled durable Session MCP projections"
+                reconciled_realizations = realizations.settled.len(),
+                "reconciled durable Session Runtime projections"
             );
+        }
+        tracing::info!(
+            pending_sessions = pending.max(realizations.pending),
+            quarantined_sessions = quarantined.max(realizations.quarantined.len()),
+            retryable_failures = resource_failure_count + realization_failure_count,
+            "Session recovery scan completed"
+        );
+        SessionRecoveryCycle {
+            retryable_failures: resource_failure_count + realization_failure_count,
         }
     }
 
@@ -197,8 +223,9 @@ impl SessionApplication {
         Some(runtime.spawn(async move {
             let recovery_application = application.clone();
             let mut recovery = tokio::spawn(async move {
-                recovery_application.reconcile_pending_session_state().await;
+                recovery_application.reconcile_pending_session_state().await
             });
+            let mut recovery_failure_streak = 0_u32;
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             interval.tick().await;
             let initial_dispatch = application.reconcile_work_dispatches().await;
@@ -213,12 +240,19 @@ impl SessionApplication {
             loop {
                 interval.tick().await;
                 if recovery.is_finished() {
-                    if let Err(error) = recovery.await {
-                        tracing::warn!(error = ?error, "Session state reconciliation task failed");
-                    }
+                    recovery_failure_streak = match recovery.await {
+                        Ok(cycle) if cycle.retryable_failures == 0 => 0,
+                        Ok(_) => recovery_failure_streak.saturating_add(1),
+                        Err(error) => {
+                            tracing::warn!(error = ?error, "Session state reconciliation task failed");
+                            recovery_failure_streak.saturating_add(1)
+                        }
+                    };
+                    let delay = session_recovery_delay(recovery_failure_streak);
                     let recovery_application = application.clone();
                     recovery = tokio::spawn(async move {
-                        recovery_application.reconcile_pending_session_state().await;
+                        tokio::time::sleep(delay).await;
+                        recovery_application.reconcile_pending_session_state().await
                     });
                 }
                 if let Err(error) = application
@@ -335,7 +369,7 @@ impl SessionApplication {
             .await
             .map_err(|error| SessionRealizationError::Control(unavailable(error)))?;
         let mut renewed = 0;
-        for scoped in sessions {
+        for scoped in sessions.sessions {
             let Some(lease) = scoped.session.realization.clone() else {
                 continue;
             };
@@ -372,9 +406,11 @@ impl SessionApplication {
         Ok(renewed)
     }
 
-    /// Recover every local MCP projection requiring convergence. Terminal and
-    /// Worker-owned Sessions remain untouched by this Coordinator application.
-    pub async fn reconcile_mcp_attachments(&self) -> SessionReconciliation {
+    /// Recover the one local Runtime projection for every Session that lost its
+    /// process incarnation or has unfinished MCP work. This is deliberately the
+    /// same canonical realization driver used by create/update, not a restart-only
+    /// environment or MCP path. Terminal and Worker-owned Sessions remain untouched.
+    pub async fn reconcile_session_realizations(&self) -> SessionReconciliation {
         let mut report = SessionReconciliation::default();
         let sessions = match self.session_repository().reconcilable_sessions().await {
             Ok(sessions) => sessions,
@@ -386,12 +422,35 @@ impl SessionApplication {
                 return report;
             }
         };
-        for scoped in sessions {
+        report.pending = sessions.sessions.len();
+        report.quarantined.clone_from(&sessions.quarantined);
+        for scoped in sessions.sessions {
             let session = scoped.session;
-            if session.is_terminal()
-                || self.requires_external_realization(&session)
-                || !session.mcp.needs_reconciliation()
-            {
+            let now = now_unix_ms();
+            let projection_is_current = session.realization.as_ref().is_some_and(|lease| {
+                lease.owner == self.local_realization_owner()
+                    && lease.runtime_incarnation == self.runtime_incarnation()
+                    && awaken_session_contract::realization_lease_is_live_at(
+                        lease.expires_at_unix_ms,
+                        now,
+                    )
+            });
+            if session.is_terminal() || self.requires_external_realization(&session) {
+                continue;
+            }
+            // Recovery cause/effect decision table:
+            // C1 local nonterminal Session; C2 durable lease names this process;
+            // C3 lease is live; C4 MCP has unfinished work. E1 a missing/stale
+            // process projection is reassigned and rebuilt once; E2 pending MCP
+            // is driven by that same phase protocol; E3 an already-current idle
+            // projection is a no-op; E4 terminal/remote placement is untouched.
+            //
+            // | Rule | C1 | C2+C3 | C4 | Effect |
+            // | R1 | yes | no | any | E1 (+E2 when pending) |
+            // | R2 | yes | yes | yes | E2 |
+            // | R3 | yes | yes | no | E3 |
+            // | R4 | no | any | any | E4 |
+            if projection_is_current && !session.mcp.needs_reconciliation() {
                 continue;
             }
             let session_id = session.session_id.clone();
@@ -538,6 +597,23 @@ impl SessionApplication {
             .map_err(unavailable)?;
         Ok((owner_scope, session))
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SessionRecoveryCycle {
+    retryable_failures: usize,
+}
+
+fn session_recovery_delay(failure_streak: u32) -> std::time::Duration {
+    const BASE_SECONDS: u64 = 30;
+    const MAX_SECONDS: u64 = 300;
+    let multiplier = 1_u64.checked_shl(failure_streak.min(4)).unwrap_or(16);
+    std::time::Duration::from_secs(
+        BASE_SECONDS
+            .checked_mul(multiplier)
+            .unwrap_or(MAX_SECONDS)
+            .min(MAX_SECONDS),
+    )
 }
 
 #[async_trait::async_trait]
@@ -1094,5 +1170,22 @@ impl SessionRealizationControl for SessionApplication {
             error => unavailable(error),
         })?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod recovery_backoff_tests {
+    use super::session_recovery_delay;
+
+    #[test]
+    fn retry_backoff_follows_the_failure_streak_decision_table() {
+        /* Causes: C1 consecutive retryable failure count. Effect: E1 next
+         * recovery delay. Rules: R1 C1=0=>30s normal cadence; R2 C1=1=>60s;
+         * R3 C1=2=>120s; R4 C1=3=>240s; R5 C1>=4=>300s cap. Quarantine is
+         * excluded because it is operator-repair work, not retryable work. */
+        let rules = [(0, 30), (1, 60), (2, 120), (3, 240), (4, 300), (99, 300)];
+        for (streak, seconds) in rules {
+            assert_eq!(session_recovery_delay(streak).as_secs(), seconds);
+        }
     }
 }

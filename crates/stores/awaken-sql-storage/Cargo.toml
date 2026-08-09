@@ -11,9 +11,11 @@ authority = "store"
 
 [dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+thiserror.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+proptest.workspace = true
 
 [lints]
 workspace = true

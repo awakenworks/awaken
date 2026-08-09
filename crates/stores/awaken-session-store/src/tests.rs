@@ -25,12 +25,14 @@ fn lifecycle_decoder_rejects_missing_authoritative_fields_but_accepts_legacy_obj
 #[tokio::test]
 async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
     /* FMECA cause/effect decision table. Causes: C1 the Postgres authority
-     * is unavailable; C2 a durable lifecycle row cannot decode; C3 a
-     * durable Session aggregate cannot decode. Effects: E1 expose a typed
-     * scan error; E2 preserve durable rows for a later/operator-assisted
-     * retry. Rules: healthy scans are covered by repository conformance;
-     * R1 C1=>E1; R2 C2=>E1+E2; R3 C3=>E1+E2. Partial results are forbidden because
-     * they would make a corrupt/unavailable authority look complete. */
+     * is unavailable; C2 a durable lifecycle row cannot decode; C3 one
+     * Session row is corrupt while another is healthy. Effects: E1 expose a
+     * typed outage/error; E2 preserve durable rows; E3 durably quarantine only
+     * the corrupt Session; E4 continue healthy recovery. Rules: healthy scans
+     * are covered by repository conformance; R1 C1=>E1; R2 C2=>E1+E2;
+     * R3 C3=>E2+E3+E4. A storage-wide outage fails the scan; row-local decode
+     * corruption is isolated because returning neither row would silently lose
+     * unrelated durable work. */
     let pool = sqlx::postgres::PgPoolOptions::new()
         .acquire_timeout(Duration::from_millis(10))
         .connect_lazy("postgres://localhost/awaken")
@@ -65,6 +67,7 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
     assert!(sqlite.pending_lifecycle().await.is_err(), "R2 typed error");
 
     create_fixture(&sqlite, "workspace", sample("sesn_corrupt"), Vec::new()).await;
+    create_fixture(&sqlite, "workspace", sample("sesn_healthy"), Vec::new()).await;
     sqlite
         .conn
         .lock()
@@ -74,10 +77,31 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
             params!["{", "sesn_corrupt"],
         )
         .unwrap();
-    assert!(
-        sqlite.reconcilable_sessions().await.is_err(),
-        "R3 typed error"
+    let scan = sqlite.reconcilable_sessions().await.unwrap();
+    assert_eq!(scan.sessions.len(), 1, "R3/E4 healthy work continues");
+    assert_eq!(scan.sessions[0].session.session_id, "sesn_healthy");
+    assert_eq!(
+        scan.quarantined,
+        vec![SessionRecoveryQuarantine {
+            session_id: "sesn_corrupt".into(),
+            reason: scan.quarantined[0].reason.clone(),
+        }],
+        "R3/E3 exposes secret-free durable isolation evidence"
     );
+    let replay = sqlite.reconcilable_sessions().await.unwrap();
+    assert_eq!(replay.sessions.len(), 1);
+    assert_eq!(replay.quarantined, scan.quarantined, "R3 idempotent replay");
+    let quarantined_rows: i64 = sqlite
+        .conn
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM managed_session_quarantine WHERE session_id = ?1",
+            params!["sesn_corrupt"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(quarantined_rows, 1, "R3 durable quarantine");
 }
 
 /// Shared-file write-admission causal graph:
@@ -123,6 +147,52 @@ fn sqlite_create_waits_for_a_competing_aggregate_writer() {
 
     let created = writer.join().unwrap();
     assert_eq!(created.session_id, "sesn_waiting_writer", "W2");
+}
+
+#[test]
+fn sqlite_migration_startup_is_concurrent_and_replay_safe() {
+    /* MIG-01/MIG-02 cause/effect decision table. Causes: C1 fresh database,
+     * C2 two simultaneous Session-store starters, C3 later replay. Effects:
+     * E1 exactly one complete V1..V22 ledger, E2 both starters converge, E3
+     * replay is a no-op. Rules: S1 T/F/F=>E1; S2 T/T/F=>E1+E2; S3 F/F/T=>E3.
+     * A backend crash cannot expose DDL without its receipt because the shared
+     * migration runner commits each migration and ledger row in one backend
+     * transaction; this test exercises the competing-start boundary around it. */
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("concurrent-migration.db");
+    let path = path.to_string_lossy().to_string();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let starters = (0..2)
+        .map(|_| {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                SqliteManagedSessionRepository::open(&path)
+            })
+        })
+        .collect::<Vec<_>>();
+    for starter in starters {
+        starter.join().unwrap().expect("S2 converges");
+    }
+    SqliteManagedSessionRepository::open(&path).expect("S3 replay");
+    let conn = Connection::open(&path).unwrap();
+    let ledger_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM managed_schema_migrations WHERE bundle_id = ?1",
+            params!["awaken.managed_session"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(ledger_count, 22, "S1/E1 and S3/E3");
+    let quarantine_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params!["managed_session_quarantine"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(quarantine_exists, 1, "S1/E1");
 }
 
 pub(crate) fn sample(id: &str) -> PersistedSession {
@@ -1018,6 +1088,34 @@ async fn postgres_round_trips_and_upserts() {
         vec![claimed]
     );
     assert_eq!(repo.extraction_cursor("sesn-1").await.unwrap(), 1);
+
+    /* Postgres parity for the recovery isolation decision table above.
+     * Causes: P1 one decodable pending Session; P2 one corrupt aggregate.
+     * Effects: Q1 P1 remains returned; Q2 P2 is excluded and durably
+     * quarantined; Q3 replay preserves the same isolation record. */
+    create_fixture(&repo, "workspace", sample("sesn_pg_healthy"), Vec::new()).await;
+    create_fixture(&repo, "workspace", sample("sesn_pg_corrupt"), Vec::new()).await;
+    sqlx::query("UPDATE managed_session SET aggregate_json = $1 WHERE session_id = $2")
+        .bind("{")
+        .bind("sesn_pg_corrupt")
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+    let scan = repo.reconcilable_sessions().await.unwrap();
+    assert!(
+        scan.sessions
+            .iter()
+            .any(|row| row.session.session_id == "sesn_pg_healthy"),
+        "Q1"
+    );
+    assert!(
+        scan.quarantined
+            .iter()
+            .any(|row| row.session_id == "sesn_pg_corrupt"),
+        "Q2"
+    );
+    let replay = repo.reconcilable_sessions().await.unwrap();
+    assert_eq!(replay.quarantined, scan.quarantined, "Q3");
 }
 
 /// Postgres parity for the ADR-0051 owner `scope_id` — the same atomic

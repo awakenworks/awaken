@@ -61,12 +61,12 @@ impl RunApplication for AwaitingRuntime {
         ))
     }
 
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        self.started.load(Ordering::SeqCst).then(pending)
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(self.started.load(Ordering::SeqCst).then(pending))
     }
 
-    async fn history(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
 
     fn model(&self) -> String {
@@ -270,17 +270,17 @@ impl RunApplication for ClientToolRuntime {
         ))
     }
 
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        Some(Pending {
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(Some(Pending {
             tool_use_id: "c2".into(),
             name: "submit_answer".into(),
             input: Value::Null,
             client_executed: true,
-        })
+        }))
     }
 
-    async fn history(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
 
     fn model(&self) -> String {

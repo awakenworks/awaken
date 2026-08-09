@@ -164,8 +164,8 @@ impl SessionRuntime for ScriptFake {
     ) -> Result<OutcomeReport, RunError> {
         Err(RunError::internal("no outcome"))
     }
-    async fn session_usage(&self, _t: &str) -> SessionUsage {
-        self.usage
+    async fn session_usage(&self, _t: &str) -> Result<SessionUsage, RunError> {
+        Ok(self.usage)
     }
     fn model(&self) -> String {
         "test-model".into()

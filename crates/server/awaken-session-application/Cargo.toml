@@ -29,6 +29,7 @@ tracing = "0.1"
 [dev-dependencies]
 awaken-session-store = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["macros"] }
+tempfile = "3"
 
 [lints]
 workspace = true

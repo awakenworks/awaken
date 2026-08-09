@@ -56,7 +56,7 @@ impl AcpServeHost {
     /// served over ACP records token usage exactly like a native turn — this is the
     /// one ACP direction where usage is real (driving an *external* ACP CLI cannot be,
     /// since the ACP wire carries no token counts). Zero until a turn has run.
-    pub async fn usage(&self, session: &str) -> (u64, u64) {
+    pub async fn usage(&self, session: &str) -> Result<(u64, u64), RunApplicationError> {
         self.runtime.usage(session).await
     }
 
@@ -160,12 +160,15 @@ mod tests {
         // Serving over ACP ran the native engine, so the turn's token usage was
         // recorded on the served session exactly like a native turn.
         assert_eq!(
-            serve.usage(&s1).await,
+            serve.usage(&s1).await.expect("usage remains available"),
             (13, 9),
             "a turn served over ACP records native-engine token usage"
         );
         // A session that never ran a turn has zero usage.
-        assert_eq!(serve.usage(&s2).await, (0, 0));
+        assert_eq!(
+            serve.usage(&s2).await.expect("usage remains available"),
+            (0, 0)
+        );
     }
 
     #[test]

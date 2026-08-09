@@ -16,7 +16,9 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-struct NoopRuntime;
+struct NoopRuntime {
+    pending_unavailable: bool,
+}
 
 #[async_trait]
 impl RunApplication for NoopRuntime {
@@ -43,12 +45,16 @@ impl RunApplication for NoopRuntime {
         unreachable!("resume is not exercised by these error-path tests")
     }
 
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        None
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        if self.pending_unavailable {
+            Err(RunApplicationError::unavailable("pending store offline"))
+        } else {
+            Ok(None)
+        }
     }
 
-    async fn history(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
 
     fn model(&self) -> String {
@@ -57,7 +63,9 @@ impl RunApplication for NoopRuntime {
 }
 
 async fn post(raw: String) -> (StatusCode, Value) {
-    let app = router(Arc::new(NoopRuntime));
+    let app = router(Arc::new(NoopRuntime {
+        pending_unavailable: false,
+    }));
     let resp = app
         .oneshot(
             Request::builder()
@@ -201,12 +209,12 @@ impl RunApplication for FaultingRuntime {
         unreachable!()
     }
 
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        None
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
 
     fn model(&self) -> String {
@@ -264,6 +272,22 @@ async fn message_send_bad_request_fault_maps_to_jsonrpc_invalid_params() {
     let r = rpc_on(Arc::new(FaultingRuntime { internal: false }), send_body(12)).await;
     assert_eq!(r["error"]["code"], -32602, "{r}");
     assert_eq!(r["id"], 12);
+}
+
+#[tokio::test]
+async fn pending_store_outage_is_not_interpreted_as_a_fresh_run() {
+    // Cause/effect table: R1 pending=None => admit a fresh Run; R2 pending=Some
+    // => resume it; R3 pending query unavailable => JSON-RPC internal failure and
+    // no fresh Run. This covers R3; ordinary send and resume tests cover R1/R2.
+    let r = rpc_on(
+        Arc::new(NoopRuntime {
+            pending_unavailable: true,
+        }),
+        send_body(13),
+    )
+    .await;
+    assert_eq!(r["error"]["code"], -32603, "R3: {r}");
+    assert!(r.get("result").is_none(), "R3: {r}");
 }
 
 #[tokio::test]

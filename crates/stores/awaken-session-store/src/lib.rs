@@ -21,7 +21,8 @@ use awaken_session_contract::SessionExecutionState;
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
     ScopedPersistedSession, SessionMutation, SessionMutationPayload, SessionMutationResult,
-    SessionRepositoryConflict, SessionRepositoryError, SessionRevision,
+    SessionRecoveryQuarantine, SessionRecoveryScan, SessionRepositoryConflict,
+    SessionRepositoryError, SessionRevision,
 };
 
 mod deployments;

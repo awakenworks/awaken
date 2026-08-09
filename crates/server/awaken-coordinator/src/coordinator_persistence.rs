@@ -7,18 +7,13 @@
 
 use awaken_session_executor::{DeploymentConfig, DispatchBackend, StoreKind};
 
+use super::runtime_authority::SchemaAccess;
 use super::worker_registry::WorkerDirectoryHandle;
 
 #[derive(Clone)]
 pub struct CoordinatorPersistence {
     pub worker_directory: WorkerDirectoryHandle,
     pub runtime_authority: std::sync::Arc<dyn awaken_session_executor::RuntimeAuthority>,
-}
-
-#[derive(Clone, Copy)]
-enum SchemaAccess {
-    Migrate,
-    Verify,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -134,10 +129,7 @@ async fn open_with(
     let runtime_authority =
         super::runtime_authority::DurableRuntimeAuthority::open_with_postgres_pool(
             deployment,
-            match schema {
-                SchemaAccess::Migrate => super::runtime_authority::SchemaAccess::Migrate,
-                SchemaAccess::Verify => super::runtime_authority::SchemaAccess::Verify,
-            },
+            schema,
             postgres_pool.clone(),
         )
         .await?;

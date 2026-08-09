@@ -3,12 +3,11 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::agent::run::RunState;
 use awaken_session_contract::{
     Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 
-use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
+use crate::host::{HostError, HostErrorKind};
 use crate::{HostResume, SharedHost};
 
 fn to_application_error(error: HostError) -> RunApplicationError {
@@ -17,38 +16,12 @@ fn to_application_error(error: HostError) -> RunApplicationError {
             RunApplicationError::bad_request(error.message)
         }
         HostErrorKind::Internal => RunApplicationError::internal(error.message),
-    }
-}
-
-fn to_pending(pending: Option<PendingTool>) -> Option<Pending> {
-    pending.map(|pending| Pending {
-        tool_use_id: pending.tool_use_id,
-        name: pending.name,
-        input: pending.input,
-        client_executed: pending.client_executed,
-    })
-}
-
-fn to_step_outcome(result: RunResult) -> StepOutcome {
-    let run_id = result.run_id;
-    match result.state {
-        RunState::Awaiting => StepOutcome::awaiting(
-            result.new_messages,
-            to_pending(result.pending),
-            result.compacted,
-            result.rescheduled,
-        )
-        .with_delegated_runs(result.delegated_runs)
-        .with_run_id(run_id),
-        RunState::Ended(cause) => StepOutcome::ended(
-            result.new_messages,
-            cause,
-            result.compacted,
-            result.rescheduled,
-        )
-        .with_delegated_runs(result.delegated_runs)
-        .with_run_id(run_id),
-        RunState::Running => unreachable!("settled host result cannot remain Running"),
+        HostErrorKind::Unavailable if error.code == "unavailable" => {
+            RunApplicationError::unavailable(error.message)
+        }
+        HostErrorKind::Unavailable => {
+            RunApplicationError::unavailable_classified(error.code, error.message)
+        }
     }
 }
 
@@ -56,55 +29,12 @@ fn to_step_outcome(result: RunResult) -> StepOutcome {
 /// Every protocol shares the same [`SharedHost`] and therefore the same thread.
 pub struct RunApplicationHost {
     host: Arc<SharedHost>,
-    session_defaults: Option<Arc<dyn SessionDefaultsPreparer>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("Session defaults could not be prepared: {0}")]
-pub struct SessionDefaultsPreparationError(pub String);
-
-#[async_trait::async_trait]
-pub trait SessionDefaultsPreparer: Send + Sync {
-    async fn prepare(
-        &self,
-        workspace_id: &str,
-        thread_id: &str,
-        agent_id: &str,
-    ) -> Result<(), SessionDefaultsPreparationError>;
 }
 
 impl RunApplicationHost {
     #[must_use]
     pub fn new(host: Arc<SharedHost>) -> Self {
-        Self {
-            host,
-            session_defaults: None,
-        }
-    }
-
-    #[must_use]
-    pub fn with_session_defaults(mut self, preparer: Arc<dyn SessionDefaultsPreparer>) -> Self {
-        self.session_defaults = Some(preparer);
-        self
-    }
-
-    async fn prepare_defaults(
-        &self,
-        thread: &str,
-        agent: Option<&str>,
-    ) -> Result<(), RunApplicationError> {
-        let Some(preparer) = &self.session_defaults else {
-            return Ok(());
-        };
-        let projected_agent = self.host.thread_agent_projection(thread);
-        preparer
-            .prepare(
-                &self.host.thread_workspace(thread),
-                thread,
-                agent.or(projected_agent.as_deref()).unwrap_or("assistant"),
-            )
-            .await
-            .map_err(|error| RunApplicationError::bad_request(error.to_string()))
+        Self { host }
     }
 }
 
@@ -116,13 +46,12 @@ impl RunApplication for RunApplicationHost {
         agent: Option<String>,
         messages: Vec<Message>,
     ) -> Result<StepOutcome, RunApplicationError> {
-        self.prepare_defaults(thread, agent.as_deref()).await?;
         let result = self
             .host
             .run(agent.as_deref(), thread, messages)
             .await
             .map_err(to_application_error)?;
-        Ok(to_step_outcome(result))
+        crate::step_projection::settled_step(result)
     }
 
     async fn run_streaming(
@@ -132,13 +61,12 @@ impl RunApplication for RunApplicationHost {
         messages: Vec<Message>,
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunApplicationError> {
-        self.prepare_defaults(thread, agent.as_deref()).await?;
         let result = self
             .host
             .run_streaming(agent.as_deref(), thread, messages, sink)
             .await
             .map_err(to_application_error)?;
-        Ok(to_step_outcome(result))
+        crate::step_projection::settled_step(result)
     }
 
     async fn resume(
@@ -158,7 +86,7 @@ impl RunApplication for RunApplicationHost {
             .resume(thread, tool_use_id, resume)
             .await
             .map_err(to_application_error)?;
-        Ok(to_step_outcome(result))
+        crate::step_projection::settled_step(result)
     }
 
     async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {
@@ -168,24 +96,27 @@ impl RunApplication for RunApplicationHost {
             .map_err(to_application_error)
     }
 
-    async fn pending(&self, thread: &str) -> Option<Pending> {
+    async fn pending(&self, thread: &str) -> Result<Option<Pending>, RunApplicationError> {
         self.host
             .pending_tool(thread)
             .await
-            .ok()
-            .and_then(to_pending)
+            .map(crate::step_projection::pending)
+            .map_err(to_application_error)
     }
 
-    async fn history(&self, thread: &str) -> Vec<Message> {
-        self.host.committed_messages(thread).await
+    async fn history(&self, thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        self.host
+            .committed_messages(thread)
+            .await
+            .map_err(to_application_error)
     }
 
     fn model(&self) -> String {
         self.host.model()
     }
 
-    async fn usage(&self, thread: &str) -> (u64, u64) {
+    async fn usage(&self, thread: &str) -> Result<(u64, u64), RunApplicationError> {
         let usage = self.host.thread_usage(thread).await.total();
-        (usage.prompt_tokens, usage.completion_tokens)
+        Ok((usage.prompt_tokens, usage.completion_tokens))
     }
 }

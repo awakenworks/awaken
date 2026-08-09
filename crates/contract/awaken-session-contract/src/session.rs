@@ -415,6 +415,16 @@ pub trait SessionRuntime: Send + Sync {
         _lease: crate::SessionRealizationLease,
     ) {
     }
+    /// Project the durable Environment binding expectation before recovery I/O.
+    /// `Some` forbids creating a substitute environment if adoption later fails;
+    /// the binding itself remains owned by the Session aggregate.
+    fn install_expected_environment_binding(
+        &self,
+        _session_id: &str,
+        _binding: Option<String>,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
     /// Read the runtime-owned, durable child-Run relationships for `thread`.
     /// Protocol adapters use this only to rebuild disposable projections after a
     /// restart; the runtime relationship registry remains the sole authority.
@@ -577,16 +587,16 @@ pub trait SessionRuntime: Send + Sync {
     /// MUST answer without materializing any per-thread state (no context
     /// build, no cache entry) — probing must be free of side effects. The
     /// default reports nothing, so an ephemeral host mints densely from 0.
-    async fn owns_thread(&self, _thread: &str) -> bool {
-        false
+    async fn owns_thread(&self, _thread: &str) -> Result<bool, RunError> {
+        Ok(false)
     }
 
     /// The committed transcript for `thread`, in commit order. Used to rehydrate a
     /// session whose in-memory record was lost (e.g. after a process restart) from
     /// durable truth: a non-empty result means the thread exists in the store. The
     /// default reports nothing, so an ephemeral host never rehydrates.
-    async fn committed_messages(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn committed_messages(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
+        Ok(Vec::new())
     }
 
     /// Read committed Run lifecycle facts after `cursor`. The commit log remains
@@ -607,8 +617,8 @@ pub trait SessionRuntime: Send + Sync {
     /// The session's accumulated token usage across all turns, surfaced on the
     /// session's `usage` field. The default is empty — a runtime that reports no usage
     /// (the deterministic in-process models).
-    async fn session_usage(&self, _thread: &str) -> SessionUsage {
-        SessionUsage::default()
+    async fn session_usage(&self, _thread: &str) -> Result<SessionUsage, RunError> {
+        Ok(SessionUsage::default())
     }
 
     /// Whether the thread's selected model accepts a system message after the
@@ -794,6 +804,14 @@ impl RunError {
         }
     }
 
+    pub fn unavailable_classified(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: RunErrorKind::Unavailable,
+            code: code.into(),
+        }
+    }
+
     pub fn classified(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
@@ -937,13 +955,23 @@ mod tests {
     #[tokio::test]
     async fn default_probes_report_nothing() {
         let rt = MinimalRuntime;
-        assert!(!rt.owns_thread("t").await, "an ephemeral host owns nothing");
         assert!(
-            rt.committed_messages("t").await.is_empty(),
+            !rt.owns_thread("t")
+                .await
+                .expect("default ownership query remains available"),
+            "an ephemeral host owns nothing"
+        );
+        assert!(
+            rt.committed_messages("t")
+                .await
+                .expect("default history query remains available")
+                .is_empty(),
             "no durable transcript by default"
         );
         assert_eq!(
-            rt.session_usage("t").await,
+            rt.session_usage("t")
+                .await
+                .expect("default usage query remains available"),
             SessionUsage::default(),
             "no usage reported by default"
         );

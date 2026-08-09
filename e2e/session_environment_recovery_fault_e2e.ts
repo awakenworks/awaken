@@ -126,7 +126,11 @@ async function createRealizedSession(client: Anthropic, name: string): Promise<s
   return created.id;
 }
 
-async function expectRestoreFailure(sessionId: string, marker: string): Promise<void> {
+async function expectRestoreFailure(
+  client: Anthropic,
+  sessionId: string,
+  marker: string,
+): Promise<void> {
   const response = await fetch(`${BASE}/v1/sessions/${sessionId}/events`, {
     method: 'POST',
     headers: {
@@ -139,8 +143,31 @@ async function expectRestoreFailure(sessionId: string, marker: string): Promise<
     }),
   });
   const body = await response.text();
-  assert.equal(response.status, 500, `${marker} failed closed: ${response.status} ${body}`);
-  assert.ok(body.includes('error'), `${marker} returned a structured error: ${body}`);
+  // Durable-ingress outcome decision table: C1 restoration fails before enqueue
+  // -> synchronous 500; C2 the durable command is accepted before the Worker
+  // observes corruption -> 200 receipt followed by committed `session.error`.
+  // Both fail closed; C2 must never be mistaken for successful execution merely
+  // because command acknowledgement and outcome use separate boundaries.
+  //
+  // | Rule | Admission | Runtime restore | Observable outcome |
+  // | F1 | reject | not run | HTTP 500 error |
+  // | F2 | accept | corrupt/unavailable | HTTP 200 + committed session.error |
+  if (response.status === 500) {
+    assert.ok(body.includes('error'), `${marker} returned a structured error: ${body}`);
+    return;
+  }
+  assert.equal(response.status, 200, `${marker} admission shape: ${response.status} ${body}`);
+  const deadline = Date.now() + 30_000;
+  let observed: any[] = [];
+  do {
+    observed = [];
+    for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
+      observed.push(event);
+    }
+    if (observed.some((event) => event.type === 'session.error')) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() <= deadline);
+  assert.fail(`${marker} did not commit session.error: ${JSON.stringify(observed)}`);
 }
 
 function removeContainers(ids: Iterable<string>): void {
@@ -231,7 +258,7 @@ async function main(): Promise<void> {
     brain = spawnBrain(binary, storage);
     await waitForPort(PORT, 180_000, brain);
     for (const [name, sessionId] of cases) {
-      await expectRestoreFailure(sessionId, name);
+      await expectRestoreFailure(client, sessionId, name);
       const afterFault = execFileSync(
         'docker',
         ['ps', '-q', '--filter', 'label=awaken.sandbox=1', '--filter', `ancestor=${IMAGE}`],

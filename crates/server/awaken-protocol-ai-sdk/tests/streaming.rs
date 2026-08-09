@@ -2,8 +2,8 @@
 //! frames live and closes with the authoritative `tool-input-available` +
 //! `finish`, over a real chunked SSE body driven through the axum router.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -86,12 +86,12 @@ impl RunApplication for StreamingMock {
         unreachable!()
     }
 
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        None
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
 
     fn model(&self) -> String {
@@ -217,11 +217,11 @@ async fn falls_back_to_full_projection_when_nothing_streamed() {
         ) -> Result<StepOutcome, RunApplicationError> {
             unreachable!()
         }
-        async fn pending(&self, _t: &str) -> Option<Pending> {
-            None
+        async fn pending(&self, _t: &str) -> Result<Option<Pending>, RunApplicationError> {
+            Ok(None)
         }
-        async fn history(&self, _t: &str) -> Vec<Message> {
-            Vec::new()
+        async fn history(&self, _t: &str) -> Result<Vec<Message>, RunApplicationError> {
+            Ok(Vec::new())
         }
         fn model(&self) -> String {
             "silent".into()
@@ -262,6 +262,92 @@ async fn falls_back_to_full_projection_when_nothing_streamed() {
     assert!(types.contains(&"text-delta"));
     assert!(types.contains(&"finish"));
     assert!(text.contains("hello"));
+}
+
+#[tokio::test]
+async fn a_retained_best_effort_sink_cannot_hold_the_completed_stream_open() {
+    struct RetainedSinkMock {
+        retained: Mutex<Option<Arc<dyn StreamSink>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl RunApplication for RetainedSinkMock {
+        async fn run(
+            &self,
+            _thread: &str,
+            _agent: Option<String>,
+            _messages: Vec<Message>,
+        ) -> Result<StepOutcome, RunApplicationError> {
+            unreachable!("the completion test uses run_streaming")
+        }
+
+        async fn run_streaming(
+            &self,
+            _thread: &str,
+            _agent: Option<String>,
+            _messages: Vec<Message>,
+            sink: Arc<dyn StreamSink>,
+        ) -> Result<StepOutcome, RunApplicationError> {
+            *self.retained.lock().unwrap() = Some(sink);
+            Ok(StepOutcome::ended(
+                vec![Message::text(Id("a1".into()), Role::Assistant, "complete")],
+                awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+                false,
+                false,
+            ))
+        }
+
+        async fn resume(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _resume: RunResume,
+        ) -> Result<StepOutcome, RunApplicationError> {
+            unreachable!()
+        }
+
+        async fn pending(&self, _thread: &str) -> Option<Pending> {
+            None
+        }
+
+        async fn history(&self, _thread: &str) -> Vec<Message> {
+            Vec::new()
+        }
+
+        fn model(&self) -> String {
+            "retained-sink".into()
+        }
+    }
+
+    let runtime = Arc::new(RetainedSinkMock {
+        retained: Mutex::new(None),
+    });
+    let app = awaken_protocol_ai_sdk::router(runtime.clone());
+    let body =
+        json!({ "messages": [{ "role": "user", "parts": [{ "type": "text", "text": "go" }] }] });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/chat")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = tokio::time::timeout(
+        Duration::from_secs(1),
+        to_bytes(response.into_body(), usize::MAX),
+    )
+    .await
+    .expect("a completed Run closes without waiting for retained sink clones")
+    .unwrap();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(text.contains("complete"));
+    assert!(text.contains("\"type\":\"finish\""));
+    assert!(text.contains("data: [DONE]"));
+    assert!(runtime.retained.lock().unwrap().is_some());
 }
 
 /// A runtime that streams best-effort live text until its sink closes, recording
@@ -322,11 +408,11 @@ impl RunApplication for HangupProbe {
     ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!()
     }
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        None
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(None)
     }
-    async fn history(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
     fn model(&self) -> String {
         "mock".into()
