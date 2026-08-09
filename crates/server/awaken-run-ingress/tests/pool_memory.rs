@@ -18,8 +18,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::{
     Clock, CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchPool, DispatchQueue,
     DispatchServiceConfig, DispatchWorker, Error, Inbox, ManualClock, MemoryDispatchStore,
@@ -248,7 +247,7 @@ async fn pool_cancellation_resolves_and_drives_the_frozen_claim() {
         "C2"
     );
     assert_eq!(
-        RunStore::get(commit.as_ref(), &RunId("cold-cancel".into()))
+        CommittedThreadView::run(commit.as_ref(), &RunId("cold-cancel".into()))
             .expect("C2 terminal")
             .state,
         RunState::Ended(EndCause::Cancelled),
@@ -364,10 +363,10 @@ async fn routing_drives_each_run_on_its_own_threads_runtime() {
     );
 
     // Each run landed on its own thread's boundary, and NOT on the other's.
-    assert!(RunStore::get(&*commit_a, &RunId("run-a".into())).is_some());
-    assert!(RunStore::get(&*commit_a, &RunId("run-b".into())).is_none());
-    assert!(RunStore::get(&*commit_b, &RunId("run-b".into())).is_some());
-    assert!(RunStore::get(&*commit_b, &RunId("run-a".into())).is_none());
+    assert!(CommittedThreadView::run(&*commit_a, &RunId("run-a".into())).is_some());
+    assert!(CommittedThreadView::run(&*commit_a, &RunId("run-b".into())).is_none());
+    assert!(CommittedThreadView::run(&*commit_b, &RunId("run-b".into())).is_some());
+    assert!(CommittedThreadView::run(&*commit_b, &RunId("run-a".into())).is_none());
 
     pool.shutdown().await;
 }
@@ -867,7 +866,7 @@ async fn shutdown_awaits_an_in_flight_drive() {
     let run = RunId("run-1".to_string());
     assert!(
         matches!(
-            RunStore::get(&*commit, &run).map(|r| r.state),
+            CommittedThreadView::run(&*commit, &run).map(|r| r.state),
             Some(RunState::Running)
         ),
         "the run is in-flight (Running), not yet settled"
@@ -890,7 +889,7 @@ async fn shutdown_awaits_an_in_flight_drive() {
         .expect("shutdown task did not panic");
     assert!(
         matches!(
-            RunStore::get(&*commit, &run).map(|r| r.state),
+            CommittedThreadView::run(&*commit, &run).map(|r| r.state),
             Some(RunState::Ended(_))
         ),
         "the in-flight run was driven to completion, not dropped by shutdown"

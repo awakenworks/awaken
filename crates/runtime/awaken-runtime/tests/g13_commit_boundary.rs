@@ -13,7 +13,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
-use awaken_agent_contract::thread::read::run_store::RunStore;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 fn ended(run: &str) -> RunDisposition {
@@ -42,7 +42,7 @@ fn ticket(run: &str, thread: &str) -> ResumeTicket {
 async fn g13_projection_absent_before_first_commit() {
     let store = MemoryCommitCoordinator::new();
     assert!(
-        store.get(&RunId("run-1".to_string())).is_none(),
+        store.run(&RunId("run-1".to_string())).is_none(),
         "projection must be empty before any commit"
     );
     assert_eq!(store.commit_count(), 0);
@@ -55,7 +55,7 @@ async fn g13_projection_visible_only_after_commit_returns_ok() {
     let store = MemoryCommitCoordinator::new();
     let run = RunId("run-1".to_string());
 
-    assert!(store.get(&run).is_none(), "projection absent before commit");
+    assert!(store.run(&run).is_none(), "projection absent before commit");
 
     store
         .commit(ThreadCommit {
@@ -68,7 +68,7 @@ async fn g13_projection_visible_only_after_commit_returns_ok() {
         .await
         .expect("commit ok");
 
-    let record = store.get(&run).expect("projection visible after commit");
+    let record = store.run(&run).expect("projection visible after commit");
     assert_eq!(record.state, RunState::Ended(EndCause::NaturalEnd));
 }
 
@@ -92,7 +92,7 @@ async fn g13_failed_commit_leaves_no_partial_state() {
     assert!(err.is_err(), "invalid plan must be rejected");
 
     assert!(
-        store.get(&run).is_none(),
+        store.run(&run).is_none(),
         "no partial state after failed commit"
     );
     assert_eq!(

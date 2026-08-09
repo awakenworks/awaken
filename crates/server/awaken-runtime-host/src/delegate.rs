@@ -371,7 +371,7 @@ mod durable_cancel_tests {
     use awaken_agent_contract::agent::delegation::DelegationOrigin;
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+    use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
     use awaken_run_ingress::{AnyDispatchStore, DispatchQueue};
     use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
     use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse};

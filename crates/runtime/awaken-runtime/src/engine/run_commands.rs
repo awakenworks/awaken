@@ -91,7 +91,7 @@ pub(crate) async fn stop_run(
 pub(crate) async fn perform_scheduled_action(
     runtime: &Runtime,
     run_id: &RunId,
-    reader: &dyn ThreadReader,
+    reader: &dyn CommittedThreadView,
     context: RuntimeRunContext,
     now_ms: u64,
 ) -> Result<RunState> {
@@ -124,7 +124,7 @@ pub(crate) async fn perform_scheduled_action(
 pub(crate) async fn resume_run(
     runtime: &Runtime,
     command: ResumeCommand,
-    reader: &dyn ThreadReader,
+    reader: &dyn CommittedThreadView,
     context: RuntimeRunContext,
 ) -> Result<RunState> {
     let ticket = reader

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::thread::read::run_store::RunStore;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::{
     DispatchQueue, DispatchServiceConfig, DurableRunIngress, ManualClock, MemoryDispatchStore,
     PendingInput, RunDispatch, SystemClock,
@@ -26,7 +26,7 @@ use harness::{THREAD, TICKET, activation, text_runtime, tool_runtime};
 /// The run's committed state, if any — per-step commits make a run durable
 /// (as `Running`) before it awaits or ends, so waits key on the state itself.
 fn state_of(commit: &MemoryCommitCoordinator, run: &str) -> Option<RunState> {
-    RunStore::get(commit, &RunId(run.to_string())).map(|r| r.state)
+    CommittedThreadView::run(commit, &RunId(run.to_string())).map(|r| r.state)
 }
 
 async fn wait_for(cond: impl Fn() -> bool) -> bool {
@@ -99,7 +99,8 @@ async fn service_resumes_an_awaiting_run_on_delivery() {
         "the daemon resumed the run"
     );
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the pending tool ran once");
-    let record = RunStore::get(commit.as_ref(), &RunId("run-1".to_string())).expect("record");
+    let record =
+        CommittedThreadView::run(commit.as_ref(), &RunId("run-1".to_string())).expect("record");
     assert_eq!(record.state, RunState::Ended(EndCause::NaturalEnd));
 
     service.shutdown().await;

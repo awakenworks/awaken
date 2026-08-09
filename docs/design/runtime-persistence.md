@@ -69,14 +69,19 @@ Reading the map:
 trait CommitCoordinator { async fn commit(&self, plan: ThreadCommit) -> Result<CommitRecord>; }
 struct ThreadCommit { thread_id, run: RunDisposition, messages, state, events }
 
-// read: the single after-commit repository. Subsumes today's ThreadReader + RunStore.
-trait CheckpointReader {
+// execution view: one meaning across local authorities and a Worker's
+// claim-fenced recovery snapshot. This is not a second persistence repository.
+trait CommittedThreadView {
     fn committed_messages(&self, thread: &ThreadId) -> Vec<Message>;
     fn committed_state(&self, thread: &ThreadId) -> Vec<StateCommand>;
     fn run(&self, run: &RunId) -> Option<RunRecord>;
     fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord>;
     fn resume_ticket(&self, run: &RunId) -> Option<ResumeTicket>;
-    async fn list_events(&self, scope: EventScope, from: Option<Cursor>, limit: usize) -> EventPage;
+}
+
+// durable read repository: extends that same view only with committed events.
+trait CheckpointReader: CommittedThreadView {
+    fn list_events(&self, scope: EventScope, from: Option<Cursor>, limit: usize) -> Vec<EventRecord>;
 }
 
 // live: best-effort progress (G10), reconciled by committed history.

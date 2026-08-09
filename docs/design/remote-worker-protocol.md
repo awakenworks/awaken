@@ -162,7 +162,7 @@ pub struct RunRecoverySnapshot {
 ```
 
 - `thread_version` is per thread and is used for optimistic concurrency.
-- `latest_run_id` preserves the existing `RunStore::latest_run` semantics
+- `latest_run_id` preserves the `CommittedThreadView::latest_run` Thread-head semantics
   without requiring the Worker to infer ordering from backend-specific records.
 - `store_cursor` identifies the source-store prefix for diagnostics, feed
   backfill, and future delta reads.
@@ -198,8 +198,8 @@ these semantics.
 
 ### 4.2 Recovery projection
 
-`RecoveryProjection` implements the synchronous committed read ports needed by
-the runtime, including `ThreadReader`/`RunStore` compatibility:
+`RecoveryProjection` implements the single synchronous `CommittedThreadView`
+needed by the runtime. It is not a `CheckpointReader` or persistence owner:
 
 1. atomically replace an empty attempt cache with a validated snapshot;
 2. expose only that snapshot and later acknowledged commits;

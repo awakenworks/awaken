@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_ext_builtin_tools::{MessageSendRequest, MessageSender};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::tool::ToolError;
@@ -29,13 +29,13 @@ use crate::dispatch::{DispatchQueue, Outbox, PendingInput};
 /// compatible input-accepting ticket and otherwise preserves it for the next Run.
 pub struct OutboxMessageSender<S> {
     store: Arc<S>,
-    reader: Arc<dyn ThreadReader>,
+    reader: Arc<dyn CommittedThreadView>,
 }
 
 impl<S: DispatchQueue + Outbox> OutboxMessageSender<S> {
     /// Build the adapter from the dispatch store (to resolve the target thread's
     /// awaiting run and stage) and the commit boundary's read port (for its ticket).
-    pub fn new(store: Arc<S>, reader: Arc<dyn ThreadReader>) -> Self {
+    pub fn new(store: Arc<S>, reader: Arc<dyn CommittedThreadView>) -> Self {
         Self { store, reader }
     }
 }

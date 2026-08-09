@@ -24,8 +24,7 @@ use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitOperationId, CommitPayloadHash,
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEventKind, RunLifecycleFeed};
 use awaken_store_postgres::PostgresCommitCoordinator;
 use sqlx::Executor;
@@ -303,7 +302,7 @@ async fn reconnect_replays_committed_state() {
         .await
         .expect("reconnect");
     assert_eq!(
-        ThreadReader::committed_state(&reopened, &thread),
+        CommittedThreadView::committed_state(&reopened, &thread),
         commands,
         "committed state replays from durable truth after a reconnect"
     );
@@ -340,11 +339,12 @@ async fn commit_persists_facts_messages_and_serves_reads() {
     assert_eq!(record.sequence, 1);
     assert_eq!(coordinator.commit_count(), 1);
 
-    let run = RunStore::get(&coordinator, &RunId("run-1".to_string())).expect("run record");
+    let run =
+        CommittedThreadView::run(&coordinator, &RunId("run-1".to_string())).expect("run record");
     assert_eq!(run.state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(run.thread_id, thread);
 
-    let messages = ThreadReader::committed_messages(&coordinator, &thread);
+    let messages = CommittedThreadView::committed_messages(&coordinator, &thread);
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].id.0, "m1");
 
@@ -444,7 +444,7 @@ async fn post_terminal_commit_is_fenced_durably() {
         "the rejected commit did not advance the fence"
     );
     assert_eq!(
-        RunStore::get(&coordinator, &run).map(|record| record.state),
+        CommittedThreadView::run(&coordinator, &run).map(|record| record.state),
         Some(RunState::Ended(EndCause::NaturalEnd)),
         "the run stays terminal"
     );
@@ -482,7 +482,7 @@ async fn resume_ticket_awaits_then_clears() {
         })
         .await
         .expect("await");
-    assert!(ThreadReader::resume_ticket(&coordinator, &run).is_some());
+    assert!(CommittedThreadView::resume_ticket(&coordinator, &run).is_some());
 
     coordinator
         .commit(ThreadCommit {
@@ -495,7 +495,7 @@ async fn resume_ticket_awaits_then_clears() {
         .await
         .expect("resume to terminal");
     assert!(
-        ThreadReader::resume_ticket(&coordinator, &run).is_none(),
+        CommittedThreadView::resume_ticket(&coordinator, &run).is_none(),
         "a terminal run clears its ticket (fail closed)"
     );
 }
@@ -665,17 +665,17 @@ async fn projection_rehydrates_from_postgres_after_reconnect() {
     assert_eq!(restarted.commit_count(), 1, "fence survives restart");
     let thread = ThreadId("thread-1".to_string());
     assert_eq!(
-        ThreadReader::committed_messages(&restarted, &thread)[0]
+        CommittedThreadView::committed_messages(&restarted, &thread)[0]
             .id
             .0,
         "m1"
     );
     assert!(
-        RunStore::get(&restarted, &RunId("run-1".to_string())).is_some(),
+        CommittedThreadView::run(&restarted, &RunId("run-1".to_string())).is_some(),
         "run record rehydrated"
     );
     assert!(
-        ThreadReader::resume_ticket(&restarted, &RunId("run-1".to_string())).is_some(),
+        CommittedThreadView::resume_ticket(&restarted, &RunId("run-1".to_string())).is_some(),
         "active ticket rehydrated"
     );
 }
@@ -773,7 +773,7 @@ async fn peer_lifecycle_feed_reads_authoritative_postgres_without_projection_ref
     }
 
     assert!(
-        RunStore::get(&peer, &run).is_none(),
+        CommittedThreadView::run(&peer, &run).is_none(),
         "P1/P3 the peer's synchronous compatibility projection remains stale"
     );
     assert_eq!(
@@ -786,7 +786,7 @@ async fn peer_lifecycle_feed_reads_authoritative_postgres_without_projection_ref
         "P2 exact active-active reconciliation reads committed truth"
     );
     assert!(
-        ThreadReader::committed_messages(&peer, &thread).is_empty(),
+        CommittedThreadView::committed_messages(&peer, &thread).is_empty(),
         "P1/P3 the synchronous peer transcript remains stale"
     );
     assert_eq!(

@@ -16,8 +16,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -78,7 +77,7 @@ async fn postgres_commit_backs_execute_resume_and_survives_restart() {
         "input, requested batch, and awaiting approval survive restart"
     );
     assert!(
-        ThreadReader::resume_ticket(&*restarted, &RunId("run-1".to_string())).is_some(),
+        CommittedThreadView::resume_ticket(&*restarted, &RunId("run-1".to_string())).is_some(),
         "the active ticket rehydrated — the await survives restart"
     );
 
@@ -92,10 +91,11 @@ async fn postgres_commit_backs_execute_resume_and_survives_restart() {
     assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
 
     // The committed run record (the derived cache) equals the latest fact.
-    let record = RunStore::get(&*restarted, &RunId("run-1".to_string())).expect("run record");
+    let record =
+        CommittedThreadView::run(&*restarted, &RunId("run-1".to_string())).expect("run record");
     assert_eq!(record.state, RunState::Ended(EndCause::NaturalEnd));
     assert!(
-        ThreadReader::resume_ticket(&*restarted, &RunId("run-1".to_string())).is_none(),
+        CommittedThreadView::resume_ticket(&*restarted, &RunId("run-1".to_string())).is_none(),
         "a resumed run clears its ticket"
     );
 }

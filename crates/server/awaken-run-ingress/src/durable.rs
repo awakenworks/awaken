@@ -11,8 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime::{RunIngress, RunService, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::control::Error as ControlError;
@@ -37,7 +36,7 @@ pub struct DurableRunIngress<S> {
     /// Same committed-history source the worker consults. A replayed completed
     /// run is blocked by the dispatch tombstone, so submit returns this existing
     /// state rather than creating a second execution (ADR-0060).
-    reader: Arc<dyn ThreadReader>,
+    reader: Arc<dyn CommittedThreadView>,
     /// The per-session live inbox shared by the worker's drive (drained at safe
     /// loop boundaries) and the offer side (ADR-0054 P2). Neutral `Message`s only;
     /// this is why durable steer needs no protocol type in the worker.
@@ -60,7 +59,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     /// the runtime's writes and the worker's reads (G6 same-source wiring).
     pub fn new<C>(runtime: Arc<Runtime>, store: Arc<S>, commit: Arc<C>) -> Self
     where
-        C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
+        C: CommitCoordinator + CommittedThreadView + Send + Sync + 'static,
     {
         Self::with_owner(runtime, store, commit, "durable-run-ingress", None)
     }
@@ -80,7 +79,7 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         >,
     ) -> Self
     where
-        C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
+        C: CommitCoordinator + CommittedThreadView + Send + Sync + 'static,
     {
         Self::with_owner_and_resolver(runtime, store, commit, owner, stream_checkpoint, None)
     }
@@ -101,9 +100,9 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         inference_materializer: Option<crate::worker_context::InferenceMaterializerFn>,
     ) -> Self
     where
-        C: CommitCoordinator + ThreadReader + RunStore + Send + Sync + 'static,
+        C: CommitCoordinator + CommittedThreadView + Send + Sync + 'static,
     {
-        let reader: Arc<dyn ThreadReader> = commit.clone();
+        let reader: Arc<dyn CommittedThreadView> = commit.clone();
         let live_inbox = awaken_runtime_contract::live_inbox::LiveInbox::new();
         let mut worker =
             DispatchWorker::new(runtime, store, commit, owner).with_live_inbox(live_inbox.clone());

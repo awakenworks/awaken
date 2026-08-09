@@ -14,18 +14,108 @@ use awaken_agent_contract::thread::commit::coordinator::{
 };
 use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleFeed, RunLifecycleFeedError, RunLifecyclePage,
 };
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use std::sync::Arc;
 
+use crate::{LocalCommitAdapter, LocalCommitQueries};
+
+// All delegation for a Coordinator-owned commit source is centralized here so
+// composition adapters cannot become parallel implementations of persistence
+// authority (ADR-0065/0066 architecture fitness).
+#[async_trait::async_trait]
+impl<S, Q> Coordinator for LocalCommitAdapter<S, Q>
+where
+    S: Coordinator + Send + Sync,
+    Q: Send + Sync,
+{
+    async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
+        self.store.as_ref().commit(commit).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<S, Q> OperationCoordinator for LocalCommitAdapter<S, Q>
+where
+    S: OperationCoordinator + Send + Sync,
+    Q: Send + Sync,
+{
+    async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
+        self.store.as_ref().commit_operation(operation).await
+    }
+}
+
+impl<S, Q> CommittedThreadView for LocalCommitAdapter<S, Q>
+where
+    S: CommittedThreadView,
+    Q: Send + Sync,
+{
+    fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
+        self.store.as_ref().committed_messages(thread_id)
+    }
+
+    fn run(&self, run_id: &RunId) -> Option<RunRecord> {
+        self.store.as_ref().run(run_id)
+    }
+
+    fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
+        self.store.as_ref().latest_run(thread_id)
+    }
+
+    fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
+        self.store.as_ref().resume_ticket(run_id)
+    }
+
+    fn committed_state(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Vec<awaken_agent_contract::agent::state::Command> {
+        self.store.as_ref().committed_state(thread_id)
+    }
+}
+
+#[async_trait::async_trait]
+impl<S, Q> RunRecoverySource for LocalCommitAdapter<S, Q>
+where
+    S: RunRecoverySource + Send + Sync,
+    Q: Send + Sync,
+{
+    async fn recovery_snapshot(
+        &self,
+        thread_id: &ThreadId,
+        claimed_run_id: &RunId,
+    ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        self.store
+            .as_ref()
+            .recovery_snapshot(thread_id, claimed_run_id)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl<S, Q> RunLifecycleFeed for LocalCommitAdapter<S, Q>
+where
+    S: Send + Sync,
+    Q: LocalCommitQueries<S>,
+{
+    async fn events_after(
+        &self,
+        cursor: RunLifecycleCursor,
+        limit: usize,
+    ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
+        self.queries
+            .events_after(self.store.as_ref(), cursor, limit)
+            .await
+    }
+}
+
 /// One thread's commit boundary: either a `Local` read+write store (an
-/// interchangeable memory/sqlite/fs/postgres backend behind `Arc<dyn HostStore>`,
+/// interchangeable memory/sqlite/fs/postgres backend behind `Arc<dyn LocalCommit>`,
 /// chosen at the composition root) or the `Remote` Worker boundary backed by a
 /// non-authoritative recovery projection. The four local backends are polymorphic
 /// — the enum only discriminates local authoritative reads from projected remote
@@ -38,7 +128,7 @@ pub(crate) enum HostCommit {
     /// The database-independent Worker's read boundary. Authoritative writes go
     /// through the attempt's claim-fenced operation coordinator; reads use the
     /// [`awaken_run_ingress::RecoveryProjection`]. It deliberately is not a
-    /// [`HostStore`]: the projection is an execution cache, never authoritative
+    /// [`crate::LocalCommit`]: the projection is an execution cache, never authoritative
     /// storage or an alternate commit path.
     Remote(RemoteHostCommit),
 }
@@ -62,7 +152,7 @@ impl HostCommit {
     ) -> Result<Option<RunRecord>, String> {
         match self {
             HostCommit::Local(store) => store.authoritative_run(run_id).await,
-            HostCommit::Remote(remote) => Ok(remote.projection.get(run_id)),
+            HostCommit::Remote(remote) => Ok(remote.projection.run(run_id)),
         }
     }
 
@@ -159,7 +249,7 @@ impl OperationCoordinator for HostCommit {
     }
 }
 
-impl ThreadReader for HostCommit {
+impl CommittedThreadView for HostCommit {
     fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
         match self {
             HostCommit::Local(store) => store.committed_messages(thread_id),
@@ -171,6 +261,20 @@ impl ThreadReader for HostCommit {
         match self {
             HostCommit::Local(store) => store.resume_ticket(run_id),
             HostCommit::Remote(remote) => remote.projection.resume_ticket(run_id),
+        }
+    }
+
+    fn run(&self, run_id: &RunId) -> Option<RunRecord> {
+        match self {
+            HostCommit::Local(store) => store.run(run_id),
+            HostCommit::Remote(remote) => remote.projection.run(run_id),
+        }
+    }
+
+    fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
+        match self {
+            HostCommit::Local(store) => store.latest_run(thread_id),
+            HostCommit::Remote(remote) => remote.projection.latest_run(thread_id),
         }
     }
 
@@ -188,15 +292,6 @@ impl ThreadReader for HostCommit {
         match self {
             HostCommit::Local(store) => store.committed_state(thread_id),
             HostCommit::Remote(remote) => remote.projection.committed_state(thread_id),
-        }
-    }
-}
-
-impl RunStore for HostCommit {
-    fn get(&self, id: &RunId) -> Option<RunRecord> {
-        match self {
-            HostCommit::Local(store) => store.get(id),
-            HostCommit::Remote(remote) => remote.projection.get(id),
         }
     }
 }

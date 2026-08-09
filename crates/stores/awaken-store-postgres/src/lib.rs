@@ -7,7 +7,7 @@
 //! fact log is the authority; the `run_record` table is a derived cache equal to
 //! the latest fact (G32).
 //!
-//! The read ports (`RunStore`, `ThreadReader`) are synchronous, so the
+//! The `CommittedThreadView` read port is synchronous, so the
 //! coordinator keeps an in-memory projection of committed truth that it rebuilds
 //! from Postgres on construction (durable across restart) and updates in lockstep
 //! with each commit. The projection is never an independent authority — it always
@@ -31,6 +31,7 @@ use awaken_agent_contract::thread::commit::operation::{
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleEvent, RunLifecycleFeed, RunLifecycleFeedError,
     RunLifecyclePage, classify_run_lifecycle_event,
@@ -38,8 +39,6 @@ use awaken_agent_contract::thread::read::lifecycle::{
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
 };
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_store_schema::StoredU64;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
@@ -742,22 +741,27 @@ fn advance_projection(
     }
 }
 
-impl RunStore for PostgresCommitCoordinator {
-    fn get(&self, id: &RunId) -> Option<RunRecord> {
-        self.projection
-            .lock()
-            .ok()
-            .and_then(|p| p.run_records.get(id).cloned())
-    }
-}
-
-impl ThreadReader for PostgresCommitCoordinator {
+impl CommittedThreadView for PostgresCommitCoordinator {
     fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
         PostgresCommitCoordinator::committed_messages(self, thread_id)
     }
 
     fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
         self.resume_ticket_for(run_id)
+    }
+
+    fn run(&self, run_id: &RunId) -> Option<RunRecord> {
+        self.projection
+            .lock()
+            .ok()
+            .and_then(|projection| projection.run_records.get(run_id).cloned())
+    }
+
+    fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
+        self.projection
+            .lock()
+            .ok()
+            .and_then(|projection| projection.latest_by_thread.get(thread_id).cloned())
     }
 
     fn run_state(&self, run_id: &RunId) -> Option<RunState> {
@@ -775,17 +779,6 @@ impl ThreadReader for PostgresCommitCoordinator {
 /// The merged read repository (ADR-0039 D1), served from the fact-derived
 /// projection that `hydrate` rebuilt from the durable tables (D4).
 impl CheckpointReader for PostgresCommitCoordinator {
-    fn run(&self, id: &RunId) -> Option<RunRecord> {
-        self.get(id)
-    }
-
-    fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
-        self.projection
-            .lock()
-            .ok()
-            .and_then(|p| p.latest_by_thread.get(thread_id).cloned())
-    }
-
     fn list_events(&self, scope: &EventScope, from: Option<u64>, limit: usize) -> Vec<EventRecord> {
         let after = from.unwrap_or(0);
         let projection = match self.projection.lock() {

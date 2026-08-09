@@ -3,8 +3,8 @@
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
 use awaken_runtime_contract::{
-    EndCause, ExecutableAgentSnapshot, Message, MessageId, ModelBinding, Role, RunActivation,
-    RunState, RuntimeRunContext, ThreadReader, TranscriptSliceSpec,
+    CommittedThreadView, EndCause, ExecutableAgentSnapshot, Message, MessageId, ModelBinding, Role,
+    RunActivation, RunState, RuntimeRunContext, TranscriptSliceSpec,
 };
 
 use crate::outcome::{Grade, Grader, GraderError, GradingInput, parse_grade};
@@ -57,7 +57,7 @@ pub fn grading_prompt(input: &GradingInput) -> Result<String, GraderError> {
 /// Thread reader used by any other Run; no Host or backend type is required.
 pub struct AgentGrader<'a> {
     executor: &'a dyn RunExecutor,
-    reader: &'a dyn ThreadReader,
+    reader: &'a dyn CommittedThreadView,
     context: RuntimeRunContext,
 }
 
@@ -65,7 +65,7 @@ impl<'a> AgentGrader<'a> {
     #[must_use]
     pub fn new(
         executor: &'a dyn RunExecutor,
-        reader: &'a dyn ThreadReader,
+        reader: &'a dyn CommittedThreadView,
         context: RuntimeRunContext,
     ) -> Self {
         Self {

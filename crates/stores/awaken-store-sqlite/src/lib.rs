@@ -2,7 +2,7 @@
 //!
 //! [`SqliteCommitCoordinator`] is the embedded sibling of the Postgres backend:
 //! it implements the same neutral [`Coordinator`] write boundary (G1/G13) and the
-//! `RunStore` / `ThreadReader` read ports against an in-process SQLite database,
+//! unified `CommittedThreadView` read port against an in-process SQLite database,
 //! using the *same* portable commit schema ([`awaken_store_schema`]). It satisfies
 //! the identical commit contract (ADR-0006): the committed fact log is the
 //! authority and the `run_record` table is a derived cache equal to the latest
@@ -34,6 +34,7 @@ use awaken_agent_contract::thread::commit::operation::{
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleEvent, RunLifecycleFeed, RunLifecycleFeedError,
     RunLifecyclePage, classify_run_lifecycle_event,
@@ -41,8 +42,6 @@ use awaken_agent_contract::thread::read::lifecycle::{
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
 };
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_store_schema::StoredU64;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
@@ -276,22 +275,27 @@ impl OperationCoordinator for SqliteCommitCoordinator {
     }
 }
 
-impl RunStore for SqliteCommitCoordinator {
-    fn get(&self, id: &RunId) -> Option<RunRecord> {
-        self.projection
-            .lock()
-            .ok()
-            .and_then(|p| p.run_records.get(id).cloned())
-    }
-}
-
-impl ThreadReader for SqliteCommitCoordinator {
+impl CommittedThreadView for SqliteCommitCoordinator {
     fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
         SqliteCommitCoordinator::committed_messages(self, thread_id)
     }
 
     fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
         self.resume_ticket_for(run_id)
+    }
+
+    fn run(&self, run_id: &RunId) -> Option<RunRecord> {
+        self.projection
+            .lock()
+            .ok()
+            .and_then(|projection| projection.run_records.get(run_id).cloned())
+    }
+
+    fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
+        self.projection
+            .lock()
+            .ok()
+            .and_then(|projection| projection.latest_by_thread.get(thread_id).cloned())
     }
 
     fn run_state(&self, run_id: &RunId) -> Option<RunState> {
@@ -309,17 +313,6 @@ impl ThreadReader for SqliteCommitCoordinator {
 /// The merged read repository (ADR-0039 D1), served from the fact-derived
 /// projection that `hydrate` rebuilt from the durable tables (D4).
 impl CheckpointReader for SqliteCommitCoordinator {
-    fn run(&self, id: &RunId) -> Option<RunRecord> {
-        self.get(id)
-    }
-
-    fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
-        self.projection
-            .lock()
-            .ok()
-            .and_then(|p| p.latest_by_thread.get(thread_id).cloned())
-    }
-
     fn list_events(&self, scope: &EventScope, from: Option<u64>, limit: usize) -> Vec<EventRecord> {
         let after = from.unwrap_or(0);
         let projection = match self.projection.lock() {
@@ -347,7 +340,7 @@ impl CheckpointReader for SqliteCommitCoordinator {
 
 /// Authoritative lifecycle feed for multiple processes sharing one SQLite file.
 ///
-/// The synchronous compatibility ports retain their process-local projection,
+/// The synchronous committed execution view retains its process-local projection,
 /// but lifecycle delivery must observe commits made by a peer Worker or Control
 /// process. This query therefore reads durable event truth on every page, just
 /// like the PostgreSQL implementation.

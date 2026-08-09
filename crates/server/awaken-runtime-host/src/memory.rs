@@ -17,7 +17,7 @@ use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::transcript::TranscriptSnapshot;
 use awaken_ext_builtin_tools::{AuxiliaryAgentInput, erase, invoke_auxiliary_agent};
 use awaken_ext_memory::{
@@ -985,7 +985,7 @@ impl crate::host::SharedHost {
                 extraction_prompt: config.extraction_prompt,
             },
         });
-        let reader: Arc<dyn ThreadReader> = commit;
+        let reader: Arc<dyn CommittedThreadView> = commit;
         Some(Arc::new(MemoryTerminalObserver::new(reader, extraction)))
     }
 
@@ -1185,7 +1185,9 @@ mod tests {
             true,
         );
         bound.bind_execution(Arc::new(HostCommit::Local(Arc::new(
-            crate::ProjectedLocalCommit(awaken_store_inmem::MemoryCommitCoordinator::new()),
+            crate::LocalCommitAdapter::projected(
+                awaken_store_inmem::MemoryCommitCoordinator::new(),
+            ),
         ))));
         (runtime, bound, repository, extractions)
     }
@@ -1334,9 +1336,9 @@ mod tests {
         // -> E1 auxiliary Run commits through that authority + E2 parsed selection
         // is returned. The forbidden complement (!C2 -> process-local fallback) is
         // unrepresentable because `AgentSelector::new` requires the authority.
-        let commit = Arc::new(HostCommit::Local(Arc::new(crate::ProjectedLocalCommit(
-            awaken_store_inmem::MemoryCommitCoordinator::new(),
-        ))));
+        let commit = Arc::new(HostCommit::Local(Arc::new(
+            crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new()),
+        )));
         let selector = AgentSelector::new(
             Arc::new(IndexModel),
             awaken_ext_memory::default_selector_agent(

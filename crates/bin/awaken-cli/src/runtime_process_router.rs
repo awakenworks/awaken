@@ -518,6 +518,7 @@ pub(super) async fn assemble_runtime_process_router(
     if let Some(factory) = credential_refresh_factory {
         managed_host = managed_host.with_credential_refresh_factory(factory);
     }
+    managed_host = managed_host.install_dispatch_session_runtime();
     let managed_host = Arc::new(managed_host);
     let session_application =
         awaken_session_application::SessionApplication::new_with_configuration(

@@ -14,7 +14,7 @@ use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error as CommitError,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition, ThreadCommit};
-use awaken_agent_contract::thread::read::run_store::RunStore;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::{
     ClaimedCommitCoordinator, ClaimedRunCommit, DispatchCursor, DispatchOperation,
     DispatchOperationalFeed, DispatchQueue, DurableRunIngress, GuardedRunCommit, Inbox,
@@ -183,7 +183,8 @@ async fn durable_loop_runs_entirely_on_sqlite() {
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the pending tool ran once");
 
-    let record = RunStore::get(commit.as_ref(), &RunId("run-1".to_string())).expect("record");
+    let record =
+        CommittedThreadView::run(commit.as_ref(), &RunId("run-1".to_string())).expect("record");
     assert_eq!(record.state, RunState::Ended(EndCause::NaturalEnd));
 }
 
@@ -291,7 +292,7 @@ async fn cancellation_intent_survives_restart_and_reconciles_to_terminal() {
     );
     assert!(store.list_dispatches().await.unwrap().is_empty());
     assert_eq!(
-        RunStore::get(commit.as_ref(), &run)
+        CommittedThreadView::run(commit.as_ref(), &run)
             .expect("terminal record")
             .state,
         RunState::Ended(EndCause::Cancelled)

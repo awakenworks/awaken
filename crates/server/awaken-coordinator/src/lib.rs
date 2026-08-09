@@ -482,14 +482,14 @@ fn local_managed_state_over(
     let local_realization_owner = host.dispatch_owner().to_string();
     let environments = environments
         .unwrap_or_else(|| awaken_protocol_managed::test_support::environment_components().1);
-    let runtime = Arc::new(
-        ManagedHost::new(host)
-            .with_resource_validator(catalog.clone())
-            .with_repository_binding_verifier(Arc::new(
-                awaken_resource_application::CatalogRepositoryBindingVerifier::new(catalog.clone()),
-            ))
-            .with_credentials(credentials, secrets),
-    );
+    let runtime = ManagedHost::new(host)
+        .with_resource_validator(catalog.clone())
+        .with_repository_binding_verifier(Arc::new(
+            awaken_resource_application::CatalogRepositoryBindingVerifier::new(catalog.clone()),
+        ))
+        .with_credentials(credentials, secrets);
+    let runtime = runtime.install_dispatch_session_runtime();
+    let runtime = Arc::new(runtime);
     let application = awaken_session_application::SessionApplication::new_with_configuration(
         runtime.clone(),
         runtime,

@@ -9,31 +9,33 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
-use awaken_agent_contract::agent::state::Command;
+use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
-use awaken_agent_contract::thread::commit::coordinator::Error;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, OperationCoordinator};
-use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
-use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::CheckpointReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleFeedError, RunLifecyclePage, checkpoint_lifecycle_events_after,
 };
-use awaken_agent_contract::thread::read::recovery::{
-    RecoveryError, RunRecoverySnapshot, RunRecoverySource,
-};
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 
 /// One local authoritative commit boundary selected by the Coordinator.
 ///
-/// This deliberately mirrors only the operations the Runtime Host consumes. It
-/// avoids exposing a concrete SQLite/FS/Postgres type or a backend-selection
-/// enum across the bounded-context boundary.
+/// This composes the canonical commit, committed-view, recovery, and lifecycle
+/// ports rather than mirroring their methods in a second facade. It adds only
+/// queries whose authoritative implementations may require asynchronous shared
+/// storage reads.
 #[async_trait::async_trait]
-pub trait LocalCommit: Send + Sync {
+pub trait LocalCommit:
+    Coordinator
+    + OperationCoordinator
+    + CommittedThreadView
+    + RunRecoverySource
+    + awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed
+    + Send
+    + Sync
+{
     async fn authoritative_run(&self, run_id: &RunId) -> Result<Option<RunRecord>, String>;
 
     async fn authoritative_committed_messages(
@@ -41,75 +43,99 @@ pub trait LocalCommit: Send + Sync {
         thread_id: &ThreadId,
     ) -> Result<Vec<Message>, String>;
 
-    fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord>;
+    async fn open_wait_for_thread(
+        &self,
+        thread: &ThreadId,
+    ) -> Result<Option<(RunId, ResumeTicket)>, String>;
+}
+
+/// The only policy seam added by [`LocalCommitAdapter`]. It selects whether
+/// asynchronous authoritative reads can use the adapter's committed projection
+/// or must query shared durable truth. It never commits or stores data.
+#[async_trait::async_trait]
+pub trait LocalCommitQueries<S>: Send + Sync {
+    async fn authoritative_run(
+        &self,
+        store: &S,
+        run_id: &RunId,
+    ) -> Result<Option<RunRecord>, String>;
+
+    async fn authoritative_committed_messages(
+        &self,
+        store: &S,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<Message>, String>;
 
     async fn open_wait_for_thread(
         &self,
+        store: &S,
         thread: &ThreadId,
     ) -> Result<Option<(RunId, ResumeTicket)>, String>;
 
     async fn events_after(
         &self,
+        store: &S,
         cursor: RunLifecycleCursor,
         limit: usize,
     ) -> Result<RunLifecyclePage, RunLifecycleFeedError>;
-
-    async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error>;
-
-    async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error>;
-
-    fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message>;
-    fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket>;
-    fn run_state(&self, run_id: &RunId) -> Option<RunState>;
-    fn committed_state(&self, thread_id: &ThreadId) -> Vec<Command>;
-    fn get(&self, id: &RunId) -> Option<RunRecord>;
-
-    async fn recovery_snapshot(
-        &self,
-        thread_id: &ThreadId,
-        claimed_run_id: &RunId,
-    ) -> Result<RunRecoverySnapshot, RecoveryError>;
 }
 
-/// Adapter for single-process commit implementations whose hydrated projection
-/// is authoritative. Durable multi-replica backends implement [`LocalCommit`]
-/// directly so their reads can query shared truth.
-pub struct ProjectedLocalCommit<T>(pub T);
+/// One canonical delegation adapter for a Coordinator-owned commit source.
+/// Implementations of the commit/read/recovery ports live in `store.rs`, the
+/// architecture-approved adapter owner; composition roots only select queries.
+pub struct LocalCommitAdapter<S, Q> {
+    pub(crate) store: Arc<S>,
+    pub(crate) queries: Q,
+}
+
+impl<S, Q> LocalCommitAdapter<S, Q> {
+    #[must_use]
+    pub fn with_queries(store: Arc<S>, queries: Q) -> Self {
+        Self { store, queries }
+    }
+}
+
+/// Query policy for single-process stores whose committed projection is the
+/// authoritative read view.
+pub struct ProjectedQueries;
+
+impl<S> LocalCommitAdapter<S, ProjectedQueries> {
+    #[must_use]
+    pub fn projected(store: S) -> Self {
+        Self::with_queries(Arc::new(store), ProjectedQueries)
+    }
+}
 
 #[async_trait::async_trait]
-impl<T> LocalCommit for ProjectedLocalCommit<T>
+impl<S> LocalCommitQueries<S> for ProjectedQueries
 where
-    T: Coordinator
-        + OperationCoordinator
-        + CheckpointReader
-        + RunStore
-        + RunRecoverySource
-        + Send
-        + Sync,
+    S: CheckpointReader + Send + Sync,
 {
-    async fn authoritative_run(&self, run_id: &RunId) -> Result<Option<RunRecord>, String> {
-        Ok(RunStore::get(&self.0, run_id))
+    async fn authoritative_run(
+        &self,
+        store: &S,
+        run_id: &RunId,
+    ) -> Result<Option<RunRecord>, String> {
+        Ok(store.run(run_id))
     }
 
     async fn authoritative_committed_messages(
         &self,
+        store: &S,
         thread_id: &ThreadId,
     ) -> Result<Vec<Message>, String> {
-        Ok(ThreadReader::committed_messages(&self.0, thread_id))
-    }
-
-    fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord> {
-        CheckpointReader::latest_run(&self.0, thread)
+        Ok(store.committed_messages(thread_id))
     }
 
     async fn open_wait_for_thread(
         &self,
+        store: &S,
         thread: &ThreadId,
     ) -> Result<Option<(RunId, ResumeTicket)>, String> {
-        let Some(run) = CheckpointReader::latest_run(&self.0, thread) else {
+        let Some(run) = store.latest_run(thread) else {
             return Ok(None);
         };
-        let Some(ticket) = ThreadReader::resume_ticket(&self.0, &run.id) else {
+        let Some(ticket) = store.resume_ticket(&run.id) else {
             return Ok(None);
         };
         Ok((&ticket.thread_id == thread).then_some((run.id, ticket)))
@@ -117,46 +143,42 @@ where
 
     async fn events_after(
         &self,
+        store: &S,
         cursor: RunLifecycleCursor,
         limit: usize,
     ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
-        checkpoint_lifecycle_events_after(&self.0, cursor, limit)
+        checkpoint_lifecycle_events_after(store, cursor, limit)
+    }
+}
+
+#[async_trait::async_trait]
+impl<S, Q> LocalCommit for LocalCommitAdapter<S, Q>
+where
+    S: Coordinator + OperationCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync,
+    Q: LocalCommitQueries<S>,
+{
+    async fn authoritative_run(&self, run_id: &RunId) -> Result<Option<RunRecord>, String> {
+        self.queries
+            .authoritative_run(self.store.as_ref(), run_id)
+            .await
     }
 
-    async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
-        Coordinator::commit(&self.0, commit).await
-    }
-
-    async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
-        OperationCoordinator::commit_operation(&self.0, operation).await
-    }
-
-    fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
-        ThreadReader::committed_messages(&self.0, thread_id)
-    }
-
-    fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
-        ThreadReader::resume_ticket(&self.0, run_id)
-    }
-
-    fn run_state(&self, run_id: &RunId) -> Option<RunState> {
-        ThreadReader::run_state(&self.0, run_id)
-    }
-
-    fn committed_state(&self, thread_id: &ThreadId) -> Vec<Command> {
-        ThreadReader::committed_state(&self.0, thread_id)
-    }
-
-    fn get(&self, id: &RunId) -> Option<RunRecord> {
-        RunStore::get(&self.0, id)
-    }
-
-    async fn recovery_snapshot(
+    async fn authoritative_committed_messages(
         &self,
         thread_id: &ThreadId,
-        claimed_run_id: &RunId,
-    ) -> Result<RunRecoverySnapshot, RecoveryError> {
-        RunRecoverySource::recovery_snapshot(&self.0, thread_id, claimed_run_id).await
+    ) -> Result<Vec<Message>, String> {
+        self.queries
+            .authoritative_committed_messages(self.store.as_ref(), thread_id)
+            .await
+    }
+
+    async fn open_wait_for_thread(
+        &self,
+        thread: &ThreadId,
+    ) -> Result<Option<(RunId, ResumeTicket)>, String> {
+        self.queries
+            .open_wait_for_thread(self.store.as_ref(), thread)
+            .await
     }
 }
 
@@ -248,7 +270,7 @@ impl RuntimeAuthority for EphemeralRuntimeAuthority {
         Ok(commits
             .entry(thread.to_owned())
             .or_insert_with(|| {
-                Arc::new(ProjectedLocalCommit(
+                Arc::new(LocalCommitAdapter::projected(
                     awaken_store_inmem::MemoryCommitCoordinator::new(),
                 )) as Arc<dyn LocalCommit>
             })

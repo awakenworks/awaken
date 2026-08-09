@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use futures_util::FutureExt;
 use std::sync::Arc;
 
@@ -88,7 +88,7 @@ pub async fn deliver_committed_terminal(
 /// `None` means the Run is absent or not terminal; `Some` means the committed
 /// terminal fact was delivered, even when individual observers failed.
 pub async fn redeliver_committed_terminal(
-    reader: &dyn ThreadReader,
+    reader: &dyn CommittedThreadView,
     observers: &[Arc<dyn RunTerminalObserver>],
     run_id: &RunId,
     thread_id: &ThreadId,

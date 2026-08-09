@@ -16,6 +16,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+#[cfg(test)]
+use awaken_agent_contract::agent::run::Record as RunRecord;
 use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
 use awaken_agent_contract::agent::state::{
     Action as StateAction, Command as StateCommand, MergePolicy, Scope,
@@ -613,7 +615,7 @@ mod tests {
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as CommitError};
     use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
-    use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+    use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
     use awaken_protocol_a2a::Artifact;
     use awaken_protocol_a2a::client::Response;
     use awaken_protocol_a2a::types::{
@@ -695,7 +697,7 @@ mod tests {
         }
     }
 
-    impl ThreadReader for Rec {
+    impl CommittedThreadView for Rec {
         fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
             self.0
                 .lock()
@@ -714,6 +716,34 @@ mod tests {
                 .rev()
                 .find(|commit| commit.run.run_id() == run_id)
                 .and_then(|commit| commit.run.resume_ticket().cloned())
+        }
+
+        fn run(&self, run_id: &RunId) -> Option<RunRecord> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|commit| commit.run.run_id() == run_id)
+                .map(|commit| RunRecord {
+                    id: run_id.clone(),
+                    thread_id: commit.thread_id.clone(),
+                    state: commit.run.state(),
+                })
+        }
+
+        fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|commit| &commit.thread_id == thread_id)
+                .map(|commit| RunRecord {
+                    id: commit.run.run_id().clone(),
+                    thread_id: thread_id.clone(),
+                    state: commit.run.state(),
+                })
         }
 
         fn run_state(&self, run_id: &RunId) -> Option<RunState> {

@@ -16,7 +16,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::execution::RunAttemptExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
@@ -49,7 +49,7 @@ pub struct DispatchWorker<S> {
     attempt_executor: std::sync::RwLock<Arc<dyn RunAttemptExecutor>>,
     store: Arc<S>,
     exec: WorkerContext,
-    reader: Arc<dyn ThreadReader>,
+    reader: Arc<dyn CommittedThreadView>,
     claimed_commit: Arc<dyn ClaimedRunCommit>,
     recovery_projection: Option<Arc<crate::RecoveryProjection>>,
     owner: String,
@@ -147,10 +147,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         owner: impl Into<String>,
     ) -> Self
     where
-        C: CommitCoordinator + ThreadReader + Send + Sync + 'static,
+        C: CommitCoordinator + CommittedThreadView + Send + Sync + 'static,
     {
         let base_commit: Arc<dyn CommitCoordinator> = commit.clone();
-        let reader: Arc<dyn ThreadReader> = commit;
+        let reader: Arc<dyn CommittedThreadView> = commit;
         Self::from_parts(runtime, store, base_commit, reader, owner)
     }
 
@@ -162,7 +162,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         runtime: Arc<Runtime>,
         store: Arc<S>,
         commit: Arc<dyn CommitCoordinator>,
-        reader: Arc<dyn ThreadReader>,
+        reader: Arc<dyn CommittedThreadView>,
         owner: impl Into<String>,
     ) -> Self {
         let dispatch: Arc<dyn crate::dispatch::DispatchQueue> = store.clone();

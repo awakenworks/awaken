@@ -28,11 +28,10 @@ use awaken_agent_contract::thread::commit::operation::{
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
 };
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 
 /// Everything one commit made durable, materialized as read models. This is the
 /// after-commit truth that replay and projection consume.
@@ -310,19 +309,9 @@ fn apply_commit_locked(state: &mut CommitState, commit: ThreadCommit) -> CommitR
     CommitRecord { sequence: next }
 }
 
-/// The committed run is readable through the contract read port — the same
-/// after-commit truth a server projection would consume, never the live sink.
-impl RunStore for MemoryCommitCoordinator {
-    fn get(&self, id: &RunId) -> Option<RunRecord> {
-        self.committed()
-            .latest_run
-            .filter(|record| &record.id == id)
-    }
-}
-
 /// Committed thread truth is readable for resume through the contract read port:
 /// the transcript and the active awaiting ticket, never the live sink (G1/G13).
-impl ThreadReader for MemoryCommitCoordinator {
+impl CommittedThreadView for MemoryCommitCoordinator {
     fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
         self.state
             .lock()
@@ -334,25 +323,6 @@ impl ThreadReader for MemoryCommitCoordinator {
         self.resume_ticket_for(run_id)
     }
 
-    fn run_state(&self, run_id: &RunId) -> Option<RunState> {
-        CheckpointReader::run(self, run_id).map(|record| record.state)
-    }
-
-    fn committed_state(
-        &self,
-        thread_id: &ThreadId,
-    ) -> Vec<awaken_agent_contract::agent::state::Command> {
-        self.state
-            .lock()
-            .map(|state| state.thread(thread_id).state)
-            .unwrap_or_default()
-    }
-}
-
-/// The merged after-commit read repository (ADR-0039 D1): the run record and
-/// committed-event reads, on top of [`ThreadReader`]. Reads derive from committed
-/// facts, so a fresh reader over the same state resumes correctly (ADR-0039 D4).
-impl CheckpointReader for MemoryCommitCoordinator {
     fn run(&self, id: &RunId) -> Option<RunRecord> {
         let state = self.state.lock().ok()?;
         // A run lives in exactly one thread; find the most recent fact for it,
@@ -381,10 +351,25 @@ impl CheckpointReader for MemoryCommitCoordinator {
             state
                 .threads
                 .get(thread_id)
-                .and_then(|t| t.latest_run.clone())
+                .and_then(|thread| thread.latest_run.clone())
         })
     }
 
+    fn committed_state(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Vec<awaken_agent_contract::agent::state::Command> {
+        self.state
+            .lock()
+            .map(|state| state.thread(thread_id).state)
+            .unwrap_or_default()
+    }
+}
+
+/// The merged after-commit read repository (ADR-0039 D1): the run record and
+/// committed-event reads, on top of [`CommittedThreadView`]. Reads derive from committed
+/// facts, so a fresh reader over the same state resumes correctly (ADR-0039 D4).
+impl CheckpointReader for MemoryCommitCoordinator {
     fn list_events(&self, scope: &EventScope, from: Option<u64>, limit: usize) -> Vec<EventRecord> {
         let after = from.unwrap_or(0);
         let state = match self.state.lock() {

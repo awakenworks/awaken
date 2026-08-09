@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
-use awaken_agent_contract::thread::read::run_store::RunStore;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::{
     DispatchQueue, DispatchService, DispatchServiceConfig, DispatchWorker, MemoryDispatchStore,
     RunDispatch, SystemClock,
@@ -176,7 +176,7 @@ async fn an_early_terminal_recovery_return_is_still_fully_metered() {
     let state = runtime.execute(activation("run-1"), ctx).await.unwrap();
     assert!(matches!(state, RunState::Ended(_)));
     assert!(matches!(
-        RunStore::get(&*commit, &run).map(|r| r.state),
+        CommittedThreadView::run(&*commit, &run).map(|r| r.state),
         Some(RunState::Ended(_))
     ));
     // Reset the metrics: we only want to measure the recovery drive below.

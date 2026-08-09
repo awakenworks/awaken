@@ -30,11 +30,10 @@ use awaken_agent_contract::thread::commit::coordinator::{
 use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 const LOG_FILE: &str = "commits.ndjson";
@@ -138,8 +137,8 @@ impl Coordinator for FsCommitCoordinator {
         // reject a post-terminal commit for a run whose committed state is already
         // `Ended`. (See awaken-store-inmem for the full rationale on why a stale
         // owner's duplicate commit must be fenced.) This uses the per-run fact
-        // lookup (`CheckpointReader::run`), not the latest-run cache
-        // (`RunStore::get`): a run that ended is fenced even after a *different*
+        // lookup (`CommittedThreadView::run`), not the latest-run cache
+        // (`CommittedThreadView::run`): a run that ended is fenced even after a *different*
         // run committed afterwards and became the thread's latest — matching what
         // inner's own run-fact scan enforces.
         //
@@ -179,13 +178,21 @@ impl OperationCoordinator for FsCommitCoordinator {
     }
 }
 
-impl ThreadReader for FsCommitCoordinator {
+impl CommittedThreadView for FsCommitCoordinator {
     fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
         self.inner.committed_messages(thread_id)
     }
 
     fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
         self.inner.resume_ticket(run_id)
+    }
+
+    fn run(&self, run_id: &RunId) -> Option<RunRecord> {
+        self.inner.run(run_id)
+    }
+
+    fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
+        self.inner.latest_run(thread_id)
     }
 
     fn run_state(&self, run_id: &RunId) -> Option<RunState> {
@@ -197,21 +204,7 @@ impl ThreadReader for FsCommitCoordinator {
     }
 }
 
-impl RunStore for FsCommitCoordinator {
-    fn get(&self, id: &RunId) -> Option<RunRecord> {
-        self.inner.get(id)
-    }
-}
-
 impl CheckpointReader for FsCommitCoordinator {
-    fn run(&self, id: &RunId) -> Option<RunRecord> {
-        self.inner.run(id)
-    }
-
-    fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
-        self.inner.latest_run(thread_id)
-    }
-
     fn list_events(&self, scope: &EventScope, from: Option<u64>, limit: usize) -> Vec<EventRecord> {
         self.inner.list_events(scope, from, limit)
     }

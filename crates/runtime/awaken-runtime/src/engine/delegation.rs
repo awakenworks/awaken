@@ -328,7 +328,7 @@ pub(super) async fn resume_delegation(
     env: &ResolvedExecutionEnv,
     run_id: &RunId,
     thread_id: &ThreadId,
-    reader: &dyn ThreadReader,
+    reader: &dyn CommittedThreadView,
     context: &RuntimeRunContext,
 ) -> Result<RunState> {
     let call_id = ticket.call_id.clone().unwrap_or_default();
@@ -535,7 +535,7 @@ fn derive_delegation_origin(
 pub(crate) async fn reconcile_delegation_cancellations(
     runtime: &Runtime,
     thread_id: &ThreadId,
-    reader: &dyn ThreadReader,
+    reader: &dyn CommittedThreadView,
 ) -> Result<usize> {
     if runtime.run_delegation().is_none() {
         return Ok(0);

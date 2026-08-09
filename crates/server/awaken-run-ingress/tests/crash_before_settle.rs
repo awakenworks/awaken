@@ -34,8 +34,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::{
     Dispatch, DispatchOutcome, DispatchQueue, DispatchWorker, Inbox, MemoryDispatchStore,
     RunDispatch, SqliteDispatchStore,
@@ -735,7 +734,7 @@ async fn commit_is_atomic_and_survives_replay_with_no_orphans() {
         // The terminal-is-final fence: a post-terminal commit for the same run is
         // REJECTED and must add NO rows.
         let fence_before = commit.commit_count();
-        let msgs_before = ThreadReader::committed_messages(commit.as_ref(), &thread).len();
+        let msgs_before = CommittedThreadView::committed_messages(commit.as_ref(), &thread).len();
         let rejected = CommitCoordinator::commit(
             commit.as_ref(),
             ThreadCommit {
@@ -761,7 +760,7 @@ async fn commit_is_atomic_and_survives_replay_with_no_orphans() {
             "a rejected commit does not advance the fence"
         );
         assert_eq!(
-            ThreadReader::committed_messages(commit.as_ref(), &thread).len(),
+            CommittedThreadView::committed_messages(commit.as_ref(), &thread).len(),
             msgs_before,
             "a rejected commit adds no message rows (no partial write)"
         );
@@ -771,12 +770,12 @@ async fn commit_is_atomic_and_survives_replay_with_no_orphans() {
             commit.resume_ticket_for(&run).is_none(),
             "the ticket is cleared atomically with the terminal commit"
         );
-        let record = RunStore::get(commit.as_ref(), &run).expect("run record");
+        let record = CommittedThreadView::run(commit.as_ref(), &run).expect("run record");
         assert_eq!(record.state, RunState::Ended(EndCause::NaturalEnd));
 
         (
             commit.commit_count(),
-            ThreadReader::committed_messages(commit.as_ref(), &thread),
+            CommittedThreadView::committed_messages(commit.as_ref(), &thread),
             record.state,
         )
     };
@@ -798,12 +797,12 @@ async fn commit_is_atomic_and_survives_replay_with_no_orphans() {
         fence,
         "the durable fence survives a fresh hydrate (no lost or partial commit)"
     );
-    let replayed = ThreadReader::committed_messages(&reopened, &thread);
+    let replayed = CommittedThreadView::committed_messages(&reopened, &thread);
     assert_eq!(
         replayed, messages,
         "every committed message survives replay from the durable log"
     );
-    let record = RunStore::get(&reopened, &run).expect("run-fact present after replay");
+    let record = CommittedThreadView::run(&reopened, &run).expect("run-fact present after replay");
     assert_eq!(
         record.state, state,
         "the run-fact is present and terminal after replay — no orphan message without its run-fact"

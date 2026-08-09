@@ -17,10 +17,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use awaken_agent_contract::agent::delegation::DelegationOrigin;
+#[cfg(test)]
+use awaken_agent_contract::agent::run::Record as RunRecord;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::{
     AnyDispatchStore, ClaimedRunCommit, Clock, DispatchWorker, PendingInput, RunDispatch,
     SystemClock,
@@ -80,7 +82,7 @@ pub(crate) struct RunScheduler {
     /// Read side of the same committed authority. Kept separately after trait
     /// erasure so cancellation/recovery can make idempotency decisions from
     /// committed child state after a process restart.
-    pub(crate) reader: Arc<dyn ThreadReader>,
+    pub(crate) reader: Arc<dyn CommittedThreadView>,
     pub(crate) owner: String,
     pub(crate) claimed_commit: Option<Arc<dyn ClaimedRunCommit>>,
     pub(crate) recovery_projection: Option<Arc<awaken_run_ingress::RecoveryProjection>>,
@@ -298,7 +300,7 @@ pub(crate) enum AgentRunBoundary {
 }
 
 fn settled_agent_boundary(
-    reader: &dyn ThreadReader,
+    reader: &dyn CommittedThreadView,
     thread_id: &ThreadId,
     state: RunState,
 ) -> Result<AgentRunBoundary, AgentRunError> {
@@ -344,7 +346,7 @@ impl AgentRunError {
 /// committed boundary. This path is bounded and cancellation-aware so a dead
 /// worker cannot leave the parent hanging indefinitely.
 async fn await_committed_child_boundary(
-    reader: &dyn ThreadReader,
+    reader: &dyn CommittedThreadView,
     child_run_id: &RunId,
     cancellation: Option<&CancellationToken>,
 ) -> Result<RunState, AgentRunError> {
@@ -775,7 +777,7 @@ async fn run_configured_agent_inner(
 /// thread state. The run loop writes the running cumulative under
 /// `THREAD_USAGE_STATE_KEY` each step, so the last `Set` is the whole tally
 /// (mirrors `SharedHost::thread_usage`).
-fn usage_from_committed(reader: &dyn ThreadReader, thread_id: &ThreadId) -> ThreadUsage {
+fn usage_from_committed(reader: &dyn CommittedThreadView, thread_id: &ThreadId) -> ThreadUsage {
     ThreadUsage::from_committed_state(&reader.committed_state(thread_id))
 }
 
@@ -957,12 +959,20 @@ mod tests {
         reads: AtomicUsize,
     }
 
-    impl ThreadReader for EventuallySettledReader {
+    impl CommittedThreadView for EventuallySettledReader {
         fn committed_messages(&self, _thread_id: &ThreadId) -> Vec<Message> {
             Vec::new()
         }
 
         fn resume_ticket(&self, _run_id: &RunId) -> Option<ResumeTicket> {
+            None
+        }
+
+        fn run(&self, _run_id: &RunId) -> Option<RunRecord> {
+            None
+        }
+
+        fn latest_run(&self, _thread_id: &ThreadId) -> Option<RunRecord> {
             None
         }
 
@@ -992,12 +1002,20 @@ mod tests {
     async fn waiting_for_a_competing_child_claim_observes_parent_cancellation() {
         struct RunningReader;
 
-        impl ThreadReader for RunningReader {
+        impl CommittedThreadView for RunningReader {
             fn committed_messages(&self, _thread_id: &ThreadId) -> Vec<Message> {
                 Vec::new()
             }
 
             fn resume_ticket(&self, _run_id: &RunId) -> Option<ResumeTicket> {
+                None
+            }
+
+            fn run(&self, _run_id: &RunId) -> Option<RunRecord> {
+                None
+            }
+
+            fn latest_run(&self, _thread_id: &ThreadId) -> Option<RunRecord> {
                 None
             }
 

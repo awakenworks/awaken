@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::thread::read::run_store::RunStore;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::{
     DispatchOutcome, DispatchQueue, DispatchWorker, MemoryDispatchStore, PendingInput, RunDispatch,
     SqliteDispatchStore,
@@ -317,7 +317,8 @@ async fn stale_reclaim_of_a_completed_run_settles_without_re_executing() {
     let state = runtime.execute(activation("run-1"), ctx).await.unwrap();
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(infers.load(Ordering::SeqCst), 1, "A executed the run once");
-    let record = RunStore::get(commit.as_ref(), &RunId("run-1".to_string())).expect("record");
+    let record =
+        CommittedThreadView::run(commit.as_ref(), &RunId("run-1".to_string())).expect("record");
     assert_eq!(record.state, RunState::Ended(EndCause::NaturalEnd));
 
     // B reclaims the still-Running dispatch (lease expired). The committed terminal
@@ -443,7 +444,7 @@ async fn mid_flight_reclaim_applies_never_replay_policy() {
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the tool ran once (owner A)");
 
     // A is mid-flight: it committed a `Running` fact and awaiting NO awaiting ticket.
-    let record = RunStore::get(commit.as_ref(), &run).expect("record");
+    let record = CommittedThreadView::run(commit.as_ref(), &run).expect("record");
     assert_eq!(
         record.state,
         RunState::Running,

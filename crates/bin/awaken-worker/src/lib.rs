@@ -988,6 +988,7 @@ impl WorkerNode {
         if let Some(realizer) = self.mcp_attachment_realizer {
             managed = managed.with_mcp_attachment_realizer(realizer);
         }
+        managed = managed.install_dispatch_session_runtime();
         drop(managed);
         let observations = Arc::new(WorkerObservationCache::default());
         let lifecycle = Arc::new(WorkerSupervisor {

@@ -1164,11 +1164,12 @@ async fn cancel_durable_commits_cancelled_for_an_awaiting_run() {
             .await
             .unwrap()
     );
-    let record = awaken_agent_contract::thread::read::run_store::RunStore::get(
-        commit.as_ref(),
-        &RunId("run-1".to_string()),
-    )
-    .expect("run record");
+    let record =
+        awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run(
+            commit.as_ref(),
+            &RunId("run-1".to_string()),
+        )
+        .expect("run record");
     assert_eq!(record.state, RunState::Ended(EndCause::Cancelled));
     assert!(
         commit
@@ -1195,11 +1196,12 @@ async fn unified_run_service_cancel_is_durable_for_a_queued_run() {
     RunService::cancel(&ingress, &RunId("run-1".to_string()))
         .await
         .expect("unified cancel");
-    let record = awaken_agent_contract::thread::read::run_store::RunStore::get(
-        commit.as_ref(),
-        &RunId("run-1".to_string()),
-    )
-    .expect("run record");
+    let record =
+        awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run(
+            commit.as_ref(),
+            &RunId("run-1".to_string()),
+        )
+        .expect("run record");
     assert_eq!(record.state, RunState::Ended(EndCause::Cancelled));
     assert_eq!(store.dispatch_count(), 0);
 
@@ -1229,7 +1231,7 @@ async fn durable_cancel_invokes_the_selected_executor_before_terminal_commit() {
 
     assert_eq!(selected.cancels.load(Ordering::SeqCst), 1);
     assert_eq!(
-        awaken_agent_contract::thread::read::run_store::RunStore::get(
+        awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run(
             commit.as_ref(),
             &RunId("run-1".to_string()),
         )
@@ -1277,8 +1279,11 @@ async fn committed_cancel_is_settled_without_duplicate_after_crash() {
     );
     assert_eq!(store.dispatch_count(), 0);
     let record =
-        awaken_agent_contract::thread::read::run_store::RunStore::get(commit.as_ref(), &run)
-            .expect("single terminal record");
+        awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run(
+            commit.as_ref(),
+            &run,
+        )
+        .expect("single terminal record");
     assert_eq!(record.state, RunState::Ended(EndCause::Cancelled));
 }
 
@@ -1314,16 +1319,19 @@ async fn cancellation_does_not_materialize_the_model_or_credentials() {
         "terminal control must not depend on the unavailable execution provider"
     );
     assert_eq!(
-        awaken_agent_contract::thread::read::run_store::RunStore::get(commit.as_ref(), &run)
-            .unwrap()
-            .state,
+        awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run(
+            commit.as_ref(),
+            &run
+        )
+        .unwrap()
+        .state,
         RunState::Ended(EndCause::Cancelled)
     );
 }
 
 #[tokio::test]
 async fn send_message_cannot_approve_a_threads_pending_tool() {
-    use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+    use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
     use awaken_run_ingress::OutboxMessageSender;
 
     let (runtime, ran) = tool_runtime();
@@ -1341,7 +1349,10 @@ async fn send_message_cannot_approve_a_threads_pending_tool() {
     );
 
     // The send_message host adapter, addressed by thread, stages a delivery.
-    let sender = OutboxMessageSender::new(store.clone(), commit.clone() as Arc<dyn ThreadReader>);
+    let sender = OutboxMessageSender::new(
+        store.clone(),
+        commit.clone() as Arc<dyn CommittedThreadView>,
+    );
     sender
         .send(send_request(
             "thread-1",

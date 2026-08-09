@@ -82,8 +82,8 @@ use awaken_session_contract::{
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::authority::EphemeralRuntimeAuthority;
 pub use crate::authority::{
-    CredentialRefreshFactory, LocalCommit, ProjectedLocalCommit, RuntimeAuthority,
-    RuntimeAuthorityError,
+    CredentialRefreshFactory, LocalCommit, LocalCommitAdapter, LocalCommitQueries,
+    RuntimeAuthority, RuntimeAuthorityError,
 };
 pub use crate::host::{CommittedStepReceipt, HostError, HostErrorKind, PendingTool};
 pub use crate::worker_http::respond as respond_host_http;
@@ -372,19 +372,24 @@ impl SharedHost {
 
 impl ManagedHost {
     pub fn new(host: Arc<SharedHost>) -> Self {
-        let managed = Self {
+        Self {
             host,
             credentials: None,
             credential_refresh_factory: None,
             resource_validator: None,
             repository_binding_verifier: None,
             mcp_realizer: None,
-        };
-        managed.refresh_dispatch_session_runtime();
-        managed
+        }
     }
 
-    fn refresh_dispatch_session_runtime(&self) {
+    /// Install the fully configured Managed adapter used by durable dispatch.
+    ///
+    /// Call this once at the composition root after all `with_*` configuration
+    /// has been applied. Construction and configuration are deliberately free
+    /// of shared-host side effects, so a partially configured adapter can never
+    /// become visible to a concurrently claimed Run.
+    #[must_use]
+    pub fn install_dispatch_session_runtime(self) -> Self {
         *self
             .host
             .dispatch_session_runtime
@@ -397,6 +402,7 @@ impl ManagedHost {
             repository_binding_verifier: self.repository_binding_verifier.clone(),
             mcp_realizer: self.mcp_realizer.clone(),
         });
+        self
     }
 
     /// Project the committed attempt result into the Managed Session contract.
@@ -422,7 +428,6 @@ impl ManagedHost {
         validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
     ) -> Self {
         self.resource_validator = Some(validator);
-        self.refresh_dispatch_session_runtime();
         self
     }
 
@@ -434,7 +439,6 @@ impl ManagedHost {
         verifier: Arc<dyn RepositoryBindingVerifier<awaken_run_ingress::RunClaim>>,
     ) -> Self {
         self.repository_binding_verifier = Some(verifier);
-        self.refresh_dispatch_session_runtime();
         self
     }
 
@@ -695,7 +699,6 @@ impl ManagedHost {
         materializer: PinnedCredentialMaterializer,
     ) -> Self {
         self.credentials = Some(materializer);
-        self.refresh_dispatch_session_runtime();
         self
     }
 
@@ -707,7 +710,6 @@ impl ManagedHost {
         factory: Arc<dyn CredentialRefreshFactory>,
     ) -> Self {
         self.credential_refresh_factory = Some(factory);
-        self.refresh_dispatch_session_runtime();
         self
     }
 
@@ -721,7 +723,6 @@ impl ManagedHost {
         realizer: Arc<dyn awaken_session_contract::McpAttachmentRealizer>,
     ) -> Self {
         self.mcp_realizer = Some(realizer);
-        self.refresh_dispatch_session_runtime();
         self
     }
 

@@ -9,7 +9,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitOperationId};
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::ClaimedCommitService;
 use awaken_run_ingress::{
     ClaimedCommitCommand, ClaimedRunCommit, DispatchQueue, MemoryDispatchStore, RegisteredWorker,
@@ -197,8 +197,11 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         "C2"
     );
     assert!(
-        ThreadReader::committed_messages(&*coordinator, &ThreadId("typed-commit-thread".into()))
-            .is_empty(),
+        CommittedThreadView::committed_messages(
+            &*coordinator,
+            &ThreadId("typed-commit-thread".into())
+        )
+        .is_empty(),
         "C2 rejects before commit"
     );
 
@@ -220,8 +223,10 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
     assert!(!first.duplicate);
     assert!(duplicate.duplicate);
     assert_eq!(first.commit_sequence, duplicate.commit_sequence);
-    let messages =
-        ThreadReader::committed_messages(&*coordinator, &ThreadId("typed-commit-thread".into()));
+    let messages = CommittedThreadView::committed_messages(
+        &*coordinator,
+        &ThreadId("typed-commit-thread".into()),
+    );
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].text_content(), "typed commit");
 }

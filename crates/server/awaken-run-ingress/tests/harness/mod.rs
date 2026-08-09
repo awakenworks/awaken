@@ -40,8 +40,7 @@ use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error as CommitError,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime_contract::metrics::{InferenceMetric, MetricsRecorder};
 
 pub const FP: &str = "catalog-a";
@@ -486,15 +485,15 @@ impl CommitCoordinator for FailingCommit {
     }
 }
 
-impl RunStore for FailingCommit {
-    fn get(&self, id: &RunId) -> Option<RunRecord> {
-        self.inner.get(id)
-    }
-}
-
-impl ThreadReader for FailingCommit {
+impl CommittedThreadView for FailingCommit {
     fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
         self.inner.committed_messages(thread_id)
+    }
+    fn run(&self, run_id: &RunId) -> Option<RunRecord> {
+        self.inner.run(run_id)
+    }
+    fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
+        self.inner.latest_run(thread_id)
     }
     fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
         self.inner.resume_ticket(run_id)

@@ -267,7 +267,7 @@ commit/
 store/
   event_log.rs
   fact_log.rs
-  run_store.rs
+  committed_thread_view.rs
 ```
 
 Durable-ingress modules use their own context:

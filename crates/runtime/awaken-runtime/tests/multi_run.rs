@@ -8,7 +8,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
@@ -110,7 +110,7 @@ fn activation(message_id: &str, text: &str) -> RunActivation {
 async fn a_fresh_run_continues_the_thread_with_a_reader() {
     let runtime = runtime();
     let commit: Arc<MemoryCommitCoordinator> = Arc::new(MemoryCommitCoordinator::new());
-    let reader: Arc<dyn ThreadReader> = commit.clone();
+    let reader: Arc<dyn CommittedThreadView> = commit.clone();
 
     // Run 1: the model sees only this Run's input.
     let ctx = RuntimeRunContext::new()

@@ -10,28 +10,16 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
-use awaken_agent_contract::agent::state::Command;
+use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
-use awaken_agent_contract::thread::commit::coordinator::{
-    Coordinator, Error, OperationCoordinator,
-};
-use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
-use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
-use awaken_agent_contract::thread::read::checkpoint::CheckpointReader;
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleFeed, RunLifecycleFeedError, RunLifecyclePage,
 };
-use awaken_agent_contract::thread::read::recovery::{
-    RecoveryError, RunRecoverySnapshot, RunRecoverySource,
-};
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_run_ingress::{AnyDispatchStore, WakeSignal};
 use awaken_runtime_host::{
-    DeploymentConfig, DispatchBackend, LocalCommit, ProjectedLocalCommit, RuntimeAuthority,
-    RuntimeAuthorityError, StoreKind, Wake,
+    DeploymentConfig, DispatchBackend, LocalCommit, LocalCommitAdapter, LocalCommitQueries,
+    RuntimeAuthority, RuntimeAuthorityError, StoreKind, Wake,
 };
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_postgres::PostgresCommitCoordinator;
@@ -260,7 +248,10 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
             StoreKind::Postgres => self
                 .postgres_commit
                 .clone()
-                .map(|store| Arc::new(PostgresCommit(store)) as Arc<dyn LocalCommit>)
+                .map(|store| {
+                    Arc::new(LocalCommitAdapter::with_queries(store, PostgresQueries))
+                        as Arc<dyn LocalCommit>
+                })
                 .ok_or_else(|| {
                     RuntimeAuthorityError::misconfigured(
                         "Postgres commit authority was not opened at startup",
@@ -277,7 +268,7 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
                 let store = FsCommitCoordinator::open(&path)
                     .await
                     .map_err(|error| RuntimeAuthorityError::unavailable(error.to_string()))?;
-                Ok(Arc::new(ProjectedLocalCommit(store)))
+                Ok(Arc::new(LocalCommitAdapter::projected(store)))
             }
             StoreKind::Sqlite => {
                 let path = self
@@ -289,7 +280,7 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
                 }
                 let store = SqliteCommitCoordinator::open(&path.to_string_lossy())
                     .map_err(|error| RuntimeAuthorityError::unavailable(error.to_string()))?;
-                Ok(Arc::new(ProjectedLocalCommit(store)))
+                Ok(Arc::new(LocalCommitAdapter::projected(store)))
             }
         }
     }
@@ -385,69 +376,50 @@ fn thread_path_stem(thread: &str) -> String {
     stem
 }
 
-struct PostgresCommit(Arc<PostgresCommitCoordinator>);
+struct PostgresQueries;
 
 #[async_trait::async_trait]
-impl LocalCommit for PostgresCommit {
-    async fn authoritative_run(&self, run_id: &RunId) -> Result<Option<RunRecord>, String> {
-        self.0
+impl LocalCommitQueries<PostgresCommitCoordinator> for PostgresQueries {
+    async fn authoritative_run(
+        &self,
+        store: &PostgresCommitCoordinator,
+        run_id: &RunId,
+    ) -> Result<Option<RunRecord>, String> {
+        store
             .authoritative_run_record(run_id)
             .await
             .map_err(|error| error.to_string())
     }
+
     async fn authoritative_committed_messages(
         &self,
+        store: &PostgresCommitCoordinator,
         thread_id: &ThreadId,
     ) -> Result<Vec<Message>, String> {
-        PostgresCommitCoordinator::authoritative_committed_messages(&self.0, thread_id)
+        store
+            .authoritative_committed_messages(thread_id)
             .await
             .map_err(|error| error.to_string())
     }
-    fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord> {
-        CheckpointReader::latest_run(self.0.as_ref(), thread)
-    }
+
     async fn open_wait_for_thread(
         &self,
+        store: &PostgresCommitCoordinator,
         thread: &ThreadId,
     ) -> Result<Option<(RunId, ResumeTicket)>, String> {
-        PostgresCommitCoordinator::authoritative_open_wait_for_thread(&self.0, thread)
+        store
+            .authoritative_open_wait_for_thread(thread)
             .await
             .map_err(|error| error.to_string())
     }
+
     async fn events_after(
         &self,
+        store: &PostgresCommitCoordinator,
         cursor: RunLifecycleCursor,
         limit: usize,
     ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
-        RunLifecycleFeed::events_after(self.0.as_ref(), cursor, limit).await
-    }
-    async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
-        Coordinator::commit(self.0.as_ref(), commit).await
-    }
-    async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
-        OperationCoordinator::commit_operation(self.0.as_ref(), operation).await
-    }
-    fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
-        ThreadReader::committed_messages(self.0.as_ref(), thread_id)
-    }
-    fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
-        ThreadReader::resume_ticket(self.0.as_ref(), run_id)
-    }
-    fn run_state(&self, run_id: &RunId) -> Option<RunState> {
-        ThreadReader::run_state(self.0.as_ref(), run_id)
-    }
-    fn committed_state(&self, thread_id: &ThreadId) -> Vec<Command> {
-        ThreadReader::committed_state(self.0.as_ref(), thread_id)
-    }
-    fn get(&self, id: &RunId) -> Option<RunRecord> {
-        RunStore::get(self.0.as_ref(), id)
-    }
-    async fn recovery_snapshot(
-        &self,
-        thread_id: &ThreadId,
-        claimed_run_id: &RunId,
-    ) -> Result<RunRecoverySnapshot, RecoveryError> {
-        RunRecoverySource::recovery_snapshot(self.0.as_ref(), thread_id, claimed_run_id).await
+        store.events_after(cursor, limit).await
     }
 }
 

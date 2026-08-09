@@ -20,8 +20,7 @@ use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error as CommitError,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition, ThreadCommit};
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::{
     ClaimedCommitCoordinator, ClaimedRunCommit, DispatchQueue, DispatchWorker, DurableRunIngress,
     GuardedRunCommit, Inbox, PendingInput, PostgresDispatchStore, PostgresStreamCheckpointStore,
@@ -275,7 +274,8 @@ async fn durable_submit_awaits_then_delivered_decision_resumes_on_postgres() {
     assert_eq!(ran.load(Ordering::SeqCst), 1);
 
     // Committed truth is terminal.
-    let record = RunStore::get(&*commit, &RunId("run-1".to_string())).expect("run record");
+    let record =
+        CommittedThreadView::run(&*commit, &RunId("run-1".to_string())).expect("run record");
     assert_eq!(record.state, RunState::Ended(EndCause::NaturalEnd));
 }
 
@@ -417,7 +417,7 @@ async fn postgres_append_is_idempotent_and_stale_input_is_dropped() {
         .expect("good delivery");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 1);
-    let record = RunStore::get(&*commit, &RunId("run-1".to_string())).expect("record");
+    let record = CommittedThreadView::run(&*commit, &RunId("run-1".to_string())).expect("record");
     assert_eq!(record.state, RunState::Ended(EndCause::NaturalEnd));
 }
 
@@ -729,7 +729,7 @@ async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
     .await;
     assert!(frozen.is_ok(), "A reached and blocked in the tool");
 
-    let record = RunStore::get(&*commit, &run).expect("A committed a record");
+    let record = CommittedThreadView::run(&*commit, &run).expect("A committed a record");
     assert_eq!(
         record.state,
         RunState::Running,
@@ -769,7 +769,7 @@ async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
     // THE guarantee: exactly-once committed LOG. The committed transcript carries
     // exactly ONE final "all done" assistant message and the run's record is a single
     // terminal fact — the stale owner's duplicate terminal commit was fenced.
-    let all_done = ThreadReader::committed_messages(&*commit, &ThreadId(THREAD.to_string()))
+    let all_done = CommittedThreadView::committed_messages(&*commit, &ThreadId(THREAD.to_string()))
         .into_iter()
         .filter(|m| m.text_content().contains("all done"))
         .count();
@@ -777,7 +777,7 @@ async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
         all_done, 1,
         "exactly one final assistant message — no duplicate terminal turn"
     );
-    let record = RunStore::get(&*commit, &run).expect("terminal record");
+    let record = CommittedThreadView::run(&*commit, &run).expect("terminal record");
     assert_eq!(
         record.state,
         RunState::Ended(EndCause::NaturalEnd),

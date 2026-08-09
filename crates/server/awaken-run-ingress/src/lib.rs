@@ -12,7 +12,7 @@
 //! The aggregates follow the run-ingress design's DDD split: [`DispatchQueue`] owns
 //! delivery opportunity (claim/lease/recovery), [`Inbox`] owns the
 //! thread's pending input, and run outcome stays in committed facts, read back
-//! through the commit boundary's `ThreadReader`/`RunStore` ports.
+//! through the commit boundary's single `CommittedThreadView` port.
 
 mod any;
 mod application;

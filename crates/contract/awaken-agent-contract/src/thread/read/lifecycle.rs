@@ -195,7 +195,7 @@ mod tests {
     use crate::agent::run::{Failure, Record as RunRecord};
     use crate::agent::state::Command as StateCommand;
     use crate::audit::record::Record as EventRecord;
-    use crate::thread::read::thread_reader::ThreadReader;
+    use crate::thread::read::committed_thread_view::CommittedThreadView;
 
     struct Reader {
         events: Vec<EventRecord>,
@@ -203,12 +203,20 @@ mod tests {
         _sync: Mutex<()>,
     }
 
-    impl ThreadReader for Reader {
+    impl CommittedThreadView for Reader {
         fn committed_messages(&self, _thread_id: &ThreadId) -> Vec<Message> {
             Vec::new()
         }
 
         fn resume_ticket(&self, _run_id: &RunId) -> Option<ResumeTicket> {
+            None
+        }
+
+        fn run(&self, run_id: &RunId) -> Option<RunRecord> {
+            self.runs.get(run_id).cloned()
+        }
+
+        fn latest_run(&self, _thread_id: &ThreadId) -> Option<RunRecord> {
             None
         }
 
@@ -222,14 +230,6 @@ mod tests {
     }
 
     impl CheckpointReader for Reader {
-        fn run(&self, id: &RunId) -> Option<RunRecord> {
-            self.runs.get(id).cloned()
-        }
-
-        fn latest_run(&self, _thread_id: &ThreadId) -> Option<RunRecord> {
-            None
-        }
-
         fn list_events(
             &self,
             scope: &EventScope,

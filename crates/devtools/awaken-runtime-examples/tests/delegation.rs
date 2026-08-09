@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Role;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime_contract::delegation::{
     DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,
     RunDelegationService,

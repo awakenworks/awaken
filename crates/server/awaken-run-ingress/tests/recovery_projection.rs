@@ -8,9 +8,8 @@ use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitOperationId, CommitPayloadHash, CommitReceipt,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunResumeTicket};
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_run_ingress::{
     ClaimedCommitCommand, ClaimedCommitCoordinator, ClaimedRunCommit, RecoveryProjection, RunClaim,
 };
@@ -34,15 +33,23 @@ fn ticket(run_id: &RunId, thread_id: &ThreadId) -> ResumeTicket {
 fn snapshot() -> RunRecoverySnapshot {
     let thread_id = ThreadId("thread".to_string());
     let run_id = RunId("run".to_string());
+    let historical_run_id = RunId("historical-run".to_string());
     let resume = ticket(&run_id, &thread_id);
     RunRecoverySnapshot {
         thread_id: thread_id.clone(),
         claimed_run_id: run_id.clone(),
-        runs: vec![RunRecord {
-            id: run_id.clone(),
-            thread_id: thread_id.clone(),
-            state: RunState::Awaiting,
-        }],
+        runs: vec![
+            RunRecord {
+                id: historical_run_id,
+                thread_id: thread_id.clone(),
+                state: RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
+            },
+            RunRecord {
+                id: run_id.clone(),
+                thread_id: thread_id.clone(),
+                state: RunState::Awaiting,
+            },
+        ],
         latest_run_id: Some(run_id.clone()),
         messages: vec![Message::text(
             MessageId("before".to_string()),
@@ -62,6 +69,12 @@ fn snapshot() -> RunRecoverySnapshot {
 
 #[test]
 fn install_exposes_the_claimed_committed_prefix() {
+    // Cause/effect graph: C1 a snapshot contains a historical Run and a distinct
+    // latest claimed Run; C2 the queried Thread matches; C3 a Run/Thread is
+    // unknown. Effects: E1 both known Runs are addressable; E2 latest_run selects
+    // only the snapshot head; E3 unknown identities are absent. Decision table:
+    // R1 C1+C2 -> E1+E2; R2 C3 -> E3. This pins Worker projection semantics to
+    // the same committed view contract used by every authoritative backend.
     let projection = RecoveryProjection::new();
     let run_id = RunId("run".to_string());
     projection
@@ -76,7 +89,28 @@ fn install_exposes_the_claimed_committed_prefix() {
     );
     assert_eq!(projection.run_state(&run_id), Some(RunState::Awaiting));
     assert!(projection.resume_ticket(&run_id).is_some());
-    assert!(RunStore::get(&projection, &run_id).is_some());
+    assert!(CommittedThreadView::run(&projection, &run_id).is_some());
+    assert!(
+        CommittedThreadView::run(&projection, &RunId("historical-run".to_string())).is_some(),
+        "R1/E1"
+    );
+    assert_eq!(
+        projection
+            .latest_run(&ThreadId("thread".to_string()))
+            .map(|run| run.id),
+        Some(run_id),
+        "R1/E2"
+    );
+    assert!(
+        projection.run(&RunId("missing-run".to_string())).is_none(),
+        "R2/E3"
+    );
+    assert!(
+        projection
+            .latest_run(&ThreadId("missing-thread".to_string()))
+            .is_none(),
+        "R2/E3"
+    );
 }
 
 #[test]
