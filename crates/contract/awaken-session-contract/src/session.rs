@@ -8,6 +8,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
+use awaken_agent_contract::{LifecycleCursor, LifecyclePage};
 
 /// The tool a run awaits: its id, model-visible name/input, and whether it is
 /// client-executed (projected as `agent.custom_tool_use`) or a built-in awaiting
@@ -38,6 +39,10 @@ pub struct DelegatedRun {
 #[derive(Debug, Clone)]
 pub struct StepOutcome {
     pub new_messages: Vec<Message>,
+    /// Exact identity of the committed Run when supplied by a durable runtime.
+    /// Protocol projections use it only to deduplicate the same terminal fact
+    /// observed locally and through the committed lifecycle feed.
+    run_id: Option<RunId>,
     state: RunState,
     pending: Option<Pending>,
     /// `true` when this turn folded its context — projected as an
@@ -60,6 +65,7 @@ impl StepOutcome {
     ) -> Self {
         Self {
             new_messages: messages,
+            run_id: None,
             state: RunState::Awaiting,
             pending,
             compacted,
@@ -77,6 +83,7 @@ impl StepOutcome {
     ) -> Self {
         Self {
             new_messages: messages,
+            run_id: None,
             state: RunState::Ended(cause),
             pending: None,
             compacted,
@@ -88,6 +95,17 @@ impl StepOutcome {
     #[must_use]
     pub fn state(&self) -> &RunState {
         &self.state
+    }
+
+    #[must_use]
+    pub fn with_run_id(mut self, run_id: RunId) -> Self {
+        self.run_id = Some(run_id);
+        self
+    }
+
+    #[must_use]
+    pub fn run_id(&self) -> Option<&RunId> {
+        self.run_id.as_ref()
     }
 
     /// Neutral terminal fact derived from the authoritative Run state.
@@ -516,6 +534,21 @@ pub trait SessionRuntime: Send + Sync {
     /// default reports nothing, so an ephemeral host never rehydrates.
     async fn committed_messages(&self, _thread: &str) -> Vec<Message> {
         Vec::new()
+    }
+
+    /// Read committed Run lifecycle facts after `cursor`. The commit log remains
+    /// the sole authority; Managed uses this projection to observe turns accepted
+    /// through AI SDK, AG-UI, A2A, or another Coordinator replica.
+    async fn committed_run_lifecycle(
+        &self,
+        _thread: &str,
+        cursor: LifecycleCursor,
+        _limit: usize,
+    ) -> Result<LifecyclePage, RunError> {
+        Ok(LifecyclePage {
+            events: Vec::new(),
+            next_cursor: cursor,
+        })
     }
 
     /// The session's accumulated token usage across all turns, surfaced on the

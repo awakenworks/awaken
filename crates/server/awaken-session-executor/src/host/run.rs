@@ -792,6 +792,7 @@ impl SharedHost {
             .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed) > 0);
         let delegated_runs = project_delegated_runs(delegation_registry.as_ref());
         Ok(RunResult {
+            run_id,
             new_messages,
             state,
             pending,

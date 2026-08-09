@@ -28,6 +28,7 @@ fn to_pending(pending: Option<PendingTool>) -> Option<Pending> {
 }
 
 fn to_step_outcome(result: RunResult) -> StepOutcome {
+    let run_id = result.run_id;
     match result.state {
         RunState::Awaiting => StepOutcome::awaiting(
             result.new_messages,
@@ -35,14 +36,16 @@ fn to_step_outcome(result: RunResult) -> StepOutcome {
             result.compacted,
             result.rescheduled,
         )
-        .with_delegated_runs(result.delegated_runs),
+        .with_delegated_runs(result.delegated_runs)
+        .with_run_id(run_id),
         RunState::Ended(cause) => StepOutcome::ended(
             result.new_messages,
             cause,
             result.compacted,
             result.rescheduled,
         )
-        .with_delegated_runs(result.delegated_runs),
+        .with_delegated_runs(result.delegated_runs)
+        .with_run_id(run_id),
         RunState::Running => unreachable!("settled host result cannot remain Running"),
     }
 }
