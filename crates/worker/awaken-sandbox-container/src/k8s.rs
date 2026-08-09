@@ -386,7 +386,7 @@ fn build_pod(
             command: Some(plan.command.clone()),
             env: Some(agent_env),
             // Enforce the advertised resource caps as the container's limits.
-            resources: pod_resources(&plan.limits),
+            resources: pod_resources(&plan.requests, &plan.limits),
             volume_mounts: (!agent_mounts.is_empty()).then_some(agent_mounts),
             // Harden the untrusted agent: no privilege escalation, all caps dropped.
             security_context: Some(hardened_security_context()),
@@ -1389,14 +1389,29 @@ mod tests {
     }
 
     #[test]
-    fn pod_resources_maps_cpu_memory_and_disk() {
-        let r = pod_resources(&pc::ResourceLimits {
-            cpu_millis: Some(1500),
-            memory_bytes: Some(1_073_741_824),
-            pids: Some(256),
-            disk_bytes: Some(2048),
-        })
-        .expect("limits are set");
+    fn pod_resources_maps_requests_and_limits_independently() {
+        // Cause/effect graph: C1 requests set, C2 limits set, C3 pids set.
+        // R1 C1+C2+C3 => E1 Kubernetes requests and limits carry cpu/memory/disk,
+        // E2 pids is absent because Kubernetes has no Pod resource key. R2 neither
+        // C1 nor an expressible C2 => no ResourceRequirements (next test).
+        let r = pod_resources(
+            &pc::ResourceRequests {
+                cpu_millis: Some(750),
+                memory_bytes: Some(536_870_912),
+                disk_bytes: Some(1024),
+            },
+            &pc::ResourceLimits {
+                cpu_millis: Some(1500),
+                memory_bytes: Some(1_073_741_824),
+                pids: Some(256),
+                disk_bytes: Some(2048),
+            },
+        )
+        .expect("requests and limits are set");
+        let requests = r.requests.expect("requests map present");
+        assert_eq!(requests.get("cpu").unwrap().0, "750m");
+        assert_eq!(requests.get("memory").unwrap().0, "536870912");
+        assert_eq!(requests.get("ephemeral-storage").unwrap().0, "1024");
         let limits = r.limits.expect("limits map present");
         assert_eq!(limits.get("cpu").unwrap().0, "1500m");
         assert_eq!(limits.get("memory").unwrap().0, "1073741824");
@@ -1407,13 +1422,22 @@ mod tests {
 
     #[test]
     fn pod_resources_is_none_without_expressible_caps() {
-        assert!(pod_resources(&pc::ResourceLimits::default()).is_none());
+        assert!(
+            pod_resources(
+                &pc::ResourceRequests::default(),
+                &pc::ResourceLimits::default()
+            )
+            .is_none()
+        );
         // pids-only → nothing k8s expresses as a pod limit.
         assert!(
-            pod_resources(&pc::ResourceLimits {
-                pids: Some(9),
-                ..Default::default()
-            })
+            pod_resources(
+                &pc::ResourceRequests::default(),
+                &pc::ResourceLimits {
+                    pids: Some(9),
+                    ..Default::default()
+                }
+            )
             .is_none()
         );
     }
@@ -1454,6 +1478,7 @@ mod tests {
             binds: Vec::new(),
             outputs_volume: "/mnt/session/outputs".into(),
             network: crate::NetworkMode::Open,
+            requests: pc::ResourceRequests::default(),
             limits: pc::ResourceLimits {
                 memory_bytes: Some(1 << 30),
                 ..Default::default()

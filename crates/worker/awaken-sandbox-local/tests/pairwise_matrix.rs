@@ -269,6 +269,7 @@ async fn build(
         packages: Default::default(),
         network,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: Default::default(),
         lease_ttl_secs: None,
         extra: None,

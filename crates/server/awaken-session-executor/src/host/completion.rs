@@ -203,6 +203,9 @@ pub fn remote_worker_placement(
                 crate::provisioning::sandbox_requirements(environment, requires_opaque_process)
             },
         );
+        if let Some(environment) = environment {
+            placement.resources = crate::provisioning::sandbox_resource_requests(environment);
+        }
     }
     for candidate in std::iter::once(&models.model_binding).chain(models.model_candidates.iter()) {
         placement.required_capabilities.insert(
@@ -766,6 +769,7 @@ mod completion_tests {
             config_fingerprint: awaken_session_contract::EnvironmentFingerprint("fp-env".into()),
             sandbox: serde_json::json!({
                 "isolation": "container",
+                "requests": {"cpu_millis": 250, "memory_bytes": 33554432},
                 "limits": {"memory_bytes": 67108864}
             }),
             sandbox_provisioning: Default::default(),
@@ -882,6 +886,12 @@ mod completion_tests {
         assert!(native.sandbox.enforced_network_allowlist, "R1 allowlist");
         assert!(native.sandbox.resource_limits, "R1 limits");
         assert!(native.sandbox.package_provisioning, "R1 packages");
+        assert_eq!(native.resources.cpu_millis, Some(250), "R1 cpu request");
+        assert_eq!(
+            native.resources.memory_bytes,
+            Some(33_554_432),
+            "R1 memory request"
+        );
         assert!(
             !native.sandbox.tool_transparent && !native.sandbox.path_fidelity,
             "R1 hand"
@@ -934,6 +944,11 @@ mod completion_tests {
         );
         let remote_placement = remote_worker_placement(&remote, Some(&frozen), None, true);
         assert_eq!(remote_placement.sandbox, Default::default(), "R4");
+        assert_eq!(
+            remote_placement.resources,
+            Default::default(),
+            "R4 resources"
+        );
 
         remote.model_candidates.push(host_models().model_binding);
         let mixed = remote_worker_placement(&remote, Some(&frozen), None, true);

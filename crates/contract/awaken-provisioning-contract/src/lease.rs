@@ -615,6 +615,7 @@ mod actuator_tests {
             packages: Default::default(),
             network: crate::vocab::NetworkPolicy::Unrestricted,
             outputs_path: "/mnt/session/outputs".into(),
+            requests: Default::default(),
             limits: Default::default(),
             lease_ttl_secs: None,
             extra: None,
