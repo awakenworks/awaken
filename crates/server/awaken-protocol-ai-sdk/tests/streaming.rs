@@ -266,6 +266,9 @@ async fn falls_back_to_full_projection_when_nothing_streamed() {
 
 #[tokio::test]
 async fn a_retained_best_effort_sink_cannot_hold_the_completed_stream_open() {
+    // Cause/effect rule: once run_streaming returns a terminal outcome, retaining
+    // its best-effort sink must not retain the response body; the client observes
+    // exactly one finish event and EOF without waiting for the retained Arc.
     struct RetainedSinkMock {
         retained: Mutex<Option<Arc<dyn StreamSink>>>,
     }
@@ -306,12 +309,12 @@ async fn a_retained_best_effort_sink_cannot_hold_the_completed_stream_open() {
             unreachable!()
         }
 
-        async fn pending(&self, _thread: &str) -> Option<Pending> {
-            None
+        async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+            Ok(None)
         }
 
-        async fn history(&self, _thread: &str) -> Vec<Message> {
-            Vec::new()
+        async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+            Ok(Vec::new())
         }
 
         fn model(&self) -> String {
