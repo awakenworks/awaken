@@ -120,7 +120,6 @@ awaken-iam-client = { git = "https://github.com/awakenworks/awaken-iam", rev = "
 # three modes (Open/Local/Remote). Local mode is the zero-config single-machine
 # embed (in-memory SQLite, seeded roles, ephemeral bootstrap admin token).
 awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam", rev = "1a2612550dfd4a541eedc9b62912a556bbd7fc54" }
-awaken-managed-bridge = { path = "crates/server/awaken-managed-bridge" }
 awaken-store-conformance = { path = "crates/stores/awaken-store-conformance" }
 awaken-store-runtime = { path = "crates/stores/awaken-store-runtime" }
 awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }
@@ -150,7 +149,6 @@ awaken-acp-contract = { path = "crates/worker/awaken-acp-contract" }
 awaken-connection-plan = { path = "crates/worker/awaken-connection-plan" }
 awaken-tool-relay = { path = "crates/worker/awaken-tool-relay" }
 awaken-file-store = { path = "crates/resources/awaken-file-store" }
-awaken-file-application = { path = "crates/resources/awaken-file-application" }
 awaken-resource-application = { path = "crates/resources/awaken-resource-application" }
 awaken-sandbox-local = { path = "crates/worker/awaken-sandbox-local" }
 awaken-sandbox-memoryd = { path = "crates/worker/awaken-sandbox-memoryd" }
@@ -164,7 +162,6 @@ awaken-worker-transport-security = { path = "crates/server/awaken-worker-transpo
 awaken-runtime-host = { path = "crates/server/awaken-runtime-host" }
 awaken-coordinator-runtime = { path = "crates/server/awaken-coordinator-runtime" }
 awaken-worker-runtime = { path = "crates/server/awaken-worker-runtime" }
-awaken-protocol-managed-resources = { path = "crates/server/awaken-protocol-managed-resources" }
 awaken-admin-assistant = { path = "crates/control/awaken-admin-assistant" }
 awaken-coordinator = { path = "crates/server/awaken-coordinator" }
 awaken-scenario-host = { path = "crates/devtools/awaken-scenario-host" }

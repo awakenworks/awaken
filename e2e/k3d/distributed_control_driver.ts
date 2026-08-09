@@ -148,9 +148,12 @@ function assertProviderResponsesAreUnique(rendered: string) {
 async function bootstrap(base: string) {
   // Cause/effect decision table:
   // B1 private route through the public endpoint -> 404 and no mutation;
-  // B2 File/Memory/Skill/Credential CRUD -> durable, secret-free public projections;
-  // B3 Agent publication with exact Resource/Credential pins -> one immutable snapshot;
-  // B4 Deployment launch -> one Session; B5 real Worker materializes all pins,
+  // B2 tenant Credential mutation under deployment-managed model supply -> typed
+  // 403 without reflecting the submitted secret or creating a second supply path;
+  // B3 File/Memory/Skill CRUD -> durable, secret-free public projections;
+  // B4 Agent publication uses the deployment-supplied model and sealed Credential
+  // candidate -> one immutable snapshot; B5 Deployment launch -> one Session;
+  // B6 real Worker materializes all pins,
   // calls the authenticated Provider, and commits one claim-fenced response.
   await expectStatus(base, 'POST', '/internal/v1/executable-agents/withdraw', 404, {
     workspace_id: 'auth-probe', agent_id: 'auth-probe', lifecycle_revision: 1,
@@ -159,25 +162,21 @@ async function bootstrap(base: string) {
   await expectStatus(base, 'GET', '/v1/models', 200);
 
   const credentialSecret = 'adr71-must-never-be-returned'; // awaken-allow: secret
-  const credential = await expectStatus(
+  const deniedCredential = await expectStatus(
     base,
     'POST',
     '/v1/config/credentials',
-    201,
+    403,
     {
       workspace_id: WORKSPACE, kind: 'vault', provider_id: 'anthropic',
       env_key: 'ADR71_PUBLIC_PROBE', secret: credentialSecret,
     },
   );
-  assert.ok(credential.id, JSON.stringify(credential));
+  assert.equal(deniedCredential.code, 'model_supply_managed', JSON.stringify(deniedCredential));
   assert.ok(
-    !JSON.stringify(credential).includes(credentialSecret),
-    'credential response leaked secret',
+    !JSON.stringify(deniedCredential).includes(credentialSecret),
+    'credential rejection leaked secret',
   );
-  const storedCredential = await expectStatus(
-    base, 'GET', `/v1/config/credentials/${credential.id}`, 200,
-  );
-  assert.ok(!JSON.stringify(storedCredential).includes(credentialSecret));
 
   const fileMarker = 'ADR71-FILE-MATERIALIZED';
   const file = await uploadFile(base, fileMarker);
@@ -281,7 +280,9 @@ async function verifyDurable(
 ) {
   // Cause/effect decision table:
   // R1 authority replacement/failover + stable edge route -> durable Deployment
-  // and Session remain readable;
+  // and Session remain readable; a cold Coordinator projection must never have
+  // a process-local sandbox binding to adopt because Worker placement was frozen
+  // before realization;
   // R2 EndpointSlice convergence is uncertain -> use repeatable GET probes until
   // stable, then issue the non-idempotent Event command once; an ambiguous write
   // response is never blindly replayed because this route has no idempotency key;

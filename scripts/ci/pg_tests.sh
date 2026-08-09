@@ -51,6 +51,10 @@ self_test() {
     echo "Postgres gate omits --features test-support for awaken-run-ingress" >&2
     return 1
   }
+  grep -Fq "cargo test -p awaken-coordinator-runtime --test active_active_postgres" "$0" || {
+    echo "Postgres gate omits the coordinator-owned active/active transport test" >&2
+    return 1
+  }
   grep -Fq "cargo test -p awaken-model-catalog-store --features postgres,test-support" "$0" || {
     echo "Postgres gate omits the authoritative model-catalog store" >&2
     return 1
@@ -151,7 +155,7 @@ cargo test -p awaken-run-ingress \
 cargo test -p awaken-runtime-host \
   commit_claimed_postgres_guard_blocks_reclaim_until_http_commit_finishes \
   || status=1
-cargo test -p awaken-runtime-host --test active_active_postgres -- --test-threads=1 \
+cargo test -p awaken-coordinator-runtime --test active_active_postgres -- --test-threads=1 \
   || status=1
 cargo test -p awaken-config-store --test postgres || status=1
 cargo test -p awaken-admin-config-api --features postgres --test postgres_store || status=1

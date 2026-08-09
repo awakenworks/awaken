@@ -8,7 +8,7 @@
 //! The router is built over the canonical Resources application component and its
 //! in-memory path-addressed repository — the same ports a durable deployment wires.
 
-use awaken_protocol_managed_resources::memory_stores_router;
+use awaken_protocol_managed::memory_stores_router;
 use awaken_tenancy::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
@@ -19,7 +19,7 @@ use tower::ServiceExt;
 mod support;
 
 fn router() -> Router {
-    let resources = support::ephemeral_resources();
+    let resources = support::resources::ephemeral_resources();
     memory_stores_router(
         resources.ports().memory_repository(),
         resources.memory_stores(),
@@ -239,7 +239,7 @@ async fn unknown_store_is_fail_closed_on_every_verb() {
 
 #[tokio::test]
 async fn workspace_and_lifecycle_are_intrinsic_resource_guards() {
-    let resources = support::ephemeral_resources();
+    let resources = support::resources::ephemeral_resources();
     let router = memory_stores_router(
         resources.ports().memory_repository(),
         resources.memory_stores(),

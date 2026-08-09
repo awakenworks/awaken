@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
-context = "coordinator"
+context = "apps"
 layer = "interface"
 authority = "protocol-managed"
 
@@ -52,11 +52,14 @@ awaken-tenancy.workspace = true
 # Managed vault/credential front door (ADR-0043): the neutral credential domain
 # and the ACL that maps its rows ⇄ the Anthropic Managed wire tags.
 awaken-credential-vault.workspace = true
-awaken-managed-bridge.workspace = true
 # Neutral sandbox egress vocabulary (`NetworkPolicy`): the environments ACL maps
 # the Anthropic `BetaEnvironment.networking` wire config onto this typed policy, so
 # the egress decision is a shared neutral fact rather than an inline string match.
 awaken-provisioning-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-memory-store.workspace = true
+awaken-skill-store.workspace = true
+awaken-ext-skills.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["serde"] }
@@ -66,7 +69,7 @@ thiserror.workspace = true
 # `sync` for the per-session live-SSE broadcast the preview sink and committed
 # events publish to; `rt`/`macros` come from the workspace default.
 tokio = { workspace = true, features = ["sync"] }
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 tokio-stream = "0.1"
 # The live-SSE endpoint yields a snapshot backfill then live broadcast frames from
 # one `async` generator (`stream!`).
@@ -121,6 +124,12 @@ awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-model-catalog = { workspace = true, features = ["test-support"] }
 awaken-sandbox-policy-store = { workspace = true, features = ["test-support"] }
 awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
+awaken-resource-application.workspace = true
+awaken-file-store = { workspace = true, features = ["test-support"] }
+awaken-memory-store = { workspace = true, features = ["test-support"] }
+awaken-skill-store = { workspace = true, features = ["test-support"] }
+# Test-only ZIP construction drives the canonical Skill bundle ingestor.
+zip = { version = "8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

@@ -25,6 +25,8 @@ use crate::types::{
 };
 #[cfg(test)]
 use awaken_session_contract::ManagedSessionRepository;
+#[cfg(test)]
+use awaken_session_contract::SessionInit;
 use awaken_session_contract::{ManagedLifecycleFact, PersistedSession};
 #[cfg(test)]
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -41,8 +43,10 @@ mod helpers;
 #[path = "state/lifecycle_event.rs"]
 pub mod lifecycle_event;
 mod managed_state;
+#[cfg(any(test, feature = "test-support"))]
 mod mcp_attachment;
 mod realization;
+mod rehydration;
 mod resource;
 mod resources;
 mod session_create_idempotency;
@@ -51,6 +55,8 @@ mod session_record;
 mod session_update;
 pub(crate) use session_update::SessionUpdateCommand;
 mod sessions;
+#[cfg(test)]
+mod test_support;
 mod threads;
 mod types;
 mod work_dispatch;
@@ -67,315 +73,21 @@ pub(crate) use resource::{
 use session_record::SessionRecord;
 pub(crate) use types::{
     AgentCapabilities, CustomTool, DelegatedRun, LiveInboxSnapshot, OutcomeIteration,
-    OutcomeReport, RunError, RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepOutcome,
+    OutcomeReport, RunError, RunErrorKind, SessionRuntime, SessionUsage, StepOutcome,
     ToolPermissionDecision,
 };
 
 #[cfg(test)]
 mod tests {
+    use super::test_support::{RehydrateFake, create_session_fixture, ephemeral_session_repo};
     use super::*;
     use async_trait::async_trait;
     use awaken_agent_contract::agent::message::Message;
     use std::collections::BTreeMap;
 
-    struct UnavailableEnvironmentSource;
-
-    #[async_trait]
-    impl awaken_executable_environment_contract::ExecutableEnvironmentRegistrationSource
-        for UnavailableEnvironmentSource
-    {
-        async fn current_registration(
-            &self,
-            _environment_id: &str,
-        ) -> Result<
-            Option<awaken_executable_environment_contract::ExecutableEnvironmentRegistration>,
-            awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError,
-        > {
-            Err(
-                awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError::Unavailable(
-                    "catalog offline".into(),
-                ),
-            )
-        }
-
-        async fn registration_at_revision(
-            &self,
-            _environment_id: &str,
-            _revision: awaken_environment_contract::EnvironmentRevision,
-        ) -> Result<
-            Option<awaken_executable_environment_contract::ExecutableEnvironmentRegistration>,
-            awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError,
-        > {
-            Err(
-                awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError::Unavailable(
-                    "catalog offline".into(),
-                ),
-            )
-        }
-    }
-
-    #[tokio::test]
-    async fn deployment_launch_preserves_missing_and_unavailable_environment_outcomes() {
-        // Cause/effect graph: C1=registration present, C2=registration absent,
-        // C3=catalog read fails (mutually exclusive). Effects are E1=Some,
-        // E2=None, E3=typed error. Decision rules exercised here are R2 C2→E2
-        // and R3 C3→E3; R1 is covered by Environment execution conformance.
-        // This distinction lets Deployment make absence terminal while retaining
-        // a pending run for an indeterminate catalog outage.
-        let request = |environment_id: &str| crate::DeploymentLaunch {
-            deployment_id: "depl_a".into(),
-            deployment_run_id: "deprun_a".into(),
-            workspace_id: "workspace_a".into(),
-            agent: crate::types::agent::AgentReference::new("agent_a", 1),
-            environment_id: environment_id.into(),
-            metadata: BTreeMap::new(),
-            initial_events: Vec::new(),
-            resources: Vec::new(),
-            vault_ids: Vec::new(),
-        };
-        let missing = Arc::new(ManagedState::new(RehydrateFake::default()));
-        let missing_launcher = crate::LocalDeploymentSessionLauncher::new(missing);
-        assert!(
-            matches!(
-                crate::DeploymentSessionLauncher::launch(&missing_launcher, request("env_missing"))
-                    .await,
-                crate::DeploymentLaunchOutcome::Failed {
-                    error: crate::types::deployment::RunError::EnvironmentNotFoundError { .. }
-                }
-            ),
-            "R2"
-        );
-
-        let unavailable = Arc::new(
-            ManagedState::new(RehydrateFake::default()).with_environments(Arc::new(
-                crate::routes::environments::EnvironmentExecutionState::new(
-                    Arc::new(awaken_work_store::InMemoryWorkQueue::new()),
-                    Arc::new(UnavailableEnvironmentSource),
-                ),
-            )),
-        );
-        let unavailable_launcher = crate::LocalDeploymentSessionLauncher::new(unavailable);
-        assert!(
-            matches!(
-                crate::DeploymentSessionLauncher::launch(&unavailable_launcher, request("env_a"))
-                    .await,
-                crate::DeploymentLaunchOutcome::Unavailable { message }
-                    if message.contains("catalog offline")
-            ),
-            "R3"
-        );
-    }
-
-    fn ephemeral_session_repo() -> SqliteManagedSessionRepository {
-        SqliteManagedSessionRepository::open_in_memory()
-            .expect("open ephemeral managed Session repository")
-    }
-
-    async fn create_session_fixture(
-        repo: &dyn ManagedSessionRepository,
-        owner: &str,
-        mut session: PersistedSession,
-    ) {
-        session.revision = awaken_session_contract::SessionRevision(0);
-        let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
-        let payload_hash = payload.stable_hash();
-        repo.create(
-            owner,
-            session.clone(),
-            awaken_session_contract::IdempotencyRecord {
-                key: format!("test:create:{}:{payload_hash}", session.session_id),
-                payload_hash,
-            },
-            Vec::new(),
-        )
-        .await
-        .expect("create Session fixture");
-    }
-
     fn ephemeral_resource_catalog() -> awaken_resource_store::SqliteResourceStore {
         awaken_resource_store::SqliteResourceStore::in_memory()
             .expect("open ephemeral Resource Catalog")
-    }
-
-    type RestoredRuntime = (
-        String,
-        Option<String>,
-        usize,
-        awaken_session_contract::SessionNetworkPolicy,
-        serde_json::Value,
-    );
-
-    /// A runtime that reports a non-empty committed transcript, so a session can
-    /// rehydrate. Every operational method is unused by these tests.
-    #[derive(Clone, Default)]
-    pub(super) struct RehydrateFake {
-        restored: Arc<
-            std::sync::Mutex<
-                Vec<(
-                    String,
-                    String,
-                    awaken_session_contract::ResolvedSessionResources,
-                )>,
-            >,
-        >,
-        restored_environments: Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
-        restored_runtimes: Arc<std::sync::Mutex<Vec<RestoredRuntime>>>,
-        delegated: Arc<std::sync::Mutex<Vec<DelegatedRun>>>,
-        order: Arc<std::sync::Mutex<Vec<&'static str>>>,
-        committed: Arc<std::sync::Mutex<Option<Vec<Message>>>>,
-        pending: Arc<std::sync::Mutex<Option<awaken_session_contract::Pending>>>,
-        ended: Arc<std::sync::Mutex<Vec<String>>>,
-    }
-
-    #[async_trait]
-    impl SessionRuntime for RehydrateFake {
-        async fn prepare_session(&self, thread: &str, init: SessionInit) -> Result<(), RunError> {
-            self.order.lock().unwrap().push("runtime");
-            self.restored_runtimes.lock().unwrap().push((
-                thread.to_string(),
-                init.runtime,
-                0,
-                init.environment.network,
-                init.environment.sandbox,
-            ));
-            Ok(())
-        }
-
-        async fn run(
-            &self,
-            _agent: &str,
-            _thread: &str,
-            _content: Vec<ContentBlock>,
-        ) -> Result<StepOutcome, RunError> {
-            unreachable!()
-        }
-        async fn resume(
-            &self,
-            _thread: &str,
-            _tool_use_id: &str,
-            _decision: ToolPermissionDecision,
-        ) -> Result<StepOutcome, RunError> {
-            unreachable!()
-        }
-        async fn resume_custom(
-            &self,
-            _thread: &str,
-            _tool_use_id: &str,
-            _content: Vec<ContentBlock>,
-            _is_error: bool,
-        ) -> Result<StepOutcome, RunError> {
-            unreachable!()
-        }
-        async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
-            Ok(())
-        }
-        async fn define_outcome(
-            &self,
-            _thread: &str,
-            _description: &str,
-            _rubric: &str,
-            _max_iterations: u32,
-        ) -> Result<OutcomeReport, RunError> {
-            unreachable!()
-        }
-        async fn committed_messages(&self, thread: &str) -> Vec<Message> {
-            self.order.lock().unwrap().push("history");
-            if let Some(messages) = self.committed.lock().unwrap().clone() {
-                return messages;
-            }
-            vec![Message::text(
-                awaken_agent_contract::agent::message::Id(format!("{thread}-m0")),
-                awaken_agent_contract::agent::message::Role::User,
-                "hello",
-            )]
-        }
-        async fn pending_tool(
-            &self,
-            _thread: &str,
-        ) -> Result<Option<awaken_session_contract::Pending>, RunError> {
-            Ok(self.pending.lock().unwrap().clone())
-        }
-        async fn delegated_runs(&self, _thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
-            self.order.lock().unwrap().push("delegations");
-            Ok(self.delegated.lock().unwrap().clone())
-        }
-        async fn end_session(&self, thread: &str) -> Result<(), RunError> {
-            self.ended.lock().unwrap().push(thread.to_string());
-            Ok(())
-        }
-        async fn restore_session_environment(
-            &self,
-            agent: &str,
-            thread: &str,
-            binding: &str,
-        ) -> Result<(), RunError> {
-            self.order.lock().unwrap().push("environment");
-            self.restored_environments.lock().unwrap().push((
-                agent.to_string(),
-                thread.to_string(),
-                binding.to_string(),
-            ));
-            Ok(())
-        }
-        fn model(&self) -> String {
-            "host-default-model".to_string()
-        }
-        async fn apply_session_inputs(
-            &self,
-            thread: &str,
-            workspace_id: &str,
-            _resource_revision: u64,
-            inputs: &awaken_session_contract::ResolvedSessionResources,
-        ) -> Result<(), RunError> {
-            self.order.lock().unwrap().push("resources");
-            self.restored.lock().unwrap().push((
-                thread.to_string(),
-                workspace_id.to_string(),
-                inputs.clone(),
-            ));
-            Ok(())
-        }
-    }
-
-    #[async_trait]
-    impl awaken_session_contract::McpAttachmentRealizer for RehydrateFake {
-        async fn stage_mcp_attachment(
-            &self,
-            request: awaken_session_contract::StageMcpAttachment,
-        ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
-            self.order.lock().unwrap().push("mcp");
-            if let Some(restored) = self
-                .restored_runtimes
-                .lock()
-                .unwrap()
-                .iter_mut()
-                .find(|restored| restored.0 == request.generation.session_id)
-            {
-                restored.2 += 1;
-            }
-            let receipt_fingerprint = request.fingerprint();
-            Ok(awaken_session_contract::McpRealizationReceipt {
-                generation: request.generation,
-                realization_id: request.realization_id,
-                selected_plaintext_holder: request.selected_plaintext_holder,
-                actual_realization_kind: None,
-                receipt_fingerprint,
-            })
-        }
-
-        async fn publish_mcp_generation(
-            &self,
-            _generation: awaken_session_contract::McpGenerationRef,
-        ) -> Result<(), RunError> {
-            Ok(())
-        }
-
-        async fn drain_mcp_generation(
-            &self,
-            _generation: awaken_session_contract::McpGenerationRef,
-        ) -> Result<(), RunError> {
-            Ok(())
-        }
     }
 
     /// A runtime that records every `end_session` thread it is asked to tear down,
@@ -442,6 +154,67 @@ mod tests {
         fn model(&self) -> String {
             "host-default-model".to_string()
         }
+    }
+
+    /// Cause/effect graph: C1 deployment disables the local pool; C2 the
+    /// Session has no application contribution; C3 its Environment definition
+    /// is otherwise local. C1 freezes the application-selected Runtime placement fact,
+    /// which causes E1 one dispatch-only Runtime projection, E2 no local
+    /// realization lease, and E3 no resident environment binding. Without C1,
+    /// the canonical local phase driver owns realization (covered by the
+    /// existing create/realization tests).
+    ///
+    /// | Rule | No local pool | Application | Environment | Projection | Local lease/binding |
+    /// |---|---|---|---|---|---|
+    /// | P1 | yes | absent | local | once | none |
+    /// | P2 | no | absent | local | local phase driver | local |
+    /// | P3 | any | required | any | wait for contribution | none |
+    #[tokio::test]
+    async fn coordinator_only_creation_freezes_worker_placement_without_local_realization() {
+        let runtime = EndSessionRecorder::default();
+        let prepared = runtime.prepared.clone();
+        let runtime = Arc::new(runtime);
+        let application = awaken_session_application::SessionApplication::new_with_configuration(
+            runtime.clone(),
+            Arc::new(mcp_attachment::UnsupportedMcpAttachmentRealizer),
+            Arc::new(ephemeral_session_repo()),
+            Arc::new(crate::routes::environments::EnvironmentExecutionState::default()),
+            awaken_session_application::SessionApplicationConfiguration {
+                execution_placement:
+                    awaken_session_application::SessionExecutionPlacement::RegisteredWorker,
+            },
+        );
+        let state = ManagedState::from_application(application);
+        let created = state
+            .create_session(
+                serde_json::from_value(serde_json::json!({ "agent": "assistant" })).unwrap(),
+                None,
+            )
+            .await
+            .expect("P1 creates the durable Session");
+        let persisted = state
+            .application
+            .session_repository()
+            .get(&created.id)
+            .await
+            .expect("P1 durable aggregate");
+
+        assert!(
+            persisted
+                .frozen_baseline()
+                .is_some_and(|baseline| baseline.runtime_placement
+                    == awaken_session_contract::SessionRuntimePlacement::Worker),
+            "P1 freezes the Runtime placement fact"
+        );
+        assert!(persisted.realization.is_none(), "P1/E2");
+        assert!(
+            matches!(
+                persisted.environment,
+                awaken_session_contract::SessionEnvironmentState::Unmaterialized
+            ),
+            "P1/E3"
+        );
+        assert_eq!(prepared.lock().unwrap().as_slice(), &[created.id], "P1/E1");
     }
 
     /// Cause graph: exact child -> runtime termination -> one terminal projection.
@@ -916,7 +689,7 @@ mod tests {
         );
     }
 
-    fn sample_persisted(id: &str) -> PersistedSession {
+    pub(super) fn sample_persisted(id: &str) -> PersistedSession {
         let mut metadata = BTreeMap::new();
         metadata.insert("team".to_string(), "research".to_string());
         let holder = awaken_credential_contract::PlaintextHolder::new(
@@ -958,6 +731,7 @@ mod tests {
                 awaken_session_contract::SessionBaseline::compile(
                     awaken_session_contract::SessionBaselineInputs {
                         environment,
+                        runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                         mcp_authoring: Default::default(),
                         agent_id: "coder".into(),
                         model: "kimi-k2".into(),
@@ -1000,10 +774,14 @@ mod tests {
         .await;
         let sink = awaken_session_application::RepositoryEnvironmentBindingSink::new(repo.clone());
 
-        sink.persist("binding-now", "opaque-handle").await.unwrap();
+        sink.persist("binding-now", "opaque-handle", None)
+            .await
+            .unwrap();
         let first = repo.get("binding-now").await.unwrap();
         assert_eq!(first.environment.binding(), Some("opaque-handle"));
-        sink.persist("binding-now", "opaque-handle").await.unwrap();
+        sink.persist("binding-now", "opaque-handle", None)
+            .await
+            .unwrap();
         let replay = repo.get("binding-now").await.unwrap();
         assert_eq!(replay.revision, first.revision);
         assert_eq!(replay.environment, first.environment);
@@ -1113,7 +891,7 @@ mod tests {
             });
             let sink = awaken_session_application::RepositoryEnvironmentBindingSink::new(repo);
             let result = sink
-                .persist(&format!("binding-{conflicts}"), "opaque")
+                .persist(&format!("binding-{conflicts}"), "opaque", None)
                 .await;
             assert_eq!(result.is_ok(), accepted, "{case}");
             assert_eq!(
@@ -1129,7 +907,7 @@ mod tests {
         }
     }
 
-    fn sample_inputs() -> awaken_session_contract::ResolvedSessionResources {
+    pub(super) fn sample_inputs() -> awaken_session_contract::ResolvedSessionResources {
         awaken_session_contract::ResolvedSessionResources {
             inputs: vec![awaken_session_contract::ResolvedInput {
                 binding_id: awaken_resource_contract::BindingId::from("input-file"),
@@ -1331,6 +1109,12 @@ mod tests {
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let mut persisted = sample_persisted("sesn_1");
         persisted.environment.set_resident("opaque-runtime-binding");
+        persisted.realization = Some(awaken_session_contract::SessionRealizationLease {
+            owner: "managed-runtime/prior-boot".into(),
+            runtime_incarnation: "managed-runtime/prior-boot".into(),
+            epoch: 3,
+            expires_at_unix_ms: 0,
+        });
         create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, persisted).await;
 
         // Fresh state (empty cache) sharing the durable repo — simulates a restart.
@@ -1821,7 +1605,7 @@ mod tests {
             .await
             .expect("attach");
         let resource_id = resource.id().unwrap().to_string();
-        let after_attach = repo.get(&id).await.unwrap();
+        let mut after_attach = repo.get(&id).await.unwrap();
         assert_eq!(after_attach.resources.revision, 2);
         assert_eq!(
             after_attach
@@ -1834,6 +1618,18 @@ mod tests {
                 .count(),
             1
         );
+        // Crash recovery may replace a process-local physical owner only after
+        // its lease expires. Expire the fixture explicitly; a still-live owner
+        // is the fail-closed row covered by the realization ownership table.
+        after_attach
+            .realization
+            .as_mut()
+            .expect("local realization lease")
+            .expires_at_unix_ms = 0;
+        state
+            .commit_session_snapshot(DEFAULT_SCOPE, after_attach, "expire-test-owner", Vec::new())
+            .await
+            .expect("expire the crashed Runtime owner");
 
         let restarted = ManagedState::new_with_mcp(RehydrateFake::default())
             .with_session_repo(repo.clone())
@@ -1851,7 +1647,7 @@ mod tests {
             .delete_resource(&id, &resource_id)
             .await
             .expect("detach");
-        let after_delete = repo.get(&id).await.unwrap();
+        let mut after_delete = repo.get(&id).await.unwrap();
         assert_eq!(after_delete.resources.revision, 3);
         assert!(
             after_delete
@@ -1861,6 +1657,20 @@ mod tests {
                 .all(|activation| activation.state
                     != awaken_session_contract::ActivationState::Active)
         );
+        after_delete
+            .realization
+            .as_mut()
+            .expect("replacement realization lease")
+            .expires_at_unix_ms = 0;
+        restarted
+            .commit_session_snapshot(
+                DEFAULT_SCOPE,
+                after_delete,
+                "expire-second-test-owner",
+                Vec::new(),
+            )
+            .await
+            .expect("expire the second crashed Runtime owner");
         let second_restart = ManagedState::new_with_mcp(RehydrateFake::default())
             .with_session_repo(repo)
             .with_resource_catalog(catalog);

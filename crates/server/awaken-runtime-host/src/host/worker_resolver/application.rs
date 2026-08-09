@@ -2,13 +2,24 @@
 
 use super::*;
 
-pub(super) async fn install_application_projection(
+/// Install the frozen Session projection under the authenticated Run claim.
+/// Application contribution is one optional branch; ordinary registered-Worker
+/// Sessions use this same realization owner and phase driver.
+pub(super) async fn install_claimed_session_projection(
     host: &SharedHost,
     claimed: &awaken_run_ingress::Claimed,
     thread_id: &awaken_agent_contract::agent::thread::Id,
     dispatched_resources: Option<&awaken_session_contract::SessionResourceManifest>,
 ) -> Result<(), awaken_run_ingress::Error> {
-    let Some(provisioner) = &host.application_session_provisioner else {
+    let Some(control) = host.application_session_control.as_ref() else {
+        if host.application_session_provisioner.is_some() {
+            return Err(HostWorkerResolver::execution_error(
+                "application Session provisioner has no Control contribution client",
+            ));
+        }
+        // The co-located AllInOne pool already used the same in-process Session
+        // realization driver before enqueue. Only a registered Worker installs
+        // the outbound control client.
         if let Some(manifest) = dispatched_resources {
             let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
             host.install_dispatched_resources(&thread_id.0, manifest, Some(&claim))
@@ -31,11 +42,6 @@ pub(super) async fn install_application_projection(
             "run {} lost ownership before application provisioning: {error}",
             claimed.lease.run_id.0
         ))
-    })?;
-    let control = host.application_session_control.as_ref().ok_or_else(|| {
-        HostWorkerResolver::execution_error(
-            "application Session provisioner has no Control contribution client",
-        )
     })?;
     let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
 
@@ -63,21 +69,31 @@ pub(super) async fn install_application_projection(
                 "Control resume projection conflicts with the claimed resource snapshot",
             ));
         }
-        provisioner
-            .refresh_frozen(&claimed.request.activation, &thread_id.0, ownership.clone())
-            .await
-            .map_err(|error| {
+        if directive.projection.baseline.application.is_some() {
+            let provisioner = host
+                .application_session_provisioner
+                .as_ref()
+                .ok_or_else(|| {
+                    HostWorkerResolver::execution_error(
+                        "application Session resume has no application provisioner",
+                    )
+                })?;
+            provisioner
+                .refresh_frozen(&claimed.request.activation, &thread_id.0, ownership.clone())
+                .await
+                .map_err(|error| {
+                    HostWorkerResolver::execution_error(format!(
+                        "run {} frozen application material refresh failed: {error}",
+                        claimed.lease.run_id.0
+                    ))
+                })?;
+            ownership.verify_current().await.map_err(|error| {
                 HostWorkerResolver::execution_error(format!(
-                    "run {} frozen application material refresh failed: {error}",
+                    "run {} lost ownership during frozen application material refresh: {error}",
                     claimed.lease.run_id.0
                 ))
             })?;
-        ownership.verify_current().await.map_err(|error| {
-            HostWorkerResolver::execution_error(format!(
-                "run {} lost ownership during frozen application material refresh: {error}",
-                claimed.lease.run_id.0
-            ))
-        })?;
+        }
         HostWorkerResolver::realize_application_session(
             host,
             control,
@@ -87,6 +103,14 @@ pub(super) async fn install_application_projection(
         )
         .await?;
     } else {
+        let provisioner = host
+            .application_session_provisioner
+            .as_ref()
+            .ok_or_else(|| {
+                HostWorkerResolver::execution_error(
+                    "preparing application Session has no application provisioner",
+                )
+            })?;
         let contribution = provisioner
             .prepare(&claimed.request.activation, &thread_id.0, ownership.clone())
             .await

@@ -56,7 +56,7 @@ pub use baseline::{
     ControlSessionCreationInputs, EnvironmentFingerprint, EnvironmentSnapshot, SandboxProvisioning,
     SessionBaseline, SessionBaselineFingerprint, SessionBaselineInputs, SessionBaselineState,
     SessionCreationFinalizeError, SessionCreationIntent, SessionMcpAuthoringContext,
-    SessionNetworkPolicy,
+    SessionNetworkPolicy, SessionRuntimePlacement,
 };
 pub use dream::{
     DREAM_MAX_INSTRUCTIONS_CHARS, DREAM_MAX_SESSIONS, DREAM_SUPPORTED_MODELS, Dream,

@@ -11,12 +11,9 @@ copied cluster setup scripts.
 |---|---|
 | `bases/postgres/` | Ephemeral Postgres Service, readiness contract, test credentials, and storage policy |
 | `bases/durable-brain/` | Deterministic Postgres-backed brain Service and Deployment, typed scenario inputs, and unique dispatch ownership |
-| `bases/topology-direct/` | Direct brain-to-hand Services and Deployments, including the canonical `awaken-sandbox hand` command |
 | `product-backend/` | Private all-in-one product backend with durable state, no public Service/Ingress, and an ingress allowlist for Awaken Design backends |
-| `microservices/` | Postgres plus the Direct topology, with a focused durable-brain patch applied before object creation |
 | `distributed-control/` | ADR-0071 production Control/Coordinator/Worker composition, four owner databases on a primary/streaming-standby fixture, authenticated boundaries, and a single public edge |
 | `failover/`, `scaling/`, `cold-start/`, `nats-wake/`, `worker-failover/` | Placement, replica counts, dependencies, and fault behavior layered over the Postgres and durable-brain bases |
-| `topology-reverse.yaml`, `topology-relay.yaml` | Distinct network topologies that cannot reuse the Direct deployment contract |
 | `e2e/k3d/harness.sh` | Tool admission, cluster lifecycle, Cargo executable resolution, single-platform image import, CoreDNS refresh, and collision-free IPv4 port forwarding |
 | `e2e/k3d/*_e2e.sh` | Scenario triggers, fault timing, and terminal assertions only |
 
@@ -32,7 +29,7 @@ flowchart LR
     H --> C[k3d cluster]
     D --> K[Kustomize scenario overlay]
     K --> P[Canonical Postgres base]
-    K --> T[Canonical topology or scenario resources]
+    K --> T[Canonical Worker/Environment scenario resources]
     P --> C
     T --> C
     C --> F[Fault injection]
@@ -89,7 +86,7 @@ backward compatibility.
 | K1 | Valid cluster name, node count, and eviction threshold | One validated cluster create operation with the same policy on every node role |
 | K2 | Invalid or option-shaped cluster input | Rejection before any cluster deletion or creation |
 | K3 | Duplicate image coordinate | One archive and one import entry for that image |
-| K4 | Microservices overlay | Exactly one Postgres, brain, and hand Deployment; the brain is durable before first creation |
+| K4 | Worker execution topology | Coordinator selects one eligible Worker; that Worker realizes one Session Environment and its sole Hand |
 | K5 | Worker or coordinator failure | Durable truth survives; a valid peer reclaims or resumes without duplicate commit |
 | K6 | ADR-0071 split-role topology | One public endpoint drives configuration through terminal response; database-less Workers realize exact pins; Pod/node/Provider/Coordinator/Worker/database faults recover from durable truth without duplicate terminal output |
 
@@ -103,7 +100,6 @@ bash e2e/k3d/product_backend_contract_test.sh
 Run a real topology with its driver, for example:
 
 ```bash
-bash e2e/k3d/microservices_e2e.sh
 bash e2e/k3d/worker_failover_e2e.sh
 bash e2e/k3d/distributed_control_e2e.sh
 ```

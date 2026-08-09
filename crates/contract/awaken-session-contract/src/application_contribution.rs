@@ -41,6 +41,26 @@ pub struct FrozenSessionProjection {
     pub mcp: Vec<SessionMcpAttachment>,
 }
 
+impl FrozenSessionProjection {
+    /// Lower the one durable projection into the Runtime installation command.
+    /// Local dispatch preparation, cold rehydration, and Worker realization use
+    /// this conversion so they cannot silently select different frozen fields.
+    #[must_use]
+    pub fn session_init(&self) -> crate::SessionInit {
+        crate::SessionInit {
+            workspace_id: self.workspace_id.clone(),
+            agent_id: self.baseline.agent_id.clone(),
+            delegate_ids: self.baseline.delegate_ids.clone(),
+            toolsets: Some(self.toolsets.clone()),
+            resource_revision: self.resource_revision,
+            resources: self.resources.clone(),
+            model: Some(self.baseline.execution_model_ref.clone()),
+            runtime: self.baseline.runtime.clone(),
+            environment: self.baseline.environment.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ApplicationSessionContributionReceipt {
     pub outcome: ApplicationContributionOutcome,

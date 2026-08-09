@@ -643,7 +643,6 @@ dependencies = [
  "awaken-protocol-ai-sdk",
  "awaken-protocol-awaken",
  "awaken-protocol-managed",
- "awaken-protocol-managed-resources",
  "awaken-protocol-mcp",
  "awaken-provider-genai",
  "awaken-provisioning-contract",
@@ -691,9 +690,9 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-file-application",
  "awaken-file-store",
  "awaken-memory-store",
+ "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-store",
  "awaken-run-ingress",
@@ -1122,19 +1121,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "awaken-file-application"
-version = "1.0.0-dev"
-dependencies = [
- "async-trait",
- "awaken-file-store",
- "awaken-resource-contract",
- "awaken-resource-store",
- "chrono",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "awaken-file-store"
 version = "1.0.0-dev"
 dependencies = [
@@ -1252,18 +1238,6 @@ dependencies = [
  "awaken-provisioning-contract",
  "nix",
  "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "awaken-managed-bridge"
-version = "1.0.0-dev"
-dependencies = [
- "awaken-agent-contract",
- "awaken-credential-contract",
- "awaken-credential-vault",
- "serde",
- "serde_json",
  "tokio",
 ]
 
@@ -1483,15 +1457,20 @@ dependencies = [
  "awaken-executable-agent-contract",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
- "awaken-managed-bridge",
+ "awaken-ext-skills",
+ "awaken-file-store",
+ "awaken-memory-store",
  "awaken-model-catalog",
  "awaken-provisioning-contract",
+ "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-store",
+ "awaken-runtime-contract",
  "awaken-sandbox-policy-store",
  "awaken-session-application",
  "awaken-session-contract",
  "awaken-session-store",
+ "awaken-skill-store",
  "awaken-tenancy",
  "awaken-work-store",
  "axum",
@@ -1506,28 +1485,6 @@ dependencies = [
  "tokio-stream",
  "tower",
  "tracing",
-]
-
-[[package]]
-name = "awaken-protocol-managed-resources"
-version = "1.0.0-dev"
-dependencies = [
- "awaken-agent-contract",
- "awaken-ext-skills",
- "awaken-file-store",
- "awaken-memory-store",
- "awaken-resource-application",
- "awaken-resource-contract",
- "awaken-resource-store",
- "awaken-runtime-contract",
- "awaken-session-contract",
- "awaken-skill-store",
- "awaken-tenancy",
- "axum",
- "serde",
- "serde_json",
- "tokio",
- "tower",
  "zip",
 ]
 
@@ -1585,13 +1542,14 @@ name = "awaken-resource-application"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
- "awaken-file-application",
  "awaken-file-store",
  "awaken-memory-store",
  "awaken-resource-contract",
  "awaken-resource-store",
  "awaken-skill-store",
+ "chrono",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -1807,11 +1765,11 @@ dependencies = [
  "awaken-ext-permission",
  "awaken-ext-skills",
  "awaken-ext-state-machine",
- "awaken-file-application",
  "awaken-file-store",
  "awaken-memory-store",
  "awaken-observability",
  "awaken-provisioning-contract",
+ "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-store",
  "awaken-run-executor-acp",
@@ -1994,7 +1952,6 @@ dependencies = [
  "awaken-protocol-ai-sdk",
  "awaken-protocol-awaken",
  "awaken-protocol-managed",
- "awaken-protocol-managed-resources",
  "awaken-provider-genai",
  "awaken-resource-contract",
  "awaken-resource-store",

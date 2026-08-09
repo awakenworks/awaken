@@ -307,6 +307,10 @@ pub awaken_session_contract::SessionRepositoryError::IdempotencyMismatch
 pub awaken_session_contract::SessionRepositoryError::InvalidMutation(alloc::string::String)
 pub awaken_session_contract::SessionRepositoryError::Storage(alloc::string::String)
 pub awaken_session_contract::SessionRepositoryError::Tombstoned
+pub enum awaken_session_contract::SessionRuntimePlacement
+pub awaken_session_contract::SessionRuntimePlacement::LegacyUnspecified
+pub awaken_session_contract::SessionRuntimePlacement::Local
+pub awaken_session_contract::SessionRuntimePlacement::Worker
 pub struct awaken_session_contract::AcknowledgeSessionRealization
 pub awaken_session_contract::AcknowledgeSessionRealization::drained: alloc::vec::Vec<awaken_session_contract::McpGenerationRef>
 pub awaken_session_contract::AcknowledgeSessionRealization::lease: awaken_session_contract::SessionRealizationLease
@@ -375,6 +379,7 @@ pub awaken_session_contract::ControlSessionCreationInputs::mounts: alloc::vec::V
 pub awaken_session_contract::ControlSessionCreationInputs::prompts: alloc::vec::Vec<alloc::string::String>
 pub awaken_session_contract::ControlSessionCreationInputs::resources: awaken_session_contract::ResolvedSessionResources
 pub awaken_session_contract::ControlSessionCreationInputs::runtime: core::option::Option<alloc::string::String>
+pub awaken_session_contract::ControlSessionCreationInputs::runtime_placement: awaken_session_contract::SessionRuntimePlacement
 pub awaken_session_contract::ControlSessionCreationInputs::toolsets: alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
 pub struct awaken_session_contract::CustomTool
 pub awaken_session_contract::CustomTool::description: alloc::string::String
@@ -505,6 +510,8 @@ pub awaken_session_contract::FrozenSessionProjection::resources: awaken_session_
 pub awaken_session_contract::FrozenSessionProjection::revision: awaken_session_contract::SessionRevision
 pub awaken_session_contract::FrozenSessionProjection::toolsets: alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
 pub awaken_session_contract::FrozenSessionProjection::workspace_id: alloc::string::String
+impl awaken_session_contract::FrozenSessionProjection
+pub fn awaken_session_contract::FrozenSessionProjection::session_init(&self) -> awaken_session_contract::SessionInit
 pub struct awaken_session_contract::IdempotencyRecord
 pub awaken_session_contract::IdempotencyRecord::key: alloc::string::String
 pub awaken_session_contract::IdempotencyRecord::payload_hash: alloc::string::String
@@ -590,6 +597,7 @@ impl awaken_session_contract::PersistedSession
 pub fn awaken_session_contract::PersistedSession::agent_id(&self) -> core::option::Option<&str>
 pub fn awaken_session_contract::PersistedSession::environment_id(&self) -> &str
 pub fn awaken_session_contract::PersistedSession::frozen_baseline(&self) -> core::option::Option<&awaken_session_contract::SessionBaseline>
+pub fn awaken_session_contract::PersistedSession::has_application_contribution(&self) -> bool
 pub fn awaken_session_contract::PersistedSession::is_terminal(&self) -> bool
 pub fn awaken_session_contract::PersistedSession::model(&self) -> core::option::Option<&str>
 pub fn awaken_session_contract::PersistedSession::needs_reconciliation(&self) -> bool
@@ -645,6 +653,7 @@ pub awaken_session_contract::SessionBaseline::model: alloc::string::String
 pub awaken_session_contract::SessionBaseline::mounts: alloc::vec::Vec<serde_json::value::Value>
 pub awaken_session_contract::SessionBaseline::prompts: alloc::vec::Vec<alloc::string::String>
 pub awaken_session_contract::SessionBaseline::runtime: core::option::Option<alloc::string::String>
+pub awaken_session_contract::SessionBaseline::runtime_placement: awaken_session_contract::SessionRuntimePlacement
 pub awaken_session_contract::SessionBaseline::toolsets: alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
 impl awaken_session_contract::SessionBaseline
 pub fn awaken_session_contract::SessionBaseline::compile(awaken_session_contract::SessionBaselineInputs) -> Self
@@ -661,6 +670,7 @@ pub awaken_session_contract::SessionBaselineInputs::model: alloc::string::String
 pub awaken_session_contract::SessionBaselineInputs::mounts: alloc::vec::Vec<serde_json::value::Value>
 pub awaken_session_contract::SessionBaselineInputs::prompts: alloc::vec::Vec<alloc::string::String>
 pub awaken_session_contract::SessionBaselineInputs::runtime: core::option::Option<alloc::string::String>
+pub awaken_session_contract::SessionBaselineInputs::runtime_placement: awaken_session_contract::SessionRuntimePlacement
 pub awaken_session_contract::SessionBaselineInputs::toolsets: alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
 pub struct awaken_session_contract::SessionCreationIntent
 pub awaken_session_contract::SessionCreationIntent::application: awaken_session_contract::ApplicationContributionState
@@ -882,7 +892,7 @@ pub fn awaken_session_contract::RunApplication::run_streaming<'life0, 'life1, 'a
 pub fn awaken_session_contract::RunApplication::usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = (u64, u64)> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_session_contract::SessionEnvironmentBindingSink: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::SessionEnvironmentBindingSink::owns<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = bool> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_contract::SessionEnvironmentBindingSink::persist<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_session_contract::SessionEnvironmentBindingSink::persist<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<&'life3 awaken_session_contract::SessionRealizationLease>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub trait awaken_session_contract::SessionLifecycleSink: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::SessionLifecycleSink::emit<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<&'life2 str>, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_session_contract::SessionLifecycleSink::emit_fact<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<&'life3 str>, &'life4 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
@@ -904,6 +914,7 @@ pub fn awaken_session_contract::SessionRuntime::define_outcome<'life0, 'life1, '
 pub fn awaken_session_contract::SessionRuntime::delegated_runs<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_session_contract::DelegatedRun>, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::end_session<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::install_environment_binding_sink(&self, alloc::sync::Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>)
+pub fn awaken_session_contract::SessionRuntime::install_session_realization_lease(&self, &str, awaken_session_contract::SessionRealizationLease)
 pub fn awaken_session_contract::SessionRuntime::interrupt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::live_inbox_queue<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<u64, awaken_session_contract::LiveInboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::live_inbox_remove<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::LiveInboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

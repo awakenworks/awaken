@@ -524,8 +524,8 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - `awaken-environment-contract` as the Control-owned static aggregate contract;
 - `ExecutableEnvironmentRegistrar`, local/HTTP/PostgreSQL adapters, exact
   command-log projection, withdrawal, and reconciliation;
-- `awaken-file-application` and `awaken-resource-application` as the canonical
-  Resources application layer over existing repositories;
+- `awaken-resource-application` as the canonical File, MemoryStore, and lifecycle
+  application layer over existing repositories;
 - split-role registration composition, token-file loading, catalog migration,
   and Worker database rejection;
 - stable DeploymentRun-to-Session identity/fingerprint replay through the local

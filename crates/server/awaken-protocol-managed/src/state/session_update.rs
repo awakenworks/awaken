@@ -38,7 +38,14 @@ impl ManagedState {
             // Root lifecycle is the outer fence. A terminal Session may retain
             // nonterminal attachment facts solely as cleanup evidence; startup
             // must not resolve credentials or recreate routes for them.
-            if record.session.is_terminal() || !record.session.mcp.needs_reconciliation() {
+            // Immutable WorkQueue/application facts, including topology-selected
+            // placement frozen at creation, fence this Coordinator-local driver.
+            if record.session.is_terminal()
+                || self
+                    .application
+                    .requires_external_realization(&record.session)
+                || !record.session.mcp.needs_reconciliation()
+            {
                 continue;
             }
             let session_id = record.session.session_id.clone();

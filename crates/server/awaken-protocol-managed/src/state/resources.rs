@@ -26,7 +26,12 @@ impl ManagedState {
         for record in pending {
             let owner_scope = record.workspace_id;
             let session = record.session;
-            if !session.needs_resource_reconciliation() {
+            // Frozen WorkQueue/application facts fence Worker custody. This
+            // Coordinator scanner owns only
+            // local Session effects and must preserve those durable intents.
+            if self.application.requires_external_realization(&session)
+                || !session.needs_resource_reconciliation()
+            {
                 continue;
             }
             match self

@@ -1000,6 +1000,7 @@ mod runtime_session_store_tests {
                         ),
                     },
                 },
+                runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                 agent_id: "assistant".into(),
                 model: "test-model".into(),
                 execution_model_ref: "test-model".into(),

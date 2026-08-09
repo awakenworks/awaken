@@ -62,8 +62,7 @@ live under the technical `crates/server/` workspace bucket:
 | `awaken-coordinator` | Coordinator application component | owns dynamic scheduling, dispatch, settlement, and replay; it is not a generic “server” |
 | `awaken-worker` | Worker process composition | advertises capabilities and executes claim-fenced work; native, ACP, and outbound A2A are execution adapters, not public ingress owners |
 | `awaken-resource-application` | Resources application component | sole composition of File, MemoryStore, Skill, and lifecycle ports |
-| `awaken-protocol-managed` | Anthropic-compatible Agent/Session/Environment anti-corruption layer | translates wire DTOs only; domain behavior stays behind application ports |
-| `awaken-protocol-managed-resources` | Anthropic-compatible File/MemoryStore/Skill/Model anti-corruption layer | one public resource route family, with no Runtime Host dependency |
+| `awaken-protocol-managed` | Complete Anthropic-compatible Managed Public API anti-corruption layer | owns Agent/Session/Environment/File/MemoryStore/Skill/Model wire DTOs and routing only; domain behavior stays behind application ports |
 | `awaken-protocol-awaken` | Awaken extension protocol | owns only explicitly namespaced `/v1/awaken/*` routes |
 | `awaken-protocol-a2a`, `-ai-sdk`, `-ag-ui`, `-mcp` | other ingress anti-corruption layers | each method + normalized path has exactly one source owner |
 
@@ -158,7 +157,7 @@ crate name.
 | Runtime implementation | live execution behavior over agent-domain vocabulary | agent loop, resolver implementation, provider routing, plugin execution, retry/backoff modules |
 | Run-ingress contract | durable delivery and dispatch vocabulary | submit/input records, dispatch records, claims, leases, wake hints, live-command delivery stores |
 | Run-ingress implementation | buffering, host supervision, recovery, and live delivery | `DurableRunIngress`, input buffer, dispatch coordinator, recovery replay |
-| Protocol projection | public protocol and product-facing replay shapes outside the runtime slice | `awaken-protocol-managed` and `awaken-protocol-managed-resources` jointly own only the exact Anthropic-compatible surface; `/v1/awaken/*` lives in the separate `awaken-protocol-awaken` crate |
+| Protocol projection | public protocol and product-facing replay shapes outside the runtime slice | `awaken-protocol-managed` solely owns the exact Anthropic-compatible surface; `/v1/awaken/*` lives in the separate `awaken-protocol-awaken` crate |
 | Concrete stores | backend implementations of multiple ports | SQL/in-memory adapters that implement both agent-truth and ingress stores |
 
 If a type describes durable agent truth, it belongs to the agent-domain contract.

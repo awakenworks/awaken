@@ -48,10 +48,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! k3d_require_tools; then
-  echo "k3d/kubectl/docker unavailable; skipping worker-failover e2e"
-  exit 0
-fi
+k3d_admit_or_exit "worker-failover E2E"
 
 # Port-forward to the brain Service (any pod serves the durable API — it is the
 # coordinator, backed by shared Postgres).

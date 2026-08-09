@@ -985,13 +985,14 @@ mod provisioning_registry_tests {
         let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test");
         let catalog = Arc::new(FailingFileCatalog);
         raw_host.file_catalog = catalog.clone();
-        raw_host.file_application = Some(Arc::new(awaken_file_application::FileApplication::new(
-            raw_host.file_store(),
-            catalog,
-            raw_host
-                .resource_lifecycle()
-                .expect("test lifecycle repository"),
-        )));
+        raw_host.file_application =
+            Some(Arc::new(awaken_resource_application::FileApplication::new(
+                raw_host.file_store(),
+                catalog,
+                raw_host
+                    .resource_lifecycle()
+                    .expect("test lifecycle repository"),
+            )));
         let host = Arc::new(raw_host);
         let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
             LocalProvider::new(storage.path())

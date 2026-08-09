@@ -292,11 +292,11 @@ pub fn registered_worker_transport_router(
     let dispatch = host
         .dispatch_store()
         .map_err(|error| RegisteredWorkerTransportBuildError::Dispatch(error.to_string()))?;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(feature = "test-support")]
     let volatile_test_fallback = Some(Arc::new(
         awaken_store_inmem::MemoryStreamCheckpointStore::new(),
     ) as Arc<dyn StreamCheckpointStore>);
-    #[cfg(not(any(test, feature = "test-support")))]
+    #[cfg(not(feature = "test-support"))]
     let volatile_test_fallback = None;
     let checkpoint = registered_checkpoint_store(
         dispatch.as_ref(),

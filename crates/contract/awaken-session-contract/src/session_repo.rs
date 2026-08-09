@@ -142,8 +142,17 @@ impl PersistedSession {
     pub fn needs_work_dispatch(&self) -> bool {
         !self.is_terminal()
             && self.frozen_baseline().is_some_and(|baseline| {
-                baseline.environment.self_hosted && baseline.application.is_none()
+                baseline.environment.self_hosted && !self.has_application_contribution()
             })
+    }
+
+    /// Whether the frozen Session consumed an external application contribution.
+    /// This immutable aggregate fact, rather than a transient realization lease,
+    /// distinguishes the claimed-application realization path after restart.
+    #[must_use]
+    pub fn has_application_contribution(&self) -> bool {
+        self.frozen_baseline()
+            .is_some_and(|baseline| baseline.application.is_some())
     }
 
     #[must_use]
@@ -451,6 +460,7 @@ mod mutation_tests {
                             ),
                         },
                     },
+                    runtime_placement: crate::SessionRuntimePlacement::Local,
                     agent_id: "assistant".into(),
                     model: "model".into(),
                     execution_model_ref: "model".into(),

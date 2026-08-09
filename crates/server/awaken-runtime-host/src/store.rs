@@ -19,6 +19,10 @@ use awaken_agent_contract::thread::commit::coordinator::{
 use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::CheckpointReader;
+use awaken_agent_contract::thread::read::lifecycle::{
+    LifecycleCursor, LifecyclePage, RunLifecycleFeed, RunLifecycleFeedError,
+    checkpoint_lifecycle_events_after,
+};
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
@@ -102,6 +106,18 @@ pub(crate) trait HostStore:
     ) -> Result<Vec<Message>, String> {
         Ok(ThreadReader::committed_messages(self, thread_id))
     }
+
+    /// Read committed lifecycle truth. Single-process backends reuse the one
+    /// checkpoint projection; shared SQLite/Postgres backends override this with
+    /// their store-native query so trait erasure cannot fall back to a stale
+    /// process-local projection.
+    async fn authoritative_lifecycle_events_after(
+        &self,
+        cursor: LifecycleCursor,
+        limit: usize,
+    ) -> Result<LifecyclePage, RunLifecycleFeedError> {
+        checkpoint_lifecycle_events_after(self, cursor, limit)
+    }
 }
 
 /// Recover the awaiting position from a durable backend's fact-derived read model
@@ -122,10 +138,19 @@ impl HostStore for MemoryCommitCoordinator {
     }
 }
 
+#[async_trait::async_trait]
 impl HostStore for SqliteCommitCoordinator {
     fn projected_open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         // Inherent method wins over the trait method in resolution — not recursive.
         SqliteCommitCoordinator::open_wait_for_thread(self, thread)
+    }
+
+    async fn authoritative_lifecycle_events_after(
+        &self,
+        cursor: LifecycleCursor,
+        limit: usize,
+    ) -> Result<LifecyclePage, RunLifecycleFeedError> {
+        RunLifecycleFeed::events_after(self, cursor, limit).await
     }
 }
 
@@ -164,6 +189,14 @@ impl HostStore for PostgresCommitCoordinator {
             .await
             .map_err(|error| error.to_string())
     }
+
+    async fn authoritative_lifecycle_events_after(
+        &self,
+        cursor: LifecycleCursor,
+        limit: usize,
+    ) -> Result<LifecyclePage, RunLifecycleFeedError> {
+        RunLifecycleFeed::events_after(self, cursor, limit).await
+    }
 }
 
 impl HostCommit {
@@ -184,20 +217,6 @@ impl HostCommit {
         match self {
             HostCommit::Local(store) => store.authoritative_committed_messages(thread_id).await,
             HostCommit::Remote(remote) => Ok(remote.projection.committed_messages(thread_id)),
-        }
-    }
-
-    pub(crate) fn lifecycle_feed(
-        &self,
-    ) -> Option<awaken_agent_contract::CheckpointRunLifecycleFeed> {
-        match self {
-            HostCommit::Local(store) => {
-                let reader: Arc<dyn CheckpointReader> = store.clone();
-                Some(awaken_agent_contract::CheckpointRunLifecycleFeed::new(
-                    reader,
-                ))
-            }
-            HostCommit::Remote(_) => None,
         }
     }
 
@@ -239,6 +258,26 @@ impl HostCommit {
         match self {
             HostCommit::Local(_) => None,
             HostCommit::Remote(remote) => Some(remote.projection.clone()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RunLifecycleFeed for HostCommit {
+    async fn events_after(
+        &self,
+        cursor: LifecycleCursor,
+        limit: usize,
+    ) -> Result<LifecyclePage, RunLifecycleFeedError> {
+        match self {
+            HostCommit::Local(store) => {
+                store
+                    .authoritative_lifecycle_events_after(cursor, limit)
+                    .await
+            }
+            HostCommit::Remote(_) => Err(RunLifecycleFeedError::Rejected(
+                "remote Worker recovery projection is not committed lifecycle authority".into(),
+            )),
         }
     }
 }

@@ -371,6 +371,14 @@ pub trait McpAttachmentRealizer: Send + Sync {
 pub trait SessionRuntime: Send + Sync {
     /// Install the durable callback used at the exact sandbox creation boundary.
     fn install_environment_binding_sink(&self, _sink: Arc<dyn SessionEnvironmentBindingSink>) {}
+    /// Install the exact realization fence before any physical environment can
+    /// be published. Runtime adapters retain it only as an effect guard.
+    fn install_session_realization_lease(
+        &self,
+        _session_id: &str,
+        _lease: crate::SessionRealizationLease,
+    ) {
+    }
     /// Read the runtime-owned, durable child-Run relationships for `thread`.
     /// Protocol adapters use this only to rebuild disposable projections after a
     /// restart; the runtime relationship registry remains the sole authority.
@@ -669,7 +677,12 @@ pub trait SessionEnvironmentBindingSink: Send + Sync {
         true
     }
 
-    async fn persist(&self, session_id: &str, binding: &str) -> Result<(), RunError>;
+    async fn persist(
+        &self,
+        session_id: &str,
+        binding: &str,
+        realization: Option<&crate::SessionRealizationLease>,
+    ) -> Result<(), RunError>;
 }
 
 /// A runtime failure. `kind` classifies who is at fault so the router can map it

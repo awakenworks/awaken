@@ -25,7 +25,6 @@ awaken-ext-skills.workspace = true
 awaken-run-ingress.workspace = true
 awaken-sandbox-local.workspace = true
 awaken-worker-transport-security.workspace = true
-awaken-protocol-managed-resources = { workspace = true }
 awaken-admin-assistant = { workspace = true }
 awaken-tenancy = { workspace = true }
 # Cross-cutting telemetry: the tracing subscriber + OTLP/AWAKEN_TRACE_FILE span

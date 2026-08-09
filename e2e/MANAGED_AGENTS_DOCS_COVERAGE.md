@@ -428,8 +428,9 @@ The goal's cleanup clause ("is the uncovered code redundant/duplicate — if so,
   behavior above; the implemented rows in the table carry direct test evidence.
 - Structural duplication that *did* exist (durable store backends inlined in the
   `awaken-runtime-host` god-hub) was removed by the Step-3b re-layout: `awaken-env-store`,
-  `awaken-work-store`, `awaken-session-store`, `awaken-session-contract`, and
-  `awaken-protocol-managed-resources` are now their own leaves.
+  `awaken-work-store`, `awaken-session-store`, and `awaken-session-contract` are
+  now their own leaves. Managed resource routes are consolidated into the single
+  `awaken-protocol-managed` wire owner.
 
 ## Real-LLM validation (live KIMI)
 
