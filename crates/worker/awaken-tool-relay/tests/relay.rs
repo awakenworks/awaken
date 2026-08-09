@@ -37,6 +37,37 @@ impl Drop for TestDirectory {
     }
 }
 
+struct TestOperationLedger {
+    _directory: TestDirectory,
+    inner: FsOperationLedger,
+}
+
+#[async_trait]
+impl HandOperationLedger for TestOperationLedger {
+    async fn begin(
+        &self,
+        operation_id: &str,
+    ) -> Result<awaken_tool_relay::LedgerAdmission, String> {
+        self.inner.begin(operation_id).await
+    }
+
+    async fn complete(&self, operation_id: &str, result: &HandResult) -> Result<(), String> {
+        self.inner.complete(operation_id, result).await
+    }
+}
+
+fn test_session(tools: impl IntoIterator<Item = Arc<dyn RawTool>>) -> HandSession {
+    let directory = TestDirectory::create();
+    let inner = FsOperationLedger::open(directory.path()).expect("open test operation ledger");
+    HandSession::new(
+        tools,
+        Arc::new(TestOperationLedger {
+            _directory: directory,
+            inner,
+        }),
+    )
+}
+
 /// A tool that echoes its `text` argument and counts how many times it ran, so a
 /// test can prove an effect ran exactly once.
 struct CountingEcho {
@@ -77,7 +108,7 @@ async fn remote_tool_runs_out_of_process_and_returns_output() {
         id: "echo".into(),
         runs: runs.clone(),
     });
-    let session = HandSession::new([tool as Arc<dyn RawTool>]);
+    let session = test_session([tool as Arc<dyn RawTool>]);
 
     let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
     let hand = tokio::spawn(serve_hand(hand_end, session));
@@ -106,7 +137,7 @@ async fn concurrent_calls_serialize_and_never_cross_their_correlation() {
     // from many tasks must each still receive THEIR OWN reply (request/reply pairing
     // never crosses under contention).
     let runs = Arc::new(AtomicU32::new(0));
-    let session = HandSession::new([Arc::new(CountingEcho {
+    let session = test_session([Arc::new(CountingEcho {
         id: "echo".into(),
         runs: runs.clone(),
     }) as Arc<dyn RawTool>]);
@@ -146,7 +177,7 @@ async fn concurrent_calls_serialize_and_never_cross_their_correlation() {
 
 #[tokio::test]
 async fn unknown_tool_reads_identically_to_the_local_path() {
-    let session = HandSession::new(std::iter::empty::<Arc<dyn RawTool>>());
+    let session = test_session(std::iter::empty::<Arc<dyn RawTool>>());
     let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
     let hand = tokio::spawn(serve_hand(hand_end, session));
 
@@ -203,7 +234,7 @@ async fn re_drive_with_same_correlation_id_runs_the_effect_at_most_once() {
         id: "echo".into(),
         runs: runs.clone(),
     });
-    let mut session = HandSession::new([tool as Arc<dyn RawTool>]);
+    let mut session = test_session([tool as Arc<dyn RawTool>]);
 
     let request = HandRequest::new(42, call("c1", "echo", "once"));
     let first = session.handle(request.clone()).await;
@@ -221,7 +252,7 @@ async fn re_drive_with_same_correlation_id_runs_the_effect_at_most_once() {
 #[tokio::test]
 async fn different_transport_ids_with_one_operation_id_run_the_effect_once() {
     let runs = Arc::new(AtomicU32::new(0));
-    let mut session = HandSession::new([Arc::new(CountingEcho {
+    let mut session = test_session([Arc::new(CountingEcho {
         id: "echo".into(),
         runs: runs.clone(),
     }) as Arc<dyn RawTool>]);
@@ -240,6 +271,13 @@ async fn different_transport_ids_with_one_operation_id_run_the_effect_once() {
 
 #[tokio::test]
 async fn filesystem_ledger_survives_a_hand_restart() {
+    // Cause/effect graph: C1 first Hand claims and completes an operation;
+    // C2 its response may be lost and that Hand is destroyed; C3 a replacement
+    // Hand opens the same Environment-owned ledger and receives the same stable
+    // operation id. Effects: E1 the replacement returns the durable result and
+    // E2 the tool side effect count remains one. Decision rule D1 is
+    // C1+C2+C3→E1+E2; a new ledger root is deliberately a different Environment
+    // and therefore outside this idempotency scope.
     let directory = TestDirectory::create();
     let runs = Arc::new(AtomicU32::new(0));
     let tool = || {
@@ -249,16 +287,18 @@ async fn filesystem_ledger_survives_a_hand_restart() {
         }) as Arc<dyn RawTool>
     };
 
-    let mut first = HandSession::new([tool()]).with_operation_ledger(Arc::new(
-        FsOperationLedger::open(directory.path()).expect("open first ledger"),
-    ));
+    let mut first = HandSession::new(
+        [tool()],
+        Arc::new(FsOperationLedger::open(directory.path()).expect("open first ledger")),
+    );
     let request = HandRequest::new(1, call("c1", "echo", "durable"));
     let first_reply = first.handle(request.clone()).await;
     drop(first);
 
-    let mut restarted = HandSession::new([tool()]).with_operation_ledger(Arc::new(
-        FsOperationLedger::open(directory.path()).expect("reopen ledger"),
-    ));
+    let mut restarted = HandSession::new(
+        [tool()],
+        Arc::new(FsOperationLedger::open(directory.path()).expect("reopen ledger")),
+    );
     let mut retry = request;
     retry.correlation_id = 99;
     let retry_reply = restarted.handle(retry).await;
@@ -300,7 +340,7 @@ impl RawTool for FailingTool {
 
 #[tokio::test]
 async fn a_tool_execution_error_round_trips_as_a_tool_error() {
-    let session = HandSession::new([Arc::new(FailingTool) as Arc<dyn RawTool>]);
+    let session = test_session([Arc::new(FailingTool) as Arc<dyn RawTool>]);
     let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
     let hand = tokio::spawn(serve_hand(hand_end, session));
 
@@ -320,8 +360,7 @@ async fn catalog_fingerprint_mismatch_fails_closed() {
         id: "echo".into(),
         runs: Arc::new(AtomicU32::new(0)),
     });
-    let mut session =
-        HandSession::new([tool as Arc<dyn RawTool>]).with_catalog_fingerprint("hand-v1");
+    let mut session = test_session([tool as Arc<dyn RawTool>]).with_catalog_fingerprint("hand-v1");
 
     let mut request = HandRequest::new(1, call("c1", "echo", "x"));
     request.catalog_fingerprint = Some("run-v2".into());
@@ -405,7 +444,7 @@ async fn a_reply_frame_that_is_not_a_hand_reply_is_indeterminate() {
 
 #[tokio::test]
 async fn the_brain_stamps_its_catalog_fingerprint_and_a_matching_hand_accepts() {
-    let session = HandSession::new([Arc::new(CountingEcho {
+    let session = test_session([Arc::new(CountingEcho {
         id: "echo".into(),
         runs: Arc::new(AtomicU32::new(0)),
     }) as Arc<dyn RawTool>])
@@ -425,7 +464,7 @@ async fn the_brain_stamps_its_catalog_fingerprint_and_a_matching_hand_accepts() 
 
 #[tokio::test]
 async fn a_brain_fingerprint_drift_is_rejected_end_to_end() {
-    let session = HandSession::new([Arc::new(CountingEcho {
+    let session = test_session([Arc::new(CountingEcho {
         id: "echo".into(),
         runs: Arc::new(AtomicU32::new(0)),
     }) as Arc<dyn RawTool>])
@@ -498,7 +537,7 @@ async fn a_hand_fingerprint_with_an_unstamped_request_runs_permissively() {
     // this locks that documented permissive row so a future tightening is a
     // deliberate, test-visible change.
     let runs = Arc::new(AtomicU32::new(0));
-    let mut session = HandSession::new([Arc::new(CountingEcho {
+    let mut session = test_session([Arc::new(CountingEcho {
         id: "echo".into(),
         runs: runs.clone(),
     }) as Arc<dyn RawTool>])
@@ -534,7 +573,7 @@ async fn a_re_drive_of_a_failed_execution_returns_the_cached_error_without_re_ru
     }
     let runs = Arc::new(AtomicU32::new(0));
     let mut session =
-        HandSession::new([Arc::new(CountingFail { runs: runs.clone() }) as Arc<dyn RawTool>]);
+        test_session([Arc::new(CountingFail { runs: runs.clone() }) as Arc<dyn RawTool>]);
 
     let request = HandRequest::new(99, call("c1", "fail", "x"));
     let first = session.handle(request.clone()).await;
@@ -619,7 +658,7 @@ async fn serve_hand_fails_closed_on_a_frame_that_is_not_a_request() {
     use futures_util::SinkExt;
     use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-    let session = HandSession::new(std::iter::empty::<Arc<dyn RawTool>>());
+    let session = test_session(std::iter::empty::<Arc<dyn RawTool>>());
     let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
     let hand = tokio::spawn(serve_hand(hand_end, session));
 

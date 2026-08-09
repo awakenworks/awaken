@@ -928,6 +928,7 @@ mod tests {
             environment: crate::EnvironmentSnapshot {
                 environment_id: "env".into(),
                 revision: awaken_environment_contract::EnvironmentRevision(1),
+                self_hosted: false,
                 config_fingerprint: crate::EnvironmentFingerprint("env-1".into()),
                 sandbox: serde_json::json!({}),
                 sandbox_provisioning: Default::default(),

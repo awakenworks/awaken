@@ -405,6 +405,7 @@ mod tests {
                 environment: awaken_session_contract::EnvironmentSnapshot {
                     environment_id: "env".into(),
                     revision: awaken_environment_contract::EnvironmentRevision(1),
+                    self_hosted: false,
                     config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                         "env-fingerprint".into(),
                     ),

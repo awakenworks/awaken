@@ -13,6 +13,36 @@ enum ResourceSettlement {
 }
 
 impl ManagedState {
+    /// ResourceReclaimer entry point. Composition roots call this after durable
+    /// stores and the Runtime Host are wired. It scans only Session application
+    /// state; authorization principals and policy objects never cross this seam.
+    pub async fn reconcile_resource_activations(&self) -> usize {
+        let pending = self.sessions_repo.reconcilable_sessions().await;
+        let mut settled = 0;
+        for record in pending {
+            let owner_scope = record.workspace_id;
+            let session = record.session;
+            if session.status != "deleted"
+                && !session.resources.needs_reconciliation()
+                && (session.status == "idle" || !session.resources.has_active())
+            {
+                continue;
+            }
+            match self
+                .reconcile_persisted_resources(&owner_scope, session.clone())
+                .await
+            {
+                Ok(_) => settled += 1,
+                Err(error) => tracing::warn!(
+                    session = %session.session_id,
+                    error = ?error,
+                    "Session resource reconciliation remains pending"
+                ),
+            }
+        }
+        settled
+    }
+
     fn resource_plaintext_holder(
         session: &PersistedSession,
     ) -> Result<awaken_credential_contract::PlaintextHolder, StateError> {

@@ -5,9 +5,9 @@
 //! reconnect or response-loss re-drive to return the recorded result without
 //! invoking the tool again.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+#[cfg(any(test, feature = "test-support"))]
+use std::{collections::HashMap, sync::Mutex};
 
 use crate::HandResult;
 use async_trait::async_trait;
@@ -33,18 +33,21 @@ pub trait HandOperationLedger: Send + Sync {
 }
 
 #[derive(Debug, Clone)]
+#[cfg(any(test, feature = "test-support"))]
 enum Entry {
     Executing,
     Completed(HandResult),
 }
 
 /// Process-local ledger used by the zero-configuration in-process hand.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct InMemoryOperationLedger {
     entries: Mutex<HashMap<String, Entry>>,
 }
 
 #[async_trait]
+#[cfg(any(test, feature = "test-support"))]
 impl HandOperationLedger for InMemoryOperationLedger {
     async fn begin(&self, operation_id: &str) -> Result<LedgerAdmission, String> {
         let mut entries = self.entries.lock().expect("hand ledger poisoned");
@@ -136,7 +139,10 @@ impl HandOperationLedger for FsOperationLedger {
             .open(&claim_path)
             .await
         {
-            Ok(_) => Ok(LedgerAdmission::Execute),
+            Ok(file) => {
+                file.sync_all().await.map_err(|error| error.to_string())?;
+                Ok(LedgerAdmission::Execute)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 // Completion may have raced the first result read.
                 Ok(match Self::read_result(&result_path).await? {
@@ -152,10 +158,26 @@ impl HandOperationLedger for FsOperationLedger {
         let path = self.result_path(operation_id)?;
         let temporary = path.with_extension("result.tmp");
         let bytes = serde_json::to_vec(result).map_err(|error| error.to_string())?;
-        tokio::fs::write(&temporary, bytes)
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temporary)
             .await
             .map_err(|error| error.to_string())?;
+        use tokio::io::AsyncWriteExt as _;
+        file.write_all(&bytes)
+            .await
+            .map_err(|error| error.to_string())?;
+        file.sync_all().await.map_err(|error| error.to_string())?;
         tokio::fs::rename(&temporary, &path)
+            .await
+            .map_err(|error| error.to_string())?;
+        let directory = tokio::fs::File::open(&self.root)
+            .await
+            .map_err(|error| error.to_string())?;
+        directory
+            .sync_all()
             .await
             .map_err(|error| error.to_string())
     }

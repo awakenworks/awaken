@@ -146,10 +146,11 @@ type ProcessParts = (
     Option<Arc<dyn awaken_runtime_contract::ContentEraser>>,
 );
 
-/// Consume the role wiring into its process-assembly values. The boundary module
-/// owns the local default as well as the distributed selection.
+/// Consume the explicitly selected role wiring into process-assembly values.
+/// A missing value is a composition defect; local single-process operation is
+/// represented by an explicit [`ExecutableAgentWiring::local`] value.
 pub(crate) fn process_parts(wiring: Option<ExecutableAgentWiring>) -> ProcessParts {
-    let wiring = wiring.unwrap_or_else(ExecutableAgentWiring::local);
+    let wiring = wiring.expect("process assembly requires executable Agent wiring");
     (
         wiring.catalog,
         wiring.registrar,
@@ -157,4 +158,18 @@ pub(crate) fn process_parts(wiring: Option<ExecutableAgentWiring>) -> ProcessPar
         wiring.projection_refresher,
         wiring.coordinator_content_eraser,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[should_panic(expected = "process assembly requires executable Agent wiring")]
+    fn missing_wiring_never_falls_back_to_a_volatile_catalog() {
+        // Cause/effect decision table: A1 explicit local wiring -> the caller's
+        // one local catalog; A2 explicit distributed wiring -> its durable/HTTP
+        // adapter; A3 missing wiring -> composition failure. A1/A2 are exercised
+        // by process assembly tests; this case owns A3 and prevents a healthy-
+        // looking empty catalog from replacing durable authority.
+        let _ = super::process_parts(None);
+    }
 }

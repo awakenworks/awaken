@@ -18,7 +18,9 @@ use awaken_connection_plan::{
     ConnectionPlan, TokioChannelFactory, bind_tcp, bind_unix, connect_with_retry,
 };
 use awaken_ext_builtin_tools::executable_hand_tools;
-use awaken_tool_relay::{HandSession, serve_hand};
+use std::sync::Arc;
+
+use awaken_tool_relay::{FsOperationLedger, HandOperationLedger, HandSession, serve_hand};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 struct StdioChannel<R = tokio::io::Stdin, W = tokio::io::Stdout> {
@@ -80,6 +82,21 @@ pub enum HandBind {
 
 /// The default NATS subject a hand serves on (matches the brain's `AWAKEN_HAND_SUBJECT`).
 const DEFAULT_NATS_SUBJECT: &str = "awaken.hand.exec";
+const HAND_LEDGER_DIR: &str = "AWAKEN_HAND_LEDGER_DIR";
+
+fn operation_ledger_root(configured: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    configured.map_or_else(
+        || std::path::PathBuf::from(".awaken/hand-operations"),
+        std::path::PathBuf::from,
+    )
+}
+
+fn open_operation_ledger() -> Result<Arc<dyn HandOperationLedger>, String> {
+    let root = operation_ledger_root(std::env::var_os(HAND_LEDGER_DIR));
+    FsOperationLedger::open(&root)
+        .map(|ledger| Arc::new(ledger) as Arc<dyn HandOperationLedger>)
+        .map_err(|error| format!("open Hand operation ledger at {}: {error}", root.display()))
+}
 
 /// Parse the `hand` role args: `--unix <path>`, `--listen <addr>` (brain dials in),
 /// `--dial <addr>` (hand dials the brain rendezvous), or `--nats <url> [--subject <s>]`.
@@ -111,13 +128,23 @@ fn subject_flag(rest: &[String]) -> Option<String> {
 /// Bind and serve the executor channel until the process is torn down. Each accepted
 /// connection is served concurrently over a fresh [`HandSession`].
 pub async fn serve(bind: HandBind) -> Result<(), String> {
+    let ledger = open_operation_ledger()?;
+    serve_with_operation_ledger(bind, ledger).await
+}
+
+/// Serve with an explicitly scoped ledger. SessionEnvironment embeddings and
+/// tests use this seam to bind the ledger lifetime to the Environment owner.
+pub async fn serve_with_operation_ledger(
+    bind: HandBind,
+    ledger: Arc<dyn HandOperationLedger>,
+) -> Result<(), String> {
     match bind {
         HandBind::Stdio => {
             let channel = StdioChannel {
                 read: tokio::io::stdin(),
                 write: tokio::io::stdout(),
             };
-            let session = HandSession::new(executable_hand_tools());
+            let session = HandSession::new(executable_hand_tools(), ledger);
             serve_hand(channel, session)
                 .await
                 .map_err(|error| format!("hand stdio: {error}"))
@@ -141,8 +168,9 @@ pub async fn serve(bind: HandBind) -> Result<(), String> {
                     .accept()
                     .await
                     .map_err(|e| format!("hand accept: {e}"))?;
+                let ledger = ledger.clone();
                 tokio::spawn(async move {
-                    let session = HandSession::new(executable_hand_tools());
+                    let session = HandSession::new(executable_hand_tools(), ledger);
                     let _ = serve_hand(channel, session).await;
                 });
             }
@@ -157,8 +185,9 @@ pub async fn serve(bind: HandBind) -> Result<(), String> {
                     .accept()
                     .await
                     .map_err(|e| format!("hand accept: {e}"))?;
+                let ledger = ledger.clone();
                 tokio::spawn(async move {
-                    let session = HandSession::new(executable_hand_tools());
+                    let session = HandSession::new(executable_hand_tools(), ledger);
                     let _ = serve_hand(channel, session).await;
                 });
             }
@@ -180,7 +209,7 @@ pub async fn serve(bind: HandBind) -> Result<(), String> {
                 .await
                 {
                     Ok(channel) => {
-                        let session = HandSession::new(executable_hand_tools());
+                        let session = HandSession::new(executable_hand_tools(), ledger.clone());
                         let _ = serve_hand(channel, session).await;
                         eprintln!("awaken-sandbox hand: brain link closed; re-dialing");
                     }
@@ -188,14 +217,18 @@ pub async fn serve(bind: HandBind) -> Result<(), String> {
                 }
             }
         }
-        HandBind::Nats { url, subject } => run_nats(&url, &subject).await,
+        HandBind::Nats { url, subject } => run_nats(&url, &subject, ledger).await,
     }
 }
 
 /// Serve the executor channel over a NATS broker (Relay topology, ADR-0045): subscribe
 /// the shared subject and reply to each `HandRequest` with the built-in hand tools'
 /// result. Retries while the broker comes up; loops until killed.
-async fn run_nats(url: &str, subject: &str) -> Result<(), String> {
+async fn run_nats(
+    url: &str,
+    subject: &str,
+    ledger: Arc<dyn HandOperationLedger>,
+) -> Result<(), String> {
     use awaken_tool_relay::wire::HandRequest;
     use futures::StreamExt;
 
@@ -214,7 +247,7 @@ async fn run_nats(url: &str, subject: &str) -> Result<(), String> {
         .subscribe(subject.to_string())
         .await
         .map_err(|e| format!("hand NATS subscribe {subject}: {e}"))?;
-    let mut session = HandSession::new(executable_hand_tools());
+    let mut session = HandSession::new(executable_hand_tools(), ledger);
     eprintln!(
         "awaken-sandbox hand: serving the executor channel over NATS {url} subject '{subject}'"
     );
@@ -277,6 +310,25 @@ mod tests {
         assert!(parse_hand_args(&["--unix".into()]).is_err());
     }
 
+    #[test]
+    fn operation_ledger_root_uses_explicit_override_or_workspace_default() {
+        // Cause/effect decision table: L1 explicit Environment-owned directory
+        // -> use it exactly; L2 absent -> use the current Session workspace's
+        // hidden durable directory. An empty override remains explicit so a bad
+        // production configuration fails while opening instead of silently
+        // falling back to another authority.
+        assert_eq!(
+            operation_ledger_root(Some("/session/ledger".into())),
+            std::path::PathBuf::from("/session/ledger"),
+            "L1"
+        );
+        assert_eq!(
+            operation_ledger_root(None),
+            std::path::PathBuf::from(".awaken/hand-operations"),
+            "L2"
+        );
+    }
+
     /// Drive the private `run_nats` at the library altitude when a broker is reachable:
     /// serve the executor channel over NATS, then act as the brain — publish a real
     /// `HandRequest` (a `bash` call) to the subject and assert the harvested `HandReply`.
@@ -311,7 +363,14 @@ mod tests {
         let subject = format!("awaken.hand.test.{}", std::process::id());
         let serve_url = url.clone();
         let serve_subject = subject.clone();
-        let server = tokio::spawn(async move { run_nats(&serve_url, &serve_subject).await });
+        let server = tokio::spawn(async move {
+            run_nats(
+                &serve_url,
+                &serve_subject,
+                Arc::new(awaken_tool_relay::InMemoryOperationLedger::default()),
+            )
+            .await
+        });
 
         // Brain side: a real HandRequest carrying a `bash` call.
         let request = HandRequest::new(

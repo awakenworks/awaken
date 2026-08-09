@@ -46,8 +46,9 @@ pub struct CoordinatorDependencies {
     pub environments: Arc<EnvironmentExecutionState>,
     pub sessions: Arc<dyn ManagedSessionRepository>,
     pub default_workspace: String,
-    /// Authenticated executable-Agent registration routes, including any
-    /// process-selected projection refresh middleware.
+    /// Authenticated executable Agent and Environment registration routes.
+    /// Process composition installs projection refresh around the final
+    /// Runtime-admitting surface, not around these transport-only routes.
     pub registration_router: Router,
 }
 
@@ -108,6 +109,10 @@ pub async fn build_coordinator_component(
     let reconciled_mcp_attachments = managed_state.reconcile_mcp_attachments().await;
     if reconciled_mcp_attachments > 0 {
         eprintln!("reconciled {reconciled_mcp_attachments} durable Session MCP projection(s)");
+    }
+    let reconciled_work_dispatches = managed_state.reconcile_work_dispatches().await;
+    if reconciled_work_dispatches > 0 {
+        eprintln!("reconciled {reconciled_work_dispatches} durable Session WorkQueue dispatch(es)");
     }
     let _ = managed_state.spawn_realization_lease_supervisor();
     deployment_state.bind_launcher(Arc::new(

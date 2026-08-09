@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Ephemeral convenience constructors are intentionally absent from product builds.
+test-support = ["awaken-work-store/test-support"]
+
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-executable-agent-contract.workspace = true
@@ -22,9 +26,8 @@ awaken-credential-contract.workspace = true
 # Typed resource ids/bindings plus the Resource Catalog port used by the Managed
 # ACL to lower wire resources before Session resolution. No IAM policy lives here.
 awaken-resource-contract.workspace = true
-# The in-memory reference WorkQueue + EnvRegistry + session-repository backends the
-# Managed Default wires (the ports + value objects stay inward in session-contract; the
-# backends live beside the durable sqlite/postgres siblings).
+# Concrete stores used by explicit composition. Volatile convenience wiring is
+# available only through this crate's `test-support` feature.
 awaken-work-store.workspace = true
 awaken-env-store.workspace = true
 awaken-session-store.workspace = true
@@ -60,7 +63,40 @@ form_urlencoded = "1"
 # service binary installs; this crate emits spans, never wires an exporter.
 tracing = "0.1"
 
+[[test]]
+name = "adapter"
+required-features = ["test-support"]
+
+[[test]]
+name = "environments"
+required-features = ["test-support"]
+
+[[test]]
+name = "mcp_sessions"
+required-features = ["test-support"]
+
+[[test]]
+name = "projection"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_egress"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_environment"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_resources"
+required-features = ["test-support"]
+
+[[test]]
+name = "streaming"
+required-features = ["test-support"]
+
 [dev-dependencies]
+awaken-work-store = { workspace = true, features = ["test-support"] }
 awaken-sandbox-policy-store.workspace = true
 awaken-resource-store = { workspace = true, features = ["sqlite"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
