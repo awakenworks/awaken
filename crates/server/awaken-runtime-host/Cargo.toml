@@ -113,6 +113,7 @@ awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-run-ingress = { workspace = true, features = ["test-support"] }
 awaken-session-store = { workspace = true, features = ["test-support"] }
 awaken-skill-store = { workspace = true, features = ["test-support"] }
+tokio = { workspace = true, features = ["test-util"] }
 awaken-file-application.workspace = true
 awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
 awaken-run-ingress-testkit = { workspace = true }

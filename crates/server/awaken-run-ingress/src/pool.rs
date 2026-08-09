@@ -37,7 +37,7 @@ use crate::service::DispatchServiceConfig;
 use crate::wake::{LocalWakeSignal, WakeSignal};
 use crate::worker::DispatchWorker;
 use awaken_run_ingress_contract::RunDispatch;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Resolves the worker that owns a thread's runtime. The pool claims from the one
 /// shared queue, then asks the resolver for the session worker carrying the
@@ -136,47 +136,69 @@ struct PoolAdmission {
 /// projection used by lease renewal. In particular, a resolver/drive failure
 /// removes the Run immediately so an un-settled claim can expire and recover.
 #[derive(Default)]
-struct ActiveRuns(std::sync::Mutex<std::collections::BTreeMap<String, (RunId, usize)>>);
+struct ActiveRuns {
+    entries: std::sync::Mutex<std::collections::BTreeMap<String, (RunId, usize, u64)>>,
+    next_generation: AtomicU64,
+}
 
 impl ActiveRuns {
     fn enter(self: &Arc<Self>, run_id: RunId) -> ActiveRunGuard {
         let mut active = self
-            .0
+            .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        active
-            .entry(run_id.0.clone())
-            .and_modify(|(_, count)| *count += 1)
-            .or_insert_with(|| (run_id.clone(), 1));
+        let generation = if let Some((_, count, generation)) = active.get_mut(&run_id.0) {
+            *count += 1;
+            *generation
+        } else {
+            let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+            active.insert(run_id.0.clone(), (run_id.clone(), 1, generation));
+            generation
+        };
         ActiveRunGuard {
             active: self.clone(),
             run_id,
+            generation,
         }
     }
 
     fn snapshot(&self) -> Vec<RunId> {
-        self.0
+        self.entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
-            .map(|(run_id, _)| run_id.clone())
+            .map(|(run_id, _, _)| run_id.clone())
             .collect()
+    }
+
+    /// Stop renewing a claim after durable truth says this owner no longer owns
+    /// it. A later claim of the same Run receives a fresh generation, so dropping
+    /// a stale drive guard cannot erase or decrement the new activity record.
+    fn forget(&self, run_id: &RunId) -> bool {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&run_id.0)
+            .is_some()
     }
 }
 
 struct ActiveRunGuard {
     active: Arc<ActiveRuns>,
     run_id: RunId,
+    generation: u64,
 }
 
 impl Drop for ActiveRunGuard {
     fn drop(&mut self) {
         let mut active = self
             .active
-            .0
+            .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((_, count)) = active.get_mut(&self.run_id.0) {
+        if let Some((_, count, generation)) = active.get_mut(&self.run_id.0)
+            && *generation == self.generation
+        {
             *count -= 1;
             if *count == 0 {
                 active.remove(&self.run_id.0);
@@ -709,24 +731,44 @@ async fn renewal_loop<S: Dispatch + 'static>(
         tokio::select! {
             _ = shutdown.cancelled() => break,
             _ = tokio::time::sleep(interval) => {
-                let now = clock.now_ms();
-                for run_id in admission.active_runs.snapshot() {
-                    match store.renew_lease(&run_id, &owner, lease_ms, now).await {
-                        Ok(true) => {}
-                        Ok(false) => tracing::warn!(
-                            run_id = %run_id.0,
-                            %owner,
-                            "dispatch lease renewal lost ownership"
-                        ),
-                        Err(error) => tracing::warn!(
-                            run_id = %run_id.0,
-                            %owner,
-                            %error,
-                            "dispatch lease renewal failed"
-                        ),
-                    }
-                }
+                renew_active_runs_once(
+                    store.as_ref(),
+                    clock.as_ref(),
+                    &owner,
+                    lease_ms,
+                    admission.active_runs.as_ref(),
+                )
+                .await;
             }
+        }
+    }
+}
+
+async fn renew_active_runs_once<S: Dispatch + 'static>(
+    store: &S,
+    clock: &dyn Clock,
+    owner: &str,
+    lease_ms: u64,
+    active_runs: &ActiveRuns,
+) {
+    let now = clock.now_ms();
+    for run_id in active_runs.snapshot() {
+        match store.renew_lease(&run_id, owner, lease_ms, now).await {
+            Ok(true) => {}
+            Ok(false) => {
+                active_runs.forget(&run_id);
+                tracing::warn!(
+                    run_id = %run_id.0,
+                    %owner,
+                    "dispatch lease renewal lost ownership; stopped local renewal"
+                );
+            }
+            Err(error) => tracing::warn!(
+                run_id = %run_id.0,
+                %owner,
+                %error,
+                "dispatch lease renewal failed"
+            ),
         }
     }
 }
@@ -883,5 +925,39 @@ mod in_flight_tests {
             )],
             "R3"
         );
+    }
+
+    #[test]
+    fn forgotten_generation_cannot_remove_a_later_claim_of_the_same_run() {
+        let active = Arc::new(ActiveRuns::default());
+        let run_id = RunId("run-1".into());
+        let stale = active.enter(run_id.clone());
+        assert!(active.forget(&run_id));
+
+        let current = active.enter(run_id.clone());
+        drop(stale);
+        assert_eq!(active.snapshot(), vec![run_id.clone()]);
+
+        drop(current);
+        assert!(active.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn lost_durable_ownership_stops_further_local_renewal() {
+        let active = Arc::new(ActiveRuns::default());
+        let run_id = RunId("missing-run".into());
+        let _drive = active.enter(run_id);
+        let store = crate::memory::MemoryDispatchStore::new();
+
+        renew_active_runs_once(
+            &store,
+            &crate::clock::SystemClock,
+            "stale-owner",
+            100,
+            active.as_ref(),
+        )
+        .await;
+
+        assert!(active.snapshot().is_empty());
     }
 }

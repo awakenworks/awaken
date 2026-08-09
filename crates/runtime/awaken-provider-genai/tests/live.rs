@@ -1,6 +1,6 @@
-//! Live provider smoke test. Ignored by default; it needs network and a
-//! an explicit OpenAI-compatible provider API key in the environment. This test reads it itself and
-//! injects it into a fixed adapter; the provider adapter has no ambient default.
+//! Live provider smoke tests. Ignored by default; they need network and an
+//! explicit provider API key in the environment. These tests read it themselves
+//! and inject it into fixed adapters; provider adapters have no ambient default.
 //! Run with:
 //!
 //! ```sh
@@ -9,7 +9,7 @@
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
-use awaken_provider_genai::GenaiExecutor;
+use awaken_provider_genai::{GenaiExecutor, OpenAiResponsesExecutor};
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, DeltaSink, LlmExecutor};
 use awaken_runtime_contract::resolved::ModelBinding;
 use std::sync::Mutex;
@@ -126,4 +126,57 @@ async fn live_streaming_emits_public_or_reasoning_delta_before_returning_the_com
     );
     assert_eq!(streamed_text, response.output.text_content(), "R1/E2");
     assert!(deltas.tool_arguments.lock().unwrap().is_empty(), "R1/E3");
+}
+
+#[tokio::test]
+#[ignore = "requires network and DEEPSEEK_API_KEY"]
+async fn live_deepseek_anthropic_messages_completion() {
+    let key = std::env::var("DEEPSEEK_API_KEY").expect("set DEEPSEEK_API_KEY");
+    let model =
+        std::env::var("AWAKEN_ANTHROPIC_MODEL").unwrap_or_else(|_| "deepseek-v4-pro".to_string());
+    let executor = GenaiExecutor::from_resolved(
+        awaken_provider_genai::AdapterKind::Anthropic,
+        Some("https://api.deepseek.com/anthropic".to_string()),
+        key,
+    );
+
+    assert_text_completion(&executor, model).await;
+}
+
+#[tokio::test]
+#[ignore = "requires network and DEEPSEEK_API_KEY"]
+async fn live_deepseek_openai_responses_completion() {
+    let key = std::env::var("DEEPSEEK_API_KEY").expect("set DEEPSEEK_API_KEY");
+    // DeepSeek currently rejects its pro model on the Responses surface while
+    // accepting it on Chat and Anthropic Messages. Keep the protocol live proof
+    // on the strongest model the endpoint currently advertises as executable.
+    let model =
+        std::env::var("AWAKEN_RESPONSES_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".to_string());
+    let executor = OpenAiResponsesExecutor::new("https://api.deepseek.com/v1", key)
+        .expect("construct Responses executor");
+
+    assert_text_completion(&executor, model).await;
+}
+
+async fn assert_text_completion(executor: &dyn LlmExecutor, model: String) {
+    let request = ChatRequest {
+        model_binding: ModelBinding {
+            provider_identity_ref: "deepseek".to_string(),
+            model_ref: model,
+            backend_ref: "genai".to_string(),
+        },
+        inference: Default::default(),
+        messages: vec![ChatMessage {
+            role: Role::User,
+            content: vec![ContentBlock::text("Reply with the single word: pong")],
+        }],
+        tools: Vec::new(),
+    };
+
+    let response = executor.infer(request).await.expect("live inference");
+    assert!(
+        response.output.tool_calls().is_empty(),
+        "expected text, got tool calls"
+    );
+    assert!(!response.output.text_content().is_empty());
 }

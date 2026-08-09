@@ -569,6 +569,38 @@ async fn interrupt_cancels_the_run_and_reports_interrupted() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_authority_loss_interrupts_active_session_before_revocation() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let model = Arc::new(GatedModel {
+        gate: gate.clone(),
+        reached: reached.clone(),
+        calls: AtomicUsize::new(0),
+    });
+    let host = Arc::new(SharedHost::new(model, "scripted"));
+
+    let driver = host.clone();
+    let task = tokio::spawn(async move {
+        driver
+            .define_outcome("authority-loss-active", "finish", "FINAL", 5)
+            .await
+    });
+
+    reached.notified().await;
+    // The outcome owns both its Worker Session and its Judge Session; authority
+    // loss must fence every process-local projection, not only the caller thread.
+    assert_eq!(host.interrupt_all_session_runs().await, 2);
+    gate.notify_one();
+
+    let report = task.await.expect("join").expect("define_outcome");
+    assert_eq!(
+        report.iterations.last().expect("a round").result,
+        "interrupted"
+    );
+    assert_eq!(host.revoke_all_session_realizations().await.unwrap(), 2);
+}
+
 #[tokio::test]
 async fn interrupt_is_a_noop_when_nothing_runs() {
     let host = SharedHost::new(

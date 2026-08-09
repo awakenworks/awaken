@@ -165,6 +165,7 @@ async fn infer_step(
     step_resume: Option<StreamCheckpoint>,
     context: &RuntimeRunContext,
     context_window: Option<usize>,
+    final_step: bool,
 ) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
     let mut truncation_retries = 0;
     // Model-pool failover: the ordered candidate bindings (primary first, then
@@ -181,6 +182,20 @@ async fn infer_step(
             &env.dynamic_descriptors(),
             opened,
         );
+        if final_step {
+            // `max_steps` is a runaway bound, but a run that spends its last
+            // allowance on another tool call cannot report the evidence it has
+            // already gathered. Reserve the last inference for a natural final
+            // response: hide every tool and make the boundary explicit without
+            // mutating the durable transcript.
+            request.tools.clear();
+            request.messages.push(ChatMessage {
+                role: Role::System,
+                content: vec![ContentBlock::text(
+                    "This is the final inference step. Do not request or invoke tools. Return the best complete natural final response now, obey the original output contract, and explicitly report every incomplete check or blocker.",
+                )],
+            });
+        }
         if let Some(keep_last) = context_window {
             // Compaction supplied complete prefix coverage in `prelude` (summary
             // plus any bridge). Protect that request-only prefix and window only
@@ -458,6 +473,7 @@ pub(super) async fn drive(
             None
         };
         let checkpoint_ref = checkpoint_ctx.as_ref();
+        let final_step = resolved.spec.max_steps > 1 && step + 1 == resolved.spec.max_steps;
         let inference = infer_step(
             &llm,
             runtime,
@@ -474,6 +490,7 @@ pub(super) async fn drive(
             step_resume,
             context,
             context_window,
+            final_step,
         );
         // A cancel aborts a hung or long inference in flight rather than
         // awaiting for the step boundary. Dropping the inference future drops
@@ -574,6 +591,14 @@ pub(super) async fn drive(
         let assistant = assistant_message(run_id, step_base + step, response.output.blocks);
         ledger.push_message(assistant);
 
+        // A non-compliant model can still emit a tool call even though the
+        // reserved final request advertised no tools. Never execute that call:
+        // the hard ceiling remains authoritative and the run ends MaxSteps.
+        if final_step && !calls.is_empty() {
+            disposition = Some(RunDisposition::ended(run_id.clone(), EndCause::MaxSteps));
+            break;
+        }
+
         // A text-only step (no tool requests) is a natural end — unless queued
         // live input or a run-end guard keeps the loop going. Queued input is
         // drained first: a message the caller already addressed to this run
@@ -672,7 +697,7 @@ pub(super) async fn drive(
         // Otherwise run each requested tool and feed the results back. A call that
         // awaits or fails the run returns its disposition here, ending the step
         // loop; every call answered with a result returns `None` and the loop goes on.
-        match dispatch::run_tool_calls(
+        let tool_execution = dispatch::run_tool_calls(
             runtime,
             context,
             delegation_origin,
@@ -685,9 +710,27 @@ pub(super) async fn drive(
             &mut ledger,
             &mut store,
             &mut opened,
-        )
-        .await
-        {
+        );
+        // Cancellation must also preempt an executing tool. Waiting until the
+        // next step boundary leaves a hung shell, package download, or nested
+        // container alive after the durable Run has already ended Cancelled.
+        // Dropping this future propagates through the tool SPI; process-backed
+        // tools use that drop to terminate their complete process group.
+        let tool_execution = match &context.cancellation {
+            Some(token) => {
+                tokio::select! {
+                    biased;
+                    _ = token.cancelled() => None,
+                    result = tool_execution => Some(result),
+                }
+            }
+            None => Some(tool_execution.await),
+        };
+        let Some(tool_execution) = tool_execution else {
+            disposition = Some(RunDisposition::ended(run_id.clone(), EndCause::Cancelled));
+            break;
+        };
+        match tool_execution {
             Ok(Some(reached)) => {
                 disposition = Some(reached);
                 break;

@@ -206,6 +206,9 @@ pub struct SandboxSettings {
     pub k8s_image_pull_secrets: Vec<String>,
     /// Executable path for the Awaken Hand inside a container image.
     pub container_hand_bin: String,
+    /// Inactivity horizon after which the Worker-local Session owner releases
+    /// its rebuildable Hand process/channel. Zero disables idle hibernation.
+    pub container_hand_idle_secs: u64,
     /// Podman executable used by the rootless container adapter.
     pub podman_bin: String,
     /// Shared OCI repository prefix for package images. When absent, Docker and
@@ -219,6 +222,10 @@ pub struct SandboxSettings {
     /// Permit plain-HTTP/TLS-insecure access from the Kubernetes BuildKit Job.
     /// Intended for explicitly trusted development registries such as k3d.
     pub package_registry_insecure: bool,
+    /// Rootless BuildKit image used by Kubernetes package-build Jobs. Operators
+    /// may point this at an admitted private mirror so Environment startup never
+    /// depends on live Docker Hub availability.
+    pub k8s_buildkit_image: String,
     /// Optional builder independent from the Session execution backend.
     pub package_image_builder: Option<PackageImageBuilder>,
     /// Age after which unused, Awaken-labeled derived images may be pruned from
@@ -244,10 +251,12 @@ impl Default for SandboxSettings {
             k8s_namespace: "default".to_owned(),
             k8s_image_pull_secrets: Vec::new(),
             container_hand_bin: "/usr/local/bin/awaken-sandbox".to_owned(),
+            container_hand_idle_secs: 300,
             podman_bin: "podman".to_owned(),
             package_image_registry: None,
             package_registry_auth_file: None,
             package_registry_insecure: false,
+            k8s_buildkit_image: "moby/buildkit:v0.30.0-rootless".to_owned(),
             package_image_builder: None,
             package_local_cache_ttl_secs: 7 * 24 * 60 * 60,
             inherit_agent_stderr: false,

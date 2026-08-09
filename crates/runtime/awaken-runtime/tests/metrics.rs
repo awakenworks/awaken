@@ -134,6 +134,7 @@ fn no_retries() -> LlmRetryPolicy {
         max_retries: 0,
         backoff_base_ms: 0,
         overloaded_backoff_base_ms: 0,
+        attempt_timeout: std::time::Duration::from_secs(5),
     }
 }
 

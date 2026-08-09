@@ -66,13 +66,21 @@ k3d registry create awaken-registry.localhost --port 5111
 # to `k3d cluster create --registry-use`.
 . e2e/k3d/harness.sh
 k3d_create_cluster awaken-product 1 2 k3d-awaken-registry.localhost:5111
+
+# Mirror the rootless builder as well as derived Environment images. This keeps
+# package materialization independent of Docker Hub availability on every node.
+docker tag moby/buildkit:v0.30.0-rootless \
+  localhost:5111/system/buildkit:v0.30.0-rootless
+docker push localhost:5111/system/buildkit:v0.30.0-rootless
 ```
 
 The all-in-one Pod never runs or mounts a Docker daemon. It submits bounded,
 rootless BuildKit Jobs through namespace-scoped RBAC; those Jobs push immutable
 derived Environment images to the same Registry. Session creation waits inside
 Awaken for the exact digest, and Session Pods receive that digest instead of
-installing packages at startup.
+installing packages at startup. Set `k8s_buildkit_image` to the cluster-visible
+mirror reference; omitting it retains `moby/buildkit:v0.30.0-rootless` for
+backward compatibility.
 
 ## Verification Rules
 

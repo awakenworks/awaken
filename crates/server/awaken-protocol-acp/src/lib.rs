@@ -579,7 +579,14 @@ impl Supervisor {
         process.signal(pc::Signal::Kill).await.map_err(io)?;
         // Wait through the provider boundary so lifecycle hooks (notably durable
         // credential-file write-back) run before the turn is considered finished.
-        process.wait().await.map_err(io)?;
+        // A broken provider must not retain the caller's lifecycle lock forever.
+        tokio::time::timeout(
+            grace.max(std::time::Duration::from_millis(1)),
+            process.wait(),
+        )
+        .await
+        .map_err(|_| AcpError::Io("process did not report exit after SIGKILL".into()))?
+        .map_err(io)?;
         Ok(true)
     }
 
@@ -1098,6 +1105,51 @@ mod tests {
             .unwrap();
         assert!(!killed);
         assert_eq!(signalled.lock().unwrap().as_slice(), &[pc::Signal::Term]);
+    }
+
+    /// Reap liveness cause/effect rule R3: C1=TERM ignored, C2=KILL delivered,
+    /// C3=provider wait never resolves; E1=the canonical signal ladder returns a
+    /// bounded error after TERM+KILL instead of retaining an execution lock.
+    #[tokio::test]
+    async fn reap_bounds_a_provider_that_never_reports_exit_after_kill() {
+        struct NeverExits {
+            signalled: Arc<Mutex<Vec<pc::Signal>>>,
+        }
+
+        #[async_trait]
+        impl pc::ProcessHandle for NeverExits {
+            fn id(&self) -> &str {
+                "never-exits"
+            }
+
+            async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
+                std::future::pending().await
+            }
+
+            async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+                Ok(None)
+            }
+
+            async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
+                self.signalled.lock().unwrap().push(signal);
+                Ok(())
+            }
+        }
+
+        let signalled = Arc::new(Mutex::new(Vec::new()));
+        let error = Supervisor::reap(
+            &NeverExits {
+                signalled: signalled.clone(),
+            },
+            std::time::Duration::from_millis(5),
+        )
+        .await
+        .expect_err("a provider wait cannot block forever after SIGKILL");
+        assert!(error.to_string().contains("after SIGKILL"));
+        assert_eq!(
+            signalled.lock().unwrap().as_slice(),
+            &[pc::Signal::Term, pc::Signal::Kill]
+        );
     }
 
     #[tokio::test]

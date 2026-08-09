@@ -2,7 +2,7 @@ use std::fmt::Debug;
 use std::time::Duration;
 
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::PostParams;
+use kube::api::{DeleteParams, PostParams, Preconditions};
 use kube::{Api, Resource, ResourceExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -70,6 +70,46 @@ where
         }
         Err(error) => Err(backend(error)),
     }
+}
+
+/// Reap a terminal Pod left behind by eviction or node loss before realizing a
+/// new attempt under the same deterministic runtime id. A live or provisioning
+/// Pod is never replaced: its realization digest still decides whether the
+/// caller may adopt it. The UID/resourceVersion preconditions prevent a stale
+/// observer from deleting a concurrently-created incarnation with the same
+/// name.
+pub(super) async fn reap_terminal_pod(api: &Api<Pod>, name: &str) -> Result<(), RuntimeError> {
+    let existing = match api.get(name).await {
+        Ok(pod) => pod,
+        Err(error) if api_not_found(&error) => return Ok(()),
+        Err(error) => return Err(backend(error)),
+    };
+    let Some(preconditions) = terminal_pod_preconditions(&existing) else {
+        return Ok(());
+    };
+    match api
+        .delete(name, &DeleteParams::default().preconditions(preconditions))
+        .await
+    {
+        Ok(_) => await_pod_deleted(api, name).await,
+        Err(error) if api_not_found(&error) => Ok(()),
+        Err(error) => Err(backend(error)),
+    }
+}
+
+fn terminal_pod_preconditions(pod: &Pod) -> Option<Preconditions> {
+    let terminal = pod
+        .status
+        .as_ref()
+        .and_then(|status| status.phase.as_deref())
+        .is_some_and(|phase| matches!(phase, "Failed" | "Succeeded"));
+    if !terminal || pod.metadata.deletion_timestamp.is_some() {
+        return None;
+    }
+    Some(Preconditions {
+        uid: pod.metadata.uid.clone(),
+        resource_version: pod.metadata.resource_version.clone(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,5 +293,38 @@ mod tests {
         changed.metadata.name = Some("different".into());
         stamp_realization(&mut changed).unwrap();
         assert_ne!(first.annotations(), changed.annotations(), "F2");
+    }
+
+    #[test]
+    fn only_terminal_pods_are_safe_to_replace_with_identity_preconditions() {
+        /* Recovery decision table. R1 Pending/Running => preserve; R2 a Pod
+         * already being deleted => preserve; R3 Failed/Succeeded => replace,
+         * guarded by the exact observed UID/resourceVersion. This covers the
+         * DiskPressure eviction that previously left deterministic names stuck
+         * behind `different realization` forever. */
+        for phase in ["Pending", "Running"] {
+            let mut existing = pod(phase, phase == "Running", None);
+            existing.metadata.uid = Some("live-uid".into());
+            assert_eq!(terminal_pod_preconditions(&existing), None, "R1 {phase}");
+        }
+
+        let mut deleting = pod("Failed", false, None);
+        deleting.metadata.deletion_timestamp =
+            Some(serde_json::from_str("\"2026-08-03T00:45:35Z\"").expect("valid timestamp"));
+        assert_eq!(terminal_pod_preconditions(&deleting), None, "R2");
+
+        for phase in ["Failed", "Succeeded"] {
+            let mut terminal = pod(phase, false, None);
+            terminal.metadata.uid = Some(format!("{phase}-uid"));
+            terminal.metadata.resource_version = Some("21413".into());
+            assert_eq!(
+                terminal_pod_preconditions(&terminal),
+                Some(Preconditions {
+                    uid: Some(format!("{phase}-uid")),
+                    resource_version: Some("21413".into()),
+                }),
+                "R3 {phase}"
+            );
+        }
     }
 }

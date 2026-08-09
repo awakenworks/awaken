@@ -60,6 +60,7 @@ fn exact_generation_key(generation: &McpGenerationRef) -> String {
 
 struct LocalProjectionSynchronizer<'a> {
     runtime: &'a dyn SessionRuntime,
+    environment_binding: Option<&'a str>,
 }
 
 #[async_trait::async_trait]
@@ -90,7 +91,13 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
                     environment: baseline.environment.clone(),
                 },
             )
-            .await
+            .await?;
+        if let Some(binding) = self.environment_binding {
+            self.runtime
+                .restore_session_environment(&baseline.agent_id, session_id, binding)
+                .await?;
+        }
+        Ok(())
     }
 }
 
@@ -689,11 +696,17 @@ impl ManagedState {
         session_id: &str,
         directive: awaken_session_contract::SessionRealizationDirective,
     ) -> Result<(), StateError> {
+        let environment_binding = self
+            .sessions_repo
+            .get(session_id)
+            .await
+            .and_then(|session| session.environment.binding().map(str::to_string));
         awaken_session_contract::drive_session_realization(
             session_id,
             self,
             &LocalProjectionSynchronizer {
                 runtime: self.runtime.as_ref(),
+                environment_binding: environment_binding.as_deref(),
             },
             self.mcp_realizer.as_ref(),
             directive,
@@ -820,12 +833,6 @@ impl ManagedState {
                     tracing::warn!(
                         error = ?error,
                         "Session realization lease renewal remains pending"
-                    );
-                }
-                if let Err(error) = state.reconcile_session_residency(now).await {
-                    tracing::warn!(
-                        error = ?error,
-                        "Session environment residency reconciliation remains pending"
                     );
                 }
                 state.reconcile_work_dispatches().await;
@@ -989,7 +996,7 @@ mod tests {
             title: None,
             metadata: Default::default(),
             tools: Default::default(),
-            activity: Default::default(),
+            activity_epoch: 0,
             environment: Default::default(),
             mcp,
             resources,

@@ -1,7 +1,10 @@
 //! Cancellation produces a terminal Cancelled outcome and DirectRunIngress is
 //! the direct delivery seam; durable-only operations fail closed (G5).
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -13,12 +16,13 @@ use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveR
 use awaken_runtime_contract::execution::{Error, RunExecutor};
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
+use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use awaken_store_inmem::MemoryCommitCoordinator;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -229,6 +233,97 @@ async fn live_cancel_aborts_a_hung_inference() {
         .expect("join")
         .expect("runs");
     assert_eq!(outcome, RunState::Ended(EndCause::Cancelled));
+}
+
+struct ToolCallingLlm;
+
+#[async_trait::async_trait]
+impl LlmExecutor for ToolCallingLlm {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        Ok(ChatResponse {
+            output: AssistantOutput::from_tool_calls(vec![
+                awaken_runtime_contract::llm::ToolCall {
+                    call_id: "call-hang".into(),
+                    tool_id: "hang".into(),
+                    arguments: serde_json::json!({}),
+                },
+            ]),
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+struct HangingTool {
+    started: Arc<Notify>,
+    dropped: Arc<AtomicBool>,
+}
+
+struct ToolFutureDrop(Arc<AtomicBool>);
+
+impl Drop for ToolFutureDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl RawTool for HangingTool {
+    fn id(&self) -> &str {
+        "hang"
+    }
+
+    async fn invoke(
+        &self,
+        _call: awaken_runtime_contract::llm::ToolCall,
+    ) -> Result<ToolOutput, ToolError> {
+        let _drop = ToolFutureDrop(self.dropped.clone());
+        self.started.notify_one();
+        std::future::pending::<()>().await;
+        unreachable!("a hung tool never completes")
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_cancel_aborts_a_hung_tool_invocation() {
+    let started = Arc::new(Notify::new());
+    let dropped = Arc::new(AtomicBool::new(false));
+    let runtime = Arc::new(
+        Runtime::new()
+            .with_llm(Arc::new(ToolCallingLlm))
+            .with_tool(Arc::new(HangingTool {
+                started: started.clone(),
+                dropped: dropped.clone(),
+            })),
+    );
+    let mut run = activation();
+    run.snapshot.resolved_spec.tool_descriptors = vec![ToolDescriptor::pinned(
+        "test",
+        "hang",
+        "hang until cancelled",
+        serde_json::json!({"type": "object"}),
+    )];
+    let context = RuntimeRunContext::new().with_cancellation(CancellationToken::new());
+    let runtime_for_run = runtime.clone();
+    let handle = tokio::spawn(async move { runtime_for_run.execute(run, context).await });
+
+    started.notified().await;
+    runtime
+        .deliver(LiveCommand::Cancel {
+            run_id: RunId("run-1".to_string()),
+        })
+        .expect("cancel delivered");
+
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+        .await
+        .expect("cancel aborts the hung tool")
+        .expect("join")
+        .expect("runs");
+    assert_eq!(outcome, RunState::Ended(EndCause::Cancelled));
+    assert!(dropped.load(Ordering::SeqCst), "tool future was dropped");
 }
 
 #[test]

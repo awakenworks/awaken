@@ -34,12 +34,12 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_protocol_acp::{
     AcpError, AcpFailure, AcpProjectedEvent, AllowAll, AppendError, Injection, LaunchSink,
     PermissionAsk, PermissionResolver, PermissionVerdict, RawAcpError, RunFactAppender, Stage,
-    SupervisePolicy, Supervisor, TerminationReason, TurnConfig, classify_error,
+    SupervisePolicy, TerminationReason, TurnConfig, classify_error,
 };
 // Re-exported (not just `use`d) so a host composition root selects the wire and
 // observes agent bring-up without a direct dependency on the protocol crate. The
 // executor also uses these names internally to emit lifecycle events.
-pub use awaken_protocol_acp::{AcpLaunchEvent, AcpLaunchStage, Codec, LaunchObserver};
+pub use awaken_protocol_acp::{AcpLaunchEvent, AcpLaunchStage, Codec, LaunchObserver, Supervisor};
 use awaken_provisioning_contract::ProcessHandle;
 pub use awaken_provisioning_contract::{SandboxError, SecretBroker};
 use awaken_runtime_contract::activation::RunActivation;

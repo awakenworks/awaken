@@ -56,7 +56,7 @@ fn session() -> PersistedSession {
         title: None,
         metadata: BTreeMap::new(),
         tools: Default::default(),
-        activity: Default::default(),
+        activity_epoch: 0,
         environment: Default::default(),
         mcp: Default::default(),
         resources: Default::default(),

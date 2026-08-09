@@ -2,8 +2,12 @@
 //! its thread, opening (or reusing) the session through the host.
 
 use super::*;
+mod application;
 mod claimed_dispatch;
-use claimed_dispatch::{WorkerMcpEffects, WorkerProjectionSynchronizer, adopt_bound_sandbox};
+use application::install_application_projection;
+#[cfg(test)]
+use claimed_dispatch::adopt_bound_sandbox;
+use claimed_dispatch::{WorkerMcpEffects, WorkerProjectionSynchronizer};
 
 /// Routes a claimed run to the worker that owns its thread, opening (or reusing)
 /// the session through the host. Holds a `Weak` back-reference so the pool's tasks
@@ -42,84 +46,6 @@ impl HostWorkerResolver {
         )
         .await
         .map_err(|error| Self::execution_error(error.to_string()))
-    }
-
-    pub(super) async fn reconcile_dispatched_mcp(
-        host: &SharedHost,
-        session_id: &str,
-        stages: Vec<awaken_session_contract::StageMcpAttachment>,
-    ) -> Result<(), awaken_run_ingress::Error> {
-        use awaken_session_contract::McpAttachmentRealizer as _;
-
-        let existing = host.active_mcp_projections(session_id);
-        let existing_generations = existing
-            .iter()
-            .map(|projection| {
-                awaken_session_contract::stable_fingerprint(&projection.request.generation)
-            })
-            .collect::<std::collections::BTreeSet<_>>();
-        let mut desired_generations = std::collections::BTreeSet::new();
-        let mut desired_names = std::collections::BTreeSet::new();
-        for stage in &stages {
-            if stage.generation.session_id != session_id
-                || !desired_generations.insert(awaken_session_contract::stable_fingerprint(
-                    &stage.generation,
-                ))
-                || !desired_names.insert(stage.name.clone())
-            {
-                return Err(Self::execution_error(
-                    "dispatched MCP projection has a foreign or duplicate generation/name",
-                ));
-            }
-        }
-
-        let effects = WorkerMcpEffects(host);
-        let mut newly_staged = Vec::new();
-        for stage in stages {
-            match effects.stage_mcp_attachment(stage.clone()).await {
-                Ok(receipt) => {
-                    if !existing_generations.contains(&awaken_session_contract::stable_fingerprint(
-                        &receipt.generation,
-                    )) {
-                        newly_staged.push(receipt.generation.clone());
-                    }
-                    if let Err(error) = effects
-                        .publish_mcp_generation(receipt.generation.clone())
-                        .await
-                    {
-                        for generation in newly_staged {
-                            let _ = effects.drain_mcp_generation(generation).await;
-                        }
-                        return Err(Self::execution_error(format!(
-                            "dispatched MCP publication failed: {error}"
-                        )));
-                    }
-                }
-                Err(error) => {
-                    for generation in newly_staged {
-                        let _ = effects.drain_mcp_generation(generation).await;
-                    }
-                    return Err(Self::execution_error(format!(
-                        "dispatched MCP staging failed: {error}"
-                    )));
-                }
-            }
-        }
-        for projection in existing {
-            if !desired_generations.contains(&awaken_session_contract::stable_fingerprint(
-                &projection.request.generation,
-            )) {
-                effects
-                    .drain_mcp_generation(projection.request.generation)
-                    .await
-                    .map_err(|error| {
-                        Self::execution_error(format!(
-                            "obsolete dispatched MCP drain failed: {error}"
-                        ))
-                    })?;
-            }
-        }
-        Ok(())
     }
 
     async fn resolve(
@@ -717,6 +643,7 @@ mod tests {
 
     struct CountingProvisioner {
         calls: Arc<AtomicUsize>,
+        refreshes: Arc<AtomicUsize>,
     }
 
     struct RecordingContributor {
@@ -775,6 +702,28 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::ApplicationSessionControlClient for RecordingContributor {
+        async fn resume_frozen(
+            &self,
+            claim: &awaken_run_ingress::RunClaim,
+            _session_id: &str,
+        ) -> Result<
+            Option<awaken_session_contract::SessionRealizationDirective>,
+            crate::ApplicationSessionError,
+        > {
+            Ok(self.projection.lock().unwrap().clone().map(|projection| {
+                awaken_session_contract::SessionRealizationDirective {
+                    projection,
+                    lease: awaken_session_contract::SessionRealizationLease {
+                        owner: claim.owner.clone(),
+                        runtime_incarnation: claim.owner.clone(),
+                        epoch: claim.epoch,
+                        expires_at_unix_ms: u64::MAX,
+                    },
+                    action: awaken_session_contract::SessionRealizationAction::Complete,
+                }
+            }))
+        }
+
         async fn contribute(
             &self,
             _claim: &awaken_run_ingress::RunClaim,
@@ -1006,6 +955,20 @@ mod tests {
                 input: Default::default(),
             })
         }
+
+        async fn refresh_frozen(
+            &self,
+            _activation: &RunActivation,
+            _session_id: &str,
+            ownership: Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>,
+        ) -> Result<(), crate::ApplicationSessionError> {
+            ownership
+                .verify_current()
+                .await
+                .map_err(|error| crate::ApplicationSessionError::new(error.to_string()))?;
+            self.refreshes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -1026,6 +989,7 @@ mod tests {
         // | W5 | T | initial MCP stage fails | installed | fail; no publish/environment |
         // | W6 | T | active MCP lease due | installed | same canonical driver renews generation |
         // | W7 | T | renewal loses Session authority | installed | revoke only that Session; Worker remains healthy |
+        // | W8 | T | Session already frozen | installed | resume projection; refresh only indirect material |
         for (rule, install_contributor, with_initial_mcp, fail_mcp_stage) in [
             ("W1", true, false, false),
             ("W2", false, false, false),
@@ -1038,6 +1002,7 @@ mod tests {
                     .expect("in-memory dispatch"),
             );
             let calls = Arc::new(AtomicUsize::new(0));
+            let refreshes = Arc::new(AtomicUsize::new(0));
             let contribution_calls = Arc::new(AtomicUsize::new(0));
             let phases = Arc::new(std::sync::Mutex::new(Vec::new()));
             let projection = Arc::new(std::sync::Mutex::new(None));
@@ -1047,6 +1012,7 @@ mod tests {
                 .with_dispatch_store(dispatch.clone())
                 .with_application_session_provisioner(Arc::new(CountingProvisioner {
                     calls: calls.clone(),
+                    refreshes: refreshes.clone(),
                 }));
             let mcp_realizer = Arc::new(RecordingMcpRealizer::default());
             mcp_realizer
@@ -1115,6 +1081,16 @@ mod tests {
             };
             let result = resolver.worker_for_claimed(&claimed).await;
 
+            if rule == "W1" {
+                resolver
+                    .worker_for_claimed(&claimed)
+                    .await
+                    .expect("W8 resumes the frozen projection");
+                assert_eq!(calls.load(Ordering::SeqCst), 1, "W8");
+                assert_eq!(refreshes.load(Ordering::SeqCst), 1, "W8");
+                assert_eq!(contribution_calls.load(Ordering::SeqCst), 1, "W8");
+            }
+
             if rule == "W4" {
                 assert_eq!(
                     host.renew_due_session_realizations(
@@ -1140,10 +1116,19 @@ mod tests {
                 assert!(!host.session_slots.contains(&thread), "W7");
             }
 
-            assert_eq!(calls.load(Ordering::SeqCst), 1, "{rule}");
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                usize::from(install_contributor),
+                "{rule}"
+            );
             assert_eq!(
                 contribution_calls.load(Ordering::SeqCst),
                 usize::from(install_contributor),
+                "{rule}"
+            );
+            assert_eq!(
+                refreshes.load(Ordering::SeqCst),
+                usize::from(rule == "W1"),
                 "{rule}"
             );
             let succeeds = install_contributor && !fail_mcp_stage;
@@ -1198,12 +1183,14 @@ mod tests {
                 .expect("in-memory dispatch"),
         );
         let calls = Arc::new(AtomicUsize::new(0));
+        let refreshes = Arc::new(AtomicUsize::new(0));
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub")
                 .with_store_dir(storage.path())
                 .with_dispatch_store(dispatch.clone())
                 .with_application_session_provisioner(Arc::new(CountingProvisioner {
                     calls: calls.clone(),
+                    refreshes: refreshes.clone(),
                 })),
         );
         dispatch
@@ -1226,6 +1213,7 @@ mod tests {
 
         assert!(resolver.worker_for_claimed(&claimed).await.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(refreshes.load(Ordering::SeqCst), 0);
         assert!(
             host.session_environment("thread-stale-application")
                 .await

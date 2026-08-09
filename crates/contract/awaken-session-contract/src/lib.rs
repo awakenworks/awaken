@@ -14,10 +14,10 @@ mod agent_config;
 mod application_contribution;
 mod baseline;
 mod dream;
+mod environment;
 mod lifecycle;
 mod mcp_attachment;
 mod mcp_probe;
-mod residency;
 mod resource;
 mod resource_activation;
 mod run_application;
@@ -61,6 +61,7 @@ pub use dream::{
     DreamPolicyApplicationError, DreamPolicyConfig, DreamPolicyRecord, DreamProcessFailure,
     DreamProcessRecord, DreamProcessStore, DreamProcessStoreError, DreamStatus, DreamUsage,
 };
+pub use environment::SessionEnvironmentState;
 pub use lifecycle::{ManagedLifecycleFact, SessionLifecycleSink};
 pub use mcp_attachment::{
     McpAttachmentDraft, McpAttachmentError, McpAttachmentId, McpAttachmentOrigin,
@@ -70,10 +71,6 @@ pub use mcp_attachment::{
     SessionMcpAttachmentSet, StageMcpAttachment,
 };
 pub use mcp_probe::{McpProbe, McpProbeStatus};
-pub use residency::{
-    SessionActivity, SessionActivityState, SessionEnvironmentState, SessionIdleReason,
-    SessionResidencyAction, SessionResidencyPolicy, decide_session_residency,
-};
 pub use resource::{
     ResolvedInput, ResolvedInputSource, ResolvedRepositoryCredential, ResolvedSessionResources,
     ResolvedSkillBinding, SessionInputAttachment, SessionInputError, SessionInputResolver,

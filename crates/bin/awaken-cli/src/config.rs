@@ -1028,6 +1028,7 @@ mod tests {
         // |---|---|---|
         // | S1 | all omitted | fail-closed fallback, no pool/proxy, default namespace/reaper |
         // | S2 | all explicit valid | exact typed values projected losslessly |
+        // | S3 | Hand idle seconds = 0 | disable Worker-local idle hibernation |
         let defaults = resolve(FileConfig::default(), ConfigOverrides::default())
             .runtime
             .sandbox;
@@ -1040,10 +1041,15 @@ mod tests {
             defaults.container_hand_bin, "/usr/local/bin/awaken-sandbox",
             "S1"
         );
+        assert_eq!(defaults.container_hand_idle_secs, 300, "S1");
         assert_eq!(defaults.podman_bin, "podman", "S1");
         assert_eq!(defaults.package_image_registry, None, "S1");
         assert_eq!(defaults.package_registry_auth_file, None, "S1");
         assert!(!defaults.package_registry_insecure, "S1");
+        assert_eq!(
+            defaults.k8s_buildkit_image, "moby/buildkit:v0.30.0-rootless",
+            "S1"
+        );
         assert_eq!(defaults.package_image_builder, None, "S1");
         assert!(!defaults.inherit_agent_stderr, "S1");
         assert!(defaults.reaper_enabled, "S1");
@@ -1056,10 +1062,14 @@ mod tests {
                 k8s_namespace: Some("agents".into()),
                 k8s_image_pull_secrets: Some(vec![" registry-pull ".into(), String::new()]),
                 container_hand_bin: Some("/opt/awaken/bin/hand".into()),
+                container_hand_idle_secs: Some(73),
                 podman_bin: Some("/opt/podman/bin/podman".into()),
                 package_image_registry: Some("registry.internal/agents/".into()),
                 package_registry_auth_file: Some(PathBuf::from("/run/secrets/registry.json")),
                 package_registry_insecure: Some(true),
+                k8s_buildkit_image: Some(
+                    "registry.internal/system/buildkit:v0.30.0-rootless".into(),
+                ),
                 package_image_builder: Some("k8s".into()),
                 package_local_cache_ttl_secs: Some(300),
                 sandbox_inherit_agent_stderr: Some(true),
@@ -1082,6 +1092,7 @@ mod tests {
         assert_eq!(selected.k8s_namespace, "agents", "S2");
         assert_eq!(selected.k8s_image_pull_secrets, ["registry-pull"], "S2");
         assert_eq!(selected.container_hand_bin, "/opt/awaken/bin/hand", "S2");
+        assert_eq!(selected.container_hand_idle_secs, 73, "S2");
         assert_eq!(selected.podman_bin, "/opt/podman/bin/podman", "S2");
         assert_eq!(
             selected.package_image_registry.as_deref(),
@@ -1094,6 +1105,10 @@ mod tests {
             "S2"
         );
         assert_eq!(
+            selected.k8s_buildkit_image, "registry.internal/system/buildkit:v0.30.0-rootless",
+            "S2"
+        );
+        assert_eq!(
             selected.package_registry_auth_file.as_deref(),
             Some(Path::new("/run/secrets/registry.json")),
             "S2"
@@ -1103,6 +1118,17 @@ mod tests {
         assert!(selected.inherit_agent_stderr, "S2");
         assert_eq!(selected.reaper_interval_secs, 17, "S2");
         assert_eq!(selected.reaper_max_age_secs, 91, "S2");
+
+        let disabled = resolve(
+            FileConfig {
+                container_hand_idle_secs: Some(0),
+                ..FileConfig::default()
+            },
+            ConfigOverrides::default(),
+        )
+        .runtime
+        .sandbox;
+        assert_eq!(disabled.container_hand_idle_secs, 0, "S3");
     }
 
     #[test]

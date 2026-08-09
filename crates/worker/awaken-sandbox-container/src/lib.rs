@@ -1139,22 +1139,20 @@ pub trait ContainerRuntime: Send + Sync {
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError>;
     /// Discover the awaken-managed containers this runtime currently holds, with the
     /// ownership, liveness, and age signals judged by [`crate::reaper`].
-    /// The default returns none — a runtime with **native GC** (k8s `ownerReferences`)
-    /// needs no custom reaper, so it opts out here; the docker/podman adapters (no
-    /// native TTL) implement it so leaked containers of a *crashed* worker are swept.
+    /// The default returns none. Backends without a guaranteed native GC owner
+    /// implement it so leaked containers of a *crashed* worker are swept.
     async fn list_managed(&self) -> Result<Vec<ManagedContainer>, RuntimeError> {
         Ok(Vec::new())
     }
 }
 
 /// The label every awaken-created container/pod carries, so the cross-restart reaper
-/// ([`crate::reaper`]) can discover the ones a crashed worker left behind (docker/podman
-/// filter on it; k8s uses it alongside native `ownerReferences` GC).
+/// ([`crate::reaper`]) can discover the ones a crashed worker left behind.
 pub(crate) const REAPER_LABEL: &str = "awaken.sandbox";
 /// Identifies the worker-runtime instance that owns a container. A reaper only
 /// collects containers owned by a different (therefore restarted/crashed) instance;
 /// the current instance's normal process lifecycle owns its teardown and write-back.
-#[cfg(any(feature = "docker", feature = "podman"))]
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) const REAPER_OWNER_LABEL: &str = "awaken.sandbox.owner";
 
 pub(crate) fn runtime_owner_id() -> String {
@@ -1957,8 +1955,9 @@ pub const DEFAULT_REAPER_MAX_AGE_SECS: u64 = 6 * 60 * 60;
 /// Default interval between orphan-reconciliation sweeps.
 pub const DEFAULT_REAPER_INTERVAL_SECS: u64 = 60;
 
-/// The cross-restart container reaper (docker/podman leaked-container GC; k8s uses
-/// native `ownerReferences` GC). Gated on `connection` for the background loop's timer.
+/// The cross-restart container reaper. Gated on `connection` for the background
+/// loop's timer. Kubernetes may additionally use native `ownerReferences`, but the
+/// reaper remains the fallback for ownerless local/control-plane deployments.
 #[cfg(feature = "connection")]
 pub mod reaper;
 #[cfg(feature = "connection")]

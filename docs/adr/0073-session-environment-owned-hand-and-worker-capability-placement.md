@@ -82,14 +82,23 @@ replacement Hand in the existing Environment, and retries the undispatched call
 once. A channel loss after dispatch remains indeterminate and is never replayed by
 this lifecycle path; it continues through ADR-0044's existing recovery boundary.
 
-The Session supervisor may proactively hibernate that same recreatable Hand after
-a settled end-turn idle horizon. Hibernation releases only the process/channel;
-the Environment, opaque durable binding, and workspace remain resident, and the
-next tool call uses the same serialized replacement path. Awaiting human/tool
-action is not classified as an end-turn idle. Terminal Session release remains a
-different operation: it closes the owner and disposes the Environment, so it can
-never lazily recreate a Hand. Full Pod/container suspension is disabled while the
-workspace is backed by ephemeral storage; reclaiming it would violate continuity.
+The Worker-local SessionEnvironment owner proactively hibernates that same
+recreatable Hand after its configured process-inactivity horizon. This policy is
+based on actual Hand use, not Coordinator Session status: a long model turn or a
+Session awaiting human/tool action may safely release an unused Hand. Each call
+advances a local generation, so an old deadline cannot stop a newer invocation;
+the same binding mutex serializes deadline, dispatch, replacement, and terminal
+stop. Hibernation releases only the process/channel; the Environment, opaque
+durable binding, and workspace remain resident, and the next tool call uses the
+same serialized replacement path.
+
+Process release reuses the ACP supervisor's one bounded `TERM -> KILL -> wait`
+signal ladder. If the provider cannot prove the old process was reaped, the owner
+fails closed and does not launch a possibly concurrent replacement. Terminal
+Session release remains a different operation: it closes the owner and disposes
+the Environment, so it can never lazily recreate a Hand. Full Pod/container
+suspension is disabled while the workspace is backed by ephemeral storage;
+reclaiming it would violate continuity.
 
 ## Consequences
 
@@ -118,6 +127,10 @@ workspace is backed by ephemeral storage; reclaiming it would violate continuity
 7. Idle hibernation is reversible and retains the Environment; terminal release is
    irreversible and never recreates a Hand. A provider may not suspend an
    Environment until its workspace has a durable continuation contract.
+8. Hand inactivity and residency are Worker-local runtime facts. The Coordinator
+   owns no Hand timer, scan, registry, or durable Hand-state replica.
+9. A failed process reap closes the Hand owner; replacement is permitted only
+   after absence of the previous process is known.
 
 Cause/effect decision tables live beside the corresponding Rust/Python tests.
 The architecture fitness suite rejects retired Hand selection symbols and
