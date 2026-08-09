@@ -13,6 +13,7 @@ pub enum awaken_runtime_host::HostErrorKind
 pub awaken_runtime_host::HostErrorKind::BadRequest
 pub awaken_runtime_host::HostErrorKind::Conflict
 pub awaken_runtime_host::HostErrorKind::Internal
+pub awaken_runtime_host::HostErrorKind::Unavailable
 pub enum awaken_runtime_host::HostResume
 pub awaken_runtime_host::HostResume::ClientResult
 pub awaken_runtime_host::HostResume::ClientResult::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
@@ -28,6 +29,15 @@ pub enum awaken_runtime_host::PackageImageBuilder
 pub awaken_runtime_host::PackageImageBuilder::Docker
 pub awaken_runtime_host::PackageImageBuilder::Kubernetes
 pub awaken_runtime_host::PackageImageBuilder::Podman
+pub enum awaken_runtime_host::RuntimeAuthorityError
+pub awaken_runtime_host::RuntimeAuthorityError::Corrupt(alloc::string::String)
+pub awaken_runtime_host::RuntimeAuthorityError::Misconfigured(alloc::string::String)
+pub awaken_runtime_host::RuntimeAuthorityError::Unavailable(alloc::string::String)
+impl awaken_runtime_host::RuntimeAuthorityError
+pub fn awaken_runtime_host::RuntimeAuthorityError::misconfigured(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_host::RuntimeAuthorityError::unavailable(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::convert::From<awaken_runtime_host::RuntimeAuthorityError> for awaken_runtime_host::HostError
+pub fn awaken_runtime_host::HostError::from(awaken_runtime_host::RuntimeAuthorityError) -> Self
 pub enum awaken_runtime_host::SandboxTier
 pub awaken_runtime_host::SandboxTier::Docker
 pub awaken_runtime_host::SandboxTier::K8s
@@ -67,7 +77,7 @@ pub fn awaken_runtime_host::AcpServeHost::model(&self) -> alloc::string::String
 pub fn awaken_runtime_host::AcpServeHost::new(alloc::sync::Arc<dyn awaken_session_contract::run_application::RunApplication>) -> Self
 pub fn awaken_runtime_host::AcpServeHost::new_session(&self) -> alloc::string::String
 pub async fn awaken_runtime_host::AcpServeHost::prompt(&self, &str, core::option::Option<alloc::string::String>, &str) -> core::result::Result<awaken_runtime_host::AcpTurn, awaken_session_contract::run_application::RunApplicationError>
-pub async fn awaken_runtime_host::AcpServeHost::usage(&self, &str) -> (u64, u64)
+pub async fn awaken_runtime_host::AcpServeHost::usage(&self, &str) -> core::result::Result<(u64, u64), awaken_session_contract::run_application::RunApplicationError>
 pub struct awaken_runtime_host::AcpToolExport
 pub awaken_runtime_host::AcpToolExport::server: awaken_runtime_contract::resolved::AcpMcpServer
 impl awaken_runtime_host::AcpToolExport
@@ -122,12 +132,18 @@ pub struct awaken_runtime_host::ExtMcpProbe
 impl awaken_session_contract::mcp_probe::McpProbe for awaken_runtime_host::ExtMcpProbe
 pub fn awaken_runtime_host::ExtMcpProbe::probe<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_agent_contract::secret::RedactedString) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_session_contract::mcp_probe::McpProbeStatus> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_runtime_host::HostError
+pub awaken_runtime_host::HostError::code: alloc::string::String
 pub awaken_runtime_host::HostError::kind: awaken_runtime_host::HostErrorKind
 pub awaken_runtime_host::HostError::message: alloc::string::String
 impl awaken_runtime_host::HostError
 pub fn awaken_runtime_host::HostError::bad_request(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_host::HostError::classified(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::HostError::conflict(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::HostError::internal(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_host::HostError::unavailable(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_host::HostError::unavailable_classified(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+impl core::convert::From<awaken_runtime_host::RuntimeAuthorityError> for awaken_runtime_host::HostError
+pub fn awaken_runtime_host::HostError::from(awaken_runtime_host::RuntimeAuthorityError) -> Self
 pub struct awaken_runtime_host::HostResourceReclamation
 impl awaken_runtime_host::HostResourceReclamation
 pub fn awaken_runtime_host::HostResourceReclamation::new(alloc::sync::Arc<awaken_runtime_host::SharedHost>, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>) -> Self
@@ -152,7 +168,7 @@ pub fn awaken_runtime_host::ManagedHost::add_system<'life0, 'life1, 'life2, 'asy
 pub fn awaken_runtime_host::ManagedHost::apply_session_inputs<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, u64, &'life3 awaken_session_contract::resource::ResolvedSessionResources) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_runtime_host::ManagedHost::capabilities(&self) -> awaken_session_contract::session::AgentCapabilities
 pub fn awaken_runtime_host::ManagedHost::capabilities_for(&self, &str) -> awaken_session_contract::session::AgentCapabilities
-pub fn awaken_runtime_host::ManagedHost::committed_messages<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_agent_contract::agent::message::Message>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_host::ManagedHost::committed_messages<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::ManagedHost::committed_run_lifecycle<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_agent_contract::thread::read::lifecycle::RunLifecycleCursor, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::lifecycle::RunLifecyclePage, awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::ManagedHost::define_outcome<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, u32) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::OutcomeReport, awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_runtime_host::ManagedHost::delegated_runs<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_session_contract::session::DelegatedRun>, awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -168,7 +184,7 @@ pub fn awaken_runtime_host::ManagedHost::live_inbox_reorder<'life0, 'life1, 'asy
 pub fn awaken_runtime_host::ManagedHost::live_inbox_replace<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::session::LiveInboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::ManagedHost::live_inbox_snapshot<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_session_contract::session::LiveInboxSnapshot> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::ManagedHost::model(&self) -> alloc::string::String
-pub fn awaken_runtime_host::ManagedHost::owns_thread<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = bool> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_host::ManagedHost::owns_thread<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::ManagedHost::pending_tool<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_session_contract::session::Pending>, awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::ManagedHost::prepare_session<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_session_contract::session::SessionInit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::ManagedHost::quiesce_terminal_delegations<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::DelegatedRunSnapshot, awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -182,7 +198,7 @@ pub fn awaken_runtime_host::ManagedHost::run<'life0, 'life1, 'life2, 'async_trai
 pub fn awaken_runtime_host::ManagedHost::run_attributed<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>, core::option::Option<alloc::string::String>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_host::ManagedHost::run_streaming<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_host::ManagedHost::run_streaming_attributed<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>, core::option::Option<alloc::string::String>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_runtime_host::ManagedHost::session_usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_session_contract::session::SessionUsage> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_host::ManagedHost::session_usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::SessionUsage, awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::ManagedHost::supports_mid_conversation_system<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = bool> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_runtime_host::NoModelConfiguredExecutor
 impl awaken_runtime_contract::llm::LlmExecutor for awaken_runtime_host::NoModelConfiguredExecutor
@@ -226,16 +242,15 @@ pub awaken_runtime_host::RemoteAttemptInstallation::executor: alloc::sync::Arc<d
 pub struct awaken_runtime_host::RunApplicationHost
 impl awaken_runtime_host::RunApplicationHost
 pub fn awaken_runtime_host::RunApplicationHost::new(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> Self
-pub fn awaken_runtime_host::RunApplicationHost::with_session_defaults(self, alloc::sync::Arc<dyn awaken_runtime_host::SessionDefaultsPreparer>) -> Self
 impl awaken_session_contract::run_application::RunApplication for awaken_runtime_host::RunApplicationHost
-pub fn awaken_runtime_host::RunApplicationHost::history<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_agent_contract::agent::message::Message>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_host::RunApplicationHost::history<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::RunApplicationHost::interrupt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::RunApplicationHost::model(&self) -> alloc::string::String
-pub fn awaken_runtime_host::RunApplicationHost::pending<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::session::Pending>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_host::RunApplicationHost::pending<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_session_contract::session::Pending>, awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::RunApplicationHost::resume<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_session_contract::run_application::RunResume) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_host::RunApplicationHost::run<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::RunApplicationHost::run_streaming<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_runtime_host::RunApplicationHost::usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = (u64, u64)> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_host::RunApplicationHost::usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(u64, u64), awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_runtime_host::RunResult
 pub awaken_runtime_host::RunResult::compacted: bool
 pub awaken_runtime_host::RunResult::delegated_runs: alloc::vec::Vec<awaken_session_contract::session::DelegatedRun>
@@ -272,7 +287,6 @@ impl awaken_runtime_host::SessionAcpCapabilityNegotiator
 pub fn awaken_runtime_host::SessionAcpCapabilityNegotiator::new(alloc::sync::Arc<awaken_runtime_host::SharedHost>, core::time::Duration, alloc::sync::Arc<dyn awaken_acp_contract::AcpCapabilityHandshake>) -> Self
 impl awaken_acp_contract::AcpCapabilityNegotiator for awaken_runtime_host::SessionAcpCapabilityNegotiator
 pub fn awaken_runtime_host::SessionAcpCapabilityNegotiator::negotiate<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 [alloc::string::String], &'life2 std::path::Path, core::option::Option<&'life3 str>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_acp_contract::NegotiatedAcpCapabilities, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
-pub struct awaken_runtime_host::SessionDefaultsPreparationError(pub alloc::string::String)
 pub struct awaken_runtime_host::SharedHost
 impl awaken_runtime_host::SharedHost
 pub fn awaken_runtime_host::SharedHost::acp_launch_observer(&self) -> alloc::sync::Arc<dyn awaken_protocol_acp::LaunchObserver>
@@ -283,10 +297,10 @@ pub fn awaken_runtime_host::SharedHost::with_projected_acp(self, awaken_run_exec
 pub async fn awaken_runtime_host::SharedHost::with_session_environment_from_deployment(self, core::option::Option<alloc::sync::Arc<dyn awaken_runtime_host::HandExecutorFactory>>) -> Self
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::add_system(&self, &str, &str) -> core::result::Result<(), awaken_runtime_host::HostError>
-pub async fn awaken_runtime_host::SharedHost::committed_messages(&self, &str) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub async fn awaken_runtime_host::SharedHost::committed_messages(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::dead_letters(&self, &str) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::delegated_runs(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_session_contract::session::DelegatedRun>, awaken_runtime_host::HostError>
-pub fn awaken_runtime_host::SharedHost::has_durable_thread(&self, &str) -> bool
+pub async fn awaken_runtime_host::SharedHost::has_durable_thread(&self, &str) -> core::result::Result<bool, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::interrupt(&self, &str) -> core::result::Result<(), awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::is_awaiting(&self, &str) -> bool
 pub async fn awaken_runtime_host::SharedHost::list_dispatches(&self, &str) -> core::result::Result<alloc::vec::Vec<(alloc::string::String, alloc::string::String, u64, bool)>, awaken_runtime_host::HostError>
@@ -343,6 +357,8 @@ pub fn awaken_runtime_host::SharedHost::sandbox_tier(&self) -> awaken_runtime_ho
 pub fn awaken_runtime_host::SharedHost::session_blob_eraser(&self) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::ContentEraser>>
 pub async fn awaken_runtime_host::SharedHost::shutdown_environment_capacity(&self)
 pub fn awaken_runtime_host::SharedHost::storage_dir(&self) -> core::option::Option<&std::path::Path>
+pub fn awaken_runtime_host::SharedHost::thread_agent_projection(&self, &str) -> core::option::Option<alloc::string::String>
+pub fn awaken_runtime_host::SharedHost::thread_workspace(&self, &str) -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::web_search_provider_registry(&self) -> &awaken_ext_builtin_tools::web::WebSearchProviderRegistry
 pub fn awaken_runtime_host::SharedHost::with_acp_tool_exporter(self, alloc::sync::Arc<dyn awaken_runtime_host::AcpToolExporter>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_admin_tools(self, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self
@@ -484,11 +500,9 @@ pub fn awaken_runtime_host::ProjectedLocalCommit<T>::run_state(&self, &awaken_ag
 pub trait awaken_runtime_host::RuntimeAuthority: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::RuntimeAuthority::dispatch_store(&self) -> alloc::sync::Arc<awaken_run_ingress::any::AnyDispatchStore>
 pub fn awaken_runtime_host::RuntimeAuthority::dispatch_wake(&self) -> core::option::Option<alloc::sync::Arc<dyn awaken_run_ingress::wake::WakeSignal>>
-pub fn awaken_runtime_host::RuntimeAuthority::durable_thread_exists(&self, &str) -> bool
-pub fn awaken_runtime_host::RuntimeAuthority::open_commit<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::sync::Arc<dyn awaken_runtime_host::LocalCommit>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_runtime_host::RuntimeAuthority::stream_checkpoint(&self, &str) -> core::result::Result<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>, alloc::string::String>
-pub trait awaken_runtime_host::SessionDefaultsPreparer: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_host::SessionDefaultsPreparer::prepare<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_host::SessionDefaultsPreparationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_runtime_host::RuntimeAuthority::durable_thread_exists<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_runtime_host::RuntimeAuthorityError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_host::RuntimeAuthority::open_commit<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::sync::Arc<dyn awaken_runtime_host::LocalCommit>, awaken_runtime_host::RuntimeAuthorityError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_runtime_host::RuntimeAuthority::stream_checkpoint(&self, &str) -> core::result::Result<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>, awaken_runtime_host::RuntimeAuthorityError>
 pub fn awaken_runtime_host::advertised_tools(&std::collections::hash::set::HashSet<alloc::string::String>, &std::collections::hash::set::HashSet<alloc::string::String>, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub fn awaken_runtime_host::authorable_config_sections() -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub fn awaken_runtime_host::authorable_config_sections_with_web_search(&awaken_ext_builtin_tools::web::WebSearchProviderRegistry) -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>

@@ -219,8 +219,7 @@ impl ManagedState {
         // after that effect succeeds. `end_session` is idempotent for an already
         // absent local child, so a retry after an uncertain response is safe.
         self.application
-            .runtime()
-            .end_session(thread_id)
+            .end_runtime_session(thread_id)
             .await
             .map_err(StateError::Run)?;
 

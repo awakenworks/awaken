@@ -81,6 +81,7 @@ async fn commit_claimed(
                 ApplicationErrorKind::InvalidRequest => StatusCode::BAD_REQUEST,
                 ApplicationErrorKind::Conflict => StatusCode::CONFLICT,
                 ApplicationErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+                ApplicationErrorKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             };
             (status, Json(json!({ "error": error.message })))
         }

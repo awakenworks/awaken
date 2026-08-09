@@ -26,8 +26,7 @@ async fn coordinator_only_creation_freezes_worker_placement_without_local_realiz
         .expect("P1 creates the durable Session");
     let persisted = state
         .application
-        .session_repository()
-        .get(&created.id)
+        .session(&created.id)
         .await
         .expect("P1 durable aggregate");
 

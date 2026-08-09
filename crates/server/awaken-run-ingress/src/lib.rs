@@ -87,7 +87,7 @@ pub use fenced_checkpoint::FencedStreamCheckpointStore;
 pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
 #[cfg(any(test, feature = "test-support"))]
 pub use memory::MemoryDispatchStore;
-pub use pool::{CompletionSink, DispatchPool, WorkerResolver};
+pub use pool::{CompletionSink, DispatchMaintenance, DispatchPool, WorkerResolver};
 #[cfg(feature = "durable")]
 pub use postgres::{
     PostgresDispatchStore, PostgresStreamCheckpointStore, StoreError as PostgresStoreError,

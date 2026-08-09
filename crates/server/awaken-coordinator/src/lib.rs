@@ -852,29 +852,16 @@ fn mount_with_managed_over_and_models(
     );
     // One neutral port impl behind the three wire adapters (each `router` takes
     // `Arc<dyn RunApplication>`), so they share the host with no per-protocol twin.
-    struct ManagedSessionDefaults(Arc<ManagedState>);
-
-    #[async_trait::async_trait]
-    impl awaken_runtime_host::SessionDefaultsPreparer for ManagedSessionDefaults {
-        async fn prepare(
-            &self,
-            workspace_id: &str,
-            thread_id: &str,
-            agent_id: &str,
-        ) -> Result<(), awaken_runtime_host::SessionDefaultsPreparationError> {
-            self.0
-                .prepare_protocol_session(workspace_id, thread_id, agent_id)
-                .await
-                .map_err(|error| {
-                    awaken_runtime_host::SessionDefaultsPreparationError(error.to_string())
-                })
-        }
-    }
-
-    let port: Arc<dyn RunApplication> = Arc::new(
-        RunApplicationHost::new(host.clone())
-            .with_session_defaults(Arc::new(ManagedSessionDefaults(managed_state.clone()))),
-    );
+    let raw_port: Arc<dyn RunApplication> = Arc::new(RunApplicationHost::new(host.clone()));
+    let workspace_host = host.clone();
+    let agent_host = host.clone();
+    let port: Arc<dyn RunApplication> =
+        Arc::new(awaken_session_application::AdmittedRunApplication::new(
+            raw_port,
+            managed_state.session_application(),
+            move |thread| workspace_host.thread_workspace(thread),
+            move |thread| agent_host.thread_agent_projection(thread),
+        ));
     let mut ai_sdk = awaken_protocol_ai_sdk::router(port.clone());
     let mut ag_ui = awaken_protocol_ag_ui::router(port.clone());
     if let Some(application_access) = application_access {

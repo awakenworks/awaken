@@ -1,5 +1,6 @@
-"""Semantic route-inventory boundary for the Managed protocol adapter."""
+"""Semantic route and application boundaries for the Managed protocol adapter."""
 
+import re
 from pathlib import Path
 
 import _execution_ownership_fitness
@@ -109,6 +110,83 @@ AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
     }
 )
 
+MANAGED_STATE_ROOT = "crates/server/awaken-protocol-managed/src/state"
+FORBIDDEN_APPLICATION_BYPASSES = {
+    "runtime": "use a SessionApplication command/query instead of the Runtime collaborator",
+    "session_repository": "use the SessionApplication aggregate command/query surface",
+    "config_source": "use a SessionApplication publication query",
+    "credential_source": "use a SessionApplication credential command/query",
+    "resource_catalog": "use a SessionApplication resource command/query",
+    "repository_credential_ingress": "use the SessionApplication repository command",
+    "lifecycle_sink": "use the SessionApplication lifecycle projection command",
+}
+
+
+def managed_application_bypass_violations(sources: dict[str, str]) -> list[str]:
+    """Managed wire state may call the application, never its raw collaborators."""
+    errors: list[str] = []
+    for relative, source in sources.items():
+        production = _execution_ownership_fitness._production(source)
+        for method, replacement in FORBIDDEN_APPLICATION_BYPASSES.items():
+            pattern = re.compile(
+                rf"\.application\s*\.\s*{re.escape(method)}\s*\(", re.MULTILINE
+            )
+            if pattern.search(production):
+                errors.append(
+                    f"{relative}: Managed state bypasses SessionApplication via {method}(); {replacement}"
+                )
+    return errors
+
+
+def check_managed_application_boundary(repo_root: Path) -> list[str]:
+    root = repo_root / MANAGED_STATE_ROOT
+    sources: dict[str, str] = {}
+    for path in sorted(root.glob("**/*.rs")):
+        if "tests" in path.parts:
+            continue
+        sources[str(path.relative_to(repo_root))] = path.read_text(encoding="utf-8")
+    return managed_application_bypass_violations(sources)
+
+
+def session_admission_ownership_violations(sources: dict[str, str]) -> list[str]:
+    """SessionApplication, never a protocol adapter, owns Run admission."""
+    errors: list[str] = []
+    for relative, source in sources.items():
+        production = _execution_ownership_fitness._production(source)
+        for symbol in ("prepare_protocol_session", "ManagedSessionAdmission"):
+            if re.search(rf"\b{symbol}\b", production):
+                errors.append(
+                    f"{relative}: obsolete protocol-owned Session admission {symbol!r}; "
+                    "use SessionApplication's SessionRunAdmission implementation"
+                )
+    application = sources.get(
+        "crates/server/awaken-session-application/src/run_admission.rs", ""
+    )
+    if "impl SessionRunAdmission for SessionApplication" not in application:
+        errors.append(
+            "awaken-session-application: missing authoritative SessionRunAdmission implementation"
+        )
+    coordinator = sources.get("crates/server/awaken-coordinator/src/lib.rs", "")
+    if "managed_state.session_application()" not in coordinator:
+        errors.append(
+            "awaken-coordinator: public Run protocols are not wired to SessionApplication admission"
+        )
+    return errors
+
+
+def check_session_admission_ownership(repo_root: Path) -> list[str]:
+    paths = (
+        repo_root / "crates/server/awaken-protocol-managed/src/state/sessions.rs",
+        repo_root / "crates/server/awaken-coordinator/src/lib.rs",
+        repo_root / "crates/server/awaken-session-application/src/run_admission.rs",
+    )
+    return session_admission_ownership_violations(
+        {
+            str(path.relative_to(repo_root)): path.read_text(encoding="utf-8")
+            for path in paths
+        }
+    )
+
 
 def managed_route_inventory_violations(
     core: set[tuple[str, str]], extensions: set[tuple[str, str]]
@@ -159,3 +237,44 @@ def selftest() -> None:
         set(AWAKEN_MANAGED_EXTENSION_ROUTES) | {("GET", "/v1/custom")},
     ), "R3"
     assert managed_route_inventory_violations(set(), set()), "R4"
+
+    # Application-boundary cause/effect graph: C5 production wire state calls a
+    # semantic SessionApplication operation; C6 it reaches through the application
+    # to a raw Runtime/repository/source/sink; C7 the same text occurs only in an
+    # inline test module. Effects: E5 accept the single application authority;
+    # E6 reject the parallel orchestration path; E7 ignore fixture inspection.
+    # Decision table: B1 C5,!C6 -> E5; B2 C6 -> E6; B3 C7 -> E7.
+    assert managed_application_bypass_violations(
+        {"state.rs": "self.application.session(id).await"}
+    ) == [], "B1/E5"
+    assert managed_application_bypass_violations(
+        {"state.rs": "self.application.session_repository().get(id).await"}
+    ), "B2/E6"
+    assert managed_application_bypass_violations(
+        {
+            "state.rs": "prod\n#[cfg(test)]\nmod tests { self.application.runtime(); }"
+        }
+    ) == [], "B3/E7"
+
+    # Admission-ownership cause/effect graph: C8 SessionApplication implements
+    # the neutral gate; C9 Coordinator injects that implementation; C10 Managed
+    # or Coordinator defines a compatibility admission. Effects: E8 one owner;
+    # E9 all public Run adapters share it; E10 reject a second creation/recovery
+    # path. Decision table: A1 C8+C9,!C10 -> accept; A2 !C8 -> reject; A3 C10 ->
+    # reject. The production stripper keeps test fixtures from becoming owners.
+    valid = {
+        "crates/server/awaken-session-application/src/run_admission.rs":
+            "impl SessionRunAdmission for SessionApplication {}",
+        "crates/server/awaken-coordinator/src/lib.rs":
+            "managed_state.session_application()",
+        "crates/server/awaken-protocol-managed/src/state/sessions.rs": "",
+    }
+    assert session_admission_ownership_violations(valid) == [], "A1/E8/E9"
+    missing = dict(valid)
+    missing["crates/server/awaken-session-application/src/run_admission.rs"] = ""
+    assert session_admission_ownership_violations(missing), "A2/E10"
+    duplicate = dict(valid)
+    duplicate["crates/server/awaken-protocol-managed/src/state/sessions.rs"] = (
+        "fn prepare_protocol_session() {}"
+    )
+    assert session_admission_ownership_violations(duplicate), "A3/E10"

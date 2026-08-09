@@ -6,50 +6,6 @@ use super::*;
 
 use super::session_mcp_projection::typed_mcp_servers;
 use crate::types::AgentRef;
-use awaken_session_contract::ApplicationSessionContributionFailure;
-
-fn validate_session_skill_total(
-    source: Option<&dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
-    workspace_id: &str,
-    root_agent_id: &str,
-    root_view: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
-    root_skills: &[awaken_agent_contract::AgentSkillBinding],
-) -> Result<(), RunError> {
-    const MAX_SESSION_SKILLS: usize = 500;
-
-    let mut total = root_skills.len();
-    if total > MAX_SESSION_SKILLS {
-        return Err(RunError::bad_request(
-            "a session supports at most 500 skills across all agents",
-        ));
-    }
-
-    // Agent identity, rather than roster-edge count, owns one mounted Skill set.
-    // This also closes cycles in malformed/legacy published topologies.
-    let mut seen = std::collections::BTreeSet::from([root_agent_id.to_string()]);
-    let mut pending = root_view
-        .into_iter()
-        .flat_map(|view| view.delegate_ids.iter().cloned())
-        .collect::<std::collections::VecDeque<_>>();
-    while let Some(agent_id) = pending.pop_front() {
-        if !seen.insert(agent_id.clone()) {
-            continue;
-        }
-        let Some(view) =
-            source.and_then(|source| source.session_profile_in(workspace_id, &agent_id))
-        else {
-            continue;
-        };
-        total = total.saturating_add(view.skills.len());
-        if total > MAX_SESSION_SKILLS {
-            return Err(RunError::bad_request(
-                "a session supports at most 500 skills across all agents",
-            ));
-        }
-        pending.extend(view.delegate_ids);
-    }
-    Ok(())
-}
 
 impl ManagedState {
     pub fn validate_dream_agent(
@@ -60,14 +16,12 @@ impl ManagedState {
         if agent_id == awaken_dream_application::BUILT_IN_DREAM_AGENT_ID {
             return Ok(());
         }
-        let Some(source) = &self.application.config_source() else {
+        let Some(_) = self.application.session_profile(workspace_id, agent_id) else {
             return Err(StateError::Run(RunError::bad_request(format!(
                 "dream agent Agent `{agent_id}` is unavailable"
             ))));
         };
-        if source.session_profile_in(workspace_id, agent_id).is_none()
-            || source.agent_unavailable_in(workspace_id, agent_id)
-        {
+        if self.application.agent_unavailable(workspace_id, agent_id) {
             return Err(StateError::Run(RunError::bad_request(format!(
                 "dream agent Agent `{agent_id}` is unavailable"
             ))));
@@ -92,55 +46,10 @@ impl ManagedState {
         if owner != workspace_id {
             return Err(StateError::NotFound);
         }
-        Ok(self
-            .application
-            .runtime()
+        self.application
             .committed_messages(session_id)
-            .await)
-    }
-
-    pub async fn prepare_protocol_session(
-        &self,
-        workspace_id: &str,
-        thread_id: &str,
-        agent_id: &str,
-    ) -> Result<(), StateError> {
-        match self.application.session_repository().get(thread_id).await {
-            Ok(_) => {
-                // A durable row does not imply that this process has reconstructed
-                // the runtime projection.  Reuse the authoritative restart path so
-                // resources and the exact Environment snapshot are restored before
-                // a non-Managed adapter is allowed to execute the next turn.
-                return self.ensure_session(thread_id).await;
-            }
-            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {}
-            Err(error) => return Err(StateError::from(error)),
-        }
-        let request = serde_json::from_value(serde_json::json!({"agent": agent_id}))
-            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        match self
-            .create_session_with_identity(
-                request,
-                Some(workspace_id.to_string()),
-                Some(thread_id.to_string()),
-            )
             .await
-        {
-            Ok(_) => Ok(()),
-            // Concurrent first turns share the explicit protocol thread id. The
-            // durable create fence chooses one winner; every loser adopts that
-            // exact committed Session through the normal recovery seam.
-            Err(StateError::Conflict) => {
-                match self.application.session_repository().get(thread_id).await {
-                    Ok(_) => self.ensure_session(thread_id).await,
-                    Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
-                        Err(StateError::Conflict)
-                    }
-                    Err(error) => Err(StateError::from(error)),
-                }
-            }
-            Err(error) => Err(error),
-        }
+            .map_err(StateError::Run)
     }
 
     pub(super) const fn wire_session_status(execution: SessionExecutionState) -> SessionStatus {
@@ -181,6 +90,7 @@ impl ManagedState {
     /// Wire-cache adapter around the Session application's sole root CAS. Every
     /// specialized command crosses the application boundary first; only its
     /// committed result is projected into the disposable Managed cache.
+    #[cfg(test)]
     pub(crate) async fn commit_session_snapshot(
         &self,
         owner_scope: &str,
@@ -197,7 +107,7 @@ impl ManagedState {
         Ok(session)
     }
 
-    fn map_application_mutation_error(
+    pub(super) fn map_application_mutation_error(
         error: awaken_session_application::SessionMutationError,
     ) -> StateError {
         match error {
@@ -212,26 +122,19 @@ impl ManagedState {
         }
     }
 
-    async fn create_session_root(
-        &self,
-        owner_scope: &str,
-        session: PersistedSession,
-    ) -> Result<PersistedSession, StateError> {
-        let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
-        let payload_hash = payload.stable_hash();
-        let session_id = session.session_id.clone();
-        self.application
-            .create_session_root(
-                owner_scope,
-                session,
-                awaken_session_contract::IdempotencyRecord {
-                    key: format!("managed:create:{session_id}:{payload_hash}"),
-                    payload_hash,
-                },
-                Vec::new(),
-            )
-            .await
-            .map_err(Self::map_application_mutation_error)
+    fn map_creation_error(error: awaken_session_application::SessionCreationError) -> StateError {
+        match error {
+            awaken_session_application::SessionCreationError::Conflict => StateError::Conflict,
+            awaken_session_application::SessionCreationError::IdempotencyMismatch => {
+                StateError::IdempotencyMismatch
+            }
+            awaken_session_application::SessionCreationError::Rejected(error) => {
+                StateError::Run(error)
+            }
+            awaken_session_application::SessionCreationError::Unavailable(message) => {
+                StateError::Run(RunError::unavailable(message))
+            }
+        }
     }
 
     /// `POST /v1/sessions`.
@@ -255,17 +158,13 @@ impl ManagedState {
     /// prepared, so it lives in a single method rather than inline — a dry-run
     /// bind check calls exactly this, and gets exactly the error create would.
     pub async fn check_bind(&self, req: &SessionCreateParams) -> Result<(), StateError> {
-        if let Some(vaults) = &self.application.credential_source() {
-            for vault_id in &req.vault_ids {
-                let exists = vaults.has_vault(vault_id).await.map_err(|error| {
-                    StateError::Run(RunError::internal(format!(
-                        "credential authority unavailable: {error}"
-                    )))
-                })?;
-                if !exists {
-                    return Err(StateError::VaultNotFound(vault_id.clone()));
-                }
-            }
+        if let Some(vault_id) = self
+            .application
+            .missing_vault(&req.vault_ids)
+            .await
+            .map_err(StateError::Run)?
+        {
+            return Err(StateError::VaultNotFound(vault_id));
         }
         Ok(())
     }
@@ -368,13 +267,18 @@ impl ManagedState {
                         sequence,
                     ))
                 );
-                let repository_absent =
-                    match self.application.session_repository().get(&candidate).await {
-                        Err(awaken_session_contract::SessionRepositoryError::NotFound) => true,
-                        Ok(_) => false,
-                        Err(error) => return Err(StateError::from(error)),
-                    };
-                if !self.application.runtime().owns_thread(&candidate).await && repository_absent {
+                let repository_absent = match self.application.session(&candidate).await {
+                    Err(awaken_session_contract::SessionRepositoryError::NotFound) => true,
+                    Ok(_) => false,
+                    Err(error) => return Err(StateError::from(error)),
+                };
+                if !self
+                    .application
+                    .runtime_owns_thread(&candidate)
+                    .await
+                    .map_err(StateError::Run)?
+                    && repository_absent
+                {
                     break candidate;
                 }
             },
@@ -383,20 +287,14 @@ impl ManagedState {
         let owner_scope = workspace_id
             .clone()
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
-        let config_view = self
-            .application
-            .config_source()
-            .and_then(|source| source.session_profile_in(&owner_scope, &agent_id));
+        let config_view = self.application.session_profile(&owner_scope, &agent_id);
         let is_built_in_dream_agent = agent_id == awaken_dream_application::BUILT_IN_DREAM_AGENT_ID
             && req
                 .metadata
                 .get("awaken.session.origin")
                 .is_some_and(|origin| origin == "dream");
         if config_view.is_none()
-            && self
-                .application
-                .config_source()
-                .is_some_and(|source| source.agent_unavailable_in(&owner_scope, &agent_id))
+            && self.application.agent_unavailable(&owner_scope, &agent_id)
             && !is_built_in_dream_agent
         {
             return Err(StateError::Run(RunError::bad_request(format!(
@@ -565,15 +463,10 @@ impl ManagedState {
         // selection has already produced one exact snapshot above; the final
         // SessionCreationIntent is the only value that combines and freezes both
         // families. Runtime never re-opens Agent or Resource stores.
-        let mut resolved_resources = awaken_session_contract::SessionInputResolver::resolve_inputs(
-            &owner_scope,
-            self.application
-                .resource_catalog()
-                .map(|catalog| catalog as &dyn awaken_resource_contract::ResourceConfigSource),
-            agent_defaults,
-            &attachments,
-        )
-        .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        let mut resolved_resources = self
+            .application
+            .resolve_session_inputs(&owner_scope, agent_defaults, &attachments)
+            .map_err(StateError::Run)?;
         let effective_skills = match &req.agent {
             AgentRef::Object(override_ref) => override_ref.skills.as_ref().map(|skills| {
                 skills
@@ -586,18 +479,17 @@ impl ManagedState {
             AgentRef::Id(_) => None,
         }
         .or_else(|| config_view.as_ref().map(|view| view.skills.clone()));
-        validate_session_skill_total(
-            self.application.config_source(),
-            &owner_scope,
-            &agent_id,
-            config_view.as_ref(),
-            effective_skills.as_deref().unwrap_or_default(),
-        )
-        .map_err(StateError::Run)?;
+        self.application
+            .validate_session_skill_total(
+                &owner_scope,
+                &agent_id,
+                config_view.as_ref(),
+                effective_skills.as_deref().unwrap_or_default(),
+            )
+            .map_err(StateError::Run)?;
         if let Some(skills) = &effective_skills {
             resolved_resources.skills = Some(
                 self.application
-                    .runtime()
                     .resolve_session_skills(&owner_scope, skills)
                     .await
                     .map_err(StateError::Run)?,
@@ -613,7 +505,7 @@ impl ManagedState {
             .map_err(Self::map_preparation_error)?;
         // Validate the advertised tool surface before persisting an activation or
         // touching a Host. A definition error cannot strand Prepared resources.
-        let caps = self.application.runtime().capabilities_for(&id);
+        let caps = self.application.capabilities_for(&id);
         for tool in &caps.custom_tools {
             project::validate_custom_tool(tool)
                 .map_err(|msg| StateError::Run(RunError::bad_request(msg)))?;
@@ -642,7 +534,7 @@ impl ManagedState {
         };
         let resolved_model = selected_model
             .clone()
-            .unwrap_or_else(|| ModelConfig::new(self.application.runtime().model()));
+            .unwrap_or_else(|| ModelConfig::new(self.application.model()));
         let execution_model_ref = config_view
             .as_ref()
             .and_then(|view| view.execution_model_ref.clone())
@@ -673,69 +565,29 @@ impl ManagedState {
                 awaken_session_contract::ApplicationContributionState::Absent
             },
         };
-        // Compile before insert so malformed no-application input cannot strand a
-        // preparation row. The transient result is committed exactly once after
-        // the insert; required applications compile only after their contribution.
-        let compiled = if application_required {
-            None
-        } else {
-            Some(
-                creation_intent
-                    .clone()
-                    .finalize(Vec::new())
-                    .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?,
+        let created_fact = (!application_required).then(|| {
+            lifecycle_fact(
+                format!("session:{id}:created"),
+                &id,
+                workspace_id.clone(),
+                lifecycle_event::SESSION_IDLED,
             )
-        };
-        let mut persisted = PersistedSession::preparing(
-            id.clone(),
-            creation_intent,
-            req.title.clone(),
-            req.metadata.clone(),
-            effective_tools.clone(),
-        );
-        // The activation intent and owner fence commit before Host/worker IO.
-        persisted = self.create_session_root(&owner_scope, persisted).await?;
-        if let Some(compiled) = compiled {
-            persisted = self
-                .application
-                .commit_compiled_session_creation(&owner_scope, persisted, compiled)
-                .await
-                .map_err(|error| match error {
-                    ApplicationSessionContributionFailure::Conflict => StateError::Conflict,
-                    error => StateError::Run(RunError::internal(error.to_string())),
-                })?;
-            // Cause/effect decision table (the cross-product is exercised by the
-            // placement test below):
-            //
-            // | Frozen placement | Application | Coordinator effect | Realization owner |
-            // |---|---|---|---|
-            // | local | absent | canonical local phase driver | local Runtime |
-            // | WorkQueue | absent | install dispatch projection only | claiming Worker |
-            // | any | required | wait for claimed contribution | claiming Worker |
-            //
-            // The frozen baseline and Requested generations are durable before
-            // either effect. Dispatch preparation deliberately acquires no
-            // realization lease and performs no physical Runtime I/O.
-            let realization = if self.application.requires_external_realization(&persisted) {
-                self.application
-                    .install_dispatch_projection(&owner_scope, &persisted)
-                    .await
-                    .map_err(Self::map_realization_application_error)
-                    .map(|()| persisted.clone())
-            } else {
-                self.realize_session_locally(&id).await
-            };
-            persisted = match realization {
-                Ok(persisted) => persisted,
-                Err(error) => {
-                    let _ = self
-                        .application
-                        .release_terminal_resources(&owner_scope, &id)
-                        .await;
-                    return Err(error);
-                }
-            };
-        }
+        });
+        // The adapter has finished lowering wire policy. The Session application
+        // now exclusively orders every durable mutation and external projection.
+        let persisted = self
+            .application
+            .create_session(awaken_session_application::CreateSessionCommand {
+                owner_scope: owner_scope.clone(),
+                session_id: id.clone(),
+                intent: creation_intent,
+                title: req.title.clone(),
+                metadata: req.metadata.clone(),
+                tools: effective_tools.clone(),
+                lifecycle_facts: created_fact.iter().cloned().collect(),
+            })
+            .await
+            .map_err(Self::map_creation_error)?;
         let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
         let session_tools = project::managed_tools(&effective_tools);
         let mut session = Session {
@@ -804,49 +656,7 @@ impl ManagedState {
                 session.agent.tools = project::resolved_tools(tools.as_deref().unwrap_or_default());
             }
         }
-        // Persist the session's config (secret-free) so a restart or a peer process
-        // rehydrates its real agent/model/title/metadata/MCP, not a placeholder.
-        // The core session record is tenancy-agnostic (authz is an edge aspect) —
-        // it never stores a workspace/org.
-        let created_fact = if application_required {
-            persisted = self
-                .commit_session_snapshot(
-                    &owner_scope,
-                    persisted,
-                    "record-preparing-config",
-                    Vec::new(),
-                )
-                .await?;
-            None
-        } else {
-            let fact = lifecycle_fact(
-                format!("session:{id}:created"),
-                &id,
-                workspace_id.clone(),
-                lifecycle_event::SESSION_IDLED,
-            );
-            persisted = self
-                .commit_session_snapshot(&owner_scope, persisted, "activate", vec![fact.clone()])
-                .await?;
-            Some(fact)
-        };
         self.owners.lock().unwrap().insert(id.clone(), owner_scope);
-        // Dispatch only after the active activation and Session lifecycle fact are
-        // durable. A worker can never claim a work item whose resource intent is
-        // still merely Prepared. The application command is shared with recovery.
-        if let Err(error) = self.application.dispatch_session_work(&persisted).await {
-            // The frozen Session baseline is already durable and is the
-            // authoritative dispatch intent. Returning an ambiguous create
-            // failure here could make a client create a second Session while
-            // reconciliation later dispatches this one. Keep the successful
-            // create result and let the canonical reconciler retry projection.
-            tracing::warn!(
-                session = %id,
-                environment = %environment_id,
-                error = ?error,
-                "Session WorkQueue dispatch remains pending after create"
-            );
-        }
         let record = SessionRecord::new(
             agent_id,
             session,
@@ -861,16 +671,15 @@ impl ManagedState {
         // fact, distinct from the SSE `session.status_idle` transition) to any
         // workspace-scoped subscribers. The owning workspace comes from the edge (the
         // aspect), passed in — never read back from the core record. Out-of-band.
-        if let (Some(sink), Some(created_fact)) =
-            (&self.application.lifecycle_sink(), &created_fact)
-        {
-            sink.emit_fact(
-                &created_fact.id,
-                &id,
-                workspace_id.as_deref(),
-                lifecycle_event::SESSION_IDLED,
-            )
-            .await;
+        if let Some(created_fact) = &created_fact {
+            self.application
+                .emit_lifecycle_fact(
+                    &created_fact.id,
+                    &id,
+                    workspace_id.as_deref(),
+                    lifecycle_event::SESSION_IDLED,
+                )
+                .await;
         }
         Ok(session)
     }
@@ -894,15 +703,10 @@ impl ManagedState {
         if let Some(scope) = self.owner_scope(session_id) {
             return Ok(Some(scope));
         }
-        match self
-            .application
-            .session_repository()
-            .owner(session_id)
-            .await
-        {
+        match self.application.owner(session_id).await {
             Ok(owner) => Ok(Some(owner)),
-            Err(awaken_session_contract::SessionRepositoryError::NotFound) => Ok(None),
-            Err(error) => Err(StateError::from(error)),
+            Err(awaken_session_application::SessionMutationError::NotFound) => Ok(None),
+            Err(error) => Err(Self::map_application_mutation_error(error)),
         }
     }
 
@@ -916,7 +720,7 @@ impl ManagedState {
         id: &str,
         persisted: Option<PersistedSession>,
     ) -> Result<Session, StateError> {
-        let caps = self.application.runtime().capabilities_for(id);
+        let caps = self.application.capabilities_for(id);
         let default_tools = project::agent_tools(&caps);
         let (
             agent_id,
@@ -942,7 +746,7 @@ impl ManagedState {
                     .unwrap_or_else(|| {
                         (
                             "assistant".into(),
-                            self.application.runtime().model(),
+                            self.application.model(),
                             p.environment_id().to_string(),
                         )
                     });
@@ -962,7 +766,7 @@ impl ManagedState {
             }
             None => (
                 "assistant".to_string(),
-                self.application.runtime().model(),
+                self.application.model(),
                 "env_local".to_string(),
                 None,
                 Default::default(),
@@ -1015,8 +819,7 @@ impl ManagedState {
         }
         let persisted = self
             .application
-            .session_repository()
-            .get(id)
+            .session(id)
             .await
             .map_err(StateError::from)?;
         if persisted.is_hidden() {
@@ -1024,13 +827,11 @@ impl ManagedState {
         }
         let owner_scope = self
             .application
-            .session_repository()
             .owner(id)
             .await
-            .map_err(StateError::from)?;
+            .map_err(Self::map_application_mutation_error)?;
         let delegated_runs = self
             .application
-            .runtime()
             .delegated_runs(id)
             .await
             .map_err(StateError::Run)?;
@@ -1069,8 +870,7 @@ impl ManagedState {
         id: &str,
     ) -> Result<awaken_session_contract::SessionRevision, StateError> {
         self.application
-            .session_repository()
-            .get(id)
+            .session(id)
             .await
             .map(|session| session.revision)
             .map_err(StateError::from)
@@ -1169,15 +969,14 @@ impl ManagedState {
         // notified, mirroring create's `session.status_idled` and archive's
         // `session.status_terminated`. The owner is resolved from the persisted
         // owner (the delete edge carries only the id).
-        if let Some(sink) = &self.application.lifecycle_sink() {
-            sink.emit_fact(
+        self.application
+            .emit_lifecycle_fact(
                 &deleted_fact.id,
                 id,
                 owner.as_deref(),
                 lifecycle_event::SESSION_DELETED,
             )
             .await;
-        }
         Ok(())
     }
 
@@ -1219,7 +1018,7 @@ impl ManagedState {
         // sandbox — but only on the transition, so a re-archive (idempotent) does
         // not re-dispose. The record survives as a tombstone; only the sandbox goes.
         let release_required = newly_terminated
-            || match self.application.session_repository().get(id).await {
+            || match self.application.session(id).await {
                 Ok(persisted) => {
                     persisted.resources.pending.is_some()
                         || persisted.resources.activations.iter().any(|activation| {
@@ -1243,14 +1042,15 @@ impl ManagedState {
         // `session.status_idled`. The owning workspace is resolved from the session's
         // persisted owner (the archive edge carries only the id) so a subscription in
         // that workspace is matched even after a restart lost the in-memory index.
-        if newly_terminated && let Some(sink) = &self.application.lifecycle_sink() {
-            sink.emit_fact(
-                &terminated_fact.id,
-                id,
-                owner.as_deref(),
-                lifecycle_event::SESSION_TERMINATED,
-            )
-            .await;
+        if newly_terminated {
+            self.application
+                .emit_lifecycle_fact(
+                    &terminated_fact.id,
+                    id,
+                    owner.as_deref(),
+                    lifecycle_event::SESSION_TERMINATED,
+                )
+                .await;
         }
         Ok(session)
     }

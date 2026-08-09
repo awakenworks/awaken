@@ -23,8 +23,8 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use awaken_api_contract::CursorPage;
 use awaken_session_contract::{
-    CursorParams, EventForwardingSink, Pending, RunApplication, RunApplicationError, RunResume,
-    StepOutcome, paginate_history,
+    CursorParams, EventForwardingSink, Pending, RunApplication, RunApplicationError, RunErrorKind,
+    RunResume, StepOutcome, paginate_history,
 };
 use awaken_tenancy::{ResolvedAgentId, ResolvedResourceId};
 
@@ -82,7 +82,10 @@ async fn thread_messages(
     let thread_id = resolved
         .map(|Extension(thread)| thread.0)
         .unwrap_or(thread_id);
-    let history = rt.history(&thread_id).await;
+    let history = match rt.history(&thread_id).await {
+        Ok(history) => history,
+        Err(error) => return query_error(error),
+    };
     match paginate_history(&history, params.cursor.as_deref(), params.limit()) {
         // The house cursor-page envelope (`awaken-api-contract`): `{ items, cursor }`,
         // where `cursor` is the continuation (`null` on the last page).
@@ -128,12 +131,18 @@ async fn run(rt: Runtime, input: RunAgentInput, agent_id: Option<String>) -> Res
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty());
     let known_ids: HashSet<String> = match &peek {
-        Some(thread) => rt
-            .history(thread)
-            .await
-            .into_iter()
-            .map(|m| m.id.0)
-            .collect(),
+        Some(thread) => match rt.history(thread).await {
+            Ok(history) => history.into_iter().map(|message| message.id.0).collect(),
+            Err(error) => {
+                let error_run = input
+                    .run_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or("unknown-run");
+                return sse_error(thread, error_run, error);
+            }
+        },
         None => HashSet::new(),
     };
     let error_thread = peek.clone().unwrap_or_else(|| "unknown-thread".into());
@@ -237,7 +246,7 @@ async fn resume_step(
 ) -> Result<StepOutcome, RunApplicationError> {
     let pending = rt
         .pending(thread)
-        .await
+        .await?
         .ok_or_else(|| RunApplicationError::bad_request("no awaiting run to resume"))?;
     let result = tool_results
         .iter()
@@ -324,6 +333,15 @@ fn error_events(
 /// A run bracketed by `RUN_STARTED` / `RUN_ERROR` for a non-streaming failure.
 fn sse_error(thread: &str, run_id: &str, err: RunApplicationError) -> Response {
     sse_response(error_events(thread, run_id, err, false))
+}
+
+fn query_error(error: RunApplicationError) -> Response {
+    let status = match error.kind {
+        RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
+        RunErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+        RunErrorKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    (status, error.message).into_response()
 }
 
 #[cfg(test)]

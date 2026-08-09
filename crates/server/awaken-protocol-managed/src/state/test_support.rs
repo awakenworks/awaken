@@ -129,16 +129,16 @@ impl SessionRuntime for RehydrateFake {
         unreachable!()
     }
 
-    async fn committed_messages(&self, thread: &str) -> Vec<Message> {
+    async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, RunError> {
         self.order.lock().unwrap().push("history");
         if let Some(messages) = self.committed.lock().unwrap().clone() {
-            return messages;
+            return Ok(messages);
         }
-        vec![Message::text(
+        Ok(vec![Message::text(
             awaken_agent_contract::agent::message::Id(format!("{thread}-m0")),
             awaken_agent_contract::agent::message::Role::User,
             "hello",
-        )]
+        )])
     }
 
     async fn pending_tool(

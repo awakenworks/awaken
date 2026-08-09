@@ -93,8 +93,7 @@ impl ManagedState {
         let owner_scope = self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
         let persisted = self
             .application
-            .session_repository()
-            .get(id)
+            .session(id)
             .await
             .map_err(StateError::from)?;
         let current = persisted.resources.desired().clone();
@@ -196,8 +195,7 @@ impl ManagedState {
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
         let persisted = self
             .application
-            .session_repository()
-            .get(id)
+            .session(id)
             .await
             .map_err(StateError::from)?;
         let input = persisted

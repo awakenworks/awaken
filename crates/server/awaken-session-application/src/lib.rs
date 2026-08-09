@@ -29,17 +29,26 @@ mod activity;
 mod live_inbox;
 pub use activity::SessionActivityError;
 mod contribution;
+mod creation;
+pub use creation::{CreateSessionCommand, SessionCreationError};
 mod credentials;
 mod projection;
 pub use credentials::SessionPreparationError;
 mod mcp;
 mod realization;
 mod resource_reconciliation;
+mod run_admission;
+mod runtime_commands;
 pub use mcp::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
 pub use realization::{
     SessionRealizationError, SessionReconciliation, SessionReconciliationFailure,
 };
 pub use resource_reconciliation::SessionResourcePurgeGuard;
+pub use run_admission::{
+    AdmittedRunApplication, RecoveredSessionProjection, SessionProjectionRecoveryError,
+    SessionRunAdmission,
+};
+pub use runtime_commands::SessionRepositoryResourceInput;
 mod update;
 pub use update::{
     SessionUpdateChanges, SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,

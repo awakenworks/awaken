@@ -83,12 +83,12 @@ impl RunApplication for StreamingMock {
         unreachable!()
     }
 
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        None
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
 
     fn model(&self) -> String {
@@ -215,12 +215,12 @@ impl RunApplication for PrefixMock {
         unreachable!()
     }
 
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        None
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(None)
     }
 
-    async fn history(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
 
     fn model(&self) -> String {
@@ -380,11 +380,11 @@ impl RunApplication for HangupProbe {
     ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!()
     }
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        None
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(None)
     }
-    async fn history(&self, _thread: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
     fn model(&self) -> String {
         "mock".into()

@@ -16,7 +16,19 @@ RETIRED_EXECUTION_PATHS = {
     "with_remote_hand": "a Host-global Hand would bypass the Session Environment",
     "plan_shape": "environment realization has one Session/backend decision path",
     "ExecutionShape": "environment realization has one Session/backend decision path",
+    "SessionDefaultsPreparer": "Session admission is owned by awaken-session-application",
+    "SessionDefaultsPreparationError": "Session admission is owned by awaken-session-application",
 }
+
+RUNTIME_HOST_ERROR_OWNER = "crates/server/awaken-runtime-host/src/lib.rs"
+SESSION_RUN_ADMISSION_OWNER = (
+    "crates/server/awaken-session-application/src/run_admission.rs"
+)
+FORBIDDEN_HOST_ERROR_INFERENCE = (
+    '.contains("401")',
+    '.contains("auth")',
+    '.contains("mcp server")',
+)
 
 # Deployment/test compositions are architecture-bearing too. These process-wide
 # selectors were removed by ADR-0073 because they create a Host-global Hand beside
@@ -191,6 +203,22 @@ def retired_deployment_selector_violations(sources: dict[str, str]) -> list[str]
     return errors
 
 
+def runtime_host_boundary_violations(sources: dict[str, str]) -> list[str]:
+    errors: list[str] = []
+    host_error_projection = _production(sources.get(RUNTIME_HOST_ERROR_OWNER, ""))
+    for token in FORBIDDEN_HOST_ERROR_INFERENCE:
+        if token in host_error_projection:
+            errors.append(
+                f"{RUNTIME_HOST_ERROR_OWNER}: Host fault classification must use stable origin codes; forbidden {token!r}"
+            )
+    admission = sources.get(SESSION_RUN_ADMISSION_OWNER, "")
+    if "pub struct AdmittedRunApplication" not in admission:
+        errors.append(
+            f"{SESSION_RUN_ADMISSION_OWNER}: missing Session-owned public Run admission decorator"
+        )
+    return errors
+
+
 def check_all(repo_root: Path) -> list[str]:
     errors: list[str] = []
     rust_sources: dict[str, str] = {}
@@ -203,6 +231,7 @@ def check_all(repo_root: Path) -> list[str]:
                     f"{path.relative_to(repo_root)}: retired execution path {symbol!r}; {owner}"
                 )
     errors.extend(duplicate_tool_registry_violations(rust_sources))
+    errors.extend(runtime_host_boundary_violations(rust_sources))
 
     fixture_sources: dict[str, str] = {}
     for relative_root in EXECUTABLE_FIXTURE_ROOTS:
@@ -284,3 +313,17 @@ def selftest() -> None:
     assert retired_deployment_selector_violations(
         {"deploy/stale.yaml": "AWAKEN_REMOTE_HAND=hand:9000"}
     ), "D2"
+
+    # Runtime boundary decision table: B1 Session application owns the one
+    # admission decorator and Host maps typed codes -> accept; B2 decorator
+    # missing -> reject; B3 Host infers identity from message text -> reject.
+    boundary = {
+        RUNTIME_HOST_ERROR_OWNER: "match error.code { _ => () }",
+        SESSION_RUN_ADMISSION_OWNER: "pub struct AdmittedRunApplication;",
+    }
+    assert runtime_host_boundary_violations(boundary) == [], "B1"
+    assert runtime_host_boundary_violations(
+        {RUNTIME_HOST_ERROR_OWNER: boundary[RUNTIME_HOST_ERROR_OWNER]}
+    ), "B2"
+    boundary[RUNTIME_HOST_ERROR_OWNER] = 'message.contains("401")'
+    assert runtime_host_boundary_violations(boundary), "B3"

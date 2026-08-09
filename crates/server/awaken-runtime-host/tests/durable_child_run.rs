@@ -167,6 +167,7 @@ async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
     assert!(
         host.committed_messages("parent-thread")
             .await
+            .expect("committed history remains readable")
             .iter()
             .any(|message| message
                 .text_content()

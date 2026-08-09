@@ -21,8 +21,14 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         prepare_session: bool,
     ) -> Result<(), awaken_session_contract::RunError> {
         let resolved_publication;
+        let retained_publication = self
+            .host
+            .session_slots
+            .read(session_id, |slot| slot.published_snapshot.clone())
+            .flatten();
         let published_snapshot = match self.published_snapshot {
             Some(snapshot) => Some(snapshot),
+            None if retained_publication.is_some() => retained_publication.as_ref(),
             None => {
                 resolved_publication = self
                     .host
@@ -38,6 +44,26 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
                 resolved_publication.as_ref()
             }
         };
+        if let Some(snapshot) = published_snapshot {
+            let conflict = self.host.session_slots.update(session_id, |slot| {
+                if slot
+                    .published_snapshot
+                    .as_ref()
+                    .is_some_and(|retained| retained != snapshot)
+                {
+                    true
+                } else {
+                    slot.published_snapshot = Some(snapshot.clone());
+                    false
+                }
+            });
+            if conflict {
+                return Err(awaken_session_contract::RunError::classified(
+                    "session_runtime_publication_conflict",
+                    "Session realization cannot replace its immutable Agent publication",
+                ));
+            }
+        }
         // A claim authorizes live Resource revalidation. A preparation Stage
         // authorizes local realization. Lease-only MCP renewal has neither and
         // must reuse the already-resident Resource/Skill projection instead of
@@ -616,6 +642,55 @@ mod tests {
             .await
             .expect_err("M3 preparation needs a material source");
         assert!(preparing.to_string().contains("Skill"), "M3: {preparing}");
+    }
+
+    #[tokio::test]
+    async fn lease_only_renewal_reuses_a_dynamic_claimed_publication() {
+        use awaken_session_contract::SessionProjectionSynchronizer as _;
+
+        let thread = "dynamic-publication-renewal";
+        let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+        let _managed = crate::ManagedHost::new(host.clone());
+        let mut projection = frozen_projection();
+        projection.baseline.runtime = Some("acp:claude".into());
+        let mut snapshot = test_activation(thread, "dynamic-publication").snapshot;
+        snapshot.resolved_spec.model_binding.backend_ref = "acp:claude".into();
+        let lease = awaken_session_contract::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a/boot-1".into(),
+            epoch: 1,
+            expires_at_unix_ms: u64::MAX,
+        };
+        WorkerProjectionSynchronizer {
+            host: host.as_ref(),
+            claim: None,
+            published_snapshot: Some(&snapshot),
+            rebuild_unavailable_environment: false,
+            requires_runtime_before_effects: false,
+        }
+        .synchronize_session_projection(thread, &projection, &lease, true)
+        .await
+        .expect("initial claimed publication is retained");
+
+        WorkerProjectionSynchronizer {
+            host: host.as_ref(),
+            claim: None,
+            published_snapshot: None,
+            rebuild_unavailable_environment: false,
+            requires_runtime_before_effects: false,
+        }
+        .synchronize_session_projection(thread, &projection, &lease, false)
+        .await
+        .expect("lease renewal reuses the retained immutable publication");
+        assert_eq!(
+            host.session_slots
+                .read(thread, |slot| slot
+                    .published_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.id.clone()))
+                .flatten(),
+            Some(snapshot.id)
+        );
     }
 
     /// Concurrent-renewal cause/effect graph: C1 an initial phase driver owns

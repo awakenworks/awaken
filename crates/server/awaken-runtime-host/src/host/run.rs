@@ -65,29 +65,22 @@ impl SharedHost {
     /// True when the durable store already holds `thread` — WITHOUT building a
     /// session context (the layout probe lives with the commit boundary in
     /// [`crate::store`]).
-    pub fn has_durable_thread(&self, thread: &str) -> bool {
-        self.authority
-            .as_ref()
-            .is_some_and(|authority| authority.durable_thread_exists(thread))
+    pub async fn has_durable_thread(&self, thread: &str) -> Result<bool, HostError> {
+        match self.authority.as_ref() {
+            Some(authority) => authority
+                .durable_thread_exists(thread)
+                .await
+                .map_err(HostError::from),
+            None => Ok(false),
+        }
     }
 
-    pub async fn committed_messages(&self, thread: &str) -> Vec<Message> {
-        match self.commit_for_read(thread).await {
-            Ok(commit) => match commit
-                .authoritative_committed_messages(&ThreadId(thread.to_string()))
-                .await
-            {
-                Ok(messages) => messages,
-                Err(error) => {
-                    tracing::warn!(thread, %error, "failed to read authoritative thread history");
-                    Vec::new()
-                }
-            },
-            Err(error) => {
-                tracing::warn!(thread, error = %error, "failed to open committed thread history");
-                Vec::new()
-            }
-        }
+    pub async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, HostError> {
+        let commit = self.commit_for_read(thread).await?;
+        commit
+            .authoritative_committed_messages(&ThreadId(thread.to_string()))
+            .await
+            .map_err(HostError::internal)
     }
 
     /// Rebuild the neutral child-Run projection from the one durable owner:

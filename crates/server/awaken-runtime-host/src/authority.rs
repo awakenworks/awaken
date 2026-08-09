@@ -163,15 +163,41 @@ where
 /// The complete durable capability injected into one Coordinator Runtime Host.
 #[async_trait::async_trait]
 pub trait RuntimeAuthority: Send + Sync {
-    async fn open_commit(&self, thread: &str) -> Result<Arc<dyn LocalCommit>, String>;
+    async fn open_commit(
+        &self,
+        thread: &str,
+    ) -> Result<Arc<dyn LocalCommit>, RuntimeAuthorityError>;
 
-    fn durable_thread_exists(&self, thread: &str) -> bool;
+    async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RuntimeAuthorityError>;
 
     fn dispatch_store(&self) -> Arc<awaken_run_ingress::AnyDispatchStore>;
 
     fn dispatch_wake(&self) -> Option<Arc<dyn awaken_run_ingress::WakeSignal>>;
 
-    fn stream_checkpoint(&self, thread: &str) -> Result<Arc<dyn StreamCheckpointStore>, String>;
+    fn stream_checkpoint(
+        &self,
+        thread: &str,
+    ) -> Result<Arc<dyn StreamCheckpointStore>, RuntimeAuthorityError>;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RuntimeAuthorityError {
+    #[error("runtime authority unavailable: {0}")]
+    Unavailable(String),
+    #[error("runtime authority is corrupt: {0}")]
+    Corrupt(String),
+    #[error("runtime authority is misconfigured: {0}")]
+    Misconfigured(String),
+}
+
+impl RuntimeAuthorityError {
+    pub fn unavailable(error: impl Into<String>) -> Self {
+        Self::Unavailable(error.into())
+    }
+
+    pub fn misconfigured(error: impl Into<String>) -> Self {
+        Self::Misconfigured(error.into())
+    }
 }
 
 /// Process-local authority used only by unit tests and scenario fixtures.
@@ -212,11 +238,13 @@ impl EphemeralRuntimeAuthority {
 #[cfg(any(test, feature = "test-support"))]
 #[async_trait::async_trait]
 impl RuntimeAuthority for EphemeralRuntimeAuthority {
-    async fn open_commit(&self, thread: &str) -> Result<Arc<dyn LocalCommit>, String> {
-        let mut commits = self
-            .commits
-            .lock()
-            .map_err(|_| "ephemeral commit authority lock poisoned".to_owned())?;
+    async fn open_commit(
+        &self,
+        thread: &str,
+    ) -> Result<Arc<dyn LocalCommit>, RuntimeAuthorityError> {
+        let mut commits = self.commits.lock().map_err(|_| {
+            RuntimeAuthorityError::Corrupt("ephemeral commit authority lock poisoned".to_owned())
+        })?;
         Ok(commits
             .entry(thread.to_owned())
             .or_insert_with(|| {
@@ -227,10 +255,15 @@ impl RuntimeAuthority for EphemeralRuntimeAuthority {
             .clone())
     }
 
-    fn durable_thread_exists(&self, thread: &str) -> bool {
+    async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RuntimeAuthorityError> {
         self.commits
             .lock()
-            .is_ok_and(|commits| commits.contains_key(thread))
+            .map(|commits| commits.contains_key(thread))
+            .map_err(|_| {
+                RuntimeAuthorityError::Corrupt(
+                    "ephemeral commit authority lock poisoned".to_owned(),
+                )
+            })
     }
 
     fn dispatch_store(&self) -> Arc<awaken_run_ingress::AnyDispatchStore> {
@@ -241,11 +274,15 @@ impl RuntimeAuthority for EphemeralRuntimeAuthority {
         None
     }
 
-    fn stream_checkpoint(&self, thread: &str) -> Result<Arc<dyn StreamCheckpointStore>, String> {
-        let mut checkpoints = self
-            .checkpoints
-            .lock()
-            .map_err(|_| "ephemeral checkpoint authority lock poisoned".to_owned())?;
+    fn stream_checkpoint(
+        &self,
+        thread: &str,
+    ) -> Result<Arc<dyn StreamCheckpointStore>, RuntimeAuthorityError> {
+        let mut checkpoints = self.checkpoints.lock().map_err(|_| {
+            RuntimeAuthorityError::Corrupt(
+                "ephemeral checkpoint authority lock poisoned".to_owned(),
+            )
+        })?;
         Ok(checkpoints
             .entry(thread.to_owned())
             .or_insert_with(|| {

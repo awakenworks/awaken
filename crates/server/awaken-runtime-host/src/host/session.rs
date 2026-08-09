@@ -427,7 +427,7 @@ impl SharedHost {
             .open_commit(thread)
             .await
             .map(HostCommit::Local)
-            .map_err(HostError::internal)
+            .map_err(HostError::from)
     }
 
     /// Open only the authoritative commit/read boundary for a query. A resident
@@ -475,7 +475,7 @@ impl SharedHost {
             })?
             .stream_checkpoint(thread)
             .map(Some)
-            .map_err(HostError::internal)
+            .map_err(HostError::from)
     }
 
     /// Build a thread's run-delivery ingress. Default is direct in-process

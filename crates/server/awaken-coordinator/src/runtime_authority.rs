@@ -31,23 +31,41 @@ use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_run_ingress::{AnyDispatchStore, WakeSignal};
 use awaken_runtime_host::{
     DeploymentConfig, DispatchBackend, LocalCommit, ProjectedLocalCommit, RuntimeAuthority,
-    StoreKind, Wake,
+    RuntimeAuthorityError, StoreKind, Wake,
 };
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_postgres::PostgresCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 #[derive(Clone, Copy)]
-pub enum SchemaAccess {
+pub(super) enum SchemaAccess {
     Migrate,
     Verify,
 }
 
 pub struct DurableRuntimeAuthority {
-    deployment: DeploymentConfig,
+    commit: CommitAuthorityConfig,
     dispatch: Arc<AnyDispatchStore>,
     wake: Option<Arc<dyn WakeSignal>>,
     postgres_commit: Option<Arc<PostgresCommitCoordinator>>,
+}
+
+/// The minimal immutable configuration retained by the durable commit owner.
+/// Worker sandbox, ACP, upstream, capture, and execution-pool settings never
+/// enter this authority object.
+#[derive(Clone)]
+struct CommitAuthorityConfig {
+    store: StoreKind,
+    storage_dir: Option<PathBuf>,
+}
+
+impl From<&DeploymentConfig> for CommitAuthorityConfig {
+    fn from(deployment: &DeploymentConfig) -> Self {
+        Self {
+            store: deployment.store,
+            storage_dir: deployment.storage_dir.clone(),
+        }
+    }
 }
 
 impl DurableRuntimeAuthority {
@@ -97,7 +115,7 @@ impl DurableRuntimeAuthority {
             None
         };
         Ok(Arc::new(Self {
-            deployment: deployment.clone(),
+            commit: CommitAuthorityConfig::from(deployment),
             dispatch,
             wake,
             postgres_commit,
@@ -234,42 +252,72 @@ async fn open_nats_dispatch(
 
 #[async_trait::async_trait]
 impl RuntimeAuthority for DurableRuntimeAuthority {
-    async fn open_commit(&self, thread: &str) -> Result<Arc<dyn LocalCommit>, String> {
-        match self.deployment.store {
+    async fn open_commit(
+        &self,
+        thread: &str,
+    ) -> Result<Arc<dyn LocalCommit>, RuntimeAuthorityError> {
+        match self.commit.store {
             StoreKind::Postgres => self
                 .postgres_commit
                 .clone()
                 .map(|store| Arc::new(PostgresCommit(store)) as Arc<dyn LocalCommit>)
-                .ok_or_else(|| "Postgres commit authority was not opened at startup".to_owned()),
+                .ok_or_else(|| {
+                    RuntimeAuthorityError::misconfigured(
+                        "Postgres commit authority was not opened at startup",
+                    )
+                }),
             StoreKind::Fs => {
-                let path = self.commit_path(thread)?;
+                let path = self
+                    .commit_path(thread)
+                    .map_err(RuntimeAuthorityError::misconfigured)?;
                 if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                    std::fs::create_dir_all(parent)
+                        .map_err(|error| RuntimeAuthorityError::unavailable(error.to_string()))?;
                 }
                 let store = FsCommitCoordinator::open(&path)
                     .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| RuntimeAuthorityError::unavailable(error.to_string()))?;
                 Ok(Arc::new(ProjectedLocalCommit(store)))
             }
             StoreKind::Sqlite => {
-                let path = self.commit_path(thread)?;
+                let path = self
+                    .commit_path(thread)
+                    .map_err(RuntimeAuthorityError::misconfigured)?;
                 if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                    std::fs::create_dir_all(parent)
+                        .map_err(|error| RuntimeAuthorityError::unavailable(error.to_string()))?;
                 }
                 let store = SqliteCommitCoordinator::open(&path.to_string_lossy())
-                    .map_err(|error| error.to_string())?;
-                Ok(Arc::new(SqliteCommit(store)))
+                    .map_err(|error| RuntimeAuthorityError::unavailable(error.to_string()))?;
+                Ok(Arc::new(ProjectedLocalCommit(store)))
             }
         }
     }
 
-    fn durable_thread_exists(&self, thread: &str) -> bool {
-        match self.deployment.store {
-            StoreKind::Postgres => self.postgres_commit.as_ref().is_some_and(|store| {
-                CheckpointReader::latest_run(store.as_ref(), &ThreadId(thread.to_owned())).is_some()
-            }),
+    async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RuntimeAuthorityError> {
+        match self.commit.store {
+            StoreKind::Postgres => self
+                .postgres_commit
+                .as_ref()
+                .ok_or_else(|| {
+                    RuntimeAuthorityError::misconfigured(
+                        "Postgres commit authority was not opened at startup",
+                    )
+                })?
+                .authoritative_thread_exists(&ThreadId(thread.to_owned()))
+                .await
+                .map_err(|error| RuntimeAuthorityError::unavailable(error.to_string())),
             StoreKind::Fs | StoreKind::Sqlite => {
-                self.commit_path(thread).is_ok_and(|path| path.exists())
+                let path = self
+                    .commit_path(thread)
+                    .map_err(RuntimeAuthorityError::misconfigured)?;
+                match std::fs::metadata(path) {
+                    Ok(_) => Ok(true),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                    Err(error) => Err(RuntimeAuthorityError::unavailable(format!(
+                        "inspect durable thread authority: {error}"
+                    ))),
+                }
             }
         }
     }
@@ -282,38 +330,41 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
         self.wake.clone()
     }
 
-    fn stream_checkpoint(&self, thread: &str) -> Result<Arc<dyn StreamCheckpointStore>, String> {
-        if self.deployment.store == StoreKind::Postgres {
+    fn stream_checkpoint(
+        &self,
+        thread: &str,
+    ) -> Result<Arc<dyn StreamCheckpointStore>, RuntimeAuthorityError> {
+        if self.commit.store == StoreKind::Postgres {
             return self
                 .dispatch
                 .stream_checkpoint_store()
                 .map(|store| store as Arc<dyn StreamCheckpointStore>)
                 .ok_or_else(|| {
-                    "Postgres runtime requires the checkpoint store paired with dispatch".to_owned()
+                    RuntimeAuthorityError::misconfigured(
+                        "Postgres runtime requires the checkpoint store paired with dispatch",
+                    )
                 });
         }
-        let root = self
-            .deployment
-            .storage_dir
-            .as_deref()
-            .ok_or_else(|| "stream checkpoints require runtime.storage_dir".to_owned())?;
+        let root = self.commit.storage_dir.as_deref().ok_or_else(|| {
+            RuntimeAuthorityError::misconfigured("stream checkpoints require runtime.storage_dir")
+        })?;
         let path = root
             .join(thread_path_stem(thread))
             .join("stream-checkpoints");
         FsStreamCheckpointStore::open(&path)
             .map(|store| Arc::new(store) as Arc<dyn StreamCheckpointStore>)
-            .map_err(|error| error.to_string())
+            .map_err(|error| RuntimeAuthorityError::unavailable(error.to_string()))
     }
 }
 
 impl DurableRuntimeAuthority {
     fn commit_path(&self, thread: &str) -> Result<PathBuf, String> {
         let root = self
-            .deployment
+            .commit
             .storage_dir
             .as_deref()
             .ok_or_else(|| "local commit authority requires runtime.storage_dir".to_owned())?;
-        Ok(thread_commit_path(self.deployment.store, root, thread))
+        Ok(thread_commit_path(self.commit.store, root, thread))
     }
 }
 
@@ -334,68 +385,7 @@ fn thread_path_stem(thread: &str) -> String {
     stem
 }
 
-struct SqliteCommit(SqliteCommitCoordinator);
-
 struct PostgresCommit(Arc<PostgresCommitCoordinator>);
-
-#[async_trait::async_trait]
-impl LocalCommit for SqliteCommit {
-    async fn authoritative_run(&self, run_id: &RunId) -> Result<Option<RunRecord>, String> {
-        Ok(RunStore::get(&self.0, run_id))
-    }
-    async fn authoritative_committed_messages(
-        &self,
-        thread_id: &ThreadId,
-    ) -> Result<Vec<Message>, String> {
-        Ok(ThreadReader::committed_messages(&self.0, thread_id))
-    }
-    fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord> {
-        CheckpointReader::latest_run(&self.0, thread)
-    }
-    async fn open_wait_for_thread(
-        &self,
-        thread: &ThreadId,
-    ) -> Result<Option<(RunId, ResumeTicket)>, String> {
-        Ok(SqliteCommitCoordinator::open_wait_for_thread(
-            &self.0, thread,
-        ))
-    }
-    async fn events_after(
-        &self,
-        cursor: RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
-        RunLifecycleFeed::events_after(&self.0, cursor, limit).await
-    }
-    async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
-        Coordinator::commit(&self.0, commit).await
-    }
-    async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
-        OperationCoordinator::commit_operation(&self.0, operation).await
-    }
-    fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
-        ThreadReader::committed_messages(&self.0, thread_id)
-    }
-    fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
-        ThreadReader::resume_ticket(&self.0, run_id)
-    }
-    fn run_state(&self, run_id: &RunId) -> Option<RunState> {
-        ThreadReader::run_state(&self.0, run_id)
-    }
-    fn committed_state(&self, thread_id: &ThreadId) -> Vec<Command> {
-        ThreadReader::committed_state(&self.0, thread_id)
-    }
-    fn get(&self, id: &RunId) -> Option<RunRecord> {
-        RunStore::get(&self.0, id)
-    }
-    async fn recovery_snapshot(
-        &self,
-        thread_id: &ThreadId,
-        claimed_run_id: &RunId,
-    ) -> Result<RunRecoverySnapshot, RecoveryError> {
-        RunRecoverySource::recovery_snapshot(&self.0, thread_id, claimed_run_id).await
-    }
-}
 
 #[async_trait::async_trait]
 impl LocalCommit for PostgresCommit {

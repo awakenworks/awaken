@@ -614,4 +614,5 @@ fn file_resources(id: &str) -> awaken_session_contract::ResolvedSessionResources
 /// | L4 | different | replacement | true | false | E4 epoch advances immediately |
 /// | L5 | any | any | true | true | invalid, no mutation |
 mod authority;
+mod creation;
 mod realization;

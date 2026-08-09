@@ -1080,7 +1080,7 @@ mod tests {
                     .await
                     .expect("W8 resumes the frozen projection");
                 assert_eq!(calls.load(Ordering::SeqCst), 1, "W8");
-                assert_eq!(refreshes.load(Ordering::SeqCst), 1, "W8");
+                assert_eq!(refreshes.load(Ordering::SeqCst), 3, "W8");
                 assert_eq!(contribution_calls.load(Ordering::SeqCst), 1, "W8");
             }
 
@@ -1142,7 +1142,7 @@ mod tests {
             );
             assert_eq!(
                 refreshes.load(Ordering::SeqCst),
-                usize::from(rule == "W1"),
+                usize::from(install_contributor && !fail_mcp_stage) + 2 * usize::from(rule == "W1"),
                 "{rule}"
             );
             let succeeds = install_contributor && !fail_mcp_stage;

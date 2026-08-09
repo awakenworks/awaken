@@ -12,73 +12,38 @@ impl ManagedState {
         if self.sessions.lock().unwrap().contains_key(id) {
             return Ok(());
         }
-        // Install the persisted, already-resolved resource snapshot BEFORE opening
-        // runtime history. Opening a thread constructs its context; doing that first
-        // would transiently resolve today's Agent/Skill configuration and could both
-        // drift from the Session pin and mutate its sandbox before the pin is known.
-        let persisted = match self.application.session_repository().get(id).await {
-            Ok(session) if session.is_publicly_readable() => Some(session),
-            Ok(_) => return Err(StateError::NotFound),
-            Err(awaken_session_contract::SessionRepositoryError::NotFound) => None,
-            Err(error) => return Err(StateError::from(error)),
-        };
-        let owner_scope = match self.application.session_repository().owner(id).await {
-            Ok(owner) => owner,
-            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
-                DEFAULT_SCOPE.to_string()
-            }
-            Err(error) => return Err(StateError::from(error)),
-        };
-        let mut persisted = match persisted {
-            Some(session) => Some(
-                self.application
-                    .reconcile_persisted_resources(&owner_scope, session)
-                    .await
-                    .map_err(Self::map_preparation_error)?,
-            ),
-            None => None,
-        };
-        // Archived Sessions remain readable; deletion phases are hidden from the
-        // public read model. Initial activation failure was rejected by the
-        // visibility guard above but remains durable and deletable through the
-        // terminal-command reconstruction path.
-        if persisted.as_ref().is_some_and(PersistedSession::is_hidden) {
-            return Err(StateError::NotFound);
-        }
-        if let Some(session) = persisted.clone() {
-            session.frozen_baseline().ok_or_else(|| {
-                StateError::Run(RunError::internal(
-                    "cannot realize a Session whose baseline is still preparing",
-                ))
+        // The Session application owns resource reconciliation and realization
+        // ordering. Managed only rebuilds its disposable wire cache afterward.
+        let recovered = self
+            .application
+            .recover_session_projection(id, None)
+            .await
+            .map_err(|error| match error {
+                awaken_session_application::SessionProjectionRecoveryError::NotFound => {
+                    StateError::NotFound
+                }
+                awaken_session_application::SessionProjectionRecoveryError::Rejected(error) => {
+                    StateError::Run(error)
+                }
+                awaken_session_application::SessionProjectionRecoveryError::Unavailable(
+                    message,
+                ) => StateError::Run(RunError::unavailable(message)),
             })?;
-            // Reconciliation already crosses the canonical projection synchronizer,
-            // which prepares the frozen facts and restores the durable Environment
-            // before staging MCP. Calling either operation here as well would stage
-            // resources or adopt the sandbox twice after cache loss. A settled
-            // Session has no reconciliation phase, so it performs that same order
-            // directly through the Runtime port.
-            let worker_owned_realization = self.application.requires_external_realization(&session);
-            let recovered = if !worker_owned_realization {
-                // Cold local recovery always crosses ownership assignment before
-                // adopting or rebuilding physical state. A new process must not
-                // bypass a still-live predecessor merely because MCP is settled.
-                self.realize_session_locally(id).await?
-            } else {
-                self.application
-                    .install_dispatch_projection(&owner_scope, &session)
-                    .await
-                    .map_err(Self::map_realization_application_error)?;
-                session
-            };
-            persisted = Some(recovered.clone());
-        }
+        let owner_scope = recovered
+            .as_ref()
+            .map(|recovered| recovered.owner_scope.clone())
+            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+        let persisted = recovered.map(|recovered| recovered.session);
         let pending = self
             .application
-            .runtime()
             .pending_tool(id)
             .await
             .map_err(StateError::Run)?;
-        let messages = self.application.runtime().committed_messages(id).await;
+        let messages = self
+            .application
+            .committed_messages(id)
+            .await
+            .map_err(StateError::Run)?;
         if messages.is_empty() && persisted.is_none() {
             return Err(StateError::NotFound);
         }
@@ -106,7 +71,6 @@ impl ManagedState {
         let session = self.rehydrated_session(id, persisted)?;
         let delegated_runs = self
             .application
-            .runtime()
             .delegated_runs(id)
             .await
             .map_err(StateError::Run)?;
@@ -297,8 +261,7 @@ mod tests {
             assert_eq!(
                 restarted
                     .application
-                    .session_repository()
-                    .get(id)
+                    .session(id)
                     .await
                     .unwrap()
                     .mcp
@@ -309,8 +272,7 @@ mod tests {
             assert_eq!(
                 restarted
                     .application
-                    .session_repository()
-                    .get(id)
+                    .session(id)
                     .await
                     .unwrap()
                     .resources

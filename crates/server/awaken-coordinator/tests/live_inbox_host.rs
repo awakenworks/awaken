@@ -122,7 +122,11 @@ async fn a_message_queued_mid_turn_reaches_the_same_turn() {
     assert!(h.host.live_inbox(thread).await.is_none());
 
     // The injected turn is committed under the engine's run-scoped inbox id.
-    let committed = h.host.committed_messages(thread).await;
+    let committed = h
+        .host
+        .committed_messages(thread)
+        .await
+        .expect("committed history remains readable");
     assert!(
         committed
             .iter()

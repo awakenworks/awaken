@@ -82,6 +82,9 @@ fn map_host_error(error: HostError) -> awaken_run_ingress::ApplicationError {
         crate::HostErrorKind::Internal => {
             awaken_run_ingress::ApplicationError::internal(error.message)
         }
+        crate::HostErrorKind::Unavailable => {
+            awaken_run_ingress::ApplicationError::unavailable(error.message)
+        }
     }
 }
 

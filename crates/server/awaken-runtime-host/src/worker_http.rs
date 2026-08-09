@@ -19,6 +19,7 @@ pub fn respond(result: Result<Value, HostError>) -> (StatusCode, Json<Value>) {
                 HostErrorKind::BadRequest => StatusCode::BAD_REQUEST,
                 HostErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
                 HostErrorKind::Conflict => StatusCode::CONFLICT,
+                HostErrorKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             };
             (status, Json(json!({ "error": error.message })))
         }
@@ -30,10 +31,10 @@ mod tests {
     use super::*;
 
     /// Cause/effect decision table for the sole HostError HTTP mapper.
-    /// Causes are C1 success, C2 bad request, C3 conflict, and C4 internal
-    /// failure. Effects are E1 200 with the original value, E2 400, E3 409,
-    /// and E4 500; every error effect preserves the message in `{error}`.
-    /// Rules H1 C1=>E1, H2 C2=>E2, H3 C3=>E3, H4 C4=>E4 exhaust the enum.
+    /// Causes are C1 success, C2 bad request, C3 conflict, C4 internal failure,
+    /// and C5 temporary unavailability. Effects are E1 200 with the original
+    /// value, E2 400, E3 409, E4 500, and E5 retryable 503; every error effect
+    /// preserves the message in `{error}`. Rules H1..H5 exhaust the enum.
     #[test]
     fn host_error_http_mapping_exhausts_success_and_failure_classes() {
         let (status, Json(body)) = respond(Ok(json!({ "ok": true })));
@@ -47,6 +48,11 @@ mod tests {
                 "H4",
                 HostError::internal("internal"),
                 StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                "H5",
+                HostError::unavailable("unavailable"),
+                StatusCode::SERVICE_UNAVAILABLE,
             ),
         ] {
             let message = error.message.clone();

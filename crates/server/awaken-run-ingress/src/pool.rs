@@ -131,6 +131,62 @@ pub struct DispatchPool<S> {
     admission: Arc<PoolAdmission>,
 }
 
+/// The canonical process-level maintenance owner when a deployment owns the
+/// durable queue but intentionally runs no local claim drainers.
+///
+/// Coordinator-only deployments use this handle instead of reproducing the
+/// pool's reap/relay/terminal-reconciliation scheduler in their Runtime Host.
+pub struct DispatchMaintenance {
+    shutdown: CancellationToken,
+    wake: Arc<dyn WakeSignal>,
+    task: Option<JoinHandle<()>>,
+}
+
+impl DispatchMaintenance {
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn<S: Dispatch + 'static>(
+        store: Arc<S>,
+        clock: Arc<dyn Clock>,
+        wake: Arc<dyn WakeSignal>,
+        config: DispatchServiceConfig,
+        resolver: Arc<dyn WorkerResolver<S>>,
+        completion: Option<Arc<dyn CompletionSink>>,
+    ) -> Self {
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(maintenance_loop(
+            store,
+            clock,
+            wake.clone(),
+            shutdown.clone(),
+            config,
+            resolver,
+            completion,
+        ));
+        Self {
+            shutdown,
+            wake,
+            task: Some(task),
+        }
+    }
+
+    pub async fn shutdown(mut self) {
+        self.shutdown.cancel();
+        let _ = self.wake.publish().await;
+        if let Some(task) = self.task.take() {
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for DispatchMaintenance {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DrainAdmission {
     open: bool,

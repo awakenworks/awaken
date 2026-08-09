@@ -69,12 +69,12 @@ pub trait RunApplication: Send + Sync {
         Ok(())
     }
 
-    async fn pending(&self, thread: &str) -> Option<Pending>;
-    async fn history(&self, thread: &str) -> Vec<Message>;
+    async fn pending(&self, thread: &str) -> Result<Option<Pending>, RunApplicationError>;
+    async fn history(&self, thread: &str) -> Result<Vec<Message>, RunApplicationError>;
     fn model(&self) -> String;
 
-    async fn usage(&self, _thread: &str) -> (u64, u64) {
-        (0, 0)
+    async fn usage(&self, _thread: &str) -> Result<(u64, u64), RunApplicationError> {
+        Ok((0, 0))
     }
 }
 

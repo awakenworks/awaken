@@ -90,6 +90,7 @@ pub enum awaken_run_ingress::ApplicationErrorKind
 pub awaken_run_ingress::ApplicationErrorKind::Conflict
 pub awaken_run_ingress::ApplicationErrorKind::Internal
 pub awaken_run_ingress::ApplicationErrorKind::InvalidRequest
+pub awaken_run_ingress::ApplicationErrorKind::Unavailable
 pub enum awaken_run_ingress::CommitHashError
 pub awaken_run_ingress::CommitHashError::Serialize(alloc::string::String)
 pub enum awaken_run_ingress::Error
@@ -180,6 +181,7 @@ pub fn awaken_run_ingress::ApplicationError::bad_request(impl core::convert::Int
 pub fn awaken_run_ingress::ApplicationError::conflict(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_run_ingress::ApplicationError::internal(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_run_ingress::ApplicationError::invalid(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_run_ingress::ApplicationError::unavailable(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_run_ingress::ClaimedCommitCoordinator
 impl awaken_run_ingress::ClaimedCommitCoordinator
 pub fn awaken_run_ingress::ClaimedCommitCoordinator::new(alloc::sync::Arc<dyn awaken_run_ingress_contract::claimed_commit::ClaimedRunCommit>, awaken_run_ingress_contract::dispatch::RunClaim) -> Self
@@ -191,6 +193,12 @@ impl awaken_run_ingress::ClaimedCommitService
 pub async fn awaken_run_ingress::ClaimedCommitService::apply_claimed(&self, awaken_run_ingress_contract::worker_transport::ClaimedCommitRequest) -> core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_run_ingress::ApplicationError>
 pub fn awaken_run_ingress::ClaimedCommitService::new(alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::OperationCoordinator>) -> Self
 pub fn awaken_run_ingress::ClaimedCommitService::with_applier(alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_run_ingress::ClaimedCommitApplier>) -> Self
+pub struct awaken_run_ingress::DispatchMaintenance
+impl awaken_run_ingress::DispatchMaintenance
+pub async fn awaken_run_ingress::DispatchMaintenance::shutdown(self)
+pub fn awaken_run_ingress::DispatchMaintenance::spawn<S: awaken_run_ingress_contract::dispatch::Dispatch + 'static>(alloc::sync::Arc<S>, alloc::sync::Arc<dyn awaken_run_ingress::Clock>, alloc::sync::Arc<dyn awaken_run_ingress::WakeSignal>, awaken_run_ingress::DispatchServiceConfig, alloc::sync::Arc<dyn awaken_run_ingress::WorkerResolver<S>>, core::option::Option<alloc::sync::Arc<dyn awaken_run_ingress::CompletionSink>>) -> Self
+impl core::ops::drop::Drop for awaken_run_ingress::DispatchMaintenance
+pub fn awaken_run_ingress::DispatchMaintenance::drop(&mut self)
 pub struct awaken_run_ingress::DispatchPool<S>
 impl<S: awaken_run_ingress_contract::dispatch::Dispatch + 'static> awaken_run_ingress::DispatchPool<S>
 pub async fn awaken_run_ingress::DispatchPool<S>::begin_drain(&self)

@@ -73,7 +73,11 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
         assert_eq!(pending.name, "submit_answer");
         assert!(pending.client_executed);
         assert!(
-            !host.committed_messages(thread).await.is_empty(),
+            !host
+                .committed_messages(thread)
+                .await
+                .expect("committed history remains readable")
+                .is_empty(),
             "the turn is committed to durable truth before the restart"
         );
         pending.tool_use_id
@@ -86,7 +90,11 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
         "the rebuilt host recovers the awaiting run from the durable store"
     );
     assert!(
-        !host.committed_messages(thread).await.is_empty(),
+        !host
+            .committed_messages(thread)
+            .await
+            .expect("committed history remains readable")
+            .is_empty(),
         "the committed history is readable after the restart"
     );
 
@@ -102,7 +110,10 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
     .await
     .unwrap();
 
-    let history = host.committed_messages(thread).await;
+    let history = host
+        .committed_messages(thread)
+        .await
+        .expect("committed history remains readable");
     let reply = history
         .iter()
         .rev()

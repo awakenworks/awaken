@@ -1478,7 +1478,6 @@ pub fn awaken_protocol_managed::ManagedState::get_session(&self, &str) -> core::
 pub fn awaken_protocol_managed::ManagedState::list_sessions(&self) -> alloc::vec::Vec<awaken_protocol_managed::types::Session>
 pub fn awaken_protocol_managed::ManagedState::list_sessions_scoped(&self, &str) -> alloc::vec::Vec<awaken_protocol_managed::types::Session>
 pub fn awaken_protocol_managed::ManagedState::owner_scope(&self, &str) -> core::option::Option<alloc::string::String>
-pub async fn awaken_protocol_managed::ManagedState::prepare_protocol_session(&self, &str, &str, &str) -> core::result::Result<(), awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::resolve_owner(&self, &str) -> core::result::Result<core::option::Option<alloc::string::String>, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::session_revision(&self, &str) -> core::result::Result<awaken_session_contract::session_repo::SessionRevision, awaken_protocol_managed::StateError>
 pub fn awaken_protocol_managed::ManagedState::validate_dream_agent(&self, &str, &str) -> core::result::Result<(), awaken_protocol_managed::StateError>

@@ -160,52 +160,42 @@ impl SessionApplication {
     }
 
     #[must_use]
-    pub fn runtime(&self) -> &dyn SessionRuntime {
+    pub(crate) fn runtime(&self) -> &dyn SessionRuntime {
         self.runtime.as_ref()
     }
 
     #[must_use]
-    pub fn mcp_realizer(&self) -> &dyn McpAttachmentRealizer {
+    pub(crate) fn mcp_realizer(&self) -> &dyn McpAttachmentRealizer {
         self.mcp_realizer.as_ref()
     }
 
     #[must_use]
-    pub fn credential_source(&self) -> Option<&dyn SessionCredentialSource> {
+    pub(crate) fn credential_source(&self) -> Option<&dyn SessionCredentialSource> {
         self.credential_source.as_deref()
     }
 
     #[must_use]
-    pub fn repository_credential_ingress(&self) -> Option<&dyn RepositoryCredentialIngress> {
+    pub(crate) fn repository_credential_ingress(&self) -> Option<&dyn RepositoryCredentialIngress> {
         self.repository_credential_ingress.as_deref()
     }
 
     #[must_use]
-    pub fn config_source(
+    pub(crate) fn resource_catalog(
         &self,
-    ) -> Option<&dyn awaken_executable_agent_contract::ExecutableAgentProfileSource> {
-        self.config_source.as_deref()
-    }
-
-    #[must_use]
-    pub fn resource_catalog(&self) -> Option<&dyn awaken_resource_contract::ResourceCatalog> {
+    ) -> Option<&dyn awaken_resource_contract::ResourceCatalog> {
         self.resource_catalog.as_deref()
     }
 
     #[must_use]
-    pub fn resource_purge_scheduler(
+    pub(crate) fn resource_purge_scheduler(
         &self,
     ) -> Option<&dyn awaken_resource_contract::ResourcePurgeScheduler> {
         self.resource_purge_scheduler.as_deref()
     }
 
     #[must_use]
-    pub fn session_repository(&self) -> &dyn ManagedSessionRepository {
+    pub(crate) fn session_repository(&self) -> &dyn ManagedSessionRepository {
         self.sessions_repo.as_ref()
-    }
-
-    #[must_use]
-    pub fn lifecycle_sink(&self) -> Option<&dyn SessionLifecycleFactSink> {
-        self.lifecycle_sink.as_deref()
     }
 
     #[must_use]

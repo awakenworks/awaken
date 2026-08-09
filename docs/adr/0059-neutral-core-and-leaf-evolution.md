@@ -151,11 +151,16 @@ Verified state after the 2026-08-04 cut:
 
 - **Session application** — `awaken-session-application` owns the Session repository,
   runtime/environment/credential/resource ports, environment-binding CAS, incarnation,
-  lifecycle-supervisor fence, exact Environment selection/runtime validation, and the sole
-  durable Session-to-WorkQueue projection command used by both create and recovery.
+  lifecycle-supervisor fence, exact Environment selection/runtime validation, the sole
+  post-intent creation protocol (insert → finalize → realize → activate → dispatch), and the
+  sole Session recovery/WorkQueue projection command.
   Its collaborators are private and reached through explicit application operations/ports;
   `awaken-protocol-managed::ManagedState` has no `Deref` compatibility path and owns only
-  wire projections, event ids, and SSE channels.
+  wire validation/lowering, projections, event ids, and SSE channels. AI SDK, AG-UI, and A2A
+  share one `AdmittedRunApplication`: it invokes `SessionApplication` admission before the
+  neutral `RunApplication`, while resume/control/read operations address committed Thread
+  truth directly. Coordinator only assembles these ports; Runtime Host executes the admitted
+  Run and never creates or recovers a Session.
 - **Coordinator runtime interface** — `awaken-run-ingress-http` owns durable-operation
   HTTP routing. Neutral durable-control methods remain on `SharedHost` as its application API.
 - **Worker runtime interface** — `awaken-worker-runtime` owns registration, heartbeat,

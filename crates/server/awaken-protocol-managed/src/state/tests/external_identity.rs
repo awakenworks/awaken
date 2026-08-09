@@ -68,12 +68,7 @@ async fn externally_identified_application_session_follows_the_causal_decision_t
         "E3"
     );
     assert!(
-        state
-            .application
-            .session_repository()
-            .get("flow/run-2")
-            .await
-            .is_err(),
+        state.application.session("flow/run-2").await.is_err(),
         "E3 no row"
     );
 }

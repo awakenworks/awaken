@@ -94,6 +94,11 @@ pub(crate) struct SessionRuntimeSlot {
     /// resolve the publication through this projection instead of defaulting to
     /// the built-in assistant.
     pub agent_id: Option<String>,
+    /// Exact immutable Agent publication supplied by the claimed activation.
+    /// Dynamic application publications may not be present in the host catalog,
+    /// so lease-only realization must retain this authority instead of trying
+    /// to reconstruct it from the backend projection.
+    pub published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
     pub model_ref: Option<String>,
     /// Process-local copy of the backend frozen in the Session baseline. It is
     /// validated against the immutable publication before runtime construction.

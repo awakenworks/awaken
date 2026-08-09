@@ -34,7 +34,62 @@ impl From<awaken_session_contract::SessionRepositoryError> for StateError {
     fn from(error: awaken_session_contract::SessionRepositoryError) -> Self {
         match error {
             awaken_session_contract::SessionRepositoryError::NotFound => Self::NotFound,
+            awaken_session_contract::SessionRepositoryError::Unavailable(message) => {
+                Self::Run(RunError::unavailable(message))
+            }
+            awaken_session_contract::SessionRepositoryError::Conflict(_) => Self::Conflict,
             error => Self::Run(RunError::internal(error.to_string())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_session_contract::{
+        RunErrorKind, SessionRepositoryConflict, SessionRepositoryError,
+    };
+
+    #[test]
+    fn repository_causes_survive_the_managed_boundary() {
+        // Cause/effect table: R1 missing => NotFound; R2 outage => retryable
+        // Unavailable; R3 CAS conflict => Conflict; R4 corrupt/invalid durable
+        // state => Internal. No error is converted to an empty successful read.
+        assert!(
+            matches!(
+                StateError::from(SessionRepositoryError::NotFound),
+                StateError::NotFound
+            ),
+            "R1"
+        );
+        assert!(
+            matches!(
+                StateError::from(SessionRepositoryError::Unavailable("offline".into())),
+                StateError::Run(RunError {
+                    kind: RunErrorKind::Unavailable,
+                    ..
+                })
+            ),
+            "R2"
+        );
+        assert!(
+            matches!(
+                StateError::from(SessionRepositoryError::Conflict(
+                    SessionRepositoryConflict::AlreadyExists
+                )),
+                StateError::Conflict
+            ),
+            "R3"
+        );
+        assert!(
+            matches!(
+                StateError::from(SessionRepositoryError::Corrupt("bad row".into())),
+                StateError::Run(RunError {
+                    kind: RunErrorKind::Internal,
+                    ..
+                })
+            ),
+            "R4"
+        );
     }
 }

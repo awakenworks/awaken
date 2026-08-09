@@ -314,10 +314,9 @@ pub struct SharedHost {
     /// its thread. Held here so background submit / cross-thread relay nudge it and
     /// so it lives for the process's lifetime.
     pub(crate) dispatch_pool: std::sync::OnceLock<Arc<DispatchPool<AnyDispatchStore>>>,
-    /// Marks the coordinator-only committed-terminal reconciliation daemon as
-    /// started. The detached task owns only a Weak host reference, so this flag
-    /// prevents duplicate loops without extending the Host lifetime.
-    pub(crate) terminal_reconciliation_started: std::sync::OnceLock<()>,
+    /// The run-ingress-owned maintenance loop used by a coordinator-only Host.
+    /// Local pools already own the same canonical maintenance mechanism.
+    pub(crate) dispatch_maintenance: std::sync::OnceLock<awaken_run_ingress::DispatchMaintenance>,
     /// Owns the temporary run-id registration for event-driven durable completion
     /// and best-effort foreground stream relay. Injected into the pool as its
     /// `CompletionSink` and into each local Session worker as its `StreamSink`.

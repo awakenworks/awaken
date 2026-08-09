@@ -390,6 +390,21 @@ impl PostgresCommitCoordinator {
             })
             .collect()
     }
+
+    /// Query durable PostgreSQL truth directly instead of consulting the
+    /// process-local projection. Collision checks must see commits from peers.
+    pub async fn authoritative_thread_exists(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<bool, StoreError> {
+        sqlx::query_scalar::<_, bool>(&format!(
+            "SELECT EXISTS(SELECT 1 FROM {NS}_commit WHERE thread_id = $1)"
+        ))
+        .bind(&thread_id.0)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|error| StoreError::Read(error.to_string()))
+    }
 }
 
 #[async_trait]

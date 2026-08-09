@@ -1953,9 +1953,9 @@ async fn minting_namespace_cannot_alias_committed_truth() {
         ) -> Result<StepOutcome, RunError> {
             unreachable!()
         }
-        async fn owns_thread(&self, thread: &str) -> bool {
+        async fn owns_thread(&self, thread: &str) -> Result<bool, RunError> {
             // A previous process persisted threads sesn_0 and sesn_1.
-            thread == "sesn_0" || thread == "sesn_1"
+            Ok(thread == "sesn_0" || thread == "sesn_1")
         }
         async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
             Ok(())

@@ -6,9 +6,6 @@
 //! executor, because repair can settle only a Run already committed as terminal.
 
 use super::*;
-use awaken_run_ingress::Clock as _;
-
-const RECONCILIATION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl SharedHost {
     /// Start the one coordinator-side reconciliation loop when this Host owns
@@ -20,32 +17,32 @@ impl SharedHost {
         if !self.deployment.durable
             || self.runs_local_dispatch_pool()
             || self.upstream.is_some()
-            || self.terminal_reconciliation_started.set(()).is_err()
+            || self.dispatch_maintenance.get().is_some()
         {
             return false;
         }
-        spawn_reconciliation_loop(Arc::downgrade(self), RECONCILIATION_INTERVAL);
-        true
+        let Ok(store) = self.dispatch_store() else {
+            return false;
+        };
+        let resolver: Arc<dyn awaken_run_ingress::WorkerResolver<AnyDispatchStore>> =
+            Arc::new(HostWorkerResolver {
+                host: Arc::downgrade(self),
+            });
+        let wake = self
+            .authority
+            .as_ref()
+            .and_then(|authority| authority.dispatch_wake())
+            .unwrap_or_else(|| Arc::new(awaken_run_ingress::LocalWakeSignal::new()));
+        let maintenance = awaken_run_ingress::DispatchMaintenance::spawn(
+            store,
+            Arc::new(awaken_run_ingress::SystemClock),
+            wake,
+            awaken_run_ingress::DispatchServiceConfig::default(),
+            resolver,
+            Some(self.completion.clone()),
+        );
+        self.dispatch_maintenance.set(maintenance).is_ok()
     }
-}
-
-fn spawn_reconciliation_loop(host: std::sync::Weak<SharedHost>, interval: std::time::Duration) {
-    tokio::spawn(async move {
-        loop {
-            let Some(host) = host.upgrade() else {
-                break;
-            };
-            let resolver = HostWorkerResolver {
-                host: Arc::downgrade(&host),
-            };
-            let now_ms = awaken_run_ingress::SystemClock.now_ms();
-            if let Err(error) = reconcile_committed_terminals(&resolver, now_ms, 256).await {
-                tracing::warn!(%error, "coordinator terminal dispatch reconciliation failed; retrying");
-            }
-            drop(host);
-            tokio::time::sleep(interval).await;
-        }
-    });
 }
 
 impl HostWorkerResolver {

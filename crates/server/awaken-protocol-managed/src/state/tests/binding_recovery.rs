@@ -566,7 +566,8 @@ async fn protocol_defaults_preparer_rehydrates_the_exact_durable_baseline() {
     let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo);
 
     restarted
-        .prepare_protocol_session("workspace-a", "external-thread", "ignored-on-recovery")
+        .session_application()
+        .admit_run_session("workspace-a", "external-thread", "ignored-on-recovery")
         .await
         .expect("prepare existing protocol thread");
 
