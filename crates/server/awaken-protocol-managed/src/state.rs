@@ -16,7 +16,7 @@ use awaken_agent_contract::page::paginate_by_id;
 
 use crate::preview::{PreviewAllocations, PreviewSink};
 use crate::project::{self, project_messages, project_messages_with_mcp_ids, project_step};
-use crate::routes::vaults::{SessionCredentialSource, VaultState};
+use crate::routes::vaults::{RepositoryCredentialIngress, SessionCredentialSource, VaultState};
 use crate::types::{
     ConfirmResult, Event, EventReceipt, InboundEvent, ListEventsResponse, ModelConfig,
     ModelOverride, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
@@ -90,6 +90,8 @@ pub struct ManagedState {
     /// session's `mcp_servers` are bound to vault credentials through it at
     /// creation. `None` means every binding resolves to no credential.
     credential_source: Option<Arc<dyn SessionCredentialSource>>,
+    /// Sole write-only path for Managed Repository authorization material.
+    repository_credential_ingress: Option<Arc<dyn RepositoryCredentialIngress>>,
     /// The environments surface, when the server mounts one: a session's
     /// `environment_id` is resolved to its networking policy (egress on/off) at
     /// creation. `None` → every session gets host network (unrestricted).
@@ -238,6 +240,7 @@ impl ManagedState {
             runtime,
             mcp_realizer,
             credential_source: None,
+            repository_credential_ingress: None,
             environments: Arc::new(
                 crate::routes::environments::EnvironmentExecutionState::default(),
             ),
@@ -308,7 +311,19 @@ impl ManagedState {
     /// routes see different credentials.
     #[must_use]
     pub fn with_vaults(mut self, vaults: Arc<VaultState>) -> Self {
-        self.credential_source = Some(vaults);
+        self.credential_source = Some(vaults.clone());
+        self.repository_credential_ingress = Some(vaults);
+        self
+    }
+
+    /// Wire a split-service implementation of the write-only Repository token
+    /// ingress independently from the secret-free credential selection port.
+    #[must_use]
+    pub fn with_repository_credential_ingress(
+        mut self,
+        ingress: Arc<dyn RepositoryCredentialIngress>,
+    ) -> Self {
+        self.repository_credential_ingress = Some(ingress);
         self
     }
 

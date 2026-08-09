@@ -7,6 +7,7 @@ import { useNavigate, useParams } from "react-router";
 import { api, ws } from "../lib/api/client";
 import type { ListSessionsResponse } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import { WORKSPACE_JOURNEY, navPath } from "../lib/navigation/paths";
 import { StatusPill } from "./sessions";
 import { Button, Card } from "../components/ui";
 import ReadinessPanel from "../components/app/ReadinessPanel";
@@ -26,12 +27,13 @@ export default function WorkspaceOverviewSurface() {
   const recent = active.slice(0, 5);
 
   return (
-    <>
-      <div className="page-intro">
+    <div className="workspace-overview">
+      <div className="page-intro workspace-overview__intro">
         <span>
-          <h1>{app.t("Workspace overview", "工作区概览")}</h1>
+          <small className="product-kicker">{app.t("Agent control plane", "Agent 控制面")}</small>
+          <h1>{app.t("Build an Agent that can prove its work.", "构建一个能证明其工作的 Agent。")}</h1>
           <p className="mut">
-            {app.t("Connect capabilities, build an Agent, then prove it with a real Session.", "连接能力、构建 Agent，并通过真实会话验证结果。")}
+            {app.t("Connect governed capabilities, publish one exact definition, then inspect the committed Session evidence.", "连接受治理的能力，发布一个精确版本，再检查会话提交的证据。")}
           </p>
         </span>
         <span className="row">
@@ -42,6 +44,15 @@ export default function WorkspaceOverviewSurface() {
           </Button>
         </span>
       </div>
+      <nav className="execution-path" aria-label={app.t("Agent proof journey", "Agent 验证路径")}>
+        {WORKSPACE_JOURNEY.map((step) => (
+          <button key={step.number} type="button" onClick={() => nav(navPath(step.destination, wsId))}>
+            <span>{step.number}</span>
+            <strong>{app.t(step.label, step.labelZh)}</strong>
+            <small>{app.t(step.detail, step.detailZh)}</small>
+          </button>
+        ))}
+      </nav>
       <ReadinessPanel />
       {sessions.error instanceof Error && (
         <div className="banner err">
@@ -62,11 +73,15 @@ export default function WorkspaceOverviewSurface() {
         </button>
       </div>
       <Card style={{ padding: 0 }}>
-        <div className="row" style={{ padding: "13px 16px" }}>
-          <h2 style={{ margin: 0, fontSize: 14 }}>{app.t("Recent sessions", "最近会话")}</h2>
+        <div className="row session-ledger__header" style={{ padding: "13px 16px" }}>
+          <span className="ledger-signal" aria-hidden="true" />
+          <h2 style={{ margin: 0, fontSize: 14 }}>{app.t("Recent session evidence", "最近会话证据")}</h2>
           <span className="mut">{app.t("newest first", "最新在前")}</span>
         </div>
         <table className="table">
+          <thead>
+            <tr><th>{app.t("Session", "会话")}</th><th>{app.t("Title", "标题")}</th><th>{app.t("State", "状态")}</th><th><span className="sr-only">{app.t("Open", "打开")}</span></th></tr>
+          </thead>
           <tbody>
             {recent.map((s) => (
               <tr key={s.id} data-click="true" onClick={() => nav(`/w/${wsId}/sessions/${s.id}`)}>
@@ -80,7 +95,7 @@ export default function WorkspaceOverviewSurface() {
             ))}
             {!sessions.error && recent.length === 0 && (
               <tr>
-                <td className="mut">
+                <td className="mut" colSpan={4}>
                   {sessions.isLoading ? "…" : app.t("No sessions yet.", "还没有会话。")}
                 </td>
               </tr>
@@ -88,6 +103,6 @@ export default function WorkspaceOverviewSurface() {
           </tbody>
         </table>
       </Card>
-    </>
+    </div>
   );
 }

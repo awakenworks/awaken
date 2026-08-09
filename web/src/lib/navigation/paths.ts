@@ -56,6 +56,31 @@ export function visibleNavigation(byokEnabled: boolean): NavItem[] {
   );
 }
 
+export interface WorkspaceJourneyStep {
+  readonly number: string;
+  readonly label: string;
+  readonly labelZh: string;
+  readonly detail: string;
+  readonly detailZh: string;
+  readonly destination: NavItem;
+}
+
+function primarySurface(key: string): NavItem {
+  const item = NAV.find((candidate) => candidate.key === key);
+  if (!item) throw new Error(`Unknown primary surface: ${key}`);
+  return item;
+}
+
+/** A presentational journey over NAV references. NAV remains the sole route
+ * authority; the overview only explains the order in which operators prove an
+ * Agent, and never copies a path or creates workflow state. */
+export const WORKSPACE_JOURNEY: readonly WorkspaceJourneyStep[] = [
+  { number: "01", label: "Connect", labelZh: "连接", detail: "Model supply and runtime capabilities", detailZh: "模型供给与运行能力", destination: primarySurface("models") },
+  { number: "02", label: "Build", labelZh: "构建", detail: "One publishable Agent definition", detailZh: "一个可发布的 Agent 定义", destination: primarySurface("agents") },
+  { number: "03", label: "Run", labelZh: "运行", detail: "A Session on a frozen publication", detailZh: "基于冻结发布版本的会话", destination: primarySurface("sessions") },
+  { number: "04", label: "Observe", labelZh: "观察", detail: "Committed events, artifacts, and usage", detailZh: "已提交事件、产物与用量", destination: primarySurface("artifacts") },
+];
+
 export function navPath(item: NavItem, workspaceId: string): string {
   return item.path.replace(":ws", workspaceId || "default");
 }

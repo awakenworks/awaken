@@ -1,6 +1,36 @@
 //! Typed inputs shared by Session and Deployment `resources[]`.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Write-only repository credential admitted by the Anthropic-compatible wire.
+///
+/// It is deliberately neither serializable nor printable. The state adapter
+/// consumes it into the canonical credential Vault before a Session snapshot is
+/// persisted, and the wrapped value is zeroized when this request DTO is dropped.
+#[derive(Clone)]
+pub struct RepositoryAuthorizationToken(awaken_agent_contract::RedactedString);
+
+impl RepositoryAuthorizationToken {
+    #[must_use]
+    pub(crate) fn into_redacted(self) -> awaken_agent_contract::RedactedString {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for RepositoryAuthorizationToken {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer).map(|value| Self(value.into()))
+    }
+}
+
+impl std::fmt::Debug for RepositoryAuthorizationToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RepositoryAuthorizationToken(***)")
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -9,9 +39,9 @@ pub enum ResourceAccess {
     ReadWrite,
 }
 
-/// The official Managed Agents resource union. The raw authorization-token
-/// compatibility field is intentionally absent, and unknown fields fail closed.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// The official Managed Agents resource union. Repository authorization is a
+/// write-only ingress field and unknown fields fail closed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResourceInput {
     File {
@@ -30,10 +60,10 @@ pub enum ResourceInput {
     },
     GithubRepository {
         url: String,
-        /// Awaken security extension: an opaque, pre-existing Vault binding.
-        /// It replaces the official write-only raw `authorization_token` field.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        credential_binding: Option<String>,
+        /// Official write-only clone credential. Serialization always omits it,
+        /// so Session projections and idempotency snapshots cannot echo material.
+        #[serde(default, skip_serializing)]
+        authorization_token: Option<RepositoryAuthorizationToken>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mount_path: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -127,12 +157,12 @@ impl ResourceAddParams {
     }
 }
 
-/// The SDK update body contains only raw credential material, which Awaken never
-/// admits. Every supplied field fails at this typed admission boundary before
-/// state or Runtime effects; `{}` receives a stable unsupported-command error.
+/// Official write-only repository credential rotation body.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ResourceUpdateParams {}
+pub struct ResourceUpdateParams {
+    pub authorization_token: RepositoryAuthorizationToken,
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct DeletedSessionResource {
@@ -147,13 +177,13 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn resource_union_rejects_raw_credentials_and_unknown_shapes() {
+    fn resource_union_accepts_write_only_credentials_and_rejects_unknown_shapes() {
         // JSON resource -> tagged union -> neutral binding -> sandbox realization
         //
         // | known type | required fields | raw/unknown field | admission |
         // |------------|-----------------|-------------------|-----------|
         // | yes        | yes             | no                | accept    |
-        // | yes        | yes             | authorization     | reject    |
+        // | yes        | yes             | authorization     | accept    |
         // | yes        | misspelled      | no                | reject    |
         // | no         | any             | any               | reject    |
         let valid = json!({
@@ -163,12 +193,18 @@ mod tests {
         });
         assert!(serde_json::from_value::<ResourceInput>(valid).is_ok());
 
+        let credential = serde_json::from_value::<ResourceInput>(json!({
+            "type":"github_repository",
+            "url":"https://github.com/acme/repo.git",
+            "authorization_token":"secret"
+        }))
+        .unwrap();
+        let serialized = serde_json::to_string(&credential).unwrap();
+        assert!(!serialized.contains("authorization_token"));
+        assert!(!serialized.contains("secret"));
+
         for invalid in [
-            json!({
-                "type":"github_repository",
-                "url":"https://github.com/acme/repo.git",
-                "authorization_token":"secret"
-            }),
+            json!({"type":"github_repository", "url":"https://github.com/acme/repo.git", "credential_binding":"internal"}),
             json!({"type":"file", "id":"file_1"}),
             json!({"type":"vault", "vault_id":"vlt_1"}),
         ] {

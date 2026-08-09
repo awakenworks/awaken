@@ -814,6 +814,55 @@ impl MemoryRepository for SqliteMemoryRepository {
 mod migration_seam_tests {
     use super::*;
 
+    #[test]
+    fn published_v1_v2_ledger_upgrades_to_v3() {
+        // Cause/effect decision table:
+        // | starting ledger | canonical bundle | effect                         |
+        // | none            | V1..V3           | all schema versions apply      |
+        // | V1,V2           | V1..V3           | V3 alone applies; data remains |
+        // | V1,V2           | rewritten V1     | rejected as unknown V2         |
+        // This test covers the deployed upgrade rule. The fail-closed rule is
+        // owned by the shared migration runner; here we prove MemoryStore keeps
+        // its published bytes and applies only the missing suffix.
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        let full = memory_store_bundle().expect("bundle builds");
+        let published_v1_v2 = awaken_scoped_migration::MigrationBundle::new(
+            crate::schema::BUNDLE_ID,
+            full.migrations()[..2].to_vec(),
+        )
+        .expect("published V1/V2 bundle");
+        let runner =
+            awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS).expect("runner");
+
+        let first = runner
+            .run_bundle(&conn, &published_v1_v2)
+            .expect("apply published V1/V2");
+        assert_eq!(
+            first.iter().map(|m| m.version).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        conn.execute(
+            "INSERT INTO memory_store_memories \
+             (store_id,path,id,ordinal,content,sha,version,created,updated) \
+             VALUES ('s','/kept.md','mem_1',1,X'6B657074','sha',1,1,1)",
+            [],
+        )
+        .expect("seed pre-upgrade memory");
+
+        let delta = runner
+            .run_bundle(&conn, &full)
+            .expect("upgrade through canonical bundle");
+        assert_eq!(delta.iter().map(|m| m.version).collect::<Vec<_>>(), vec![3]);
+        let kept: Vec<u8> = conn
+            .query_row(
+                "SELECT content FROM memory_store_memories WHERE path='/kept.md'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read pre-upgrade memory");
+        assert_eq!(kept, b"kept");
+    }
+
     /// `over` wraps a connection without migrating; the store only works once the
     /// caller opts into the `memory_store` scope via `ensure_schema`.
     #[tokio::test]

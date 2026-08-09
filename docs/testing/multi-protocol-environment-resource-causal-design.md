@@ -427,7 +427,7 @@ and a default local/namespace provider cannot participate in recovery.
 |---|---|---|---|---|
 | G1 | resource + Session/admin | different | exact binding only | shared File/Memory/Skill/lifecycle truth |
 | G2 | catalog/credential/config/admin/Session | replacement | exact references | publication and Session survive restart |
-| G3 | same Postgres resource DB | different | raw Repository token | reject before mutation |
+| G3 | same Postgres resource DB | different | raw Repository token | seal in owning Workspace; reject cross-Workspace use |
 | G4 | same Postgres resource DB | different | no raw token | mount-only update succeeds |
 
 Both production processes receive database topology through one generated typed
