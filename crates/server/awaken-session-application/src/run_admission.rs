@@ -361,11 +361,14 @@ impl SessionRunAdmission for SessionApplication {
 }
 
 /// The sole admission decorator for all public Run protocols.
+type WorkspaceResolver = dyn Fn(&str) -> String + Send + Sync;
+type ProjectedAgentResolver = dyn Fn(&str) -> Option<String> + Send + Sync;
+
 pub struct AdmittedRunApplication {
     runtime: Arc<dyn RunApplication>,
     admission: Arc<dyn SessionRunAdmission>,
-    workspace: Arc<dyn Fn(&str) -> String + Send + Sync>,
-    projected_agent: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    workspace: Arc<WorkspaceResolver>,
+    projected_agent: Arc<ProjectedAgentResolver>,
 }
 
 impl AdmittedRunApplication {
