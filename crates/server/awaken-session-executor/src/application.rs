@@ -390,7 +390,17 @@ impl crate::SharedHost {
                     })
                     .await
                     .map_err(|error| crate::HostError::internal(error.to_string()))?;
-                crate::host::HostWorkerResolver::realize_application_session(
+                let realization = self.session_slots.realization_lock(session_id);
+                let Ok(_realization) = realization.try_lock() else {
+                    // Control has extended only the same owner/incarnation/epoch.
+                    // Preserve that authority locally, but never start a second
+                    // effect driver. The active driver compares exact generation
+                    // fences at Activate/Acknowledge and catches up before it can
+                    // report completion.
+                    self.install_session_realization_lease(session_id, directive.lease.clone());
+                    return Ok::<bool, crate::HostError>(true);
+                };
+                crate::host::HostWorkerResolver::drive_application_session(
                     self,
                     control.as_ref(),
                     session_id,
@@ -400,11 +410,13 @@ impl crate::SharedHost {
                     false,
                 )
                 .await
-                .map_err(|error| crate::HostError::internal(error.to_string()))
+                .map_err(|error| crate::HostError::internal(error.to_string()))?;
+                Ok::<bool, crate::HostError>(true)
             }
             .await;
             match renewal {
-                Ok(()) => renewed += 1,
+                Ok(true) => renewed += 1,
+                Ok(false) => {}
                 Err(error) => {
                     eprintln!(
                         "Session realization renewal lost authority for `{session_id}`; revoking only that Session: {error}"

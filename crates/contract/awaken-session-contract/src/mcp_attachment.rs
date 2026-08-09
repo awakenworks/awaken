@@ -620,8 +620,9 @@ impl SessionMcpAttachmentSet {
     /// it changes neither desired MCP state nor credential selection. Clearing
     /// `publication_acknowledged` makes the sole realization phase protocol
     /// restage and republish the extended exact fence before it reports
-    /// completion. A private relay-specific renewal registry is therefore not
-    /// needed.
+    /// completion. Replaying the same expiry is an idempotent no-op, which lets
+    /// activation converge after a concurrent aggregate lease renewal without
+    /// inventing a second renewal registry.
     pub fn renew_active_realizations(
         &mut self,
         runtime_incarnation: &str,
@@ -640,12 +641,12 @@ impl SessionMcpAttachmentSet {
                 .ok_or(McpAttachmentError::StaleRealizationClaim)?;
             if claim.runtime_incarnation != runtime_incarnation
                 || claim.lease_epoch != lease_epoch
-                || lease_expires_at_unix_ms <= claim.lease_expires_at_unix_ms
+                || lease_expires_at_unix_ms < claim.lease_expires_at_unix_ms
             {
                 return Err(McpAttachmentError::StaleRealizationClaim);
             }
         }
-        let renewed = active.len();
+        let mut renewed = 0;
         for attachment in &mut self.attachments {
             if attachment.state != McpAttachmentState::Active {
                 continue;
@@ -654,6 +655,9 @@ impl SessionMcpAttachmentSet {
                 .realization
                 .as_mut()
                 .expect("all active claims were validated");
+            if claim.lease_expires_at_unix_ms == lease_expires_at_unix_ms {
+                continue;
+            }
             claim.lease_expires_at_unix_ms = lease_expires_at_unix_ms;
             claim.stage_idempotency_key = format!(
                 "renew:{}:{}:{}:{}:{}",
@@ -664,6 +668,7 @@ impl SessionMcpAttachmentSet {
                 lease_expires_at_unix_ms
             );
             attachment.publication_acknowledged = false;
+            renewed += 1;
         }
         if renewed > 0 {
             self.bump_revision()?;
@@ -1229,8 +1234,9 @@ mod tests {
         // | N1 | Active | exact | exact | later | extend + unacknowledged |
         // | N2 | Active | other | exact | later | reject/no mutation |
         // | N3 | Active | exact | other | later | reject/no mutation |
-        // | N4 | Active | exact | exact | same/earlier | reject/no mutation |
-        // | N5 | Requested | exact | exact | later | unchanged |
+        // | N4 | Active | exact | exact | same | idempotent/no mutation |
+        // | N5 | Active | exact | exact | earlier | reject/no mutation |
+        // | N6 | Requested | exact | exact | later | unchanged |
         let active = || {
             let mut set = SessionMcpAttachmentSet::from_initial(
                 vec![draft("a", "https://a.test/mcp", None)],
@@ -1273,7 +1279,7 @@ mod tests {
         for (rule, incarnation, epoch, expiry) in [
             ("N2", "runtime-2", 4, 200),
             ("N3", "runtime-1", 5, 200),
-            ("N4", "runtime-1", 4, 100),
+            ("N5", "runtime-1", 4, 99),
         ] {
             let mut set = active();
             let before = set.clone();
@@ -1284,6 +1290,17 @@ mod tests {
             );
             assert_eq!(set, before, "{rule} no mutation");
         }
+
+        let mut idempotent = active();
+        let before = idempotent.clone();
+        assert_eq!(
+            idempotent
+                .renew_active_realizations("runtime-1", 4, 100)
+                .unwrap(),
+            0,
+            "N4"
+        );
+        assert_eq!(idempotent, before, "N4 no mutation");
 
         let mut requested = SessionMcpAttachmentSet::from_initial(
             vec![draft("a", "https://a.test/mcp", None)],
@@ -1296,9 +1313,9 @@ mod tests {
                 .renew_active_realizations("runtime-1", 4, 200)
                 .unwrap(),
             0,
-            "N5"
+            "N6"
         );
-        assert_eq!(requested, before, "N5");
+        assert_eq!(requested, before, "N6");
     }
 
     #[test]

@@ -45,12 +45,9 @@ fn verify_lease(
     session: &PersistedSession,
     asserted: &SessionRealizationLease,
 ) -> Result<(), SessionRealizationControlFailure> {
-    if session.realization.as_ref() != Some(asserted)
-        || !awaken_session_contract::realization_lease_is_live_at(
-            asserted.expires_at_unix_ms,
-            now_unix_ms(),
-        )
-    {
+    if !session.realization.as_ref().is_some_and(|current| {
+        awaken_session_contract::realization_lease_authorizes(current, asserted, now_unix_ms())
+    }) {
         return Err(SessionRealizationControlFailure::StaleOwnership);
     }
     Ok(())
@@ -58,6 +55,24 @@ fn verify_lease(
 
 fn exact_generation_key(generation: &McpGenerationRef) -> String {
     awaken_session_contract::stable_fingerprint(generation)
+}
+
+fn generation_set_is_renewed_successor(
+    current: &[McpGenerationRef],
+    asserted: &[McpGenerationRef],
+) -> bool {
+    current.len() == asserted.len()
+        && current.iter().all(|expected| {
+            asserted.iter().any(|actual| {
+                awaken_session_contract::realization_generation_authorizes(expected, actual)
+            })
+        })
+        && current.iter().any(|expected| {
+            asserted.iter().any(|actual| {
+                awaken_session_contract::realization_generation_authorizes(expected, actual)
+                    && expected.lease_expires_at_unix_ms > actual.lease_expires_at_unix_ms
+            })
+        })
 }
 
 /// Failure while the Session application drives durable realization effects.
@@ -654,6 +669,33 @@ impl SessionRealizationControl for SessionApplication {
                     "MCP realization receipt set contains a duplicate generation".into(),
                 ));
             }
+        }
+        let expected_generations = expected
+            .iter()
+            .map(|request| request.generation.clone())
+            .collect::<Vec<_>>();
+        let receipt_generations = command
+            .mcp_receipts
+            .iter()
+            .map(|receipt| receipt.generation.clone())
+            .collect::<Vec<_>>();
+        if generation_set_is_renewed_successor(&expected_generations, &receipt_generations)
+            && command.mcp_receipts.iter().all(|receipt| {
+                expected.iter().any(|request| {
+                    awaken_session_contract::realization_generation_authorizes(
+                        &request.generation,
+                        &receipt.generation,
+                    ) && request.realization_id == receipt.realization_id
+                        && request.selected_plaintext_holder == receipt.selected_plaintext_holder
+                })
+            })
+        {
+            // A heartbeat advanced only the exact lease expiry while this Stage
+            // was in flight. The predecessor receipt commits nothing; return the
+            // latest Stage so the one driver catches up under current authority.
+            return Self::next_action(owner_scope, &session, false);
+        }
+        for receipt in &command.mcp_receipts {
             let request = expected
                 .iter()
                 .find(|request| request.generation == receipt.generation)
@@ -705,6 +747,23 @@ impl SessionRealizationControl for SessionApplication {
                     .map_err(unavailable)?;
             }
         }
+        // A heartbeat may have extended the aggregate lease while the Runtime
+        // was staging a previously admitted request. Promote the newly Active
+        // durable claim to that current lease before publication. The returned
+        // Stage directive then updates the same process-local projection by its
+        // renewal binding; it does not reconnect or reopen credentials.
+        let current_lease = session
+            .realization
+            .clone()
+            .ok_or(SessionRealizationControlFailure::NotReady)?;
+        let renewed_after_activation = session
+            .mcp
+            .renew_active_realizations(
+                &current_lease.runtime_incarnation,
+                current_lease.epoch,
+                current_lease.expires_at_unix_ms,
+            )
+            .map_err(unavailable)?;
         session.mcp.begin_obsolete_drains().map_err(unavailable)?;
         // Initial creation remains non-visible until publication acknowledgement.
         // A hot mutation belongs to an already-idle Session, so keep that lifecycle
@@ -725,6 +784,9 @@ impl SessionRealizationControl for SessionApplication {
                 SessionMutationError::Conflict => SessionRealizationControlFailure::Conflict,
                 error => unavailable(error),
             })?;
+        if renewed_after_activation > 0 {
+            return Self::next_action(owner_scope, &session, false);
+        }
         let publish = Self::publication_generations(&session)?;
         let drain = Self::draining_generations(&session)?;
         Self::realization_directive(
@@ -782,9 +844,19 @@ impl SessionRealizationControl for SessionApplication {
                 SessionRealizationAction::Complete,
             );
         }
-        if keys(&expected_publish) != keys(&command.published)
-            || keys(&expected_drain) != keys(&command.drained)
+        let publish_mismatch = keys(&expected_publish) != keys(&command.published);
+        let drain_mismatch = keys(&expected_drain) != keys(&command.drained);
+        if publish_mismatch
+            && !drain_mismatch
+            && generation_set_is_renewed_successor(&expected_publish, &command.published)
         {
+            // Publication happened under a shorter same-epoch lease while a
+            // heartbeat advanced durable authority. Do not acknowledge the old
+            // fence and do not fail the Session: return the latest Stage/Publish
+            // work to the same canonical driver.
+            return Self::next_action(owner_scope, &session, false);
+        }
+        if publish_mismatch || drain_mismatch {
             return Err(SessionRealizationControlFailure::Invalid(
                 "publication acknowledgement does not match the durable generation set".into(),
             ));
