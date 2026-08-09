@@ -277,7 +277,7 @@ dependencies = [
  "awaken-credential-vault",
  "awaken-model-catalog",
  "awaken-runtime-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "awaken-tenancy",
  "axum",
@@ -319,7 +319,7 @@ dependencies = [
 [[package]]
 name = "awaken-api-contract"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation?rev=97717ab58faaa1ab9957e4c638aa367fb24334ee#97717ab58faaa1ab9957e4c638aa367fb24334ee"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8#c8a0139e1861a964c475f1b748c90d75a06027c8"
 dependencies = [
  "serde",
  "serde_json",
@@ -347,7 +347,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-runtime-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "serde_json",
@@ -487,7 +487,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-runtime",
  "awaken-runtime-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "awaken-store-inmem",
  "awaken-store-sqlite",
@@ -505,7 +505,7 @@ dependencies = [
 [[package]]
 name = "awaken-connection"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation?rev=97717ab58faaa1ab9957e4c638aa367fb24334ee#97717ab58faaa1ab9957e4c638aa367fb24334ee"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8#c8a0139e1861a964c475f1b748c90d75a06027c8"
 dependencies = [
  "async-trait",
  "futures",
@@ -695,7 +695,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "chacha20poly1305",
  "rusqlite",
@@ -715,7 +715,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-runtime-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "serde",
@@ -764,7 +764,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-environment-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "proptest",
  "rusqlite",
@@ -808,7 +808,7 @@ dependencies = [
  "awaken-environment-realization-contract",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "serde_json",
@@ -870,7 +870,7 @@ dependencies = [
  "awaken-executable-agent-contract",
  "awaken-resource-contract",
  "awaken-runtime-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-service-auth-contract",
  "axum",
  "reqwest 0.12.28",
@@ -903,7 +903,7 @@ dependencies = [
  "awaken-environment-contract",
  "awaken-executable-environment-contract",
  "awaken-provisioning-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-service-auth-contract",
  "axum",
  "reqwest 0.12.28",
@@ -1055,7 +1055,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-resource-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "blake3",
  "futures",
@@ -1224,7 +1224,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-resource-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "serde_json",
@@ -1240,7 +1240,7 @@ name = "awaken-model-catalog"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "schemars 1.2.1",
@@ -1511,7 +1511,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-resource-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "parking_lot",
  "proptest",
@@ -1567,7 +1567,7 @@ dependencies = [
  "awaken-run-ingress-testkit",
  "awaken-runtime",
  "awaken-runtime-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "awaken-store-inmem",
  "awaken-store-postgres",
@@ -1827,7 +1827,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-provisioning-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "serde_json",
@@ -1899,16 +1899,6 @@ dependencies = [
 [[package]]
 name = "awaken-scoped-migration"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a#8a0037c012fe63f496dad1772cdcbc89bbc03c5a"
-dependencies = [
- "sha2 0.10.9",
- "sqlx",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "awaken-scoped-migration"
-version = "0.1.0-dev"
 source = "git+https://github.com/awakenworks/awaken-foundation?rev=97717ab58faaa1ab9957e4c638aa367fb24334ee#97717ab58faaa1ab9957e4c638aa367fb24334ee"
 dependencies = [
  "sha2 0.10.9",
@@ -1916,11 +1906,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-scoped-migration"
+version = "0.1.0-dev"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8#c8a0139e1861a964c475f1b748c90d75a06027c8"
+dependencies = [
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "awaken-scoped-migration-sqlite"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a#8a0037c012fe63f496dad1772cdcbc89bbc03c5a"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8#c8a0139e1861a964c475f1b748c90d75a06027c8"
 dependencies = [
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "rusqlite",
 ]
 
@@ -1954,7 +1954,7 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-deployment-contract",
  "awaken-ext-memory",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
  "proptest",
@@ -1972,7 +1972,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-resource-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "serde",
@@ -2025,7 +2025,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-runtime-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-store-conformance",
  "awaken-store-schema",
  "serde_json",
@@ -2038,7 +2038,7 @@ dependencies = [
 name = "awaken-store-schema"
 version = "1.0.0-dev"
 dependencies = [
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "sqlx",
@@ -2051,7 +2051,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "awaken-store-conformance",
  "awaken-store-schema",
@@ -2138,7 +2138,7 @@ name = "awaken-work-store"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
  "proptest",
@@ -2190,7 +2190,7 @@ name = "awaken-worker-registry"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
- "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "awaken-worker-contract",
  "loom",
