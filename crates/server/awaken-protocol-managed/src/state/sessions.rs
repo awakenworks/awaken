@@ -145,11 +145,6 @@ impl ManagedState {
         }
     }
 
-    /// Bounded retry for a root Session CAS. A retry always reloads the
-    /// aggregate and reruns the command's domain checks; stale snapshots are
-    /// never merged wholesale.
-    pub(super) const ROOT_CAS_ATTEMPTS: usize = 3;
-
     fn wire_session_status(status: &str) -> &'static str {
         match status {
             "preparing" => "preparing",
@@ -300,9 +295,9 @@ impl ManagedState {
         self.realize_session_locally(session_id).await
     }
 
-    /// The sole application-layer compiler for an existing Session write. Every
-    /// specialized command builds a complete replacement, then crosses this root
-    /// CAS seam; no caller retries by writing a stale aggregate snapshot.
+    /// Wire-cache adapter around the Session application's sole root CAS. Every
+    /// specialized command crosses the application boundary first; only its
+    /// committed result is projected into the disposable Managed cache.
     pub(crate) async fn commit_session_snapshot(
         &self,
         owner_scope: &str,
@@ -310,63 +305,42 @@ impl ManagedState {
         operation: &str,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<PersistedSession, StateError> {
-        let expected_revision = session.revision;
-        let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
-        let payload_hash = payload.stable_hash();
-        let idempotency = awaken_session_contract::IdempotencyRecord {
-            key: format!(
-                "managed:{operation}:{}:{}:{payload_hash}",
-                session.session_id, expected_revision.0
-            ),
-            payload_hash,
-        };
-        self.commit_session_snapshot_with_record(owner_scope, session, idempotency, lifecycle_facts)
+        let session = self
+            .application
+            .commit_session_snapshot(owner_scope, session, operation, lifecycle_facts)
             .await
-            .map(|(session, _)| session)
+            .map_err(Self::map_application_mutation_error)?;
+        self.refresh_cached_projection(&session)?;
+        Ok(session)
     }
 
     pub(super) async fn commit_session_snapshot_with_record(
         &self,
         owner_scope: &str,
-        mut session: PersistedSession,
+        session: PersistedSession,
         idempotency: awaken_session_contract::IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<(PersistedSession, bool), StateError> {
-        let expected_revision = session.revision;
-        let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
-        let mutation = awaken_session_contract::SessionMutation {
-            expected_revision,
-            idempotency,
-            payload,
-            lifecycle_facts,
-        };
-        match self
+        let result = self
             .application
-            .session_repository()
-            .commit_mutation(owner_scope, mutation)
+            .commit_session_snapshot_with_record(owner_scope, session, idempotency, lifecycle_facts)
             .await
-            .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?
-        {
-            awaken_session_contract::SessionMutationResult::Applied { new_revision } => {
-                session.revision = new_revision;
-                self.refresh_cached_projection(&session)?;
-                Ok((session, true))
+            .map_err(Self::map_application_mutation_error)?;
+        self.refresh_cached_projection(&result.0)?;
+        Ok(result)
+    }
+
+    fn map_application_mutation_error(
+        error: awaken_session_application::SessionMutationError,
+    ) -> StateError {
+        match error {
+            awaken_session_application::SessionMutationError::NotFound => StateError::NotFound,
+            awaken_session_application::SessionMutationError::Conflict => StateError::Conflict,
+            awaken_session_application::SessionMutationError::IdempotencyMismatch => {
+                StateError::IdempotencyMismatch
             }
-            awaken_session_contract::SessionMutationResult::Replayed { .. } => {
-                let session = self
-                    .application
-                    .session_repository()
-                    .get(&session.session_id)
-                    .await
-                    .ok_or(StateError::NotFound)?;
-                self.refresh_cached_projection(&session)?;
-                Ok((session, false))
-            }
-            awaken_session_contract::SessionMutationResult::Conflict { .. } => {
-                Err(StateError::Conflict)
-            }
-            awaken_session_contract::SessionMutationResult::IdempotencyMismatch => {
-                Err(StateError::IdempotencyMismatch)
+            awaken_session_application::SessionMutationError::Unavailable(message) => {
+                StateError::Run(RunError::internal(message))
             }
         }
     }
@@ -438,10 +412,9 @@ impl ManagedState {
         };
         match self
             .application
-            .session_repository()
             .commit_mutation(owner_scope, mutation)
             .await
-            .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?
+            .map_err(Self::map_application_mutation_error)?
         {
             awaken_session_contract::SessionMutationResult::Applied { .. }
             | awaken_session_contract::SessionMutationResult::Replayed { .. } => Ok(()),

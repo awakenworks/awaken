@@ -19,6 +19,7 @@ awaken-executable-environment-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-session-contract.workspace = true
 async-trait.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 awaken-session-store = { workspace = true, features = ["test-support"] }

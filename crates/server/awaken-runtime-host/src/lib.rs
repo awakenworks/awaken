@@ -87,10 +87,6 @@ pub use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
 // The neutral session substrate and its resume vocabulary.
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
 pub use crate::acp_tool_export::{AcpToolExport, AcpToolExporter};
-pub use crate::application::{
-    ApplicationSessionControlClient, ApplicationSessionControlReceipt, ApplicationSessionError,
-    ApplicationSessionProvisioner,
-};
 pub use crate::commit_backend::{
     init_shared_postgres_commit, init_shared_postgres_commit_existing,
     migrate_postgres_commit_schema,

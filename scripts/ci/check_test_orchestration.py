@@ -40,6 +40,7 @@ REQUIRED_RELEASE_COMMANDS = (
     "cargo deny --log-level error check bans",
     "check_formal.sh --require-tools",
     "pg_tests.sh --require-docker",
+    "scripts/e2e/k8s_container_e2e.sh",
     "npm --prefix e2e run test:deterministic",
     "sandbox_capability_suite.sh --require-substrates",
 )
@@ -274,6 +275,10 @@ def self_test() -> None:
         check_all.replace("pg_tests.sh --require-docker", "pg_tests.sh"),
         public_api,
     ), "R7 required infrastructure"
+    assert release_gate_errors(
+        check_all.replace("scripts/e2e/k8s_container_e2e.sh", ""),
+        public_api,
+    ), "R7 required Kubernetes infrastructure"
     assert release_gate_errors(check_all, public_api + '\nexcluded="awaken-cli"\n'), (
         "R7 public API exclusion"
     )

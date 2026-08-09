@@ -9,11 +9,11 @@ import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import {
   childDirectories,
   deploymentEnv,
   onlyChildDirectory,
+  spawnServer,
   stopServer,
   waitForPort,
   waitForValue,
@@ -98,24 +98,6 @@ function buildWorker(): string {
     }
   }
   throw new Error('could not resolve credential_reference_worker example');
-}
-
-function buildAwaken(): string {
-  const output = execFileSync(
-    'cargo',
-    ['build', '--quiet', '--message-format=json', '-p', 'awaken-cli', '--bin', 'awaken'],
-    { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-  );
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken') return message.executable;
-    } catch {
-      // Only Cargo artifact records are relevant.
-    }
-  }
-  throw new Error('could not resolve awaken binary');
 }
 
 async function post(pathname: string, body: unknown, worker?: string): Promise<any> {
@@ -401,10 +383,16 @@ async function main(): Promise<void> {
   const database = await postgres();
   const configStorage = mkdtempSync(path.join(tmpdir(), 'awaken-resource-config-'));
   const workerStorage = mkdtempSync(path.join(tmpdir(), 'awaken-resource-worker-'));
-  const management = spawn(buildAwaken(), automatedAllInOneArgs('--port', String(PORT)), {
-    cwd: ROOT,
-    env: {
-      ...process.env,
+  // Seed-model decision table: R1 explicit scenario model -> the production
+  // management composition emits one real serialized activation for this
+  // resource-boundary test; R2 production with no configured model -> durable
+  // submission fails closed (covered by the no-model Host tests), never an
+  // implicit echo fallback. Resource/Postgres/dispatch/Worker adapters remain
+  // the production implementations in both rules.
+  const management = spawnServer(
+    'management',
+    PORT,
+    {
       ...deploymentEnv(configStorage, {
         // Management-plane identity decision table for this resource-boundary
         // scenario: no-login + no Authorization => exercise the resource
@@ -431,8 +419,7 @@ async function main(): Promise<void> {
       }),
       AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
     },
-    stdio: ['ignore', 'inherit', 'inherit'],
-  });
+  ).server;
   let worker: ChildProcessWithoutNullStreams | undefined;
   let workerOutput = '';
   try {

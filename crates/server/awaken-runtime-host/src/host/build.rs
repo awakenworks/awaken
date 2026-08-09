@@ -439,7 +439,7 @@ impl SharedHost {
     #[must_use]
     pub fn with_application_session_provisioner(
         mut self,
-        provisioner: Arc<dyn crate::ApplicationSessionProvisioner>,
+        provisioner: Arc<dyn awaken_session_contract::ApplicationSessionProvisioner>,
     ) -> Self {
         self.application_session_provisioner = Some(provisioner);
         self
@@ -451,7 +451,7 @@ impl SharedHost {
     #[must_use]
     pub fn with_application_session_control(
         mut self,
-        control: Arc<dyn crate::ApplicationSessionControlClient>,
+        control: Arc<dyn awaken_run_ingress_contract::ClaimedSessionControl>,
     ) -> Self {
         self.application_session_control = Some(control);
         self

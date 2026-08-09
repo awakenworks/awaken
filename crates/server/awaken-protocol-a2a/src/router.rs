@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::run::{EndCause, Failure};
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
@@ -26,13 +25,13 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use awaken_session_contract::{
-    EventForwardingSink, Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
+    EventForwardingSink, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 
 use crate::card::agent_card;
 use crate::encoder::{encode_task, working_task};
 use crate::extract::A2aJson;
-use crate::request::process;
+use crate::request::{process, resume_for_pending};
 use crate::state::{A2aState, PushProtocolVersion};
 use crate::state_error::{
     rpc_error, state_cancel_error, state_failure_update, state_fault_response, state_rpc_response,
@@ -887,10 +886,14 @@ async fn drive_processed_runtime(
     match runtime.pending(thread).await {
         // A awaiting run on this context → the message is the awaited input.
         Some(pending) => {
-            let resume = to_resume(&processed.text, &pending);
+            let resume =
+                resume_for_pending(&processed.text, processed.approval.as_ref(), &pending)?;
             runtime.resume(thread, &pending.tool_use_id, resume).await
         }
         // No awaiting run → a fresh turn.
+        None if processed.approval.is_some() => Err(RunApplicationError::bad_request(
+            "A2A tool-approval decision has no awaiting tool",
+        )),
         None => match sink {
             Some(sink) => {
                 runtime
@@ -1782,23 +1785,6 @@ fn rpc_fault(err: RunApplicationError) -> (i32, String) {
     }
 }
 
-/// Map the inbound text to a neutral resume, matching the pending tool's binding:
-/// a client-executed tool receives the text as its result; a built-in tool awaiting
-/// approval reads any answer as an allow.
-fn to_resume(text: &str, pending: &Pending) -> RunResume {
-    if pending.client_executed {
-        RunResume::ClientResult {
-            content: vec![ContentBlock::text(text)],
-            is_error: false,
-        }
-    } else {
-        RunResume::Confirm {
-            allow: true,
-            note: None,
-        }
-    }
-}
-
 /// Map a driver error to `(status, A2A error envelope)`.
 fn error_response(err: RunApplicationError) -> Response {
     use awaken_session_contract::RunErrorKind;
@@ -1962,35 +1948,5 @@ mod tests {
             error_response(RunApplicationError::internal("boom")).status(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
-    }
-
-    fn pending(client_executed: bool) -> Pending {
-        Pending {
-            tool_use_id: "c1".into(),
-            name: "t".into(),
-            input: serde_json::Value::Null,
-            client_executed,
-        }
-    }
-
-    #[test]
-    fn to_resume_delivers_the_text_to_a_client_executed_tool() {
-        let r = to_resume("the answer", &pending(true));
-        assert!(
-            matches!(r, RunResume::ClientResult { content, is_error: false } if content == vec![ContentBlock::text("the answer")])
-        );
-    }
-
-    #[test]
-    fn to_resume_reads_any_answer_as_an_allow_for_a_builtin_tool() {
-        // A2A carries no in-band deny for a built-in approval (that is `tasks/cancel`).
-        let r = to_resume("whatever", &pending(false));
-        assert!(matches!(
-            r,
-            RunResume::Confirm {
-                allow: true,
-                note: None
-            }
-        ));
     }
 }

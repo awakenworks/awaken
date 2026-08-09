@@ -248,7 +248,7 @@ mod tests {
             result["content"][0]["text"]
                 .as_str()
                 .unwrap()
-                .contains("out-of-band approval")
+                .contains("no authenticated client-request channel")
         );
     }
 

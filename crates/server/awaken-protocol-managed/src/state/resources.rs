@@ -153,7 +153,7 @@ impl ManagedState {
         owner_scope: &str,
         mut session: PersistedSession,
     ) -> Result<PersistedSession, StateError> {
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS {
             let holder = Self::resource_plaintext_holder(&session)?;
             let mut changed = self
                 .pin_repository_credentials(owner_scope, &holder, &mut session.resources.active)
@@ -177,7 +177,10 @@ impl ManagedState {
                 .await
             {
                 Ok(session) => return Ok(session),
-                Err(StateError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                Err(StateError::Conflict)
+                    if attempt + 1
+                        < awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS =>
+                {
                     session = self
                         .application
                         .session_repository()
@@ -198,7 +201,7 @@ impl ManagedState {
         desired: &awaken_session_contract::ResolvedSessionResources,
     ) -> Result<PersistedSession, StateError> {
         let unchanged_resources = current.resources.clone();
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS {
             if current.resources != unchanged_resources {
                 return Err(StateError::Conflict);
             }
@@ -215,7 +218,10 @@ impl ManagedState {
                 .commit_session_snapshot(owner_scope, candidate, "resource-prepare", Vec::new())
                 .await
             {
-                Err(StateError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                Err(StateError::Conflict)
+                    if attempt + 1
+                        < awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS =>
+                {
                     current = self
                         .application
                         .session_repository()
@@ -237,7 +243,7 @@ impl ManagedState {
         desired: &awaken_session_contract::ResolvedSessionResources,
         settlement: ResourceSettlement,
     ) -> Result<PersistedSession, StateError> {
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS {
             let mut current = self
                 .application
                 .session_repository()
@@ -280,7 +286,12 @@ impl ManagedState {
                 .commit_session_snapshot(owner_scope, current, operation, Vec::new())
                 .await
             {
-                Err(StateError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => continue,
+                Err(StateError::Conflict)
+                    if attempt + 1
+                        < awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS =>
+                {
+                    continue;
+                }
                 result => return result,
             }
         }
@@ -521,7 +532,7 @@ impl ManagedState {
                 )))
             })?;
 
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS {
             let holder = Self::resource_plaintext_holder(&persisted)?;
             let input = persisted
                 .resources
@@ -557,7 +568,10 @@ impl ManagedState {
                         .ok_or(StateError::NotFound)?;
                     return Ok(resolved_resource_dto(id, input));
                 }
-                Err(StateError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                Err(StateError::Conflict)
+                    if attempt + 1
+                        < awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS =>
+                {
                     persisted = self
                         .application
                         .session_repository()

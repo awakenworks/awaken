@@ -1,9 +1,9 @@
 //! Worker-side Session application control over the authenticated Coordinator transport.
 
-use awaken_run_ingress_contract::{RunClaim, WorkerIdentity};
-use awaken_runtime_host::{
-    ApplicationSessionControlClient, ApplicationSessionControlReceipt, ApplicationSessionError,
+use awaken_run_ingress_contract::{
+    ClaimedSessionContributionReceipt, ClaimedSessionControl, ClaimedSessionControlError,
 };
+use awaken_run_ingress_contract::{RunClaim, WorkerIdentity};
 
 /// Standard client using the same registered identity-bound Worker transport as
 /// lifecycle, dispatch, recovery, and claimed commits.
@@ -20,28 +20,30 @@ impl WorkerControlApplicationSessionClient {
 }
 
 #[async_trait::async_trait]
-impl ApplicationSessionControlClient for WorkerControlApplicationSessionClient {
+impl ClaimedSessionControl for WorkerControlApplicationSessionClient {
     async fn resume_frozen(
         &self,
         claim: &RunClaim,
         session_id: &str,
-    ) -> Result<Option<awaken_session_contract::SessionRealizationDirective>, ApplicationSessionError>
-    {
+    ) -> Result<
+        Option<awaken_session_contract::SessionRealizationDirective>,
+        ClaimedSessionControlError,
+    > {
         self.control
             .resume_application_session(&self.identity, claim, session_id)
             .await
-            .map_err(ApplicationSessionError::new)
+            .map_err(ClaimedSessionControlError::new)
     }
 
     async fn contribute(
         &self,
         claim: &RunClaim,
         contribution: awaken_session_contract::ApplicationSessionContribution,
-    ) -> Result<ApplicationSessionControlReceipt, ApplicationSessionError> {
+    ) -> Result<ClaimedSessionContributionReceipt, ClaimedSessionControlError> {
         self.control
             .contribute_application(&self.identity, claim, contribution)
             .await
-            .map_err(ApplicationSessionError::new)
+            .map_err(ClaimedSessionControlError::new)
     }
 }
 

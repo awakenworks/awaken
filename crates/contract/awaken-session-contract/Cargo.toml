@@ -20,6 +20,9 @@ awaken-environment-contract.workspace = true
 # Secret-free resources-plane identity/configuration port used once while a
 # Session freezes its effective inputs. It contains no IAM policy or principal.
 awaken-resource-contract.workspace = true
+# Neutral activation and ownership-verifier vocabulary used by the Session
+# application provisioning port. No dispatch claim or transport type crosses it.
+awaken-runtime-contract.workspace = true
 # The opaque tenancy `ScopeId` bound on the scoped session-repository decorator.
 async-trait.workspace = true
 serde.workspace = true

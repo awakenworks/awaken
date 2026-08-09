@@ -1235,6 +1235,24 @@ async fn per_run_permission_is_an_intersection_with_acp_authority() {
 #[cfg(feature = "real-acp")]
 #[tokio::test]
 async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_session() {
+    // FMECA cause-effect graph: C1=ACP agent requests permission; C2=neutral
+    // policy requires confirmation; C3=the first executor/process exits after
+    // committing the wait; C4=replacement loads the durable ACP session;
+    // C5=operator decision. Effects: E1=one ToolPermission ticket with exact
+    // correlation/tool identity; E2=first ACP request receives `cancelled` and
+    // cannot keep an in-memory authority alive; E3=replacement uses
+    // `session/load`; E4=exact allow/reject option is returned; E5=one terminal
+    // continuation consumes the ticket.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | C5    | E1 | E2 | E3 | E4     | E5 |
+    // |---|---|---|---|---|---|---|---|---|---|---|
+    // | AR1 | T | T | T | T | allow | T | T | T | allow  | T |
+    // | AR2 | T | T | T | T | deny  | T | T | T | reject | T |
+    //
+    // Invalid free-form input and stale/mismatched ticket rules belong to the
+    // authoritative runtime resume state machine and are covered in
+    // awaken-runtime/tests/awaiting.rs; this adapter test owns only ACP wire
+    // projection plus replacement recovery, avoiding a duplicate validator.
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};

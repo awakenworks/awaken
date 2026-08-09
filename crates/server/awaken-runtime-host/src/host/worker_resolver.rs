@@ -30,7 +30,7 @@ impl HostWorkerResolver {
 
     pub(crate) async fn realize_application_session(
         host: &SharedHost,
-        control: &Arc<dyn crate::ApplicationSessionControlClient>,
+        control: &Arc<dyn awaken_run_ingress_contract::ClaimedSessionControl>,
         session_id: &str,
         directive: awaken_session_contract::SessionRealizationDirective,
         claim: Option<&awaken_run_ingress::RunClaim>,
@@ -700,14 +700,14 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::ApplicationSessionControlClient for RecordingContributor {
+    impl awaken_run_ingress_contract::ClaimedSessionControl for RecordingContributor {
         async fn resume_frozen(
             &self,
             claim: &awaken_run_ingress::RunClaim,
             _session_id: &str,
         ) -> Result<
             Option<awaken_session_contract::SessionRealizationDirective>,
-            crate::ApplicationSessionError,
+            awaken_run_ingress_contract::ClaimedSessionControlError,
         > {
             Ok(self.projection.lock().unwrap().clone().map(|projection| {
                 awaken_session_contract::SessionRealizationDirective {
@@ -727,8 +727,10 @@ mod tests {
             &self,
             _claim: &awaken_run_ingress::RunClaim,
             contribution: awaken_session_contract::ApplicationSessionContribution,
-        ) -> Result<crate::ApplicationSessionControlReceipt, crate::ApplicationSessionError>
-        {
+        ) -> Result<
+            awaken_run_ingress_contract::ClaimedSessionContributionReceipt,
+            awaken_run_ingress_contract::ClaimedSessionControlError,
+        > {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.phases.lock().unwrap().push("contribute");
             let holder = awaken_runtime_contract::PlaintextHolder::new(
@@ -815,20 +817,22 @@ mod tests {
                     .as_ref()
                     .map_or(u64::MAX, |stage| stage.generation.lease_expires_at_unix_ms),
             };
-            Ok(crate::ApplicationSessionControlReceipt {
-                contribution: awaken_session_contract::ApplicationSessionContributionReceipt {
-                    outcome: awaken_session_contract::ApplicationContributionOutcome::Committed,
-                    projection: projection.clone(),
-                },
-                realization: awaken_session_contract::SessionRealizationDirective {
-                    projection,
-                    lease,
-                    action: awaken_session_contract::SessionRealizationAction::Stage {
-                        prepare_session: true,
-                        mcp_stages: self.mcp_stage.clone().into_iter().collect(),
+            Ok(
+                awaken_run_ingress_contract::ClaimedSessionContributionReceipt {
+                    contribution: awaken_session_contract::ApplicationSessionContributionReceipt {
+                        outcome: awaken_session_contract::ApplicationContributionOutcome::Committed,
+                        projection: projection.clone(),
+                    },
+                    realization: awaken_session_contract::SessionRealizationDirective {
+                        projection,
+                        lease,
+                        action: awaken_session_contract::SessionRealizationAction::Stage {
+                            prepare_session: true,
+                            mcp_stages: self.mcp_stage.clone().into_iter().collect(),
+                        },
                     },
                 },
-            })
+            )
         }
     }
 
@@ -930,7 +934,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl crate::ApplicationSessionProvisioner for CountingProvisioner {
+    impl awaken_session_contract::ApplicationSessionProvisioner for CountingProvisioner {
         async fn prepare(
             &self,
             activation: &RunActivation,
@@ -938,12 +942,11 @@ mod tests {
             ownership: Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>,
         ) -> Result<
             awaken_session_contract::ApplicationSessionContribution,
-            crate::ApplicationSessionError,
+            awaken_session_contract::ApplicationSessionProvisionError,
         > {
-            ownership
-                .verify_current()
-                .await
-                .map_err(|error| crate::ApplicationSessionError::new(error.to_string()))?;
+            ownership.verify_current().await.map_err(|error| {
+                awaken_session_contract::ApplicationSessionProvisionError::new(error.to_string())
+            })?;
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(awaken_session_contract::ApplicationSessionContribution {
                 session_id: session_id.to_owned(),
@@ -960,11 +963,10 @@ mod tests {
             _activation: &RunActivation,
             _session_id: &str,
             ownership: Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>,
-        ) -> Result<(), crate::ApplicationSessionError> {
-            ownership
-                .verify_current()
-                .await
-                .map_err(|error| crate::ApplicationSessionError::new(error.to_string()))?;
+        ) -> Result<(), awaken_session_contract::ApplicationSessionProvisionError> {
+            ownership.verify_current().await.map_err(|error| {
+                awaken_session_contract::ApplicationSessionProvisionError::new(error.to_string())
+            })?;
             self.refreshes.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }

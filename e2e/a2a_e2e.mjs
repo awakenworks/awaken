@@ -147,7 +147,8 @@ async function main() {
   });
 
   // --- HITL: a tool needing approval awaits the task (input-required); a follow-up
-  // message on the same context approves it and the task completes ---
+  // message on the same context carries an explicit structured approval and the
+  // task completes; plain text is never interpreted as authorization ---
   await withRealServer('probe', 38153, async (base) => {
     const client = await A2AClient.fromCardUrl(`${base}/v1/a2a/agent-card`);
     const awaiting = await client.sendMessage({
@@ -170,7 +171,7 @@ async function main() {
         contextId: 'a2a-hitl',
         role: 'user',
         kind: 'message',
-        parts: [{ kind: 'text', text: 'approved' }],
+        parts: [{ kind: 'data', data: { type: 'tool-approval', allow: true, note: 'reviewed' } }],
       },
     });
     assert.equal(done.result?.status?.state, 'completed', `expected completion after approval`);

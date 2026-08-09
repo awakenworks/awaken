@@ -20,6 +20,17 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 IMAGE="awaken-memoryd:e2e"
 MARKER="memoryd-roundtrip-ok-7c31"
+BUILD_TIMEOUT_SECONDS="${AWAKEN_MEMORYD_BUILD_TIMEOUT_SECONDS:-300}"
+BUILD_NETWORK="${AWAKEN_DOCKER_BUILD_NETWORK:-host}"
+# Build-boundary FMECA decision table. C1=timeout input is a positive integer;
+# C2=Docker build completes inside it; C3=the selected build network reaches
+# the pinned Debian source. E1=run the current binary/image lifecycle; E2=reject
+# configuration before any build; E3=fail boundedly and delete the exact
+# temporary context. R1=C1+C2+C3=>E1; R2=!C1=>E2; R3=C1+(!C2|!C3)=>E3.
+[[ "$BUILD_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
+  echo "AWAKEN_MEMORYD_BUILD_TIMEOUT_SECONDS must be a positive integer" >&2
+  exit 2
+}
 
 ok()  { echo -e "\033[1;32m$*\033[0m"; }
 err() { echo -e "\033[1;31m$*\033[0m"; }
@@ -43,10 +54,18 @@ for l in sys.stdin:
 
 log "2/4 build the memoryd image"
 CTX=$(mktemp -d)
+cleanup_build_context() { rm -rf "$CTX"; }
+trap cleanup_build_context EXIT
 cp "$BIN" "$CTX/awaken-sandbox"
 cp deploy/images/sandbox/Dockerfile.memoryd "$CTX/Dockerfile"
-docker buildx build --load -q --build-arg BIN=awaken-sandbox -t "$IMAGE" "$CTX" >/dev/null
+if ! timeout --foreground "$BUILD_TIMEOUT_SECONDS" \
+  docker buildx build --load -q --network "$BUILD_NETWORK" \
+    --build-arg BIN=awaken-sandbox -t "$IMAGE" "$CTX" >/dev/null; then
+  err "memoryd image build failed or exceeded ${BUILD_TIMEOUT_SECONDS}s"
+  exit 1
+fi
 rm -rf "$CTX"
+trap - EXIT
 
 STORE=$(mktemp -d); MNT1=$(mktemp -d); MNT2=$(mktemp -d)
 chmod 777 "$STORE" "$MNT1" "$MNT2"
