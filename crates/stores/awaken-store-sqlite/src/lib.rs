@@ -167,15 +167,19 @@ impl SqliteCommitCoordinator {
             .and_then(|p| p.resume_tickets.get(run_id).cloned())
     }
 
-    /// The awaiting run on `thread`, if any, with its committed ticket. Read from
-    /// hydrated durable truth so a rebuilt session can recover its awaiting position
-    /// after a restart (G1/G13).
+    /// The latest run on `thread` when that run is awaiting, with its committed
+    /// ticket. Older runs may retain historical waiting rows, but they cannot keep
+    /// a thread awaiting after a newer run has completed. Read from hydrated durable
+    /// truth so a rebuilt session preserves the same lifecycle boundary after a
+    /// restart (G1/G13).
     pub fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         self.projection.lock().ok().and_then(|p| {
-            p.resume_tickets
-                .iter()
-                .find(|(_, ticket)| &ticket.thread_id == thread)
-                .map(|(run_id, ticket)| (run_id.clone(), ticket.clone()))
+            let latest = p.latest_by_thread.get(thread)?;
+            if !matches!(latest.state, RunState::Awaiting) {
+                return None;
+            }
+            let ticket = p.resume_tickets.get(&latest.id)?;
+            (&ticket.thread_id == thread).then(|| (latest.id.clone(), ticket.clone()))
         })
     }
 }

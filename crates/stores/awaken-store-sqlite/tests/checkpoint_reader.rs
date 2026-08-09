@@ -327,3 +327,119 @@ async fn recovery_snapshot_observes_peer_committed_transcript_and_state() {
     assert_eq!(snapshot.next_commit_ordinal, 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn open_wait_tracks_only_the_latest_run_across_reopen() {
+    /* Cause/effect decision table for SQLite's thread-level awaiting boundary.
+     * Causes: C1 a Run has a committed awaiting ticket; C2 a later Run exists on
+     * the same thread; C3 that later Run is terminal; C4 the store is reopened and
+     * its projection hydrated; C5 the latest Run is awaiting with a matching ticket.
+     * Effects: E1 open_wait returns none; E2 open_wait returns the exact latest
+     * Run/ticket. Rules: R1 C1+!C2 => E2; R2 C1+C2+C3+!C4 => E1; R3
+     * C1+C2+C3+C4 => E1; R4 C1+C2+!C3+C5 => E2 for the new latest Run. This
+     * prevents a historical tool wait from blocking a later turn.
+     */
+    let dir = std::env::temp_dir().join(format!(
+        "awaken_store_sqlite_latest_wait_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path = dir.join("commit.db");
+    let path = path.to_str().expect("utf8 path");
+    let thread = ThreadId("latest-wait-thread".into());
+    let old_run = RunId("old-awaiting-run".into());
+    let old_ticket = ResumeTicket {
+        correlation_id: "old-correlation".into(),
+        run_id: old_run.clone(),
+        thread_id: thread.clone(),
+        snapshot_id: "old-snapshot".into(),
+        catalog_fingerprint: "catalog".into(),
+        delegation_origin: None,
+        data_subject_id: None,
+        reason: AwaitReason::UserInput,
+        call_id: Some("old-call".into()),
+        pending_tool: None,
+        deadline_ms: None,
+    };
+
+    {
+        let store = SqliteCommitCoordinator::open(path).expect("open");
+        store
+            .commit(ThreadCommit::assemble(
+                thread.clone(),
+                RunDisposition::awaiting(old_ticket.clone()),
+                true,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .expect("old awaiting commit");
+        assert_eq!(
+            store.open_wait_for_thread(&thread),
+            Some((old_run.clone(), old_ticket.clone())),
+            "R1: the awaiting Run is open while it remains latest"
+        );
+
+        store
+            .commit(ThreadCommit::assemble(
+                thread.clone(),
+                RunDisposition::ended(RunId("new-terminal-run".into()), EndCause::NaturalEnd),
+                true,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .expect("new terminal commit");
+        assert!(
+            store.resume_ticket_for(&old_run).is_some(),
+            "the historical ticket remains addressable by its Run"
+        );
+        assert_eq!(
+            store.open_wait_for_thread(&thread),
+            None,
+            "R2: an older ticket cannot make a terminal latest Run appear awaiting"
+        );
+    }
+
+    let reopened = SqliteCommitCoordinator::open(path).expect("reopen");
+    assert_eq!(
+        reopened.open_wait_for_thread(&thread),
+        None,
+        "R3: hydration preserves the latest-Run boundary"
+    );
+
+    let latest_run = RunId("latest-awaiting-run".into());
+    let latest_ticket = ResumeTicket {
+        correlation_id: "latest-correlation".into(),
+        run_id: latest_run.clone(),
+        thread_id: thread.clone(),
+        snapshot_id: "latest-snapshot".into(),
+        catalog_fingerprint: "catalog".into(),
+        delegation_origin: None,
+        data_subject_id: None,
+        reason: AwaitReason::UserInput,
+        call_id: Some("latest-call".into()),
+        pending_tool: None,
+        deadline_ms: None,
+    };
+    reopened
+        .commit(ThreadCommit::assemble(
+            thread.clone(),
+            RunDisposition::awaiting(latest_ticket.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("latest awaiting commit");
+    assert_eq!(
+        reopened.open_wait_for_thread(&thread),
+        Some((latest_run, latest_ticket)),
+        "R4: the exact latest awaiting Run remains resumable"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

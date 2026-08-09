@@ -72,8 +72,19 @@ impl RemoteHostCommit {
 pub(crate) trait HostStore:
     Coordinator + OperationCoordinator + CheckpointReader + RunStore + RunRecoverySource + Send + Sync
 {
-    /// The awaiting run on `thread`, if any, recovered from committed truth.
-    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)>;
+    /// Compatibility projection used by single-process stores. Shared backends
+    /// override the authoritative read below so a peer's commit cannot leave an
+    /// admission or resume decision on stale process-local state.
+    fn projected_open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)>;
+
+    /// The awaiting run on `thread`, if any, from the backend's authoritative
+    /// truth. Single-process stores reuse their projection.
+    async fn authoritative_open_wait_for_thread(
+        &self,
+        thread: &ThreadId,
+    ) -> Result<Option<(RunId, ResumeTicket)>, String> {
+        Ok(self.projected_open_wait_for_thread(thread))
+    }
 
     /// Read one Run from the backend's authoritative truth. Local backends have
     /// one in-process projection; PostgreSQL overrides this for cross-replica
@@ -106,7 +117,7 @@ fn awaiting_from_reader<R: CheckpointReader>(
 
 #[cfg(any(test, feature = "test-support"))]
 impl HostStore for MemoryCommitCoordinator {
-    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+    fn projected_open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         let run = self.committed().latest_run?;
         let ticket = self.resume_ticket_for(&run.id)?;
         (&ticket.thread_id == thread).then_some((run.id, ticket))
@@ -114,22 +125,31 @@ impl HostStore for MemoryCommitCoordinator {
 }
 
 impl HostStore for SqliteCommitCoordinator {
-    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+    fn projected_open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         // Inherent method wins over the trait method in resolution — not recursive.
         SqliteCommitCoordinator::open_wait_for_thread(self, thread)
     }
 }
 
 impl HostStore for FsCommitCoordinator {
-    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+    fn projected_open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         awaiting_from_reader(self, thread)
     }
 }
 
 #[async_trait::async_trait]
 impl HostStore for PostgresCommitCoordinator {
-    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+    fn projected_open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
         awaiting_from_reader(self, thread)
+    }
+
+    async fn authoritative_open_wait_for_thread(
+        &self,
+        thread: &ThreadId,
+    ) -> Result<Option<(RunId, ResumeTicket)>, String> {
+        PostgresCommitCoordinator::authoritative_open_wait_for_thread(self, thread)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     async fn authoritative_run(&self, run_id: &RunId) -> Result<Option<RunRecord>, String> {
@@ -199,16 +219,19 @@ impl HostCommit {
     /// The awaiting run on `thread`, if any, recovered from committed truth. After a
     /// restart the durable variants read their hydrated projection, so a rebuilt
     /// session can restore its awaiting position and be resumed.
-    pub(crate) fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+    pub(crate) async fn open_wait_for_thread(
+        &self,
+        thread: &ThreadId,
+    ) -> Result<Option<(RunId, ResumeTicket)>, String> {
         match self {
-            HostCommit::Local(store) => store.open_wait_for_thread(thread),
-            HostCommit::Remote(remote) => remote.projection.current().and_then(|snapshot| {
+            HostCommit::Local(store) => store.authoritative_open_wait_for_thread(thread).await,
+            HostCommit::Remote(remote) => Ok(remote.projection.current().and_then(|snapshot| {
                 snapshot
                     .resume_tickets
                     .into_iter()
                     .find(|entry| entry.ticket.thread_id == *thread)
                     .map(|entry| (entry.run_id, entry.ticket))
-            }),
+            })),
         }
     }
 

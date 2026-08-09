@@ -308,6 +308,39 @@ impl PostgresCommitCoordinator {
         .transpose()
     }
 
+    /// Read the latest Run's awaiting ticket directly from committed PostgreSQL
+    /// truth. This is deliberately one query over the latest commit and its
+    /// optional waiting row: a peer may have completed a newer Run without
+    /// advancing this process's compatibility projection.
+    pub async fn authoritative_open_wait_for_thread(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<(RunId, ResumeTicket)>, StoreError> {
+        let row = sqlx::query(&format!(
+            "SELECT latest.run_id, waiting.ticket \
+             FROM (\
+                 SELECT run_id FROM {NS}_commit \
+                 WHERE thread_id = $1 ORDER BY sequence DESC LIMIT 1\
+             ) AS latest \
+             JOIN {NS}_waiting AS waiting ON waiting.run_id = latest.run_id"
+        ))
+        .bind(&thread_id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| StoreError::Read(error.to_string()))?;
+        row.map(|row| {
+            let run_id = RunId(
+                row.try_get("run_id")
+                    .map_err(|error| StoreError::Read(error.to_string()))?,
+            );
+            let Json(ticket): Json<ResumeTicket> = row
+                .try_get("ticket")
+                .map_err(|error| StoreError::Read(error.to_string()))?;
+            Ok((run_id, ticket))
+        })
+        .transpose()
+    }
+
     /// Read a thread's complete message history directly from committed
     /// PostgreSQL truth. Active-active peers use this instead of their
     /// process-local compatibility projection when projecting public history.
