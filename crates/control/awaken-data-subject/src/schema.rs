@@ -1,39 +1,21 @@
-//! The data-subject schema (ADR-0050). One portable [`MigrationBundle`] under
-//! the `data_subject` namespace with its own ledger; the whole subject aggregate
-//! (id, org, external_id, consents) serializes into the `data {json}` column.
-//!
-//! The DDL is NOT encoded here: every migration is a `.sql` file under
-//! `migrations/`, embedded with `include_str!`. The file name carries the version
-//! (`V0003__…` ⇒ version 3) and the first `-- comment` line is its description.
+//! Versioned schema for Control-owned subject consent and erasure orchestration.
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
-/// Namespaced bundle id — the split/merge unit for the data-subject domain.
-pub const BUNDLE_ID: &str = "awaken.data_subject";
+pub const CONTROL_BUNDLE_ID: &str = "awaken.control_data_subject";
+pub const CONTROL_PREFIX: &str = "control_data_subject";
 
-/// Embedded migration files, in apply order (`(name, contents)`): the name yields
-/// the version, the contents the description (first `-- comment`) and SQL body.
-const FILES: &[(&str, &str)] = &[
+const CONTROL_FILES: &[(&str, &str)] = &[
     (
-        "V0001__subject.sql",
-        include_str!("migrations/V0001__subject.sql"),
+        "V0001__control_data_subject.sql",
+        include_str!("migrations/V0001__control_data_subject.sql"),
     ),
     (
-        "V0002__captured.sql",
-        include_str!("migrations/V0002__captured.sql"),
-    ),
-    (
-        "V0003__restricted.sql",
-        include_str!("migrations/V0003__restricted.sql"),
-    ),
-    (
-        "V0004__erasure_job.sql",
-        include_str!("migrations/V0004__erasure_job.sql"),
+        "V0002__control_erasure_job.sql",
+        include_str!("migrations/V0002__control_erasure_job.sql"),
     ),
 ];
 
-/// Version from a `Vnnnn__slug.sql` file name (`V0003__…` ⇒ 3); a non-positive
-/// value is rejected by [`Migration::new`], so a mis-named file fails loudly.
 fn version_of(name: &str) -> i64 {
     name.trim_start_matches('V')
         .split("__")
@@ -42,19 +24,20 @@ fn version_of(name: &str) -> i64 {
         .unwrap_or(0)
 }
 
-/// The first `-- comment` line of the file — the description lives with the DDL.
 fn description_of(name: &str, contents: &str) -> String {
     contents
         .lines()
         .map(str::trim)
-        .find_map(|line| line.strip_prefix("--").map(|rest| rest.trim().to_string()))
-        .filter(|desc| !desc.is_empty())
-        .unwrap_or_else(|| name.to_string())
+        .find_map(|line| line.strip_prefix("--").map(|rest| rest.trim().to_owned()))
+        .filter(|description| !description.is_empty())
+        .unwrap_or_else(|| name.to_owned())
 }
 
-/// Build the data-subject migration bundle (prefix `data_subject`).
-pub fn data_subject_bundle() -> Result<MigrationBundle, MigrationError> {
-    let migrations = FILES
+fn bundle(
+    bundle_id: &'static str,
+    files: &[(&str, &str)],
+) -> Result<MigrationBundle, MigrationError> {
+    let migrations = files
         .iter()
         .map(|(name, contents)| {
             Migration::new(
@@ -64,7 +47,11 @@ pub fn data_subject_bundle() -> Result<MigrationBundle, MigrationError> {
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    MigrationBundle::new(BUNDLE_ID, migrations)
+    MigrationBundle::new(bundle_id, migrations)
+}
+
+pub fn control_data_subject_bundle() -> Result<MigrationBundle, MigrationError> {
+    bundle(CONTROL_BUNDLE_ID, CONTROL_FILES)
 }
 
 #[cfg(test)]
@@ -72,8 +59,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn data_subject_bundle_lints() {
-        let bundle = data_subject_bundle().expect("bundle builds");
-        awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
+    fn control_bundle_is_lint_clean() {
+        // Cause/effect: the Control subject/erasure files produce one bundle and
+        // one prefix; deterministic migration lint rejects unsafe DDL.
+        let control = control_data_subject_bundle().expect("Control bundle builds");
+        assert_eq!(control.bundle_id(), CONTROL_BUNDLE_ID);
+        awaken_scoped_migration::lint(&[control]).expect("lint");
     }
 }

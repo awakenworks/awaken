@@ -43,7 +43,12 @@ struct FakeEnvAuthor {
 }
 #[async_trait]
 impl EnvironmentAuthor for FakeEnvAuthor {
-    async fn create(&self, name: &str, config: EnvironmentDraft) -> Result<String, String> {
+    async fn create(
+        &self,
+        _command_id: &str,
+        name: &str,
+        config: EnvironmentDraft,
+    ) -> Result<String, String> {
         *self.last.lock().unwrap() = Some((name.to_string(), config));
         Ok("env_test_0".to_string())
     }

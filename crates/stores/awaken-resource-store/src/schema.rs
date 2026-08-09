@@ -4,6 +4,8 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
 pub const BUNDLE_ID: &str = "awaken.resource_lifecycle";
 pub const NS: &str = "resource_lifecycle";
+pub const CATALOG_BUNDLE_ID: &str = "awaken.resource_catalog";
+pub const CATALOG_NS: &str = "resource_catalog";
 
 const FILES: &[(&str, &str)] = &[(
     "V0001__resource_lifecycle.sql",
@@ -41,13 +43,32 @@ pub fn resource_lifecycle_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
+/// Resources-owned catalog aggregate, independently versioned from lifecycle
+/// fencing because the two aggregates have no table-level dependency.
+pub fn resource_catalog_bundle() -> Result<MigrationBundle, MigrationError> {
+    MigrationBundle::new(
+        CATALOG_BUNDLE_ID,
+        vec![Migration::new(
+            1,
+            "create resource catalog aggregate",
+            include_str!("migrations/V0001__resource_catalog.sql").trim(),
+        )?],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn resource_lifecycle_bundle_lints() {
-        let bundle = resource_lifecycle_bundle().expect("bundle builds");
-        awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
+        // Cause/effect rule: both independently deployable Resources aggregates
+        // must have unique version streams and may reference only their own
+        // tables; lint success is the static ownership proof.
+        let bundles = [
+            resource_lifecycle_bundle().expect("lifecycle bundle builds"),
+            resource_catalog_bundle().expect("catalog bundle builds"),
+        ];
+        awaken_scoped_migration::lint(&bundles).expect("resource bundles lint");
     }
 }

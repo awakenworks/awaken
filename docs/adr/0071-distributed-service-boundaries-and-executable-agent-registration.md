@@ -112,19 +112,54 @@ receipt, or continue mutable Resource write-back.
 
 ### D6: Data ownership is enforced at composition time
 
-Control owns authoring, publication, IAM, and credential mutation stores.
+Control owns authoring, publication, IAM, credential mutation, and Data Subject
+consent/accountability stores.
 Coordinator owns executable Agent registration, Deployment, DeploymentRun,
-Environment execution state, Session, dispatch, and commit stores. Resource
+Environment execution state, Session, subject-tagged captured content, dispatch,
+and commit stores. Resource
 providers own their content. Worker owns only ephemeral execution state and must
 not receive authority database connections.
 
-Environment is the remaining deliberate transition: the public Environment API
-and work execution run in Coordinator, while Control's Admin Assistant still
-authors definitions through the existing `EnvironmentAuthor` port backed by the
-same registry. Separating definition commands from execution/work ports requires
-its own contract migration; this change does not create an in-memory shadow
-registry or claim that migration is complete. The transition uses the explicit
-`environment_db` binding; Control never receives `sessions_db` merely to locate it.
+The process store bundle is split into optional Control and Coordinator groups.
+Split Coordinator cannot configure or acquire Catalog, Credential, Config,
+Admin, or the Control seal key; split Control cannot configure or acquire
+Session/Deployment or Resources content stores. `ResourceComponent` owns the
+existing `ResourceCatalog` implementation together with its per-kind ports, so
+Coordinator may mount the component without borrowing Control's Admin store.
+
+Coordinator-to-Control calls cross one authenticated application boundary:
+`ManagementAuditRepository` preserves the existing audit state machine,
+`SessionCredentialSource` returns only secret-free credential access pins, and
+`LifecycleFactDelivery` delivers the existing durable lifecycle-outbox fact.
+AllInOne injects local implementations of the same ports. The HTTP adapter owns
+serialization, authentication, and bounded idempotent retry only; it owns no
+business state. Authentication precedes handler dispatch, so a rejected request
+cannot mutate an authority before returning 401.
+
+Coordinator model discovery is derived from
+`ExecutableAgentInventorySource`, the same current immutable registrations used
+for Session resolution. It does not reopen Control's mutable model or credential
+catalogs merely to populate `/v1/models`.
+
+Environment is Coordinator-owned. Public Managed HTTP, the authenticated private
+Control command, and the AllInOne local adapter all invoke the same
+`EnvironmentApplication::create`; the Registry atomically owns command-id /
+fingerprint replay and the application converges one healthcheck through the Work
+Queue. Control receives only `EnvironmentAuthor`, never `EnvironmentState` or an
+Environment database address. `environment_db` remains an external deployment
+field but resolves into the Coordinator store group.
+
+Data Subject is Control-owned; captured runtime content is Coordinator-owned.
+Control builds the only `RepoDataSubjectResolver`, persists its erasure-process
+checkpoints, and owns the public consent/erasure API. Coordinator installs its
+own durable captured-content adapter into Runtime and reads consent once per
+attributed Run through `DataSubjectConsentSource`. The reverse erasure command
+uses the authenticated private Coordinator boundary and invokes the one
+Coordinator erasure application, which fans out to captured telemetry and the
+configured portable ACP session store. Each adapter persists an erasure fence
+and stable receipt, preventing both late-write resurrection and receipt loss on
+an ambiguous retry. AllInOne replaces both HTTP adapters with the same local
+ports; neither role opens the other's database.
 
 ## Implementation Status
 
@@ -138,6 +173,9 @@ The enforced boundary is G45 in [INVARIANTS](../INVARIANTS.md). In addition to
 the adapter decision tables, `scripts/ci/check_crate_boundaries.py` verifies
 that production Worker code cannot link or acquire a Control, Coordinator,
 Credential, or Resource authority store.
+The same fitness rule also rejects Control/Coordinator cross-owned store fields,
+unconditional Resources migration by a Control role, and a Resources component
+that loses ownership of `ResourceCatalog`.
 
 ## Consequences
 
@@ -149,6 +187,9 @@ Credential, or Resource authority store.
   write-back have stable idempotency or fencing identities.
 - Resource semantics remain type-specific instead of accumulating optional
   behavior in a generic service.
+- Split Coordinator no longer needs Control database credentials or the Control
+  seal key; loss of the reverse Control boundary fails closed while durable
+  Coordinator outbox/audit identities remain retryable.
 - The service split requires boundary adapters, handlers, configuration checks,
   and tests, but no new domain model or general-purpose framework.
 

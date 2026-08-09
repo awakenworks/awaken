@@ -1,4 +1,4 @@
-//! `awaken-server` — the single-machine **data plane** (Stage B2).
+//! `awaken-server` — the Coordinator application and protocol data plane.
 //!
 //! It composes one protocol-neutral [`SharedHost`] (from `awaken-runtime-host`,
 //! the thread-keyed session substrate) and mounts public protocol adapters over
@@ -7,7 +7,9 @@
 //! same thread id and drives the same coordinator, a turn started through one
 //! protocol can be resumed or observed through another on the *same thread*.
 //!
-//! This crate is the DATA PLANE: the session surface + protocol adapters
+//! This crate is the Coordinator owner: its canonical
+//! [`build_coordinator_component`] assembles Deployment/Session scheduling and
+//! the session surface + protocol adapters
 //! ([`mount`] / [`mount_with_managed`]), exact published-model credential
 //! materialization, the model publication resolver, the inert no-model placeholder,
 //! workspace path addressing, and the Worker
@@ -19,11 +21,16 @@
 //! `awaken-runtime-host`.
 
 pub mod admin;
+pub mod application_access;
 pub mod brokered_inference;
 pub mod console;
+pub mod control_service_boundary;
+mod coordinator_component;
+mod coordinator_persistence;
+pub mod data_subject_boundary;
 pub mod dynamic_placement;
+pub mod environment_boundary;
 pub mod inference_materializer;
-mod legacy_resource_migration;
 pub mod mcp_export;
 pub mod model_directory;
 pub mod model_discovery;
@@ -33,6 +40,17 @@ mod relay_hand;
 pub mod webhooks;
 mod worker_registry;
 pub mod workspace_path;
+
+pub use awaken_managed_routers::ModelDirectory;
+pub use coordinator_component::{
+    CoordinatorBuildError, CoordinatorComponent, CoordinatorDependencies,
+    build_coordinator_component,
+};
+pub use coordinator_persistence::{
+    init_existing_postgres as init_existing_postgres_coordinator,
+    init_postgres as init_postgres_coordinator,
+    migrate_postgres_schema as migrate_postgres_coordinator_schema,
+};
 
 use std::sync::Arc;
 
@@ -52,8 +70,7 @@ pub use awaken_acp_application::{
 pub use awaken_config_service::{ConfigService, capabilities_router, config_router};
 pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_managed_routers::{
-    consent_router, default_models, erasure_router, files_router,
-    memory_stores_router_with_catalog, models_router, skills_router,
+    default_models, files_router, memory_stores_router_with_catalog, models_router, skills_router,
 };
 pub use awaken_runtime_host::{
     ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost, NoModelConfiguredExecutor,
@@ -61,11 +78,9 @@ pub use awaken_runtime_host::{
     advertised_tools, durable_ops_router,
 };
 pub use awaken_sandbox_local::content_fingerprint;
-pub use legacy_resource_migration::migrate_legacy_skill_registry;
 pub use relay_hand::relay_hand_executor_factory;
 pub use worker_registry::{
-    WorkerDirectoryHandle, init_postgres as init_postgres_worker_registry,
-    inject as init_worker_registry, shared as worker_directory,
+    WorkerDirectoryHandle, inject as init_worker_registry, shared as worker_directory,
 };
 
 /// Canonical trusted-host ACP composition for outer product roots. This
@@ -106,17 +121,20 @@ pub fn install_platform_memory_data_plane(host: &SharedHost) {
 /// Keeping this factory at the data-plane composition edge prevents the runtime
 /// substrate from depending on concrete resource stores and prevents independent
 /// roots from drifting on filenames or backend selection.
-pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_runtime_host::ResourcePlane {
+pub fn embedded_resource_component(
+    root: &std::path::Path,
+) -> awaken_resource_contract::ResourceComponent {
     std::fs::create_dir_all(root).expect("create resource-plane directory");
+    let resources = Arc::new(
+        awaken_resource_store::SqliteResourceStore::open(root.join("resources.db"))
+            .expect("open Resources sqlite"),
+    );
     let memory = awaken_memory_store::SqliteMemoryRepository::open(
         root.join("memory_fs.db")
             .to_str()
             .expect("resource memory path is valid UTF-8"),
     )
     .expect("open resource memory sqlite");
-    memory
-        .import_legacy_versions(&root.join("resource-api.db"))
-        .expect("import legacy resource memory versions");
     let files = Arc::new(
         awaken_file_store::sqlite::SqliteFileStore::open(
             root.join("files.db")
@@ -125,21 +143,15 @@ pub fn embedded_resource_plane(root: &std::path::Path) -> awaken_runtime_host::R
         )
         .expect("open resource file sqlite"),
     );
-    awaken_runtime_host::ResourcePlane::new(
-        files.clone(),
-        files,
-        Arc::new(memory),
-        embedded_skill_store(root),
-        Arc::new({
-            let lifecycle = awaken_resource_store::SqliteResourceStore::open(
-                root.join("resource-lifecycle.db"),
-            )
-            .expect("open resource lifecycle sqlite");
-            lifecycle
-                .migrate_legacy_unscoped_schema()
-                .expect("migrate legacy resource lifecycle rows");
-            lifecycle
-        }),
+    awaken_resource_contract::build_resource_component(
+        awaken_resource_contract::ResourceDependencies {
+            resource_catalog: resources.clone(),
+            file_store: files.clone(),
+            file_catalog: files,
+            memory_repository: Arc::new(memory),
+            skill_store: embedded_skill_store(root),
+            lifecycle: resources,
+        },
     )
 }
 
@@ -151,9 +163,6 @@ pub fn embedded_skill_store(
 ) -> Arc<dyn awaken_resource_contract::SkillStore> {
     let skills = awaken_skill_store::FsSkillStore::open(root.join("skills"))
         .expect("open resource skill filesystem store");
-    skills
-        .migrate_legacy_files()
-        .expect("migrate legacy Skill files");
     Arc::new(skills)
 }
 
@@ -376,7 +385,7 @@ pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState
 
 fn ephemeral_resource_catalog() -> Arc<dyn awaken_protocol_managed::ResourceCatalog> {
     Arc::new(
-        awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+        awaken_resource_store::SqliteResourceStore::in_memory()
             .expect("open ephemeral Resource Catalog"),
     )
 }
@@ -592,21 +601,6 @@ fn mount_with_managed_over_and_models(
         || models_router(std::sync::Arc::new(default_models())),
         awaken_managed_routers::models_router_with_directory,
     );
-    // ADR-0050: install the Host-owned captured-content sink and expose the
-    // erasure + consent routes over the SAME store, so content a run captures is
-    // erasable within this one server (the run→capture→store→erase loop). Durable
-    // (sqlite under DeploymentConfig::storage_dir) so captured content + consent survive a
-    // restart; in-memory otherwise.
-    let (sink, eraser, ds_repo) = data_subject_plane();
-    host.install_capture_sink(sink);
-    let mut resolver =
-        awaken_data_subject::RepoDataSubjectResolver::new(ds_repo.clone()).with_eraser(eraser);
-    if let Some(session_blobs) = host.session_blob_eraser() {
-        resolver = resolver.with_eraser(session_blobs);
-    }
-    let resolver: Arc<dyn awaken_runtime_contract::DataSubjectResolver> = Arc::new(resolver);
-    let erasure = awaken_managed_routers::erasure_router(resolver);
-    let consent = awaken_managed_routers::consent_router(ds_repo, host.content_capture_ceiling());
     let local_workspace = host.local_workspace().to_string();
     let router = managed
         .merge(ai_sdk)
@@ -618,8 +612,6 @@ fn mount_with_managed_over_and_models(
         .merge(memory_stores)
         .merge(skills)
         .merge(models)
-        .merge(erasure)
-        .merge(consent)
         // A scope-less request is the local/single-tenant mode. Resolve that mode
         // once at the composition edge so sessions and every resource adapter see
         // the same platform-provisioned workspace. Authenticated/cloud edges stamp
@@ -642,22 +634,6 @@ fn mount_with_managed_over_and_models(
             },
         ));
     (router, dream_state)
-}
-
-/// The open data-subject plane (ADR-0050): the captured-content store (used as
-/// both the capture sink a run writes to and the eraser the endpoint fans out to)
-/// and the subject/consent repo. One captured-content instance backs both the sink
-/// and the eraser, so a run's content is erasable. Durable (sqlite under
-/// `DeploymentConfig::storage_dir`) or in-memory. Built once at composition (build_router).
-pub fn data_subject_plane() -> (
-    Arc<dyn awaken_runtime_contract::CaptureSink>,
-    Arc<dyn awaken_runtime_contract::ContentEraser>,
-    Arc<dyn awaken_data_subject::DataSubjectRepo>,
-) {
-    use awaken_data_subject::{InMemoryCapturedContentStore, InMemoryDataSubjectRepo};
-    let cap = Arc::new(InMemoryCapturedContentStore::new());
-    let repo = Arc::new(InMemoryDataSubjectRepo::new());
-    (cap.clone(), cap, repo)
 }
 
 /// The worker composition seam refuses incomplete or unsupported materialized

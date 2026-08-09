@@ -1064,6 +1064,7 @@ impl SharedHost {
                 .expect("capture sink lock poisoned")
                 .clone(),
             capture_decision: self.capture_decision.clone(),
+            data_subject_consent: self.data_subject_consent.clone(),
             thread_id,
             env,
             skill_registry,

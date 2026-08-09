@@ -161,6 +161,9 @@ wrappers = [
     "awaken-cli",
     "awaken-config-resolver",
     "awaken-data-subject",
+    # Coordinator persistence implements the neutral CaptureSink/ContentEraser
+    # ports; it does not depend on Runtime Core or Host behavior.
+    "awaken-captured-content-store",
     "awaken-managed-routers",
     # Worker-side ACP discovery/binding application service consumes credential
     # liveness values from the runtime contract without implementing execution.

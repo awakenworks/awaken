@@ -16,6 +16,8 @@ awaken-provisioning-contract.workspace = true
 awaken-run-ingress.workspace = true
 awaken-sandbox-local.workspace = true
 awaken-worker-transport-security.workspace = true
+awaken-executable-agent-contract.workspace = true
+awaken-deployment-contract.workspace = true
 awaken-worker-registry = { workspace = true }
 awaken-acp-contract = { workspace = true }
 awaken-managed-routers = { workspace = true }
@@ -67,7 +69,6 @@ awaken-model-catalog = { workspace = true, features = ["sqlite", "postgres"] }
 # SQLite and secrets only as AEAD-sealed blobs under typed control_seal_key.
 awaken-credential-vault = { workspace = true, features = ["oauth-command", "sqlite", "sealed-aead", "postgres"] }
 # Data-subject consent/erasure store (ADR-0050): backs the /v1/user_profiles/:id/erasure endpoint.
-awaken-data-subject = { workspace = true }
 # Embedded IAM (ADR-0042/0043 P1): typed self-managed identity gates management
 # plane behind bearer ApiTokens. contract = ids/scopes/requests, core = token
 # directory + minter + the default-deny PolicySet evaluator, preset = the seeded
@@ -122,6 +123,7 @@ container-podman = ["awaken-runtime-host/container-podman"]
 container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
+awaken-captured-content-store = { workspace = true }
 awaken-scenario-host = { workspace = true }
 awaken-run-ingress = { workspace = true }
 http-body-util = "0.1"

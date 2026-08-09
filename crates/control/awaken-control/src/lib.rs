@@ -16,10 +16,11 @@
 //! guard exactly where it applied before.
 
 pub mod admin_assistant;
-pub mod application_access;
 pub mod authz;
+mod component;
 pub mod control_stores;
 mod credential_reference;
+mod data_subject;
 mod managed_agents;
 pub mod worker_stores;
 
@@ -31,7 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use crate::admin_assistant::{
     CatalogCapabilityReader, ConfigServiceDraftStore, ConfigServiceDraftValidator,
-    EnvironmentStateAuthor, HostResourceInventory, seed_admin_assistant,
+    HostResourceInventory, seed_admin_assistant,
 };
 // Embedded management-plane IAM (ADR-0042/0043 P1): the authorizer, its boot
 // fn, the mint spec (tests / operator embeddings), and the bootstrap constants.
@@ -44,8 +45,12 @@ pub use crate::authz::{
     embedded_iam_for_tenant, embedded_iam_for_workspace, hosted_runtime_authorization_profile,
     management_authorization_profile, management_resource_authorization_profile,
 };
+pub use crate::component::{
+    ControlBuildError, ControlComponent, ControlDependencies, build_control_component,
+};
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};
 pub use crate::credential_reference::CredentialRevisionValidator;
+pub use crate::data_subject::{consent_router, erasure_router};
 pub use crate::managed_agents::ConfigPlaneManagedAgentRepository;
 pub use awaken_config_service::{
     LocalRuntimeCapability, RuntimeCapability, RuntimeCapabilitySource, static_runtime_capabilities,
@@ -60,7 +65,7 @@ pub use crate::worker_stores::{
 
 use awaken_admin_config_api::{AdminState, CredentialProbe, InferenceProfileStore, WebhookStore};
 use awaken_config_resolver::AgentInputBindingRepository;
-use awaken_config_service::{ConfigPlane, config_router};
+use awaken_config_service::{ConfigPlane, ManagementAuditPlane, config_router};
 use awaken_config_store::{AuditedConfigWrite, DEFAULT_SCOPE, ManagementAuditRecord};
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
@@ -72,7 +77,6 @@ use awaken_protocol_managed::{
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
-use awaken_webhook_managed::{WebhookLifecycleSink, assemble_with_session_repo};
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode};
@@ -83,7 +87,7 @@ static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const MAX_AUDITED_BODY: usize = 2 * 1024 * 1024;
 
 async fn durable_management_audit(
-    axum::extract::State(plane): axum::extract::State<ConfigPlane>,
+    axum::extract::State(plane): axum::extract::State<ManagementAuditPlane>,
     request: Request<Body>,
     next: axum::middleware::Next,
 ) -> Response {
@@ -130,7 +134,7 @@ async fn durable_management_audit(
         call_id,
         summary: format!("body_sha256={body_hash}"),
     };
-    match plane.record_management_audit(&scope, &audit).await {
+    match plane.record(&scope, &audit).await {
         Ok(AuditedConfigWrite::Applied) => {}
         Ok(AuditedConfigWrite::Replayed) => {
             // The prior attempt may have committed business state and crashed
@@ -154,7 +158,7 @@ async fn durable_management_audit(
         .await;
     if response.status().is_success()
         && let Err(error) = plane
-            .mark_management_audit_committed(&scope, &audit.tool, &audit.call_id)
+            .mark_committed(&scope, &audit.tool, &audit.call_id)
             .await
     {
         // The business write already succeeded. Keep the durable pending audit
@@ -292,7 +296,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     let user_profiles = user_profiles_router(Arc::new(UserProfileState::new()));
     // The config authoring plane (`/v1/config/agents/*`): the console authors the
     // rich `AgentConfig` here and `publish` compiles + installs it so sessions run it.
-    let audit_plane = plane.clone();
+    let audit_plane = plane.management_audit_plane();
     let config_plane = config_router(plane);
     // `/v1/agents` projects the config plane it hosts: an agent published via
     // `/v1/config/agents` is retrievable as a managed-wire projection of that single
@@ -327,20 +331,6 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     mgmt
 }
 
-/// Construct only the outbound lifecycle sink used by Managed Execution.
-///
-/// Split Coordinator composition must not instantiate the authoring router merely
-/// to obtain this adapter. Subscription custody remains in the supplied Control
-/// ports; this function exposes no CRUD or other management state.
-pub fn webhook_lifecycle_sink(
-    webhook_store: Arc<dyn WebhookStore>,
-    secrets: Arc<dyn SecretStore>,
-    org_id: Option<String>,
-    sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
-) -> Arc<WebhookLifecycleSink> {
-    assemble_with_session_repo(webhook_store, secrets, org_id, sessions).0
-}
-
 /// Apply the canonical management audit and IAM edge to a domain router.
 ///
 /// Deployment is execution-owned, but its public management API must retain the
@@ -348,7 +338,7 @@ pub fn webhook_lifecycle_sink(
 /// edge here prevents a second interpretation of management identity in the CLI.
 pub fn protect_management_router(
     mut router: Router,
-    audit_plane: ConfigPlane,
+    audit_plane: ManagementAuditPlane,
     iam: Option<Arc<ManagementAuthz>>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
 ) -> Router {

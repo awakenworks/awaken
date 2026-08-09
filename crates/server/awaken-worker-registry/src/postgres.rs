@@ -32,11 +32,29 @@ impl PostgresWorkerDirectory {
         Self::with_pool(pool).await
     }
 
+    /// Connect to a registry schema already applied by the deployment migration
+    /// phase. This path verifies the ledger and never executes DDL.
+    pub async fn connect_existing(url: &str) -> Result<Self, RegistryError> {
+        let pool = PgPool::connect(url).await.map_err(persist)?;
+        Self::with_existing_pool(pool).await
+    }
+
     pub async fn with_pool(pool: PgPool) -> Result<Self, RegistryError> {
         let bundle = registry_bundle().map_err(persist)?;
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
             .map_err(persist)?
             .run_bundle(&bundle)
+            .await
+            .map_err(persist)?;
+        Ok(Self { pool })
+    }
+
+    /// Wrap a shared pool after verifying its externally-owned migration ledger.
+    pub async fn with_existing_pool(pool: PgPool) -> Result<Self, RegistryError> {
+        let bundle = registry_bundle().map_err(persist)?;
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .map_err(persist)?
+            .verify_bundle(&bundle)
             .await
             .map_err(persist)?;
         Ok(Self { pool })

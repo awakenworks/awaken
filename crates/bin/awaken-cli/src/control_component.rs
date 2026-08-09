@@ -1,0 +1,263 @@
+//! Process adapters for the canonical Control application component.
+//!
+//! This module maps concrete product stores and provider adapters onto
+//! `awaken-control` ports. It contains no Control business implementation.
+
+use super::*;
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn control_component_for_process(
+    stores: &ProcessStores,
+    execution_workspace: &str,
+    executable_agent_registrar: Arc<dyn awaken_executable_agent_contract::ExecutableAgentRegistrar>,
+    model_publication_resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
+    web_search_publication_resolver: Arc<dyn awaken_config_service::PluginPublicationResolver>,
+    web_search_providers: &awaken_ext_builtin_tools::WebSearchProviderRegistry,
+    brokered_client: Option<Arc<awaken_server::brokered_inference::HttpBrokeredInferenceClient>>,
+    injected_brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
+    model_supply: awaken_admin_config_api::ModelSupplyCapabilityView,
+    local_acp_observations: &[awaken_acp_application::AcpHostObservation],
+    runtimes: Arc<dyn awaken_config_service::RuntimeCapabilitySource>,
+    resource_inventory: Option<Arc<dyn awaken_admin_assistant::ResourceInventory>>,
+    environment_author: Arc<dyn awaken_admin_assistant::EnvironmentAuthor>,
+    coordinator_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
+    content_capture_ceiling: awaken_runtime_contract::ContentCapture,
+    iam: Option<Arc<ManagementAuthz>>,
+    local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
+    remote_iam: Option<Arc<RemoteManagementAuthz>>,
+) -> awaken_control::ControlComponent {
+    let control = stores
+        .control
+        .as_ref()
+        .expect("Control process requires Control stores");
+    let assistant_catalog = control.catalog.snapshot().await.unwrap_or_default();
+    let assistant_credentials = control
+        .credentials
+        .list(execution_workspace)
+        .await
+        .unwrap_or_default();
+    let assistant_model_selection = assistant_selection::select(
+        &assistant_catalog,
+        &assistant_credentials,
+        local_acp_observations,
+    );
+    awaken_control::build_control_component(awaken_control::ControlDependencies {
+        execution_workspace: execution_workspace.to_owned(),
+        catalog: control.catalog.clone(),
+        credentials: control.credentials.clone(),
+        secrets: control.secrets.clone(),
+        profiles: control.profiles.clone(),
+        webhook_store: control.webhooks.clone(),
+        resource_store: control.resources.clone(),
+        config_store: control.config.clone(),
+        executable_agent_registrar,
+        model_publication_resolver,
+        plugin_publication_resolvers: vec![web_search_publication_resolver],
+        credential_probe: Arc::new(credential_probe::GenaiProbe),
+        model_discovery: Arc::new(awaken_server::model_discovery::GenaiModelDiscovery::new(
+            control.secrets.clone(),
+        )),
+        brokered_catalog: injected_brokered_catalog.or_else(|| {
+            brokered_client
+                .map(|client| client as Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>)
+        }),
+        model_supply,
+        mcp_probe: Some(Arc::new(ExtMcpProbe)),
+        assistant_model_selection,
+        global_tools: awaken_runtime_host::authorable_tools(),
+        platform_plugins: awaken_runtime_host::platform_plugin_capabilities_with_web_search(
+            web_search_providers,
+        ),
+        assistant_plugins: awaken_runtime_host::authorable_config_sections_with_web_search(
+            web_search_providers,
+        ),
+        runtimes,
+        resource_inventory,
+        environment_author,
+        data_subjects: control.data_subjects.clone(),
+        erasure_jobs: control.erasure_jobs.clone(),
+        coordinator_content_eraser,
+        resource_content_eraser: None,
+        content_capture_ceiling,
+        iam,
+        local_browser_auth,
+        remote_iam,
+    })
+    .await
+    .unwrap_or_else(|error| panic!("build Control component: {error}"))
+}
+
+/// Standalone Control process assembly. It opens no Managed Execution path and
+/// asks the same Control component builder used by AllInOne for the complete
+/// authoring application.
+pub(super) async fn assemble_control_process_router(
+    stores: ProcessStores,
+    iam: Option<Arc<ManagementAuthz>>,
+    remote_iam: Option<Arc<RemoteManagementAuthz>>,
+    local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
+    model_composition: PublicationModelComposition,
+    assembly: ProcessAssemblyOptions,
+) -> Router {
+    debug_assert_eq!(assembly.role, config::Role::Control);
+    let (_, executable_agent_registrar, _, _, environment_author, coordinator_content_eraser) =
+        executable_agent_registration::process_parts(assembly.executable_agent_wiring);
+    let content_capture_ceiling = assembly.content_capture_ceiling;
+    let execution_workspace = stores.workspace_root.as_deref().map_or_else(
+        SharedHost::provision_local_workspace,
+        SharedHost::provision_local_workspace_at,
+    );
+    let model_supply = assembly.model_supply.clone();
+    let cloud_models_enabled = model_supply.cloud_models_enabled;
+    let brokered_client = brokered_inference_client(
+        cloud_models_enabled,
+        remote_iam.as_ref(),
+        assembly.cloud_api_base_url.as_deref(),
+        &execution_workspace,
+    );
+    let model_assembly =
+        publication_model_assembly(model_composition, &stores, cloud_models_enabled);
+    let web_search_providers = assembly
+        .web_search_providers
+        .unwrap_or_else(awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins);
+    let web_search_publication_resolver =
+        assembly.web_search_publication_resolver.unwrap_or_else(|| {
+            Arc::new(awaken_config_service::WebSearchPublicationResolver::new(
+                web_search_providers.clone(),
+            ))
+        });
+    let runtimes = Arc::new(LiveRuntimeCapabilities {
+        initial: assembly.local_acp_observations.clone(),
+        workers: awaken_server::worker_directory(),
+        credentials: stores
+            .control
+            .as_ref()
+            .expect("Control process requires Control stores")
+            .credentials
+            .clone(),
+        workspace: execution_workspace.clone(),
+    });
+    let component = control_component_for_process(
+        &stores,
+        &execution_workspace,
+        executable_agent_registrar,
+        model_assembly.publication_resolver,
+        web_search_publication_resolver,
+        &web_search_providers,
+        brokered_client,
+        assembly.brokered_catalog,
+        model_supply,
+        &assembly.local_acp_observations,
+        runtimes,
+        None,
+        environment_author.unwrap_or_else(test_environment_author),
+        coordinator_content_eraser.unwrap_or_else(test_coordinator_content_eraser),
+        content_capture_ceiling,
+        iam,
+        local_browser_auth,
+        remote_iam,
+    )
+    .await;
+    let webhook_delivery = {
+        let control = stores
+            .control
+            .as_ref()
+            .expect("Control process requires Control stores");
+        awaken_webhook_managed::config_plane_lifecycle_delivery(
+            control.webhooks.clone(),
+            control.secrets.clone(),
+            assembly.org_id.clone(),
+        )
+    };
+    let router = match assembly.control_service_token.as_deref() {
+        Some(token) => component.router.merge(
+            awaken_server::control_service_boundary::router(
+                component.management_audit.clone(),
+                component.vault_state.clone(),
+                webhook_delivery,
+                component.data_subject_consent.clone(),
+                token,
+            )
+            .unwrap_or_else(|error| panic!("build Control service boundary: {error}")),
+        ),
+        None => component.router,
+    };
+    let mcp_export = awaken_server::mcp_export::router(
+        awaken_admin_assistant::admin_tool_descriptors(),
+        component.admin_tools,
+        assembly.mcp_bearer_token,
+    );
+    process_surface::finish(
+        router,
+        mcp_export,
+        Some(component.publication_reconciler),
+        execution_workspace,
+        Arc::new(
+            awaken_protocol_managed::ManagedRateLimiter::for_organization(
+                assembly.org_id.unwrap_or_else(local_org_id),
+            ),
+        ),
+    )
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn standalone_control_uses_the_authored_capture_ceiling() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use tower::ServiceExt as _;
+
+    // Causes: C1 standalone Control has no Runtime deployment object, C2 its
+    // authored ceiling is Off, C3 the request asks for Full, C4 the subject is
+    // absent. Effects: E1 the endpoint is available, E2 effective capture is Off.
+    // Constraint: consent may only narrow the authored ceiling.
+    // Decision rule R1 = C1+C2+C3+C4 -> E1+E2. This pins the policy input that
+    // standalone Control must carry independently of Runtime deployment state.
+    let app = assemble_control_process_router(
+        in_memory_control_stores(),
+        None,
+        None,
+        None,
+        PublicationModelComposition::PublishedProviders,
+        ProcessAssemblyOptions {
+            role: config::Role::Control,
+            content_capture_ceiling: awaken_runtime_contract::ContentCapture::Off,
+            ..Default::default()
+        },
+    )
+    .await;
+    let response = app
+        .oneshot(
+            Request::get("/v1/user_profiles/unknown/capture-decision?requested=full")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["effective"], "off", "R1 + R2");
+}
+
+#[cfg(test)]
+fn test_environment_author() -> Arc<dyn awaken_admin_assistant::EnvironmentAuthor> {
+    Arc::new(
+        awaken_server::environment_boundary::LocalEnvironmentAuthor::new(
+            awaken_protocol_managed::EnvironmentState::new().application(),
+        ),
+    )
+}
+
+#[cfg(test)]
+fn test_coordinator_content_eraser() -> Arc<dyn awaken_runtime_contract::ContentEraser> {
+    Arc::new(awaken_captured_content_store::InMemoryCapturedContentStore::new())
+}
+
+#[cfg(not(test))]
+fn test_coordinator_content_eraser() -> Arc<dyn awaken_runtime_contract::ContentEraser> {
+    panic!("split Control requires Coordinator content-erasure adapter")
+}
+
+#[cfg(not(test))]
+fn test_environment_author() -> Arc<dyn awaken_admin_assistant::EnvironmentAuthor> {
+    panic!("split Control requires Coordinator Environment adapter")
+}

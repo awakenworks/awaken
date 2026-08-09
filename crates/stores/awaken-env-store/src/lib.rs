@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_session_contract::env_registry::{
-    EnvItem, EnvRegistry, EnvUpdate, EnvironmentConfig, EnvironmentRevision,
+    CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvItem,
+    EnvRegistry, EnvUpdate, EnvironmentConfig, EnvironmentRevision,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sqlx::Row;
@@ -50,6 +51,14 @@ fn env_bundle() -> Result<MigrationBundle, MigrationError> {
                 3,
                 "Anthropic Environment visibility scope",
                 "ALTER TABLE {prefix}_env ADD COLUMN scope TEXT",
+            )?,
+            Migration::new(
+                4,
+                "idempotent Environment create commands",
+                "CREATE TABLE {prefix}_create_command (\
+                 command_id  TEXT PRIMARY KEY, \
+                 fingerprint TEXT NOT NULL, \
+                 env_id      TEXT NOT NULL UNIQUE REFERENCES {prefix}_env(env_id) ON DELETE CASCADE)",
             )?,
         ],
     )
@@ -165,18 +174,31 @@ impl SqliteEnvRegistry {
 
 #[async_trait]
 impl EnvRegistry for SqliteEnvRegistry {
-    async fn create_scoped(
+    async fn create_once(
         &self,
-        name: String,
-        description: String,
-        metadata: BTreeMap<String, String>,
-        scope: Option<String>,
-        config: EnvironmentConfig,
-    ) -> EnvItem {
+        command: CreateEnvironmentCommand,
+    ) -> Result<CreateEnvironmentOutcome, CreateEnvironmentError> {
         let mut guard = self.conn.lock().expect("env registry mutex poisoned");
         let tx = guard
             .transaction_with_behavior(TransactionBehavior::Immediate)
-            .expect("begin immediate");
+            .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        let fingerprint = command.fingerprint();
+        let replay: Option<(String, String)> = tx
+            .query_row(
+                "SELECT fingerprint, env_id FROM env_registry_create_command WHERE command_id = ?1",
+                params![command.command_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        if let Some((existing_fingerprint, environment_id)) = replay {
+            if existing_fingerprint != fingerprint {
+                return Err(CreateEnvironmentError::IdempotencyConflict);
+            }
+            let item = Self::read(&tx, &environment_id)
+                .ok_or_else(|| CreateEnvironmentError::Store("command target is missing".into()))?;
+            return Ok(CreateEnvironmentOutcome::Replayed(item));
+        }
         let next: i64 = tx
             .query_row(
                 "SELECT COALESCE(MAX(seq), -1) + 1 FROM env_registry_env",
@@ -192,25 +214,32 @@ impl EnvRegistry for SqliteEnvRegistry {
             params![
                 id,
                 next,
-                name,
-                description,
-                metadata_str(&metadata),
-                config_str(&config),
-                scope
+                command.name,
+                command.description,
+                metadata_str(&command.metadata),
+                config_str(&command.config),
+                command.scope
             ],
         )
-        .expect("insert env");
-        tx.commit().expect("commit create");
-        EnvItem {
-            id,
+        .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        tx.execute(
+            "INSERT INTO env_registry_create_command (command_id, fingerprint, env_id) VALUES (?1, ?2, ?3)",
+            params![command.command_id, fingerprint, id],
+        )
+        .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        let item = EnvItem {
+            id: id.clone(),
             revision: EnvironmentRevision(1),
-            name,
-            description,
-            metadata,
-            scope,
-            config,
+            name: command.name,
+            description: command.description,
+            metadata: command.metadata,
+            scope: command.scope,
+            config: command.config,
             archived_at: None,
-        }
+        };
+        tx.commit()
+            .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        Ok(CreateEnvironmentOutcome::Created(item))
     }
 
     async fn list_active(&self) -> Vec<EnvItem> {
@@ -336,15 +365,48 @@ impl PostgresEnvRegistry {
 
 #[async_trait]
 impl EnvRegistry for PostgresEnvRegistry {
-    async fn create_scoped(
+    async fn create_once(
         &self,
-        name: String,
-        description: String,
-        metadata: BTreeMap<String, String>,
-        scope: Option<String>,
-        config: EnvironmentConfig,
-    ) -> EnvItem {
-        let mut tx = self.pool.begin().await.expect("begin");
+        command: CreateEnvironmentCommand,
+    ) -> Result<CreateEnvironmentOutcome, CreateEnvironmentError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        sqlx::query("LOCK TABLE env_registry_create_command IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        let fingerprint = command.fingerprint();
+        let replay = sqlx::query(
+            "SELECT fingerprint, env_id FROM env_registry_create_command WHERE command_id = $1",
+        )
+        .bind(&command.command_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        if let Some(row) = replay {
+            let existing_fingerprint: String = row.get("fingerprint");
+            if existing_fingerprint != fingerprint {
+                return Err(CreateEnvironmentError::IdempotencyConflict);
+            }
+            let environment_id: String = row.get("env_id");
+            let item = sqlx::query(&format!(
+                "SELECT {COLS} FROM env_registry_env WHERE env_id = $1"
+            ))
+            .bind(environment_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?
+            .map(|row| pg_row(&row))
+            .ok_or_else(|| CreateEnvironmentError::Store("command target is missing".into()))?;
+            return Ok(CreateEnvironmentOutcome::Replayed(item));
+        }
+        sqlx::query("LOCK TABLE env_registry_env IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
         let next: i64 =
             sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM env_registry_env")
                 .fetch_one(&mut *tx)
@@ -358,25 +420,31 @@ impl EnvRegistry for PostgresEnvRegistry {
         )
         .bind(&id)
         .bind(next)
-        .bind(&name)
-        .bind(&description)
-        .bind(metadata_str(&metadata))
-        .bind(config_str(&config))
-        .bind(&scope)
+        .bind(&command.name)
+        .bind(&command.description)
+        .bind(metadata_str(&command.metadata))
+        .bind(config_str(&command.config))
+        .bind(&command.scope)
         .execute(&mut *tx)
         .await
-        .expect("insert env");
-        tx.commit().await.expect("commit create");
-        EnvItem {
-            id,
+        .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        sqlx::query("INSERT INTO env_registry_create_command (command_id, fingerprint, env_id) VALUES ($1, $2, $3)")
+            .bind(&command.command_id).bind(&fingerprint).bind(&id)
+            .execute(&mut *tx).await.map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        let item = EnvItem {
+            id: id.clone(),
             revision: EnvironmentRevision(1),
-            name,
-            description,
-            metadata,
-            scope,
-            config,
+            name: command.name,
+            description: command.description,
+            metadata: command.metadata,
+            scope: command.scope,
+            config: command.config,
             archived_at: None,
-        }
+        };
+        tx.commit()
+            .await
+            .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        Ok(CreateEnvironmentOutcome::Created(item))
     }
 
     async fn list_active(&self) -> Vec<EnvItem> {

@@ -7,8 +7,10 @@ from pathlib import Path
 import _arch_fitness
 import _coordinator_authority_fitness
 import _crate_dependency_fitness
+import _migration_fitness
 from _executable_agent_boundary import EXECUTABLE_AGENT_ALLOWED_DEPS
 import _provider_env_fitness
+from _privacy_boundary import PRIVACY_ALLOWED_DEPS
 import _resource_plane_fitness
 import _runtime_secret_boundary
 import _service_data_ownership_fitness
@@ -34,6 +36,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     **MANAGED_ROUTERS_ALLOWED_DEPS,
     **MANAGED_PROTOCOL_ALLOWED_DEPS,
     **EXECUTABLE_AGENT_ALLOWED_DEPS,
+    **PRIVACY_ALLOWED_DEPS,
     # zeroize backs RedactedString's zero-on-drop (ADR-0043); a leaf crypto-hygiene
     # primitive, not a model/provider SDK.
     "awaken-agent-contract": {"serde", "serde_json", "thiserror", "async-trait", "tokio", "zeroize", "http", "schemars"},
@@ -196,26 +199,6 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # `catalog` migration scope (ADR-0043); the SQL driver, as config-store.
         "sqlx",
         # dev-only: reopen-from-file persistence tests.
-        "tempfile",
-    },
-    # Data-subject aggregate + consent grants + repo/resolver (ADR-0050): a
-    # control/compliance-plane store peer to the credential vault; reuses the
-    # neutral DataSubjectId/Purpose/DataSubjectResolver from runtime-contract.
-    "awaken-data-subject": {
-        "awaken-agent-contract",
-        "awaken-runtime-contract",
-        "async-trait",
-        "serde",
-        "serde_json",
-        "thiserror",
-        "rusqlite",
-        # `spawn_blocking` for the sqlite adapter's off-thread connection work.
-        "tokio",
-        "awaken-scoped-migration",
-        "awaken-scoped-migration-sqlite",
-        # feature `postgres`: the PgDataSubjectRepo / PgCapturedContentStore backend.
-        "sqlx",
-        # dev-only: reopen-from-file persistence test.
         "tempfile",
     },
     "awaken-credential-vault": {
@@ -1280,6 +1263,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # Resource facts and lifecycle SPIs are consumed from their canonical
         # owner; the host must not obtain them through the Managed facade.
         "awaken-resource-contract",
+        # dev-only: host tests use the canonical Resource catalog adapter.
+        "awaken-resource-store",
         "awaken-runtime",
         "tower",
         # dev-only: the files/models routers were extracted to this sibling adapter;
@@ -1372,7 +1357,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "reqwest", "serde", "serde_json", "sha2", "thiserror", "tokio",
     },
     "awaken-resource-reclaimer": {"awaken-resource-contract", "async-trait", "tokio"},
-"awaken-resource-store": {"awaken-resource-contract", "awaken-scoped-migration", "awaken-scoped-migration-sqlite", "async-trait", "parking_lot", "proptest", "rusqlite", "serde_json", "sqlx", "tempfile", "tokio"},
+"awaken-resource-store": {"awaken-resource-contract", "awaken-scoped-migration", "awaken-scoped-migration-sqlite", "async-trait", "parking_lot", "proptest", "rusqlite", "serde", "serde_json", "sqlx", "tempfile", "tokio"},
     # Single-machine assembly binary: the composition root. Since the service
     # layer moved to awaken-runtime-host; it composes host/protocol/management router modes.
     # Test-only scenario host (Stage A): the mock models + build_*_router scenario
@@ -1397,6 +1382,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-connection-plan",
         "awaken-credential-vault",
         "awaken-data-subject",
+        # dev-only: capability-inventory tests use the canonical Resource adapter.
+        "awaken-resource-store",
         "awaken-ext-builtin-tools",
         "awaken-ext-skills",
         "awaken-ext-mcp",
@@ -1453,6 +1440,12 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-run-ingress", "awaken-runtime-host",
         "awaken-config-service", "awaken-credential-materializer",
         "awaken-worker-transport-security",
+        # Coordinator consumes Control's immutable registration projection through
+        # the read port; it never imports Control authoring or its database.
+        "awaken-executable-agent-contract",
+        # Coordinator owns Deployment/DeploymentRun through the inward repository
+        # contract; protocol-managed remains only its HTTP projection.
+        "awaken-deployment-contract",
         "awaken-session-store",
         "awaken-session-contract", "awaken-resource-contract",
         # Outer composition owns Hand topology/relay; runtime-host exposes only APIs/SPIs.
@@ -1464,8 +1457,8 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-admin-assistant",
         # ADR-0051/0052: the opaque scope id the reserved-scope seeding is keyed by.
         "awaken-tenancy",
-        # ADR-0050: the data-subject consent/erasure store backing the erasure endpoint.
-        "awaken-data-subject", "awaken-observability", "awaken-authz-enforce",
+        # Dev-only: the private erasure boundary test uses the Coordinator store.
+        "awaken-captured-content-store", "awaken-observability", "awaken-authz-enforce",
         "awaken-run-executor-acp", "awaken-acp-application", "awaken-protocol-acp",
         "awaken-provisioning-contract",
         "awaken-protocol-managed",
@@ -1549,6 +1542,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # control names this, NOT the data-plane host.
         "awaken-config-service",
         "awaken-admin-assistant",
+        "awaken-executable-agent-contract",
         "awaken-tenancy",
         "awaken-authz-enforce",
         "awaken-protocol-managed",
@@ -1560,6 +1554,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-model-catalog",
         "awaken-credential-vault",
         "awaken-data-subject",
+        "awaken-resource-store",
         "awaken-iam-contract",
         "awaken-iam-server",
         "awaken-iam-core",
@@ -1577,6 +1572,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         # Secret-free, fixed-size request-body fingerprints for the durable
         # management audit middleware. The body itself is never persisted.
         "sha2",
+        "base64",
+        "uuid",
+        "thiserror",
         "tokio",
         "axum",
         # dev-only: the authz restart tests open a tempdir-backed iam.sqlite.
@@ -1609,6 +1607,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-sandbox-policy-store",
         "awaken-resource-store",
         "awaken-resource-reclaimer",
+        # Process adapter joining Control-owned subscriptions/secrets to the
+        # Coordinator-owned Session lifecycle outbox.
+        "awaken-webhook-managed",
         "awaken-file-store", "awaken-memory-store", "awaken-resource-contract",
         "awaken-session-contract", "awaken-session-store",
         "awaken-executable-agent-contract",
@@ -1633,6 +1634,10 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-admin-config-api",
         "awaken-config-store",
         "awaken-config-resolver",
+        # Composition is the only layer allowed to open both role-owned privacy
+        # adapters; it injects ports and never shares their database handles.
+        "awaken-data-subject",
+        "awaken-captured-content-store",
         # The durable skill catalog, shared by the host and the capability inventory.
         "awaken-skill-store",
         "awaken-admin-assistant",
@@ -1937,8 +1942,6 @@ BUCKET_ALLOWED_DEPS = {
         "devtools",
     },
 }
-
-
 # The neutral-core / crate-layout fitness rules (contract purity, protocol-leaf, god-hub
 # ratchet — Phases 0.1 / 0.2 / 3) live in `_arch_fitness.py` (pure predicates + cause-
 # effect selftests), imported and driven by `main()` over the parsed crate specs. Split
@@ -1955,6 +1958,7 @@ BUCKET_ALLOWED_DEPS = {
 def main() -> int:
     _arch_fitness.selftest()
     _coordinator_authority_fitness.selftest()
+    _migration_fitness.selftest()
     _service_data_ownership_fitness.selftest()
     errors = (
         check_dependencies()
@@ -1967,6 +1971,7 @@ def main() -> int:
         + _provider_env_fitness.check_all(REPO_ROOT, CRATES)
         + _arch_fitness.check_all(architecture_fitness_specs())
         + _coordinator_authority_fitness.check_all(REPO_ROOT, CRATES)
+        + _migration_fitness.check_all(REPO_ROOT)
         + _service_data_ownership_fitness.check_all(REPO_ROOT)
     )
     if errors:

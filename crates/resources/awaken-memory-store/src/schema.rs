@@ -1,7 +1,6 @@
 //! The memory-store schema. One portable [`MigrationBundle`] under the
-//! `memory_store` namespace. V0002 defines the active path-addressed `MemoryRepository`
-//! storage. V0001 is retained only so existing migration histories remain valid;
-//! its former workspace-scoped blob table has no production adapter or port.
+//! `memory_store` namespace. V0001 defines the complete active path-addressed
+//! aggregate; no retired projection table is created.
 //!
 //! The DDL is a `.sql` file under `migrations/`, embedded with `include_str!`: the
 //! file name carries the version (`V0001__…` ⇒ version 1) and the first
@@ -13,20 +12,10 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 pub const BUNDLE_ID: &str = "awaken.memory_store";
 
 /// Embedded migration files, in apply order (`(name, contents)`).
-const FILES: &[(&str, &str)] = &[
-    (
-        "V0001__blob.sql",
-        include_str!("migrations/V0001__blob.sql"),
-    ),
-    (
-        "V0002__memories.sql",
-        include_str!("migrations/V0002__memories.sql"),
-    ),
-    (
-        "V0003__versions_and_counters.sql",
-        include_str!("migrations/V0003__versions_and_counters.sql"),
-    ),
-];
+const FILES: &[(&str, &str)] = &[(
+    "V0001__memory_store.sql",
+    include_str!("migrations/V0001__memory_store.sql"),
+)];
 
 /// Version from a `Vnnnn__slug.sql` file name (`V0001__…` ⇒ 1); a non-positive
 /// value is rejected by [`Migration::new`], so a mis-named file fails loudly.
@@ -69,6 +58,9 @@ mod tests {
 
     #[test]
     fn memory_store_bundle_lints() {
+        // Cause/effect rule: the one active MemoryStore aggregate requires the
+        // current rows, version journal, and id counters together. Its V1 owns
+        // exactly those tables and no retired workspace-blob projection.
         let bundle = memory_store_bundle().expect("bundle builds");
         awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
     }

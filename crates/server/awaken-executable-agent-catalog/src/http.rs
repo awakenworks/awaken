@@ -6,7 +6,7 @@ use std::time::Duration;
 use awaken_executable_agent_contract::{
     ExecutableAgentRegistrar, ExecutableAgentRegistration, ExecutableAgentRegistrationError,
     ExecutableAgentRegistrationOutcome, ExecutableAgentWithdrawal,
-    ExecutableAgentWithdrawalOutcome,
+    ExecutableAgentWithdrawalOutcome, service_bearer_token_matches,
 };
 use axum::Json;
 use axum::extract::State;
@@ -86,11 +86,12 @@ async fn withdraw(
 }
 
 fn authorized(headers: &HeaderMap, expected: &str) -> bool {
-    headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|actual| actual.as_bytes() == expected.as_bytes())
+    service_bearer_token_matches(
+        headers
+            .get(header::AUTHORIZATION)
+            .map(|value| value.as_bytes()),
+        expected,
+    )
 }
 
 fn registration_error_response(
@@ -393,6 +394,25 @@ mod tests {
                 "",
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn private_bearer_matching_fails_closed() {
+        // Causes: header presence, exact scheme, exact token bytes. Effects:
+        // authorize only R1; missing, wrong scheme, and wrong token are denied.
+        assert!(
+            service_bearer_token_matches(Some(b"Bearer secret"), "secret"),
+            "R1"
+        );
+        assert!(!service_bearer_token_matches(None, "secret"), "R2");
+        assert!(
+            !service_bearer_token_matches(Some(b"bearer secret"), "secret"),
+            "R3"
+        );
+        assert!(
+            !service_bearer_token_matches(Some(b"Bearer other"), "secret"),
+            "R4"
         );
     }
 

@@ -26,12 +26,14 @@ use awaken_deployment_contract::{
     DeploymentRecord as StoredDeployment, DeploymentRepository, DeploymentRepositoryError,
     DeploymentRunRecord as StoredDeploymentRun,
 };
+use awaken_executable_agent_contract::{
+    ExecutableAgentRegistrationError, ExecutableAgentRegistrationSource,
+};
 use awaken_session_contract::ManagedLifecycleFact;
 
 use crate::ManagedRateLimiter;
-use crate::routes::agents_registry::{ManagedAgentError, ManagedAgentRepository};
 use crate::routes::{ManagedJson, WorkspaceScope};
-use crate::types::agent::{AgentReference, AgentStatus};
+use crate::types::agent::AgentReference;
 use crate::types::deployment::{
     Deployment, DeploymentCreateParams, DeploymentInitialEvent, DeploymentRun,
     DeploymentUpdateParams, PausedReason, RunError, Schedule, TriggerContext,
@@ -102,7 +104,7 @@ pub struct DeploymentState {
     launcher: Mutex<Option<Arc<dyn DeploymentSessionLauncher>>>,
     rate_limiter: Mutex<Option<Arc<ManagedRateLimiter>>>,
     repository: Option<Arc<dyn DeploymentRepository>>,
-    agent_repository: Mutex<Option<Arc<dyn ManagedAgentRepository>>>,
+    executable_agents: Mutex<Option<Arc<dyn ExecutableAgentRegistrationSource>>>,
     scheduled_limit: usize,
 }
 
@@ -116,7 +118,7 @@ impl Default for DeploymentState {
             launcher: Mutex::new(None),
             rate_limiter: Mutex::new(None),
             repository: None,
-            agent_repository: Mutex::new(None),
+            executable_agents: Mutex::new(None),
             scheduled_limit: MAX_SCHEDULED_DEPLOYMENTS,
         }
     }
@@ -323,13 +325,12 @@ async fn refresh_projection(state: &DeploymentState) -> Result<(), WireError> {
         .map_err(repository_unavailable)
 }
 
-fn agent_resolution_error(error: ManagedAgentError) -> WireError {
+fn agent_resolution_error(error: ExecutableAgentRegistrationError) -> WireError {
     match error {
-        ManagedAgentError::NotFound => not_found("agent"),
-        ManagedAgentError::Invalid(message) | ManagedAgentError::Conflict(message) => {
-            invalid(message)
-        }
-        ManagedAgentError::Storage(message) => repository_unavailable(message),
+        ExecutableAgentRegistrationError::Invalid(message)
+        | ExecutableAgentRegistrationError::Conflict(message) => invalid(message),
+        ExecutableAgentRegistrationError::Unavailable(message)
+        | ExecutableAgentRegistrationError::Storage(message) => repository_unavailable(message),
     }
 }
 
@@ -829,8 +830,9 @@ async fn list_runs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ModelConfig;
-    use crate::types::agent::{Agent, AgentCreateParams, AgentListParams, AgentUpdateParams};
+    use awaken_executable_agent_contract::{
+        ExecutableAgentRegistration, ExecutableAgentSessionProfile, ExecutableAgentSnapshot,
+    };
 
     // 2026-01-05 09:00:00 UTC (a Monday).
     const MON_0900: u64 = 1_767_603_600_000;
@@ -888,119 +890,84 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
 
-    struct ResolvingAgentRepository {
-        selected: Result<(u64, AgentStatus), ManagedAgentError>,
+    struct RegistrationSource {
+        selected: Result<Option<u64>, ExecutableAgentRegistrationError>,
         requested_versions: Mutex<Vec<Option<u64>>>,
     }
 
-    impl ResolvingAgentRepository {
+    impl RegistrationSource {
         fn published(version: u64) -> Self {
             Self {
-                selected: Ok((version, AgentStatus::Published)),
+                selected: Ok(Some(version)),
                 requested_versions: Mutex::new(Vec::new()),
             }
         }
 
-        fn projected(id: &str, version: u64, status: AgentStatus) -> Agent {
-            Agent {
-                id: id.into(),
-                object_type: "agent",
-                archived_at: (status == AgentStatus::Archived).then(|| OBJECT_AT.into()),
-                disabled_at: (status == AgentStatus::Disabled).then(|| OBJECT_AT.into()),
-                status,
-                created_at: OBJECT_AT.into(),
-                updated_at: OBJECT_AT.into(),
-                name: "agent".into(),
-                description: None,
-                model: ModelConfig::new("claude-sonnet-5"),
-                system: None,
-                metadata: BTreeMap::new(),
-                mcp_servers: Vec::new(),
-                skills: Vec::new(),
-                tools: Vec::new(),
-                multiagent: None,
-                x_awaken: None,
-                version,
+        fn registration(
+            workspace_id: &str,
+            agent_id: &str,
+            version: u64,
+        ) -> ExecutableAgentRegistration {
+            ExecutableAgentRegistration {
+                workspace_id: workspace_id.into(),
+                agent_id: agent_id.into(),
+                source_revision: version,
+                snapshot: ExecutableAgentSnapshot::builder(agent_id).build(),
+                session_profile: ExecutableAgentSessionProfile::default(),
+                declared_hand: None,
             }
+        }
+
+        fn select(
+            &self,
+            workspace_id: &str,
+            agent_id: &str,
+        ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
+            self.selected.as_ref().map_or_else(
+                |error| Err(error.clone()),
+                |version| {
+                    Ok(version.map(|version| Self::registration(workspace_id, agent_id, version)))
+                },
+            )
         }
     }
 
     #[async_trait::async_trait]
-    impl ManagedAgentRepository for ResolvingAgentRepository {
-        async fn create(
+    impl ExecutableAgentRegistrationSource for RegistrationSource {
+        async fn current_registration(
             &self,
-            _workspace_id: &str,
-            _params: AgentCreateParams,
-        ) -> Result<Agent, ManagedAgentError> {
-            unreachable!()
+            workspace_id: &str,
+            agent_id: &str,
+        ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
+            self.requested_versions.lock().unwrap().push(None);
+            self.select(workspace_id, agent_id)
         }
 
-        async fn retrieve(
+        async fn registration_at_revision(
             &self,
-            _workspace_id: &str,
-            id: &str,
-            version: Option<u64>,
-        ) -> Result<Agent, ManagedAgentError> {
-            self.requested_versions.lock().unwrap().push(version);
-            match &self.selected {
-                Ok((selected, status)) => Ok(Self::projected(id, *selected, *status)),
-                Err(ManagedAgentError::NotFound) => Err(ManagedAgentError::NotFound),
-                Err(error) => panic!("unexpected test error: {error}"),
-            }
-        }
-
-        async fn list(
-            &self,
-            _workspace_id: &str,
-            _params: &AgentListParams,
-        ) -> Result<Vec<Agent>, ManagedAgentError> {
-            unreachable!()
-        }
-
-        async fn update(
-            &self,
-            _workspace_id: &str,
-            _id: &str,
-            _params: AgentUpdateParams,
-        ) -> Result<Agent, ManagedAgentError> {
-            unreachable!()
-        }
-
-        async fn disable(
-            &self,
-            _workspace_id: &str,
-            _id: &str,
-        ) -> Result<Agent, ManagedAgentError> {
-            unreachable!()
-        }
-
-        async fn archive(
-            &self,
-            _workspace_id: &str,
-            _id: &str,
-        ) -> Result<Agent, ManagedAgentError> {
-            unreachable!()
-        }
-
-        async fn versions(
-            &self,
-            _workspace_id: &str,
-            _id: &str,
-        ) -> Result<Vec<Agent>, ManagedAgentError> {
-            unreachable!()
+            workspace_id: &str,
+            agent_id: &str,
+            source_revision: u64,
+        ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
+            self.requested_versions
+                .lock()
+                .unwrap()
+                .push(Some(source_revision));
+            self.select(workspace_id, agent_id)
         }
     }
 
     #[tokio::test]
     async fn deployment_resolves_and_freezes_the_authoritative_agent_version() {
         // Cause/effect decision table derived from the official Agent input union:
-        // G1 bare id -> query latest (None) and freeze the returned concrete version;
-        // G2 object with version -> query and freeze that exact version;
-        // G3 disabled/archived selection -> reject before storing a Deployment;
-        // G4 unknown Agent -> workspace-scoped 404.
-        let latest = Arc::new(ResolvingAgentRepository::published(7));
+        // G1 bare id -> query current registration and freeze its concrete revision;
+        // G2 object with version -> query and freeze that exact registration;
+        // G3 missing/withdrawn registration -> workspace-scoped 404;
+        // G4 registration projection failure -> service unavailable. No rule reads
+        // Control's mutable ManagedAgentRepository or its authoring database.
+        let latest = Arc::new(RegistrationSource::published(7));
         let latest_state = DeploymentState::new();
-        latest_state.bind_agent_repository(latest.clone());
+        latest_state.bind_executable_agents(latest.clone());
         let bare: crate::types::AgentRef =
             serde_json::from_value(serde_json::json!("agent_a")).unwrap();
         assert_eq!(
@@ -1014,9 +981,9 @@ mod tests {
         );
         assert_eq!(*latest.requested_versions.lock().unwrap(), vec![None], "G1");
 
-        let pinned = Arc::new(ResolvingAgentRepository::published(3));
+        let pinned = Arc::new(RegistrationSource::published(3));
         let pinned_state = DeploymentState::new();
-        pinned_state.bind_agent_repository(pinned.clone());
+        pinned_state.bind_executable_agents(pinned.clone());
         let reference: crate::types::AgentRef = serde_json::from_value(serde_json::json!({
             "type": "agent", "id": "agent_a", "version": 3
         }))
@@ -1036,30 +1003,12 @@ mod tests {
             "G2"
         );
 
-        for status in [AgentStatus::Disabled, AgentStatus::Archived] {
-            let repository = Arc::new(ResolvingAgentRepository {
-                selected: Ok((2, status)),
-                requested_versions: Mutex::new(Vec::new()),
-            });
-            let state = DeploymentState::new();
-            state.bind_agent_repository(repository);
-            assert_eq!(
-                state
-                    .resolve_agent("workspace_a", &bare)
-                    .await
-                    .unwrap_err()
-                    .0,
-                StatusCode::BAD_REQUEST,
-                "G3"
-            );
-        }
-
-        let missing = Arc::new(ResolvingAgentRepository {
-            selected: Err(ManagedAgentError::NotFound),
+        let missing = Arc::new(RegistrationSource {
+            selected: Ok(None),
             requested_versions: Mutex::new(Vec::new()),
         });
         let state = DeploymentState::new();
-        state.bind_agent_repository(missing);
+        state.bind_executable_agents(missing);
         assert_eq!(
             state
                 .resolve_agent("workspace_a", &bare)
@@ -1067,39 +1016,51 @@ mod tests {
                 .unwrap_err()
                 .0,
             StatusCode::NOT_FOUND,
+            "G3"
+        );
+
+        let unavailable = Arc::new(RegistrationSource {
+            selected: Err(ExecutableAgentRegistrationError::Unavailable(
+                "projection offline".into(),
+            )),
+            requested_versions: Mutex::new(Vec::new()),
+        });
+        let state = DeploymentState::new();
+        state.bind_executable_agents(unavailable);
+        assert_eq!(
+            state
+                .resolve_agent("workspace_a", &bare)
+                .await
+                .unwrap_err()
+                .0,
+            StatusCode::SERVICE_UNAVAILABLE,
             "G4"
         );
     }
 
     #[tokio::test]
-    async fn missing_or_archived_primary_agent_archives_without_a_run() {
+    async fn unavailable_primary_registration_archives_without_a_run() {
         // Official scheduled-primary decision table:
-        // P1 current primary Agent published -> ordinary occurrence claim/run;
-        // P2 current primary Agent archived or missing -> archive every live
-        // Deployment for that Agent and create no DeploymentRun or Session.
-        // P1 is covered by the durable-claim test; this test covers both P2 causes.
-        for selected in [
-            Ok((1, AgentStatus::Archived)),
-            Err(ManagedAgentError::NotFound),
-        ] {
-            let state = Arc::new(DeploymentState::new());
-            state.bind_agent_repository(Arc::new(ResolvingAgentRepository {
-                selected,
-                requested_versions: Mutex::new(Vec::new()),
-            }));
-            let id = "depl_primary".to_string();
-            let mut record = deployment(Some(cron_schedule("*/15 * * * *")));
-            record.next_fire_ms = Some(MON_0900);
-            state.deployments.lock().unwrap().insert(id.clone(), record);
-            let due = jitter_due(&id, MON_0900, 15 * 60_000);
+        // P1 current registration present -> ordinary occurrence claim/run;
+        // P2 current registration absent after withdrawal or unknown id -> archive
+        // every live Deployment and create no DeploymentRun or Session.
+        let state = Arc::new(DeploymentState::new());
+        state.bind_executable_agents(Arc::new(RegistrationSource {
+            selected: Ok(None),
+            requested_versions: Mutex::new(Vec::new()),
+        }));
+        let id = "depl_primary".to_string();
+        let mut record = deployment(Some(cron_schedule("*/15 * * * *")));
+        record.next_fire_ms = Some(MON_0900);
+        state.deployments.lock().unwrap().insert(id.clone(), record);
+        let due = jitter_due(&id, MON_0900, 15 * 60_000);
 
-            assert!(state.tick_and_launch(due).await.unwrap().is_empty(), "P2");
-            assert!(state.runs.lock().unwrap().is_empty(), "P2");
-            assert!(
-                state.deployments.lock().unwrap()[&id].archived_at.is_some(),
-                "P2"
-            );
-        }
+        assert!(state.tick_and_launch(due).await.unwrap().is_empty(), "P2");
+        assert!(state.runs.lock().unwrap().is_empty(), "P2");
+        assert!(
+            state.deployments.lock().unwrap()[&id].archived_at.is_some(),
+            "P2"
+        );
     }
 
     #[tokio::test]

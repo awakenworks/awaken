@@ -276,7 +276,6 @@ dependencies = [
  "awaken-config-store",
  "awaken-credential-vault",
  "awaken-model-catalog",
- "awaken-resource-contract",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
@@ -343,6 +342,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-captured-content-store"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-runtime-contract",
+ "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
+ "rusqlite",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-cli"
 version = "1.0.0-dev"
 dependencies = [
@@ -354,6 +369,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-api-contract",
  "awaken-authz-enforce",
+ "awaken-captured-content-store",
  "awaken-config-resolver",
  "awaken-config-service",
  "awaken-config-store",
@@ -361,6 +377,7 @@ dependencies = [
  "awaken-control",
  "awaken-credential-materializer",
  "awaken-credential-vault",
+ "awaken-data-subject",
  "awaken-env-store",
  "awaken-executable-agent-catalog",
  "awaken-executable-agent-contract",
@@ -393,6 +410,7 @@ dependencies = [
  "awaken-session-store",
  "awaken-skill-store",
  "awaken-tenancy",
+ "awaken-webhook-managed",
  "awaken-work-store",
  "awaken-worker",
  "awaken-worker-contract",
@@ -509,6 +527,7 @@ dependencies = [
  "awaken-credential-vault",
  "awaken-data-subject",
  "awaken-executable-agent-catalog",
+ "awaken-executable-agent-contract",
  "awaken-iam-contract",
  "awaken-iam-core",
  "awaken-iam-host",
@@ -516,20 +535,23 @@ dependencies = [
  "awaken-iam-server",
  "awaken-model-catalog",
  "awaken-protocol-managed",
+ "awaken-resource-store",
  "awaken-runtime-contract",
- "awaken-session-contract",
  "awaken-skill-store",
  "awaken-tenancy",
  "awaken-webhook-managed",
  "axum",
+ "base64",
  "http-body-util",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "thiserror 2.0.19",
  "tokio",
  "tower",
+ "uuid",
 ]
 
 [[package]]
@@ -929,25 +951,20 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-data-subject",
  "awaken-ext-skills",
  "awaken-memory-store",
  "awaken-protocol-transport",
  "awaken-resource-contract",
- "awaken-run-executor-acp",
  "awaken-runtime-contract",
  "awaken-runtime-host",
  "awaken-skill-store",
  "awaken-tenancy",
  "axum",
- "base64",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tower",
- "uuid",
 ]
 
 [[package]]
@@ -1119,7 +1136,6 @@ version = "1.0.0-dev"
 dependencies = [
  "async-stream",
  "async-trait",
- "awaken-admin-config-api",
  "awaken-agent-contract",
  "awaken-config-resolver",
  "awaken-credential-contract",
@@ -1133,6 +1149,7 @@ dependencies = [
  "awaken-protocol-transport",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
+ "awaken-resource-store",
  "awaken-sandbox-policy-store",
  "awaken-session-contract",
  "awaken-session-store",
@@ -1243,6 +1260,7 @@ dependencies = [
  "parking_lot",
  "proptest",
  "rusqlite",
+ "serde",
  "serde_json",
  "sqlx",
  "tempfile",
@@ -1405,7 +1423,6 @@ name = "awaken-runtime-host"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
- "awaken-admin-config-api",
  "awaken-agent-contract",
  "awaken-config-resolver",
  "awaken-credential-materializer",
@@ -1426,6 +1443,7 @@ dependencies = [
  "awaken-protocol-transport",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
+ "awaken-resource-store",
  "awaken-run-executor-acp",
  "awaken-run-ingress",
  "awaken-run-ingress-testkit",
@@ -1651,13 +1669,15 @@ dependencies = [
  "awaken-admin-config-api",
  "awaken-agent-contract",
  "awaken-authz-enforce",
+ "awaken-captured-content-store",
  "awaken-config-resolver",
  "awaken-config-service",
  "awaken-config-store",
  "awaken-connection-plan",
  "awaken-credential-materializer",
  "awaken-credential-vault",
- "awaken-data-subject",
+ "awaken-deployment-contract",
+ "awaken-executable-agent-contract",
  "awaken-ext-mcp",
  "awaken-ext-skills",
  "awaken-file-store",

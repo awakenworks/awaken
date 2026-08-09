@@ -18,8 +18,14 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 #[cfg(feature = "postgres")]
 mod postgres;
+#[cfg(feature = "postgres")]
+mod postgres_catalog;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+mod resource_catalog_codec;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 mod schema;
+#[cfg(feature = "sqlite")]
+mod sqlite_catalog;
 
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresResourceStore;
@@ -52,66 +58,23 @@ impl SqliteResourceStore {
         Ok(store)
     }
 
-    /// Apply the versioned `resource_lifecycle` migration scope idempotently.
+    /// Apply every Resources-owned migration scope. Catalog and lifecycle keep
+    /// independent ledgers because neither aggregate depends on the other's
+    /// tables.
     pub fn ensure_schema(&self) -> Result<(), ResourcePurgeError> {
         let connection = self.connection();
-        let bundle =
+        let lifecycle =
             schema::resource_lifecycle_bundle().map_err(|error| storage(error.to_string()))?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(schema::NS)
             .map_err(|error| storage(error.to_string()))?
-            .run_bundle(&connection, &bundle)
+            .run_bundle(&connection, &lifecycle)
             .map_err(|error| storage(error.to_string()))?;
-        Ok(())
-    }
-
-    /// One-time compatibility import from the pre-migration unscoped SQLite
-    /// tables. The canonical scoped rows win on every conflict, so reopening is
-    /// idempotent and stale legacy rows can never overwrite newer state.
-    pub fn migrate_legacy_unscoped_schema(&self) -> Result<(), ResourcePurgeError> {
-        let mut connection = self.connection();
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| storage(error.to_string()))?;
-        for (legacy, import_sql) in [
-            (
-                "resource_purge_intents",
-                "INSERT OR IGNORE INTO resource_lifecycle_purge_intents
-                   (intent_id, idempotency_key, revision, status, requested_at_unix_ms,
-                    not_before_unix_ms, lease_expires_at_unix_ms, data)
-                 SELECT intent_id, idempotency_key, revision, status, requested_at_unix_ms,
-                        not_before_unix_ms, lease_expires_at_unix_ms, data
-                 FROM resource_purge_intents",
-            ),
-            (
-                "resource_references",
-                "INSERT OR IGNORE INTO resource_lifecycle_references
-                   (workspace_id, resource_kind, resource_id, reference_kind, reference_id)
-                 SELECT workspace_id, resource_kind, resource_id, reference_kind, reference_id
-                 FROM resource_references",
-            ),
-            (
-                "resource_reclamation_fences",
-                "INSERT OR IGNORE INTO resource_lifecycle_reclamation_fences
-                   (resource_kind, resource_id, intent_id)
-                 SELECT resource_kind, resource_id, intent_id
-                 FROM resource_reclamation_fences",
-            ),
-        ] {
-            let exists = transaction
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-                    [legacy],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(|error| storage(error.to_string()))?;
-            if exists {
-                transaction
-                    .execute(import_sql, [])
-                    .map_err(|error| storage(error.to_string()))?;
-            }
-        }
-        transaction
-            .commit()
+        let catalog =
+            schema::resource_catalog_bundle().map_err(|error| storage(error.to_string()))?;
+        awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(schema::CATALOG_NS)
+            .map_err(|error| storage(error.to_string()))?
+            .run_bundle(&connection, &catalog)
+            .map(|_| ())
             .map_err(|error| storage(error.to_string()))
     }
 
@@ -870,44 +833,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(applied, 1);
-    }
-
-    #[tokio::test]
-    async fn sqlite_imports_pre_migration_unscoped_references_once() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("legacy-resources.db");
-        let legacy = Connection::open(&path).unwrap();
-        legacy
-            .execute_batch(
-                "CREATE TABLE resource_references (
-                   workspace_id TEXT NOT NULL,
-                   resource_kind TEXT NOT NULL,
-                   resource_id TEXT NOT NULL,
-                   reference_kind TEXT NOT NULL,
-                   reference_id TEXT NOT NULL,
-                   PRIMARY KEY(workspace_id, resource_kind, resource_id, reference_kind, reference_id)
-                 );
-                 INSERT INTO resource_references VALUES
-                   ('workspace-a', 'file', 'hash-1', 'workspace_ownership', 'ownership-a');",
-            )
-            .unwrap();
-        drop(legacy);
-
-        let store = SqliteResourceStore::open(&path).unwrap();
-        store.migrate_legacy_unscoped_schema().unwrap();
-        let target = ResourceTarget::new("workspace-a", ResourceKind::File, "hash-1");
-        assert_eq!(
-            store.references(&target).await.unwrap(),
-            vec![ResourceReference {
-                kind: ResourceReferenceKind::WorkspaceOwnership,
-                reference_id: "ownership-a".into(),
-            }]
-        );
-        drop(store);
-
-        let reopened = SqliteResourceStore::open(&path).unwrap();
-        reopened.migrate_legacy_unscoped_schema().unwrap();
-        assert_eq!(reopened.references(&target).await.unwrap().len(), 1);
     }
 
     proptest! {

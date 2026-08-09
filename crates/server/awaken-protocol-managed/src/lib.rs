@@ -67,9 +67,11 @@ pub use routes::deployments::{
     DeploymentLaunch, DeploymentLaunchOutcome, DeploymentRunError, DeploymentSessionLauncher,
     DeploymentState, LocalDeploymentSessionLauncher, deployments_router,
 };
-pub use routes::environments::{EnvironmentState, environments_router};
+pub use routes::environments::{EnvironmentApplication, EnvironmentState, environments_router};
 pub use routes::user_profiles::{UserProfileState, user_profiles_router};
-pub use routes::vaults::{McpProbe, McpProbeStatus, VaultState, vault_router};
+pub use routes::vaults::{
+    McpProbe, McpProbeStatus, SessionCredentialSource, VaultState, vault_router,
+};
 pub use routes::{DREAMING_BETA, dreams_router};
 pub use routes::{MEMORY_BETA, SKILLS_BETA, WorkspaceScope, enforce_managed_beta, router};
 // Managed wire projections remain convenient protocol exports. Persistence ports

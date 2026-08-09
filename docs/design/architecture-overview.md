@@ -17,31 +17,57 @@ state and registration-bound clients; it receives no authority database handle.
 
 ```text
   Control Context
-  Agent/Resource authoring, publication history, Deployment/DeploymentRun,
-  IAM, credential metadata, vaults, product mappings, operator UX
+  Agent/Resource-reference authoring, publication history, IAM,
+  credential metadata, vaults, product mappings, operator UX
         |
         | immutable publications, exact references, boundary adapters
         v
   Coordinator Context
-  executable Agent registration, Session, durable dispatch,
-  committed truth, protocol replay, HTTP/SSE routes
+  executable Agent registration, Deployment/DeploymentRun, Session,
+  durable dispatch, committed truth, protocol replay, HTTP/SSE routes
         |
         | bidirectional dispatch/claim and commit/settle protocol
         v
-  Worker / Sandbox Context
-  claim-fenced execution, per-kind Resource realization, exact credential
-  materialization, ephemeral processes and mounts
-        |
-        | gated runtime ports: RunActivation, RuntimeRunContext, ResolvedSpec,
-        | RunExecutor, LiveRunControl, CommitCoordinator, StreamSink,
-        | Plugin, RunWithSnapshotExecutor, AgentSnapshotResolver,
-        | RuntimeCapabilitySource
-        v
-  Runtime Core Context
-  AgentRuntime, agent loop, phases, in-process tool abstractions,
-  typed state/effects, plugin hooks, backend profiles, cancellation/stop policy,
-  continuation guards, goal extension, commit boundary, store contracts
+  Worker / Sandbox Context  -- claim-fenced exact reads / CAS write-back -->
+  claim-fenced execution, exact credential materialization,                 |
+  ephemeral processes and mounts                                            |
+        |                                                                   v
+        | gated Runtime ports                                     Resources Context
+        v                                                File/Memory/Skill/lifecycle,
+  Runtime Core Context                                    independent per-kind ports
+  AgentRuntime, agent loop, phases, typed state/effects,
+  plugin hooks, cancellation, commit boundary, store contracts
 ```
+
+AllInOne co-locates these components but does not create another bounded
+context or implementation. It calls the canonical Control, Coordinator, and
+Resources builders; an optional local Worker uses the same `WorkerNodeBuilder`
+as the split Worker process.
+
+### 1.1 Physical role and authority map
+
+| Process role | Canonical components | Durable authority acquired | Cross-context ports |
+|---|---|---|---|
+| Control | `awaken_control::build_control_component` | Catalog, Credential/secret, Config/publication, Admin, Data Subject consent/accountability | registers immutable executable Agents; calls Coordinator Environment/erasure ports; exposes authenticated audit, credential, webhook, and consent-read ports |
+| Coordinator | `awaken_server::build_coordinator_component`; currently co-locates the canonical Resources component | executable-Agent projection, Deployment/Session, Environment, captured content, dispatch/commit; Resources content/catalog | calls Control application ports; dispatches to and settles Workers |
+| Worker | `WorkerNodeBuilder` | none; execution state is ephemeral | claim-fenced Coordinator and per-kind Resources/Credential clients |
+| AllInOne | the same Control, Coordinator, Resources, and optional Worker components | the union of those authorities in one process | local adapters implement the same ports |
+
+`ProcessStores` contains optional `ControlStores` and `CoordinatorStores`
+groups; it is not a shared bag of database handles. A split Coordinator receives
+no Control Catalog, Credential, Config, Admin, or seal-key value. A split Control
+receives no Session/Deployment or Resources content store. The legacy
+`ControlStoreConfig` name is only a backend-address compatibility bundle;
+role-aware validation and acquisition define authority.
+
+Environment is fully Coordinator-owned. Control authors through the narrow
+`EnvironmentAuthor` command port and never receives `EnvironmentState` or
+`environment_db`. Data Subject follows the same rule in both directions:
+Coordinator reads consent through `DataSubjectConsentSource`, while Control
+requests subject-content erasure through an authenticated Coordinator port. The
+single Coordinator application fans that command out to its captured-content
+store and optional portable ACP session store; AllInOne calls the same port
+locally.
 
 The Runtime Core is the domain center. It runs tools in-process but must not know
 public protocols, registry publication workflow, vault schemas, remote execution
@@ -54,6 +80,15 @@ subsystem. Control persists one immutable `StoredPublication`, then invokes
 `ExecutableAgentCatalog` projection for future Session resolution. The complete
 decision and transition plan is
 [ADR-0071](../adr/0071-distributed-service-boundaries-and-executable-agent-registration.md).
+
+The reverse direction is equally explicit. Before Coordinator management
+effects it records the stable audit identity through `ManagementAuditRepository`;
+Session binding asks `SessionCredentialSource` only for secret-free credential
+pins; lifecycle outbox delivery calls `LifecycleFactDelivery`. Split roles use
+one authenticated HTTP adapter and AllInOne uses local adapters over the same
+ports. Authentication runs before a handler reaches any authority. Network or
+5xx failures are retried only for these idempotent commands; an unavailable
+webhook delivery leaves the Coordinator outbox fact pending for later drain.
 
 Contract names follow authority, not implementation convenience. Agent-domain
 truth, run-ingress delivery, protocol projection, and concrete stores are

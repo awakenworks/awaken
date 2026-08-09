@@ -8,6 +8,7 @@ use super::{config, executable_agent_registration};
 #[derive(Default)]
 pub(super) struct ProcessAssemblyOptions {
     pub(super) deployment: Option<awaken_runtime_host::DeploymentConfig>,
+    pub(super) content_capture_ceiling: awaken_runtime_contract::ContentCapture,
     pub(super) org_id: Option<String>,
     pub(super) mcp_bearer_token: Option<String>,
     pub(super) role: config::Role,
@@ -24,6 +25,8 @@ pub(super) struct ProcessAssemblyOptions {
         Option<executable_agent_registration::ExecutableAgentWiring>,
     pub(super) worker_authenticator:
         Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
+    pub(super) control_service_token: Option<String>,
+    pub(super) control_service: Option<super::ControlServicePorts>,
 }
 
 pub(super) fn local_model_supply(

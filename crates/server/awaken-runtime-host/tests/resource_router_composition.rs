@@ -44,7 +44,7 @@ async fn the_resource_planes_merge_over_one_host_without_route_conflicts() {
         .merge(memory_stores_router_with_catalog(
             host.memory_repository(),
             Arc::new(
-                awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+                awaken_resource_store::SqliteResourceStore::in_memory()
                     .expect("open ephemeral Resource Catalog"),
             ),
             purge.clone(),

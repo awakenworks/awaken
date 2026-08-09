@@ -51,47 +51,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(error) = deployment.durable_needs_persistence_error(false) {
         return Err(error.to_owned().into());
     }
-    let postgres_startup = (deployment.durable
-        && deployment.dispatch_backend == awaken_runtime_host::DispatchBackend::Postgres)
-        || deployment.store == awaken_runtime_host::StoreKind::Postgres;
-    let migration_lock = if postgres_startup {
-        let url = deployment.database_url.as_deref().ok_or(
-            "a Postgres dispatch or commit backend requires DeploymentConfig::database_url",
-        )?;
-        Some(awaken_runtime_host::PostgresMigrationLock::acquire(url).await?)
-    } else {
-        None
-    };
-    // Connect the shared Postgres dispatch pool once, before serving, when durable
-    // ingress is backed by Postgres (a multi-node fleet sharing one queue). Doing it
-    // here keeps the non-`Send` sqlx connect future out of the per-thread run loop.
-    if deployment.durable
-        && deployment.dispatch_backend == awaken_runtime_host::DispatchBackend::Postgres
-    {
-        let url = deployment
-            .database_url
-            .as_deref()
-            .ok_or("Postgres dispatch requires runtime.database_url")?;
-        awaken_runtime_host::init_shared_postgres_dispatch_with_config(url, &deployment).await?;
-        // The worker transport mounted by awaken-server shares the same durable
-        // Postgres topology. Initialize its sole process-wide directory before the
-        // router is built, matching the production awaken composition root.
-        awaken_server::init_postgres_worker_registry(url).await?;
-    }
-    // Shared Postgres commit backend (ADR-0022 D6): thread history on one DB so any
-    // node warm-reloads any thread. Connected once here (non-Send sqlx out of the run
-    // loop), independent of the dispatch backend.
-    if deployment.store == awaken_runtime_host::StoreKind::Postgres {
-        let url = deployment
-            .database_url
-            .as_deref()
-            .ok_or("scenario Postgres commit store requires a database URL")?;
-        awaken_runtime_host::init_shared_postgres_commit(
-            url,
-            deployment.postgres_max_connections.get(),
-        )
-        .await?;
-    }
+    // The scenario host is a Local composition and therefore reuses the same
+    // canonical Coordinator migrate-and-connect path as Local AllInOne.
+    awaken_server::init_postgres_coordinator(&deployment).await?;
     let app = match std::env::var("AWAKEN_MODEL_MODE").as_deref() {
         Ok("probe") => {
             awaken_scenario_host::build_router(Arc::new(awaken_scenario_host::ProbeModel), "probe")
@@ -175,9 +137,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok("full-chain") => awaken_scenario_host::build_full_chain_router(),
         _ => awaken_scenario_host::build_echo_router(),
     };
-    if let Some(lock) = migration_lock {
-        lock.release().await?;
-    }
     // Brain admin surface (ADR-0022 D7): the connection-count metric that KEDA
     // autoscales on, plus /admin/drain + /readyz for graceful, stream-preserving
     // scale-in. Wraps the served router so the in-flight counter sees every request.

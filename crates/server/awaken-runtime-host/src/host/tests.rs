@@ -42,9 +42,9 @@ fn on_tool_use_environment() -> awaken_session_contract::EnvironmentSnapshot {
     environment
 }
 
-fn resource_catalog() -> Arc<awaken_admin_config_api::SqliteAdminStore> {
+fn resource_catalog() -> Arc<awaken_resource_store::SqliteResourceStore> {
     Arc::new(
-        awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+        awaken_resource_store::SqliteResourceStore::in_memory()
             .expect("open ephemeral Resource Catalog"),
     )
 }
@@ -585,6 +585,59 @@ async fn interrupt_is_a_noop_when_nothing_runs() {
     host.interrupt("idle-thread")
         .await
         .expect("interrupt is a no-op");
+}
+
+#[tokio::test]
+async fn attributed_run_meets_deployment_capture_with_control_consent() {
+    struct SubjectConsent;
+
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::DataSubjectConsentSource for SubjectConsent {
+        async fn consent_ceiling(
+            &self,
+            subject: &awaken_runtime_contract::DataSubjectId,
+            _purpose: awaken_runtime_contract::Purpose,
+        ) -> awaken_runtime_contract::ContentCapture {
+            if subject.as_str() == "granted" {
+                awaken_runtime_contract::ContentCapture::Full
+            } else {
+                awaken_runtime_contract::ContentCapture::Structured
+            }
+        }
+    }
+
+    // Cause/effect decision table: deployment Full + granted subject -> Full;
+    // deployment Full + absent/withdrawn subject -> Structured. The consent
+    // source is consulted by `context_for` once per attributed Run, and meet can
+    // only narrow the deployment decision.
+    let mut deployment = crate::DeploymentConfig::ephemeral();
+    deployment.content_capture.level = awaken_runtime_contract::ContentCapture::Full;
+    let host = SharedHost::new_with_deployment(Arc::new(MemoryHostModel), "stub", deployment)
+        .with_data_subject_consent_source(Arc::new(SubjectConsent));
+    let session = host.ctx_for("consent-run", None).await.unwrap();
+
+    for (subject, expected, rule) in [
+        (
+            "granted",
+            awaken_runtime_contract::ContentCapture::Full,
+            "R1",
+        ),
+        (
+            "unknown",
+            awaken_runtime_contract::ContentCapture::Structured,
+            "R2",
+        ),
+    ] {
+        let mut activation = RunActivation::new(
+            RunId(format!("run-{subject}")),
+            session.thread_id.clone(),
+            session.config.clone(),
+            user("hello"),
+        );
+        activation.data_subject_id = Some(awaken_runtime_contract::DataSubjectId(subject.into()));
+        let context = session.context_for(&activation).await.unwrap();
+        assert_eq!(context.capture.decision.level, expected, "{rule}");
+    }
 }
 
 #[tokio::test]

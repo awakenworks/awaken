@@ -38,7 +38,8 @@ Distributed:  application port -> network adapter -> same authority
 | Concern | Authoritative owner | Worker access |
 |---|---|---|
 | Agent drafts, revisions, publication history | Control | carried as a registered immutable snapshot; no Control database access |
-| Resource definitions and immutable config versions | Control / Resource Catalog | exact resolved values in the Session manifest plus per-kind clients |
+| Agent Resource-reference authoring and immutable config versions | Control | exact resolved references in the Session manifest |
+| Resource lifecycle metadata/catalog | Resources | exact resolved values plus per-kind clients |
 | credential metadata, policy, and encrypted material | Control / Vault | exact claim-fenced materialization only |
 | executable Agent catalog | Coordinator | exact snapshot carried by dispatch or resolved through Coordinator |
 | Deployment, DeploymentRun, and Environment execution state | Coordinator | none; launch is a local Session application call |
@@ -56,11 +57,102 @@ or Resource Catalog database. Its standard capability manifest is derived from
 the installed adapters rather than from a marker composition value.
 
 An owner in this table is a component boundary, not necessarily a dedicated
-process. AllInOne co-locates every component. A distributed Coordinator process
-may co-locate the File, Memory, Skill, Repository-verification, and credential
-projection handlers, but each handler still delegates only to its named owner
-port. Separating one of those providers later changes composition and routing;
-it does not introduce another domain service or data model.
+process. AllInOne co-locates every component. The current distributed
+Coordinator process co-locates the canonical Resources component and its File,
+Memory, Skill, and Repository-verification handlers, but delegates only through
+the named Resources ports. Credential selection instead crosses the authenticated
+Control application boundary. Separating a provider later changes composition
+and routing; it does not introduce another domain service or data model.
+
+## Database And Migration Ownership
+
+The deployable unit is a bounded-context migration bundle, not a physical
+database and not an individual table. A production deployment may place several
+bundles owned by the same service in one PostgreSQL database; each prefix keeps
+its own ledger. A service must never open another service's database. AllInOne
+may co-locate the same canonical bundles, but it does not gain a fifth schema or
+another implementation.
+
+Every prefix owns `<prefix>_schema_migrations` and
+`<prefix>_schema_migrations_meta` in addition to the business tables below. The
+ledger records bundle id, dense positive version, and checksum. IAM has four
+subdomain bundle ids over the `iam` prefix and one IAM ledger; the other rows use
+one bundle id per aggregate-safe scope.
+
+| Service owner | Bundle id / prefix | Business tables (indexes, triggers, and PostgreSQL sequences omitted) |
+|---|---|---|
+| Control | `iam.identity`, `iam.authz`, `iam.entitlement`, `iam.audit` / `iam` | `iam_accounts`, `iam_external_identities`, `iam_sessions`, `iam_login_flows`, `iam_api_tokens`, `iam_oauth_clients`, `iam_grants`, `iam_role_bindings`, `iam_resource_edges`, `iam_orgs`, `iam_groups`, `iam_roles`, `iam_fence`, `iam_authorization_profiles`, `iam_authorization_profile_heads`, `iam_workspace_org_edges`, `iam_plans`, `iam_subscriptions`, `iam_audit_events` |
+| Control | `awaken.catalog` / `catalog` | `catalog_provider`, `catalog_protocol_endpoint`, `catalog_offering`, `catalog_model_attributes` |
+| Control | `awaken.credential` / `credential` | `credential_source`, `credential_secret`, `credential_pool`, `credential_creation_intent` |
+| Control | `awaken.admin` / `admin` | `admin_inference_profile`, `admin_agent_resource`, `admin_webhook` |
+| Control | `awaken.config` / `config` | `config_agent`, `config_publication`, `config_management_audit`, `config_management_effect`, `config_agent_revision` |
+| Control | `awaken.control_data_subject` / `control_data_subject` | `control_data_subject_subject`, `control_data_subject_erasure_job` |
+| Coordinator | `awaken.managed_session` / `managed` | `managed_session`, `managed_lifecycle_outbox`, `managed_memory_extraction`, `managed_session_idempotency`, `managed_session_tombstone`, `managed_dream`, `managed_dream_agent_override`, `managed_deployment`, `managed_deployment_run`, `managed_deployment_claim`, `managed_dream_policy` |
+| Coordinator | `awaken.env_registry` / `env_registry` | `env_registry_env`, `env_registry_create_command` |
+| Coordinator | `awaken.work_queue` / `work_queue` | `work_queue_item` |
+| Coordinator | `awaken.sandbox_execution_policy` / `sandbox_execution_policy` | `sandbox_execution_policy_version`, `sandbox_execution_policy_current`, `sandbox_execution_policy_environment` |
+| Coordinator | `awaken.worker_registry` / `worker_registry` | `worker_registry_worker` |
+| Coordinator | `awaken.executable_agent_catalog` / `executable_agent` | `executable_agent_command` |
+| Coordinator | `awaken.run_dispatch` / `runtime` | `runtime_dispatch`, `runtime_pending`, `runtime_outbox`, `runtime_dispatch_completion`, `runtime_stream_checkpoint`, `runtime_dispatch_operation` |
+| Coordinator | `awaken.runtime_commit`, `awaken.runtime_commit_pg` / `runtime` | `runtime_commit`, `runtime_message`, `runtime_state_command`, `runtime_event`, `runtime_run_record`, `runtime_waiting`, `runtime_thread_version`, `runtime_commit_receipt`; PostgreSQL also owns `runtime_commit_seq` |
+| Coordinator | `awaken.coordinator_data_capture` / `coordinator_data_capture` | `coordinator_data_capture_captured`, `coordinator_data_capture_fence` |
+| Resources | `awaken.resource_catalog` / `resource_catalog` | `resource_catalog_entry` |
+| Resources | `awaken.resource_lifecycle` / `resource_lifecycle` | `resource_lifecycle_purge_intents`, `resource_lifecycle_references`, `resource_lifecycle_reclamation_fences` |
+| Resources | `awaken.file_store` / `file_store` | `file_store_blob`, `file_store_file` |
+| Resources | `awaken.memory_store` / `memory_store` | `memory_store_memories`, `memory_store_counters`, `memory_store_versions` |
+| Resources | `awaken.skill_store` / `skill_store` | `skill_store_aggregate` |
+| Worker | none | none; Worker has only ephemeral execution/cache state and receives no authority database setting |
+
+Environment Registry, Work Queue, and sandbox-policy persistence are Coordinator
+stores. Control maps its Admin Assistant command onto the authenticated
+Coordinator `EnvironmentAuthor` adapter; AllInOne maps that same port locally.
+Both reach the single idempotent `EnvironmentApplication`, and Control never opens
+`environment_db`.
+
+The two privacy rows are active, independently versioned authorities. Control
+opens `data_subject_db`, owns consent/accountability plus durable erasure
+checkpoints, and exposes only an authenticated consent read port to Coordinator.
+Coordinator opens `captured_content_db`, installs that exact adapter as the
+Runtime `CaptureSink`, and exposes an authenticated erasure command back to
+Control. The Coordinator erasure application also includes the configured
+portable ACP session-blob adapter. Both adapters persist a subject fence and a
+stable deletion receipt: a late write cannot resurrect erased content, and an
+ambiguous HTTP retry returns the original count. The SQL capture fence and
+content delete commit atomically. AllInOne injects the same ports locally; it has
+no in-memory compatibility plane.
+
+Schema execution is deterministic:
+
+```text
+database migrate
+  -> select the role's immutable migration manifest
+  -> acquire only those component stores
+  -> Coordinator additionally applies dispatch + worker-registry + commit bundles
+  -> ledger lock + exact ledger-state read
+  -> absent: execute unconditional versioned SQL, record checksum, commit
+  -> current: verify checksum and perform no DDL
+  -> partial/drift/unknown version: fail; never probe-and-skip an object
+
+server process start
+  -> connect_existing
+  -> verify exact ledger
+  -> serve, or fail closed without DDL
+```
+
+| Role | Migration manifest |
+|---|---|
+| `control` | Control + Control Data Subject |
+| `coordinator` | Coordinator + Coordinator Captured Content + co-deployed Resources + executable-Agent projection |
+| `worker` | empty; no database connection |
+| `all-in-one` | Control + Control Data Subject + Coordinator + Coordinator Captured Content + Resources; no second executable-Agent projection |
+
+Conditional schema commands (`IF NOT EXISTS`, `IF EXISTS`, `CREATE OR REPLACE`),
+conflict-ignore data migration, raw startup DDL, and unversioned `.sql` files are
+rejected by the repository fitness check. Since this repository is still
+`1.0.0-dev`, this consolidation intentionally rebases unreleased histories;
+developers must recreate pre-change local databases. After the first stable
+release, an applied migration is immutable and every change appends a new
+version—never edits or renumbers history.
 
 ## Flow One: Configuration To Application
 
@@ -315,6 +407,8 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - `DeploymentSessionLauncher` as the sole application port;
 - Session creation, `SessionInputResolver`, and `SessionResourceManifest`;
 - exact `CredentialMaterialResolver` semantics;
+- `ScopedConfigRegistry` management-audit state and the Session lifecycle outbox;
+- the existing `ResourceCatalog` implementation, now exposed by Resources;
 - per-kind File, Memory, Skill, and Repository ports;
 - authenticated Worker registration, claim, recovery, commit, and settle;
 - committed-event projection and HTTP/SSE response behavior.
@@ -329,12 +423,22 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - disable/archive emits a monotonic withdrawal while exact history remains
   addressable;
 - registration availability/storage failures return HTTP 503 after durable
-  publication persistence.
+  publication persistence;
 - Deployment, DeploymentRun, scheduler, and Session launch now share one
   Coordinator-owned application composition. The Environment API and work
   execution are Coordinator-mounted; Control's Admin Assistant still uses the
   existing shared `EnvironmentAuthor` registry port until definition commands
-  are separated from execution/work ownership.
+  are separated from execution/work ownership;
+- process stores are role-owned groups: split Coordinator acquires no Control
+  store or seal key, and split Control acquires no Session or Resources content
+  store;
+- split Coordinator model discovery projects current executable-Agent
+  registrations instead of reading Control Catalog/Credential stores;
+- Session binding, management audit, and webhook delivery consume narrow Control
+  ports; AllInOne supplies local adapters and split Coordinator supplies one
+  authenticated HTTP adapter;
+- `ResourceComponent` exposes the authoritative `ResourceCatalog` beside its
+  existing File, Memory, Skill, repository-verification, and lifecycle ports.
 
 ### New boundary code (implemented)
 
@@ -363,7 +467,10 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - atomic Memory and Skill snapshot operations reused by both local and remote
   adapters instead of reconstructing a snapshot through parallel read paths;
 - role-specific provider composition and the service-data-ownership fitness
-  check in `scripts/ci/check_crate_boundaries.py`.
+  check in `scripts/ci/check_crate_boundaries.py`;
+- authenticated Control application router/client for audit, secret-free
+  credential selection, and lifecycle-fact delivery; the adapter is transport
+  only and preserves the existing state machines.
 
 No new Agent, Deployment, Session, Resource, Credential, Run, or response domain
 model is introduced.
@@ -388,6 +495,9 @@ cite the rule they cover.
 | E11 | a peer Coordinator commits while this replica has a warm Session cache | refresh from the committed transcript and project each Runtime message id once |
 | E12 | Coordinator authority disappears or rejects the Worker incarnation | stop claim admission, drain, terminate, and restart as a fresh registered incarnation |
 | E13 | public write has no idempotency identity and its response is ambiguous | do not auto-replay; reconcile/read until routing is stable, then require one explicit write decision |
+| E14 | split Coordinator config includes a Control DB or seal key; split Control includes Session DB | reject before store or key acquisition |
+| E15 | Control service bearer is missing or wrong | reject before audit, credential, or webhook authority is invoked |
+| E16 | Control service is unavailable during lifecycle delivery | keep the existing Coordinator outbox fact pending and retry its stable identity |
 
 The concrete multi-process topology, cluster lifecycle, and fault-injection
 entry points are owned by the
@@ -396,7 +506,7 @@ overlays reuse one Postgres fixture and one Direct brain/hand fixture so these
 verification rules cannot pass through a stale parallel deployment path.
 The dedicated ADR-0071 overlay crosses both canonical flows through the shipped
 Control and Coordinator composition roots, a database-less Worker, authenticated
-registration and launch adapters, isolated component databases, an unavailable
+registration and Control-application adapters, isolated component databases, an unavailable
 Coordinator, and forced authority-role restarts. Adapter and repository tests
 remain the owners of rule combinations that do not require a real cluster.
 

@@ -4,7 +4,9 @@
 //! ConfigService, publication persistence, and schema ownership remain in their
 //! existing modules.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 
@@ -129,30 +131,36 @@ async fn build_control_assembly_with_model_composition(
         &deployment.iam_workspaces,
         &deployment.cloud_iam,
     )?;
-    let stores = open_process_stores(
-        deployment.control.clone(),
-        // Control exposes no File/Memory/Skill routes. This volatile
-        // resource plane satisfies shared control-plane collaborators without
-        // acquiring a second durable resource-plane authority.
-        ephemeral_resource_plane(),
-        deployment.data_dir.clone(),
-        key,
-        config::Role::Control,
-        PostgresSchemaMode::Verify,
-    )
+    let stores = open_process_stores(ProcessStoreOpenOptions {
+        control: deployment.control.clone(),
+        coordinator: deployment.coordinator.clone(),
+        // Control receives Resource references through authoring/read ports and
+        // opens no File, Memory, Skill-content, or lifecycle authority.
+        resource_component: None,
+        workspace_root: deployment.data_dir.clone(),
+        seal_key: Some(key),
+        role: config::Role::Control,
+        postgres_schema: PostgresSchemaMode::Verify,
+        open_environment_stores: false,
+    })
     .await?;
+    let catalog = stores
+        .control
+        .as_ref()
+        .expect("Control role opens Control stores")
+        .catalog
+        .clone();
     if let Some(discovery) = brokered_catalog.as_ref() {
-        awaken_admin_config_api::reconcile_brokered_catalog(
-            discovery.as_ref(),
-            stores.catalog.as_ref(),
-        )
-        .await
-        .map_err(|error| format!("initial hosted model catalog reconciliation failed: {error}"))?;
-        spawn_hosted_model_catalog_reconciliation(stores.catalog.clone(), discovery.clone());
+        awaken_admin_config_api::reconcile_brokered_catalog(discovery.as_ref(), catalog.as_ref())
+            .await
+            .map_err(|error| {
+                format!("initial hosted model catalog reconciliation failed: {error}")
+            })?;
+        spawn_hosted_model_catalog_reconciliation(catalog, discovery.clone());
     }
     let executable_agent_wiring =
         executable_agent_registration::ExecutableAgentWiring::control(deployment)?;
-    let router = assemble_process_router(
+    let router = assemble_control_process_router(
         stores,
         identity.iam,
         identity.remote_iam,
@@ -160,6 +168,7 @@ async fn build_control_assembly_with_model_composition(
         model_composition,
         ProcessAssemblyOptions {
             deployment: None,
+            content_capture_ceiling: deployment.runtime.content_capture.level,
             org_id: Some(deployment.org_id.clone()),
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
             role: config::Role::Control,
@@ -177,8 +186,9 @@ async fn build_control_assembly_with_model_composition(
             web_search_publication_resolver: web_search.map(|value| value.1),
             executable_agent_wiring: Some(executable_agent_wiring),
             worker_authenticator: None,
+            control_service_token: Some(deployment.control_service.control_token()?),
+            control_service: None,
         },
-        None,
     )
     .await;
     Ok(ProcessAssembly {

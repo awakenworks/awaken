@@ -39,7 +39,9 @@ pub fn awaken_worker_registry::MemoryWorkerDirectory::register<'life0, 'async_tr
 pub struct awaken_worker_registry::PostgresWorkerDirectory
 impl awaken_worker_registry::PostgresWorkerDirectory
 pub async fn awaken_worker_registry::PostgresWorkerDirectory::connect(&str) -> core::result::Result<Self, awaken_worker_contract::RegistryError>
+pub async fn awaken_worker_registry::PostgresWorkerDirectory::connect_existing(&str) -> core::result::Result<Self, awaken_worker_contract::RegistryError>
 pub fn awaken_worker_registry::PostgresWorkerDirectory::pool(&self) -> sqlx_postgres::PgPool
+pub async fn awaken_worker_registry::PostgresWorkerDirectory::with_existing_pool(sqlx_postgres::PgPool) -> core::result::Result<Self, awaken_worker_contract::RegistryError>
 pub async fn awaken_worker_registry::PostgresWorkerDirectory::with_pool(sqlx_postgres::PgPool) -> core::result::Result<Self, awaken_worker_contract::RegistryError>
 impl awaken_worker_contract::WorkerDirectory for awaken_worker_registry::PostgresWorkerDirectory
 pub fn awaken_worker_registry::PostgresWorkerDirectory::begin_drain<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_worker_contract::WorkerIdentity, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_contract::RegistryMutation, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
