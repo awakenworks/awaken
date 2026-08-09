@@ -128,6 +128,9 @@ pub awaken_session_contract::ApplicationSessionContributionFailure::Invalid(allo
 pub awaken_session_contract::ApplicationSessionContributionFailure::NotFound
 pub awaken_session_contract::ApplicationSessionContributionFailure::NotRequired
 pub awaken_session_contract::ApplicationSessionContributionFailure::Unavailable(alloc::string::String)
+pub enum awaken_session_contract::ApplicationSessionProvisionFailureKind
+pub awaken_session_contract::ApplicationSessionProvisionFailureKind::Retryable
+pub awaken_session_contract::ApplicationSessionProvisionFailureKind::Terminal
 pub enum awaken_session_contract::DreamInput
 pub awaken_session_contract::DreamInput::MemoryStore
 pub awaken_session_contract::DreamInput::MemoryStore::memory_store_id: alloc::string::String
@@ -435,9 +438,12 @@ pub awaken_session_contract::ApplicationSessionInput::network_restriction: core:
 pub awaken_session_contract::ApplicationSessionInput::prompts: alloc::vec::Vec<alloc::string::String>
 impl awaken_session_contract::ApplicationSessionInput
 pub fn awaken_session_contract::ApplicationSessionInput::fingerprint(&self) -> alloc::string::String
-pub struct awaken_session_contract::ApplicationSessionProvisionError(_)
+pub struct awaken_session_contract::ApplicationSessionProvisionError
 impl awaken_session_contract::ApplicationSessionProvisionError
+pub fn awaken_session_contract::ApplicationSessionProvisionError::is_terminal(&self) -> bool
 pub fn awaken_session_contract::ApplicationSessionProvisionError::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_session_contract::ApplicationSessionProvisionError::retryable(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_session_contract::ApplicationSessionProvisionError::terminal(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_session_contract::BeginSessionRealization
 pub awaken_session_contract::BeginSessionRealization::session_id: alloc::string::String
 pub awaken_session_contract::BeginSessionRealization::target: awaken_session_contract::SessionRealizationTarget
