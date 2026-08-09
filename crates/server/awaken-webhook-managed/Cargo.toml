@@ -26,6 +26,16 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 
 [dev-dependencies]
+awaken-config-resolver = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+
+[features]
+default = []
+# Enables only the permissive loopback composition used by integration tests.
+test-support = ["awaken-webhook/test-support"]
+
+[[test]]
+name = "crud"
+required-features = ["test-support"]

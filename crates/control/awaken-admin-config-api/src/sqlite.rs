@@ -14,8 +14,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, AgentInputRepositoryError,
-    ConfigRepositoryError, InferenceProfile, InferenceProfileStore, WebhookEndpointDef,
-    WebhookStore, validate_agent_input_revision,
+    ConfigRepositoryError, InferenceProfile, InferenceProfileStore, WebhookAuthoringPatch,
+    WebhookAuthoringState, WebhookDeliveryOutcome, WebhookDeliveryState, WebhookEndpointDef,
+    WebhookMutationIntent, WebhookStore, validate_agent_input_revision,
 };
 
 use crate::schema::admin_bundle;
@@ -125,7 +126,7 @@ impl AgentInputBindingRepository for SqliteAdminStore {
             .lock()
             .map_err(|_| AgentInputRepositoryError::Storage("admin store mutex poisoned".into()))?;
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
         let current: Option<String> = tx
             .query_row(
@@ -208,9 +209,6 @@ impl InferenceProfileStore for SqliteAdminStore {
 }
 
 impl WebhookStore for SqliteAdminStore {
-    fn put(&self, def: WebhookEndpointDef) -> Result<(), ConfigRepositoryError> {
-        self.put_row("webhook", "id", &def.id.clone(), &def)
-    }
     fn get(&self, id: &str) -> Result<Option<WebhookEndpointDef>, ConfigRepositoryError> {
         self.get_row("webhook", "id", id)
     }
@@ -238,17 +236,317 @@ impl WebhookStore for SqliteAdminStore {
         })
         .collect()
     }
-    fn delete(&self, id: &str) -> Result<bool, ConfigRepositoryError> {
-        let n = self
+    fn update_authored(
+        &self,
+        patch: WebhookAuthoringPatch,
+    ) -> Result<WebhookAuthoringState, ConfigRepositoryError> {
+        let mut conn = self
             .conn
             .lock()
-            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?
-            .execute(
-                &format!("DELETE FROM {NS}_webhook WHERE id = ?1"),
-                params![id],
+            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let pending: bool = tx
+            .query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {NS}_webhook_mutation WHERE id = ?1)"),
+                params![&patch.id],
+                |row| row.get(0),
             )
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-        Ok(n > 0)
+        if pending {
+            return Err(ConfigRepositoryError::MutationConflict(format!(
+                "webhook {} has a pending material mutation",
+                patch.id
+            )));
+        }
+        let data: Option<String> = tx
+            .query_row(
+                &format!("SELECT data FROM {NS}_webhook WHERE id = ?1"),
+                params![&patch.id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let Some(data) = data else {
+            return Ok(WebhookAuthoringState::Missing);
+        };
+        let mut definition: WebhookEndpointDef = serde_json::from_str(&data)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        if definition.workspace_id != patch.workspace_id {
+            return Ok(WebhookAuthoringState::OwnerMismatch);
+        }
+        definition.url = patch.url;
+        definition.event_types = patch.event_types;
+        if let Some(disabled) = patch.disabled {
+            definition.disabled = disabled;
+            if !disabled {
+                definition.consecutive_failures = 0;
+            }
+        }
+        let data = serde_json::to_string(&definition)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        tx.execute(
+            &format!("UPDATE {NS}_webhook SET data = ?2 WHERE id = ?1"),
+            params![&patch.id, data],
+        )
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        tx.commit()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        Ok(WebhookAuthoringState::Updated(definition))
+    }
+
+    fn begin_mutation(&self, intent: WebhookMutationIntent) -> Result<(), ConfigRepositoryError> {
+        let id = intent.id()?.to_string();
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let pending: Option<String> = tx
+            .query_row(
+                &format!("SELECT data FROM {NS}_webhook_mutation WHERE id = ?1"),
+                params![&id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        if let Some(pending) = pending {
+            let pending: WebhookMutationIntent = serde_json::from_str(&pending)
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            return if pending == intent {
+                Ok(())
+            } else {
+                Err(ConfigRepositoryError::MutationConflict(format!(
+                    "webhook {id} already has a pending mutation"
+                )))
+            };
+        }
+        let current: Option<String> = tx
+            .query_row(
+                &format!("SELECT data FROM {NS}_webhook WHERE id = ?1"),
+                params![&id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let current = current
+            .as_deref()
+            .map(serde_json::from_str::<WebhookEndpointDef>)
+            .transpose()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        if current != intent.before {
+            return Err(ConfigRepositoryError::MutationConflict(format!(
+                "webhook {id} changed before mutation admission"
+            )));
+        }
+        let data = serde_json::to_string(&intent)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        tx.execute(
+            &format!("INSERT INTO {NS}_webhook_mutation(id,data) VALUES (?1,?2)"),
+            params![&id, data],
+        )
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        tx.commit()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
+    }
+
+    fn apply_mutation(&self, intent: &WebhookMutationIntent) -> Result<(), ConfigRepositoryError> {
+        let id = intent.id()?.to_string();
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let pending: Option<String> = tx
+            .query_row(
+                &format!("SELECT data FROM {NS}_webhook_mutation WHERE id = ?1"),
+                params![&id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let pending = pending
+            .as_deref()
+            .map(serde_json::from_str::<WebhookMutationIntent>)
+            .transpose()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let current: Option<String> = tx
+            .query_row(
+                &format!("SELECT data FROM {NS}_webhook WHERE id = ?1"),
+                params![&id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let current = current
+            .as_deref()
+            .map(serde_json::from_str::<WebhookEndpointDef>)
+            .transpose()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        if pending.as_ref() != Some(intent) || current != intent.before {
+            return Err(ConfigRepositoryError::MutationConflict(format!(
+                "webhook {id} no longer matches its pending mutation"
+            )));
+        }
+        match &intent.after {
+            Some(after) => {
+                let data = serde_json::to_string(after)
+                    .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+                tx.execute(
+                    &format!("INSERT INTO {NS}_webhook(id,data) VALUES (?1,?2)"),
+                    params![&id, data],
+                )
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            }
+            None => {
+                tx.execute(
+                    &format!("DELETE FROM {NS}_webhook WHERE id = ?1"),
+                    params![&id],
+                )
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            }
+        }
+        tx.commit()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
+    }
+
+    fn pending_mutations(&self) -> Result<Vec<WebhookMutationIntent>, ConfigRepositoryError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?;
+        let mut statement = conn
+            .prepare(&format!(
+                "SELECT data FROM {NS}_webhook_mutation ORDER BY id"
+            ))
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        rows.map(|row| {
+            let data = row.map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            serde_json::from_str(&data)
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
+        })
+        .collect()
+    }
+
+    fn complete_mutation(
+        &self,
+        intent: &WebhookMutationIntent,
+    ) -> Result<(), ConfigRepositoryError> {
+        let id = intent.id()?;
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let pending: Option<String> = tx
+            .query_row(
+                &format!("SELECT data FROM {NS}_webhook_mutation WHERE id = ?1"),
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let Some(pending) = pending else {
+            return Ok(());
+        };
+        let pending: WebhookMutationIntent = serde_json::from_str(&pending)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        if &pending != intent {
+            return Err(ConfigRepositoryError::MutationConflict(format!(
+                "webhook {id} has a different pending mutation"
+            )));
+        }
+        tx.execute(
+            &format!("DELETE FROM {NS}_webhook_mutation WHERE id = ?1"),
+            params![id],
+        )
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        tx.commit()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        Ok(())
+    }
+
+    fn material_refs(
+        &self,
+    ) -> Result<Vec<awaken_credential_vault::SecretRef>, ConfigRepositoryError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?;
+        let mut statement = conn
+            .prepare(&format!("SELECT data FROM {NS}_webhook ORDER BY id"))
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        rows.map(|row| {
+            let data = row.map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+            serde_json::from_str::<WebhookEndpointDef>(&data)
+                .map(|definition| definition.secret_ref)
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
+        })
+        .collect()
+    }
+
+    fn record_delivery(
+        &self,
+        id: &str,
+        outcome: WebhookDeliveryOutcome,
+        failure_threshold: u32,
+    ) -> Result<WebhookDeliveryState, ConfigRepositoryError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| ConfigRepositoryError::Storage("admin store mutex poisoned".into()))?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let pending: bool = tx
+            .query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {NS}_webhook_mutation WHERE id = ?1)"),
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        if pending {
+            return Err(ConfigRepositoryError::MutationConflict(format!(
+                "webhook {id} has a pending material mutation"
+            )));
+        }
+        let data: Option<String> = tx
+            .query_row(
+                &format!("SELECT data FROM {NS}_webhook WHERE id = ?1"),
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let Some(data) = data else {
+            return Ok(WebhookDeliveryState::Missing);
+        };
+        let mut definition: WebhookEndpointDef = serde_json::from_str(&data)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let state = definition.record_delivery(outcome, failure_threshold);
+        let data = serde_json::to_string(&definition)
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        tx.execute(
+            &format!("UPDATE {NS}_webhook SET data = ?2 WHERE id = ?1"),
+            params![id, data],
+        )
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        tx.commit()
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        Ok(state)
     }
 }
 
@@ -300,11 +598,199 @@ mod tests {
     }
 
     #[test]
-    fn published_v1_v2_ledger_upgrades_to_v9() {
+    fn webhook_failure_state_survives_reopen_and_disables_atomically() {
+        // Cause/effect graph: C1 durable row; C2 failed delivery; C3 process/store
+        // reopen; C4 second failure reaches threshold. Effects E1 count=1 on disk;
+        // E2 reopen observes it; E3 row disabled at count=2. Decision table:
+        // R1=C1∧C2 -> E1; R2=R1∧C3 -> E2; R3=R2∧C4 -> E3.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("admin.db");
+        let path = path.to_str().unwrap();
+        {
+            let store = SqliteAdminStore::open(path).unwrap();
+            let intent = WebhookMutationIntent::create(WebhookEndpointDef {
+                id: "wh".into(),
+                workspace_id: "ws".into(),
+                url: "https://hooks.example/hook".into(),
+                event_types: vec![],
+                disabled: false,
+                consecutive_failures: 0,
+                secret_ref: awaken_credential_vault::SecretRef("whsec:wh".into()),
+            });
+            store.begin_mutation(intent.clone()).unwrap();
+            store.apply_mutation(&intent).unwrap();
+            store.complete_mutation(&intent).unwrap();
+            assert_eq!(
+                store
+                    .record_delivery("wh", WebhookDeliveryOutcome::Failed, 2)
+                    .unwrap(),
+                WebhookDeliveryState::Active {
+                    consecutive_failures: 1
+                },
+                "R1"
+            );
+        }
+        let reopened = SqliteAdminStore::open(path).unwrap();
+        assert_eq!(
+            WebhookStore::get(&reopened, "wh")
+                .unwrap()
+                .unwrap()
+                .consecutive_failures,
+            1,
+            "R2"
+        );
+        assert_eq!(
+            reopened
+                .record_delivery("wh", WebhookDeliveryOutcome::Failed, 2)
+                .unwrap(),
+            WebhookDeliveryState::Disabled {
+                consecutive_failures: 2
+            },
+            "R3"
+        );
+        assert!(
+            WebhookStore::get(&reopened, "wh")
+                .unwrap()
+                .unwrap()
+                .disabled,
+            "R3"
+        );
+    }
+
+    #[test]
+    fn webhook_material_intent_survives_reopen_and_fences_other_writers() {
+        // Cause/effect decision table: R1 begin create + reopen -> intent remains;
+        // R2 pending intent + delivery/update -> mutation conflict; R3 apply +
+        // complete -> row committed and journal empty; R4 later delivery + authored
+        // update -> counter/ref preserved while URL changes.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("admin-intent.db");
+        let path = path.to_str().unwrap();
+        let definition = WebhookEndpointDef {
+            id: "wh".into(),
+            workspace_id: "ws".into(),
+            url: "https://hooks.example/old".into(),
+            event_types: vec![],
+            disabled: false,
+            consecutive_failures: 0,
+            secret_ref: awaken_credential_vault::SecretRef("sec:webhook:wh".into()),
+        };
+        let intent = WebhookMutationIntent::create(definition.clone());
+        {
+            let store = SqliteAdminStore::open(path).unwrap();
+            store.begin_mutation(intent.clone()).unwrap();
+        }
+        let store = SqliteAdminStore::open(path).unwrap();
+        assert_eq!(
+            store.pending_mutations().unwrap(),
+            vec![intent.clone()],
+            "R1"
+        );
+        assert!(
+            matches!(
+                store.record_delivery("wh", WebhookDeliveryOutcome::Failed, 2),
+                Err(ConfigRepositoryError::MutationConflict(_))
+            ),
+            "R2"
+        );
+        assert!(
+            matches!(
+                store.update_authored(WebhookAuthoringPatch {
+                    id: "wh".into(),
+                    workspace_id: "ws".into(),
+                    url: "https://hooks.example/racing".into(),
+                    event_types: vec![],
+                    disabled: None,
+                }),
+                Err(ConfigRepositoryError::MutationConflict(_))
+            ),
+            "R2"
+        );
+        store.apply_mutation(&intent).unwrap();
+        store.complete_mutation(&intent).unwrap();
+        assert!(store.pending_mutations().unwrap().is_empty(), "R3");
+        store
+            .record_delivery("wh", WebhookDeliveryOutcome::Failed, 20)
+            .unwrap();
+        let updated = store
+            .update_authored(WebhookAuthoringPatch {
+                id: "wh".into(),
+                workspace_id: "ws".into(),
+                url: "https://hooks.example/new".into(),
+                event_types: vec!["run.completed".into()],
+                disabled: None,
+            })
+            .unwrap();
+        let WebhookAuthoringState::Updated(updated) = updated else {
+            panic!("R4 must update")
+        };
+        assert_eq!(updated.url, "https://hooks.example/new", "R4");
+        assert_eq!(updated.consecutive_failures, 1, "R4");
+        assert_eq!(updated.secret_ref, definition.secret_ref, "R4");
+    }
+
+    #[test]
+    fn concurrent_sqlite_authoring_and_delivery_do_not_lose_operational_state() {
+        // Cause/effect graph: C1 two independent SQLite connections; C2 authored
+        // URL update; C3 failed-delivery increment; C2 and C3 start together.
+        // Effects E1 both operations commit in some order, E2 final URL is new,
+        // E3 final counter is one, E4 secret ref is unchanged. The IMMEDIATE
+        // transaction is the absent/independent-connection serialization edge.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("admin-race.db");
+        let path = path.to_str().unwrap().to_string();
+        let seed_store = SqliteAdminStore::open(&path).unwrap();
+        let definition = WebhookEndpointDef {
+            id: "wh".into(),
+            workspace_id: "ws".into(),
+            url: "https://hooks.example/old".into(),
+            event_types: vec![],
+            disabled: false,
+            consecutive_failures: 0,
+            secret_ref: awaken_credential_vault::SecretRef("sec:webhook:race".into()),
+        };
+        let intent = WebhookMutationIntent::create(definition.clone());
+        seed_store.begin_mutation(intent.clone()).unwrap();
+        seed_store.apply_mutation(&intent).unwrap();
+        seed_store.complete_mutation(&intent).unwrap();
+        drop(seed_store);
+
+        let authoring = SqliteAdminStore::open(&path).unwrap();
+        let delivery = SqliteAdminStore::open(&path).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let authoring_barrier = barrier.clone();
+        let authoring_thread = std::thread::spawn(move || {
+            authoring_barrier.wait();
+            authoring.update_authored(WebhookAuthoringPatch {
+                id: "wh".into(),
+                workspace_id: "ws".into(),
+                url: "https://hooks.example/new".into(),
+                event_types: vec!["run.completed".into()],
+                disabled: None,
+            })
+        });
+        let delivery_barrier = barrier.clone();
+        let delivery_thread = std::thread::spawn(move || {
+            delivery_barrier.wait();
+            delivery.record_delivery("wh", WebhookDeliveryOutcome::Failed, 20)
+        });
+        barrier.wait();
+        assert!(authoring_thread.join().unwrap().is_ok(), "E1 authoring");
+        assert!(delivery_thread.join().unwrap().is_ok(), "E1 delivery");
+
+        let final_store = SqliteAdminStore::open(&path).unwrap();
+        let final_row = WebhookStore::get(&final_store, "wh").unwrap().unwrap();
+        assert_eq!(final_row.url, "https://hooks.example/new", "E2");
+        assert_eq!(final_row.consecutive_failures, 1, "E3");
+        assert_eq!(final_row.secret_ref, definition.secret_ref, "E4");
+    }
+
+    #[test]
+    fn published_v1_v2_ledger_upgrades_to_v11() {
         // Cause/effect decision table:
         // | starting ledger | canonical bundle | effect                         |
-        // | empty           | V1..V9           | full schema applies            |
-        // | V1,V2           | V1..V9           | V3..V9 apply; profile survives |
+        // | empty           | V1..V11          | full schema; intent WAL present |
+        // | V1,V2           | V1..V11          | V3..V11; profile survives       |
         // | V1,V2           | rewritten V1     | fail closed on unknown V2      |
         let conn = Connection::open_in_memory().expect("open sqlite");
         let full = admin_bundle().expect("bundle builds");
@@ -324,13 +810,13 @@ mod tests {
         )
         .expect("seed profile");
 
-        let delta = runner.run_bundle(&conn, &full).expect("upgrade to V9");
+        let delta = runner.run_bundle(&conn, &full).expect("upgrade to V11");
         assert_eq!(
             delta
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            (3..=9).collect::<Vec<_>>()
+            (3..=11).collect::<Vec<_>>()
         );
         let kept: String = conn
             .query_row(
@@ -343,18 +829,72 @@ mod tests {
     }
 
     #[test]
+    fn published_v9_ledger_retires_the_legacy_webhook_outbox() {
+        // Cause/effect graph: C1 V1..V9 receipts + legacy outbox present; C2 V10
+        // receipt absent; C3 canonical V1..V10 bundle. Effect E1 applies only V10,
+        // E2 removes the competing outbox table, E3 records V10. Decision rule
+        // R1=C1∧C2∧C3 -> E1∧E2∧E3; V11 then installs the one material-intent
+        // journal, and replay applies no migration.
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        let full = admin_bundle().expect("bundle builds");
+        let published_v9 = awaken_scoped_migration::MigrationBundle::new(
+            crate::schema::BUNDLE_ID,
+            full.migrations()[..9].to_vec(),
+        )
+        .expect("published V1..V9 bundle");
+        let runner =
+            awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS).expect("runner");
+        runner
+            .run_bundle(&conn, &published_v9)
+            .expect("apply V1..V9");
+        conn.execute(
+            "INSERT INTO admin_webhook_outbox(event_id,data) VALUES ('legacy','{}')",
+            [],
+        )
+        .expect("seed legacy outbox");
+
+        let delta = runner.run_bundle(&conn, &full).expect("apply V10");
+        assert_eq!(
+            delta
+                .iter()
+                .map(|migration| migration.version)
+                .collect::<Vec<_>>(),
+            vec![10, 11],
+            "R1/E1/E3"
+        );
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'admin_webhook_outbox'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("inspect schema");
+        assert_eq!(count, 0, "R1/E2");
+        assert!(
+            runner
+                .run_bundle(&conn, &full)
+                .expect("replay V10/V11")
+                .is_empty(),
+            "the scoped receipt makes R1 idempotent"
+        );
+    }
+
+    #[test]
     fn control_admin_schema_exposes_only_owned_active_adapters() {
         // Cause/effect decision table:
-        // R1 active Control profile/input/webhook aggregates -> present.
+        // R1 active Control profile/input/webhook aggregates and webhook mutation
+        // journal -> present.
         // R2 retired MCP tracks -> dropped by their published retirement migration.
-        // R3 historical memory/outbox/catalog DDL has no current repository adapter;
-        // immutable ledger rows are not a competing source of truth.
+        // R3 historical memory/catalog DDL has no current repository adapter.
+        // R4 the historical admin webhook outbox is dropped because the Session
+        // repository lifecycle outbox is the sole delivery authority.
         let store = SqliteAdminStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
         for table in [
             "admin_inference_profile",
             "admin_agent_resource",
             "admin_webhook",
+            "admin_webhook_mutation",
         ] {
             let count: i64 = conn
                 .query_row(
@@ -369,6 +909,7 @@ mod tests {
             "admin_mcp_server",
             "admin_agent_mcp",
             "admin_resource_catalog_entry",
+            "admin_webhook_outbox",
         ] {
             let count: i64 = conn
                 .query_row(
@@ -377,7 +918,7 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 0, "R2/R3: {table}");
+            assert_eq!(count, 0, "R2/R3/R4: {table}");
         }
     }
 

@@ -104,6 +104,30 @@ fn inline_spec(scope: &str, marker: &str) -> pc::SandboxSpec {
     }
 }
 
+fn managed_input_spec(scope: &str, path: &str, marker: &str) -> pc::SandboxSpec {
+    pc::SandboxSpec {
+        scope: scope.into(),
+        isolation: pc::IsolationClass::Container,
+        mounts: vec![pc::MountRequirement {
+            mount_id: format!("managed-{marker}"),
+            source: pc::MountSource::Inline {
+                contents: marker.into(),
+            },
+            mount_path: path.into(),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::Session,
+            required: true,
+        }],
+        env: Vec::new(),
+        packages: Default::default(),
+        network: pc::NetworkPolicy::Unrestricted,
+        outputs_path: "/mnt/session/outputs".into(),
+        limits: pc::ResourceLimits::default(),
+        lease_ttl_secs: None,
+        extra: Some(serde_json::json!({ "command": session_argv(), "image": "awaken-bb:1" })),
+    }
+}
+
 /// The e2e spec with one `File` mount whose bytes the provider resolves by id through the
 /// injected `BlobSource` — then realizes as a ConfigMap volume just like inline content.
 fn file_spec(scope: &str) -> pc::SandboxSpec {
@@ -392,7 +416,8 @@ async fn a_live_managed_file_is_replaceable_by_the_runtime_and_read_only_to_the_
     // the writable side of the shared volume; C3 the Agent owns neither projector
     // nor Kubernetes credentials. C1+C2+C3 => E1 attach becomes immediately
     // visible, E2 Agent writes fail while bytes stay unchanged, and E3 runtime
-    // removal makes the path absent without replacing the Pod.
+    // removal makes the path and now-empty parents absent without replacing the
+    // Pod or deleting the shared projection root.
     if std::env::var("AWAKEN_K8S_E2E").as_deref() != Ok("1") {
         eprintln!("skipping: set AWAKEN_K8S_E2E=1 with a reachable cluster to run");
         return;
@@ -455,8 +480,98 @@ async fn a_live_managed_file_is_replaceable_by_the_runtime_and_read_only_to_the_
         .expect("remove the managed File through the projector");
     let absent = kubectl(&["exec", &pod, "-c", "agent", "--", "test", "!", "-e", path]);
     assert!(absent.status.success());
+    let empty_parent_absent = kubectl(&[
+        "exec",
+        &pod,
+        "-c",
+        "agent",
+        "--",
+        "test",
+        "!",
+        "-e",
+        "/mnt/session/uploads/awaken-design/current",
+    ]);
+    assert!(
+        empty_parent_absent.status.success(),
+        "hot removal must prune empty parents up to, but never including, the live-input root"
+    );
+    let root_retained = kubectl(&[
+        "exec",
+        &pod,
+        "-c",
+        "agent",
+        "--",
+        "test",
+        "-d",
+        "/mnt/session/uploads",
+    ]);
+    assert!(
+        root_retained.status.success(),
+        "projection root remains mounted"
+    );
 
     pc::Sandbox::dispose(&sandbox).await.unwrap();
+}
+
+#[tokio::test]
+async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
+    /* Cause/effect recovery decision table — KLI2:
+     * C1 a reachable cluster already has the exact Session Pod; C2 desired Managed
+     * Files change from path/value A to path/value B; C3 all other environment facts
+     * are unchanged. C1+C2+C3 => E1 create adopts the same Pod realization (no 500),
+     * E2 B is projected before create returns, E3 obsolete A is absent, and E4 no
+     * per-file ConfigMap exists. !C3 is covered by k8s_it K1 and must still fail
+     * closed as a genuinely different realization.
+     */
+    if std::env::var("AWAKEN_K8S_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping: set AWAKEN_K8S_E2E=1 with a reachable cluster to run");
+        return;
+    }
+    if !kubectl(&["get", "nodes"]).status.success() {
+        eprintln!("skipping: no reachable Kubernetes cluster");
+        return;
+    }
+
+    let scope = format!("k8s-manifest-recovery-{}", std::process::id());
+    let path_a = "/mnt/session/uploads/awaken-design/current/old.html";
+    let path_b = "/mnt/session/uploads/awaken-design/current/index.html";
+    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    let provider = ContainerProvider::new(Arc::new(runtime), "awaken-bb:1");
+
+    let first = provider
+        .create_container(&managed_input_spec(&scope, path_a, "generation-a"))
+        .await
+        .expect("create the initial Session Pod and project A");
+    let pod = pod_of(&first);
+    let read_a = kubectl(&["exec", &pod, "-c", "agent", "--", "cat", path_a]);
+    assert!(read_a.status.success());
+    assert_eq!(String::from_utf8_lossy(&read_a.stdout), "generation-a");
+
+    let recovered = provider
+        .create_container(&managed_input_spec(&scope, path_b, "generation-b"))
+        .await
+        .expect("a changed Managed File manifest must reuse the stable Pod");
+    assert_eq!(pod_of(&recovered), pod);
+    let old_absent = kubectl(&["exec", &pod, "-c", "agent", "--", "test", "!", "-e", path_a]);
+    assert!(old_absent.status.success());
+    let read_b = kubectl(&["exec", &pod, "-c", "agent", "--", "cat", path_b]);
+    assert!(read_b.status.success());
+    assert_eq!(String::from_utf8_lossy(&read_b.stdout), "generation-b");
+
+    let configmaps = kubectl(&[
+        "get",
+        "configmap",
+        "-l",
+        &format!("awaken-cfg-owner={pod}"),
+        "-o",
+        "name",
+    ]);
+    assert!(configmaps.status.success());
+    assert!(configmaps.stdout.is_empty());
+
+    pc::Sandbox::dispose(&recovered).await.unwrap();
 }
 
 #[tokio::test]

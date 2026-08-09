@@ -4,6 +4,10 @@ pub awaken_webhook::SignError::MalformedSecret
 impl core::error::Error for awaken_webhook::SignError
 impl core::fmt::Display for awaken_webhook::SignError
 pub fn awaken_webhook::SignError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum awaken_webhook::SubscriptionFailureState
+pub awaken_webhook::SubscriptionFailureState::Active
+pub awaken_webhook::SubscriptionFailureState::Disabled
+pub awaken_webhook::SubscriptionFailureState::Removed
 pub enum awaken_webhook::UrlRejected
 pub awaken_webhook::UrlRejected::Malformed
 pub awaken_webhook::UrlRejected::NotHttps
@@ -11,25 +15,30 @@ pub awaken_webhook::UrlRejected::PrivateHost
 impl core::error::Error for awaken_webhook::UrlRejected
 impl core::fmt::Display for awaken_webhook::UrlRejected
 pub fn awaken_webhook::UrlRejected::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_webhook::DispatchError
+pub awaken_webhook::DispatchError::message: alloc::string::String
+pub awaken_webhook::DispatchError::operation: &'static str
+pub awaken_webhook::DispatchError::subscription_id: core::option::Option<alloc::string::String>
+impl core::error::Error for awaken_webhook::DispatchError
+impl core::fmt::Display for awaken_webhook::DispatchError
+pub fn awaken_webhook::DispatchError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_webhook::DispatchReport
 pub awaken_webhook::DispatchReport::delivered: alloc::vec::Vec<alloc::string::String>
 pub awaken_webhook::DispatchReport::disabled: alloc::vec::Vec<alloc::string::String>
 pub awaken_webhook::DispatchReport::failed: alloc::vec::Vec<alloc::string::String>
+pub awaken_webhook::DispatchReport::rejected: alloc::vec::Vec<alloc::string::String>
 pub struct awaken_webhook::ReqwestSender
 impl awaken_webhook::ReqwestSender
 pub fn awaken_webhook::ReqwestSender::guarded() -> Self
-pub fn awaken_webhook::ReqwestSender::with_timeout(core::time::Duration) -> Self
 impl awaken_webhook::WebhookSender for awaken_webhook::ReqwestSender
 pub fn awaken_webhook::ReqwestSender::post<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<u16, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl core::default::Default for awaken_webhook::ReqwestSender
-pub fn awaken_webhook::ReqwestSender::default() -> Self
 pub struct awaken_webhook::ResolvedSubscription
 pub awaken_webhook::ResolvedSubscription::id: alloc::string::String
 pub awaken_webhook::ResolvedSubscription::secret: alloc::string::String
 pub awaken_webhook::ResolvedSubscription::url: alloc::string::String
 pub struct awaken_webhook::WebhookDispatcher
 impl awaken_webhook::WebhookDispatcher
-pub async fn awaken_webhook::WebhookDispatcher::dispatch(&self, &awaken_webhook::WebhookEvent, i64) -> awaken_webhook::DispatchReport
+pub async fn awaken_webhook::WebhookDispatcher::dispatch(&self, &awaken_webhook::WebhookEvent, i64) -> core::result::Result<awaken_webhook::DispatchReport, awaken_webhook::DispatchError>
 pub fn awaken_webhook::WebhookDispatcher::new(alloc::sync::Arc<dyn awaken_webhook::SubscriptionSource>, alloc::sync::Arc<dyn awaken_webhook::WebhookSender>) -> Self
 pub fn awaken_webhook::WebhookDispatcher::with_thresholds(self, u32, u32) -> Self
 pub struct awaken_webhook::WebhookEvent
@@ -48,13 +57,15 @@ pub awaken_webhook::WebhookEventData::workspace_id: alloc::string::String
 pub const awaken_webhook::DEFAULT_TOLERANCE_SECS: i64
 pub const awaken_webhook::SECRET_PREFIX: &str
 pub trait awaken_webhook::SubscriptionSource: core::marker::Send + core::marker::Sync
-pub fn awaken_webhook::SubscriptionSource::disable<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_webhook::SubscriptionSource::matching<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_webhook::ResolvedSubscription>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_webhook::SubscriptionSource::matching<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_webhook::ResolvedSubscription>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_webhook::SubscriptionSource::record_failure<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u32) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_webhook::SubscriptionFailureState, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_webhook::SubscriptionSource::record_success<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_webhook::WebhookSender: core::marker::Send + core::marker::Sync
 pub fn awaken_webhook::WebhookSender::post<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<u16, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_webhook::WebhookSender for awaken_webhook::ReqwestSender
 pub fn awaken_webhook::ReqwestSender::post<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<u16, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_webhook::generate_secret() -> alloc::string::String
+pub fn awaken_webhook::generate_secret_reference() -> alloc::string::String
 pub fn awaken_webhook::sign_bytes(&str, &str, i64, &str) -> core::result::Result<alloc::string::String, awaken_webhook::SignError>
 pub fn awaken_webhook::signature_header(&str, &str, i64, &str) -> core::result::Result<alloc::string::String, awaken_webhook::SignError>
 pub fn awaken_webhook::timestamp_within_tolerance(i64, i64, i64) -> bool

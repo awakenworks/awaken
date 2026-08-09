@@ -19,7 +19,6 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{StateKey, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::delegation::{
     DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,
@@ -39,6 +38,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatchPhase, ToolCallPhase};
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 const FINGERPRINT: &str = "catalog-a";
 const SNAPSHOT_ID: &str = "snapshot-1";

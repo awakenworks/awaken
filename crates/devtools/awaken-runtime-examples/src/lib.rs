@@ -100,7 +100,6 @@ pub mod prelude {
         Mode, PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
         ToolPermissionBehavior,
     };
-    pub use awaken_runtime::memory::MemoryCommitCoordinator;
     pub use awaken_runtime::{PermissionGate, RunInput, Runtime};
     pub use awaken_runtime_contract::activation::RunActivation;
     pub use awaken_runtime_contract::execution::RunExecutor;
@@ -110,6 +109,7 @@ pub mod prelude {
     pub use awaken_runtime_contract::runtime_context::RuntimeRunContext;
     pub use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
     pub use awaken_runtime_contract::{ExecutableAgentSnapshot, ExecutableAgentSnapshotBuilder};
+    pub use awaken_store_inmem::MemoryCommitCoordinator;
 
     pub use crate::{EchoTool, GreeterLlm, ScriptedLlm};
 }

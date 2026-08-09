@@ -7,7 +7,6 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime::{DirectRunIngress, RunIngress, RunService, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
@@ -20,6 +19,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
+use awaken_store_inmem::MemoryCommitCoordinator;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 

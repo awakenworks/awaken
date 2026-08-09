@@ -428,9 +428,7 @@ mod acp_context_tests {
             "Use ${SESSION_ID} and inspect the evidence.",
         );
         let skills: Arc<dyn awaken_ext_skills::SkillRegistry> =
-            Arc::new(awaken_ext_skills::InMemorySkillRegistry::from_specs([
-                skill,
-            ]));
+            Arc::new(awaken_ext_skills::FixedSkillRegistry::from_specs([skill]));
         let root = std::env::temp_dir().join(format!(
             "awaken-acp-memory-{}",
             std::time::SystemTime::now()

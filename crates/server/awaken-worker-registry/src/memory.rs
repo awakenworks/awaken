@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerRegistration,
+    WorkerIdentity, WorkerObservationSource, WorkerRegistration,
 };
 
 use crate::transition;
@@ -85,6 +85,19 @@ impl MemoryWorkerDirectory {
 }
 
 #[async_trait]
+impl WorkerObservationSource for MemoryWorkerDirectory {
+    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
+        Ok(self
+            .workers
+            .lock()
+            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?
+            .values()
+            .cloned()
+            .collect())
+    }
+}
+
+#[async_trait]
 impl WorkerDirectory for MemoryWorkerDirectory {
     async fn register(
         &self,
@@ -136,16 +149,6 @@ impl WorkerDirectory for MemoryWorkerDirectory {
             .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?
             .get(worker_id)
             .cloned())
-    }
-
-    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
-        Ok(self
-            .workers
-            .lock()
-            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?
-            .values()
-            .cloned()
-            .collect())
     }
 
     async fn expire(&self, now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {

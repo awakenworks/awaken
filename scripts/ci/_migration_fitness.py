@@ -32,7 +32,7 @@ PUBLISHED_CONDITIONAL_MIGRATION_SHA256: dict[str, str] = {
         "76ead211069b2c6e63df28828230ade1878aa3610223b623960af1290c31bf59"
     ),
     "crates/server/awaken-sandbox-policy-store/src/lib.rs": (
-        "81304da44eff5828b41292906822e62ee9fc6b832275f1a8b2b6780d5793830e"
+        "903a449718a06c7fc21b5b131030f03bb966fdc725059c1dd1e8adb4f440ee87"
     ),
     "crates/stores/awaken-store-postgres/src/migrations/"
     "V0001__commit_sequence.sql": (
@@ -70,15 +70,19 @@ def _migration_declarations(source: str) -> str:
     """Return the declaration region that owns inline Migration SQL.
 
     Some older crates keep their bundle function at the top of `lib.rs` beside
-    runtime DML. The first column-zero closing brace after the final Migration
-    constructor terminates that declaration region, preventing ordinary
-    idempotent application writes from being mistaken for migration commands.
+    runtime DML. The region begins at the first Migration constructor and ends
+    at the first column-zero closing brace after the final constructor, so
+    unrelated module prelude and ordinary idempotent writes affect no identity.
     """
-    last = max(source.rfind("Migration::new"), source.rfind("Migration::per_dialect"))
-    if last < 0:
+    constructors = ("Migration::new", "Migration::per_dialect")
+    starts = [source.find(constructor) for constructor in constructors]
+    starts = [start for start in starts if start >= 0]
+    if not starts:
         return ""
+    first = min(starts)
+    last = max(source.rfind(constructor) for constructor in constructors)
     end = source.find("\n}", last)
-    return source if end < 0 else source[: end + 2]
+    return source[first:] if end < 0 else source[first : end + 2]
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -118,7 +122,8 @@ def selftest() -> None:
     production raw DDL without Migration ownership -> rejected; M5 the same DDL
     inside a Migration -> accepted; M6 inline test fixture DDL -> ignored; M7
     runtime idempotent DML after an inline bundle declaration -> ignored; M8 an
-    exact published conditional body -> accepted; M9 mutation of it -> rejected.
+    exact published conditional body -> accepted; M9 mutation of it -> rejected;
+    M10 unrelated code before an inline bundle -> does not change its identity.
     """
     assert VERSIONED_SQL.fullmatch("V0001__catalog.sql")  # M1
     assert not VERSIONED_SQL.fullmatch("catalog.sql")  # M2
@@ -150,3 +155,7 @@ pub fn write() { sql(\"INSERT OR IGNORE INTO x VALUES (1)\"); }"""
     source = published.read_text(encoding="utf-8")
     assert not _conditional_errors(published, source, root)  # M8
     assert _conditional_errors(published, source + "-- drift\n", root)  # M9
+    declaration = 'Migration::new(1, "x", "CREATE TABLE IF NOT EXISTS x(id INT)");\n}'
+    assert _migration_declarations(declaration) == _migration_declarations(
+        "#[cfg(feature = \"test-support\")]\nuse fixture::Store;\n" + declaration
+    )  # M10

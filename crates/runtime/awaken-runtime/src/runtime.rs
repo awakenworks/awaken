@@ -14,7 +14,7 @@ use awaken_runtime_contract::plugin::{
     MergeError, Plugin, PluginConfigError, ResolvedExecutionEnv,
 };
 use awaken_runtime_contract::snapshot::{ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
-use awaken_runtime_contract::tool::RawTool;
+use awaken_runtime_contract::tool::{RawTool, RawToolRegistry};
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -53,7 +53,7 @@ pub struct Runtime {
     /// Model provider, built from the catalog at the composition root.
     llm: Option<Arc<dyn LlmExecutor>>,
     /// Executable tools keyed by id; concrete ids come from extensions.
-    tools: HashMap<String, Arc<dyn RawTool>>,
+    tools: RawToolRegistry,
     /// The authorization gate; absent means tools run ungated (test-only).
     gate: Option<Arc<dyn ToolGateHook>>,
     /// The delegation executor, if any. The engine routes the tool whose id is
@@ -218,7 +218,7 @@ impl Runtime {
     /// Register one executable tool, keyed by its id.
     #[must_use]
     pub fn with_tool(mut self, tool: Arc<dyn RawTool>) -> Self {
-        self.tools.insert(tool.id().to_string(), tool);
+        self.tools.insert(tool);
         self
     }
 

@@ -18,7 +18,6 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Fact};
-use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_state};
 use awaken_runtime::{DirectRunIngress, RunIngress, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{Error, RunExecutor};
@@ -30,6 +29,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
+use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink, replay_latest_state};
 use tokio_util::sync::CancellationToken;
 
 struct TextLlm;

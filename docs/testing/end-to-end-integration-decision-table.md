@@ -231,3 +231,127 @@ executable registration R1–R6、ProviderConnection compatibility tests，以�
 | ID | 失效模式与影响 | 消解/处理 | 判定表与测试证据 | S/O/D/RPN |
 |---|---|---|---|---|
 | EF40 | 测试遗漏较高优先级启动前提，却把先发生的安全拒绝当目标业务分支 → 覆盖虚证；或为通过测试削弱校验顺序 | 明确遮蔽关系；用真实 0600 token 文件满足前提；每个 fail-closed 原因单独成规则 | M27 T155–T158；`test:coverage-gaps` | 5/3/4/60 |
+
+## M28：Worker 身份权威的持久化与跨进程观察闭环
+
+原因 C149–C152：Coordinator 选择 SQLite/Postgres Worker registry、是否具备持久化坐标、Control 与 Coordinator 是否分进程、私有观察边界是否可达。结果 E147–E151：整个 Coordinator 只打开并显式注入一个 durable `WorkerDirectory`；默认产品不能导出 Memory 实现；split Control 通过既有私有 URL/token 读取窄只读投影，并以同一 fingerprint gate 周期重试发布重算。
+
+| 规则 | backend/topology | 前提或故障 | 结果 | 覆盖 |
+|---|---|---|---|---|
+| T159 | SQLite Coordinator | 无 `storage_dir` | 启动拒绝，不创建易失身份权威 | `sqlite_worker_authority_is_durable_and_missing_storage_fails_closed` R1 |
+| T160 | SQLite Coordinator | 可写路径并重启 | identity/generation/tombstone 从同一 DB 恢复 | 同测试 R2/R3 + registry conformance |
+| T161 | Postgres Coordinator | migrate/verify ledger | 同一 PG registry 供 transport/placement/observation | Postgres registry conformance + migration verify |
+| T162 | split Control | token 正确/错误、URL 合法/非法 | 正确时精确只读；错误时 401/构造失败 | `boundary_and_remote_adapter_preserve_auth_and_read_only_projection` |
+| T163 | split Control | 观察源失败→恢复→未变化 | 不推进 fence；下次轮询重试；相同投影合并 | `observation_source_failure_retries_without_advancing_the_fence` |
+| T164 | default/test-support build | 默认/显式 feature | 默认无 Memory API；test-support 仍跑共享 transition conformance | crate-boundary fitness + `memory_registry_conforms` |
+
+| ID | 失效模式与影响 | 消解/处理 | 判定表与测试证据 | S/O/D/RPN |
+|---|---|---|---|---|
+| EF41 | Coordinator 未初始化时隐式创建进程内 WorkerDirectory → 重启丢 incarnation/generation/tombstone，旧 Worker fence 的历史依据消失，调度观察与 transport 权威也可能取到不同实例 | 删除 `OnceLock` 与隐式 fallback；启动按 typed backend 显式打开 SQLite/PG，一份 `Arc` 注入所有消费者；无持久化坐标拒绝启动 | M28 T159–T161/T164 | 6/3/4/72 |
+| EF42 | split Control 读取自己的空内存 registry，而 heartbeat 只到 Coordinator → ACP/credential readiness 永久陈旧，publication 不随 Worker 变化 | 抽出只读 `WorkerObservationSource`；复用现有 Control→Coordinator 私有 URL/token；AllInOne 心跳即时触发，split Control 5 秒轮询同一 fingerprint/retry gate | M28 T162–T163 | 5/4/4/80 |
+| EF43 | 产品 Router helper 复制完整启动流程并绕过持久化初始化 → CLI 主路径正常而 public assembly/场景路径 fail-close 或错误降级 | 删除重复 assembly；标准、公开和场景模型入口统一调用唯一 `build_runtime_process_assembly` | 静态单调用审查；CLI 默认/all-feature compile + assembly tests | 6/2/3/36 |
+
+## M29：Webhook 投递分类、持久失败状态与恢复闭环
+
+原因 C153–C156：HTTP 结果属于成功、可重试或永久拒绝；订阅枚举、密钥解析或投递状态写可能失败；Control 可重启；自动禁用后操作员需要显式恢复。结果 E152–E157：唯一 dispatcher 负责分类，现有 WebhookStore 原子持久化连续失败，任何权威故障向 Coordinator outbox 传播，永久拒绝终结当前订阅/事件义务，显式 `disabled:false` 重新启用并清零。
+
+静态结构仍只有一条权威链：`ManagedSessionRepository lifecycle outbox → LifecycleFactDelivery → WebhookDispatcher → SubscriptionSource → WebhookStore/SecretStore`；没有新增 outbox、计数缓存或第二重试器。动态状态为 `active(count=n) --2xx--> active(0)`，`active(n) --failed event--> active(n+1)|disabled`；存储故障不迁移状态且 outbox 保持 pending。
+
+| 规则 | HTTP/本地结果 | 权威状态 | 结果 | 覆盖 |
+|---|---|---|---|---|
+| T165 | 2xx（含 204/299） | 可写 | 单次 delivered；失败计数清零；outbox 完成 | dispatcher unit + real receiver E2E |
+| T166 | 408/425/429/5xx 或网络错误后恢复 | 可写 | 同一 `webhook-id` 有界重试；2xx 后完成 | classifier decision table + real 429→204 E2E |
+| T167 | 可重试故障耗尽 | 阈值未到 | `failed`；稳定 fact 保持 pending，周期恢复 | real 500/timeout/response-loss + lifecycle reconciliation |
+| T168 | 300 或永久 4xx | 可写 | 仅一次 POST；`rejected`；当前事实不被无效重试 | unit 边界表 + real 404 E2E |
+| T169 | 枚举/密钥解析失败 | 不可读 | dispatch Err、零错误性完成；outbox 保持 pending | `matching_fails_closed...` + authority table R1 |
+| T170 | 成功/失败状态回写失败 | 不可写 | dispatch Err；不声称 delivered/disabled；outbox 保持 pending | `authority_failures_never_look_like_completed_delivery` R2/R3 |
+| T171 | 连败跨重启达到阈值；后续显式恢复 | SQLite/Postgres durable | 原子禁用；重启不清零；PUT `disabled:false` 重新启用并清零 | store contract + SQLite reopen + Postgres reconnect + CRUD recovery |
+
+| ID | 失效模式与影响 | 消解/处理 | 判定表与测试证据 | S/O/D/RPN |
+|---|---|---|---|---|
+| EF44 | 永久 3xx/4xx 与瞬态故障同样重试 → 无效流量、接收方压力与重试风暴 | 唯一 classifier：仅 408/425/429/5xx/网络可重试；其余非 2xx 单次 rejected | M29 T166–T168 | 4/4/2/32 |
+| EF45 | WebhookStore 或 SecretStore 故障被转为空订阅 → durable fact 被错误完成并静默漏通知 | `SubscriptionSource::matching` fallible；任何枚举/密钥错误穿透到 delivery/outbox | M29 T169 | 6/3/4/72 |
+| EF46 | 连败计数只在 dispatcher 内存中 → 重启/副本切换归零，坏端点永不自动禁用 | 删除进程内计数；`WebhookStore::record_delivery` 在 memory/SQLite/Postgres 共用一个领域转换并各自原子提交 | M29 T165/T171 | 5/4/4/80 |
+| EF47 | 禁用或成功清零写失败被吞掉，但报告声称已完成 → 状态与 outbox 分叉 | 状态写为 dispatch 成功前提；写失败返回 typed `DispatchError` 并保留事实 | M29 T170 | 6/2/4/48 |
+| EF48 | 自动禁用后 PUT 永远保留 disabled，操作员修复 URL 仍无法恢复投递 | 更新接口显式接受 `disabled:false`，保留 secret/owner 并原子清零计数 | M29 T171 | 4/3/2/24 |
+
+## M30：Webhook 配置行与签名材料的原子 authoring、恢复与库存闭环
+
+原因 C157–C164：PUT 命中已有/缺失/异租户行；投递状态可能并发写；SecretStore put/delete 与 admin row apply/complete 可在效果前、效果后或响应丢失时失败；Control 可在任一相位重启；库存包含 committed、pending、orphan、missing 与其他域材料；输入字段可能畸形。结果 E158–E166：唯一 `WebhookStore` 端口原子更新 authored 字段并保留 operational/ref；创建/删除在任何密钥副作用前写 durable mutation intent；恢复根据精确 before/after 行决定保留或删除材料；库存只处理 webhook-owned 且未被 committed/pending 保护的引用；无直接 put/delete 和第二 outbox。
+
+静态结构：`Webhook CRUD application → WebhookStore(authoring + mutation journal) ↔ SecretStore`；SQLite/Postgres 各自在同一数据库事务内维护 row 与 intent，Control 启动及周期 supervisor 调用同一 recovery/inventory 函数。`ManagedSessionRepository lifecycle outbox` 仍是投递事件的唯一权威，历史 `admin_webhook_outbox` 由 V0010 退役。
+
+动态结构：创建为 `none → intent(before=none,after=row) → secret put → row apply → intent complete`；删除为 `row → intent(before=row,after=none) → row apply → secret delete → intent complete`。故障后若当前行等于 `before`，清理未发布的 after 材料；等于 `after`，清理退休的 before 材料；两者都不等则 conflict/fail-closed。intent 存在期间 update/delivery 写均被 fence。
+
+| 规则 | 原因组合 | 结果 | 覆盖 |
+|---|---|---|---|
+| T172 | existing owned + authored update + concurrent delivery | URL/types 更新；secret_ref/owner/最新失败计数不丢失 | memory contract + SQLite restart/atomic test |
+| T173 | missing + begin intent + seal + apply + complete | 201；只返回一次 plaintext；行仅存随机 opaque ref | CRUD create + signing reference test |
+| T174 | secret put 失败；补偿成功/失败 | 成功则 intent 清除；补偿失败则 intent 保留并在恢复后清除 | `seal_failure...` + `failed_seal_and_failed_compensation...` |
+| T175 | apply 响应不确定或 apply 后重启 | 不在线删除可能已提交的密钥；before/after 恢复决定唯一保留侧 | mutation recovery R1/R2 + SQLite/Postgres reconnect |
+| T176 | owned DELETE；secret delete 成功/失败 | 成功 204 且行/材料/intent 全清；失败 500 且 durable intent 后续完成 | owned/failed-delete cleanup tests |
+| T177 | pending intent + update/delivery/concurrent same-id create | repository conflict；不覆盖计数、owner、secret ref | store decision table + SQLite intent fence + PG advisory lock |
+| T178 | orphan/pending/committed-missing/foreign inventory | 仅删 orphan webhook key；保护 pending；报告 missing；不碰其他域 | inventory reconciliation decision table |
+| T179 | event_types/disabled 畸形 | 400，零 row/secret/intent 副作用 | malformed authoring table |
+| T180 | 历史 admin webhook outbox | V9→V10 删除；V11 仅增加 material intent journal；重放幂等 | migration upgrade/active-schema tests |
+
+| ID | 失效模式与影响 | 消解/处理 | 判定表与测试证据 | S/O/D/RPN |
+|---|---|---|---|---|
+| EF49 | HTTP 层 `get→put` 与投递计数并发，旧快照覆盖最新失败计数、禁用状态或 secret_ref | 删除直接 put；repository transaction 只 patch authored 字段，SQLite IMMEDIATE/PG id advisory lock 串行化 | M30 T172/T177 | 6/4/4/96 |
+| EF50 | 先 seal 后 row 写失败，留下不可追踪密钥；错误响应丢失时错误补偿又可能删除已提交行的密钥 | secret 副作用前持久 create intent；不对 ambiguous apply 在线猜测；before/after 恢复 | M30 T173–T175 | 6/3/5/90 |
+| EF51 | DELETE 只删除配置行或吞掉仓储错误，密钥永久残留且客户端收到假 204 | durable delete intent；row apply 后幂等删除 material；失败返回 500 并周期恢复 | M30 T176 | 5/4/4/80 |
+| EF52 | Control 在 seal/apply/delete/complete 任一相位崩溃，重启后既不知道保留哪侧也无法释放 fence | intent 与 row 同库持久；启动和周期 recovery 以精确 before/after 收敛 | M30 T174–T176 | 6/3/4/72 |
+| EF53 | 两租户并发创建同一缺失 ID，确定性 secret_ref 被覆盖并造成所有权/签名密钥劫持 | 每次创建使用独立随机 opaque ref；按 id 原子 begin；owner mismatch 不披露 | M30 T173/T177 | 6/2/4/48 |
+| EF54 | 库存清理把在途 key 或共享 vault 中其他域 key 当 orphan 删除，制造 dangling row | inventory 快照后读取 pending+committed 保护集；仅处理 `sec:webhook:`/历史 `whsec:` owner 前缀 | M30 T178 | 6/2/5/60 |
+| EF55 | 畸形 event_types/disabled 被静默过滤或当缺省，配置与操作员意图不一致 | admission 严格类型/非空校验，400 且零副作用 | M30 T179 | 3/4/2/24 |
+| EF56 | schema 保留无人读写的第二 webhook outbox，诱导双写/错误运维与重复权威 | 保留不可改写历史 V7；V10 追加 DROP；Session lifecycle outbox 唯一 | M30 T180 | 5/3/4/60 |
+
+## M31：Sandbox-target Hand 的 Environment executor 与工具身份唯一性
+
+原因 C165–C168：工具目标为 Brain/Sandbox；Session 是否注入 Environment-derived `ToolExecutor`；同一 tool id 在注册表中出现 0/1/多次；permission 决策为 allow/deny。结果 E167–E171：Brain 工具仍由 Runtime 本地实现执行；Sandbox 工具只能经 Session executor；缺 executor、未知或重复 id 均失败关闭且零副作用；唯一工具在 allow 后执行一次，deny 后不执行。
+
+静态结构：`RawToolRegistry` 是 Runtime 静态工具、Workdir/Namespace Environment executor 与 remote Hand 的唯一 `id → RawTool` 解析规则；生产 Session 仍只从 `SessionEnvironment` 获得 executor。`awaken-runtime-examples` 是 `publish=false` 且 opt-in feature 的开发组合，显式注入同一端口，不改变产品默认路径。
+
+动态结构：`model tool call → target routing → permission gate → [Brain: local registry | Sandbox: Session ToolExecutor] → ToolOutput → commit`。Sandbox 缺 executor 不回退 Brain；注册重复时不按插入顺序选 winner，而是固定进入 ambiguous terminal error。
+
+| 规则 | target | executor / registry | permission | 结果 | 覆盖 |
+|---|---|---|---|---|---|
+| T181 | Brain | local unique | allow | 只调用 Runtime 本地实现 | runtime placement decision table |
+| T182 | Sandbox | explicit unique | allow | executor 内实现执行一次并提交结果 | coding-agent R1 + runtime placement tests |
+| T183 | Sandbox | explicit unique | deny | 一次审批、零工具副作用 | coding-agent R2 + awaiting tests |
+| T184 | Sandbox | absent | allow | `sandbox executor unavailable`，不在 Brain 执行 | `sandbox_tool_without_executor_fails_closed_instead_of_running_in_brain` |
+| T185 | 任意 | duplicate id | 任意 | ambiguous error、无实现被选择、恢复能力为 NonRecoverable | `registry_resolution_decision_table_is_fail_closed` |
+
+| ID | 失效模式与影响 | 消解/处理 | 判定表与测试证据 | S/O/D/RPN |
+|---|---|---|---|---|
+| EF57 | 工具已改为 Sandbox target，但示例/组合根只注册实现而未注入 Environment executor → 审批成功却仅产生错误结果，文件无变化；若隐式回退 Brain 则绕过隔离 | 保持产品缺 executor 时 fail-closed；Session 显式持有 executor；devtools 仅在 opt-in、非发布示例中组装单进程 Hand | M31 T182–T184 | 6/3/3/54 |
+| EF58 | Runtime、Environment、remote Hand 各自维护 id map，重复 id 由插入顺序覆盖 → 执行所有权不确定、权限/恢复能力可能取错实现 | 合并为 `RawToolRegistry`；unknown/unique/duplicate 共用一个判定表；duplicate 永久 ambiguous 且 NonRecoverable | M31 T181/T185 | 7/2/4/56 |
+
+## M32：真实 Podman 测试的外部可执行前提
+
+原因 C169–C170：`podman info` 是否响应；底层 OCI runtime 是否能实际启动最小容器。结果 E172：只有两项同时成立才执行真实 Podman 生命周期套件；否则明确报告外部前提不可用并跳过，不能把宿主 D-Bus/runc 故障归因于产品适配器。原始 OCI probe 直接调用 Podman CLI，不复用被测 `PodmanRuntime::create`，因此产品 argv/适配器回归仍会进入测试并失败。
+
+| 规则 | info | OCI start | 结果 | 覆盖 |
+|---|---:|---:|---|---|
+| T186 | 0 | 0 | skip | prerequisite R1 |
+| T187 | 0 | 1 | skip（动态不可达但逻辑保持 total） | prerequisite R2 |
+| T188 | 1 | 0 | skip，并输出 OCI 诊断 | prerequisite R3 + broken-runtime live run |
+| T189 | 1 | 1 | 执行全部真实 Podman 用例，产品错误不得转 skip | prerequisite R4 + healthy Podman CI |
+
+| ID | 失效模式与影响 | 消解/处理 | 判定表与测试证据 | S/O/D/RPN |
+|---|---|---|---|---|
+| EF59 | 仅以 `podman info` 成功判断运行时可用，宿主 systemd/runc 已失效时所有 live 用例统一假红；若 probe 复用被测 create 又会把代码回归误判为环境 skip | 外部 gate 合取 info 与独立 raw OCI run；纯判定表穷举；真实用例只在完整前提满足时执行 | M32 T186–T189 | 3/4/3/36 |
+
+## M33：Webhook 库存删除与缺失诊断的快照时序
+
+原因 C171：已提交 webhook 的密钥在库存协调器取得删除候选快照后、生成缺失材料报告前才变为可见。结果 E173：首个快照只界定本轮可删除候选；删除完成后重新读取库存，第二个快照单独作为缺失诊断的权威，避免把并发成功发布误报为材料丢失。该修复继续复用唯一 `SecretStore::inventory` 端口，没有引入缓存或第二库存实现。
+
+静态结构不变：`Webhook inventory supervisor → WebhookStore(committed/pending refs) + SecretStore(inventory/delete)`。动态时序为 `inventory₁ → pending/committed snapshot → bounded orphan delete → inventory₂ → missing report`；`inventory₁` 中不存在的并发新 key 不进入删除候选，`inventory₂` 则观察其最终可见性。
+
+| 规则 | 删除快照时 committed key 可见 | 报告快照时可见 | 结果 | 覆盖 |
+|---|---:|---:|---|---|
+| T190 | 0 | 1 | 不删除且不报告 missing；稳定缺失 key 仍报告 | inventory reconciliation R3/R5 |
+
+| ID | 失效模式与影响 | 消解/处理 | 判定表与测试证据 | S/O/D/RPN |
+|---|---|---|---|---|
+| EF60 | 用删除前的旧库存快照生成缺失报告，并发成功创建会被误报为 dangling row，触发错误告警或人工补偿 | 分离删除候选与诊断权威：首快照 bounded delete，删除后第二快照判定 missing | M33 T190 + M30 T178 | 4/3/4/48 |

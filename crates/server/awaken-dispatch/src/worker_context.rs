@@ -154,11 +154,11 @@ mod resolve_seam_tests {
 
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_runtime::memory::MemoryCommitCoordinator;
     use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
     use awaken_runtime_contract::{
         ExecutableAgentSnapshot, ModelBinding, RunActivation, RuntimeRunContext,
     };
+    use awaken_store_inmem::MemoryCommitCoordinator;
 
     use super::WorkerContext;
 

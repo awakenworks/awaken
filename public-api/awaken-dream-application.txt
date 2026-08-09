@@ -12,7 +12,6 @@ pub fn awaken_dream_application::DreamApplication::bind_session_source(&self, al
 pub async fn awaken_dream_application::DreamApplication::cancel(&self, &str, &str) -> core::result::Result<awaken_session_contract::dream::Dream, awaken_dream_application::DreamApiError>
 pub async fn awaken_dream_application::DreamApplication::create(&alloc::sync::Arc<Self>, &str, awaken_session_contract::dream::DreamCreateParams) -> core::result::Result<awaken_session_contract::dream::Dream, awaken_dream_application::DreamApiError>
 pub fn awaken_dream_application::DreamApplication::list(&self, &str, awaken_session_contract::dream::DreamListParams) -> core::result::Result<awaken_session_contract::dream::DreamPage, awaken_dream_application::DreamApiError>
-pub fn awaken_dream_application::DreamApplication::new(alloc::sync::Arc<dyn awaken_dream_application::DreamExecutor>) -> Self
 pub fn awaken_dream_application::DreamApplication::policy(&self, &str, &str) -> core::result::Result<awaken_dream_application::DreamPolicy, awaken_dream_application::DreamApiError>
 pub fn awaken_dream_application::DreamApplication::resume_incomplete(&alloc::sync::Arc<Self>)
 pub fn awaken_dream_application::DreamApplication::retrieve(&self, &str, &str) -> core::result::Result<awaken_session_contract::dream::Dream, awaken_dream_application::DreamApiError>

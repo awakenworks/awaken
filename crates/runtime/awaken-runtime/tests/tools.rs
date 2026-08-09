@@ -11,7 +11,6 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -28,6 +27,7 @@ use awaken_runtime_contract::snapshot::{
 use awaken_runtime_contract::tool::{
     RawTool, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput, ToolOutputSpiller,
 };
+use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 
 /// First inference asks for a tool call; the second ends with text.
 struct ToolThenText {
