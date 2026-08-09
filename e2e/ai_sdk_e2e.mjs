@@ -6,7 +6,7 @@
 // npm install && node ai_sdk_e2e.mjs
 
 import assert from 'node:assert/strict';
-import { DefaultChatTransport, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
+import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses } from 'ai';
 import { Chat } from '@ai-sdk/react';
 import { withRealServer, pass, RED_PNG_DATA_URI } from './harness.mjs';
 
@@ -25,9 +25,12 @@ function replyText(chat) {
     .join('');
 }
 
-/// Wait for the Chat to settle back to `ready` (its auto-send may run a follow-up).
-async function settle(chat) {
-  for (let i = 0; i < 50 && chat.status !== 'ready'; i++) {
+/// Wait for the auto-send to produce and finish a new assistant message. The v7
+/// client schedules its send predicate after `addToolOutput` resolves, so observing
+/// the immediately-ready status alone races and can mistake "not started" for done.
+async function settle(chat, awaitingMessageId) {
+  for (let i = 0; i < 50; i++) {
+    if (chat.status === 'ready' && chat.lastMessage?.id !== awaitingMessageId) return;
     await new Promise((r) => setTimeout(r, 100));
   }
 }
@@ -55,37 +58,40 @@ async function main() {
   });
 
   // --- streaming tool calls: the model's tool call arrives as a `tool-*` part in
-  // the Chat's message state (state `input-available`), delivered mid-stream ---
+  // the Chat's message state, with its complete input before approval is requested. ---
   await withRealServer('probe', 38144, async (base) => {
     const chat = newChat(base, 'sdk-stream');
     await chat.sendMessage({ text: 'remember' });
     const toolPart = (chat.lastMessage?.parts ?? []).find((p) => p.toolCallId);
     assert.ok(toolPart, `expected a streamed tool part: ${JSON.stringify(chat.lastMessage?.parts)}`);
     assert.ok(toolPart.type.startsWith('tool-'), `unexpected tool part type: ${toolPart.type}`);
-    assert.equal(toolPart.state, 'input-available', 'the tool call should stream its input');
+    assert.equal(toolPart.state, 'approval-requested', 'the streamed tool should await approval');
     assert.ok(toolPart.input && 'path' in toolPart.input, 'the streamed tool call carries its input');
-    pass('ai-sdk streaming tool call (tool-input-available)');
+    pass('ai-sdk streaming tool input followed by native approval state');
   });
 
-  // --- HITL: a tool needing approval awaits; `Chat.addToolResult` submits the
+  // --- HITL: a tool needing approval awaits; `Chat.addToolApprovalResponse` submits the
   // decision and (via sendAutomaticallyWhen) auto-resends, completing the run ---
   await withRealServer('probe', 38143, async (base) => {
     const chat = newChat(base, 'sdk-hitl', {
-      sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+      sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     });
     await chat.sendMessage({ text: 'remember this note' });
     const toolPart = (chat.lastMessage?.parts ?? []).find((p) => p.toolCallId);
     assert.ok(toolPart, `expected an awaiting tool part: ${JSON.stringify(chat.lastMessage?.parts)}`);
-    assert.equal(toolPart.state, 'input-available', 'the tool should await a decision');
+    assert.equal(toolPart.state, 'approval-requested', 'the tool should await a decision');
 
-    await chat.addToolResult({
-      tool: toolPart.type.replace(/^tool-/, ''),
-      toolCallId: toolPart.toolCallId,
-      output: 'approved',
+    const awaitingMessageId = chat.lastMessage.id;
+    await chat.addToolApprovalResponse({
+      id: toolPart.approval.id,
+      approved: true,
     });
-    await settle(chat);
-    assert.ok(replyText(chat).includes('done'), `expected completion after approval: ${replyText(chat)}`);
-    pass('ai-sdk HITL approval (await -> addToolResult -> complete)');
+    await settle(chat, awaitingMessageId);
+    assert.ok(
+      replyText(chat).includes('done'),
+      `expected completion after approval: ${JSON.stringify({ status: chat.status, message: chat.lastMessage })}`,
+    );
+    pass('ai-sdk HITL approval (await -> addToolApprovalResponse -> complete)');
   });
 
   console.log(

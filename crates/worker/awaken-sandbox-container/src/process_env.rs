@@ -2,6 +2,41 @@
 
 use super::*;
 
+fn workspace_scoped_path(value: &str) -> bool {
+    let path = std::path::Path::new(value);
+    path.is_absolute()
+        && path.starts_with("/workspace")
+        && path.components().all(|component| {
+            !matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+}
+
+/// Keep the caller's last explicit workspace-scoped path, otherwise install
+/// the runtime default. All duplicates are collapsed so backend argv ordering
+/// cannot silently change the selected process home.
+fn bind_workspace_path(command: &mut pc::Command, name: &str, default: &str) {
+    let selected = command.env.iter().rev().find_map(|var| {
+        if var.name != name {
+            return None;
+        }
+        let pc::EnvValue::Inline { value } = &var.value else {
+            return None;
+        };
+        workspace_scoped_path(value).then(|| value.clone())
+    });
+    command.env.retain(|var| var.name != name);
+    command.env.push(pc::EnvVar {
+        name: name.into(),
+        value: pc::EnvValue::Inline {
+            value: selected.unwrap_or_else(|| default.into()),
+        },
+        visibility: pc::EnvVisibility::Process,
+    });
+}
+
 /// Portable PID-1 command for a Session-owned container environment. Attempt
 /// commands run through exec; PID 1 only keeps the mount and network namespaces
 /// alive until the owning Session disposes the sandbox.
@@ -28,11 +63,7 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
         command.env.retain(|var| {
             !matches!(
                 var.name.as_str(),
-                "AWAKEN_PROJECT_DIR"
-                    | "AWAKEN_OUTPUTS_DIR"
-                    | "HOME"
-                    | "XDG_CONFIG_HOME"
-                    | "XDG_CACHE_HOME"
+                "AWAKEN_PROJECT_DIR" | "AWAKEN_OUTPUTS_DIR"
             )
         });
         command.env.extend([
@@ -50,28 +81,10 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
                 },
                 visibility: pc::EnvVisibility::Process,
             },
-            pc::EnvVar {
-                name: "HOME".into(),
-                value: pc::EnvValue::Inline {
-                    value: "/workspace".into(),
-                },
-                visibility: pc::EnvVisibility::Process,
-            },
-            pc::EnvVar {
-                name: "XDG_CONFIG_HOME".into(),
-                value: pc::EnvValue::Inline {
-                    value: "/workspace/.config".into(),
-                },
-                visibility: pc::EnvVisibility::Process,
-            },
-            pc::EnvVar {
-                name: "XDG_CACHE_HOME".into(),
-                value: pc::EnvValue::Inline {
-                    value: "/workspace/.cache".into(),
-                },
-                visibility: pc::EnvVisibility::Process,
-            },
         ]);
+        bind_workspace_path(&mut command, "HOME", "/workspace");
+        bind_workspace_path(&mut command, "XDG_CONFIG_HOME", "/workspace/.config");
+        bind_workspace_path(&mut command, "XDG_CACHE_HOME", "/workspace/.cache");
         pc::materialize_process_command(
             &self.base_env,
             command,

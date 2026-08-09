@@ -129,6 +129,9 @@ async function main(): Promise<void> {
         AWAKEN_WORKER_ID: `application-session-worker-${process.pid}`,
         AWAKEN_TEST_MCP_URL: applicationMcp.url,
         AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1',
+        // Application contribution is the subject; make the test's unsafe
+        // local execution choice explicit without weakening Worker defaults.
+        AWAKEN_TEST_SANDBOX_TIER: 'local',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });

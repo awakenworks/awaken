@@ -230,12 +230,35 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
     if let Some(materializer) = inputs.credential_materializer.as_ref() {
         credential_profiles.push(materializer.provider_adapter.clone());
     }
-    if let Some(materializer) = inputs
-        .credential_materializer
-        .as_ref()
-        .filter(|_| inputs.deployment.acp.is_some())
-    {
-        credential_profiles.push(materializer.process_secret.clone());
+    if let (Some(materializer), Some(acp)) = (
+        inputs.credential_materializer.as_ref(),
+        &inputs.deployment.acp,
+    ) {
+        for cli_id in acp.cli_ids() {
+            let Some(cli) = awaken_run_executor_acp::acp_cli(cli_id) else {
+                continue;
+            };
+            let (kind, material_type) = match cli.managed_credential_delivery {
+                awaken_run_executor_acp::ManagedCredentialDelivery::ProcessSecret => (
+                    awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment,
+                    awaken_runtime_contract::credential::PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE,
+                ),
+                awaken_run_executor_acp::ManagedCredentialDelivery::Artifact(_) => (
+                    awaken_runtime_contract::CredentialRealizationKind::PrivateSecretFile,
+                    awaken_runtime_contract::credential::PRIVATE_SECRET_FILE_MATERIAL_TYPE,
+                ),
+            };
+            let mut backend_profile = materializer.process_secret.clone();
+            backend_profile.realization_kinds = [kind].into_iter().collect();
+            backend_profile.extension_consumers.insert(
+                format!(
+                    "{}acp:{cli_id}",
+                    awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX
+                ),
+                [material_type.to_string()].into_iter().collect(),
+            );
+            credential_profiles.push(backend_profile);
+        }
     }
     if let Some(materializer) = inputs
         .credential_materializer

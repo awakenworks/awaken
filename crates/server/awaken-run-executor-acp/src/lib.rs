@@ -73,6 +73,8 @@ pub struct AgentSession {
     /// claude/gemini/opencode). Populated by [`ProjectingChannelSource::open`] for those
     /// CLIs; empty for a legacy config-file adapter and for fixtures.
     pub mcp_session_servers: Vec<awaken_protocol_acp::SessionMcpServer>,
+    /// Exact managed model selected through ACP after opening the Session.
+    pub session_model: Option<String>,
     /// Backend-owned native ACP configuration to apply after opening the
     /// session. Empty leaves the CLI's own defaults untouched.
     pub session_mode: Option<String>,
@@ -639,6 +641,7 @@ impl AcpRunExecutor {
             let mut config = TurnConfig::new(permission);
             config.mcp_servers = session.mcp_session_servers.clone();
             config.session_id = acp_session_id.take();
+            config.session_model = session.session_model.clone();
             config.session_mode = session.session_mode.clone();
             config.session_config_options = session.session_config_options.clone();
             config.expected_capability = session.expected_capability.clone();
@@ -1194,8 +1197,9 @@ struct CollectingAppender {
     messages: Vec<Message>,
     /// Index of the assistant message receiving the current contiguous ACP text
     /// stream. ACP reports token chunks as separate updates; durable history stores
-    /// one logical assistant message until a tool boundary interrupts the stream.
-    open_text_message: Option<usize>,
+    /// one logical assistant message until a tool boundary or ACP message-id
+    /// change interrupts the stream.
+    open_text_message: Option<(usize, Option<String>)>,
     /// The turn's token usage, accumulated from any `Usage` events (kept out of the
     /// committed messages — it lands as thread state, matching the native engine).
     usage: TokenUsage,
@@ -1234,18 +1238,20 @@ impl RunFactAppender for CollectingAppender {
         }
         self.last = seq;
         match event {
-            AcpProjectedEvent::Message { text } => match self.open_text_message {
-                Some(index) => match self.messages[index].content.last_mut() {
-                    Some(ContentBlock::Text { text: buffered }) => buffered.push_str(text),
-                    _ => unreachable!("open ACP text message must end in a text block"),
-                },
-                None => {
+            AcpProjectedEvent::Message { text, message_id } => match &self.open_text_message {
+                Some((index, open_message_id)) if open_message_id == message_id => {
+                    match self.messages[*index].content.last_mut() {
+                        Some(ContentBlock::Text { text: buffered }) => buffered.push_str(text),
+                        _ => unreachable!("open ACP text message must end in a text block"),
+                    }
+                }
+                _ => {
                     self.messages.push(Message::text(
                         acp_message_id(&self.run_id, seq),
                         Role::Assistant,
                         text.clone(),
                     ));
-                    self.open_text_message = Some(self.messages.len() - 1);
+                    self.open_text_message = Some((self.messages.len() - 1, message_id.clone()));
                 }
             },
             AcpProjectedEvent::ToolCall { id, name, input } => {
@@ -1351,9 +1357,10 @@ mod session_home;
 mod subprocess;
 pub use acp_cli::{
     AcpAcquisition, AcpCli, BackendModelInterface, CredentialArtifactCodec,
-    CredentialArtifactRequirement, CredentialArtifactSpec, ManagedCredentialDelivery, McpDelivery,
-    McpInterface, ModelDelivery, ProcessSecretRequirement, ResolvedModel, SessionKey,
-    SessionPersistence, acp_cli, known_acp_clis,
+    CredentialArtifactRequirement, CredentialArtifactSpec, ManagedCredentialDelivery,
+    ManagedModelInterface, ManagedProviderConfigDelivery, McpDelivery, McpInterface, ModelDelivery,
+    ProcessSecretRequirement, ResolvedModel, SessionKey, SessionPersistence, acp_cli,
+    known_acp_clis,
 };
 pub use awaken_runtime_contract::resolved::{
     AcpMcpServer as McpServerConfig, AcpMcpTransport as McpTransport,

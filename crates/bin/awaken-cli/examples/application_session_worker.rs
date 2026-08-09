@@ -128,9 +128,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     awaken_observability::init(&Default::default());
     let upstream = std::env::var("AWAKEN_UPSTREAM_URL")?;
     let decorator: awaken_runtime_host::AttemptExecutorDecorator = Arc::new(|inner| inner);
+    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    if let Ok(tier) = std::env::var("AWAKEN_TEST_SANDBOX_TIER") {
+        deployment.sandbox_tier = match tier.as_str() {
+            "local" => awaken_runtime_host::SandboxTier::Local,
+            _ => return Err(format!("unsupported E2E sandbox tier `{tier}`").into()),
+        };
+    }
     awaken_worker::WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
         upstream,
     ))
+    .with_deployment_config(deployment)
     .with_inference_materializer(Arc::new(HostMaterializer))
     .with_application_factory(Arc::new(move |_| {
         Ok(

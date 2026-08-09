@@ -87,7 +87,6 @@ pub trait ApplicationSessionControlClient:
         claim: &RunClaim,
         session_id: &str,
     ) -> Result<Option<awaken_session_contract::SessionRealizationDirective>, ApplicationSessionError>;
-
     async fn contribute(
         &self,
         claim: &RunClaim,

@@ -21,7 +21,7 @@ trap cleanup EXIT
 docker rm -f "$name" >/dev/null 2>&1 || true   # pre-clean any leftover container only
 
 deploy/images/sandbox/stage-binary.sh "$staged" # stage AFTER the pre-clean
-docker build -q -f deploy/images/sandbox/Dockerfile.smoke \
+docker buildx build --load -q -f deploy/images/sandbox/Dockerfile.smoke \
   --build-arg BIN="$staged" -t awaken-sandbox-smoke:test . >/dev/null
 
 # Cmd = a fake stdio "CLI" (read one line, reply, exit). The bridge ENTRYPOINT spawns

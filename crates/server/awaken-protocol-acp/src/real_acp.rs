@@ -19,7 +19,10 @@ use crate::{AcpProjectedEvent, TerminationReason};
 pub fn project_update(update: &SessionUpdate) -> Option<AcpProjectedEvent> {
     match update {
         SessionUpdate::AgentMessageChunk(chunk) => {
-            text_of(&chunk.content).map(|text| AcpProjectedEvent::Message { text })
+            text_of(&chunk.content).map(|text| AcpProjectedEvent::Message {
+                text,
+                message_id: chunk.message_id.clone(),
+            })
         }
         SessionUpdate::ToolCall(tool_call) => Some(AcpProjectedEvent::ToolCall {
             id: tool_call.tool_call_id.0.to_string(),
@@ -104,7 +107,24 @@ mod tests {
         let update = SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from("hi")));
         assert_eq!(
             project_update(&update),
-            Some(AcpProjectedEvent::Message { text: "hi".into() })
+            Some(AcpProjectedEvent::Message {
+                text: "hi".into(),
+                message_id: None,
+            })
+        );
+    }
+
+    #[test]
+    fn agent_message_id_is_retained_as_a_transient_stream_boundary() {
+        let mut chunk = ContentChunk::new(ContentBlock::from("deliverable"));
+        chunk.message_id = Some("026a96a1-698c-472e-9a08-ef52a4530f79".into());
+        let update = SessionUpdate::AgentMessageChunk(chunk);
+        assert_eq!(
+            project_update(&update),
+            Some(AcpProjectedEvent::Message {
+                text: "deliverable".into(),
+                message_id: Some("026a96a1-698c-472e-9a08-ef52a4530f79".into()),
+            })
         );
     }
 

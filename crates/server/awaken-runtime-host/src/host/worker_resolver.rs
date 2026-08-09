@@ -5,8 +5,6 @@ use super::*;
 mod application;
 mod claimed_dispatch;
 use application::install_application_projection;
-#[cfg(test)]
-use claimed_dispatch::adopt_bound_sandbox;
 use claimed_dispatch::{WorkerMcpEffects, WorkerProjectionSynchronizer};
 
 /// Routes a claimed run to the worker that owns its thread, opening (or reusing)
@@ -73,6 +71,7 @@ impl HostWorkerResolver {
 
 #[cfg(test)]
 mod tests {
+    use super::claimed_dispatch::adopt_bound_sandbox;
     use super::*;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,

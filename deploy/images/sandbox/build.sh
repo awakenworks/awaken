@@ -53,9 +53,10 @@ fi
 
 repo=$(cd "$(dirname "$0")/../../.." && pwd)
 image=${1:-awaken-sandbox:local}
-# `${2-...}` intentionally distinguishes an omitted package list (production
-# defaults) from an explicitly empty one (hermetic transport/E2E fixture image).
-packages=${2-"@agentclientprotocol/claude-agent-acp@0.44 @agentclientprotocol/codex-acp@1.1 @google/gemini-cli@0.11 opencode-ai@0.6"}
+# `${2-all}` intentionally distinguishes an omitted runtime set (the complete
+# production contract) from an explicitly empty one (a hermetic transport/E2E
+# fixture). A non-empty override is a comma-separated subset of catalog ids.
+runtime_ids=${2-all}
 engine=${CONTAINER_ENGINE:-docker}
 build_timeout_seconds=${AWAKEN_SANDBOX_BUILD_TIMEOUT_SECONDS:-1800}
 operation_timeout_seconds=${AWAKEN_SANDBOX_OPERATION_TIMEOUT_SECONDS:-60}
@@ -87,10 +88,10 @@ cd "$repo"
 "$repo/deploy/images/sandbox/stage-binary.sh" "$staged" hand
 if [[ -n "${AWAKEN_SANDBOX_BUILD_NETWORK:-}" ]]; then
   build_image --network "$AWAKEN_SANDBOX_BUILD_NETWORK" \
-    --build-arg ACP_NPM_PACKAGES="$packages" \
+    --build-arg ACP_RUNTIME_IDS="$runtime_ids" \
     -f deploy/images/sandbox/Dockerfile -t "$image" .
 else
-  build_image --build-arg ACP_NPM_PACKAGES="$packages" \
+  build_image --build-arg ACP_RUNTIME_IDS="$runtime_ids" \
     -f deploy/images/sandbox/Dockerfile -t "$image" .
 fi
 
@@ -104,3 +105,16 @@ run_with_deadline "$operation_timeout_seconds" \
 run_with_deadline "$operation_timeout_seconds" \
   "$engine" run --rm --entrypoint /bin/sh "$image" -c \
   'command -v curl >/dev/null && curl --version >/dev/null'
+
+# Perform the production prompt-free initialize + session/new handshake, not
+# merely `command -v`. Independent adapters are probed concurrently by the
+# image-local verifier, bounding cold-start validation to one probe deadline.
+if [[ -n "$runtime_ids" ]]; then
+  verify_ids=()
+  if [[ "$runtime_ids" != all ]]; then
+    IFS=',' read -r -a verify_ids <<<"$runtime_ids"
+  fi
+  run_with_deadline "$operation_timeout_seconds" \
+    "$engine" run --rm --entrypoint /usr/local/bin/awaken-verify-acp-runtimes \
+    "$image" "${verify_ids[@]}"
+fi

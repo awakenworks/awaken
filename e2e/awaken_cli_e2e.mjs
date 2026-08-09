@@ -136,6 +136,7 @@ async function main() {
     // This suite owns the resource-service isolation matrix. Authentication and
     // IAM authorization are covered separately by management_authz_e2e.mjs.
     'identity_mode = "no-login"',
+    'sandbox_tier = "local"',
     // Keep this production-composition fixture independent of ACP CLIs installed
     // on the developer host. The Admin Assistant under test is republished onto
     // the authored fake provider below; ambient Codex discovery must not replace

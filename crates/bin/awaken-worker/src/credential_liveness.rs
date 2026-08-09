@@ -10,8 +10,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use awaken_acp_contract::AcpCapabilityObservationSource;
-use awaken_runtime_contract::{CredentialMaterialError, WorkerLocalCredentialResolver};
+use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationSource};
+use awaken_runtime_contract::{
+    CredentialMaterialError, CredentialObservation, WorkerLocalCredentialResolver,
+};
 use awaken_worker_contract::{WorkerAcpCapabilityObservation, WorkerCredentialObservation};
 
 #[derive(Default)]
@@ -52,10 +54,16 @@ impl WorkerObservationCache {
         if self.refresh_generation.load(Ordering::Acquire) != observed_generation {
             return Ok(());
         }
-        let credentials = credential_observations(resolver, now_ms, ttl)
+        let credentials = credential_observations(resolver)
             .await
             .map_err(|error| error.to_string())?;
-        let acp_capabilities = capability_observations(capability_source, now_ms, ttl).await?;
+        let acp_capabilities = capability_observations(capability_source).await?;
+        // A slow adapter handshake is part of the observation operation. Start
+        // the full lease only after the complete causal batch has finished so
+        // probe latency cannot consume (or entirely exhaust) fresh evidence.
+        let observed_at_ms = crate::wall_clock_ms().max(now_ms);
+        let credentials = lease_credential_observations(credentials, observed_at_ms, ttl);
+        let acp_capabilities = lease_capability_observations(acp_capabilities, observed_at_ms, ttl);
         // Both probes form one causal batch. A hard failure in either source
         // cannot renew only half of the evidence or create mixed-generation
         // credential/capability truth.
@@ -81,6 +89,9 @@ pub(crate) fn spawn_probe(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(probe_interval);
+        // A slow bounded probe batch must not cause Tokio's default burst mode
+        // to replay every missed tick and immediately launch another batch.
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
         loop {
             interval.tick().await;
@@ -103,58 +114,60 @@ pub(crate) fn spawn_probe(
 
 pub(crate) async fn credential_observations(
     resolver: Option<&dyn WorkerLocalCredentialResolver>,
-    now_ms: u64,
-    ttl: Duration,
-) -> Result<BTreeSet<WorkerCredentialObservation>, CredentialMaterialError> {
+) -> Result<BTreeSet<CredentialObservation>, CredentialMaterialError> {
     match resolver {
-        Some(resolver) => resolver
-            .credential_observations()
-            .await
-            .map(|observations| {
-                let valid_until_ms = now_ms.saturating_add(ttl.as_millis() as u64);
-                observations
-                    .into_iter()
-                    .map(|observation| WorkerCredentialObservation {
-                        credential: observation.credential,
-                        state: observation.state,
-                        observed_at_ms: now_ms,
-                        valid_until_ms,
-                        reason_code: observation.reason_code,
-                    })
-                    .collect()
-            }),
+        Some(resolver) => resolver.credential_observations().await,
         None => Ok(BTreeSet::new()),
     }
 }
 
 pub(crate) async fn capability_observations(
     source: Option<&dyn AcpCapabilityObservationSource>,
-    now_ms: u64,
-    ttl: Duration,
-) -> Result<Vec<WorkerAcpCapabilityObservation>, String> {
+) -> Result<Vec<AcpCapabilityObservation>, String> {
     match source {
-        Some(source) => {
-            let valid_until_ms = now_ms.saturating_add(ttl.as_millis() as u64);
-            source.capability_observations().await.map(|observations| {
-                observations
-                    .into_iter()
-                    .map(|observation| WorkerAcpCapabilityObservation {
-                        observation,
-                        valid_until_ms,
-                    })
-                    .collect()
-            })
-        }
+        Some(source) => source.capability_observations().await,
         None => Ok(Vec::new()),
     }
+}
+
+fn lease_credential_observations(
+    observations: BTreeSet<CredentialObservation>,
+    observed_at_ms: u64,
+    ttl: Duration,
+) -> BTreeSet<WorkerCredentialObservation> {
+    let valid_until_ms = observed_at_ms.saturating_add(ttl.as_millis() as u64);
+    observations
+        .into_iter()
+        .map(|observation| WorkerCredentialObservation {
+            credential: observation.credential,
+            state: observation.state,
+            observed_at_ms,
+            valid_until_ms,
+            reason_code: observation.reason_code,
+        })
+        .collect()
+}
+
+fn lease_capability_observations(
+    observations: Vec<AcpCapabilityObservation>,
+    observed_at_ms: u64,
+    ttl: Duration,
+) -> Vec<WorkerAcpCapabilityObservation> {
+    let valid_until_ms = observed_at_ms.saturating_add(ttl.as_millis() as u64);
+    observations
+        .into_iter()
+        .map(|observation| WorkerAcpCapabilityObservation {
+            observation,
+            valid_until_ms,
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use awaken_acp_contract::{
-        AcpCapabilityObservation, AcpCapabilityObservationSource, AcpCapabilityObservationState,
-        NegotiatedAcpCapabilities,
+        AcpCapabilityObservationSource, AcpCapabilityObservationState, NegotiatedAcpCapabilities,
     };
     use awaken_runtime_contract::{
         CredentialObservation, CredentialObservationSource, CredentialRef,
@@ -162,6 +175,7 @@ mod tests {
     };
     use awaken_worker_contract::WorkerCredentialRevision;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
 
     struct AvailableResolver;
 
@@ -248,6 +262,20 @@ mod tests {
         }
     }
 
+    struct BlockingCapabilitySource {
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl AcpCapabilityObservationSource for BlockingCapabilitySource {
+        async fn capability_observations(&self) -> Result<Vec<AcpCapabilityObservation>, String> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            VerifiedCapabilitySource.capability_observations().await
+        }
+    }
+
     struct CountingResolver {
         calls: AtomicUsize,
     }
@@ -277,10 +305,11 @@ mod tests {
 
     #[tokio::test]
     async fn worker_stamps_the_trusted_observation_window() {
+        let observations = credential_observations(Some(&AvailableResolver))
+            .await
+            .expect("worker-local probe");
         assert_eq!(
-            credential_observations(Some(&AvailableResolver), 100, Duration::from_millis(30))
-                .await
-                .expect("worker-local probe"),
+            lease_credential_observations(observations, 100, Duration::from_millis(30)),
             BTreeSet::from([WorkerCredentialObservation::available(
                 WorkerCredentialRevision {
                     id: "cred:worker".into(),
@@ -322,8 +351,13 @@ mod tests {
                 .iter()
                 .next()
                 .expect("one observation")
-                .valid_until_ms,
-            130
+                .valid_until_ms
+                - before
+                    .iter()
+                    .next()
+                    .expect("one observation")
+                    .observed_at_ms,
+            30
         );
     }
 
@@ -347,7 +381,15 @@ mod tests {
             .expect("R1");
         let credentials_before = cache.credential_snapshot();
         let capabilities_before = cache.acp_capability_snapshot();
-        assert_eq!(capabilities_before[0].valid_until_ms, 130, "R1");
+        assert_eq!(
+            capabilities_before[0].valid_until_ms,
+            credentials_before
+                .iter()
+                .next()
+                .expect("one credential")
+                .valid_until_ms,
+            "R1 uses one causal-batch deadline"
+        );
 
         assert!(
             cache
@@ -363,6 +405,50 @@ mod tests {
         );
         assert_eq!(cache.credential_snapshot(), credentials_before, "R2");
         assert_eq!(cache.acp_capability_snapshot(), capabilities_before, "R2");
+    }
+
+    #[tokio::test]
+    async fn capability_probe_latency_does_not_consume_the_observation_lease() {
+        let cache = Arc::new(WorkerObservationCache::default());
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let source = Arc::new(BlockingCapabilitySource {
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let refresh = {
+            let cache = cache.clone();
+            let source = source.clone();
+            tokio::spawn(async move {
+                cache
+                    .refresh(
+                        Some(&AvailableResolver),
+                        Some(source.as_ref()),
+                        crate::wall_clock_ms(),
+                        Duration::from_millis(30),
+                    )
+                    .await
+            })
+        };
+
+        entered.notified().await;
+        let released_at_ms = crate::wall_clock_ms();
+        release.notify_one();
+        refresh.await.expect("refresh task").expect("refresh batch");
+
+        let credential = cache
+            .credential_snapshot()
+            .into_iter()
+            .next()
+            .expect("one credential");
+        let capability = cache
+            .acp_capability_snapshot()
+            .into_iter()
+            .next()
+            .expect("one capability");
+        assert!(credential.observed_at_ms >= released_at_ms);
+        assert_eq!(credential.valid_until_ms, credential.observed_at_ms + 30);
+        assert_eq!(capability.valid_until_ms, credential.valid_until_ms);
     }
 
     // Cause/effect graph for concurrent refresh triggers:

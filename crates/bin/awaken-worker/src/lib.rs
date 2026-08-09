@@ -706,11 +706,12 @@ fn configured_container_acp_targets(
             awaken_acp_application::ConfiguredAcpCapabilityTarget::new(
                 id,
                 format!("container-image:{image}"),
-                cli.container_argv
+                cli.container_probe_argv
+                    .unwrap_or(cli.container_argv)
                     .iter()
                     .map(|part| (*part).to_string())
                     .collect(),
-                cli.auth_method_id.map(str::to_string),
+                cli.capability_probe_auth_method_id.map(str::to_string),
             )
         })
         .collect()
@@ -726,7 +727,10 @@ fn configured_container_acp_capability_source(
     }
     let negotiator = Arc::new(awaken_runtime_host::SessionAcpCapabilityNegotiator::new(
         host,
-        std::time::Duration::from_secs(10),
+        // Some native adapters perform image-local plugin discovery before
+        // opening their first prompt-free Session. Keep the probe bounded while
+        // allowing that deterministic cold start to complete.
+        std::time::Duration::from_secs(30),
         Arc::new(awaken_protocol_acp::ProtocolAcpCapabilityHandshake),
     ));
     Ok(Some(Arc::new(
@@ -806,7 +810,7 @@ impl WorkerNode {
             match attempt {
                 Ok(registration) => break registration,
                 Err(awaken_worker_runtime::WorkerRegistrationError::SlotOccupied(error)) => {
-                    if occupied_attempts % 10 == 0 {
+                    if occupied_attempts.is_multiple_of(10) {
                         eprintln!("worker registration waiting for the prior lease: {error}");
                     }
                     occupied_attempts = occupied_attempts.saturating_add(1);

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Static contract for the combined K3D product runtime image."""
 
+import json
 from pathlib import Path
 
 
@@ -35,6 +36,30 @@ def main() -> None:
         in sandbox_build
     )
     assert sandbox_build.count("  build_image ") == 2
+    # C7 an ACP wrapper can be present while the coding CLI it delegates to is
+    # absent; C8 a runtime can use more than one package manager requirement.
+    # E4 every runtime declares all installed packages and all executables that
+    # must survive into the final image. Rule I4: C7+C8 => E4, enforced both at
+    # installation and again by the production handshake verifier.
+    sandbox = Path(__file__).parent.parent / "images" / "sandbox"
+    runtime_contract = json.loads((sandbox / "acp-runtimes.json").read_text())
+    runtimes = {runtime["id"]: runtime for runtime in runtime_contract["runtimes"]}
+    assert set(runtimes) == {"claude", "codex", "gemini", "opencode", "hermes"}
+    for runtime in runtimes.values():
+        assert runtime["requirements"], f"{runtime['id']} has no package requirements"
+        assert runtime["executables"], f"{runtime['id']} has no executable contract"
+        assert all(
+            item["manager"] in {"npm", "pip"} and item["requirement"]
+            for item in runtime["requirements"]
+        )
+    assert {"claude-agent-acp", "claude"} <= set(runtimes["claude"]["executables"])
+    assert {"codex-acp", "codex"} <= set(runtimes["codex"]["executables"])
+    assert {"hermes-acp", "hermes"} <= set(runtimes["hermes"]["executables"])
+    installer = (sandbox / "install-acp-runtimes.py").read_text()
+    verifier = (sandbox / "verify-acp-runtimes.py").read_text()
+    for source in (installer, verifier):
+        assert 'runtime["executables"]' in source
+    assert 'runtime["requirements"]' in installer
     print("OK - K3D product image contains Sandbox, TLS, and Skill runtime dependencies.")
 
 

@@ -45,7 +45,7 @@ log "2/4 build the memoryd image"
 CTX=$(mktemp -d)
 cp "$BIN" "$CTX/awaken-sandbox"
 cp deploy/images/sandbox/Dockerfile.memoryd "$CTX/Dockerfile"
-docker build -q --build-arg BIN=awaken-sandbox -t "$IMAGE" "$CTX" >/dev/null
+docker buildx build --load -q --build-arg BIN=awaken-sandbox -t "$IMAGE" "$CTX" >/dev/null
 rm -rf "$CTX"
 
 STORE=$(mktemp -d); MNT1=$(mktemp -d); MNT2=$(mktemp -d)

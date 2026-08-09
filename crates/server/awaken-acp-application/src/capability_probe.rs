@@ -225,45 +225,61 @@ impl ConfiguredAcpCapabilityObservationSource {
 #[async_trait]
 impl AcpCapabilityObservationSource for ConfiguredAcpCapabilityObservationSource {
     async fn capability_observations(&self) -> Result<Vec<AcpCapabilityObservation>, String> {
-        let mut observations = Vec::with_capacity(self.targets.len());
-        for target in &self.targets {
-            let observed_at_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            match self
-                .negotiator
-                .negotiate(&target.argv, &self.cwd, target.auth_method_id.as_deref())
-                .await
-            {
-                Ok(negotiated) => {
-                    let profile = EffectiveAcpCapabilityProfile::verified(
-                        &target.cli_id,
-                        &target.adapter_version,
-                        negotiated,
-                    );
-                    observations.push(AcpCapabilityObservation {
+        // Targets are independent image-local handshakes. Running them as one
+        // bounded concurrent batch prevents N adapters from consuming N times
+        // the per-probe timeout and creating a freshness gap in the shared
+        // Worker observation lease. Results are sorted back into catalog order.
+        let mut probes = tokio::task::JoinSet::new();
+        for (index, target) in self.targets.iter().cloned().enumerate() {
+            let negotiator = self.negotiator.clone();
+            let cwd = self.cwd.clone();
+            probes.spawn(async move {
+                let observed_at_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let observation = match negotiator
+                    .negotiate(&target.argv, &cwd, target.auth_method_id.as_deref())
+                    .await
+                {
+                    Ok(negotiated) => {
+                        let profile = EffectiveAcpCapabilityProfile::verified(
+                            &target.cli_id,
+                            &target.adapter_version,
+                            negotiated,
+                        );
+                        AcpCapabilityObservation {
+                            backend_ref: format!("acp:{}", target.cli_id),
+                            adapter_version: profile.cli_version,
+                            state: AcpCapabilityObservationState::Verified,
+                            observed_at_ms,
+                            fingerprint: Some(profile.fingerprint),
+                            negotiated: Some(profile.negotiated),
+                            reason_code: None,
+                        }
+                    }
+                    Err(_) => AcpCapabilityObservation {
                         backend_ref: format!("acp:{}", target.cli_id),
-                        adapter_version: profile.cli_version,
-                        state: AcpCapabilityObservationState::Verified,
+                        adapter_version: target.adapter_version,
+                        state: AcpCapabilityObservationState::ProbeFailed,
                         observed_at_ms,
-                        fingerprint: Some(profile.fingerprint),
-                        negotiated: Some(profile.negotiated),
-                        reason_code: None,
-                    });
-                }
-                Err(_) => observations.push(AcpCapabilityObservation {
-                    backend_ref: format!("acp:{}", target.cli_id),
-                    adapter_version: target.adapter_version.clone(),
-                    state: AcpCapabilityObservationState::ProbeFailed,
-                    observed_at_ms,
-                    fingerprint: None,
-                    negotiated: None,
-                    reason_code: Some("acp_capability_probe_failed".into()),
-                }),
-            }
+                        fingerprint: None,
+                        negotiated: None,
+                        reason_code: Some("acp_capability_probe_failed".into()),
+                    },
+                };
+                (index, observation)
+            });
         }
-        Ok(observations)
+        let mut observations = Vec::with_capacity(self.targets.len());
+        while let Some(result) = probes.join_next().await {
+            observations.push(result.map_err(|error| error.to_string())?);
+        }
+        observations.sort_by_key(|(index, _)| *index);
+        Ok(observations
+            .into_iter()
+            .map(|(_, observation)| observation)
+            .collect())
     }
 }
 
@@ -344,6 +360,56 @@ mod tests {
         }
     }
 
+    struct ConcurrentProbeFake {
+        barrier: std::sync::Arc<tokio::sync::Barrier>,
+    }
+
+    #[async_trait]
+    impl AcpCapabilityNegotiator for ConcurrentProbeFake {
+        async fn negotiate(
+            &self,
+            _argv: &[String],
+            _cwd: &Path,
+            _auth_method_id: Option<&str>,
+        ) -> Result<NegotiatedAcpCapabilities, String> {
+            self.barrier.wait().await;
+            Ok(capabilities())
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_targets_are_probed_as_one_concurrent_batch() {
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let targets = ["first", "second"]
+            .into_iter()
+            .map(|id| {
+                ConfiguredAcpCapabilityTarget::new(
+                    id,
+                    "image:immutable",
+                    vec!["probe".into()],
+                    None,
+                )
+                .unwrap()
+            })
+            .collect();
+        let source = ConfiguredAcpCapabilityObservationSource::new(
+            targets,
+            std::sync::Arc::new(ConcurrentProbeFake { barrier }),
+            PathBuf::from("/workspace"),
+        );
+        let observations =
+            tokio::time::timeout(Duration::from_secs(1), source.capability_observations())
+                .await
+                .expect("independent probes must overlap")
+                .unwrap();
+        assert_eq!(observations.len(), 2);
+        assert!(
+            observations.iter().all(|observation| {
+                observation.state == AcpCapabilityObservationState::Verified
+            })
+        );
+    }
+
     #[tokio::test]
     async fn configured_capability_observation_decision_table() {
         // Cause/effect graph: C1 target identity/argv complete; C2 live
@@ -420,12 +486,13 @@ mod tests {
     fn fingerprint_is_order_independent_but_changes_with_effective_evidence() {
         // Cause graph:
         // C1 identical semantic evidence in another wire order -> E1 same hash.
-        // C2 adapter/version/schema/current value changes -> E2 different hash.
+        // C2 effective protocol evidence changes -> E2 different hash.
         //
         // Decision table:
         // F1 reorder modes/choices -> same fingerprint
-        // F2 change current value  -> different fingerprint
-        // F3 change CLI version    -> different fingerprint
+        // F2 change route-derived current value -> same fingerprint
+        // F3 change protocol version -> different fingerprint
+        // F4 change CLI version      -> different fingerprint
         let original = capabilities();
         let fingerprint = capability_fingerprint("codex", "1.0", &original);
 
@@ -440,15 +507,21 @@ mod tests {
 
         let mut changed = original.clone();
         changed.config_options[0].current_value = "low".into();
-        assert_ne!(
+        assert_eq!(
             fingerprint,
             capability_fingerprint("codex", "1.0", &changed),
             "F2"
         );
+        changed.protocol_version = "2".into();
+        assert_ne!(
+            fingerprint,
+            capability_fingerprint("codex", "1.0", &changed),
+            "F3"
+        );
         assert_ne!(
             fingerprint,
             capability_fingerprint("codex", "2.0", &original),
-            "F3"
+            "F4"
         );
     }
 }

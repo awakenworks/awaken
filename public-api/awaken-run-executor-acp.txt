@@ -48,6 +48,9 @@ pub awaken_run_executor_acp::ManagedCredentialDelivery::ProcessSecret
 impl awaken_run_executor_acp::ManagedCredentialDelivery
 pub fn awaken_run_executor_acp::ManagedCredentialDelivery::allows_process_secret(self) -> bool
 pub fn awaken_run_executor_acp::ManagedCredentialDelivery::credential_artifact(self, bool) -> core::option::Option<awaken_run_executor_acp::CredentialArtifactSpec>
+pub enum awaken_run_executor_acp::ManagedModelInterface
+pub awaken_run_executor_acp::ManagedModelInterface::Environment
+pub awaken_run_executor_acp::ManagedModelInterface::SessionModel
 pub enum awaken_run_executor_acp::McpDelivery
 pub awaken_run_executor_acp::McpDelivery::ConfigFile
 pub awaken_run_executor_acp::McpDelivery::ConfigFile::contents: alloc::string::String
@@ -95,9 +98,11 @@ pub struct awaken_run_executor_acp::AcpCli
 pub awaken_run_executor_acp::AcpCli::acquisition: awaken_run_executor_acp::AcpAcquisition
 pub awaken_run_executor_acp::AcpCli::auth_method_id: core::option::Option<&'static str>
 pub awaken_run_executor_acp::AcpCli::backend_model_interface: awaken_run_executor_acp::BackendModelInterface
+pub awaken_run_executor_acp::AcpCli::capability_probe_auth_method_id: core::option::Option<&'static str>
 pub awaken_run_executor_acp::AcpCli::config_home_aliases: &'static [&'static str]
 pub awaken_run_executor_acp::AcpCli::config_home_env: core::option::Option<&'static str>
 pub awaken_run_executor_acp::AcpCli::container_argv: &'static [&'static str]
+pub awaken_run_executor_acp::AcpCli::container_probe_argv: core::option::Option<&'static [&'static str]>
 pub awaken_run_executor_acp::AcpCli::context_window_env: core::option::Option<&'static str>
 pub awaken_run_executor_acp::AcpCli::description: &'static str
 pub awaken_run_executor_acp::AcpCli::discovery: awaken_run_executor_acp::AcpDiscoverySpec
@@ -105,6 +110,8 @@ pub awaken_run_executor_acp::AcpCli::display_name: &'static str
 pub awaken_run_executor_acp::AcpCli::env: &'static [(&'static str, &'static str)]
 pub awaken_run_executor_acp::AcpCli::id: &'static str
 pub awaken_run_executor_acp::AcpCli::managed_credential_delivery: awaken_run_executor_acp::ManagedCredentialDelivery
+pub awaken_run_executor_acp::AcpCli::managed_model_interface: awaken_run_executor_acp::ManagedModelInterface
+pub awaken_run_executor_acp::AcpCli::managed_provider_config: core::option::Option<awaken_run_executor_acp::ManagedProviderConfigDelivery>
 pub awaken_run_executor_acp::AcpCli::mcp_interface: awaken_run_executor_acp::McpInterface
 pub awaken_run_executor_acp::AcpCli::memory_entrypoint: &'static str
 pub awaken_run_executor_acp::AcpCli::model_api_dialects: &'static [&'static str]
@@ -131,6 +138,7 @@ pub awaken_run_executor_acp::AcpLaunch::expected_capability: core::option::Optio
 pub awaken_run_executor_acp::AcpLaunch::identity: awaken_run_executor_acp::AcpLaunchIdentity
 pub awaken_run_executor_acp::AcpLaunch::session_config_options: alloc::vec::Vec<awaken_protocol_acp::SessionConfigOptionSelection>
 pub awaken_run_executor_acp::AcpLaunch::session_mode: core::option::Option<alloc::string::String>
+pub awaken_run_executor_acp::AcpLaunch::session_model: core::option::Option<alloc::string::String>
 impl awaken_run_executor_acp::AcpLaunch
 pub fn awaken_run_executor_acp::AcpLaunch::custom(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<(alloc::string::String, alloc::string::String)>) -> Self
 pub struct awaken_run_executor_acp::AcpLoginProbe
@@ -166,6 +174,7 @@ pub awaken_run_executor_acp::AgentSession::mcp_session_servers: alloc::vec::Vec<
 pub awaken_run_executor_acp::AgentSession::process: alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::ProcessHandle>
 pub awaken_run_executor_acp::AgentSession::session_config_options: alloc::vec::Vec<awaken_protocol_acp::SessionConfigOptionSelection>
 pub awaken_run_executor_acp::AgentSession::session_mode: core::option::Option<alloc::string::String>
+pub awaken_run_executor_acp::AgentSession::session_model: core::option::Option<alloc::string::String>
 pub awaken_run_executor_acp::AgentSession::workspace_cwd: core::option::Option<alloc::string::String>
 pub struct awaken_run_executor_acp::ConfigHome
 impl awaken_run_executor_acp::ConfigHome
@@ -198,6 +207,12 @@ pub fn awaken_run_executor_acp::FsSessionBlobStore::fetch<'life0, 'life1, 'life2
 pub fn awaken_run_executor_acp::FsSessionBlobStore::store<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_run_executor_acp::SessionHomeKey, &'life2 std::path::Path) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::io::error::Result<()>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 impl awaken_runtime_contract::data_subject::ContentEraser for awaken_run_executor_acp::FsSessionBlobStore
 pub fn awaken_run_executor_acp::FsSessionBlobStore::erase_subject<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_runtime_contract::data_subject::ErasureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_run_executor_acp::ManagedProviderConfigDelivery
+pub awaken_run_executor_acp::ManagedProviderConfigDelivery::config_env: &'static str
+pub awaken_run_executor_acp::ManagedProviderConfigDelivery::provider_env: &'static str
+pub awaken_run_executor_acp::ManagedProviderConfigDelivery::provider_id: &'static str
+pub awaken_run_executor_acp::ManagedProviderConfigDelivery::requires_openai_auth: bool
+pub awaken_run_executor_acp::ManagedProviderConfigDelivery::wire_api: &'static str
 pub struct awaken_run_executor_acp::McpInjection
 pub awaken_run_executor_acp::McpInjection::config_file: core::option::Option<(alloc::string::String, alloc::string::String)>
 pub awaken_run_executor_acp::McpInjection::session_servers: alloc::vec::Vec<awaken_protocol_acp::SessionMcpServer>
@@ -254,7 +269,7 @@ pub fn awaken_run_executor_acp::ProjectingChannelSource::open<'life0, 'life1, 'l
 impl awaken_run_executor_acp::AgentChannelSource for awaken_run_executor_acp::SubprocessChannelSource
 pub fn awaken_run_executor_acp::SubprocessChannelSource::open<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation, &'life2 awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_executor_acp::AgentSession, awaken_run_executor_acp::OpenError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_run_executor_acp::LaunchResolver: core::marker::Send + core::marker::Sync
-pub fn awaken_run_executor_acp::LaunchResolver::credential_realization_capabilities(&self) -> awaken_credential_contract::CredentialRealizationCapabilities
+pub fn awaken_run_executor_acp::LaunchResolver::credential_realization_capabilities(&self) -> awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities
 pub fn awaken_run_executor_acp::LaunchResolver::extra_env(&self, &awaken_runtime_contract::activation::RunActivation) -> core::result::Result<alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, awaken_run_executor_acp::OpenError>
 pub fn awaken_run_executor_acp::LaunchResolver::model(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_run_executor_acp::ResolvedModel, awaken_run_executor_acp::OpenError>
 pub fn awaken_run_executor_acp::LaunchResolver::secret_broker(&self) -> core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::SecretBroker>>

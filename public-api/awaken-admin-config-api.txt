@@ -92,8 +92,6 @@ pub struct awaken_admin_config_api::PoolEligibleView
 pub struct awaken_admin_config_api::ProductSurfaceCapabilityView
 pub awaken_admin_config_api::ProductSurfaceCapabilityView::access_management: bool
 pub awaken_admin_config_api::ProductSurfaceCapabilityView::managed_runtime: bool
-impl core::default::Default for awaken_admin_config_api::ProductSurfaceCapabilityView
-pub fn awaken_admin_config_api::ProductSurfaceCapabilityView::default() -> Self
 pub struct awaken_admin_config_api::ProviderConnectionResult
 pub awaken_admin_config_api::ProviderConnectionResult::credential: awaken_credential_vault::CredentialSource
 pub awaken_admin_config_api::ProviderConnectionResult::endpoint: awaken_model_catalog::ProtocolEndpoint

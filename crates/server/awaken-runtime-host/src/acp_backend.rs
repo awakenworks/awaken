@@ -9,7 +9,7 @@ use awaken_run_executor_acp::{AcpRunExecutor, LaunchObserver, SessionHomeProvide
 enum AcpExecutorSource {
     Static(Arc<AcpRunExecutor>),
     Bound {
-        launch: crate::LaunchSource,
+        launch: Box<crate::LaunchSource>,
         observer: Option<Arc<dyn LaunchObserver>>,
         session_home: Option<Arc<dyn SessionHomeProvider>>,
     },
@@ -47,7 +47,7 @@ impl AcpBackend {
     ) -> Self {
         Self {
             source: AcpExecutorSource::Bound {
-                launch,
+                launch: Box::new(launch),
                 observer,
                 session_home,
             },
@@ -76,7 +76,7 @@ impl AcpBackend {
                 let source = Arc::new(
                     crate::sandbox_source::BoundLocalChannelSource::from_environment(
                         sandbox,
-                        launch.clone(),
+                        launch.as_ref().clone(),
                         backend,
                         mcp_servers,
                     ),

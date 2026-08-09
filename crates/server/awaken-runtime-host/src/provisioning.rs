@@ -142,6 +142,12 @@ struct DispatchedSessionRuntimeProjection {
     mcp_stages: Option<Vec<awaken_session_contract::StageMcpAttachment>>,
 }
 
+type DecodedSessionRuntimeProjection = (
+    awaken_session_contract::EnvironmentSnapshot,
+    Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
+    Option<Vec<awaken_session_contract::StageMcpAttachment>>,
+);
+
 pub(crate) fn encode_session_runtime_envelope(
     environment: awaken_session_contract::EnvironmentSnapshot,
     toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
@@ -158,14 +164,7 @@ pub(crate) fn encode_session_runtime_envelope(
 
 pub(crate) fn decode_session_runtime_envelope(
     envelope: &awaken_run_ingress::SessionRuntimeEnvelope,
-) -> Result<
-    (
-        awaken_session_contract::EnvironmentSnapshot,
-        Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
-        Option<Vec<awaken_session_contract::StageMcpAttachment>>,
-    ),
-    serde_json::Error,
-> {
+) -> Result<DecodedSessionRuntimeProjection, serde_json::Error> {
     let projection: DispatchedSessionRuntimeProjection =
         serde_json::from_str(&envelope.projection_json)?;
     Ok((

@@ -28,6 +28,8 @@ agent-client-protocol = { version = "0.10.4", optional = true }
 # `unstable_session_usage` so a turn's token usage is projected too.
 real-acp = [
     "dep:agent-client-protocol",
+    "agent-client-protocol/unstable_message_id",
+    "agent-client-protocol/unstable_session_model",
     "agent-client-protocol/unstable_session_usage",
 ]
 

@@ -243,7 +243,7 @@ impl ProviderConnectionService {
                 if credential
                     .protocol_endpoint_id
                     .as_deref()
-                    .is_some_and(|endpoint_id| endpoint_id != endpoint.id.as_str())
+                    .is_some_and(|current| current != endpoint.id.as_str())
                 {
                     return Err(CredentialError::NoCredential.into());
                 }
@@ -302,6 +302,15 @@ impl ProviderConnectionService {
                     .await
             }
         }?;
+        let models = provider_compatible_models(
+            command.dialect,
+            command
+                .base_url
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty()),
+            descriptor.as_ref(),
+            models,
+        );
         if models.is_empty() {
             return Err(ProviderConnectionError::NoModelsDiscovered);
         }
@@ -494,6 +503,33 @@ fn provider_discovery_endpoint(
     discovery
 }
 
+fn provider_compatible_models(
+    dialect: ApiDialect,
+    uses_default_endpoint: bool,
+    descriptor: Option<&awaken_model_catalog::ProviderDriverDescriptor>,
+    mut models: Vec<DiscoveredModel>,
+) -> Vec<DiscoveredModel> {
+    // An explicitly authored endpoint is operator-owned and may implement a
+    // different compatibility set. Built-in endpoints apply their verified
+    // protocol/model matrix to the provider-wide directory response.
+    if !uses_default_endpoint {
+        return models;
+    }
+    let Some(endpoint) = descriptor.and_then(|descriptor| {
+        descriptor
+            .default_endpoints
+            .iter()
+            .find(|endpoint| endpoint.dialect == dialect)
+    }) else {
+        return models;
+    };
+    if endpoint.supported_model_ids.is_empty() {
+        return models;
+    }
+    models.retain(|model| endpoint.supported_model_ids.contains(&model.model_id));
+    models
+}
+
 fn installed_dialect_auth_methods(
     dialect: ApiDialect,
 ) -> Vec<awaken_model_catalog::ProviderAuthMethod> {
@@ -658,5 +694,38 @@ mod tests {
             discovery.base_url.as_deref(),
             Some("https://api.deepseek.com")
         );
+    }
+
+    #[test]
+    fn built_in_protocol_filter_does_not_publish_incompatible_discovered_models() {
+        let deepseek = awaken_model_catalog::provider_driver_descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.provider_kind == "deepseek")
+            .unwrap();
+        let discovered = vec![
+            DiscoveredModel {
+                model_id: "deepseek-v4-pro".into(),
+                upstream_model: None,
+            },
+            DiscoveredModel {
+                model_id: "deepseek-v4-flash".into(),
+                upstream_model: None,
+            },
+        ];
+        let filtered = provider_compatible_models(
+            ApiDialect::OpenAiResponses,
+            true,
+            Some(&deepseek),
+            discovered.clone(),
+        );
+        assert_eq!(filtered, vec![discovered[1].clone()], "built-in surface");
+
+        let custom = provider_compatible_models(
+            ApiDialect::OpenAiResponses,
+            false,
+            Some(&deepseek),
+            discovered.clone(),
+        );
+        assert_eq!(custom, discovered, "explicit endpoint owns compatibility");
     }
 }
