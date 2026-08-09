@@ -56,14 +56,20 @@ impl RuntimePathEnv {
     }
 }
 
-#[cfg(windows)]
 pub(crate) fn sandbox_dir(base: &Path, id: &str) -> PathBuf {
+    // A WorkUnit id is a logical identity, not a portable filesystem component.
+    // In particular Flow ids contain `:`; although Linux accepts that byte in a
+    // filename, Rust/Cargo and pkg-config use colon-delimited path lists and can
+    // no longer compile from such a root. Preserve short portable ids for
+    // operator readability and map every other identity to one deterministic,
+    // collision-resistant component.
     let invalid = id.is_empty()
         || matches!(id, "." | "..")
+        || id.len() > 96
         || id.ends_with([' ', '.'])
-        || id
-            .chars()
-            .any(|character| character.is_control() || r#"<>:"/\|?*%"#.contains(character));
+        || id.chars().any(|character| {
+            !character.is_ascii_alphanumeric() && !matches!(character, '.' | '-' | '_')
+        });
     let stem = id.split('.').next().unwrap_or_default();
     let reserved = matches!(
         stem.to_ascii_uppercase().as_str(),
@@ -93,24 +99,7 @@ pub(crate) fn sandbox_dir(base: &Path, id: &str) -> PathBuf {
     if !invalid && !reserved {
         return base.join(id);
     }
-    let mut encoded = String::from("scope-");
-    for character in id.chars() {
-        // This branch runs only for an invalid/reserved identifier. Encode dots
-        // too, otherwise "." and identifiers ending in "." would still produce
-        // illegal Windows path components after adding the prefix.
-        if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
-            encoded.push(character);
-        } else {
-            use std::fmt::Write as _;
-            write!(encoded, "%{:06X}", u32::from(character)).expect("writing to String");
-        }
-    }
-    base.join(encoded)
-}
-
-#[cfg(not(windows))]
-pub(crate) fn sandbox_dir(base: &Path, id: &str) -> PathBuf {
-    base.join(id)
+    base.join(format!("scope-{}", blake3::hash(id.as_bytes()).to_hex()))
 }
 
 /// The `awaken-provisioning-contract` seam realized locally (ADR-0041).
@@ -960,10 +949,9 @@ mod tests {
 
     // ---- jail_args branches ----
 
-    #[cfg(windows)]
     #[test]
-    fn windows_sandbox_directories_escape_reserved_and_trailing_dot_ids() {
-        let base = Path::new(r"C:\awaken");
+    fn sandbox_directories_escape_nonportable_ids_deterministically() {
+        let base = Path::new("/awaken");
         assert_eq!(sandbox_dir(base, "valid.scope"), base.join("valid.scope"));
 
         let reserved = sandbox_dir(base, "CON");
@@ -985,6 +973,18 @@ mod tests {
                 .to_string_lossy()
                 .ends_with('.')
         );
+
+        // Flow WorkUnit ids contain colons. Keeping those bytes in a local
+        // sandbox root breaks colon-delimited compiler and pkg-config paths even
+        // on Unix, so the same logical id must always resolve to one short hash.
+        let work_unit = "state-entry:issue-1:deliver:3";
+        let hashed = sandbox_dir(base, work_unit);
+        assert_eq!(hashed, sandbox_dir(base, work_unit));
+        assert_ne!(hashed, base.join(work_unit));
+        let component = hashed.file_name().unwrap().to_string_lossy();
+        assert!(component.starts_with("scope-"));
+        assert_eq!(component.len(), "scope-".len() + 64);
+        assert_ne!(hashed, sandbox_dir(base, "state-entry:issue-2:deliver:3"));
     }
 
     #[test]

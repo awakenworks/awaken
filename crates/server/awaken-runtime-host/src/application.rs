@@ -490,8 +490,10 @@ impl crate::SharedHost {
 
     /// Renew every active MCP projection approaching expiry through the same
     /// Control phase protocol used for initial creation and hot replacement.
-    /// One failure aborts the batch so a Worker heartbeat cannot claim healthy
-    /// custody while any owned route lost its authority.
+    /// A failed renewal revokes that Session's process-local projection before
+    /// the batch continues. Session authority is narrower than Worker registry
+    /// authority: an expired or terminal application Run must not fence unrelated
+    /// in-flight Sessions from the same Worker incarnation.
     pub async fn renew_due_session_realizations(
         &self,
         renew_before_unix_ms: u64,
@@ -511,26 +513,43 @@ impl crate::SharedHost {
                 "active application Session projection has no Control renewal client",
             )
         })?;
+        let mut renewed = 0;
         for (session_id, lease) in &due {
-            let directive = control
-                .begin_session_realization(awaken_session_contract::BeginSessionRealization {
-                    session_id: session_id.clone(),
-                    target: awaken_session_contract::SessionRealizationTarget {
-                        owner: lease.owner.clone(),
-                        runtime_incarnation: lease.runtime_incarnation.clone(),
-                        lease_expires_at_unix_ms: requested_expiry_unix_ms,
-                        renew_existing_lease: true,
-                    },
-                })
+            let renewal = async {
+                let directive = control
+                    .begin_session_realization(awaken_session_contract::BeginSessionRealization {
+                        session_id: session_id.clone(),
+                        target: awaken_session_contract::SessionRealizationTarget {
+                            owner: lease.owner.clone(),
+                            runtime_incarnation: lease.runtime_incarnation.clone(),
+                            lease_expires_at_unix_ms: requested_expiry_unix_ms,
+                            renew_existing_lease: true,
+                        },
+                    })
+                    .await
+                    .map_err(|error| crate::HostError::internal(error.to_string()))?;
+                crate::host::HostWorkerResolver::realize_application_session(
+                    self, control, session_id, directive, None,
+                )
                 .await
-                .map_err(|error| crate::HostError::internal(error.to_string()))?;
-            crate::host::HostWorkerResolver::realize_application_session(
-                self, control, session_id, directive, None,
-            )
-            .await
-            .map_err(|error| crate::HostError::internal(error.to_string()))?;
+                .map_err(|error| crate::HostError::internal(error.to_string()))
+            }
+            .await;
+            match renewal {
+                Ok(()) => renewed += 1,
+                Err(error) => {
+                    eprintln!(
+                        "Session realization renewal lost authority for `{session_id}`; revoking only that Session: {error}"
+                    );
+                    self.end_session(session_id).await.map_err(|revoke_error| {
+                        crate::HostError::internal(format!(
+                            "Session realization renewal failed ({error}) and local revocation failed: {revoke_error}"
+                        ))
+                    })?;
+                }
+            }
         }
-        Ok(due.len())
+        Ok(renewed)
     }
 
     /// Revoke every process-local Session projection after Worker authority is
