@@ -1447,10 +1447,16 @@ async fn reopening_a_terminal_thread_recovers_a_missing_extraction_outbox_intent
         .as_nanos();
     let dir = std::env::temp_dir().join(format!("awaken-memory-outbox-{stamp}"));
     let thread = "memory-outbox-thread";
+    let authority = Arc::new(crate::EphemeralRuntimeAuthority::new());
 
-    // Commit the terminal run without a Memory binding, modeling a crash after
-    // terminal truth but before the auxiliary intent could be inserted.
-    let first = SharedHost::new(Arc::new(MemoryHostModel), "stub").with_store_dir(&dir);
+    // Cause/effect recovery table: R1 terminal truth exists and extraction intent
+    // is absent -> reopening through the same injected commit authority creates
+    // and completes the intent; R2 the extraction repository is durable -> the
+    // completed receipt survives the Host replacement. The test intentionally
+    // injects authority because runtime-host no longer opens a commit Store.
+    let first = SharedHost::new(Arc::new(MemoryHostModel), "stub")
+        .with_store_dir(&dir)
+        .with_runtime_authority(authority.clone());
     first
         .run(None, thread, user("remember rust"))
         .await
@@ -1460,7 +1466,9 @@ async fn reopening_a_terminal_thread_recovers_a_missing_extraction_outbox_intent
     // Rebind the frozen resource and reopen the committed thread. Context recovery
     // derives the missing outbox identity from the latest terminal run and inserts
     // the same durable intent normal after-commit delivery would have produced.
-    let second = SharedHost::new(Arc::new(MemoryHostModel), "stub").with_store_dir(&dir);
+    let second = SharedHost::new(Arc::new(MemoryHostModel), "stub")
+        .with_store_dir(&dir)
+        .with_runtime_authority(authority);
     bind_test_memory(&second, thread, "outbox-store", true);
     let ctx = second
         .ctx_for(thread, None)
@@ -3849,6 +3857,40 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     };
     use awaken_session_contract::McpAttachmentRealizer;
 
+    struct PinnedBearerRefresher;
+
+    #[async_trait::async_trait]
+    impl awaken_ext_mcp::CredentialRefresher for PinnedBearerRefresher {
+        async fn refresh(
+            &self,
+            _challenge: &awaken_ext_mcp::AuthChallenge,
+        ) -> Option<awaken_ext_mcp::Credential> {
+            Some(awaken_ext_mcp::Credential::Bearer(
+                "published-mcp-token".into(),
+            ))
+        }
+    }
+
+    struct ExactRefreshFactory;
+
+    impl crate::CredentialRefreshFactory for ExactRefreshFactory {
+        fn refresher(
+            &self,
+            _credential_id: awaken_credential_contract::CredentialSourceId,
+            _access: awaken_runtime_contract::CredentialRefreshAccess,
+        ) -> Arc<dyn awaken_ext_mcp::CredentialRefresher> {
+            Arc::new(PinnedBearerRefresher)
+        }
+
+        fn bearer_reloader(
+            &self,
+            _credential_id: awaken_credential_contract::CredentialSourceId,
+            _credential_revision: u64,
+        ) -> Arc<dyn awaken_ext_mcp::CredentialRefresher> {
+            Arc::new(PinnedBearerRefresher)
+        }
+    }
+
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
@@ -3869,7 +3911,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     .await
     .unwrap();
     let managed = crate::ManagedHost::new(host.clone())
-        .with_credentials(credentials.clone(), secrets.clone());
+        .with_credentials(credentials.clone(), secrets.clone())
+        .with_credential_refresh_factory(Arc::new(ExactRefreshFactory));
     let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
     let (mcp_url, seen) = crate::test_mcp::start(Some("Bearer published-mcp-token")).await;
     let generation = |session: &str| awaken_session_contract::McpGenerationRef {
@@ -3931,6 +3974,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // | H17 | non-bearer usage | exact holder/revision | stage | - | reject before materialization |
     // | H18 | authenticated ACP/Forbidden exposure | exact | stage | - | reject before relay/no lookup |
     // | H20 | authenticated ACP/complete provider evidence | exact | stage+publish+call | generation route injects; no inline secret |
+    // | H21 | non-OAuth bearer/exact factory | exact | stage | - | one neutral challenge refresher; no Vault in Runtime |
     let exact_request = request("mcp-exact", "workspace-a", 1);
     let receipt = managed
         .stage_mcp_attachment(exact_request.clone())
@@ -3953,6 +3997,17 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             .bearer()
             .map(|secret| secret.expose_secret()),
         Some("published-mcp-token")
+    );
+    let projection = host.mcp_projection(&generation("mcp-exact")).unwrap();
+    assert!(
+        matches!(
+            projection.server.unwrap().transport,
+            crate::mcp::McpTransportMaterialKind::Http {
+                refresh: Some(_),
+                ..
+            }
+        ),
+        "H21"
     );
     managed
         .publish_mcp_generation(generation("mcp-exact"))

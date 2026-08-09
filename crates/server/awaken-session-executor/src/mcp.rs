@@ -7,36 +7,17 @@
 //! `host.rs` so the host keeps session orchestration and this module owns the
 //! outbound wire composition.
 //!
-//! It also owns the two host-side OAuth pieces of the managed vault design:
-//! [`VaultRefresher`] (the `CredentialRefresher` the HTTP transport consults on
-//! a 401/403 — it runs the RFC 6749 `refresh_token` grant and reseals the
-//! rotated secrets back into the vault) and [`ExtMcpProbe`] (the
+//! It also owns [`ExtMcpProbe`] (the
 //! `awaken_session_contract::McpProbe` port the `mcp_oauth_validate` route
 //! drives — a connect + `initialize` handshake as the live credential check).
 
-#[cfg(feature = "authority")]
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::RedactedString;
-#[cfg(feature = "authority")]
-use awaken_credential_contract::CredentialSourceId;
-#[cfg(feature = "authority")]
-use awaken_credential_vault::repo::{
-    CredentialMaterialPatch, CredentialRepo, rotate_credential_materials_exact,
-};
-#[cfg(feature = "authority")]
-use awaken_credential_vault::{
-    CredentialStatus, OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretRef, SecretStore,
-};
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher, HttpTransportBuilder};
 use awaken_ext_skills::SkillRegistry as _;
 use awaken_runtime_contract::plugin::Plugin;
-#[cfg(feature = "authority")]
-use awaken_runtime_contract::{CredentialRefreshAccess, TokenEndpointAuth};
 use awaken_session_contract::{McpProbe, McpProbeStatus};
-#[cfg(feature = "authority")]
-use base64::Engine as _;
 
 use crate::host::HostError;
 
@@ -137,255 +118,11 @@ pub(crate) fn project_mcp_transport(
     })
 }
 
-/// The refresh half of a prepared MCP server (an `mcp_oauth` vault credential
-/// entered with a refresh object — public or confidential client): everything
-/// [`VaultRefresher`] needs to run the `refresh_token` grant and reseal the
-/// results. Carries [`SecretRef`]s plus the [`SecretStore`] handle — never
-/// secret material.
+/// The already-authorized refresh half of one prepared MCP server. Coordinator
+/// authority owns the Vault and constructs this transport adapter; Runtime only
+/// invokes the neutral refresh contract after an auth challenge.
 #[derive(Clone)]
-#[cfg(feature = "authority")]
-pub(crate) struct McpRefreshMaterial {
-    credential_id: CredentialSourceId,
-    /// The same exact, fingerprinted execution fact persisted on the MCP
-    /// generation. Runtime does not project it into a second refresh DTO.
-    access: CredentialRefreshAccess,
-    credentials: Arc<dyn CredentialRepo>,
-    secrets: Arc<dyn SecretStore>,
-}
-
-#[cfg(feature = "authority")]
-impl McpRefreshMaterial {
-    pub(crate) fn new(
-        credential_id: CredentialSourceId,
-        access: CredentialRefreshAccess,
-        credentials: Arc<dyn CredentialRepo>,
-        secrets: Arc<dyn SecretStore>,
-    ) -> Self {
-        Self {
-            credential_id,
-            access,
-            credentials,
-            secrets,
-        }
-    }
-}
-
-#[derive(Clone)]
-#[cfg(not(feature = "authority"))]
-pub(crate) struct McpRefreshMaterial;
-
-/// The host-side [`CredentialRefresher`] of the managed vault design (ADR-0043):
-/// consulted by the ext-mcp HTTP transport once per auth challenge. It performs
-/// an RFC 6749 `refresh_token` grant against the credential's stored token
-/// endpoint — `POST` form-encoded `grant_type=refresh_token&refresh_token=…`
-/// (+`scope`/`resource` when configured), with client authentication per the
-/// stored [`TokenEndpointAuth`]:
-/// - `none` (public client): `client_id=…` in the form body;
-/// - `client_secret_basic`: `Authorization: Basic
-///   base64(urlencode(client_id):urlencode(client_secret))` (RFC 6749 §2.3.1),
-///   and the `client_id` stays OUT of the form body;
-/// - `client_secret_post`: `client_id=…&client_secret=…` in the form body.
-///
-/// The confidential-client secret is read from the vault at refresh time; a
-/// missing/unreadable sealed secret refuses the exchange (`None`). On success it
-/// publishes the new access token and any rotated refresh token as one higher
-/// exact credential revision, then hands the transport the fresh bearer to
-/// retry with. ANY failure (network, non-2xx, malformed JSON, a lifecycle error)
-/// returns `None`, so the transport surfaces the original challenge — fail
-/// closed, never a panic.
-#[cfg(feature = "authority")]
-pub struct VaultRefresher {
-    credential_id: CredentialSourceId,
-    access: tokio::sync::Mutex<CredentialRefreshAccess>,
-    credentials: Arc<dyn CredentialRepo>,
-    secrets: Arc<dyn SecretStore>,
-    http: reqwest::Client,
-}
-
-/// The RFC 6749 §2.3.1 `client_secret_basic` header value:
-/// `Basic base64(urlencode(client_id):urlencode(client_secret))` — both halves
-/// form-urlencoded BEFORE the base64, as the RFC requires.
-#[cfg(feature = "authority")]
-fn basic_client_auth(client_id: &str, client_secret: &str) -> String {
-    let enc = |s: &str| form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
-    let pair = format!("{}:{}", enc(client_id), enc(client_secret));
-    format!(
-        "Basic {}",
-        base64::engine::general_purpose::STANDARD.encode(pair)
-    )
-}
-
-#[cfg(feature = "authority")]
-impl VaultRefresher {
-    #[must_use]
-    pub fn new(
-        credential_id: CredentialSourceId,
-        access: CredentialRefreshAccess,
-        credentials: Arc<dyn CredentialRepo>,
-        secrets: Arc<dyn SecretStore>,
-    ) -> Self {
-        let http = http_client_for(&access.token_endpoint);
-        Self {
-            credential_id,
-            access: tokio::sync::Mutex::new(access),
-            credentials,
-            secrets,
-            http,
-        }
-    }
-
-    fn from_material(refresh: McpRefreshMaterial) -> Self {
-        Self::new(
-            refresh.credential_id,
-            refresh.access,
-            refresh.credentials,
-            refresh.secrets,
-        )
-    }
-}
-
-#[cfg(feature = "authority")]
-fn http_client_for(url: &str) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder();
-    if reqwest::Url::parse(url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(str::to_owned))
-        .is_some_and(|host| {
-            host.eq_ignore_ascii_case("localhost")
-                || host
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|address| address.is_loopback())
-        })
-    {
-        builder = builder.no_proxy();
-    }
-    builder.build().expect("build OAuth HTTP client")
-}
-
-#[cfg(feature = "authority")]
-#[async_trait::async_trait]
-impl CredentialRefresher for VaultRefresher {
-    async fn refresh(&self, _challenge: &AuthChallenge) -> Option<Credential> {
-        // Serialize refreshes for this transport. The guarded value advances to
-        // the newly committed exact revision after every successful exchange.
-        let mut access = self.access.lock().await;
-        if !access.has_valid_client_authentication_binding()
-            || !access.has_valid_configuration_fingerprint()
-        {
-            return None;
-        }
-        let source = self.credentials.get(&self.credential_id).await.ok()?;
-        if source.status != CredentialStatus::Active
-            || u64::try_from(source.version).ok()? != access.credential_revision
-            || source.material_ref.as_ref().map(|reference| &reference.0)
-                != Some(&access.access_token_ref)
-            || source
-                .auxiliary_material_ref(OAUTH_REFRESH_TOKEN_SLOT)
-                .map(|reference| &reference.0)
-                != Some(&access.refresh_token_ref)
-            || access.client_secret_ref.as_ref()
-                != source
-                    .auxiliary_material_ref(OAUTH_CLIENT_SECRET_SLOT)
-                    .map(|reference| &reference.0)
-        {
-            return None;
-        }
-        let refresh_token = self
-            .secrets
-            .get(&SecretRef(access.refresh_token_ref.clone()))
-            .await
-            .ok()?;
-        // A confidential scheme's sealed client secret is read HERE, per
-        // exchange; missing/unreadable → None (fail closed: the transport
-        // surfaces the original challenge).
-        let client_secret = match access.token_endpoint_auth {
-            TokenEndpointAuth::ClientSecretBasic | TokenEndpointAuth::ClientSecretPost => {
-                let secret_ref = access.client_secret_ref.as_ref()?;
-                Some(
-                    self.secrets
-                        .get(&SecretRef(secret_ref.clone()))
-                        .await
-                        .ok()?,
-                )
-            }
-            TokenEndpointAuth::None => None,
-        };
-        let mut form: Vec<(&str, &str)> = vec![
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token.expose_secret()),
-        ];
-        let mut request = self.http.post(&access.token_endpoint);
-        match access.token_endpoint_auth {
-            // Public client: the bare client_id rides in the form body.
-            TokenEndpointAuth::None => form.push(("client_id", access.client_id.as_str())),
-            // RFC 6749 §2.3.1: HTTP Basic with the form-urlencoded credential
-            // pair; the client_id is OMITTED from the form body.
-            TokenEndpointAuth::ClientSecretBasic => {
-                request = request.header(
-                    reqwest::header::AUTHORIZATION,
-                    basic_client_auth(&access.client_id, client_secret.as_ref()?.expose_secret()),
-                );
-            }
-            // RFC 6749 §2.3.1 form alternative: client_id + client_secret in
-            // the body.
-            TokenEndpointAuth::ClientSecretPost => {
-                form.push(("client_id", access.client_id.as_str()));
-                form.push(("client_secret", client_secret.as_ref()?.expose_secret()));
-            }
-        }
-        if let Some(scope) = &access.scope {
-            form.push(("scope", scope.as_str()));
-        }
-        if let Some(resource) = &access.resource {
-            form.push(("resource", resource.as_str()));
-        }
-        let response = request.form(&form).send().await.ok()?;
-        if !response.status().is_success() {
-            return None;
-        }
-        let body: serde_json::Value = response.json().await.ok()?;
-        let access_token = body.get("access_token")?.as_str()?.to_string();
-        let mut auxiliary = BTreeMap::new();
-        if let Some(rotated) = body.get("refresh_token").and_then(|v| v.as_str()) {
-            auxiliary.insert(
-                OAUTH_REFRESH_TOKEN_SLOT.to_string(),
-                Some(RedactedString::new(rotated.to_string())),
-            );
-        }
-        let rotated = rotate_credential_materials_exact(
-            &self.credential_id,
-            i64::try_from(access.credential_revision).ok()?,
-            CredentialMaterialPatch {
-                primary: Some(RedactedString::new(access_token.clone())),
-                auxiliary,
-            },
-            self.secrets.as_ref(),
-            self.credentials.as_ref(),
-        )
-        .await
-        .ok()?;
-        let access_token_ref = rotated.material_ref.as_ref()?.0.clone();
-        let refresh_token_ref = rotated
-            .auxiliary_material_ref(OAUTH_REFRESH_TOKEN_SLOT)?
-            .0
-            .clone();
-        let client_secret_ref = rotated
-            .auxiliary_material_ref(OAUTH_CLIENT_SECRET_SLOT)
-            .map(|reference| reference.0.clone());
-        *access = CredentialRefreshAccess::new(
-            u64::try_from(rotated.version).ok()?,
-            access.token_endpoint.clone(),
-            access.client_id.clone(),
-            access.token_endpoint_auth,
-            client_secret_ref,
-            refresh_token_ref,
-            access_token_ref,
-            access.scope.clone(),
-            access.resource.clone(),
-        );
-        Some(Credential::Bearer(access_token))
-    }
-}
+pub(crate) struct McpRefreshMaterial(pub(crate) Arc<dyn CredentialRefresher>);
 
 /// Records the auth challenge the probe's connect attempt hit (and declines to
 /// refresh), so [`ExtMcpProbe`] can tell a refused bearer apart from an
@@ -677,8 +414,8 @@ impl McpWiring {
 /// Connect every staged server and collect the discovered tools. Fail closed:
 /// a configured server that cannot connect (network, 401, bad wire) fails the
 /// build — never a silent skip — naming the server so the error is actionable.
-/// A server with refresh configuration gets a [`VaultRefresher`], so an expired
-/// access token is exchanged mid-connect (and mid-turn) instead of failing.
+/// A server with refresh configuration receives the Coordinator-built refresher,
+/// so an expired token can be exchanged without giving Runtime a Vault handle.
 pub(crate) async fn connect_materialized(
     staged: &[McpTransportMaterial],
 ) -> Result<McpWiring, HostError> {
@@ -695,19 +432,10 @@ pub(crate) async fn connect_materialized(
             None => awaken_ext_mcp::Credential::None,
         };
         let builder = HttpTransportBuilder::new(url.to_string()).credential(credential);
-        #[cfg(feature = "authority")]
         let builder = match refresh {
-            Some(refresh) => builder.refresher(Arc::new(VaultRefresher::from_material(
-                refresh.as_ref().clone(),
-            )) as Arc<dyn CredentialRefresher>),
+            Some(refresh) => builder.refresher(refresh.0.clone()),
             None => builder,
         };
-        #[cfg(not(feature = "authority"))]
-        if refresh.is_some() {
-            return Err(HostError::internal(
-                "database-less Worker cannot own MCP credential refresh state",
-            ));
-        }
         let transport = builder.connect_streaming().await.map_err(|e| {
             HostError::internal(format!("mcp server `{}` at {}: {e}", server.name, url))
         })?;
@@ -870,44 +598,6 @@ mod acp_projection_tests {
             "routed by exact generation: {url}"
         );
         assert!(!serde_json::to_string(&s).unwrap().contains("sk-RAW-SECRET"));
-    }
-
-    /// Runtime's final refresh gate follows the contract decision table too:
-    /// valid authoring fingerprint + unchanged facts may proceed; changing any
-    /// executable fact after compilation must stop before secret lookup/network.
-    #[tokio::test]
-    async fn oauth_refresh_fails_closed_when_exact_configuration_is_tampered() {
-        let mut access = awaken_runtime_contract::CredentialRefreshAccess::new(
-            1,
-            "https://auth.example/token".into(),
-            "client".into(),
-            awaken_runtime_contract::TokenEndpointAuth::None,
-            None,
-            "refresh-ref".into(),
-            "access-ref".into(),
-            None,
-            None,
-        );
-        access.scope = Some("tampered".into());
-        let secrets: Arc<dyn awaken_credential_vault::SecretStore> =
-            Arc::new(awaken_credential_vault::InMemorySecretStore::new());
-        let credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo> =
-            Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
-        let refresher = VaultRefresher::new(
-            CredentialSourceId("cred:test".into()),
-            access,
-            credentials,
-            secrets,
-        );
-        assert_eq!(
-            refresher
-                .refresh(&AuthChallenge {
-                    status: 401,
-                    www_authenticate: None,
-                })
-                .await,
-            None
-        );
     }
 }
 

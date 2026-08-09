@@ -119,7 +119,6 @@ pub async fn awaken_dispatch::AnyDispatchStore::connect_postgres_with_wake(&str,
 pub fn awaken_dispatch::AnyDispatchStore::from_dispatch(alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::Dispatch>) -> Self
 pub fn awaken_dispatch::AnyDispatchStore::open_sqlite(&str) -> core::result::Result<Self, alloc::string::String>
 pub fn awaken_dispatch::AnyDispatchStore::stream_checkpoint_store(&self) -> core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>
-pub fn awaken_dispatch::AnyDispatchStore::with_enqueue(self, alloc::sync::Arc<dyn awaken_dispatch::DispatchEnqueue>) -> Self
 impl awaken_dispatch_contract::dispatch::DispatchQueue for awaken_dispatch::AnyDispatchStore
 pub fn awaken_dispatch::AnyDispatchStore::awaiting_run<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::agent::run::Id>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch::AnyDispatchStore::bind_sandbox<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
@@ -464,6 +463,7 @@ pub struct awaken_dispatch::SystemClock
 impl awaken_dispatch::Clock for awaken_dispatch::SystemClock
 pub fn awaken_dispatch::SystemClock::now_ms(&self) -> u64
 pub const awaken_dispatch::DEFAULT_LEASE_MS: u64
+pub const awaken_dispatch::DEFAULT_LEASE_RENEWAL: core::time::Duration
 pub trait awaken_dispatch::ClaimedCommitApplier: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch::ClaimedCommitApplier::apply<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::commit::operation::CommitOperation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_dispatch::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_dispatch::Clock: core::marker::Send + core::marker::Sync
@@ -474,8 +474,6 @@ impl awaken_dispatch::Clock for awaken_dispatch::SystemClock
 pub fn awaken_dispatch::SystemClock::now_ms(&self) -> u64
 pub trait awaken_dispatch::CompletionSink: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch::CompletionSink::settled(&self, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::run::RunState)
-pub trait awaken_dispatch::DispatchEnqueue: core::marker::Send + core::marker::Sync
-pub fn awaken_dispatch::DispatchEnqueue::enqueue_with<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::run_dispatch::RunDispatch, awaken_dispatch_contract::dispatch::SubmitOptions) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_dispatch::DurableRunOperations: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch::DurableRunOperations::cancel<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dispatch::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_dispatch::DurableRunOperations::dead_letters<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_dispatch::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

@@ -18,6 +18,7 @@ test-support = [
     "dep:awaken-sandbox-policy-store",
     "dep:awaken-env-store",
     "awaken-env-store/test-support",
+    "dep:awaken-session-store",
     "awaken-session-store/test-support",
     "awaken-work-store/test-support",
     "awaken-dream-application/test-support",
@@ -46,11 +47,12 @@ awaken-credential-contract.workspace = true
 # Typed resource ids/bindings plus the Resource Catalog port used by the Managed
 # ACL to lower wire resources before Session resolution. No IAM policy lives here.
 awaken-resource-contract.workspace = true
+awaken-resource-application.workspace = true
 # Volatile fixture stores are opt-in test support, never a product dependency.
 awaken-work-store = { workspace = true, optional = true }
 awaken-env-store = { workspace = true, optional = true }
 awaken-sandbox-policy-store = { workspace = true, optional = true }
-awaken-session-store.workspace = true
+awaken-session-store = { workspace = true, optional = true }
 # Tenancy as an edge aspect (ADR-0051): the opaque `ScopeId` the `ScopedRepo`
 # decorator binds so session persistence is tenant-isolable while the core stays
 # tenancy-agnostic (the engine never reads a scope).
@@ -63,8 +65,6 @@ awaken-credential-vault.workspace = true
 # the egress decision is a shared neutral fact rather than an inline string match.
 awaken-provisioning-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-memory-store.workspace = true
-awaken-skill-store.workspace = true
 awaken-ext-skills.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -136,7 +136,6 @@ awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-model-catalog = { workspace = true, features = ["test-support"] }
 awaken-sandbox-policy-store = { workspace = true, features = ["test-support"] }
 awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
-awaken-resource-application.workspace = true
 awaken-file-store = { workspace = true, features = ["test-support"] }
 awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-skill-store = { workspace = true, features = ["test-support"] }

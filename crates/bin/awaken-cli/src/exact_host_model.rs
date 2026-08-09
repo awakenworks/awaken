@@ -18,6 +18,7 @@ pub(super) fn local_test_process_options(
     super::ProcessAssemblyOptions {
         deployment: Some(deployment),
         worker_directory: Some(worker_directory.clone()),
+        runtime_authority: None,
         worker_observations: Some(
             super::worker_observation_wiring::WorkerObservationWiring::local(worker_directory),
         ),

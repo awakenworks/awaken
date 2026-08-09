@@ -374,6 +374,22 @@ pub fn skill_stem(name: &str) -> String {
     }
 }
 
+/// Stable tagged catalog identity derived from the canonical Skill stem.
+///
+/// Keeping identity derivation in the contract makes HTTP ingestion, durable
+/// stores, and runtime advertisement use one algorithm without depending on an
+/// infrastructure crate.
+#[must_use]
+pub fn skill_catalog_id(name: &str) -> String {
+    let stem = skill_stem(name);
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in stem.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("skill_{hash:016x}")
+}
+
 /// One immutable version of a Skill bundle. The version freezes authored Skill
 /// content; it contains no principal, role, policy, API key, or runtime host path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -745,7 +761,7 @@ pub trait MemoryRepository: Send + Sync {
 
 #[cfg(test)]
 mod memory_contract_tests {
-    use super::memory_store_stem;
+    use super::{memory_store_stem, skill_catalog_id};
 
     /// Cause/effect rules: safe ASCII is preserved; each unsafe run collapses
     /// to one dash; edge dashes are trimmed; an all-unsafe id becomes the fixed
@@ -757,5 +773,28 @@ mod memory_contract_tests {
         assert_eq!(memory_store_stem("../tenant///memory"), "tenant-memory");
         assert_eq!(memory_store_stem("///"), "memstore");
         assert_eq!(memory_store_stem(&"a".repeat(200)).len(), 120);
+    }
+
+    #[test]
+    fn skill_catalog_identity_rules() {
+        // Cause/effect decision table:
+        // | Rule | canonical stems equal | raw names equal | Effect |
+        // | S1 | yes | either | one stable tagged id |
+        // | S2 | no | no | distinct tagged ids |
+        // | S3 | yes | yes | restart-stable id |
+        // Identity is derived only after canonical stem normalization, so every
+        // ingress/store/runtime adapter observes the same source of truth.
+        assert_eq!(
+            skill_catalog_id("My Skill"),
+            skill_catalog_id("My-Skill"),
+            "S1"
+        );
+        assert_ne!(
+            skill_catalog_id("skill-a"),
+            skill_catalog_id("skill-b"),
+            "S2"
+        );
+        assert_eq!(skill_catalog_id("stable"), skill_catalog_id("stable"), "S3");
+        assert!(skill_catalog_id("stable").starts_with("skill_"), "S1");
     }
 }
