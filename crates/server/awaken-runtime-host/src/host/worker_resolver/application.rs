@@ -11,6 +11,19 @@ pub(super) async fn install_claimed_session_projection(
     thread_id: &awaken_agent_contract::agent::thread::Id,
     dispatched_resources: Option<&awaken_session_contract::SessionResourceManifest>,
 ) -> Result<(), awaken_run_ingress::Error> {
+    // `RunDispatch::session_thread_id` is the contract-owned discriminator:
+    // ordinary Runs omit it, while Session Runs name the realization owner.
+    // A registered Worker must not turn an ordinary durable thread into a
+    // Coordinator Session lookup merely because the client is installed.
+    if claimed.request.session_thread_id.is_none() {
+        if let Some(manifest) = dispatched_resources {
+            let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
+            host.install_dispatched_resources(&thread_id.0, manifest, Some(&claim))
+                .await
+                .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
+        }
+        return Ok(());
+    }
     let Some(control) = host.application_session_control.as_ref() else {
         if host.application_session_provisioner.is_some() {
             return Err(HostWorkerResolver::execution_error(

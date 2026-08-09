@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use awaken_memory_store::{MemErr, MemoryRepository, sha256_hex};
+use awaken_resource_contract::{MemErr, MemoryRepository, memory_sha256_hex as sha256_hex};
 
 use crate::FuseError;
 

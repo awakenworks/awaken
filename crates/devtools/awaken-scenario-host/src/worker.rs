@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
+use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_host::InferenceExecutorMaterializer;
 
 use crate::EchoModel;
 

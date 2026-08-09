@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 
 export const AWAKEN_BIN_ENV = 'AWAKEN_E2E_AWAKEN_BIN';
 export const SCENARIO_HOST_BIN_ENV = 'AWAKEN_E2E_SCENARIO_HOST_BIN';
+export const WORKER_BIN_ENV = 'AWAKEN_E2E_WORKER_BIN';
 
 export function parseCargoExecutable(output, targetName, targetKind) {
   for (const line of String(output).split('\n')) {

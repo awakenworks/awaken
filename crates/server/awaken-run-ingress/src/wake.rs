@@ -102,6 +102,7 @@ impl WakeSignal for NatsWakeSignal {
 /// inside the enqueue transaction for same-commit delivery) and `wait` blocks on a
 /// `PgListener`. Like every [`WakeSignal`] it is a hint; the poll fallback stays
 /// authoritative, so a dropped notification only defers a drain.
+#[cfg(feature = "durable")]
 pub struct PgNotifyWake {
     pool: sqlx::postgres::PgPool,
     channel: String,
@@ -110,6 +111,7 @@ pub struct PgNotifyWake {
     local: Arc<Notify>,
 }
 
+#[cfg(feature = "durable")]
 impl PgNotifyWake {
     /// Wake over `channel` on the same database as the dispatch store `pool`.
     ///
@@ -151,6 +153,7 @@ impl PgNotifyWake {
     }
 }
 
+#[cfg(feature = "durable")]
 #[async_trait]
 impl WakeSignal for PgNotifyWake {
     async fn publish(&self) -> Result<(), DispatchError> {

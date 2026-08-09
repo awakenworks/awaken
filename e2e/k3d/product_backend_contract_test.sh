@@ -13,7 +13,8 @@ trap 'rm -f "$RENDERED"' EXIT
 # restricted to namespaces explicitly labelled as an
 # Awaken Design backend; C5 K8s sandbox uses the imported non-`latest` base while
 # BuildKit Jobs, the derived-image Registry, and namespace-scoped RBAC are
-# coherent; C6 model/provider secret names or values
+# coherent through the Registry container's internal :5000 endpoint (the host
+# publishing port is not reachable inside the cluster); C6 model/provider secret names or values
 # appear in the manifest. Effects: E1 one all-in-one backend can start from the canonical image;
 # E2 Awaken/Console and management APIs have no terminal-user ingress; E3 config
 # plus Awaken-owned provider configuration, Skills, Agents, and Sessions survive
@@ -38,7 +39,9 @@ grep -q 'identity_mode = "self-managed"' "$RENDERED"
 grep -q 'sandbox_tier = "k8s"' "$RENDERED"
 grep -q 'container_image = "awaken-sandbox:local"' "$RENDERED"
 grep -q 'package_image_builder = "k8s"' "$RENDERED"
-grep -q 'package_image_registry = "k3d-awaken-registry.localhost:5111/environments"' "$RENDERED"
+grep -q 'package_image_registry = "k3d-awaken-registry.localhost:5000/environments"' "$RENDERED"
+grep -q 'k8s_buildkit_image = "k3d-awaken-registry.localhost:5000/system/buildkit:v0.30.0-rootless"' "$RENDERED"
+! grep -q 'k3d-awaken-registry.localhost:5111' "$RENDERED"
 grep -q 'package_registry_insecure = true' "$RENDERED"
 grep -q 'serviceAccountName: awaken-product' "$RENDERED"
 grep -q -- '- jobs' "$RENDERED"

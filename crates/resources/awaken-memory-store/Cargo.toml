@@ -22,7 +22,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "fs"] }
 # ADR-0053 path-addressed MemoryRepository: content-sha256 (Anthropic wire uses sha256) +
 # a durable JSON record per memory.
-sha2 = "0.10"
 serde_json = { workspace = true }
 # Feature `sqlite`: embedded durable MemoryRepository over the crate's migration scope.
 rusqlite = { workspace = true, optional = true }

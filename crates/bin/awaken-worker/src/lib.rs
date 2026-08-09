@@ -18,12 +18,15 @@
 
 use std::sync::Arc;
 
+mod acp_capability;
 mod admin;
 mod application;
+mod bootstrap;
 mod credential_files;
 mod credential_liveness;
 mod lifecycle;
 mod manifest;
+mod relay_hand;
 
 use credential_liveness::WorkerObservationCache;
 use lifecycle::{
@@ -38,9 +41,11 @@ use manifest::{
 pub use application::{
     RegisteredApplicationFactory, RegisteredWorkerApplication, RegisteredWorkerContext,
 };
+pub use bootstrap::{WorkerBootstrap, WorkerBootstrapInput, WorkerDaemonConfig};
 pub use credential_files::WorkerCredentialFileResolver;
 pub use lifecycle::WorkerShutdown;
 pub use manifest::StandardManifestConfig;
+pub use relay_hand::relay_hand_executor_factory;
 
 /// Registration-bound construction of the exact Memory projection adapter.
 /// The assigned Worker identity is required to authenticate every claim-fenced
@@ -53,7 +58,8 @@ pub type RegisteredMemoryMounterFactory = Arc<
         + Sync,
 >;
 
-use awaken_runtime_host::{InferenceExecutorMaterializer, SharedHost};
+use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
+use awaken_runtime_host::SharedHost;
 use awaken_worker_contract::{RegistryMutation, WorkerHeartbeat, WorkerManifest};
 use awaken_worker_runtime::WorkerControlClient;
 use awaken_worker_transport_security::WorkerUpstream;
@@ -693,7 +699,7 @@ async fn build_secretless_worker(
 
 fn configured_container_acp_targets(
     deployment: &awaken_runtime_host::DeploymentConfig,
-) -> Result<Vec<awaken_acp_application::ConfiguredAcpCapabilityTarget>, String> {
+) -> Result<Vec<acp_capability::ConfiguredAcpCapabilityTarget>, String> {
     if !matches!(
         deployment.sandbox_tier,
         awaken_runtime_host::SandboxTier::Docker
@@ -717,7 +723,7 @@ fn configured_container_acp_targets(
         .map(|id| {
             let cli = awaken_run_executor_acp::acp_cli(id)
                 .ok_or_else(|| format!("configured ACP capability has unknown adapter `{id}`"))?;
-            awaken_acp_application::ConfiguredAcpCapabilityTarget::new(
+            acp_capability::ConfiguredAcpCapabilityTarget::new(
                 id,
                 format!("container-image:{image}"),
                 cli.container_probe_argv
@@ -748,7 +754,7 @@ fn configured_container_acp_capability_source(
         Arc::new(awaken_protocol_acp::ProtocolAcpCapabilityHandshake),
     ));
     Ok(Some(Arc::new(
-        awaken_acp_application::ConfiguredAcpCapabilityObservationSource::new(
+        acp_capability::ConfiguredAcpCapabilityObservationSource::new(
             targets,
             negotiator,
             std::path::PathBuf::from("/workspace"),
@@ -814,7 +820,9 @@ impl WorkerNode {
         let upstream_url = self.upstream.base_url().to_string();
         let upstream = self.upstream;
         let bootstrap_control = WorkerControlClient::new(upstream.clone());
-        let incarnation_id = new_incarnation_id()?;
+        let incarnation_id = new_incarnation_id().map_err(|error| {
+            std::io::Error::other(format!("generate Worker incarnation: {error}"))
+        })?;
         let mut shutdown = std::pin::pin!(shutdown);
         let mut occupied_attempts = 0_u64;
         let registration = loop {

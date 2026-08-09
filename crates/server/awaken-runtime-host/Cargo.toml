@@ -34,10 +34,10 @@ awaken-ext-state-machine = { workspace = true, features = ["schema"] }
 # family so a harvested write-back survives a process restart. The `sqlite` feature
 # provides the path-addressed store with **crash-atomic** rename/CAS (one transaction)
 # — the durable backend for the ADR-0053 `/memories` surface.
-awaken-memory-store = { workspace = true, features = ["sqlite"] }
+awaken-memory-store = { workspace = true, optional = true }
 # Durable skill catalog (resources plane): backs the delivered-skill source so a
 # skill added via /v1/skills survives a restart; awaken-ext-skills stays store-unaware.
-awaken-skill-store = { workspace = true }
+awaken-skill-store = { workspace = true, optional = true }
 awaken-sandbox-local = { workspace = true }
 # The container tier (podman/docker/k8s), for realizing the session-scoped execution
 # environment selected by worker configuration.
@@ -45,26 +45,26 @@ awaken-sandbox-container = { workspace = true }
 # The content-addressed store the host serves files/artifacts from + adapts behind
 # the sandbox providers' BlobSource port (was re-exported via awaken-sandbox-local,
 # now a direct dependency since that worker-tier crate no longer links it).
-awaken-file-store = { workspace = true, features = ["sqlite"] }
+awaken-file-store = { workspace = true, optional = true }
 # The neutral sandbox vocabulary the sandboxed ACP channel source speaks
 # (SandboxSpec/Command/NetworkPolicy) when realizing the namespace tier.
 awaken-provisioning-contract = { workspace = true }
-awaken-store-sqlite = { workspace = true }
-awaken-store-fs = { workspace = true }
-awaken-store-postgres = { workspace = true }
+awaken-store-sqlite = { workspace = true, optional = true }
+awaken-store-fs = { workspace = true, optional = true }
+awaken-store-postgres = { workspace = true, optional = true }
 # The durable WorkQueue backend (sqlite/postgres), extracted from this host.
-awaken-work-store = { workspace = true }
-awaken-session-store = { workspace = true }
-awaken-env-store = { workspace = true }
+awaken-work-store = { workspace = true, optional = true }
+awaken-session-store = { workspace = true, optional = true }
+awaken-env-store = { workspace = true, optional = true }
 awaken-tenancy = { workspace = true }
-awaken-run-ingress = { workspace = true }
+awaken-run-ingress = { workspace = true, default-features = false }
 awaken-run-ingress-contract.workspace = true
 awaken-worker-transport-security = { workspace = true }
 awaken-worker-runtime.workspace = true
 awaken-run-executor-acp = { workspace = true }
 awaken-acp-contract = { workspace = true }
-awaken-config-resolver = { workspace = true }
-awaken-credential-vault = { workspace = true }
+awaken-config-resolver = { workspace = true, optional = true }
+awaken-credential-vault = { workspace = true, optional = true }
 awaken-credential-contract.workspace = true
 awaken-credential-materializer = { workspace = true }
 async-trait.workspace = true
@@ -74,8 +74,8 @@ serde_json.workspace = true
 # the sqlite + postgres ManagedSessionRepository backends, moved here so any bin
 # (standalone/enterprise) gets restart-surviving sessions without the
 # authoring plane. Migration bundles are owned by the extracted store adapters.
-rusqlite = { workspace = true }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+rusqlite = { workspace = true, optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 axum = { version = "0.8", features = ["multipart"] }
@@ -93,9 +93,31 @@ regex = "1"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 [features]
+default = ["authority"]
+# Store-owning Coordinator/AllInOne adapters. The Worker build disables default
+# features and retains only the injected execution ports, so database drivers
+# and Control credential authority cannot enter its artifact transitively.
+authority = [
+    "awaken-run-ingress/durable",
+    "awaken-file-store/sqlite",
+    "awaken-memory-store/sqlite",
+    "dep:awaken-skill-store",
+    "dep:awaken-store-sqlite",
+    "dep:awaken-store-fs",
+    "dep:awaken-store-postgres",
+    "dep:awaken-work-store",
+    "dep:awaken-session-store",
+    "dep:awaken-env-store",
+    "dep:awaken-config-resolver",
+    "dep:rusqlite",
+    "dep:sqlx",
+    "awaken-credential-materializer/authority",
+    "dep:awaken-credential-vault",
+]
 # Post-construction persistence overrides are restricted to tests. Product
 # composition selects every authority before constructing SharedHost.
 test-support = [
+    "authority",
     "dep:awaken-store-inmem",
     "dep:awaken-resource-application",
     "awaken-file-store/test-support",

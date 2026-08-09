@@ -140,7 +140,7 @@ fn configured_worker_builder(
         .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(
             credentials.clone(),
         )))
-        .with_hand_executor_factory(awaken_coordinator::relay_hand_executor_factory())
+        .with_hand_executor_factory(awaken_worker::relay_hand_executor_factory())
         .with_credential_materializer(credentials)
         .with_graceful_drain(std::time::Duration::from_secs(worker.drain_grace_secs))
         .with_credential_observation_window(
@@ -154,28 +154,6 @@ fn configured_worker_builder(
         None => builder.without_admin_surface(),
     };
     builder
-}
-
-/// Compose the process Worker from the already-resolved product configuration.
-/// Store opening and concrete server adapters remain at this CLI boundary.
-pub async fn build_configured_worker(
-    upstream: impl Into<String>,
-    deployment: &crate::config::ResolvedDeployment,
-) -> Result<awaken_worker::WorkerNode, String> {
-    let resolver = Arc::new(awaken_worker::WorkerCredentialFileResolver::new(
-        &deployment.worker.credential_material_root,
-        &deployment.worker.credential_trust_domain,
-    ));
-    let credentials =
-        awaken_credential_materializer::PinnedCredentialMaterializer::external_only(resolver);
-    let mut worker_upstream = awaken_worker_transport_security::WorkerUpstream::new(upstream)
-        .with_worker_id(&deployment.worker.worker_id);
-    if let Some(authorizer) = crate::worker_transport_security::request_authorizer(deployment)? {
-        worker_upstream = worker_upstream.with_request_authorizer(authorizer);
-    }
-    configured_worker_builder(worker_upstream, deployment, credentials)
-        .build()
-        .map_err(|error| error.to_string())
 }
 
 async fn prepare_local_acp_with(
@@ -360,67 +338,6 @@ mod tests {
     };
 
     use super::*;
-
-    /// Cause/effect graph: the Worker installs inference, A2A, exact credential,
-    /// and registration-bound per-kind Resource adapters without opening an
-    /// authority store.
-    ///
-    /// | Rule | Installed implementations | Effect |
-    /// |---|---|---|
-    /// | C1 | exact file resolver | WorkerReference plus recipient-bound projected Control envelope |
-    /// | C2 | Memory factory + exact credential adapter | Session Resource and Repository credential capabilities |
-    /// | C3 | Worker runtime config | no durable local storage root |
-    #[tokio::test]
-    async fn configured_worker_projects_only_the_cli_installed_adapters() {
-        let directory = tempfile::tempdir().unwrap();
-        let deployment = crate::config::worker_test_deployment(directory.path().into());
-        deployment.ensure_data_layout().unwrap();
-        let worker = build_configured_worker("http://127.0.0.1:1", &deployment)
-            .await
-            .expect("C1 authority-store-isolated CLI Worker topology");
-        let capabilities = &worker.manifest().capabilities;
-        assert!(capabilities.contains(awaken_runtime_contract::A2A_RUNTIME_CAPABILITY));
-        assert!(
-            capabilities.contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
-            "C2"
-        );
-        assert!(
-            capabilities.contains(awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY),
-            "C2"
-        );
-        let evidence =
-            awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
-                capabilities,
-            )
-            .expect("C1 one merged credential evidence capability");
-        fn includes_source(
-            evidence: &awaken_runtime_contract::CredentialRealizationCapabilities,
-            source: CredentialMaterialSource,
-        ) -> bool {
-            evidence.material_sources.contains(&source)
-                || evidence
-                    .alternatives
-                    .iter()
-                    .any(|alternative| includes_source(alternative, source))
-        }
-        assert!(
-            includes_source(&evidence, CredentialMaterialSource::WorkerReference),
-            "C1: {evidence:?}"
-        );
-        assert!(
-            includes_source(&evidence, CredentialMaterialSource::ControlPlaneReference),
-            "C1: {evidence:?}"
-        );
-        assert!(
-            evidence.recipient_bound_envelopes
-                || evidence
-                    .alternatives
-                    .iter()
-                    .any(|alternative| alternative.recipient_bound_envelopes),
-            "C1: {evidence:?}"
-        );
-        assert!(deployment.runtime.storage_dir.is_none(), "C3");
-    }
 
     struct FixedDiscovery {
         observations: BTreeMap<String, AcpHostObservation>,

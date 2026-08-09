@@ -33,7 +33,6 @@ pub mod mcp_export;
 pub mod model_directory;
 pub mod model_discovery;
 pub mod model_resolver;
-mod relay_hand;
 pub mod webhooks;
 pub mod worker_observation_boundary;
 pub mod worker_placement;
@@ -58,8 +57,6 @@ mod a2a_security;
 mod dream;
 
 use awaken_protocol_managed::{ManagedState, router};
-use awaken_provider_genai::{GenaiExecutor, OpenAiResponsesExecutor};
-use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_session_contract::RunApplication;
 use axum::Router;
 
@@ -85,13 +82,12 @@ pub fn memory_store_application(
 }
 pub use awaken_run_ingress_http::durable_ops_router;
 pub use awaken_runtime_host::{
-    ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost, NoModelConfiguredExecutor,
-    RunApplicationHost, SharedHost, ThreadEvent, ThreadEventHub, UNCONFIGURED_MODEL_REF,
-    VaultRefresher, advertised_tools,
+    ExtMcpProbe, HostResume, ManagedHost, NoModelConfiguredExecutor, RunApplicationHost,
+    SharedHost, ThreadEvent, ThreadEventHub, UNCONFIGURED_MODEL_REF, VaultRefresher,
+    advertised_tools,
 };
 pub use awaken_sandbox_local::content_fingerprint;
 pub use awaken_worker_registry::{WorkerDirectory, WorkerObservationSource};
-pub use relay_hand::relay_hand_executor_factory;
 pub use worker_registry::WorkerDirectoryHandle;
 #[cfg(any(test, feature = "test-support"))]
 pub use worker_registry::test_directory as test_worker_directory;
@@ -1025,205 +1021,6 @@ fn resource_management_router_from_host(
     })
 }
 
-/// The worker composition seam refuses incomplete or unsupported materialized
-/// provider access (ADR-0043, fail-closed).
-#[derive(Debug, thiserror::Error)]
-pub enum ResolvedExecutorError {
-    #[error("resolved inference has no base_url for adapter `{0}`")]
-    MissingBaseUrl(String),
-    #[error("resolved inference carries no credential (unauthenticated run refused)")]
-    MissingCredential,
-    #[error("no provider executor in this build serves adapter `{0}`")]
-    UnsupportedAdapter(String),
-    #[error("no provider executor in this build serves API dialect `{0}`")]
-    UnsupportedDialect(String),
-    #[error("API dialect `{dialect}` is incompatible with adapter `{adapter}`")]
-    DialectAdapterMismatch { dialect: String, adapter: String },
-    #[error("provider executor could not be constructed: {0}")]
-    ExecutorBuild(String),
-}
-
-/// Construct from the exact protocol frozen in a modern publication. An empty
-/// dialect is accepted only for legacy snapshots and follows the adapter-family
-/// path; declared modern dialects are checked before any credential-backed
-/// executor is constructed.
-pub fn executor_from_materialized_endpoint(
-    api_dialect: &str,
-    adapter_kind: &str,
-    base_url: Option<&str>,
-    credential: Option<&awaken_agent_contract::RedactedString>,
-) -> Result<Arc<dyn LlmExecutor>, ResolvedExecutorError> {
-    let expected_adapter = match api_dialect {
-        "" => None,
-        "anthropic_messages" => Some("anthropic"),
-        "open_ai_chat" => Some("openai"),
-        "gemini" => Some("gemini"),
-        "vertex_gemini" => Some("vertex"),
-        "open_ai_responses" => Some("openai"),
-        other => return Err(ResolvedExecutorError::UnsupportedDialect(other.to_string())),
-    };
-    if expected_adapter.is_some_and(|expected| expected != adapter_kind) {
-        return Err(ResolvedExecutorError::DialectAdapterMismatch {
-            dialect: api_dialect.to_string(),
-            adapter: adapter_kind.to_string(),
-        });
-    }
-    if api_dialect == "open_ai_responses" {
-        let base_url = base_url
-            .ok_or_else(|| ResolvedExecutorError::MissingBaseUrl(adapter_kind.to_string()))?;
-        let credential = credential.ok_or(ResolvedExecutorError::MissingCredential)?;
-        return OpenAiResponsesExecutor::new(base_url, credential.expose_secret())
-            .map(|executor| Arc::new(executor) as Arc<dyn LlmExecutor>)
-            .map_err(|error| ResolvedExecutorError::ExecutorBuild(error.to_string()));
-    }
-    executor_from_materialized_access(adapter_kind, base_url, credential)
-}
-
-/// Construct a provider executor from publication-pinned endpoint facts and
-/// worker-materialized credential material. It does not consult a catalog, select
-/// a route, select a credential, or accept a management-plane preview result.
-pub fn executor_from_materialized_access(
-    adapter_kind: &str,
-    base_url: Option<&str>,
-    credential: Option<&awaken_agent_contract::RedactedString>,
-) -> Result<Arc<dyn LlmExecutor>, ResolvedExecutorError> {
-    // One path for every API-key provider: map the catalog's adapter-kind to a genai
-    // adapter and hand it the resolved credential + (optional) gateway base URL. The
-    // key comes from the resolved credential, never inlined by the Managed wire. A new
-    // provider is one line in `genai_adapter` + catalog config — no new branch here.
-    let adapter = genai_adapter(adapter_kind)
-        .ok_or_else(|| ResolvedExecutorError::UnsupportedAdapter(adapter_kind.to_string()))?;
-    // Fail closed on an incomplete resolution: the management plane always resolves the
-    // execution triple's endpoint, so a `None` base URL means the inference never bound
-    // an endpoint — refuse rather than silently fall back to the genai default endpoint.
-    let base_url =
-        base_url.ok_or_else(|| ResolvedExecutorError::MissingBaseUrl(adapter_kind.to_string()))?;
-    let credential = credential.ok_or(ResolvedExecutorError::MissingCredential)?;
-    Ok(Arc::new(GenaiExecutor::from_resolved(
-        adapter,
-        Some(base_url.to_string()),
-        credential.expose_secret(),
-    )))
-}
-
-/// Map our catalog's wire dialect (`ApiDialect::adapter_kind`) to a genai adapter.
-/// The one place a supported provider wire is named; genai's default endpoint is used
-/// unless the catalog endpoint supplies a gateway base URL.
-fn genai_adapter(adapter_kind: &str) -> Option<awaken_provider_genai::AdapterKind> {
-    use awaken_provider_genai::AdapterKind;
-    Some(match adapter_kind {
-        "anthropic" => AdapterKind::Anthropic,
-        "gemini" => AdapterKind::Gemini,
-        "vertex" => AdapterKind::Vertex,
-        "openai" => AdapterKind::OpenAI,
-        _ => return None,
-    })
-}
-
-#[cfg(test)]
-mod executor_seam_tests {
-    use super::*;
-    use awaken_agent_contract::RedactedString;
-    use awaken_provider_genai::AdapterKind;
-
-    /// The one place a supported provider wire is named maps exactly the three the
-    /// build serves, and returns `None` (→ `UnsupportedAdapter`) for everything else,
-    /// case-sensitively.
-    #[test]
-    fn genai_adapter_maps_the_supported_wires_and_rejects_the_rest() {
-        assert_eq!(genai_adapter("anthropic"), Some(AdapterKind::Anthropic));
-        assert_eq!(genai_adapter("gemini"), Some(AdapterKind::Gemini));
-        assert_eq!(genai_adapter("vertex"), Some(AdapterKind::Vertex));
-        assert_eq!(genai_adapter("openai"), Some(AdapterKind::OpenAI));
-        // Fail-closed: an unserved wire, the empty string, and a case variant all miss.
-        assert_eq!(genai_adapter("cohere"), None);
-        assert_eq!(genai_adapter(""), None);
-        assert_eq!(genai_adapter("Anthropic"), None);
-    }
-
-    /// `UnsupportedAdapter` is the reachable fail-closed arm: a resolved inference
-    /// whose `adapter_kind` no provider in this build serves is refused, naming the
-    /// adapter — never silently built into some default executor.
-    #[test]
-    fn materialized_access_fails_closed_on_an_unsupported_adapter() {
-        let credential = RedactedString::new("sk-secret");
-        // `Ok` carries an `Arc<dyn LlmExecutor>` (not `Debug`), so map to the error first.
-        match executor_from_materialized_access("cohere", Some("https://gw/"), Some(&credential))
-            .err()
-        {
-            Some(ResolvedExecutorError::UnsupportedAdapter(a)) => assert_eq!(a, "cohere"),
-            other => panic!("expected UnsupportedAdapter, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn exact_dialect_is_checked_and_responses_uses_a_dedicated_executor() {
-        let credential = RedactedString::new("sk-secret");
-        assert!(
-            executor_from_materialized_endpoint(
-                "open_ai_responses",
-                "openai",
-                Some("https://api.openai.com/v1"),
-                Some(&credential),
-            )
-            .is_ok()
-        );
-        assert!(matches!(
-            executor_from_materialized_endpoint(
-                "anthropic_messages",
-                "openai",
-                Some("https://provider.invalid"),
-                Some(&credential),
-            ),
-            Err(ResolvedExecutorError::DialectAdapterMismatch { .. })
-        ));
-        assert!(
-            executor_from_materialized_endpoint(
-                "open_ai_chat",
-                "openai",
-                Some("https://provider.invalid"),
-                Some(&credential),
-            )
-            .is_ok()
-        );
-    }
-
-    /// `MissingBaseUrl` is a reachable fail-closed arm: a resolved inference whose
-    /// `base_url` is `None` never bound an endpoint, so the seam refuses to build an
-    /// executor (rather than silently falling back to the genai default endpoint),
-    /// naming the adapter.
-    #[test]
-    fn missing_base_url_is_refused_by_the_seam() {
-        // A supported adapter + a credential but NO base URL fails closed.
-        let credential = RedactedString::new("sk-secret");
-        match executor_from_materialized_access("anthropic", None, Some(&credential)).err() {
-            Some(ResolvedExecutorError::MissingBaseUrl(a)) => assert_eq!(a, "anthropic"),
-            other => panic!("expected MissingBaseUrl, got {other:?}"),
-        }
-        // The variant renders its intended message.
-        let err = ResolvedExecutorError::MissingBaseUrl("anthropic".into());
-        assert_eq!(
-            err.to_string(),
-            "resolved inference has no base_url for adapter `anthropic`"
-        );
-    }
-
-    /// A supported adapter with both a base URL and a credential builds an executor
-    /// (the happy path the three fail-closed arms bracket).
-    #[test]
-    fn materialized_access_builds_supported_adapters_with_a_credential() {
-        let credential = RedactedString::new("k");
-        assert!(
-            executor_from_materialized_access("openai", Some("https://gw/"), Some(&credential))
-                .is_ok()
-        );
-        assert!(
-            executor_from_materialized_access("gemini", Some("https://gw/"), Some(&credential))
-                .is_ok()
-        );
-        assert!(
-            executor_from_materialized_access("vertex", Some("https://gw/"), Some(&credential))
-                .is_ok()
-        );
-    }
-}
+pub use awaken_credential_materializer::{
+    ResolvedExecutorError, executor_from_materialized_endpoint,
+};

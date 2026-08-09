@@ -119,7 +119,7 @@ pub(crate) struct SessionRuntimeSlot {
     pub toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
     /// `Some([])` means the frozen manifest delivers no Skills; `None` means this
     /// embedded Session has no frozen Skill manifest.
-    pub skills: Option<Vec<awaken_skill_store::SkillVersion>>,
+    pub skills: Option<Vec<awaken_resource_contract::SkillVersion>>,
     pub resources: StagedResources,
     pub manifest: Option<awaken_session_contract::SessionResourceManifest>,
 }

@@ -13,6 +13,10 @@ authority = "worker"
 name = "awaken_worker"
 path = "src/lib.rs"
 
+[[bin]]
+name = "awaken-worker"
+path = "src/main.rs"
+
 # The production authority-store-isolated executor crate: a peer of the control/data planes.
 # It drains runs over the dispatch transport and resolves EACH run's model_ref (from
 # its activation snapshot) to the real DB-configured provider via
@@ -33,13 +37,15 @@ container-k8s = ["awaken-runtime-host/container-k8s"]
 [dependencies]
 # The neutral host substrate: SharedHost, the dispatch pool, and the worker dispatch
 # store that routes the drain over HTTP to the cell server.
-awaken-runtime-host = { workspace = true }
+awaken-runtime-host = { workspace = true, default-features = false }
 awaken-resource-worker-http.workspace = true
+awaken-sandbox-memoryd.workspace = true
 awaken-worker-runtime.workspace = true
 awaken-runtime-contract = { workspace = true }
 awaken-credential-materializer.workspace = true
 awaken-ext-builtin-tools.workspace = true
 awaken-sandbox-container.workspace = true
+awaken-tool-relay.workspace = true
 awaken-session-contract.workspace = true
 awaken-worker-transport-security.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "fs"] }
@@ -51,12 +57,13 @@ axum = { workspace = true }
 awaken-observability = { workspace = true }
 awaken-worker-contract = { workspace = true }
 awaken-acp-contract = { workspace = true }
-awaken-acp-application = { workspace = true }
 awaken-protocol-acp = { workspace = true }
 awaken-run-executor-acp = { workspace = true }
 awaken-provisioning-contract = { workspace = true }
 async-trait = { workspace = true }
 getrandom = "0.2"
+serde.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 # The admin router tests drive the axum router directly (oneshot).
@@ -64,7 +71,9 @@ tower = { version = "0.5", features = ["util"] }
 # Bare in-memory Host construction exists only for explicit test composition;
 # production Worker builds keep the runtime-host test backend unlinked.
 awaken-runtime-host = { workspace = true, features = ["test-support"] }
+awaken-tool-relay = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
+tempfile = "3"
 
 [lints]
 workspace = true

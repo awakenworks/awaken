@@ -11,54 +11,25 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_credential_materializer::DirectInferenceMaterializer;
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_runtime_contract::ModelBinding;
+use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
 use awaken_runtime_contract::llm::{
     ChatRequest, ChatResponse, DeltaSink, Error as LlmError, LlmExecutor,
 };
 use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_runtime_host::InferenceExecutorMaterializer;
-
-use crate::executor_from_materialized_endpoint;
 
 /// Runtime adapter that materializes only the access already pinned in an
 /// executable snapshot. It cannot enumerate the model catalog or select a
 /// different credential.
 #[derive(Clone)]
 pub struct CredentialInferenceMaterializer {
-    credentials: awaken_credential_materializer::PinnedCredentialMaterializer,
+    direct: DirectInferenceMaterializer,
     brokered: Option<Arc<dyn crate::brokered_inference::BrokeredInferenceClient>>,
     brokered_mode_enabled: bool,
-}
-
-struct PinnedModelExecutor {
-    inner: Arc<dyn LlmExecutor>,
-    upstream_model: String,
-}
-
-#[async_trait]
-impl LlmExecutor for PinnedModelExecutor {
-    async fn infer(&self, mut request: ChatRequest) -> Result<ChatResponse, LlmError> {
-        request
-            .model_binding
-            .model_ref
-            .clone_from(&self.upstream_model);
-        self.inner.infer(request).await
-    }
-
-    async fn infer_streaming(
-        &self,
-        mut request: ChatRequest,
-        sink: &dyn DeltaSink,
-    ) -> Result<ChatResponse, LlmError> {
-        request
-            .model_binding
-            .model_ref
-            .clone_from(&self.upstream_model);
-        self.inner.infer_streaming(request, sink).await
-    }
 }
 
 impl CredentialInferenceMaterializer {
@@ -75,7 +46,7 @@ impl CredentialInferenceMaterializer {
         credentials: awaken_credential_materializer::PinnedCredentialMaterializer,
     ) -> Self {
         Self {
-            credentials,
+            direct: DirectInferenceMaterializer::new(credentials),
             brokered: None,
             brokered_mode_enabled: false,
         }
@@ -135,28 +106,7 @@ impl CredentialInferenceMaterializer {
             )
             .map(|executor| Some(Arc::new(executor) as Arc<dyn LlmExecutor>));
         }
-        let secret = self
-            .credentials
-            .materialize_claimed_provider(
-                candidate,
-                context,
-                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
-            )
-            .await?;
-        if endpoint.upstream_model.is_empty() {
-            return Ok(None);
-        }
-        let executor = executor_from_materialized_endpoint(
-            &endpoint.api_dialect,
-            &endpoint.adapter_kind,
-            Some(&endpoint.base_url),
-            secret.as_ref(),
-        )
-        .map_err(|error| error.to_string())?;
-        Ok(Some(Arc::new(PinnedModelExecutor {
-            inner: executor,
-            upstream_model: endpoint.upstream_model.clone(),
-        })))
+        self.direct.materialize_candidate(candidate, context).await
     }
 
     /// Realize one complete publication candidate through the exact attempt
@@ -249,25 +199,7 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
     fn credential_realization_capabilities(
         &self,
     ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
-        let (material_sources, recipient_bound_envelopes) =
-            self.credentials.material_source_capabilities();
-        awaken_runtime_contract::CredentialRealizationCapabilities {
-            holders: [awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Worker,
-                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-            )]
-            .into_iter()
-            .collect(),
-            material_sources,
-            realization_kinds: [
-                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
-            ]
-            .into_iter()
-            .collect(),
-            recipient_bound_envelopes,
-            extension_consumers: Default::default(),
-            alternatives: Vec::new(),
-        }
+        self.direct.credential_realization_capabilities()
     }
 
     fn materialize(

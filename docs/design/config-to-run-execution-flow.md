@@ -603,7 +603,7 @@ registration and Control-application adapters, isolated component databases, an 
 Coordinator, and forced authority-role restarts. Adapter and repository tests
 remain the owners of rule combinations that do not require a real cluster.
 
-The overlay now runs two instances of the shipped `awaken worker` CLI. Each
+The overlay now runs two instances of the shipped `awaken-worker` artifact. Each
 instance receives only its Worker identity, signed-request credential, Runtime
 configuration, sandbox/cache paths, and narrow Credential/File/Memory/Skill
 boundary clients. The test proves that no authority database or Control seal

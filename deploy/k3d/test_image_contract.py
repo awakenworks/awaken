@@ -18,10 +18,24 @@ def main() -> None:
     mkdir = next(line for line in install.splitlines() if "mkdir -p" in line)
     for mount_point in ("/workspace", "/outputs"):
         assert mount_point in mkdir, f"K3D product image is missing mount point: {mount_point}"
+    # I3 the execution role is a separate deployable -> the combined black-box
+    # fixture image must copy that exact artifact, not route it through the
+    # management CLI auxiliary slot.
+    assert "COPY awaken-worker /usr/local/bin/awaken-worker" in dockerfile
+    worker_image = (
+        Path(__file__).parent.parent / "images" / "worker" / "Dockerfile"
+    ).read_text()
+    # I4 the standalone production image owns only the Worker artifact, runs as
+    # the fixed non-root identity, and carries the Namespace sandbox runtime.
+    assert "COPY ${BIN} /usr/local/bin/awaken-worker" in worker_image
+    assert 'ENTRYPOINT ["/usr/local/bin/awaken-worker"]' in worker_image
+    assert "USER 10001" in worker_image
+    assert "bubblewrap" in worker_image
+    assert "/usr/local/bin/awaken\n" not in worker_image
     # Cause/effect decision table. C5 Docker uses a non-default Buildx driver;
     # C6 the production-image acceptance command immediately runs the tagged
     # image. E3 the build explicitly loads its result into Docker's image store.
-    # Rule I3: C5+C6 => E3; Podman keeps its ordinary engine-owned output path.
+    # Rule I5: C5+C6 => E3; Podman keeps its ordinary engine-owned output path.
     sandbox_build = (
         Path(__file__).parent.parent / "images" / "sandbox" / "build.sh"
     ).read_text()
@@ -38,7 +52,7 @@ def main() -> None:
     # C7 the catalog changes package/argv/auth facts; C8 Docker consumes an ACP
     # contract. E4 build.sh generates the contract from the Rust catalog and
     # passes that exact ephemeral file to Docker; E5 the installer/verifier consume
-    # all generated requirements/executables. I4 C7+C8=>E4+E5. Exact row content
+    # all generated requirements/executables. I6 C7+C8=>E4+E5. Exact row content
     # is owned by the Rust generator test, avoiding a second JSON source of truth.
     sandbox = Path(__file__).parent.parent / "images" / "sandbox"
     sandbox_dockerfile = (sandbox / "Dockerfile").read_text()

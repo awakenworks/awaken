@@ -8,6 +8,7 @@ struct WorkerProjectionSynchronizer<'a> {
     claim: Option<&'a awaken_run_ingress::RunClaim>,
     published_snapshot: Option<&'a awaken_runtime_contract::ExecutableAgentSnapshot>,
     rebuild_unavailable_environment: bool,
+    requires_runtime_before_effects: bool,
 }
 
 #[async_trait::async_trait]
@@ -25,8 +26,16 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
         self.host
             .install_session_realization_lease(session_id, lease.clone());
-        if self.host.session_environment(session_id).await.is_none()
-            && let Some(binding) = projection.environment.binding()
+        let environment_absent = self.host.session_environment(session_id).await.is_none();
+        let has_environment_binding =
+            environment_absent && projection.environment.binding().is_some();
+        if self.requires_runtime_before_effects && self.published_snapshot.is_none() {
+            return Err(awaken_session_contract::RunError::classified(
+                "session_runtime_publication_missing",
+                "sandbox stdio MCP realization requires the exact claimed Agent snapshot before effects",
+            ));
+        }
+        let adopted = if environment_absent && let Some(binding) = projection.environment.binding()
         {
             let published_snapshot = self.published_snapshot.ok_or_else(|| {
                 awaken_session_contract::RunError::classified(
@@ -34,8 +43,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
                     "a cold Worker needs the exact claimed Agent snapshot to adopt a durable Session Environment",
                 )
             })?;
-            let (adopted, _) = self
-                .host
+            self.host
                 .adopt_bound_session_environment(
                     session_id,
                     Some(binding),
@@ -43,7 +51,18 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
                     self.rebuild_unavailable_environment,
                 )
                 .await
-                .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
+                .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?
+                .0
+        } else {
+            None
+        };
+        // Synchronization is the single ordering boundary between Control's
+        // frozen projection and MCP effects. A first-use Environment has no
+        // durable binding to adopt yet, but its stage still needs the exact Run
+        // publication installed before it may realize sandbox stdio.
+        if let Some(published_snapshot) = self.published_snapshot
+            && (has_environment_binding || self.requires_runtime_before_effects)
+        {
             self.host
                 .ctx_for_snapshot_with_sandbox(
                     session_id,
@@ -95,6 +114,13 @@ impl HostWorkerResolver {
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         rebuild_unavailable_environment: bool,
     ) -> Result<(), awaken_run_ingress::Error> {
+        let requires_runtime_before_effects = matches!(
+            &directive.action,
+            awaken_session_contract::SessionRealizationAction::Stage { mcp_stages, .. }
+                if mcp_stages
+                    .iter()
+                    .any(|stage| stage.target.sandbox_stdio_target().is_some())
+        );
         awaken_session_contract::drive_session_realization(
             session_id,
             control,
@@ -103,6 +129,7 @@ impl HostWorkerResolver {
                 claim,
                 published_snapshot,
                 rebuild_unavailable_environment,
+                requires_runtime_before_effects,
             },
             &WorkerMcpEffects(host),
             directive,
@@ -291,7 +318,8 @@ mod tests {
          * the exact bound Environment before MCP stage; E2 never consult current
          * Agent publication; E3 preserve the Sandbox handle and generation; E4 a
          * cold lease-only replay without the exact snapshot fails closed; E5
-         * rebuild only when the claimed Run's explicit recovery policy permits it.
+         * rebuild only when the claimed Run's explicit recovery policy permits it;
+         * E6 no MCP effect runs when a first-use stdio stage lacks that snapshot.
          *
          * | Rule | binding | resident | snapshot | stdio | recovery | Effect |
          * |---|---|---|---|---|---|---|
@@ -301,6 +329,8 @@ mod tests {
          * | R4 | no | no | yes | no | either | ordinary resume (covered by O1) |
          * | R5 | missing | no | yes | no | rebuild | E5 |
          * | R6 | missing | no | yes | no | continuity | fail closed |
+         * | R7 | none yet | no | yes | yes | either | install publication, then stage |
+         * | R8 | none yet | no | no | yes | either | E4 + E6 |
          */
         let storage = tempfile::tempdir().expect("storage");
         let thread = "cold-frozen-environment";
@@ -360,7 +390,7 @@ mod tests {
             lease,
             action: awaken_session_contract::SessionRealizationAction::Stage {
                 prepare_session: true,
-                mcp_stages: vec![stage],
+                mcp_stages: vec![stage.clone()],
             },
         };
         let control = RecoveryControl {
@@ -396,6 +426,96 @@ mod tests {
             realizer.calls.lock().unwrap().as_slice(),
             ["stage", "publish"],
             "R1/E1"
+        );
+
+        let first_use_thread = "cold-first-use-environment";
+        let first_use_activation = test_activation(first_use_thread, "run-cold-first-use");
+        let first_use_projection = frozen_projection();
+        let first_use_stage = awaken_session_contract::StageMcpAttachment {
+            generation: awaken_session_contract::McpGenerationRef {
+                session_id: first_use_thread.into(),
+                ..stage.generation.clone()
+            },
+            realization_id: "realize-browser-first-use".into(),
+            stage_idempotency_key: "stage-browser-first-use".into(),
+            ..stage.clone()
+        };
+        let first_use_directive = awaken_session_contract::SessionRealizationDirective {
+            projection: first_use_projection.clone(),
+            lease: awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "worker-a".into(),
+                epoch: 1,
+                expires_at_unix_ms: u64::MAX,
+            },
+            action: awaken_session_contract::SessionRealizationAction::Stage {
+                prepare_session: true,
+                mcp_stages: vec![first_use_stage],
+            },
+        };
+        let first_use_host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+        );
+        let first_use_realizer = Arc::new(RecordingMcpRealizer {
+            required_runtime: Some((Arc::downgrade(&first_use_host), first_use_thread.into())),
+            ..Default::default()
+        });
+        let managed = crate::ManagedHost::new(first_use_host.clone())
+            .with_mcp_attachment_realizer(first_use_realizer.clone());
+        drop(managed);
+        HostWorkerResolver::realize_application_session(
+            &first_use_host,
+            &RecoveryControl {
+                projection: first_use_projection,
+            },
+            first_use_thread,
+            first_use_directive.clone(),
+            None,
+            Some(&first_use_activation.snapshot),
+            false,
+        )
+        .await
+        .expect("R7 first-use Environment installs publication before MCP staging");
+        assert_eq!(
+            first_use_realizer.calls.lock().unwrap().as_slice(),
+            ["stage", "publish"],
+            "R7"
+        );
+
+        let unpinned_host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
+        );
+        let unpinned_realizer = Arc::new(RecordingMcpRealizer::default());
+        let managed = crate::ManagedHost::new(unpinned_host.clone())
+            .with_mcp_attachment_realizer(unpinned_realizer.clone());
+        drop(managed);
+        let error = HostWorkerResolver::realize_application_session(
+            &unpinned_host,
+            &RecoveryControl {
+                projection: frozen_projection(),
+            },
+            first_use_thread,
+            first_use_directive,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect_err("R8 first-use stdio MCP without a publication must fail closed");
+        assert!(
+            error.to_string().contains("exact claimed Agent snapshot"),
+            "R8/E4: {error}"
+        );
+        assert!(
+            unpinned_realizer.calls.lock().unwrap().is_empty(),
+            "R8/E6: no MCP stage, publish, or drain may run"
+        );
+        assert!(
+            unpinned_host
+                .session_environment(first_use_thread)
+                .await
+                .is_none(),
+            "R8/E6: no unpinned Runtime may be installed"
         );
 
         let cold = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());

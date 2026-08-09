@@ -57,9 +57,8 @@ pub use crate::process_admin::{
     with_process_admin,
 };
 pub use acp_local_credentials::{
-    AcpLocalCredentialResolver, PreparedLocalAcp, PreparedLocalWorker, build_configured_worker,
-    local_acp_diagnostics, prepare_local_acp, prepare_local_worker,
-    registered_memory_mounter_factory,
+    AcpLocalCredentialResolver, PreparedLocalAcp, PreparedLocalWorker, local_acp_diagnostics,
+    prepare_local_acp, prepare_local_worker, registered_memory_mounter_factory,
 };
 pub use console_assets::mount as mount_console;
 pub use console_assets::mount_with_navigation as mount_console_with_navigation;
@@ -82,7 +81,6 @@ use process_stores::{
 use resource_component::ephemeral_resource_component;
 use resource_component::open_resource_component;
 use runtime_process_router::assemble_runtime_process_router;
-pub use worker_transport_security::load_request_authorizer as load_worker_request_authorizer;
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
 // constants a test / operator embedding drives — re-exported from the authoring plane.
 pub use awaken_control::{
@@ -118,7 +116,8 @@ enum PublicationModelComposition {
 struct RuntimeModelWiring {
     executor: Arc<dyn LlmExecutor>,
     model_ref: String,
-    materializer: Option<Arc<dyn awaken_runtime_host::InferenceExecutorMaterializer>>,
+    materializer:
+        Option<Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>>,
 }
 
 /// Publication policy plus a deferred runtime choice. Standalone Control uses

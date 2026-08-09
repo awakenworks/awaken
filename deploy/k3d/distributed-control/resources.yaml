@@ -6,10 +6,12 @@ kind: ConfigMap
 metadata: { name: adr71-database-init }
 data:
   00-create-databases.sql: |
-    SELECT 'CREATE DATABASE control' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'control')\gexec
-    SELECT 'CREATE DATABASE credentials' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'credentials')\gexec
-    SELECT 'CREATE DATABASE runtime' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'runtime')\gexec
-    SELECT 'CREATE DATABASE resources' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'resources')\gexec
+    SELECT 'CREATE ROLE awaken_control LOGIN PASSWORD ''adr71-control-db''' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'awaken_control')\gexec
+    SELECT 'CREATE ROLE awaken_coordinator LOGIN PASSWORD ''adr71-coordinator-db''' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'awaken_coordinator')\gexec
+    SELECT 'CREATE DATABASE control OWNER awaken_control' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'control')\gexec
+    SELECT 'CREATE DATABASE credentials OWNER awaken_control' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'credentials')\gexec
+    SELECT 'CREATE DATABASE runtime OWNER awaken_coordinator' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'runtime')\gexec
+    SELECT 'CREATE DATABASE resources OWNER awaken_coordinator' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'resources')\gexec
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -73,12 +75,12 @@ stringData:
     executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
     control_service_token_file = "/etc/awaken-auth/control-service-token"
     control_seal_key_file = "/etc/awaken-auth/seal-key"
-    catalog_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
-    credential_db = "postgres://postgres:test@postgres:5432/credentials" # awaken-allow: secret
-    config_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
-    admin_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
+    catalog_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow: secret
+    credential_db = "postgres://awaken_control:adr71-control-db@postgres:5432/credentials" # awaken-allow: secret
+    config_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow: secret
+    admin_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow: secret
     # Static Environment definitions and sandbox-policy versions are Control facts.
-    environment_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
+    environment_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow: secret
   coordinator.toml: |
     data_dir = "/var/lib/awaken/coordinator"
     bind = "0.0.0.0:3000"
@@ -86,13 +88,13 @@ stringData:
     role = "coordinator"
     no_browser = true
     identity_mode = "no-login"
-    runtime_database_url = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
+    runtime_database_url = "postgres://awaken_coordinator:adr71-coordinator-db@postgres:5432/runtime" # awaken-allow: secret
     # Two Workers expose 16 concurrent claim slots. Keep claim traffic plus
     # foreground enqueue/commit/heartbeat headroom bounded per Coordinator;
     # database capacity is sized for every owner repository across all replicas.
     postgres_max_connections = 32
-    resource_database_url = "postgres://postgres:test@postgres:5432/resources" # awaken-allow: secret
-    sessions_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
+    resource_database_url = "postgres://awaken_coordinator:adr71-coordinator-db@postgres:5432/resources" # awaken-allow: secret
+    sessions_db = "postgres://awaken_coordinator:adr71-coordinator-db@postgres:5432/runtime" # awaken-allow: secret
     executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
     control_internal_url = "http://control:3000"
     control_service_token_file = "/etc/awaken-auth/control-service-token"
@@ -287,7 +289,7 @@ spec:
           args:
             - |
               sed "s/__WORKER_ID__/${HOSTNAME}/g" /etc/awaken-template/worker.toml > /tmp/worker.toml
-              exec /usr/local/bin/awaken worker --server http://coordinator:3000 --config /tmp/worker.toml
+              exec /usr/local/bin/awaken-worker --server http://coordinator:3000 --config /tmp/worker.toml
           ports: [{ containerPort: 9090 }]
           readinessProbe:
             httpGet: { path: /readyz, port: 9090 }

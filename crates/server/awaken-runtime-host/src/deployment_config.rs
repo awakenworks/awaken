@@ -187,6 +187,21 @@ impl SandboxTier {
     }
 }
 
+impl std::str::FromStr for SandboxTier {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "local" | "none" => Ok(Self::Local),
+            "namespace" => Ok(Self::Namespace),
+            "docker" => Ok(Self::Docker),
+            "podman" => Ok(Self::Podman),
+            "k8s" | "kubernetes" => Ok(Self::K8s),
+            other => Err(format!("invalid sandbox_tier={other:?}")),
+        }
+    }
+}
+
 /// Typed operator policy for sandbox realization.
 ///
 /// This is part of the one [`DeploymentConfig`] aggregate. Runtime adapters
@@ -501,15 +516,36 @@ mod tests {
 
     #[test]
     fn sandbox_tier_default_and_container_classification_are_total() {
-        // Cause/effect inventory: omission selects Namespace; only the three
-        // image-backed variants are containers. The CLI owns string parsing, so
-        // this domain test does not maintain a second vocabulary parser.
+        /* Sandbox-tier cause/effect decision table. Causes: C1 token names an
+         * unsandboxed tier, C2 names namespace isolation, C3 names a container
+         * provider, C4 is an accepted compatibility alias, C5 is unknown.
+         * Effects: E1 the canonical typed tier; E2 container classification;
+         * E3 fail-closed parse error. Rules: T1 local/none=>Local+!E2;
+         * T2 namespace=>Namespace+!E2; T3 docker/podman/k8s=>E1+E2;
+         * T4 kubernetes=>K8s+E2; T5 unknown=>E3. Omission is owned by each
+         * composition schema and selects the domain default Namespace. */
         assert_eq!(SandboxTier::default(), SandboxTier::Namespace);
         assert!(!SandboxTier::Namespace.is_container());
         assert!(!SandboxTier::Local.is_container());
         for t in [SandboxTier::Docker, SandboxTier::Podman, SandboxTier::K8s] {
             assert!(t.is_container());
         }
+        for (token, expected) in [
+            ("local", SandboxTier::Local),
+            ("none", SandboxTier::Local),
+            ("namespace", SandboxTier::Namespace),
+            ("docker", SandboxTier::Docker),
+            ("podman", SandboxTier::Podman),
+            ("k8s", SandboxTier::K8s),
+            ("kubernetes", SandboxTier::K8s),
+        ] {
+            assert_eq!(token.parse(), Ok(expected), "canonical parse for {token}");
+        }
+        assert_eq!(
+            "vm".parse::<SandboxTier>(),
+            Err("invalid sandbox_tier=\"vm\"".into()),
+            "T5/E3"
+        );
     }
 
     /// Sandbox-network evidence graph:

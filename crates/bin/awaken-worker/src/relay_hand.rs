@@ -1,4 +1,4 @@
-//! Outer-layer binding from a segregated hand channel to the neutral tool executor.
+//! Worker-owned binding from a segregated Hand channel to the neutral tool port.
 
 use std::sync::Arc;
 
@@ -20,7 +20,7 @@ impl awaken_runtime_host::HandExecutorFactory for RelayHandExecutorFactory {
     }
 }
 
-/// Build the production hand-channel adapter injected into the protocol-neutral host.
+/// Build the canonical execution-plane Hand adapter.
 #[must_use]
 pub fn relay_hand_executor_factory() -> Arc<dyn awaken_runtime_host::HandExecutorFactory> {
     Arc::new(RelayHandExecutorFactory)
@@ -46,8 +46,11 @@ mod tests {
         }
     }
 
+    /// Cause/effect rule: a Hand channel plus operation scope produces exactly
+    /// one relay-backed ToolExecutor; an invocation crosses that channel and
+    /// returns the Hand result without a Coordinator-owned alternate adapter.
     #[tokio::test]
-    async fn factory_binds_the_existing_relay_without_reimplementing_its_wire() {
+    async fn factory_binds_the_canonical_relay() {
         let (brain, hand) = tokio::io::duplex(64 * 1024);
         tokio::spawn(awaken_tool_relay::serve_hand(
             hand,

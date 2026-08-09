@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use awaken_provider_genai::{AdapterKind, GenaiExecutor};
+use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resolved::ModelProvisioning;
-use awaken_runtime_host::InferenceExecutorMaterializer;
 use axum::Router;
 
 use super::{

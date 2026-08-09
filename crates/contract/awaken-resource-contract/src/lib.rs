@@ -72,6 +72,16 @@ pub fn content_id(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
 }
 
+/// Stable SHA-256 used by the Memory CAS contract. Keeping the digest beside
+/// the value/port types prevents execution and storage adapters from carrying
+/// competing implementations.
+#[must_use]
+pub fn memory_sha256_hex(content: &str) -> String {
+    use sha2::{Digest as _, Sha256};
+
+    format!("{:x}", Sha256::digest(content.as_bytes()))
+}
+
 /// Stable, database-portable identity for one Sandbox artifact harvest.
 /// Length framing prevents tuple ambiguity; the digest keeps internal tuple
 /// components and PostgreSQL-forbidden separators out of persistence.
@@ -343,6 +353,27 @@ pub struct SkillBundleFile {
     pub executable: bool,
 }
 
+/// Reduce a Skill name/id to the single canonical filesystem-safe stem used by
+/// persistence and execution materializers.
+#[must_use]
+pub fn skill_stem(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() || character == '_' {
+            out.push(character);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.truncate(120);
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "skill".to_string()
+    } else {
+        trimmed
+    }
+}
+
 /// One immutable version of a Skill bundle. The version freezes authored Skill
 /// content; it contains no principal, role, policy, API key, or runtime host path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -511,6 +542,28 @@ pub const MAX_MEMORY_BYTES: usize = 102_400;
 pub const MAX_MEMORIES_PER_STORE: usize = 2_000;
 /// Hard cap on a memory path.
 pub const MAX_PATH_BYTES: usize = 1024;
+
+/// Reduce an opaque memory-store id to one bounded filesystem-safe stem.
+/// Storage and Worker-side mount adapters share this implementation so path
+/// safety cannot drift across the HTTP boundary.
+#[must_use]
+pub fn memory_store_stem(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() || character == '_' || character == '-' {
+            out.push(character);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.truncate(120);
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "memstore".to_string()
+    } else {
+        trimmed
+    }
+}
 
 /// One path-addressed memory. `content` is present on `get`/`create`/`update`,
 /// absent on listings. `created`/`updated` are Unix-epoch nanoseconds so a FUSE
@@ -688,4 +741,21 @@ pub trait MemoryRepository: Send + Sync {
     /// The lifecycle reclaimer calls this only after tombstone, retention,
     /// activation and extraction guards pass. Repeated calls return zero counts.
     async fn purge_store(&self, store: &str) -> Result<MemoryPurgeSummary, MemErr>;
+}
+
+#[cfg(test)]
+mod memory_contract_tests {
+    use super::memory_store_stem;
+
+    /// Cause/effect rules: safe ASCII is preserved; each unsafe run collapses
+    /// to one dash; edge dashes are trimmed; an all-unsafe id becomes the fixed
+    /// non-empty stem; output is bounded to 120 bytes. Store and mount adapters
+    /// both call this contract owner, so these cases cover both boundaries.
+    #[test]
+    fn memory_store_stem_path_safety_rules() {
+        assert_eq!(memory_store_stem("store_A-1"), "store_A-1");
+        assert_eq!(memory_store_stem("../tenant///memory"), "tenant-memory");
+        assert_eq!(memory_store_stem("///"), "memstore");
+        assert_eq!(memory_store_stem(&"a".repeat(200)).len(), 120);
+    }
 }

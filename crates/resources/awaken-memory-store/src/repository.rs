@@ -27,7 +27,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(any(test, feature = "test-support"))]
 use async_trait::async_trait;
-use sha2::{Digest, Sha256};
 
 // The path-addressed memory port (`MemoryRepository`), its value types (`Memory`,
 // `MemoryEntry`), the error (`MemErr`), and the size caps live in the port-only
@@ -38,13 +37,7 @@ pub use awaken_resource_contract::{
     MemoryPurgeSummary, MemoryRepository, MemoryVersion, MemoryVersionOperation,
 };
 
-/// Lowercase hex SHA-256 of `content` — the CAS token (Anthropic wire is sha256).
-#[must_use]
-pub fn sha256_hex(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    format!("{:x}", hasher.finalize())
-}
+pub use awaken_resource_contract::memory_sha256_hex as sha256_hex;
 
 #[cfg(any(
     test,

@@ -7,10 +7,10 @@
 
 use std::sync::Arc;
 
-use awaken_memory_store::{MemErr, Memory, MemoryRepository};
 use awaken_resource_contract::{
-    ConfigVersion, MemoryMaterializationReferenceEncoder, MemoryMaterializationReferenceError,
-    ResourceAccess, ResourceBindingValidator,
+    ConfigVersion, MemErr, Memory, MemoryMaterializationReferenceEncoder,
+    MemoryMaterializationReferenceError, MemoryRepository, ResourceAccess,
+    ResourceBindingValidator,
 };
 use awaken_run_ingress_contract::{DispatchQueue, RunClaim};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
@@ -517,13 +517,13 @@ impl MemoryRepository for HttpMemoryRepository {
         &self,
         store: &str,
         prefix: &str,
-    ) -> Result<Vec<awaken_memory_store::MemoryEntry>, MemErr> {
+    ) -> Result<Vec<awaken_resource_contract::MemoryEntry>, MemErr> {
         let mut entries = self
             .snapshot_heads(store)
             .await?
             .into_iter()
             .filter(|memory| prefix.is_empty() || prefix == "/" || memory.path.starts_with(prefix))
-            .map(|memory| awaken_memory_store::MemoryEntry {
+            .map(|memory| awaken_resource_contract::MemoryEntry {
                 id: memory.id,
                 path: memory.path,
                 content_sha256: memory.content_sha256,
@@ -642,7 +642,7 @@ impl MemoryRepository for HttpMemoryRepository {
     async fn list_versions(
         &self,
         _store: &str,
-    ) -> Result<Vec<awaken_memory_store::MemoryVersion>, MemErr> {
+    ) -> Result<Vec<awaken_resource_contract::MemoryVersion>, MemErr> {
         Err(MemErr::Storage(
             "Worker Memory boundary does not expose history".into(),
         ))
@@ -652,7 +652,7 @@ impl MemoryRepository for HttpMemoryRepository {
         &self,
         _store: &str,
         _version_id: &str,
-    ) -> Result<Option<awaken_memory_store::MemoryVersion>, MemErr> {
+    ) -> Result<Option<awaken_resource_contract::MemoryVersion>, MemErr> {
         Err(MemErr::Storage(
             "Worker Memory boundary does not expose redaction".into(),
         ))
@@ -661,7 +661,7 @@ impl MemoryRepository for HttpMemoryRepository {
     async fn purge_store(
         &self,
         _store: &str,
-    ) -> Result<awaken_memory_store::MemoryPurgeSummary, MemErr> {
+    ) -> Result<awaken_resource_contract::MemoryPurgeSummary, MemErr> {
         Err(MemErr::Storage(
             "Worker Memory boundary does not expose lifecycle purge".into(),
         ))

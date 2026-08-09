@@ -4,6 +4,7 @@
 
 pub use awaken_run_ingress_contract::dispatch::*;
 
+#[cfg(feature = "durable")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExactClaimMode {
     Runnable,
@@ -13,11 +14,13 @@ pub(crate) enum ExactClaimMode {
 /// Canonical host-side normalization for every pending/outbox ingress path.
 /// Persistent backends store signed BIGINT values, so all implementations use
 /// the same bounded representation before idempotency comparisons.
+#[cfg(feature = "durable")]
 pub(crate) fn normalize_pending_millis(mut input: PendingInput) -> PendingInput {
     input.available_at_ms = input.available_at_ms.map(crate::clock::normalize_millis);
     input
 }
 
+#[cfg(feature = "durable")]
 pub(crate) fn installed_worker_credential_capabilities(
     worker: &crate::WorkerSnapshot,
 ) -> Result<awaken_runtime_contract::CredentialRealizationCapabilities, DispatchError> {

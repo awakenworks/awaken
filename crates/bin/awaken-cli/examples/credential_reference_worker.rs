@@ -6,10 +6,10 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
 };
-use awaken_runtime_host::InferenceExecutorMaterializer;
 
 struct GrantExecutor {
     reference: String,
