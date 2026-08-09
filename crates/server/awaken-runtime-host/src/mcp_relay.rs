@@ -30,6 +30,7 @@ use crate::mcp::McpTransportMaterial;
 struct Route {
     url: String,
     bearer: Option<awaken_agent_contract::RedactedString>,
+    refresh: Option<Box<crate::mcp::McpRefreshMaterial>>,
     /// Opaque sandbox-held capability. It is scoped by the surrounding route
     /// key and never persisted as Session desired state.
     capability: String,
@@ -99,6 +100,7 @@ impl McpRelay {
             Route {
                 url: url.to_string(),
                 bearer: server.bearer().cloned(),
+                refresh: server.refresh(),
                 capability: uuid::Uuid::new_v4().simple().to_string(),
                 lease_expires_at_unix_ms: generation.lease_expires_at_unix_ms,
             },
@@ -123,6 +125,7 @@ impl McpRelay {
         };
         route.url = url.to_string();
         route.bearer = server.bearer().cloned();
+        route.refresh = server.refresh();
         route.lease_expires_at_unix_ms = generation.lease_expires_at_unix_ms;
         true
     }
@@ -179,12 +182,8 @@ async fn forward(
     Path((session, attachment, generation, capability)): Path<(String, String, u64, String)>,
     req: Request,
 ) -> Response {
-    let Some(route) = routes
-        .lock()
-        .unwrap()
-        .get(&(session, attachment, generation))
-        .cloned()
-    else {
+    let route_key = (session, attachment, generation);
+    let Some(route) = routes.lock().unwrap().get(&route_key).cloned() else {
         return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
     };
     let now_unix_ms = std::time::SystemTime::now()
@@ -209,42 +208,86 @@ async fn forward(
     let method = reqwest::Method::from_bytes(parts.method.as_str().as_bytes())
         .unwrap_or(reqwest::Method::POST);
     let client = reqwest::Client::new();
-    let mut rb = client.request(method, &route.url).body(bytes.to_vec());
-    // Pass every header EXCEPT workload-supplied Authorization and the loopback Host.
-    for (k, v) in parts.headers.iter() {
-        if k == header::AUTHORIZATION || k == header::HOST {
-            continue;
-        }
-        if let Ok(vs) = v.to_str() {
-            rb = rb.header(k.as_str(), vs);
-        }
-    }
-    // Inject the real credential host-side — it never entered the sandbox.
-    if let Some(bearer) = &route.bearer {
-        rb = rb.bearer_auth(bearer.expose_secret());
-    }
-    match rb.send().await {
-        Ok(resp) => {
-            let status =
-                StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-            let content_type = resp
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(String::from);
-            // Stream the response body straight through — MCP Streamable HTTP replies as an
-            // SSE stream (`text/event-stream`), so buffering would stall long-poll notifications.
-            let mut out = Response::builder().status(status);
-            if let Some(ct) = content_type {
-                out = out.header(header::CONTENT_TYPE, ct);
+    let send = |route: &Route| {
+        let mut request = client
+            .request(method.clone(), &route.url)
+            .body(bytes.to_vec());
+        // Pass every header EXCEPT workload-supplied Authorization and the loopback Host.
+        for (name, value) in &parts.headers {
+            if name == header::AUTHORIZATION || name == header::HOST {
+                continue;
             }
-            out.body(Body::from_stream(resp.bytes_stream()))
-                .unwrap_or_else(|_| {
-                    (StatusCode::BAD_GATEWAY, "relay response build").into_response()
-                })
+            if let Ok(value) = value.to_str() {
+                request = request.header(name.as_str(), value);
+            }
         }
-        Err(e) => (StatusCode::BAD_GATEWAY, format!("relay upstream: {e}")).into_response(),
+        // Inject the real credential host-side — it never entered the sandbox.
+        if let Some(bearer) = &route.bearer {
+            request = request.bearer_auth(bearer.expose_secret());
+        }
+        request
+    };
+    let mut upstream = match send(&route).send().await {
+        Ok(response) => response,
+        Err(error) => {
+            return (StatusCode::BAD_GATEWAY, format!("relay upstream: {error}")).into_response();
+        }
+    };
+    if matches!(upstream.status().as_u16(), 401 | 403)
+        && let Some(refresh) = route.refresh.as_ref()
+    {
+        let challenge = awaken_ext_mcp::AuthChallenge {
+            status: upstream.status().as_u16(),
+            www_authenticate: upstream
+                .headers()
+                .get(reqwest::header::WWW_AUTHENTICATE)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+        };
+        if let Some(awaken_ext_mcp::Credential::Bearer(bearer)) =
+            refresh.0.refresh(&challenge).await
+        {
+            let refreshed = {
+                let mut routes = routes.lock().unwrap();
+                let Some(current) = routes.get_mut(&route_key) else {
+                    return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
+                };
+                if current.capability != capability
+                    || !awaken_session_contract::realization_lease_is_live_at(
+                        current.lease_expires_at_unix_ms,
+                        now_unix_ms,
+                    )
+                {
+                    return (StatusCode::NOT_FOUND, "unknown relay route").into_response();
+                }
+                current.bearer = Some(awaken_agent_contract::RedactedString::from(bearer));
+                current.clone()
+            };
+            upstream = match send(&refreshed).send().await {
+                Ok(response) => response,
+                Err(error) => {
+                    return (StatusCode::BAD_GATEWAY, format!("relay upstream: {error}"))
+                        .into_response();
+                }
+            };
+        }
     }
+    let status =
+        StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let content_type = upstream
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(String::from);
+    // Stream the response body straight through — MCP Streamable HTTP replies as an
+    // SSE stream (`text/event-stream`), so buffering would stall long-poll notifications.
+    let mut response = Response::builder().status(status);
+    if let Some(content_type) = content_type {
+        response = response.header(header::CONTENT_TYPE, content_type);
+    }
+    response
+        .body(Body::from_stream(upstream.bytes_stream()))
+        .unwrap_or_else(|_| (StatusCode::BAD_GATEWAY, "relay response build").into_response())
 }
 
 #[cfg(test)]
@@ -541,6 +584,69 @@ mod tests {
             seen.iter()
                 .all(|(_, bearer)| bearer == "Bearer relay-only-secret"),
             "every MCP operation is authenticated by the relay: {seen:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_reloads_bearer_once_after_auth_challenge() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct ReloadBearer {
+            calls: Arc<AtomicUsize>,
+        }
+
+        #[async_trait::async_trait]
+        impl awaken_ext_mcp::CredentialRefresher for ReloadBearer {
+            async fn refresh(
+                &self,
+                _challenge: &awaken_ext_mcp::AuthChallenge,
+            ) -> Option<awaken_ext_mcp::Credential> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Some(awaken_ext_mcp::Credential::Bearer("current-token".into()))
+            }
+        }
+
+        let (upstream, _) = crate::test_mcp::start(Some("Bearer current-token")).await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let material = McpTransportMaterial {
+            name: "rotating".into(),
+            prompts_as_skills: false,
+            transport: crate::mcp::McpTransportMaterialKind::Http {
+                url: upstream,
+                bearer: Some(awaken_agent_contract::RedactedString::from(
+                    "expired-token".to_string(),
+                )),
+                refresh: Some(Box::new(crate::mcp::McpRefreshMaterial(Arc::new(
+                    ReloadBearer {
+                        calls: calls.clone(),
+                    },
+                )))),
+            },
+        };
+        let relay = McpRelay::start().await.unwrap();
+        let generation = generation("session-refresh", "mcp-rotating", 1);
+        relay.set_route(&generation, &material);
+
+        let transport = HttpTransportBuilder::new(relay.route_url(&generation).unwrap())
+            .credential(Credential::None)
+            .connect()
+            .await
+            .expect("the relay must reload and retry the challenged request");
+        transport
+            .list_tools()
+            .await
+            .expect("the refreshed route remains usable");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            relay
+                .routes
+                .lock()
+                .unwrap()
+                .get(&route_key(&generation))
+                .and_then(|route| route.bearer.as_ref())
+                .map(awaken_agent_contract::RedactedString::expose_secret),
+            Some("current-token")
         );
     }
 

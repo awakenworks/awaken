@@ -70,6 +70,10 @@ impl McpTransportMaterial {
     pub(crate) fn http_url(&self) -> Option<&str> {
         self.http().map(|(url, _, _)| url)
     }
+
+    pub(crate) fn refresh(&self) -> Option<Box<McpRefreshMaterial>> {
+        self.http().and_then(|(_, _, refresh)| refresh.clone())
+    }
 }
 
 /// Project private Worker material to ACP configuration. A real bearer is never
