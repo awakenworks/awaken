@@ -36,6 +36,8 @@ use crate::types::{AiSdkChatRequest, UIStreamEvent, attach_usage};
 
 type Runtime = Arc<dyn RunApplication>;
 
+const STREAM_KEEP_ALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// The AI SDK v6 header `DefaultChatTransport` uses to identify the stream format.
 const AI_SDK_STREAM_HEADER: &str = "x-vercel-ai-ui-message-stream";
 
@@ -156,6 +158,16 @@ fn stream_turn(
     agent: Option<String>,
     messages: Vec<Message>,
 ) -> Response {
+    stream_turn_with_keep_alive(rt, thread, agent, messages, STREAM_KEEP_ALIVE_INTERVAL)
+}
+
+fn stream_turn_with_keep_alive(
+    rt: Runtime,
+    thread: String,
+    agent: Option<String>,
+    messages: Vec<Message>,
+    keep_alive_interval: std::time::Duration,
+) -> Response {
     let (out_tx, out_rx) = mpsc::unbounded_channel::<String>();
     // Kept for the post-turn usage read (the turn future consumes `rt`/`thread`).
     let rt_usage = Arc::clone(&rt);
@@ -175,26 +187,53 @@ fn stream_turn(
         // Drive the turn on its own task so live events drain concurrently. The
         // sink lives inside that future; when the turn ends it drops, closing
         // `live_rx` and ending the drain loop.
-        let turn =
+        let mut turn =
             tokio::spawn(async move { rt.run_streaming(&thread, agent, messages, sink).await });
-        while let Some(event) = live_rx.recv().await {
-            let wires = match &event {
-                AgentEvent::Delta(delta) => transcoder.delta(delta),
-                AgentEvent::Fact(fact @ Fact::RunStarted) => transcoder.fact(fact),
-                AgentEvent::Fact(_) => Vec::new(),
-            };
-            for wire in wires {
-                if out_tx.send(sse_line(&wire)).is_err() {
-                    // The client hung up: cancel the in-flight turn so it ends
-                    // promptly instead of running to completion detached (a token
-                    // leak). The cooperative cancel lets the run commit cleanly, so
-                    // the spawned turn finishes on its own — no hard abort needed.
-                    let _ = rt_usage.interrupt(&thread_usage).await;
-                    return;
+        let mut keep_alive = tokio::time::interval(keep_alive_interval);
+        keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut disconnected = false;
+        let mut live_closed = false;
+        let mut turn_result = None;
+        'live: loop {
+            if live_closed && turn_result.is_some() {
+                break;
+            }
+            tokio::select! {
+                event = live_rx.recv(), if !live_closed => match event {
+                    Some(event) => {
+                    let wires = match &event {
+                        AgentEvent::Delta(delta) => transcoder.delta(delta),
+                        AgentEvent::Fact(fact @ Fact::RunStarted) => transcoder.fact(fact),
+                        AgentEvent::Fact(_) => Vec::new(),
+                    };
+                    for wire in wires {
+                        if out_tx.send(sse_line(&wire)).is_err() {
+                            disconnected = true;
+                            break 'live;
+                        }
+                    }
+                    }
+                    None => live_closed = true,
+                },
+                result = &mut turn, if turn_result.is_none() => {
+                    turn_result = Some(result);
+                },
+                _ = keep_alive.tick() => {
+                    if out_tx.send(": keep-alive\n\n".to_string()).is_err() {
+                        disconnected = true;
+                        break;
+                    }
                 }
             }
         }
-        let mut close = match turn.await {
+        if disconnected {
+            // The client hung up: cancel the in-flight turn so it ends promptly
+            // instead of running to completion detached (a token leak). The
+            // cooperative cancel lets the run commit cleanly; no hard abort needed.
+            let _ = rt_usage.interrupt(&thread_usage).await;
+            return;
+        }
+        let mut close = match turn_result.expect("turn completes before stream closes") {
             Ok(Ok(outcome)) => transcoder.complete(&outcome),
             Ok(Err(err)) => transcoder.fail(driver_error_message(err)),
             Err(_) => transcoder.fail("turn task cancelled"),
@@ -301,7 +340,7 @@ async fn thread_messages(
 }
 
 /// The AI SDK UI Message Stream response headers (SSE + the transport marker).
-fn sse_headers() -> [(header::HeaderName, HeaderValue); 2] {
+fn sse_headers() -> [(header::HeaderName, HeaderValue); 3] {
     [
         (
             header::CONTENT_TYPE,
@@ -310,6 +349,10 @@ fn sse_headers() -> [(header::HeaderName, HeaderValue); 2] {
         (
             header::HeaderName::from_static(AI_SDK_STREAM_HEADER),
             HeaderValue::from_static("v1"),
+        ),
+        (
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache, no-transform"),
         ),
     ]
 }
@@ -359,6 +402,94 @@ fn sse_error(err: RunApplicationError) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /* Idle-stream cause/effect decision table. Causes: C1 the run is live but
+     * its best-effort AgentEvent sink closes before the authoritative turn;
+     * C2 the authoritative turn later completes; C3 the client receiver closes.
+     * Effects: E1 keep emitting protocol-neutral SSE comments after C1 without
+     * inventing UIMessage events; E2 append the committed terminal projection
+     * after C2; E3 the existing send-failure path interrupts a detached run.
+     * Rules: K1=C1&&!C2=>E1; K2=C1+C2=>E1+E2; K3=C3=>E3. The disconnect
+     * integration suite owns E3. */
+    #[tokio::test]
+    async fn idle_turn_outlives_its_closed_detail_sink_without_closing_the_sse() {
+        struct DelayedSilent;
+        #[async_trait::async_trait]
+        impl RunApplication for DelayedSilent {
+            async fn run(
+                &self,
+                _thread: &str,
+                _agent: Option<String>,
+                _messages: Vec<Message>,
+            ) -> Result<StepOutcome, RunApplicationError> {
+                unreachable!()
+            }
+
+            async fn run_streaming(
+                &self,
+                _thread: &str,
+                _agent: Option<String>,
+                _messages: Vec<Message>,
+                _sink: Arc<dyn StreamSink>,
+            ) -> Result<StepOutcome, RunApplicationError> {
+                tokio::time::sleep(std::time::Duration::from_millis(18)).await;
+                Ok(StepOutcome::ended(
+                    vec![Message::text(
+                        awaken_agent_contract::agent::message::Id("a1".into()),
+                        awaken_agent_contract::agent::message::Role::Assistant,
+                        "done",
+                    )],
+                    awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+                    false,
+                    false,
+                ))
+            }
+
+            async fn resume(
+                &self,
+                _thread: &str,
+                _tool_use_id: &str,
+                _resume: RunResume,
+            ) -> Result<StepOutcome, RunApplicationError> {
+                unreachable!()
+            }
+
+            async fn pending(&self, _thread: &str) -> Option<Pending> {
+                None
+            }
+
+            async fn history(&self, _thread: &str) -> Vec<Message> {
+                Vec::new()
+            }
+
+            fn model(&self) -> String {
+                "delayed-silent".into()
+            }
+        }
+
+        let response = stream_turn_with_keep_alive(
+            Arc::new(DelayedSilent),
+            "thread-1".into(),
+            None,
+            vec![Message::text(
+                awaken_agent_contract::agent::message::Id("u1".into()),
+                awaken_agent_contract::agent::message::Role::User,
+                "go",
+            )],
+            std::time::Duration::from_millis(5),
+        );
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-cache, no-transform"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.matches(": keep-alive\n\n").count() >= 3, "{body}");
+        assert!(body.contains("\"type\":\"text-delta\""), "{body}");
+        assert!(body.contains("\"type\":\"finish\""), "{body}");
+    }
 
     fn pending(client_executed: bool) -> Pending {
         Pending {
