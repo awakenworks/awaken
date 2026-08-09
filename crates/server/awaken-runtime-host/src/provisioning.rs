@@ -102,33 +102,6 @@ pub(crate) fn sandbox_requirements(
     pc::SandboxRequirements::from_spec(&spec, opaque_process)
 }
 
-/// Serialize the Session-domain resource manifest into the dispatch context's
-/// opaque envelope. This one ACL keeps durable ingress independent of Session
-/// vocabulary while preserving a lossless, secret-free payload.
-pub(crate) fn encode_session_resource_envelope(
-    manifest: &awaken_session_contract::SessionResourceManifest,
-) -> Result<awaken_run_ingress::SessionResourceEnvelope, serde_json::Error> {
-    Ok(awaken_run_ingress::SessionResourceEnvelope::at_revision(
-        manifest.workspace_id.clone(),
-        manifest.revision,
-        serde_json::to_string(&manifest.resources)?,
-    ))
-}
-
-/// Decode the dispatch-neutral envelope back into the Session contract before
-/// resource validation or sandbox creation.
-pub(crate) fn decode_session_resource_envelope(
-    envelope: &awaken_run_ingress::SessionResourceEnvelope,
-) -> Result<awaken_session_contract::SessionResourceManifest, serde_json::Error> {
-    Ok(
-        awaken_session_contract::SessionResourceManifest::at_revision(
-            envelope.workspace_id.clone(),
-            envelope.resource_revision,
-            serde_json::from_str(&envelope.resolved_resources_json)?,
-        ),
-    )
-}
-
 #[derive(serde::Serialize, serde::Deserialize)]
 struct DispatchedSessionRuntimeProjection {
     environment: awaken_session_contract::EnvironmentSnapshot,

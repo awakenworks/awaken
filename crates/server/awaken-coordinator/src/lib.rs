@@ -618,7 +618,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
     routing: ManagedRoutingExtensions,
 ) -> Result<
     (Router, Arc<awaken_dream_application::DreamApplication>),
-    awaken_runtime_host::RegisteredWorkerTransportBuildError,
+    awaken_coordinator_runtime::RegisteredWorkerTransportBuildError,
 > {
     mount_with_managed_over_and_models(
         host,
@@ -667,7 +667,7 @@ fn mount_with_managed_over_and_models(
     routing: ManagedRoutingExtensions,
 ) -> Result<
     (Router, Arc<awaken_dream_application::DreamApplication>),
-    awaken_runtime_host::RegisteredWorkerTransportBuildError,
+    awaken_coordinator_runtime::RegisteredWorkerTransportBuildError,
 > {
     let ManagedRoutingExtensions {
         resource_management_router,
@@ -775,7 +775,7 @@ fn mount_with_managed_over_and_models(
     let durable_ops = durable_ops_router(host.clone());
     // The Worker-facing cross-node seam: a dispatch-store-isolated Worker claims/settles runs
     // over the dispatch transport and pushes committed facts to the commit ingest.
-    let worker_transport = awaken_runtime_host::registered_worker_transport_router(
+    let worker_transport = awaken_coordinator_runtime::registered_worker_transport_router(
         host.clone(),
         worker_directory,
         worker_placement::shared_worker_placement_policy(),

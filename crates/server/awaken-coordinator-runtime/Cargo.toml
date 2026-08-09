@@ -7,20 +7,38 @@ license.workspace = true
 [package.metadata.awaken]
 context = "coordinator"
 layer = "interface"
-authority = "durable-session-operations"
+authority = "coordinator-runtime-http"
 
 [dependencies]
 awaken-agent-contract.workspace = true
+awaken-resource-contract.workspace = true
+awaken-run-ingress.workspace = true
+awaken-runtime-contract.workspace = true
 awaken-runtime.workspace = true
 awaken-runtime-host.workspace = true
+awaken-session-contract.workspace = true
+awaken-store-fs.workspace = true
+awaken-worker-transport-security.workspace = true
+async-trait.workspace = true
 axum.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+thiserror.workspace = true
+
+[features]
+test-support = ["awaken-runtime-host/test-support"]
 
 [dev-dependencies]
 awaken-run-ingress = { workspace = true, features = ["test-support"] }
 awaken-runtime-contract.workspace = true
 awaken-runtime-host = { workspace = true, features = ["test-support"] }
+awaken-store-inmem.workspace = true
+awaken-store-postgres.workspace = true
+awaken-worker-runtime.workspace = true
 async-trait.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+tempfile = "3"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 

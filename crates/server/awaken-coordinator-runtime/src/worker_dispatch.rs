@@ -17,29 +17,24 @@ use serde_json::{Value, json};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
-use awaken_agent_contract::thread::read::recovery::{
-    RecoveryError, RunRecoverySnapshot, RunRecoverySource,
-};
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_run_ingress::{
     AnyDispatchStore, BindSandboxRequest as BindSandboxReq, CheckpointRequest as CheckpointReq,
     ClaimNewRunRequest as ClaimNewRunReq, ClaimRunRequest as ClaimRunReq,
-    ClaimWorkerRequest as ClaimWorkerReq, ClaimedStreamPublisher, CompletionSink,
+    ClaimWorkerRequest as ClaimWorkerReq, CompletionSink,
     CredentialRealizationRequest as CredentialRealizationReq,
-    DeliverAndClaimRequest as DeliverAndClaimReq, Dispatch, DispatchQueue,
-    EnqueueRequest as EnqueueReq, HeartbeatWorkerRequest as HeartbeatWorkerReq, PlacementPolicy,
-    RecoveryRequest as RecoveryReq, RegisterWorkerRequest as RegisterWorkerReq,
-    RenewRequest as RenewReq, RunClaim, SettleRequest as SettleReq,
-    StreamEventRequest as StreamEventReq, WorkerDirectory, WorkerIdentity,
-    WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot,
+    DeliverAndClaimRequest as DeliverAndClaimReq, DispatchQueue, EnqueueRequest as EnqueueReq,
+    HeartbeatWorkerRequest as HeartbeatWorkerReq, PlacementPolicy, RecoveryRequest as RecoveryReq,
+    RegisterWorkerRequest as RegisterWorkerReq, RenewRequest as RenewReq, RunClaim,
+    SettleRequest as SettleReq, StreamEventRequest as StreamEventReq, WorkerDirectory,
+    WorkerIdentity, WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot,
 };
 
-use crate::host::{HostError, SharedHost};
-use crate::worker_http::respond;
-use awaken_worker_runtime::HttpDispatchQueue;
+use awaken_runtime_host::{HostError, SharedHost, respond_host_http as respond};
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, SystemWorkerClock, VerifiedWorkerContext,
-    WorkerClock, WorkerLeasePolicy, WorkerRequestAuthenticator, WorkerUpstream,
-    authenticate_worker_request, verify_current_worker_identity, verify_worker_identity,
+    WorkerClock, WorkerLeasePolicy, WorkerRequestAuthenticator, authenticate_worker_request,
+    verify_current_worker_identity, verify_worker_identity,
 };
 
 /// Startup failure while assembling the one registered-Worker transport.
@@ -58,35 +53,6 @@ pub enum RegisteredWorkerTransportBuildError {
     MissingCheckpointAuthority,
 }
 
-/// Build the database-less worker's dispatch store from the same authenticated
-/// upstream configuration used by its commit clients.
-pub fn worker_dispatch_store_with_upstream(
-    upstream: &WorkerUpstream,
-    identity: WorkerIdentity,
-) -> Arc<AnyDispatchStore> {
-    worker_transports_with_upstream(upstream, identity).0
-}
-
-/// Build the database-less Worker's one shared authenticated transport instance.
-/// Dispatch and best-effort live progress are two ports over the same client,
-/// identity, authorizer, and Coordinator origin; neither reimplements the wire.
-pub fn worker_transports_with_upstream(
-    upstream: &WorkerUpstream,
-    identity: WorkerIdentity,
-) -> (Arc<AnyDispatchStore>, Arc<dyn ClaimedStreamPublisher>) {
-    let transport = Arc::new(
-        HttpDispatchQueue::new(upstream.base_url(), identity)
-            .with_client(upstream.client().clone())
-            .with_request_authorizer(upstream.request_authorizer()),
-    );
-    (
-        Arc::new(AnyDispatchStore::from_dispatch(
-            transport.clone() as Arc<dyn Dispatch>
-        )),
-        transport as Arc<dyn ClaimedStreamPublisher>,
-    )
-}
-
 /// Explicit application service mounted by the worker HTTP adapter.
 pub struct WorkerDispatchService {
     dispatch: Arc<dyn DispatchQueue>,
@@ -103,6 +69,7 @@ pub struct WorkerDispatchService {
     application_session_control:
         Option<Arc<dyn awaken_session_contract::ApplicationSessionControl>>,
     local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
+    max_attempts: u64,
 }
 
 impl WorkerDispatchService {
@@ -127,6 +94,7 @@ impl WorkerDispatchService {
             stream_sink: None,
             application_session_control: None,
             local_credential_capabilities: Default::default(),
+            max_attempts: 5,
         }
     }
 
@@ -195,6 +163,15 @@ impl WorkerDispatchService {
         capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Self {
         self.local_credential_capabilities = capabilities;
+        self
+    }
+
+    /// Set the control-side crash-retry budget enforced immediately before
+    /// every worker claim. The control plane, not the remote worker, owns this
+    /// scheduling policy.
+    #[must_use]
+    pub fn with_max_attempts(mut self, max_attempts: u64) -> Self {
+        self.max_attempts = max_attempts.max(1);
         self
     }
 
@@ -280,9 +257,9 @@ fn registered_dispatch_router(
     application_session_control: Arc<dyn awaken_session_contract::ApplicationSessionControl>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
 ) -> Router {
-    let completion = host.completion.clone() as Arc<dyn CompletionSink>;
-    let stream_sink = host.completion.clone() as Arc<dyn StreamSink>;
-    let recovery: Arc<dyn RunRecoverySource> = Arc::new(HostRunRecoverySource(host));
+    let completion = host.worker_completion_sink();
+    let stream_sink = host.worker_stream_sink();
+    let recovery = host.worker_recovery_source();
     dispatch_transport_router_with_service(Arc::new(
         WorkerDispatchService::new(
             dispatch,
@@ -335,23 +312,25 @@ pub fn registered_worker_transport_router(
         application_session_control,
         authenticator.clone(),
     );
-    let file_content = crate::worker_file_content_router(Arc::new(
-        crate::WorkerFileContentService::new(
-            host.file_content_source.clone(),
+    let file_content = awaken_runtime_host::worker_file_content_router(Arc::new(
+        awaken_runtime_host::WorkerFileContentService::new(
+            host.worker_file_content_source(),
             dispatch.clone() as Arc<dyn DispatchQueue>,
             authenticator.clone(),
         )
         .with_worker_directory(directory.clone()),
     ));
-    let memory = crate::worker_memory_router(Arc::new(crate::WorkerMemoryService::new(
-        host.memory_repository(),
-        resource_validator.clone(),
-        dispatch.clone() as Arc<dyn DispatchQueue>,
-        authenticator.clone(),
-        directory.clone(),
-    )));
-    let repositories = crate::worker_repository_binding_router(Arc::new(
-        crate::WorkerRepositoryBindingService::new(
+    let memory = awaken_runtime_host::worker_memory_router(Arc::new(
+        awaken_runtime_host::WorkerMemoryService::new(
+            host.memory_repository(),
+            resource_validator.clone(),
+            dispatch.clone() as Arc<dyn DispatchQueue>,
+            authenticator.clone(),
+            directory.clone(),
+        ),
+    ));
+    let repositories = awaken_runtime_host::worker_repository_binding_router(Arc::new(
+        awaken_runtime_host::WorkerRepositoryBindingService::new(
             resource_validator,
             dispatch.clone() as Arc<dyn DispatchQueue>,
             authenticator.clone(),
@@ -359,16 +338,16 @@ pub fn registered_worker_transport_router(
         .with_worker_directory(directory.clone()),
     ));
     let skills = host.skill_store().map(|store| {
-        crate::worker_skill_bundle_router(Arc::new(
-            crate::WorkerSkillBundleService::new(
-                Arc::new(crate::StoreSkillBundleSource::new(store)),
+        awaken_runtime_host::worker_skill_bundle_router(Arc::new(
+            awaken_runtime_host::WorkerSkillBundleService::new(
+                Arc::new(awaken_runtime_host::StoreSkillBundleSource::new(store)),
                 dispatch.clone() as Arc<dyn DispatchQueue>,
                 authenticator.clone(),
             )
             .with_worker_directory(directory.clone()),
         ))
     });
-    let commit_service = Arc::new(crate::commit_ingest::ClaimedCommitService::for_host(
+    let commit_service = Arc::new(awaken_runtime_host::ClaimedCommitService::for_host(
         dispatch as Arc<dyn DispatchQueue>,
         host,
         directory,
@@ -397,9 +376,9 @@ pub fn registered_worker_transport_router(
 /// claims without the matching claim-fenced commit surface.
 pub fn registered_worker_transport_router_with_services(
     dispatch_router: Router,
-    commit_service: Arc<crate::commit_ingest::ClaimedCommitService>,
+    commit_service: Arc<awaken_runtime_host::ClaimedCommitService>,
 ) -> Router {
-    dispatch_router.merge(crate::commit_ingest::claimed_commit_router(commit_service))
+    dispatch_router.merge(crate::claimed_commit_router(commit_service))
 }
 
 pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService>) -> Router {
@@ -463,26 +442,6 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
             authenticate_worker_request,
         ))
         .with_state(service)
-}
-
-struct HostRunRecoverySource(Arc<SharedHost>);
-
-#[async_trait::async_trait]
-impl RunRecoverySource for HostRunRecoverySource {
-    async fn recovery_snapshot(
-        &self,
-        thread_id: &awaken_agent_contract::agent::thread::Id,
-        claimed_run_id: &RunId,
-    ) -> Result<RunRecoverySnapshot, RecoveryError> {
-        let ctx = self
-            .0
-            .ctx_for(&thread_id.0, None)
-            .await
-            .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
-        ctx.commit
-            .recovery_snapshot(thread_id, claimed_run_id)
-            .await
-    }
 }
 
 fn checkpoint_store(
@@ -1235,6 +1194,11 @@ async fn claim(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         let authority = claim_authority(&service, &worker, request.identity.as_ref(), true).await?;
+        service
+            .dispatch
+            .reap(service.max_attempts, authority.now_ms)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
         let claimed = if let Some(snapshot) = &authority.snapshot {
             if let Some(policy) = &service.placement_policy {
                 let workers = directory(&service)?
@@ -1442,7 +1406,7 @@ async fn stream_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_run_ingress::MemoryDispatchStore;
+    use awaken_run_ingress::{Dispatch, MemoryDispatchStore};
     use awaken_store_inmem::MemoryStreamCheckpointStore;
 
     #[test]

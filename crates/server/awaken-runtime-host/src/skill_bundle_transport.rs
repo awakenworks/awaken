@@ -201,7 +201,7 @@ async fn read_skill_bundle(
         .session_resources
         .as_ref()
         .filter(|envelope| envelope.workspace_id == request.workspace_id)
-        .and_then(|envelope| crate::provisioning::decode_session_resource_envelope(envelope).ok());
+        .and_then(|envelope| envelope.decode_manifest().ok());
     let skill_is_frozen = manifest
         .as_ref()
         .and_then(|manifest| manifest.resources.skills.as_ref())

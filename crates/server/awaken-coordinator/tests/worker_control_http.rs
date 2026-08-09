@@ -4,6 +4,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
+use awaken_coordinator_runtime::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_run_ingress::{
     DispatchQueue, MemoryDispatchStore, PlacementRequirements, RunDispatch,
     WORKER_LOCAL_CREDENTIALS_CAPABILITY,
@@ -13,7 +14,6 @@ use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, Resolv
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_host::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_store_inmem::MemoryStreamCheckpointStore;
 use awaken_worker_registry::{
     MemoryWorkerDirectory, RegistryMutation, WorkerCredentialObservation, WorkerCredentialRevision,

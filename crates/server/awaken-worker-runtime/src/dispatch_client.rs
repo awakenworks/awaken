@@ -16,6 +16,7 @@
 
 use async_trait::async_trait;
 use serde::Serialize;
+use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -35,7 +36,7 @@ use awaken_run_ingress_contract::{
     worker_credential_realization_capabilities,
 };
 use awaken_runtime_contract::resume::ResumeResult;
-use awaken_worker_transport_security::WorkerRequestAuthorizer;
+use awaken_worker_transport_security::{WorkerRequestAuthorizer, WorkerUpstream};
 
 const IDEMPOTENT_TRANSPORT_ATTEMPTS: usize = 3;
 const IDEMPOTENT_TRANSPORT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
@@ -53,6 +54,31 @@ pub struct HttpDispatchQueue {
     client: reqwest::Client,
     worker_identity: WorkerIdentity,
     request_authorizer: Option<std::sync::Arc<dyn WorkerRequestAuthorizer>>,
+}
+
+/// Build the Worker's single authenticated dispatch/live transport instance.
+pub fn dispatch_transport_with_upstream(
+    upstream: &WorkerUpstream,
+    identity: WorkerIdentity,
+) -> Arc<HttpDispatchQueue> {
+    Arc::new(
+        HttpDispatchQueue::new(upstream.base_url(), identity)
+            .with_client(upstream.client().clone())
+            .with_request_authorizer(upstream.request_authorizer()),
+    )
+}
+
+/// Expose the one transport through the two neutral ports consumed by a Worker
+/// composition, without making the Worker depend on a Coordinator store adapter.
+pub fn worker_transports_with_upstream(
+    upstream: &WorkerUpstream,
+    identity: WorkerIdentity,
+) -> (
+    Arc<dyn awaken_run_ingress_contract::Dispatch>,
+    Arc<dyn ClaimedStreamPublisher>,
+) {
+    let transport = dispatch_transport_with_upstream(upstream, identity);
+    (transport.clone(), transport)
 }
 
 impl HttpDispatchQueue {
@@ -560,6 +586,19 @@ impl DispatchQueue for HttpDispatchQueue {
                 .map_err(|e| DispatchError::Rejected(format!("decode claimed: {e}")))?;
         let _ = (lease_ms, now_ms);
         Ok(claimed)
+    }
+
+    async fn reap_and_claim(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        _max_attempts: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        // Retry-budget enforcement is control-side policy. The authenticated
+        // claim endpoint reaps the authoritative queue before selecting work.
+        self.claim(owner, lease_ms, now_ms, capabilities).await
     }
 
     async fn claim_compatible(

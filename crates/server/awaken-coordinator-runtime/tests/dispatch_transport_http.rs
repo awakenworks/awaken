@@ -11,6 +11,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::stream::event::Event as StreamEvent;
+use awaken_coordinator_runtime::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_run_ingress::{
     DispatchQueue, MemoryDispatchStore, RunClaim, RunDispatch, StreamEventRequest, WorkerIdentity,
 };
@@ -19,7 +20,6 @@ use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, Resolv
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_host::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_store_inmem::MemoryStreamSink;
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock,

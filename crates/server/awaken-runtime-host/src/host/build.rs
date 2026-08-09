@@ -83,9 +83,18 @@ impl SharedHost {
         self
     }
 
-    pub(crate) fn dispatch_store(
-        &self,
-    ) -> Result<Arc<awaken_run_ingress::AnyDispatchStore>, HostError> {
+    /// Install a dispatch port supplied by a database-less Worker transport.
+    #[must_use]
+    pub fn with_dispatch_port(
+        self,
+        dispatch: Arc<dyn awaken_run_ingress_contract::Dispatch>,
+    ) -> Self {
+        self.with_dispatch_store(Arc::new(
+            awaken_run_ingress::AnyDispatchStore::from_dispatch(dispatch),
+        ))
+    }
+
+    pub fn dispatch_store(&self) -> Result<Arc<awaken_run_ingress::AnyDispatchStore>, HostError> {
         self.dispatch_store_override.clone().map_or_else(
             || {
                 crate::dispatch_backend::shared_durable_store_for(

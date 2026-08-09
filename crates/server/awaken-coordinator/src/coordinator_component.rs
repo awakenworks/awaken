@@ -68,7 +68,7 @@ pub enum CoordinatorBuildError {
     #[error("restore Deployment state: {0}")]
     DeploymentRestore(String),
     #[error("build registered Worker transport: {0}")]
-    WorkerTransport(#[from] awaken_runtime_host::RegisteredWorkerTransportBuildError),
+    WorkerTransport(#[from] awaken_coordinator_runtime::RegisteredWorkerTransportBuildError),
 }
 
 pub async fn restore_deployment_state(

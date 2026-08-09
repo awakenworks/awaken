@@ -17,6 +17,10 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitOperationId};
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_coordinator_runtime::{
+    WorkerDispatchService, dispatch_transport_router_with_service,
+    registered_worker_transport_router_with_services,
+};
 use awaken_run_ingress::{
     ClaimedCommitCommand, ClaimedRunCommit, DispatchOutcome, DispatchQueue, PostgresDispatchStore,
     RegisteredWorker, RegistryError, RegistryMutation, RunClaim, RunDispatch, SettleOutcome,
@@ -28,10 +32,7 @@ use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, Resolv
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_host::{
-    ClaimedCommitService, WorkerDispatchService, dispatch_transport_router_with_service,
-    registered_worker_transport_router_with_services,
-};
+use awaken_runtime_host::ClaimedCommitService;
 use awaken_store_postgres::PostgresCommitCoordinator;
 use awaken_worker_runtime::HttpDispatchQueue;
 use awaken_worker_runtime::RemoteClaimedRunCommit;

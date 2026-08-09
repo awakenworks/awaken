@@ -10,6 +10,7 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitOperationId};
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_coordinator_runtime::claimed_commit_router;
 use awaken_run_ingress::{
     ClaimedCommitCommand, ClaimedRunCommit, DispatchQueue, MemoryDispatchStore, RegisteredWorker,
     RegistryError, RegistryMutation, RunClaim, RunDispatch, WorkerDirectory, WorkerHeartbeat,
@@ -21,7 +22,7 @@ use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, Resolv
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_host::{ClaimedCommitService, claimed_commit_router};
+use awaken_runtime_host::ClaimedCommitService;
 use awaken_store_inmem::MemoryCommitCoordinator;
 use awaken_worker_runtime::RemoteClaimedRunCommit;
 use awaken_worker_transport_security::HeaderWorkerAuthenticator;
