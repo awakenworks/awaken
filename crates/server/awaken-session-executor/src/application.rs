@@ -642,7 +642,7 @@ impl crate::SharedHost {
         thread: &str,
         environment: &awaken_session_contract::EnvironmentSnapshot,
     ) -> Result<(), crate::HostError> {
-        let projection = decode_environment_projection(environment);
+        let projection = crate::provisioning::project_environment(environment);
         if let Some(existing) = self
             .session_slots
             .read(thread, |slot| slot.environment_projection.clone())
@@ -743,63 +743,6 @@ fn decode_baseline_projection(
     })
 }
 
-fn decode_environment_projection(
-    environment: &awaken_session_contract::EnvironmentSnapshot,
-) -> crate::session_slot::FrozenEnvironmentRuntimeProjection {
-    let network = match &environment.network {
-        awaken_session_contract::SessionNetworkPolicy::Unrestricted => {
-            awaken_provisioning_contract::NetworkPolicy::Unrestricted
-        }
-        awaken_session_contract::SessionNetworkPolicy::Allowlist { hosts } => {
-            awaken_provisioning_contract::NetworkPolicy::Allowlist {
-                hosts: hosts.clone(),
-            }
-        }
-        awaken_session_contract::SessionNetworkPolicy::None => {
-            awaken_provisioning_contract::NetworkPolicy::None
-        }
-    };
-    let package_config = &environment.packages;
-    let packages = awaken_provisioning_contract::PackageRequirements {
-        managers: [
-            ("apt", &package_config.apt),
-            ("cargo", &package_config.cargo),
-            ("gem", &package_config.gem),
-            ("go", &package_config.go),
-            ("npm", &package_config.npm),
-            ("pip", &package_config.pip),
-        ]
-        .into_iter()
-        .filter(|(_, packages)| !packages.is_empty())
-        .map(|(manager, packages)| (manager.to_string(), packages.clone()))
-        .collect(),
-        // Unpinned requirements resolve once per concrete Environment revision.
-        // Two independently created Environments with identical config must not
-        // share an indefinitely frozen "latest" image.
-        resolution_id: Some(format!(
-            "{}:{}",
-            environment.environment_id, environment.revision.0
-        )),
-    };
-    let sandbox =
-        awaken_provisioning_contract::SandboxOverride::from_config_value(&environment.sandbox)
-            .and_then(|mut sandbox| {
-                // EnvironmentSnapshot.network is the sole reachability authority. Old
-                // retained blobs may still contain the pre-normalization sandbox.network
-                // field; ignoring it is fail-stable and prevents a late widening override.
-                sandbox.network = None;
-                (!sandbox.is_empty()).then_some(sandbox)
-            });
-    crate::session_slot::FrozenEnvironmentRuntimeProjection {
-        fingerprint: environment.config_fingerprint.clone(),
-        network,
-        packages,
-        sandbox,
-        provisioning: environment.sandbox_provisioning,
-        credential_realization: environment.credential_realization.clone(),
-    }
-}
-
 fn validate_baseline_projection(
     baseline: &crate::session_slot::FrozenBaselineRuntimeProjection,
     built_in_mounts: &[awaken_provisioning_contract::MountRequirement],
@@ -838,8 +781,6 @@ fn validate_baseline_projection(
 
 #[cfg(test)]
 mod network_policy_tests {
-    use super::*;
-
     /// Cause/effect graph: a Worker authors the canonical Session input directly;
     /// an exact credential reference is retained, no plaintext secret is added,
     /// and the network restriction is not translated by Runtime Host.
@@ -882,9 +823,11 @@ mod network_policy_tests {
         );
     }
 
-    /// Package projection cause graph: the exact frozen Environment package
-    /// vectors become one neutral manager map; empty managers disappear, values
-    /// and ordering remain exact, and no protocol DTO reaches provisioning.
+    /// Package projection cause/effect decision table: R1 an unprepared exact
+    /// Environment projects package managers losslessly and no image override;
+    /// R2 a prepared immutable image suppresses startup package installation and
+    /// becomes the sole sandbox image override. Empty managers disappear and no
+    /// protocol DTO reaches provisioning.
     #[test]
     fn environment_packages_project_losslessly_to_the_provisioning_contract() {
         let environment = awaken_session_contract::EnvironmentSnapshot {
@@ -898,11 +841,12 @@ mod network_policy_tests {
                 pip: vec!["httpx==0.28".into()],
                 ..Default::default()
             },
+            prepared_image: None,
             network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
             credential_realization:
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
         };
-        let projected = decode_environment_projection(&environment);
+        let projected = crate::provisioning::project_environment(&environment);
         assert_eq!(
             projected.packages.managers,
             [
@@ -917,5 +861,15 @@ mod network_policy_tests {
             projected.packages.resolution_id.as_deref(),
             Some("env_packages:3")
         );
+
+        let mut prepared = environment;
+        prepared.prepared_image = Some("registry/awaken@sha256:prepared".into());
+        let projected = crate::provisioning::project_environment(&prepared);
+        assert!(projected.packages.is_empty(), "R2");
+        assert!(matches!(
+            projected.sandbox.and_then(|value| value.environment),
+            Some(awaken_provisioning_contract::EnvironmentKind::Image { reference })
+                if reference == "registry/awaken@sha256:prepared"
+        ));
     }
 }

@@ -3,7 +3,7 @@
 //! the `Fact -> AgUiEvent` mapping. The encoder is per-stream: it holds the
 //! thread/run ids and mints tool-result message ids, so it is stateful `&mut self`.
 
-use std::collections::HashSet;
+use std::collections::BTreeMap;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Message, Role};
@@ -27,13 +27,15 @@ pub struct AgUiEncoder {
     tool_result_seq: u64,
     /// `RUN_STARTED` already emitted (idempotent on a repeated `RunStarted`).
     started: bool,
-    /// At least one live increment flowed — the router picks the committed tail.
-    streamed: bool,
+    /// Assistant text has actually been projected live. Non-visible reasoning
+    /// deltas do not set this flag and therefore cannot suppress committed text.
+    streamed_text: bool,
     /// The id of the open live text message, if a text run is currently streaming.
     open_text: Option<String>,
     text_seq: usize,
-    /// Call ids that already emitted `TOOL_CALL_START` live.
-    tools: HashSet<String>,
+    /// Call ids that emitted `TOOL_CALL_START` live, with the exact visible
+    /// prefix used to reconcile the committed name/arguments at completion.
+    tools: BTreeMap<String, (String, String)>,
 }
 
 impl AgUiEncoder {
@@ -43,21 +45,11 @@ impl AgUiEncoder {
             run_id: run_id.into(),
             tool_result_seq: 0,
             started: false,
-            streamed: false,
+            streamed_text: false,
             open_text: None,
             text_seq: 0,
-            tools: HashSet::new(),
+            tools: BTreeMap::new(),
         }
-    }
-
-    /// True once any live increment has been emitted.
-    pub fn has_streamed(&self) -> bool {
-        self.streamed
-    }
-
-    /// Close any open live text message at stream end (before the committed tail).
-    pub fn finalize(&mut self) -> Vec<AgUiEvent> {
-        self.close_text()
     }
 
     fn close_text(&mut self) -> Vec<AgUiEvent> {
@@ -65,6 +57,77 @@ impl AgUiEncoder {
             Some(message_id) => vec![AgUiEvent::TextMessageEnd { message_id }],
             None => Vec::new(),
         }
+    }
+
+    /// Reconcile the live prefix with the authoritative committed outcome using
+    /// this same encoder state. This is the only completion path: a committed
+    /// tool absent from the prefix gets a full bracket, a live tool gets only its
+    /// missing args suffix plus END, and a live-only tool is still closed.
+    pub fn complete(&mut self, outcome: &StepOutcome) -> Vec<AgUiEvent> {
+        let pending = outcome
+            .pending()
+            .map(|pending| (pending.tool_use_id.as_str(), pending.client_executed));
+        let events = fold_messages(&outcome.new_messages, pending);
+        let mut output = self.fact(&Fact::RunStarted);
+        output.extend(self.close_text());
+        let mut mismatch = None;
+
+        for event in &events {
+            match event {
+                Fact::AssistantMessage { .. } if self.streamed_text => {}
+                Fact::ToolCall {
+                    id, name, input, ..
+                } => {
+                    if let Some((live_name, live_args)) = self.tools.remove(id) {
+                        let committed_args = input.to_string();
+                        if live_name != *name || !committed_args.starts_with(&live_args) {
+                            mismatch = Some(format!(
+                                "tool `{id}` live prefix does not match committed input"
+                            ));
+                        } else if let Some(suffix) = committed_args.strip_prefix(&live_args)
+                            && !suffix.is_empty()
+                        {
+                            output.push(AgUiEvent::ToolCallArgs {
+                                tool_call_id: id.clone(),
+                                delta: suffix.to_string(),
+                            });
+                        }
+                        output.push(AgUiEvent::ToolCallEnd {
+                            tool_call_id: id.clone(),
+                        });
+                    } else {
+                        output.extend(self.fact(event));
+                    }
+                }
+                _ => output.extend(self.fact(event)),
+            }
+        }
+
+        for (tool_call_id, _) in std::mem::take(&mut self.tools) {
+            output.push(AgUiEvent::ToolCallEnd { tool_call_id });
+        }
+        output.extend(self.fact(&match mismatch {
+            Some(message) => Fact::RunFailed {
+                code: "stream_reconciliation_failed".to_string(),
+                message,
+            },
+            None => outcome.terminal_event(),
+        }));
+        output
+    }
+
+    /// Close a failed live turn without leaving text or tool brackets open.
+    pub fn fail(&mut self, message: impl Into<String>) -> Vec<AgUiEvent> {
+        let mut output = self.fact(&Fact::RunStarted);
+        output.extend(self.close_text());
+        for (tool_call_id, _) in std::mem::take(&mut self.tools) {
+            output.push(AgUiEvent::ToolCallEnd { tool_call_id });
+        }
+        output.extend(self.fact(&Fact::RunFailed {
+            code: "stream_failed".to_string(),
+            message: message.into(),
+        }));
+        output
     }
 }
 
@@ -147,9 +210,9 @@ impl Transcoder for AgUiEncoder {
     }
 
     fn delta(&mut self, delta: &Delta) -> Vec<AgUiEvent> {
-        self.streamed = true;
         match delta {
             Delta::TextDelta { delta } => {
+                self.streamed_text = true;
                 let mut out = Vec::new();
                 let id = match &self.open_text {
                     Some(id) => id.clone(),
@@ -176,13 +239,17 @@ impl Transcoder for AgUiEncoder {
                 args_delta,
             } => {
                 let mut out = self.close_text();
-                if self.tools.insert(id.clone()) {
+                if !self.tools.contains_key(id) {
+                    self.tools.insert(id.clone(), (name.clone(), String::new()));
                     out.push(AgUiEvent::ToolCallStart {
                         tool_call_id: id.clone(),
                         tool_call_name: name.clone(),
                     });
                 }
                 if !args_delta.is_empty() {
+                    if let Some((_, accumulated)) = self.tools.get_mut(id) {
+                        accumulated.push_str(args_delta);
+                    }
                     out.push(AgUiEvent::ToolCallArgs {
                         tool_call_id: id.clone(),
                         delta: args_delta.clone(),
@@ -199,54 +266,7 @@ impl Transcoder for AgUiEncoder {
 /// Project one committed step into an ordered AG-UI event stream (`RUN_STARTED` …
 /// `RUN_FINISHED`).
 pub fn encode_step(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec<AgUiEvent> {
-    let pending = outcome
-        .pending()
-        .map(|p| (p.tool_use_id.as_str(), p.client_executed));
-    let mut events = vec![Fact::RunStarted];
-    events.extend(fold_messages(&outcome.new_messages, pending));
-    // The terminal event owns the failed / awaiting / finished distinction — a fault
-    // becomes `RunFailed`, which transcodes to `RUN_ERROR` instead of `RUN_FINISHED`.
-    events.push(outcome.terminal_event());
-    AgUiEncoder::new(thread_id, run_id).transcode_facts(&events)
-}
-
-/// Project the *authoritative tail* of a committed step, for a turn whose
-/// in-flight prefix (`RUN_STARTED`, streamed `TEXT_MESSAGE_*`, and
-/// `TOOL_CALL_START`/`TOOL_CALL_ARGS`) was already emitted live (see
-/// the encoder's live `delta()`). Drops `RUN_STARTED` and assistant text
-/// (already streamed) and the tool `START`/`ARGS` (already streamed); keeps the
-/// closing `TOOL_CALL_END`, any `TOOL_CALL_RESULT`, and the terminal
-/// `RUN_FINISHED`. The live prefix plus this tail form one well-formed run.
-pub fn encode_close(outcome: &StepOutcome, thread_id: &str, run_id: &str) -> Vec<AgUiEvent> {
-    let pending = outcome
-        .pending()
-        .map(|p| (p.tool_use_id.as_str(), p.client_executed));
-    let events = fold_messages(&outcome.new_messages, pending);
-    let mut out = Vec::new();
-    let mut tool_result_seq = 0u64;
-    for event in &events {
-        match event {
-            // Text was streamed live as TEXT_MESSAGE_* deltas.
-            Fact::AssistantMessage { .. } => {}
-            // START + ARGS were streamed live; close the streamed tool call.
-            Fact::ToolCall { id, .. } => out.push(AgUiEvent::ToolCallEnd {
-                tool_call_id: id.clone(),
-            }),
-            Fact::ToolResult { id, content, .. } => {
-                out.push(AgUiEvent::ToolCallResult {
-                    message_id: format!("{run_id}-tr-{tool_result_seq}"),
-                    tool_call_id: id.clone(),
-                    content: blocks_text(content),
-                });
-                tool_result_seq += 1;
-            }
-            _ => {}
-        }
-    }
-    // The terminal event (`RUN_FINISHED`, or `RUN_ERROR` on a fault) transcoded the
-    // same way `encode_step` closes; the live prefix already carried `RUN_STARTED`.
-    out.extend(AgUiEncoder::new(thread_id, run_id).fact(&outcome.terminal_event()));
-    out
+    AgUiEncoder::new(thread_id, run_id).complete(outcome)
 }
 
 /// Project committed thread history into the AG-UI message shape — the read-model
@@ -355,7 +375,9 @@ mod tests {
                 .any(|e| matches!(e, AgUiEvent::RunFinished { .. })),
             "a failed run does not also RUN_FINISHED: {step:?}",
         );
-        let close = encode_close(&outcome, "t1", "r1");
+        let mut encoder = AgUiEncoder::new("t1", "r1");
+        encoder.fact(&Fact::RunStarted);
+        let close = encoder.complete(&outcome);
         assert!(
             close
                 .iter()
@@ -465,7 +487,17 @@ mod tests {
                 }),
             },
         };
-        let events = encode_close(&outcome, "t1", "r1");
+        let mut encoder = AgUiEncoder::new("t1", "r1");
+        encoder.fact(&Fact::RunStarted);
+        encoder.delta(&Delta::TextDelta {
+            delta: "reading".into(),
+        });
+        encoder.delta(&Delta::ToolCallDelta {
+            id: "c1".into(),
+            name: "read".into(),
+            args_delta: json!({"path": "x"}).to_string(),
+        });
+        let events = encoder.complete(&outcome);
         // No start/text/args — those were streamed live.
         assert!(events.iter().all(|e| !matches!(
             e,
@@ -806,7 +838,7 @@ mod tests {
         assert!(matches!(events.last(), Some(AgUiEvent::RunFinished { .. })));
     }
 
-    // encode_close tail for a streamed turn that ran a server tool to completion:
+    // Stateful completion for a streamed turn that ran a server tool to completion:
     // the committed step carries the assistant tool-use *and* its tool-role result.
     // The live prefix already streamed START+ARGS, so the tail closes the call with
     // TOOL_CALL_END and emits the TOOL_CALL_RESULT (minted `<run>-tr-0`) before
@@ -835,7 +867,14 @@ mod tests {
             ],
             terminal: Terminal::Finished,
         };
-        let events = encode_close(&outcome, "t1", "r1");
+        let mut encoder = AgUiEncoder::new("t1", "r1");
+        encoder.fact(&Fact::RunStarted);
+        encoder.delta(&Delta::ToolCallDelta {
+            id: "c1".into(),
+            name: "read".into(),
+            args_delta: json!({"path": "x"}).to_string(),
+        });
+        let events = encoder.complete(&outcome);
         // START/ARGS were streamed live; the tail must not re-open them.
         assert!(events.iter().all(|e| !matches!(
             e,
@@ -859,5 +898,166 @@ mod tests {
             .expect("TOOL_CALL_RESULT keyed by the answered call, minted r1-tr-0");
         assert!(end < result, "END precedes RESULT: {events:?}");
         assert!(matches!(events.last(), Some(AgUiEvent::RunFinished { .. })));
+    }
+
+    #[test]
+    fn completion_reconciles_text_only_prefix_with_committed_tools() {
+        // CE-AG7: visible text, L=empty, F={c1}. Completion must close text and
+        // emit the committed tool's full START/ARGS/END bracket exactly once.
+        let outcome = StepOutcome {
+            new_messages: vec![Message {
+                id: Id("a1".into()),
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "read".into(),
+                    input: json!({"path": "x"}),
+                }],
+            }],
+            terminal: Terminal::Finished,
+        };
+        let mut encoder = AgUiEncoder::new("t1", "r1");
+        encoder.fact(&Fact::RunStarted);
+        encoder.delta(&Delta::TextDelta { delta: "hi".into() });
+        let events = encoder.complete(&outcome);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgUiEvent::ToolCallStart { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgUiEvent::ToolCallArgs { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgUiEvent::ToolCallEnd { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn completion_reconciles_partial_and_live_only_tool_sets() {
+        // CE-AG8/AG9/AG10: L={c1,live-only}, F={c1,c2}. c1 receives only its
+        // missing args suffix+END, c2 receives a full bracket, and live-only is
+        // closed so no START remains unmatched.
+        let outcome = StepOutcome {
+            new_messages: vec![Message {
+                id: Id("a1".into()),
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::tool_use("c1", "read", json!({"path":"x"})),
+                    ContentBlock::tool_use("c2", "write", json!({"path":"y"})),
+                ],
+            }],
+            terminal: Terminal::Finished,
+        };
+        let mut encoder = AgUiEncoder::new("t1", "r1");
+        encoder.fact(&Fact::RunStarted);
+        encoder.delta(&Delta::ToolCallDelta {
+            id: "c1".into(),
+            name: "read".into(),
+            args_delta: "{\"path\":".into(),
+        });
+        encoder.delta(&Delta::ToolCallDelta {
+            id: "live-only".into(),
+            name: "probe".into(),
+            args_delta: String::new(),
+        });
+        let events = encoder.complete(&outcome);
+        let ended = events
+            .iter()
+            .filter_map(|event| match event {
+                AgUiEvent::ToolCallEnd { tool_call_id } => Some(tool_call_id.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ended, vec!["c1", "c2", "live-only"]);
+        assert!(events.iter().any(
+            |event| matches!(event, AgUiEvent::ToolCallStart { tool_call_id, .. } if tool_call_id == "c2")
+        ));
+        assert!(events.iter().any(
+            |event| matches!(event, AgUiEvent::ToolCallArgs { tool_call_id, delta } if tool_call_id == "c1" && delta == "\"x\"}")
+        ));
+    }
+
+    #[test]
+    fn reasoning_only_prefix_does_not_hide_committed_text_or_duplicate_run_start() {
+        // CE-AG3/AG4: RUN_STARTED plus a non-projected reasoning delta is not a
+        // visible assistant prefix. Completion emits committed text and neither
+        // repeats RUN_STARTED nor drops the answer.
+        let outcome = StepOutcome {
+            new_messages: vec![Message::text(Id("a1".into()), Role::Assistant, "answer")],
+            terminal: Terminal::Finished,
+        };
+        let mut encoder = AgUiEncoder::new("t1", "r1");
+        assert_eq!(encoder.fact(&Fact::RunStarted).len(), 1);
+        assert!(
+            encoder
+                .delta(&Delta::ReasoningDelta {
+                    delta: "hmm".into()
+                })
+                .is_empty()
+        );
+        let events = encoder.complete(&outcome);
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, AgUiEvent::RunStarted { .. }))
+        );
+        assert!(events.iter().any(
+            |event| matches!(event, AgUiEvent::TextMessageContent { delta, .. } if delta == "answer")
+        ));
+    }
+
+    #[test]
+    fn mismatched_live_tool_prefix_fails_closed_and_balances_events() {
+        // Extended CE-AG11: live args that are not a prefix of committed args
+        // cannot be repaired. Close the tool and terminate with one RUN_ERROR.
+        let outcome = StepOutcome {
+            new_messages: vec![Message {
+                id: Id("a1".into()),
+                role: Role::Assistant,
+                content: vec![ContentBlock::tool_use(
+                    "c1",
+                    "read",
+                    json!({"path":"committed"}),
+                )],
+            }],
+            terminal: Terminal::Finished,
+        };
+        let mut encoder = AgUiEncoder::new("t1", "r1");
+        encoder.delta(&Delta::ToolCallDelta {
+            id: "c1".into(),
+            name: "read".into(),
+            args_delta: "{\"path\":\"different\"}".into(),
+        });
+        let events = encoder.complete(&outcome);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgUiEvent::ToolCallEnd { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgUiEvent::RunError { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, AgUiEvent::RunFinished { .. }))
+        );
     }
 }

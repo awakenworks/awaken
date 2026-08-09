@@ -22,7 +22,6 @@ pub awaken_worker_contract::Incompatibility::MissingCapability(alloc::string::St
 pub awaken_worker_contract::Incompatibility::RuntimeVersion(u32)
 pub awaken_worker_contract::Incompatibility::SandboxBackend(alloc::string::String)
 pub awaken_worker_contract::Incompatibility::SandboxCapabilities
-pub awaken_worker_contract::Incompatibility::ToolTransparency
 pub awaken_worker_contract::Incompatibility::ZeroCapacity
 pub awaken_worker_contract::Incompatibility::Zone
 pub awaken_worker_contract::Incompatibility::Zone::actual: core::option::Option<alloc::string::String>
@@ -73,17 +72,14 @@ pub awaken_worker_contract::PlacementRequirements::architecture: core::option::O
 pub awaken_worker_contract::PlacementRequirements::checkpoint_format: core::option::Option<alloc::string::String>
 pub awaken_worker_contract::PlacementRequirements::contract_version: u32
 pub awaken_worker_contract::PlacementRequirements::dispatch_contract_version: u32
-pub awaken_worker_contract::PlacementRequirements::isolation: awaken_provisioning_contract::sandbox::IsolationClass
 pub awaken_worker_contract::PlacementRequirements::location: awaken_worker_contract::ExecutionLocation
 pub awaken_worker_contract::PlacementRequirements::recovery: awaken_worker_contract::WorkerRecoveryMode
-pub awaken_worker_contract::PlacementRequirements::require_network_isolation: bool
-pub awaken_worker_contract::PlacementRequirements::require_resource_limits: bool
-pub awaken_worker_contract::PlacementRequirements::require_tool_transparent: bool
 pub awaken_worker_contract::PlacementRequirements::required_acp_capabilities: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerAcpCapabilityRequirement>
 pub awaken_worker_contract::PlacementRequirements::required_capabilities: alloc::collections::btree::set::BTreeSet<alloc::string::String>
 pub awaken_worker_contract::PlacementRequirements::required_credentials: alloc::collections::btree::set::BTreeSet<awaken_credential_contract::CredentialRef>
 pub awaken_worker_contract::PlacementRequirements::required_zone: core::option::Option<alloc::string::String>
 pub awaken_worker_contract::PlacementRequirements::runtime_protocol_version: u32
+pub awaken_worker_contract::PlacementRequirements::sandbox: awaken_provisioning_contract::sandbox::SandboxRequirements
 pub awaken_worker_contract::PlacementRequirements::sandbox_backend: core::option::Option<alloc::string::String>
 impl awaken_worker_contract::PlacementRequirements
 pub fn awaken_worker_contract::PlacementRequirements::is_legacy_default(&self) -> bool

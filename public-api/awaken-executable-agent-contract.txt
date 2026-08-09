@@ -24,7 +24,6 @@ pub awaken_executable_agent_contract::ExecutableAgentMcpServer::prompts_as_skill
 pub awaken_executable_agent_contract::ExecutableAgentMcpServer::url: alloc::string::String
 pub struct awaken_executable_agent_contract::ExecutableAgentRegistration
 pub awaken_executable_agent_contract::ExecutableAgentRegistration::agent_id: alloc::string::String
-pub awaken_executable_agent_contract::ExecutableAgentRegistration::declared_hand: core::option::Option<alloc::string::String>
 pub awaken_executable_agent_contract::ExecutableAgentRegistration::session_profile: awaken_executable_agent_contract::ExecutableAgentSessionProfile
 pub awaken_executable_agent_contract::ExecutableAgentRegistration::snapshot: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub awaken_executable_agent_contract::ExecutableAgentRegistration::source_revision: u64

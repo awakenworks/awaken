@@ -12,14 +12,6 @@ use axum::Router;
 use crate::PostgresSchemaMode;
 use crate::config::{ResolvedDeployment, Role};
 
-pub(crate) struct CatalogDeclaredHandSource(pub(crate) Arc<ExecutableAgentCatalog>);
-
-impl awaken_server::placement::DeclaredHandSource for CatalogDeclaredHandSource {
-    fn declared_hand(&self, agent_id: &str) -> Result<Option<String>, String> {
-        self.0.declared_hand_for_agent(agent_id)
-    }
-}
-
 pub(crate) async fn for_runtime_role(
     role: Role,
     deployment: &ResolvedDeployment,

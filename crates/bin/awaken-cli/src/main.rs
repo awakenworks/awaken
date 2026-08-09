@@ -172,12 +172,14 @@ async fn run_service(
     warn_deprecations(&deployment);
     deployment.ensure_data_layout()?;
     let seal_key = role_seal_key(&deployment)?;
-    let local_acp = if role == Role::AllInOne {
-        awaken_cli::prepare_local_acp(
-            &mut deployment,
-            seal_key.as_ref().expect("AllInOne owns Control seal key"),
+    let local_worker = if role == Role::AllInOne {
+        Some(
+            awaken_cli::prepare_local_worker(
+                &mut deployment,
+                seal_key.as_ref().expect("AllInOne owns Control seal key"),
+            )
+            .await?,
         )
-        .await?
     } else {
         None
     };
@@ -188,7 +190,7 @@ async fn run_service(
     }
 
     awaken_observability::init(&deployment.observability);
-    let result = serve_resolved(deployment, seal_key, presentation, role, local_acp).await;
+    let result = serve_resolved(deployment, seal_key, presentation, role, local_worker).await;
     awaken_observability::shutdown();
     result
 }
@@ -198,7 +200,7 @@ async fn serve_resolved(
     seal_key: Option<[u8; 32]>,
     presentation: Presentation,
     role: Role,
-    local_acp: Option<awaken_cli::PreparedLocalAcp>,
+    prepared_worker: Option<awaken_cli::PreparedLocalWorker>,
 ) -> Result<(), String> {
     let runs_coordinator = matches!(role, Role::AllInOne | Role::Coordinator);
     if runs_coordinator {
@@ -272,7 +274,7 @@ async fn serve_resolved(
         .await
         .map_err(|error| friendly_bind_error("server", &deployment.bind, error))?;
     let url = browser_url(&deployment.bind)?;
-    let local_worker = local_acp
+    let local_worker = prepared_worker
         .map(|prepared| prepared.build_worker(url.clone(), &deployment))
         .transpose()?;
     match presentation {
@@ -329,8 +331,8 @@ async fn serve_resolved(
         }
         result = &mut worker => match result {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(format!("local ACP worker stopped: {error}")),
-            Err(error) => Err(format!("local ACP worker task failed: {error}")),
+            Ok(Err(error)) => Err(format!("local Worker stopped: {error}")),
+            Err(error) => Err(format!("local Worker task failed: {error}")),
         },
     }
 }

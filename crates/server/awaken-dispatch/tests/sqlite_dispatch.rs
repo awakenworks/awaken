@@ -200,9 +200,21 @@ async fn cross_thread_outbox_on_sqlite() {
 }
 
 #[tokio::test]
+async fn message_idempotency_conflicts_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory().unwrap();
+    harness::assert_message_idempotency_conflicts(&store).await;
+}
+
+#[tokio::test]
 async fn scheduled_delivery_due_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_scheduled_due(&store).await;
+}
+
+#[tokio::test]
+async fn millis_boundaries_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory().unwrap();
+    harness::assert_millis_boundaries(&store).await;
 }
 
 #[tokio::test]

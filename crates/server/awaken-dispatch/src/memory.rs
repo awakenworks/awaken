@@ -22,7 +22,8 @@ use crate::dispatch::{
     DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
     DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome,
     SubmitOptions, can_admit_attempt_credentials, compile_attempt_credential_bindings,
-    installed_worker_credential_capabilities, verify_credential_realization_receipt,
+    installed_worker_credential_capabilities, normalize_pending_millis,
+    verify_credential_realization_receipt,
 };
 use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
@@ -175,7 +176,31 @@ fn push_operation(state: &mut State, operation: DispatchOperation) {
 
 /// A pending input is deliverable when it has no schedule or its time has come.
 fn is_due(input: &PendingInput, now_ms: u64) -> bool {
-    input.available_at_ms.is_none_or(|t| t <= now_ms)
+    input.available_at_ms.is_none_or(|time| {
+        crate::clock::normalize_millis(time) <= crate::clock::normalize_millis(now_ms)
+    })
+}
+
+/// The one in-memory pending-input insert path. Every caller gets identical
+/// idempotency conflict and time-normalization semantics.
+fn append_pending(state: &mut State, input: PendingInput) -> Result<bool, DispatchError> {
+    let input = normalize_pending_millis(input);
+    if let Some(existing) = state
+        .pending
+        .iter()
+        .find(|pending| pending.input.message_id == input.message_id)
+    {
+        return if existing.input == input {
+            Ok(false)
+        } else {
+            Err(DispatchError::Rejected(format!(
+                "idempotency key `{}` was reused with another pending-input payload",
+                input.message_id
+            )))
+        };
+    }
+    state.pending.push(PendingRow { input, revision: 1 });
+    Ok(true)
 }
 
 /// Pick the next runnable run, oldest-first within each priority band: reclaim an
@@ -186,6 +211,7 @@ fn select_where(
     now_ms: u64,
     mut compatible: impl FnMut(&Row) -> bool,
 ) -> Option<RunId> {
+    let now_ms = crate::clock::normalize_millis(now_ms);
     // Single-writer-per-thread (ADR-0022): a wake or fresh pick must not start a
     // second concurrent run for a thread that already has one running. A recovery
     // pick is exempt — it re-owns the SAME running row, it does not add a second.
@@ -252,6 +278,7 @@ fn select_where(
 /// Whether one exact row is runnable under the same policy as [`select_where`]. The
 /// boolean says that the claim is crash recovery and must spend retry budget.
 fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<bool> {
+    let now_ms = crate::clock::normalize_millis(now_ms);
     let row = state.rows.get(run_id)?;
     if row.state == RowState::Leased
         && row
@@ -319,7 +346,7 @@ fn claim_exact(
         let lease = Lease {
             run_id: run_id.clone(),
             owner: owner.to_string(),
-            expires_ms: now_ms + lease_ms,
+            expires_ms: crate::clock::deadline_millis(now_ms, lease_ms),
             epoch: row.lease_epoch,
         };
         row.state = RowState::Leased;
@@ -428,13 +455,7 @@ fn deliver_and_claim_local(
     capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
     let run_id = input.run_id.clone();
-    if !state
-        .pending
-        .iter()
-        .any(|pending| pending.input.message_id == input.message_id)
-    {
-        state.pending.push(PendingRow { input, revision: 1 });
-    }
+    append_pending(state, input)?;
     claim_exact(state, &run_id, owner, lease_ms, now_ms, None, capabilities)
 }
 
@@ -658,13 +679,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let run_id = input.run_id.clone();
-        if !state
-            .pending
-            .iter()
-            .any(|pending| pending.input.message_id == input.message_id)
-        {
-            state.pending.push(PendingRow { input, revision: 1 });
-        }
+        append_pending(&mut state, input)?;
         if state.rows.get(&run_id).is_none_or(|row| {
             !row.cancellation_requested
                 && can_assign(
@@ -935,7 +950,7 @@ impl DispatchQueue for MemoryDispatchStore {
                     && row.lease.as_ref().is_some_and(|l| l.owner == owner) =>
             {
                 if let Some(lease) = row.lease.as_mut() {
-                    lease.expires_ms = now_ms + lease_ms;
+                    lease.expires_ms = crate::clock::deadline_millis(now_ms, lease_ms);
                 }
                 Ok(true)
             }
@@ -953,7 +968,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let mut renewed = 0;
         // Only rows within half a lease of expiring; a fresh claim is a full length
         // out and is skipped until it approaches expiry (ADR-0024).
-        let near_expiry = now_ms + lease_ms / 2;
+        let near_expiry = crate::clock::deadline_millis(now_ms, lease_ms / 2);
         for row in state.rows.values_mut() {
             if row.state == RowState::Leased
                 && row
@@ -962,7 +977,7 @@ impl DispatchQueue for MemoryDispatchStore {
                     .is_some_and(|l| l.owner == owner && l.expires_ms < near_expiry)
             {
                 if let Some(lease) = row.lease.as_mut() {
-                    lease.expires_ms = now_ms + lease_ms;
+                    lease.expires_ms = crate::clock::deadline_millis(now_ms, lease_ms);
                 }
                 renewed += 1;
             }
@@ -1226,15 +1241,7 @@ impl DispatchOperationalFeed for MemoryDispatchStore {
 impl Inbox for MemoryDispatchStore {
     async fn append(&self, input: PendingInput) -> Result<bool, DispatchError> {
         let mut state = lock(&self.state)?;
-        if state
-            .pending
-            .iter()
-            .any(|p| p.input.message_id == input.message_id)
-        {
-            return Ok(false);
-        }
-        state.pending.push(PendingRow { input, revision: 1 });
-        Ok(true)
+        append_pending(&mut state, input)
     }
 
     async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
@@ -1297,12 +1304,20 @@ impl Inbox for MemoryDispatchStore {
 impl Outbox for MemoryDispatchStore {
     async fn stage(&self, input: PendingInput) -> Result<bool, DispatchError> {
         let mut state = lock(&self.state)?;
-        if state
+        let input = normalize_pending_millis(input);
+        if let Some(existing) = state
             .outbox
             .iter()
-            .any(|i| i.message_id == input.message_id)
+            .find(|i| i.message_id == input.message_id)
         {
-            return Ok(false);
+            return if existing == &input {
+                Ok(false)
+            } else {
+                Err(DispatchError::Rejected(format!(
+                    "idempotency key `{}` was reused with another outbox payload",
+                    input.message_id
+                )))
+            };
         }
         state.outbox.push(input);
         Ok(true)
@@ -1310,6 +1325,22 @@ impl Outbox for MemoryDispatchStore {
 
     async fn relay(&self) -> Result<usize, DispatchError> {
         let mut state = lock(&self.state)?;
+        // Validate the whole in-memory transaction before moving anything: an
+        // outbox retry may match an existing pending row exactly, but the same
+        // id with another payload is corruption and must leave the outbox intact.
+        for input in &state.outbox {
+            if let Some(existing) = state
+                .pending
+                .iter()
+                .find(|pending| pending.input.message_id == input.message_id)
+                && existing.input != *input
+            {
+                return Err(DispatchError::Rejected(format!(
+                    "idempotency key `{}` was reused with another relayed payload",
+                    input.message_id
+                )));
+            }
+        }
         let staged = std::mem::take(&mut state.outbox);
         let relayed = staged.len();
         for input in staged {
@@ -1319,7 +1350,7 @@ impl Outbox for MemoryDispatchStore {
                 .iter()
                 .any(|p| p.input.message_id == input.message_id)
             {
-                state.pending.push(PendingRow { input, revision: 1 });
+                append_pending(&mut state, input)?;
             }
         }
         Ok(relayed)

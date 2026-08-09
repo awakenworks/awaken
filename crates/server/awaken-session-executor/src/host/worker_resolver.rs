@@ -533,6 +533,7 @@ mod tests {
             sandbox: serde_json::json!({}),
             sandbox_provisioning: awaken_session_contract::SandboxProvisioning::OnToolUse,
             packages: Default::default(),
+            prepared_image: None,
             network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
             credential_realization:
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
@@ -895,6 +896,7 @@ mod tests {
                         sandbox: serde_json::json!({}),
                         sandbox_provisioning: Default::default(),
                         packages: Default::default(),
+                        prepared_image: None,
                         network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
                         credential_realization:
                             awaken_runtime_contract::CredentialRealizationProfile {

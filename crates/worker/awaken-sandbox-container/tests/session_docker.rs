@@ -15,6 +15,10 @@ use tokio::io::AsyncReadExt;
 
 #[tokio::test]
 async fn native_acp_and_hand_share_one_production_container() {
+    // Cause/effect coverage: a configured production image and reachable Docker
+    // daemon create one shared container; mounted files and Native/ACP/hand
+    // commands observe the same state, structured hand content preserves its
+    // text result, and output harvesting remains exact.
     let Ok(image) = std::env::var("AWAKEN_TEST_SESSION_IMAGE") else {
         eprintln!("skipping: AWAKEN_TEST_SESSION_IMAGE is not set");
         return;
@@ -115,7 +119,7 @@ async fn native_acp_and_hand_share_one_production_container() {
         })
         .await
         .expect("Native tool routed through the in-container hand");
-    assert!(result.content.contains("real-hand-ok"));
+    assert!(awaken_runtime_contract::extract_text(&result.content).contains("real-hand-ok"));
 
     let harvest = pc::Command::new([
         "sh",

@@ -596,6 +596,7 @@ pub struct RunError {
 pub enum RunErrorKind {
     Internal,
     BadRequest,
+    Unavailable,
 }
 
 impl RunError {
@@ -614,6 +615,15 @@ impl RunError {
             message: message.into(),
             kind: RunErrorKind::BadRequest,
             code: "invalid_request".into(),
+        }
+    }
+
+    /// A temporary dependency/readiness failure — maps to `503` and is safe to retry.
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: RunErrorKind::Unavailable,
+            code: "unavailable".into(),
         }
     }
 
@@ -858,6 +868,7 @@ mod tests {
                 sandbox: serde_json::json!({}),
                 sandbox_provisioning: Default::default(),
                 packages: Default::default(),
+                prepared_image: None,
                 network: crate::SessionNetworkPolicy::Unrestricted,
                 credential_realization:
                     awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
@@ -911,9 +922,9 @@ mod tests {
         );
     }
 
-    // Item 4: `RunError` Display + the `internal`/`bad_request` constructor→kind
-    // mapping. The kind is what the router turns into a 500 / 400 status (the status
-    // mapping itself lives in the wire adapter's route, not in this contract crate).
+    // Cause/effect decision table: R1 runtime faults map to Internal/internal;
+    // R2 caller faults map to BadRequest/invalid_request; R3 temporary dependency
+    // faults map to Unavailable/unavailable. The wire adapter owns 500/400/503.
     #[test]
     fn run_error_display_and_kind_mapping() {
         let internal = RunError::internal("provider blew up");
@@ -924,8 +935,13 @@ mod tests {
         assert_eq!(bad.to_string(), "run failed: no such await");
         assert_eq!(bad.kind, RunErrorKind::BadRequest);
 
-        // The two kinds are distinct.
+        let unavailable = RunError::unavailable("image is still building");
+        assert_eq!(unavailable.kind, RunErrorKind::Unavailable);
+        assert_eq!(unavailable.code, "unavailable");
+
+        // The three causes remain distinct.
         assert_ne!(internal.kind, bad.kind);
+        assert_ne!(bad.kind, unavailable.kind);
     }
 
     // Item 5: `LiveInboxSnapshot::inactive()` invariants.

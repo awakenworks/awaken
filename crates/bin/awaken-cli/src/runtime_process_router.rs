@@ -34,7 +34,6 @@ pub(super) async fn assemble_runtime_process_router(
     ) = executable_agent_registration::process_parts(assembly.executable_agent_wiring);
     let content_capture_ceiling = assembly.content_capture_ceiling;
     let deployment = assembly.deployment;
-    let hand_executors = assembly.hand_executors;
     let cloud_api_base_url = assembly.cloud_api_base_url;
     let model_supply = assembly.model_supply.clone();
     let cloud_models_enabled = model_supply.cloud_models_enabled;
@@ -62,6 +61,7 @@ pub(super) async fn assemble_runtime_process_router(
     let executable_environment_projection_refresher =
         executable_environment_wiring.projection_refresher;
     let executable_environment_private_router = executable_environment_wiring.private_router;
+    let executable_environment_image_builds = executable_environment_wiring.image_builds;
     let coordinator_content_eraser =
         awaken_server::data_subject_boundary::coordinator_content_eraser(
             coordinator_stores.captured_content_eraser.clone(),
@@ -225,10 +225,15 @@ pub(super) async fn assemble_runtime_process_router(
         captured_content_eraser: _,
         environment_work,
     } = coordinator.expect("Managed Execution role requires Coordinator stores");
-    let environment_execution = Arc::new(awaken_protocol_managed::EnvironmentExecutionState::new(
+    let environment_execution = awaken_protocol_managed::EnvironmentExecutionState::new(
         environment_work,
         executable_environment_catalog,
-    ));
+    );
+    let environment_execution = match executable_environment_image_builds {
+        Some(builds) => environment_execution.with_image_readiness(builds),
+        None => environment_execution,
+    };
+    let environment_execution = Arc::new(environment_execution);
     let resource_catalog = resource_component.resource_catalog();
     let (
         control,
@@ -349,14 +354,6 @@ pub(super) async fn assemble_runtime_process_router(
     if let Some(credentials) = credential_materializer.clone() {
         host_builder = host_builder.with_credential_materializer(credentials);
     }
-    host_builder = host_builder.with_tool_executor_provider(Arc::new(
-        awaken_server::placement::ConfigToolExecutorProvider::from_declared_hands(
-            Arc::new(executable_agent_registration::CatalogDeclaredHandSource(
-                executable_agent_catalog.clone(),
-            )),
-            hand_executors,
-        ),
-    ));
     if let Some(materializer) = model_wiring.materializer {
         host_builder = host_builder.with_inference_materializer(materializer);
     }

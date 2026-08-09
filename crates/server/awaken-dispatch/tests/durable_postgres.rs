@@ -444,6 +444,17 @@ async fn cross_thread_outbox_on_postgres() {
 }
 
 #[tokio::test]
+async fn message_idempotency_conflicts_on_postgres() {
+    let Some(pool) = harness::schema_pool("t_pg_message_idempotency").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool)
+        .await
+        .expect("dispatch");
+    harness::assert_message_idempotency_conflicts(&store).await;
+}
+
+#[tokio::test]
 async fn scheduled_delivery_due_on_postgres() {
     let Some(pool) = harness::schema_pool("t_pg_sched").await else {
         return;
@@ -452,6 +463,17 @@ async fn scheduled_delivery_due_on_postgres() {
         .await
         .expect("dispatch");
     harness::assert_scheduled_due(&store).await;
+}
+
+#[tokio::test]
+async fn millis_boundaries_on_postgres() {
+    let Some(pool) = harness::schema_pool("t_pg_millis_boundaries").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool)
+        .await
+        .expect("dispatch");
+    harness::assert_millis_boundaries(&store).await;
 }
 
 #[tokio::test]

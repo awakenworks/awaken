@@ -69,6 +69,7 @@ impl awaken_session_contract::ApplicationSessionContributionApi
                     sandbox: serde_json::json!({}),
                     sandbox_provisioning: Default::default(),
                     packages: Default::default(),
+                    prepared_image: None,
                     network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
                     credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
                         inference_holder: holder.clone(),

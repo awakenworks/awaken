@@ -4,7 +4,7 @@
 //! `StoredPublication` remains authoritative and exact historical registrations
 //! remain addressable after current availability changes.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
@@ -110,25 +110,6 @@ impl ExecutableAgentCatalog {
             .current
             .get(&(workspace_id.to_owned(), agent_id.to_owned()))
             .is_some_and(|entry| entry.registration.is_none())
-    }
-
-    pub fn declared_hand_for_agent(&self, agent_id: &str) -> Result<Option<String>, String> {
-        let state = self.state.read().expect("executable Agent catalog");
-        let mut declarations = state
-            .current
-            .iter()
-            .filter(|((_, installed_id), entry)| {
-                installed_id == agent_id && entry.registration.is_some()
-            })
-            .filter_map(|(_, entry)| entry.registration.as_ref()?.declared_hand.clone())
-            .collect::<BTreeSet<_>>();
-        match declarations.len() {
-            0 => Ok(None),
-            1 => Ok(declarations.pop_first()),
-            _ => Err(format!(
-                "Agent id `{agent_id}` has ambiguous Hand declarations across Workspaces"
-            )),
-        }
     }
 
     fn register_locked(
@@ -438,7 +419,6 @@ mod test_support {
             source_revision: revision,
             snapshot,
             session_profile: ExecutableAgentSessionProfile::default(),
-            declared_hand: Some("hand-a".into()),
         }
     }
 }
@@ -469,7 +449,7 @@ mod tests {
             "R2"
         );
         let mut conflict = rev1.clone();
-        conflict.declared_hand = Some("other".into());
+        conflict.session_profile.system = Some("conflicting projection".into());
         assert!(
             matches!(
                 registrar.register(conflict).await,

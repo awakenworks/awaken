@@ -22,7 +22,8 @@ use crate::dispatch::{
     DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
     DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome,
     SubmitOptions, can_admit_attempt_credentials, compile_attempt_credential_bindings,
-    installed_worker_credential_capabilities, verify_credential_realization_receipt,
+    installed_worker_credential_capabilities, normalize_pending_millis,
+    verify_credential_realization_receipt,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::{
@@ -148,7 +149,7 @@ impl DispatchQueue for SqliteDispatchStore {
                      AND lease_owner = ?2 AND lease_until IS NOT NULL \
                      AND lease_until >= ?3)"
                 ),
-                params![run, owner, now_ms as i64],
+                params![run, owner, crate::clock::db_millis(now_ms)],
                 |row| row.get(0),
             )
             .map_err(reject)
@@ -341,30 +342,15 @@ impl DispatchQueue for SqliteDispatchStore {
         now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let input = normalize_pending_millis(input);
         let run_id = input.run_id.0.clone();
         let owner = owner.to_string();
-        let result_json = json(&input.result)?;
         let capabilities = capabilities.clone();
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
-            tx.execute(
-                &format!(
-                    "INSERT INTO {p}_pending \
-                     (message_id, run_id, thread_id, correlation_id, result, available_at) \
-                     VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(message_id) DO NOTHING"
-                ),
-                params![
-                    input.message_id,
-                    input.run_id.0,
-                    input.thread_id.0,
-                    input.correlation_id,
-                    result_json,
-                    input.available_at_ms.map(|time| time as i64)
-                ],
-            )
-            .map_err(reject)?;
+            append_pending_row(&tx, p, &input)?;
             let claimed = claim_exact_transaction(
                 &tx,
                 &run_id,
@@ -387,29 +373,14 @@ impl DispatchQueue for SqliteDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let input = normalize_pending_millis(input);
         let run_id = input.run_id.0.clone();
         let worker = worker.clone();
-        let result_json = json(&input.result)?;
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
-            tx.execute(
-                &format!(
-                    "INSERT INTO {p}_pending \
-                     (message_id, run_id, thread_id, correlation_id, result, available_at) \
-                     VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(message_id) DO NOTHING"
-                ),
-                params![
-                    input.message_id,
-                    input.run_id.0,
-                    input.thread_id.0,
-                    input.correlation_id,
-                    result_json,
-                    input.available_at_ms.map(|time| time as i64)
-                ],
-            )
-            .map_err(reject)?;
+            append_pending_row(&tx, p, &input)?;
             let claimed = claim_exact_transaction(
                 &tx,
                 &run_id,
@@ -521,7 +492,7 @@ impl DispatchQueue for SqliteDispatchStore {
             let row = |sql: &str, bind_now: bool| -> Result<Option<String>, DispatchError> {
                 let map = |r: &rusqlite::Row| r.get::<_, String>(0);
                 if bind_now {
-                    tx.query_row(sql, params![now_ms as i64], map)
+                    tx.query_row(sql, params![crate::clock::db_millis(now_ms)], map)
                 } else {
                     tx.query_row(sql, [], map)
                 }
@@ -581,7 +552,7 @@ impl DispatchQueue for SqliteDispatchStore {
             let selected = {
                 let mut stmt = tx.prepare(&sql).map_err(reject)?;
                 let rows = stmt
-                    .query_map(params![now_ms as i64], |row| {
+                    .query_map(params![crate::clock::db_millis(now_ms)], |row| {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
@@ -678,7 +649,7 @@ impl DispatchQueue for SqliteDispatchStore {
             let selected = {
                 let mut stmt = tx.prepare(&sql).map_err(reject)?;
                 let rows = stmt
-                    .query_map(params![now_ms as i64], |row| {
+                    .query_map(params![crate::clock::db_millis(now_ms)], |row| {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
@@ -825,7 +796,11 @@ impl DispatchQueue for SqliteDispatchStore {
                         "UPDATE {p}_dispatch SET lease_until = ?1 \
                          WHERE run_id = ?2 AND status = 'running' AND lease_owner = ?3"
                     ),
-                    params![(now_ms + lease_ms) as i64, run_id, owner],
+                    params![
+                        crate::clock::db_millis(crate::clock::deadline_millis(now_ms, lease_ms)),
+                        run_id,
+                        owner
+                    ],
                 )
                 .map_err(reject)?;
             Ok(n > 0)
@@ -947,7 +922,7 @@ impl DispatchQueue for SqliteDispatchStore {
                            AND (i.available_at IS NULL OR i.available_at <= ?1)\
                          )))"
                     ),
-                    params![now_ms as i64],
+                    params![crate::clock::db_millis(now_ms)],
                     |row| row.get(0),
                 )
                 .map_err(reject)?;
@@ -974,9 +949,12 @@ impl DispatchQueue for SqliteDispatchStore {
                          AND lease_until IS NOT NULL AND lease_until < ?3"
                     ),
                     params![
-                        (now_ms + lease_ms) as i64,
+                        crate::clock::db_millis(crate::clock::deadline_millis(now_ms, lease_ms)),
                         owner,
-                        (now_ms + lease_ms / 2) as i64
+                        crate::clock::db_millis(crate::clock::deadline_millis(
+                            now_ms,
+                            lease_ms / 2
+                        ))
                     ],
                 )
                 .map_err(reject)?;
@@ -1150,14 +1128,17 @@ impl DispatchQueue for SqliteDispatchStore {
                     ))
                     .map_err(reject)?;
                 let rows = statement
-                    .query_map(params![now_ms as i64, max_attempts as i64], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                            row.get::<_, i64>(2)?,
-                            row.get::<_, i64>(3)?,
-                        ))
-                    })
+                    .query_map(
+                        params![crate::clock::db_millis(now_ms), max_attempts as i64],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, Option<String>>(1)?,
+                                row.get::<_, i64>(2)?,
+                                row.get::<_, i64>(3)?,
+                            ))
+                        },
+                    )
                     .map_err(reject)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(reject)?
             };
@@ -1175,7 +1156,7 @@ impl DispatchQueue for SqliteDispatchStore {
                              lease_owner = NULL, lease_until = NULL, dead_lettered_at = ?1 \
                              WHERE run_id = ?2 AND status = 'running' AND lease_epoch = ?3"
                         ),
-                        params![now_ms as i64, run_id, epoch],
+                        params![crate::clock::db_millis(now_ms), run_id, epoch],
                     )
                     .map_err(reject)?;
                 if changed == 0 {
@@ -1397,13 +1378,13 @@ impl DispatchQueue for SqliteDispatchStore {
                     "DELETE FROM {p}_pending WHERE run_id IN \
                      (SELECT run_id FROM {p}_dispatch WHERE {cond})"
                 ),
-                params![cutoff_ms as i64],
+                params![crate::clock::db_millis(cutoff_ms)],
             )
             .map_err(reject)?;
             let n = tx
                 .execute(
                     &format!("DELETE FROM {p}_dispatch WHERE {cond}"),
-                    params![cutoff_ms as i64],
+                    params![crate::clock::db_millis(cutoff_ms)],
                 )
                 .map_err(reject)?;
             tx.commit().map_err(reject)?;
@@ -1416,28 +1397,9 @@ impl DispatchQueue for SqliteDispatchStore {
 #[async_trait]
 impl Inbox for SqliteDispatchStore {
     async fn append(&self, input: PendingInput) -> Result<bool, DispatchError> {
-        let result_json = json(&input.result)?;
-        self.with_conn(move |conn, p| {
-            let changed = conn
-                .execute(
-                    &format!(
-                        "INSERT INTO {p}_pending \
-                         (message_id, run_id, thread_id, correlation_id, result, available_at) \
-                         VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(message_id) DO NOTHING"
-                    ),
-                    params![
-                        input.message_id,
-                        input.run_id.0,
-                        input.thread_id.0,
-                        input.correlation_id,
-                        result_json,
-                        input.available_at_ms.map(|t| t as i64)
-                    ],
-                )
-                .map_err(reject)?;
-            Ok(changed > 0)
-        })
-        .await
+        let input = normalize_pending_millis(input);
+        self.with_conn(move |conn, p| append_pending_row(conn, p, &input))
+            .await
     }
 
     async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
@@ -1471,7 +1433,10 @@ impl Inbox for SqliteDispatchStore {
                         run_id: RunId(run_id),
                         thread_id: thread.clone(),
                         correlation_id,
-                        available_at_ms: available_at.map(|t| t as u64),
+                        available_at_ms: available_at
+                            .map(crate::clock::millis_from_db)
+                            .transpose()
+                            .map_err(|err| DispatchError::Rejected(err.to_string()))?,
                         result: serde_json::from_str(&result).map_err(json_err)?,
                     },
                     revision: revision as u64,
@@ -1609,6 +1574,7 @@ impl DispatchOperationalFeed for SqliteDispatchStore {
 #[async_trait]
 impl Outbox for SqliteDispatchStore {
     async fn stage(&self, input: PendingInput) -> Result<bool, DispatchError> {
+        let input = normalize_pending_millis(input);
         let payload = json(&input)?;
         self.with_conn(move |conn, p| {
             let changed = conn
@@ -1617,10 +1583,30 @@ impl Outbox for SqliteDispatchStore {
                         "INSERT INTO {p}_outbox (message_id, payload) VALUES (?1,?2) \
                          ON CONFLICT(message_id) DO NOTHING"
                     ),
-                    params![input.message_id, payload],
+                    params![&input.message_id, payload],
                 )
                 .map_err(reject)?;
-            Ok(changed > 0)
+            if changed > 0 {
+                return Ok(true);
+            }
+            let existing = conn
+                .query_row(
+                    &format!("SELECT payload FROM {p}_outbox WHERE message_id = ?1"),
+                    params![&input.message_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(reject)?
+                .map(|stored| serde_json::from_str::<PendingInput>(&stored).map_err(json_err))
+                .transpose()?;
+            match existing {
+                Some(existing) if existing == input => Ok(false),
+                Some(_) => Err(idempotency_conflict(&input.message_id, "outbox")),
+                None => Err(DispatchError::Rejected(format!(
+                    "outbox `{}` vanished during idempotency validation",
+                    input.message_id
+                ))),
+            }
         })
         .await
     }
@@ -1639,29 +1625,15 @@ impl Outbox for SqliteDispatchStore {
 
             let mut relayed = 0;
             for (message_id, payload) in staged {
-                let input: PendingInput = serde_json::from_str(&payload).map_err(json_err)?;
-                let result_json = json(&input.result)?;
+                let input = normalize_pending_millis(
+                    serde_json::from_str::<PendingInput>(&payload).map_err(json_err)?,
+                );
                 // One transaction per message: idempotent target append, then
                 // drop the outbox row.
                 let tx = conn
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(reject)?;
-                tx.execute(
-                    &format!(
-                        "INSERT INTO {p}_pending \
-                         (message_id, run_id, thread_id, correlation_id, result, available_at) \
-                         VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(message_id) DO NOTHING"
-                    ),
-                    params![
-                        input.message_id,
-                        input.run_id.0,
-                        input.thread_id.0,
-                        input.correlation_id,
-                        result_json,
-                        input.available_at_ms.map(|t| t as i64)
-                    ],
-                )
-                .map_err(reject)?;
+                append_pending_row(&tx, p, &input)?;
                 tx.execute(
                     &format!("DELETE FROM {p}_outbox WHERE message_id = ?1"),
                     params![message_id],
@@ -1705,7 +1677,7 @@ fn pending_for_run(
         ))
         .map_err(reject)?;
     let rows = stmt
-        .query_map(params![run_id, now_ms as i64], |row| {
+        .query_map(params![run_id, crate::clock::db_millis(now_ms)], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -1723,7 +1695,10 @@ fn pending_for_run(
             run_id: RunId(run_id.to_string()),
             thread_id: ThreadId(thread_id),
             correlation_id,
-            available_at_ms: available_at.map(|time| time as u64),
+            available_at_ms: available_at
+                .map(crate::clock::millis_from_db)
+                .transpose()
+                .map_err(|err| DispatchError::Rejected(err.to_string()))?,
             result: serde_json::from_str(&result).map_err(json_err)?,
         });
     }
@@ -1782,17 +1757,21 @@ fn claim_exact_transaction(
          ) LIMIT 1"
     );
     let picked: Option<PickedDispatch> = tx
-        .query_row(&sql, params![requested_run, now_ms as i64], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-            ))
-        })
+        .query_row(
+            &sql,
+            params![requested_run, crate::clock::db_millis(now_ms)],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
         .optional()
         .map_err(reject)?;
     let Some((
@@ -1838,7 +1817,7 @@ fn claim_exact_transaction(
             },
         )?
     };
-    let expires = now_ms + lease_ms;
+    let expires = crate::clock::deadline_millis(now_ms, lease_ms);
     tx.execute(
         &format!(
             "UPDATE {prefix}_dispatch SET status = 'running', lease_owner = ?1, \
@@ -1848,7 +1827,7 @@ fn claim_exact_transaction(
         ),
         params![
             owner,
-            expires as i64,
+            crate::clock::db_millis(expires),
             i64::from(status == "running"),
             requested_run,
             claim_epoch as i64,
@@ -1920,6 +1899,91 @@ fn claim_exact_transaction(
 
 fn json<T: serde::Serialize>(value: &T) -> Result<String, DispatchError> {
     serde_json::to_string(value).map_err(json_err)
+}
+
+/// The one SQLite pending insert path, reused by direct delivery, Inbox append,
+/// and outbox relay so exact retries and identity conflicts cannot diverge.
+fn append_pending_row(
+    conn: &Connection,
+    prefix: &str,
+    input: &PendingInput,
+) -> Result<bool, DispatchError> {
+    let changed = conn
+        .execute(
+            &format!(
+                "INSERT INTO {prefix}_pending \
+                 (message_id, run_id, thread_id, correlation_id, result, available_at) \
+                 VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(message_id) DO NOTHING"
+            ),
+            params![
+                &input.message_id,
+                &input.run_id.0,
+                &input.thread_id.0,
+                &input.correlation_id,
+                json(&input.result)?,
+                input.available_at_ms.map(crate::clock::db_millis)
+            ],
+        )
+        .map_err(reject)?;
+    if changed > 0 {
+        return Ok(true);
+    }
+    match load_pending_input(conn, prefix, &input.message_id)? {
+        Some(existing) if existing == *input => Ok(false),
+        Some(_) => Err(idempotency_conflict(&input.message_id, "pending-input")),
+        None => Err(DispatchError::Rejected(format!(
+            "pending-input `{}` vanished during idempotency validation",
+            input.message_id
+        ))),
+    }
+}
+
+fn load_pending_input(
+    conn: &Connection,
+    prefix: &str,
+    message_id: &str,
+) -> Result<Option<PendingInput>, DispatchError> {
+    conn.query_row(
+        &format!(
+            "SELECT run_id, thread_id, correlation_id, result, available_at \
+             FROM {prefix}_pending WHERE message_id = ?1"
+        ),
+        params![message_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+            ))
+        },
+    )
+    .optional()
+    .map_err(reject)?
+    .map(
+        |(run_id, thread_id, correlation_id, result, available_at)| {
+            Ok(PendingInput {
+                message_id: message_id.to_string(),
+                run_id: RunId(run_id),
+                thread_id: ThreadId(thread_id),
+                correlation_id,
+                available_at_ms: available_at.map(u64::try_from).transpose().map_err(|_| {
+                    DispatchError::Rejected(format!(
+                        "pending-input `{message_id}` has a negative delivery time"
+                    ))
+                })?,
+                result: serde_json::from_str(&result).map_err(json_err)?,
+            })
+        },
+    )
+    .transpose()
+}
+
+fn idempotency_conflict(message_id: &str, aggregate: &str) -> DispatchError {
+    DispatchError::Rejected(format!(
+        "idempotency key `{message_id}` was reused with another {aggregate} payload"
+    ))
 }
 
 fn json_err(err: serde_json::Error) -> DispatchError {

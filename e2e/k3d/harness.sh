@@ -31,9 +31,9 @@ k3d_delete_cluster() {
   k3d cluster delete "$cluster" >/dev/null 2>&1 || true
 }
 
-# k3d_create_cluster <name> <agent-count> [eviction-percent]
+# k3d_create_cluster <name> <agent-count> [eviction-percent] [registry-coordinate]
 k3d_create_cluster() {
-  local cluster="$1" agents="$2" eviction="${3:-2}"
+  local cluster="$1" agents="$2" eviction="${3:-2}" registry="${4:-}"
   k3d_validate_name "$cluster" || {
     echo "invalid k3d cluster name: $cluster" >&2
     return 2
@@ -46,6 +46,10 @@ k3d_create_cluster() {
     echo "invalid k3d eviction percentage: $eviction" >&2
     return 2
   }
+  [[ -z "$registry" || "$registry" =~ ^[a-zA-Z0-9.-]+:[0-9]+$ ]] || {
+    echo "invalid k3d Registry coordinate: $registry" >&2
+    return 2
+  }
   k3d_delete_cluster "$cluster"
   local threshold="eviction-hard=imagefs.available<${eviction}%,nodefs.available<${eviction}%"
   local args=(
@@ -56,6 +60,7 @@ k3d_create_cluster() {
   if (( agents > 0 )); then
     args+=(--k3s-arg "--kubelet-arg=$threshold@agent:*")
   fi
+  [[ -z "$registry" ]] || args+=(--registry-use "$registry")
   k3d "${args[@]}" >/dev/null
 }
 
@@ -183,8 +188,9 @@ k3d_harness_selftest() (
   # image coordinates -> one single-platform archive per unique image plus the
   # canonical Pause/CoreDNS prerequisites; H5 malformed port-forward identity ->
   # rejection before kubectl; H6 valid preferred port -> an available IPv4 port;
-  # H7 malformed preferred port -> rejection before a socket probe. The scenario
-  # tests own network and topology effects.
+  # H7 malformed preferred port -> rejection before a socket probe; H8 an exact
+  # Registry coordinate is attached once and malformed input is rejected before
+  # cluster mutation. The scenario tests own network and topology effects.
   local k3d_calls=() docker_saves=()
   k3d() { k3d_calls+=("$*"); }
 
@@ -203,6 +209,11 @@ k3d_harness_selftest() (
   ! k3d_create_cluster "--all" 1 2
   ! k3d_create_cluster "awaken-test" many 2
   ! k3d_create_cluster "awaken-test" 1 low
+  (( ${#k3d_calls[@]} == 0 ))
+  k3d_create_cluster "awaken-test" 1 2 "k3d-awaken-registry.localhost:5111"
+  [[ "${k3d_calls[1]}" = *"--registry-use k3d-awaken-registry.localhost:5111"* ]]
+  k3d_calls=()
+  ! k3d_create_cluster "awaken-test" 1 2 "--all"
   (( ${#k3d_calls[@]} == 0 ))
   ! k3d_start_port_forward "--all" "svc/brain" 38080 3000 /tmp/unused
   ! k3d_start_port_forward "awaken-test" "deployment/brain" 38080 3000 /tmp/unused

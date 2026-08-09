@@ -1,0 +1,28 @@
+[package]
+name = "awaken-environment-image-build"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+package-class = "server"
+authority = "coordinator"
+
+[dependencies]
+async-trait.workspace = true
+awaken-environment-contract.workspace = true
+awaken-environment-realization-contract.workspace = true
+awaken-executable-environment-contract.workspace = true
+awaken-scoped-migration = { workspace = true, features = ["postgres"] }
+awaken-scoped-migration-sqlite.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+tokio = { workspace = true, features = ["sync", "time"] }
+
+[dev-dependencies]
+awaken-executable-environment-catalog.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "awaken-environment-realization-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+package-class = "contract"
+authority = "coordinator"
+
+[dependencies]
+async-trait.workspace = true
+awaken-environment-contract.workspace = true
+awaken-executable-environment-contract.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

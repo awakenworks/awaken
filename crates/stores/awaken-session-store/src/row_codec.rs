@@ -158,6 +158,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         sandbox,
         sandbox_provisioning: Default::default(),
         packages,
+        prepared_image: None,
         network,
         credential_realization,
     };

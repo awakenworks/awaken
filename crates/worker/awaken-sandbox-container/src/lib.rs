@@ -24,14 +24,12 @@ use environment_owned::EnvironmentOwnedProcess;
 mod cgroup;
 mod egress;
 mod files;
-mod package_coordinator;
 mod packages;
 mod podman_plan;
 mod recovery;
 mod secret;
 pub use cgroup::CgroupCaps;
 pub use egress::{EgressError, EgressRealization, ForwardProxy, NetworkMode, egress_plan};
-pub use package_coordinator::{CoordinatedPackageProvisioner, PackageCoordinatorPolicy};
 pub use packages::package_containerfile;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 pub use secret::SecretBytes;
@@ -1060,31 +1058,22 @@ pub struct RuntimeAgentProcess {
 /// a registry-backed service shared by Kubernetes workers.
 #[async_trait]
 pub trait PackageImageProvisioner: Send + Sync {
-    /// Return the semantic identity used to coordinate one package-image build.
-    ///
-    /// Builders that can resolve mutable image references must override this and
-    /// include the resolved base-image identity plus their destination scope. The
-    /// coordinator hashes the returned value before using it as a journal key.
-    async fn package_image_coordination_key(
-        &self,
-        base_image: &str,
-        packages: &pc::PackageRequirements,
-        network: &pc::NetworkPolicy,
-    ) -> Result<String, RuntimeError> {
-        serde_json::to_string(&(base_image, packages, network))
-            .map_err(|error| RuntimeError::Backend(error.to_string()))
+    /// Resolve an operator reference before Coordinator creates its durable
+    /// demand key. Local engines return an image id; remote runtimes return a
+    /// Registry digest.
+    async fn package_base_image_identity(&self, reference: &str) -> Result<String, RuntimeError> {
+        Ok(reference.to_owned())
     }
 
     async fn prepare_package_image(
         &self,
         base_image: &str,
         packages: &pc::PackageRequirements,
-        _network: &pc::NetworkPolicy,
+        network: &pc::NetworkPolicy,
     ) -> Result<String, RuntimeError>;
 
-    /// Verify that a previously persisted immutable reference is still
-    /// available to this builder/runtime. Coordinators use this before returning
-    /// a durable cache hit after an engine prune or registry outage.
+    /// Verify that a previously persisted immutable reference remains
+    /// available after local cache pruning or a registry outage.
     async fn package_image_available(&self, _image: &str) -> Result<bool, RuntimeError> {
         Ok(false)
     }
@@ -1415,12 +1404,13 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 provisioner
                     .prepare_package_image(&base_image, &plan.packages, &spec.network)
                     .await
+                    .map_err(err)?
             } else {
                 self.runtime
                     .prepare_package_image(&base_image, &plan.packages, &spec.network)
                     .await
-            }
-            .map_err(err)?;
+                    .map_err(err)?
+            };
             plan.rootfs = RootfsPlan::Image(plan.image.clone());
         }
         // Resolve + materialize each mount's bytes: self-contained content (codex config,
@@ -1961,10 +1951,12 @@ pub mod net;
 #[cfg(feature = "docker")]
 pub mod docker;
 
+#[cfg(feature = "k8s")]
+pub mod k8s;
 /// Real Kubernetes backend (kube). Gated behind the `k8s` feature; compile-verified
 /// here, running requires a cluster.
 #[cfg(feature = "k8s")]
-pub mod k8s;
+mod k8s_package_image;
 
 /// Rootless Podman backend (daemonless CLI fork-exec). Gated behind the `podman`
 /// feature; compile-verified here, running requires the `podman` binary.

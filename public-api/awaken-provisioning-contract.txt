@@ -32,13 +32,12 @@ pub awaken_provisioning_contract::EnvironmentKind::LocalDir
 pub awaken_provisioning_contract::EnvironmentKind::LocalDir::path_template: alloc::string::String
 pub awaken_provisioning_contract::EnvironmentKind::Sandbox
 pub awaken_provisioning_contract::EnvironmentKind::Scope
-pub enum awaken_provisioning_contract::ExecutionShape
-pub awaken_provisioning_contract::ExecutionShape::NoSandbox
-pub awaken_provisioning_contract::ExecutionShape::Sandbox
 pub enum awaken_provisioning_contract::IsolationClass
 pub awaken_provisioning_contract::IsolationClass::Container
 pub awaken_provisioning_contract::IsolationClass::Namespace
 pub awaken_provisioning_contract::IsolationClass::Workdir
+impl core::default::Default for awaken_provisioning_contract::IsolationClass
+pub fn awaken_provisioning_contract::IsolationClass::default() -> Self
 pub enum awaken_provisioning_contract::LeaseLiveness
 pub awaken_provisioning_contract::LeaseLiveness::Expiring
 pub awaken_provisioning_contract::LeaseLiveness::Live
@@ -270,6 +269,7 @@ pub awaken_provisioning_contract::SandboxCapabilities::secret_egress_substitutio
 pub awaken_provisioning_contract::SandboxCapabilities::tool_transparent: bool
 impl awaken_provisioning_contract::SandboxCapabilities
 pub fn awaken_provisioning_contract::SandboxCapabilities::satisfies(&self, &awaken_provisioning_contract::SandboxSpec) -> bool
+pub fn awaken_provisioning_contract::SandboxCapabilities::satisfies_requirements(&self, &awaken_provisioning_contract::SandboxRequirements) -> bool
 pub const fn awaken_provisioning_contract::SandboxCapabilities::supports_secret_egress_without_bypass(&self) -> bool
 pub struct awaken_provisioning_contract::SandboxError(pub alloc::string::String)
 impl awaken_provisioning_contract::SandboxError
@@ -302,6 +302,18 @@ impl awaken_provisioning_contract::SandboxOverride
 pub fn awaken_provisioning_contract::SandboxOverride::apply(&self, awaken_provisioning_contract::SandboxSpec) -> awaken_provisioning_contract::SandboxSpec
 pub fn awaken_provisioning_contract::SandboxOverride::from_config_value(&serde_json::value::Value) -> core::option::Option<Self>
 pub fn awaken_provisioning_contract::SandboxOverride::is_empty(&self) -> bool
+pub struct awaken_provisioning_contract::SandboxRequirements
+pub awaken_provisioning_contract::SandboxRequirements::custom_rootfs: bool
+pub awaken_provisioning_contract::SandboxRequirements::enforced_network_allowlist: bool
+pub awaken_provisioning_contract::SandboxRequirements::enforced_readonly: bool
+pub awaken_provisioning_contract::SandboxRequirements::isolation: awaken_provisioning_contract::IsolationClass
+pub awaken_provisioning_contract::SandboxRequirements::network_isolation: bool
+pub awaken_provisioning_contract::SandboxRequirements::package_provisioning: bool
+pub awaken_provisioning_contract::SandboxRequirements::path_fidelity: bool
+pub awaken_provisioning_contract::SandboxRequirements::resource_limits: bool
+pub awaken_provisioning_contract::SandboxRequirements::tool_transparent: bool
+impl awaken_provisioning_contract::SandboxRequirements
+pub fn awaken_provisioning_contract::SandboxRequirements::from_spec(&awaken_provisioning_contract::SandboxSpec, bool) -> Self
 pub struct awaken_provisioning_contract::SandboxSpec
 pub awaken_provisioning_contract::SandboxSpec::env: alloc::vec::Vec<awaken_provisioning_contract::EnvVar>
 pub awaken_provisioning_contract::SandboxSpec::extra: core::option::Option<serde_json::value::Value>
@@ -363,7 +375,6 @@ pub const fn awaken_provisioning_contract::capability_requirements_satisfied(awa
 pub fn awaken_provisioning_contract::check_environment_soundness(&awaken_provisioning_contract::EnvironmentDecl) -> core::result::Result<(), awaken_provisioning_contract::AdmissionError>
 pub fn awaken_provisioning_contract::decide_reap(&awaken_provisioning_contract::LeaseGrant, awaken_provisioning_contract::LivenessSignals) -> core::option::Option<awaken_provisioning_contract::ReapCause>
 pub async fn awaken_provisioning_contract::materialize_process_command(&[awaken_provisioning_contract::EnvVar], awaken_provisioning_contract::Command, core::option::Option<&alloc::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>>) -> core::result::Result<awaken_provisioning_contract::MaterializedCommand, awaken_provisioning_contract::SandboxError>
-pub fn awaken_provisioning_contract::plan_shape(&awaken_provisioning_contract::SandboxSpec) -> awaken_provisioning_contract::ExecutionShape
 pub fn awaken_provisioning_contract::prepare_environment(&awaken_provisioning_contract::SandboxSpec, &awaken_provisioning_contract::SandboxCapabilities) -> core::result::Result<awaken_provisioning_contract::EnvironmentPlan, awaken_provisioning_contract::PrepareError>
 pub fn awaken_provisioning_contract::reconcile_adoption(&[awaken_provisioning_contract::SandboxHandle], &[awaken_provisioning_contract::SandboxHandle]) -> awaken_provisioning_contract::AdoptionPlan
 pub async fn awaken_provisioning_contract::reconcile_and_apply(&dyn awaken_provisioning_contract::SandboxProvider, &[awaken_provisioning_contract::SandboxHandle], &[awaken_provisioning_contract::SandboxHandle]) -> awaken_provisioning_contract::ReconcileOutcome

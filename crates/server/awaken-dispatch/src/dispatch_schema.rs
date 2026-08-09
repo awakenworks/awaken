@@ -117,6 +117,10 @@ const FILES: &[(&str, &str)] = &[
         "V0023__dispatch_operation_recorded_at.sql",
         include_str!("migrations/V0023__dispatch_operation_recorded_at.sql"),
     ),
+    (
+        "V0024__normalize_signed_millis.sql",
+        include_str!("migrations/V0024__normalize_signed_millis.sql"),
+    ),
 ];
 
 /// Parse the version from a `Vnnnn__slug.sql` file name (`V0004__…` ⇒ 4). A name
@@ -177,11 +181,96 @@ mod tests {
     #[test]
     fn versions_parse_from_file_names() {
         let bundle = dispatch_bundle().expect("bundle builds");
-        // Cause/effect decision table: empty ledgers apply the immutable V1..V23
+        // Cause/effect decision table: empty ledgers apply the immutable V1..V24
         // stream; any published prefix applies only the missing suffix; renumbering
         // effective migrations over retired V15/V16 breaks checksum/version proof.
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, (1..=23).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=24).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn v24_normalizes_legacy_negative_millis_during_forward_migration() {
+        use awaken_scoped_migration::MigrationBundle;
+        use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
+        use rusqlite::Connection;
+
+        // CE-TM10 decision rules:
+        // R1 published V1..V23 + non-negative millis -> V24 preserves the value;
+        // R2 published V1..V23 + legacy negative millis -> V24 maps it to i64::MAX;
+        // R3 current V1..V24 ledger -> reopening applies nothing (runner idempotency).
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        let full = dispatch_bundle().expect("bundle builds");
+        let published = MigrationBundle::new(BUNDLE_ID, full.migrations()[..23].to_vec())
+            .expect("published bundle");
+        let runner = SqliteMigrationRunner::with_prefix(NS).expect("runner");
+        runner
+            .run_bundle(&conn, &published)
+            .expect("apply published prefix");
+
+        conn.execute_batch(
+            "INSERT INTO runtime_dispatch
+                 (run_id, thread_id, request, status, lease_until, dead_lettered_at)
+                 VALUES ('negative', 'thread', '{}', 'pending', -1, -2),
+                        ('positive', 'thread', '{}', 'pending', 7, 8);
+             INSERT INTO runtime_pending
+                 (message_id, run_id, thread_id, correlation_id, result, available_at)
+                 VALUES ('negative', 'negative', 'thread', 'c1', '{}', -3),
+                        ('positive', 'positive', 'thread', 'c2', '{}', 9);
+             INSERT INTO runtime_dispatch_operation (run_id, operation, recorded_at_ms)
+                 VALUES ('negative', '{}', -4), ('positive', '{}', 10);",
+        )
+        .expect("seed legacy rows");
+
+        let applied = runner.run_bundle(&conn, &full).expect("apply V24");
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].version, 24);
+        let maximum = i64::MAX;
+        assert_eq!(
+            conn.query_row(
+                "SELECT lease_until FROM runtime_dispatch WHERE run_id = 'negative'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            maximum
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT dead_lettered_at FROM runtime_dispatch WHERE run_id = 'negative'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            maximum
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT available_at FROM runtime_pending WHERE message_id = 'negative'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            maximum
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT recorded_at_ms FROM runtime_dispatch_operation WHERE run_id = 'negative'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            maximum
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT lease_until + dead_lettered_at FROM runtime_dispatch WHERE run_id = 'positive'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            15
+        );
+        assert!(runner.run_bundle(&conn, &full).expect("reopen").is_empty());
     }
 
     #[test]

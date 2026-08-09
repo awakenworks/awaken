@@ -2,6 +2,10 @@
 
 - Status: Proposed
 - Date: 2026-07-16
+- Amended 2026-08-01 by [ADR-0073](0073-session-environment-owned-hand-and-worker-capability-placement.md):
+  the proposed `hand` Agent field, `declared_hand`, deployment
+  `hand_connections`, and `ToolExecutorProvider` bridge are retired. Environment
+  and durable Worker placement are the only execution authorities.
 - Amended 2026-07-30: each declarative `AcpCli` row owns its supported model API
   dialect tokens. The resolver-side CLI→dialect table and its parallel error
   vocabulary are retired; publication intersects an Offering with that one

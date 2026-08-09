@@ -119,7 +119,11 @@ fn committed() -> StepOutcome {
 }
 
 async fn frames() -> Vec<Value> {
-    let app = awaken_protocol_ag_ui::router::router(Arc::new(StreamingMock));
+    frames_for(Arc::new(StreamingMock)).await
+}
+
+async fn frames_for(runtime: Arc<dyn ProtocolRuntime>) -> Vec<Value> {
+    let app = awaken_protocol_ag_ui::router::router(runtime);
     let body = json!({
         "threadId": "t1",
         "runId": "r1",
@@ -166,6 +170,152 @@ async fn streams_tool_call_args_then_closes_with_end_and_finish() {
         .map(|f| f["delta"].as_str().unwrap())
         .collect();
     assert_eq!(joined, "{\"path\":\"x\"}");
+}
+
+struct PrefixMock {
+    events: Vec<AgentEvent>,
+    outcome: StepOutcome,
+}
+
+#[async_trait::async_trait]
+impl ProtocolRuntime for PrefixMock {
+    async fn run(
+        &self,
+        _thread: &str,
+        _agent: Option<String>,
+        _messages: Vec<Message>,
+    ) -> Result<StepOutcome, DriverError> {
+        Ok(self.outcome.clone())
+    }
+
+    async fn run_streaming(
+        &self,
+        _thread: &str,
+        _agent: Option<String>,
+        _messages: Vec<Message>,
+        sink: Arc<dyn StreamSink>,
+    ) -> Result<StepOutcome, DriverError> {
+        for kind in self.events.clone() {
+            sink.send(Event {
+                run_id: RunId("r1".into()),
+                kind,
+            })
+            .await
+            .unwrap();
+        }
+        Ok(self.outcome.clone())
+    }
+
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _resume: Resume,
+    ) -> Result<StepOutcome, DriverError> {
+        unreachable!()
+    }
+
+    async fn pending(&self, _thread: &str) -> Option<Pending> {
+        None
+    }
+
+    async fn history(&self, _thread: &str) -> Vec<Message> {
+        Vec::new()
+    }
+
+    fn model(&self) -> String {
+        "mock".into()
+    }
+}
+
+#[tokio::test]
+async fn run_started_and_reasoning_only_prefix_keeps_committed_text_once() {
+    // CE-AG3/AG4 router rule: non-projected reasoning does not select a lossy
+    // close path, and a live RUN_STARTED is never repeated by completion.
+    let frames = frames_for(Arc::new(PrefixMock {
+        events: vec![
+            AgentEvent::Fact(Fact::RunStarted),
+            AgentEvent::Delta(Delta::ReasoningDelta {
+                delta: "hmm".into(),
+            }),
+        ],
+        outcome: StepOutcome {
+            new_messages: vec![Message::text(Id("a1".into()), Role::Assistant, "answer")],
+            terminal: Terminal::Finished,
+        },
+    }))
+    .await;
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|frame| frame["type"] == "RUN_STARTED")
+            .count(),
+        1
+    );
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|frame| frame["type"] == "TEXT_MESSAGE_CONTENT" && frame["delta"] == "answer")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn text_only_prefix_and_committed_tool_emit_one_complete_tool_bracket() {
+    // CE-AG7 router rule: L=empty and F={c1} after visible text requires a full
+    // tool bracket; the committed call must not appear as an orphan END.
+    let frames = frames_for(Arc::new(PrefixMock {
+        events: vec![
+            AgentEvent::Fact(Fact::RunStarted),
+            AgentEvent::Delta(Delta::TextDelta {
+                delta: "reading".into(),
+            }),
+        ],
+        outcome: committed(),
+    }))
+    .await;
+    for kind in ["TOOL_CALL_START", "TOOL_CALL_ARGS", "TOOL_CALL_END"] {
+        assert_eq!(
+            frames.iter().filter(|frame| frame["type"] == kind).count(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn live_only_tool_is_closed_when_not_present_in_committed_outcome() {
+    // CE-AG9 router rule: L={c1}, F=empty. Completion closes c1 before the
+    // terminal event so a client never retains an open tool input bracket.
+    let frames = frames_for(Arc::new(PrefixMock {
+        events: vec![
+            AgentEvent::Fact(Fact::RunStarted),
+            AgentEvent::Delta(Delta::ToolCallDelta {
+                id: "c1".into(),
+                name: "read".into(),
+                args_delta: "{".into(),
+            }),
+        ],
+        outcome: StepOutcome {
+            new_messages: Vec::new(),
+            terminal: Terminal::Finished,
+        },
+    }))
+    .await;
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|frame| frame["type"] == "TOOL_CALL_START")
+            .count(),
+        1
+    );
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|frame| frame["type"] == "TOOL_CALL_END")
+            .count(),
+        1
+    );
 }
 
 /// A runtime that streams best-effort live text until its sink closes, recording

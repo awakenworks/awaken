@@ -138,7 +138,6 @@ impl ConfigService {
                     source_revision: publication.source_revision,
                     snapshot: publication.snapshot,
                     session_profile,
-                    declared_hand: source.config.hand,
                 })
                 .await
                 .map_err(|error| error.to_string())?;

@@ -1173,6 +1173,7 @@ mod tests {
                         sandbox: serde_json::json!({}),
                         sandbox_provisioning: Default::default(),
                         packages: Default::default(),
+                        prepared_image: None,
                         network: SessionNetworkPolicy::Unrestricted,
                         credential_realization: CredentialRealizationProfile {
                             inference_holder: PlaintextHolder::new(

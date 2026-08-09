@@ -11,14 +11,13 @@
 //! authorization decision.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
-use awaken_ext_builtin_tools::MessageSender;
+use awaken_ext_builtin_tools::{MessageSendRequest, MessageSender};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::tool::ToolError;
 
@@ -31,27 +30,37 @@ use crate::dispatch::{DispatchQueue, Outbox, PendingInput};
 pub struct OutboxMessageSender<S> {
     store: Arc<S>,
     reader: Arc<dyn ThreadReader>,
-    seq: AtomicU64,
 }
 
 impl<S: DispatchQueue + Outbox> OutboxMessageSender<S> {
     /// Build the adapter from the dispatch store (to resolve the target thread's
     /// awaiting run and stage) and the commit boundary's read port (for its ticket).
     pub fn new(store: Arc<S>, reader: Arc<dyn ThreadReader>) -> Self {
-        Self {
-            store,
-            reader,
-            seq: AtomicU64::new(0),
-        }
+        Self { store, reader }
     }
 }
 
 #[async_trait]
 impl<S: DispatchQueue + Outbox + 'static> MessageSender for OutboxMessageSender<S> {
-    async fn send(&self, target_thread: &str, content: &str) -> Result<(), ToolError> {
-        let thread = ThreadId(target_thread.to_string());
-        let n = self.seq.fetch_add(1, Ordering::SeqCst);
-        let message_id = format!("{target_thread}-msg-{n}");
+    async fn send(&self, request: MessageSendRequest) -> Result<(), ToolError> {
+        let thread = ThreadId(request.target_thread.clone());
+        // CE-SM4..SM7: the optional caller key is scoped by the sending Run; when
+        // absent, the runtime-owned operation id is the stable retry identity.
+        // Payload is deliberately excluded so reuse with changed intent reaches
+        // the Outbox's canonical idempotency-conflict check instead of becoming a
+        // second message.
+        let identity = match request.idempotency_key.as_deref() {
+            Some(key) => ("caller-key", request.source_run_id.as_str(), key),
+            None => (
+                "operation",
+                request.source_run_id.as_str(),
+                request.operation_id.as_str(),
+            ),
+        };
+        let message_id = format!(
+            "send-message-{}",
+            awaken_agent_contract::stable_fingerprint(&identity)
+        );
 
         // Bind to the run awaiting on the thread if there is one; otherwise stage
         // an unbound delivery (empty run/correlation) the thread's next run
@@ -78,7 +87,7 @@ impl<S: DispatchQueue + Outbox + 'static> MessageSender for OutboxMessageSender<
                     thread_id: ticket.thread_id,
                     correlation_id: ticket.correlation_id,
                     available_at_ms: None,
-                    result: ResumeResult::Input(content.to_string()),
+                    result: ResumeResult::Input(request.content.clone()),
                 }
             }
             // An ordinary agent message never approves a protected tool, performs
@@ -90,10 +99,11 @@ impl<S: DispatchQueue + Outbox + 'static> MessageSender for OutboxMessageSender<
                 thread_id: thread,
                 correlation_id: String::new(),
                 available_at_ms: None,
-                result: ResumeResult::Input(content.to_string()),
+                result: ResumeResult::Input(request.content),
             },
         };
-        self.store
+        let _inserted = self
+            .store
             .stage(input)
             .await
             .map_err(|err| ToolError::Execution(err.to_string()))?;

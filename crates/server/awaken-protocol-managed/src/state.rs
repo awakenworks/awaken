@@ -1130,6 +1130,7 @@ mod tests {
             sandbox: serde_json::json!({"isolation": "namespace"}),
             sandbox_provisioning: Default::default(),
             packages: Default::default(),
+            prepared_image: None,
             network: awaken_session_contract::SessionNetworkPolicy::None,
             credential_realization: awaken_credential_contract::CredentialRealizationProfile {
                 inference_holder: holder.clone(),

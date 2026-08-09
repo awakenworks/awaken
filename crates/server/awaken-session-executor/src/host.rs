@@ -43,7 +43,7 @@ use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-use awaken_runtime_contract::tool::{ToolExecutor, ToolExecutorProvider, ToolOutput};
+use awaken_runtime_contract::tool::ToolOutput;
 // The Workdir-tier sandbox realized through the neutral provisioning contract:
 // `LocalProvider::create_sandbox` yields a `LocalSandbox` whose host-tier helpers
 // (rooted tools, repos, artifacts) the host composes into each session's runtime.
@@ -302,11 +302,6 @@ pub struct SharedHost {
     /// (event-driven completion), so the durable foreground path never pays a poll
     /// interval. Injected into the pool as its `CompletionSink`.
     pub(crate) completion: Arc<CompletionRegistry>,
-    /// Where this host's runs execute tool calls (ADR-0044/0046): the session-wide
-    /// remote hand + the per-run placement provider, sealed behind one type owning
-    /// their precedence (provider placement overrides the hand). Cloned into each
-    /// `SessionCtx`. See [`crate::hand_placement`].
-    pub(crate) hand_placement: crate::hand_placement::HandPlacement,
     pub(crate) environment_binding_sink:
         std::sync::RwLock<Option<Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>>>,
     /// The one Host-owned subject-tagged captured-content sink (ADR-0050).

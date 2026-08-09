@@ -6,8 +6,6 @@
 //! implementation detail of whoever implements `ToolExecutor` — owned by the
 //! orchestration layer above — and stays out of the neutral runtime contract.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -37,6 +35,17 @@ pub struct ToolOperationContext {
     /// capability broker must fail closed when it requires run-bound authority.
     pub run_id: Option<RunId>,
     pub operation_id: String,
+}
+
+impl ToolOperationContext {
+    /// Construct the durable coordinates for one runtime-owned tool operation
+    /// without exposing the agent-contract Run id type to extension crates.
+    pub fn for_run(run_id: impl Into<String>, operation_id: impl Into<String>) -> Self {
+        Self {
+            run_id: Some(RunId(run_id.into())),
+            operation_id: operation_id.into(),
+        }
+    }
 }
 
 /// Return the runtime-owned context of the tool invocation currently entering an
@@ -266,18 +275,6 @@ pub trait ToolOutputSpiller: Send + Sync {
     ) -> Result<String, ToolError>;
 }
 
-/// Failure to select the executor that will own a run's tool side effects.
-/// This is distinct from an invocation failure: selection happens before the
-/// runtime starts the run, so a required remote placement must fail closed
-/// instead of becoming an implicit local execution.
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum ToolExecutorSelectionError {
-    #[error("tool executor placement unavailable: {0}")]
-    Unavailable(String),
-    #[error("tool executor placement policy failed: {0}")]
-    Policy(String),
-}
-
 /// Authoritative execution location for one tool implementation.
 ///
 /// The safe extension default is `Brain`: MCP, Skills and orchestration tools
@@ -394,36 +391,6 @@ pub trait ToolExecutor: Send + Sync {
     }
 
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError>;
-}
-
-/// Hand placement (ADR-0046): the single call-site port that chooses **which**
-/// [`ToolExecutor`] a run uses. A host installs one provider; per run it returns
-/// the in-process default or a remote executor over a channel to a placed hand.
-///
-/// The port is placement-*mechanism*-agnostic (G16): it takes a run activation
-/// and returns a `ToolExecutor` — no worker registry, lease, pool, or scheduler
-/// type crosses it. The default the runtime ships selects from static config; any
-/// richer (e.g. dynamically scheduling) policy is a host-supplied alternative the
-/// runtime never names. Mirrors the `InferenceExecutorMaterializer`/`SandboxProvider` seams.
-///
-/// `provide` is **async**: the static default resolves in a trivial ready future,
-/// but a dynamic policy (consult a fleet, lease a worker, dial it) needs to await
-/// I/O before it can name the executor. Making the seam async is what lets a
-/// scheduling driver live behind it without blocking the run loop's thread.
-#[async_trait]
-pub trait ToolExecutorProvider: Send + Sync {
-    /// The tool executor for this run. Returning `Ok(None)` means "use the kernel's
-    /// in-process `LocalToolExecutor`" — a deployment that places no hand installs
-    /// no provider (or a provider that always returns `None`) and is unaffected.
-    ///
-    /// A remote executor returned here owns whatever placement it acquired (e.g. a
-    /// leased worker); it releases that on drop when the run's context is dropped,
-    /// with the lease's own TTL/epoch as the backstop — so the port needs no
-    /// separate release call (keeps it minimal, G16).
-    async fn provide(
-        &self,
-        activation: &crate::activation::RunActivation,
-    ) -> Result<Option<Arc<dyn ToolExecutor>>, ToolExecutorSelectionError>;
 }
 
 #[cfg(test)]

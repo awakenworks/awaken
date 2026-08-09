@@ -1,8 +1,8 @@
 //! Managed Session metadata, tool, and generation-fenced MCP replacement.
 
-use super::application::ManagedMcpCandidate;
+use super::application::agent_mcp_candidate;
 use super::*;
-use crate::types::agent::{AgentTool, UrlMcpServer};
+use crate::types::agent::{AgentMcpServer, AgentTool};
 
 /// One application-layer Session update command compiled from the Managed wire.
 /// Keeping its fields together prevents the public endpoint and CAS retry path
@@ -11,7 +11,7 @@ pub(crate) struct SessionUpdateCommand {
     pub(crate) title: Option<Option<String>>,
     pub(crate) metadata: Option<Option<std::collections::BTreeMap<String, Option<String>>>>,
     pub(crate) tools: Option<Vec<AgentTool>>,
-    pub(crate) mcp_servers: Option<Vec<UrlMcpServer>>,
+    pub(crate) mcp_servers: Option<Vec<AgentMcpServer>>,
     pub(crate) idempotency_key: Option<String>,
     pub(crate) if_match: Option<awaken_session_contract::SessionRevision>,
 }
@@ -150,14 +150,11 @@ impl ManagedState {
                 .normalize_mcp_drafts(
                     wire_servers
                         .into_iter()
-                        .map(|server| ManagedMcpCandidate {
-                            name: server.name,
-                            target: super::application::ManagedMcpCandidateTarget::WireUrl(
-                                server.url,
-                            ),
-                            prompts_as_skills: server.prompts_as_skills,
-                            published_credential: None,
-                            origin: awaken_session_contract::McpAttachmentOrigin::Session,
+                        .map(|server| {
+                            agent_mcp_candidate(
+                                server,
+                                awaken_session_contract::McpAttachmentOrigin::Session,
+                            )
                         })
                         .collect(),
                     &baseline.mcp_authoring.ordered_vault_ids,

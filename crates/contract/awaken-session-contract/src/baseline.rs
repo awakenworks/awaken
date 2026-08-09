@@ -112,6 +112,10 @@ pub struct EnvironmentSnapshot {
     /// provision them before workload launch or reject the spec fail-closed.
     #[serde(default)]
     pub packages: EnvironmentPackages,
+    /// Immutable OCI reference prepared by Coordinator for these exact package
+    /// inputs. Older snapshots omit it and retain build-at-realization behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_image: Option<String>,
     pub network: SessionNetworkPolicy,
     pub credential_realization: CredentialRealizationProfile,
 }
@@ -503,6 +507,7 @@ mod tests {
             sandbox: serde_json::json!({}),
             sandbox_provisioning: Default::default(),
             packages: Default::default(),
+            prepared_image: None,
             network,
             credential_realization: CredentialRealizationProfile {
                 inference_holder: PlaintextHolder::new(

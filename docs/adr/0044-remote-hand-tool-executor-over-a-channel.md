@@ -1,6 +1,7 @@
 # ADR-0044: Remote Hand — Tool Execution Over a Channel
 
 - Status: Accepted
+- Amended by: [ADR-0073](0073-session-environment-owned-hand-and-worker-capability-placement.md)
 - Date: 2026-07-08
 - Implemented: 2026-07-08 — `awaken-tool-relay` (`RemoteToolExecutor`, `serve_hand`,
   `HandSession`, wire types); kernel seam in `awaken-runtime` (`LocalToolExecutor`,

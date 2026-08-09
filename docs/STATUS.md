@@ -153,3 +153,5 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0069-acp-capability-configuration-lifecycle.md` | Proposed decision record | Not required | n/a |
 | `adr/0070-local-browser-session-bootstrap.md` | Decision record | Not required | n/a |
 | `adr/0071-distributed-service-boundaries-and-executable-agent-registration.md` | Implemented decision record | Not required | n/a |
+| `adr/0072-environment-definition-and-execution-boundary.md` | Accepted Environment definition/execution ownership target | Required | self |
+| `adr/0073-session-environment-owned-hand-and-worker-capability-placement.md` | Implemented decision record | Not required | n/a |

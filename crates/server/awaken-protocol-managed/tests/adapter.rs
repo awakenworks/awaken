@@ -320,6 +320,7 @@ impl SessionRuntime for FailingFake {
         Err(match self.kind {
             RunErrorKind::BadRequest => RunError::bad_request("nope"),
             RunErrorKind::Internal => RunError::internal("boom"),
+            RunErrorKind::Unavailable => RunError::unavailable("not ready"),
         })
     }
     async fn resume(
@@ -549,9 +550,13 @@ async fn environment_binding_root_cas_cases_follow_the_decision_table() {
 
 #[tokio::test]
 async fn run_error_kind_maps_to_http_status() {
+    // Cause/effect decision table: R1 caller-invalid runtime failures map to
+    // 400; R2 permanent internal failures map to 500; R3 temporarily unavailable
+    // runtime dependencies map to retryable 503.
     for (kind, want) in [
         (RunErrorKind::BadRequest, StatusCode::BAD_REQUEST),
         (RunErrorKind::Internal, StatusCode::INTERNAL_SERVER_ERROR),
+        (RunErrorKind::Unavailable, StatusCode::SERVICE_UNAVAILABLE),
     ] {
         let app = router(Arc::new(ManagedState::new(FailingFake::with_environment(
             kind,
