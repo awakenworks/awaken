@@ -2,9 +2,11 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "test-support")]
+use awaken_skill_store::InMemorySkillStore;
 use awaken_skill_store::{
-    FsSkillStore, InMemorySkillStore, SkillBundleFile, SkillDefinition, SkillStore,
-    SkillStoreError, SkillVersion, bundle_sha256,
+    FsSkillStore, SkillBundleFile, SkillDefinition, SkillStore, SkillStoreError, SkillVersion,
+    bundle_sha256,
 };
 
 fn version(id: &str, ordinal: u64, marker: &[u8]) -> SkillVersion {
@@ -164,6 +166,7 @@ async fn aggregate_lifecycle(store: &dyn SkillStore) {
     assert!(store.definition("ws-b", "skill-a").await.unwrap().is_some());
 }
 
+#[cfg(feature = "test-support")]
 #[tokio::test]
 async fn in_memory_conforms() {
     aggregate_lifecycle(&InMemorySkillStore::new()).await;
@@ -224,6 +227,7 @@ where
     assert_eq!(store.list_versions("ws", "skill").await.unwrap().len(), 2);
 }
 
+#[cfg(feature = "test-support")]
 #[tokio::test]
 async fn in_memory_serializes_concurrent_append() {
     concurrent_append_is_serialized(Arc::new(InMemorySkillStore::new())).await;
@@ -235,7 +239,7 @@ async fn filesystem_serializes_concurrent_append() {
     concurrent_append_is_serialized(Arc::new(FsSkillStore::open(directory.path()).unwrap())).await;
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", feature = "test-support"))]
 #[tokio::test]
 async fn sqlite_conforms() {
     aggregate_lifecycle(&awaken_skill_store::SqliteSkillStore::open_in_memory().unwrap()).await;

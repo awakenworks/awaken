@@ -20,6 +20,7 @@ pub fn open_sqlite_environment_image_build_store(
     open(Connection::open(path).map_err(storage)?)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn open_in_memory_environment_image_build_store()
 -> Result<Arc<dyn EnvironmentImageBuildStore>, EnvironmentImageBuildError> {
     open(Connection::open_in_memory().map_err(storage)?)

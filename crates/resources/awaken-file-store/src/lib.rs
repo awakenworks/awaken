@@ -7,18 +7,21 @@
 //! The trait is **async** so network/db backends (`awaken-file-store-postgres`,
 //! `awaken-file-store-s3`) fit the same seam as the local ones here (`FsFileStore`,
 //! `InMemoryFileStore`). The **id is computed in this core**, never in a backend, so
-//! it is identical across every implementation.
+//! it is identical across every implementation. `InMemoryFileStore` is available
+//! only to tests or the explicit `test-support` feature.
 //!
 //! [`FileCatalog`] is implemented by the same durable adapters and owns public
 //! Files API identity/metadata. Its opaque `file_...` ids are deliberately not
 //! the content ids described above: equal bytes deduplicate without merging two
 //! logical Files or their lifecycles.
 
+#[cfg(any(test, feature = "test-support"))]
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+#[cfg(any(test, feature = "test-support"))]
 use tokio::sync::Mutex;
 
 // The `FileStore` port + its error live in the port-only contract crate; this crate
@@ -154,13 +157,20 @@ impl FileStore for FsFileStore {
     }
 }
 
-/// In-memory store (tests, ephemeral runs).
+/// In-memory store for unit, integration, and scenario fixtures.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct InMemoryFileStore {
     blobs: Mutex<HashMap<String, Vec<u8>>>,
     files: Mutex<HashMap<String, FileRecord>>,
 }
 
+#[cfg(any(
+    test,
+    feature = "test-support",
+    feature = "sqlite",
+    feature = "postgres"
+))]
 fn validate_record(record: &FileRecord) -> Result<(), FileCatalogError> {
     if record.id.trim().is_empty()
         || record.workspace_id.trim().is_empty()
@@ -177,6 +187,7 @@ fn validate_record(record: &FileRecord) -> Result<(), FileCatalogError> {
 }
 
 #[async_trait]
+#[cfg(any(test, feature = "test-support"))]
 impl FileCatalog for InMemoryFileStore {
     async fn create_file(
         &self,
@@ -274,6 +285,7 @@ impl FileCatalog for InMemoryFileStore {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl InMemoryFileStore {
     #[must_use]
     pub fn new() -> Self {
@@ -282,6 +294,7 @@ impl InMemoryFileStore {
 }
 
 #[async_trait]
+#[cfg(any(test, feature = "test-support"))]
 impl FileStore for InMemoryFileStore {
     async fn put(&self, bytes: &[u8]) -> Result<String, FileStoreError> {
         let id = content_id(bytes);

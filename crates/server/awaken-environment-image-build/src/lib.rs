@@ -2,6 +2,7 @@
 
 mod application;
 mod durable;
+#[cfg(any(test, feature = "test-support"))]
 mod in_memory;
 mod postgres;
 mod schema;
@@ -11,15 +12,16 @@ pub use application::{
     BuildAwareExecutableEnvironmentRegistrar, EnvironmentImageBuildCoordinator,
     EnvironmentImageBuildPolicy,
 };
+#[cfg(any(test, feature = "test-support"))]
 pub use in_memory::InMemoryEnvironmentImageBuildStore;
 pub use postgres::{
     connect_existing_postgres_environment_image_build_store,
     connect_postgres_environment_image_build_store,
 };
 pub use schema::environment_image_build_bundle;
-pub use sqlite::{
-    open_in_memory_environment_image_build_store, open_sqlite_environment_image_build_store,
-};
+#[cfg(any(test, feature = "test-support"))]
+pub use sqlite::open_in_memory_environment_image_build_store;
+pub use sqlite::open_sqlite_environment_image_build_store;
 
 #[must_use]
 pub fn now_unix_ms() -> u64 {

@@ -14,10 +14,10 @@ awaken-file-application.workspace = true
 awaken-resource-contract.workspace = true
 
 [dev-dependencies]
-awaken-file-store.workspace = true
-awaken-memory-store.workspace = true
-awaken-resource-store.workspace = true
-awaken-skill-store.workspace = true
+awaken-file-store = { workspace = true, features = ["test-support"] }
+awaken-memory-store = { workspace = true, features = ["test-support"] }
+awaken-resource-store = { workspace = true, features = ["test-support"] }
+awaken-skill-store = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [lints]

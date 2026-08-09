@@ -18,30 +18,41 @@ impl SharedHost {
         resolve_local_workspace(Some(root))
     }
 
-    /// A host over `llm`. Configure it with the chainable `with_*` builders
-    /// (client tools, delegates, a judge grader, a durable store).
+    /// Test-support selection of the same local extraction repository used by
+    /// volatile/local host fixtures. Product composition injects its role-owned
+    /// repository directly into the production constructor.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_memory_extraction_repository(
+        storage_dir: Option<&std::path::Path>,
+    ) -> Arc<dyn awaken_ext_memory::MemoryExtractionRepository> {
+        local_memory_extraction_repository(storage_dir)
+    }
+
+    /// Volatile test/scenario host over `llm`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
         Self::build(
             llm,
             model_ref.into(),
             None,
             None,
+            None,
             crate::deployment_config::DeploymentConfig::ephemeral(),
         )
     }
 
-    /// Construct without resource overrides from an explicitly resolved
-    /// deployment snapshot.
+    /// Test/scenario construction without an injected Resource component.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new_with_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
-        Self::build(llm, model_ref.into(), None, None, deployment)
+        Self::build(llm, model_ref.into(), None, None, None, deployment)
     }
 
-    /// Replace the environment-derived deployment value with the exact typed
-    /// value owned by an embedding composition root.
+    /// Test-support replacement of a volatile fixture's deployment value.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_deployment_config(mut self, deployment: crate::DeploymentConfig) -> Self {
         self.session_blob_root = deployment.acp_session_blob_root.clone();
@@ -77,9 +88,9 @@ impl SharedHost {
         )
     }
 
-    /// Construct with an already selected resource persistence family. Unlike
-    /// post-construction overrides, this never opens node-local resource stores
-    /// before installing shared adapters, so there is no unused second truth.
+    /// Test/scenario construction with resources but no explicit deployment or
+    /// durable extraction authority.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new_with_resource_component(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
@@ -89,6 +100,7 @@ impl SharedHost {
             llm,
             model_ref.into(),
             Some(resources),
+            None,
             None,
             crate::deployment_config::DeploymentConfig::ephemeral(),
         )
@@ -100,15 +112,23 @@ impl SharedHost {
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
         resources: awaken_resource_contract::ResourceComponent,
+        extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
-        Self::build(llm, model_ref.into(), Some(resources), None, deployment)
+        Self::build(
+            llm,
+            model_ref.into(),
+            Some(resources),
+            None,
+            Some(extraction_repository),
+            deployment,
+        )
     }
 
     /// Construct an execution Worker with its exact remote content adapters
-    /// installed before any Resource data store is selected. The Worker keeps
-    /// only process-local placeholders for management-only File capabilities;
-    /// it never opens a File or Memory authority database.
+    /// installed before any Resource data store is selected. Management-only
+    /// File and durable extraction authorities fail closed; the Worker opens no
+    /// File, Memory-content, or Memory-extraction authority database.
     pub fn new_worker_with_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
@@ -121,6 +141,7 @@ impl SharedHost {
             model_ref.into(),
             None,
             Some((file_content_source, memory_repository)),
+            None,
             deployment,
         )
     }
@@ -133,6 +154,7 @@ impl SharedHost {
             Arc<dyn crate::FileContentSource>,
             Arc<dyn awaken_memory_store::MemoryRepository>,
         )>,
+        extraction_repository: Option<Arc<dyn awaken_ext_memory::MemoryExtractionRepository>>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
         // Composition root: the deployment axes are parsed once from the environment
@@ -144,37 +166,29 @@ impl SharedHost {
             .as_ref()
             .map(|dir| dir.join("sandboxes"))
             .unwrap_or_else(|| sub_base(""));
-        // The ADR-0038/0053 memory content stores follow one storage-dir durability
-        // rule, owned by `MemoryStores::open` (durable under the dir; ephemeral
-        // per-process otherwise). Resource identity/configuration is injected into
-        // the server composition root through `ResourceCatalog`.
+        // Product Resource content is injected atomically through ResourceComponent;
+        // a Worker receives its remote adapter. Only test-support construction may
+        // still use the local opener below.
         let memory_stores = if let Some((_, repository)) = &worker_content {
             crate::memory_stores::MemoryStores::with_repository(repository.clone())
+        } else if let Some(plane) = &resources {
+            crate::memory_stores::MemoryStores::with_repository(plane.memory_repository())
         } else {
-            resources.as_ref().map_or_else(
-                || crate::memory_stores::MemoryStores::open(store_dir.as_deref()),
-                |plane| {
-                    crate::memory_stores::MemoryStores::with_repository(plane.memory_repository())
-                },
-            )
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                crate::memory_stores::MemoryStores::open(store_dir.as_deref())
+            }
+            #[cfg(not(any(test, feature = "test-support")))]
+            unreachable!("product Host construction requires an explicit Resource component")
         };
-        let extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository> =
-            match store_dir.as_ref() {
-                Some(dir) => {
-                    std::fs::create_dir_all(dir)
-                        .expect("create durable Memory extraction repository directory");
-                    Arc::new(
-                        awaken_session_store::SqliteManagedSessionRepository::open(
-                            &dir.join("sessions.db").to_string_lossy(),
-                        )
-                        .expect("open durable Memory extraction repository"),
-                    )
-                }
-                None => Arc::new(
-                    awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-                        .expect("open ephemeral Memory extraction repository"),
-                ),
-            };
+        let extraction_repository = extraction_repository.unwrap_or_else(|| {
+            if worker_content.is_some() {
+                Arc::new(crate::unavailable_worker::UnavailableWorkerExtractions)
+                    as Arc<dyn awaken_ext_memory::MemoryExtractionRepository>
+            } else {
+                local_memory_extraction_repository(store_dir.as_deref())
+            }
+        });
         let memory = Arc::new(crate::memory::MemoryRuntime::new(
             llm.clone(),
             Arc::new(LocalProvider::new(sub_base("mem"))),
@@ -186,7 +200,7 @@ impl SharedHost {
             skills.set_store(plane.skill_store());
         }
         let (file_store, file_catalog) = if worker_content.is_some() {
-            let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+            let files = Arc::new(crate::unavailable_worker::UnavailableWorkerFiles);
             (
                 files.clone() as Arc<dyn awaken_file_store::FileStore>,
                 files as Arc<dyn awaken_resource_contract::FileCatalog>,
@@ -207,10 +221,17 @@ impl SharedHost {
                         )
                     }
                     None => {
-                        let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-                        (
-                            files.clone() as Arc<dyn awaken_file_store::FileStore>,
-                            files as Arc<dyn awaken_resource_contract::FileCatalog>,
+                        #[cfg(any(test, feature = "test-support"))]
+                        {
+                            let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
+                            (
+                                files.clone() as Arc<dyn awaken_file_store::FileStore>,
+                                files as Arc<dyn awaken_resource_contract::FileCatalog>,
+                            )
+                        }
+                        #[cfg(not(any(test, feature = "test-support")))]
+                        unreachable!(
+                            "product Host construction requires an explicit Resource component"
                         )
                     }
                 },
@@ -446,10 +467,8 @@ impl SharedHost {
         self.store_dir.as_deref()
     }
 
-    /// Install the resource-lifecycle adapter selected by the composition root.
-    /// The runtime sees only the resource contract and remains independent of IAM
-    /// and storage technology; without this port, managed resource operations fail
-    /// closed instead of creating a second Host-local resource truth.
+    /// Test-support replacement of a volatile fixture's Resource lifecycle port.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_resource_lifecycle(
         mut self,
@@ -627,9 +646,8 @@ impl SharedHost {
         self
     }
 
-    /// Make this host a database-less **Worker** of the Coordinator at `url`.
-    /// Attempts use the registered HTTP dispatch transport and a claim-fenced
-    /// operation coordinator; the Worker holds no authoritative store.
+    /// Test-support shorthand for an unauthenticated Worker upstream.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_upstream(mut self, url: impl Into<String>) -> Self {
         self.upstream = Some(awaken_worker_transport_security::WorkerUpstream::new(url));
@@ -722,12 +740,8 @@ impl SharedHost {
         self
     }
 
-    /// Back the delivered skill catalog with a durable [`awaken_skill_store::SkillStore`]
-    /// rooted at `dir`. Its `SKILL.md`s are offered on every thread alongside any
-    /// static [`with_skills`](Self::with_skills) set and survive a restart, so a skill
-    /// added through `/v1/skills` is still offered by a later process over the same
-    /// dir. The extension never learns of the store — the host scans it into the
-    /// `SkillSource` port as plain file data.
+    /// Test/scenario shorthand for a filesystem Skill store.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_skill_store(mut self, dir: impl Into<PathBuf>) -> Self {
         let store = awaken_skill_store::FsSkillStore::open(dir.into())
             .expect("open durable skill store root");
@@ -735,9 +749,8 @@ impl SharedHost {
         self
     }
 
-    /// Back the delivered skill catalog with an arbitrary [`SkillStore`] backend
-    /// (e.g. `PgSkillStore` for a multi-node deployment). Sibling of
-    /// [`with_skill_store`](Self::with_skill_store), which wires the filesystem one.
+    /// Test-support replacement of a volatile fixture's Skill store.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_skill_store_backend(
         mut self,
         store: Arc<dyn awaken_skill_store::SkillStore>,
@@ -769,10 +782,8 @@ impl SharedHost {
         self
     }
 
-    /// Persist every thread's committed truth to a durable SQLite database under
-    /// `dir` (one file per thread). A run awaiting on a thread survives a restart:
-    /// a host rebuilt over the same directory recovers the awaiting position and can
-    /// resume it. Without this, sessions are in-memory and lost on restart.
+    /// Test-support upgrade of a volatile fixture to local durable storage.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_store_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         let dir = dir.into();
         // A durable host must place its Workdir sandboxes under a stable root too;
@@ -860,18 +871,16 @@ impl SharedHost {
         self
     }
 
-    /// Replace the embedded File adapter with the exact per-kind boundary selected
-    /// by the composition root. This does not change Files API authoring ownership.
+    /// Test-support replacement of a volatile fixture's File content port.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_file_content_source(mut self, source: Arc<dyn crate::FileContentSource>) -> Self {
         self.file_content_source = source;
         self
     }
 
-    /// Replace only the Memory content data-plane port. Distributed Workers use
-    /// the claim-fenced HTTP repository through
-    /// [`new_worker_with_deployment`](Self::new_worker_with_deployment), which
-    /// installs it before store selection and therefore opens no Resource DB.
+    /// Test-support replacement of a volatile fixture's Memory content port.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_memory_repository(
         mut self,
@@ -1144,4 +1153,63 @@ fn resolve_local_workspace(store_dir: Option<&std::path::Path>) -> String {
         .expect("persist platform workspace id");
     }
     generated
+}
+
+fn local_memory_extraction_repository(
+    storage_dir: Option<&std::path::Path>,
+) -> Arc<dyn awaken_ext_memory::MemoryExtractionRepository> {
+    match storage_dir {
+        Some(dir) => {
+            std::fs::create_dir_all(dir)
+                .expect("create durable Memory extraction repository directory");
+            Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open(
+                    &dir.join("sessions.db").to_string_lossy(),
+                )
+                .expect("open durable Memory extraction repository"),
+            )
+        }
+        None => Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("open ephemeral Memory extraction repository"),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod composition_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_extraction_repository_is_the_initial_authority() {
+        // Cause/effect graph: C1 an extraction repository is explicit; C2 local
+        // storage is configured. Effects: E1 exact injected identity is installed;
+        // E2 a local SQLite repository is derived; E3 volatile fixture is derived.
+        // Constraint: the production resource/deployment constructor requires C1.
+        //
+        // | Rule | explicit repo | storage dir | initial extraction authority |
+        // | T1   | yes           | any         | exact injected repository    |
+        // | T2   | no            | yes         | derived durable SQLite       |
+        // | T3   | no            | no          | test-only ephemeral SQLite   |
+        //
+        // T2/T3 remain covered by existing local restart/fixture suites. T1
+        // prevents the former construct-then-replace duplicate authority.
+        let expected: Arc<dyn awaken_ext_memory::MemoryExtractionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("test extraction repository"),
+        );
+        let host = SharedHost::build(
+            Arc::new(crate::NoModelConfiguredExecutor),
+            crate::UNCONFIGURED_MODEL_REF.into(),
+            None,
+            None,
+            Some(expected.clone()),
+            crate::DeploymentConfig::ephemeral(),
+        );
+
+        assert!(
+            Arc::ptr_eq(&expected, &host.memory.extraction_repository()),
+            "T1/E1"
+        );
+    }
 }

@@ -88,6 +88,7 @@ impl SessionEnvironmentProvider {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn at_root(&self, base: impl Into<std::path::PathBuf>) -> Self {
         let base = base.into();
         match self {

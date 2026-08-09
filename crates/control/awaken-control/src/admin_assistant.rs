@@ -159,10 +159,10 @@ impl CapabilityReader for CatalogCapabilityReader {
 /// store + skill ids without `awaken-control` depending on the runtime host. Memory-store
 /// definitions come from the durable [`awaken_resource_contract::ResourceCatalog`]
 /// shared by authoring and Session resolution, and skills from the
-/// [`awaken_skill_store::SkillStore`]. Carries only ids — never a secret or policy.
+/// [`awaken_resource_contract::SkillStore`]. Carries only ids — never a secret or policy.
 pub struct HostResourceInventory {
     memory: Arc<dyn awaken_resource_contract::ResourceCatalog>,
-    skills: Arc<dyn awaken_skill_store::SkillStore>,
+    skills: Arc<dyn awaken_resource_contract::SkillStore>,
     /// Platform-provisioned workspace used to address the skill catalog.
     skill_workspace: String,
 }
@@ -172,7 +172,7 @@ impl HostResourceInventory {
     /// workspace coordinate. The adapter never invents a tenant.
     pub fn new(
         memory: Arc<dyn awaken_resource_contract::ResourceCatalog>,
-        skills: Arc<dyn awaken_skill_store::SkillStore>,
+        skills: Arc<dyn awaken_resource_contract::SkillStore>,
         skill_workspace: impl Into<String>,
     ) -> Self {
         Self {

@@ -249,7 +249,7 @@ struct TestInput {
 
 use awaken_resource_contract::ResourceAccess;
 
-fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, writable: bool) {
+pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, writable: bool) {
     let config = awaken_resource_contract::MemoryStoreConfigVersion {
         memory_store_id: store_id.to_string().into(),
         version: awaken_resource_contract::ConfigVersion::INITIAL,
@@ -1072,7 +1072,7 @@ async fn interrupt_ends_an_in_flight_run_as_cancelled() {
 
 /// The main assistant answers plainly; the memory extractor (identified by its
 /// system instructions) saves one memory then reports done.
-struct MemoryHostModel;
+pub(crate) struct MemoryHostModel;
 
 #[async_trait::async_trait]
 impl LlmExecutor for MemoryHostModel {
