@@ -1,0 +1,18 @@
+[package]
+name = "awaken-durable-projection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+package-class = "application-support"
+authority = "coordinator"
+
+[dependencies]
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

@@ -35,6 +35,10 @@ impl ResolvedDeployment {
                     "data_subject",
                     render_store_backend(&self.control.data_subject),
                 ),
+                (
+                    "environments",
+                    render_store_backend(&self.control.environment),
+                ),
             ])
         } else {
             BTreeMap::new()
@@ -45,10 +49,6 @@ impl ResolvedDeployment {
                 (
                     "captured_content",
                     render_store_backend(&self.coordinator.captured_content),
-                ),
-                (
-                    "environments",
-                    render_store_backend(&self.coordinator.environments),
                 ),
             ])
         } else {
@@ -84,7 +84,7 @@ impl ResolvedDeployment {
             .expect("configuration report is serializable");
         }
         let mut report = format!(
-            "Awaken configuration\n\n  role                 {role}\n  mode                 {mode}\n  bind                 {bind}\n  data directory       {data}\n  config file          {config} ({exists})\n  local worker pool    {pool}\n  identity mode        {identity}\n  cloud models         {cloud_models}\n  runtime dispatch     {runtime}\n  resource plane       {resources}\n  control seal key     {key}\n\nSources: command line --config or standard config.toml, then defaults.\n",
+            "Awaken configuration\n\n  role                 {role}\n  mode                 {mode}\n  bind                 {bind}\n  data directory       {data}\n  config file          {config} ({exists})\n  local worker pool    {pool}\n  identity mode        {identity}\n  cloud models         {cloud_models}\n  runtime dispatch     {runtime}\n  Resources backend    {resources}\n  control seal key     {key}\n\nSources: command line --config or standard config.toml, then defaults.\n",
             role = self.role.as_str(),
             mode = self.mode.as_str(),
             bind = self.bind,

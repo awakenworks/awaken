@@ -72,14 +72,14 @@ impl CloudModelMode {
     }
 }
 
-/// One backend family for the complete resource plane.
+/// One backend family for the complete Resources component.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResourcePlaneStoreBackend {
+pub enum ResourceStoreBackend {
     Embedded(PathBuf),
     Postgres(String),
 }
 
-impl ResourcePlaneStoreBackend {
+impl ResourceStoreBackend {
     pub fn is_shared(&self) -> bool {
         matches!(self, Self::Postgres(_))
     }

@@ -13,20 +13,20 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
-use awaken_runtime_host::{
-    AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
-    PackageImageBuilder, SandboxSettings, SandboxTier, StoreKind, Wake,
-};
+use awaken_runtime_host::{AcpWorkerProfile, DeploymentConfig, DispatchBackend, StoreKind};
+#[cfg(test)]
+use awaken_runtime_host::{ContentRedaction, PackageImageBuilder};
 mod deployment;
 mod file_schema;
 mod file_support;
 mod report;
 mod role;
+mod runtime_settings;
 mod seal_key;
 mod service_boundary;
 mod worker_bootstrap;
 
-pub use deployment::{CloudModelMode, ConfigOverrides, OperatingMode, ResourcePlaneStoreBackend};
+pub use deployment::{CloudModelMode, ConfigOverrides, OperatingMode, ResourceStoreBackend};
 use file_schema::FileConfig;
 use file_support::{
     home_dir, is_postgres_url, override_port, read_management_database_url, validate_suite_hub_url,
@@ -78,7 +78,7 @@ pub struct ResolvedDeployment {
     pub local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
     pub control: awaken_control::ControlStoreConfig,
     pub coordinator: CoordinatorStoreConfig,
-    pub resources: ResourcePlaneStoreBackend,
+    pub resources: ResourceStoreBackend,
     pub seal_key: SealKeySource,
     pub deprecations: Vec<String>,
     pub origins: BTreeMap<String, String>,
@@ -86,7 +86,6 @@ pub struct ResolvedDeployment {
 
 #[derive(Debug, Clone)]
 pub struct CoordinatorStoreConfig {
-    pub environments: awaken_control::StoreBackend,
     pub sessions: awaken_control::StoreBackend,
     pub captured_content: awaken_control::StoreBackend,
 }
@@ -230,7 +229,6 @@ impl ResolvedDeployment {
                     "resource_database_url",
                     file.resource_database_url.is_some(),
                 ),
-                ("environment_db", file.environment_db.is_some()),
                 ("sessions_db", file.sessions_db.is_some()),
                 ("captured_content_db", file.captured_content_db.is_some()),
             ],
@@ -247,6 +245,7 @@ impl ResolvedDeployment {
                 ("config_db", file.config_db.is_some()),
                 ("admin_db", file.admin_db.is_some()),
                 ("data_subject_db", file.data_subject_db.is_some()),
+                ("environment_db", file.environment_db.is_some()),
                 ("control_seal_key", file.control_seal_key.is_some()),
                 (
                     "control_seal_key_file",
@@ -354,154 +353,7 @@ impl ResolvedDeployment {
             file.control_internal_url.clone(),
             file.control_service_token_file.clone(),
         )?;
-        let sandbox_tier = match file.sandbox_tier.as_deref() {
-            Some("local" | "none") => SandboxTier::Local,
-            Some("docker") => SandboxTier::Docker,
-            Some("podman") => SandboxTier::Podman,
-            Some("k8s" | "kubernetes") => SandboxTier::K8s,
-            Some("namespace") | None => SandboxTier::Namespace,
-            Some(other) => return Err(format!("invalid sandbox_tier={other:?}")),
-        };
-        let acp_ids = file.acp_clis.clone().unwrap_or_default();
-        let acp = (!acp_ids.is_empty())
-            .then(|| AcpWorkerProfile::new(acp_ids, file.acp_default_cli.clone()))
-            .transpose()?;
-        let wake = match file.dispatch_wake.as_deref() {
-            Some("pg-notify") => Wake::PgNotify,
-            Some("nats") => Wake::Nats,
-            Some("none") | None => Wake::None,
-            Some(other) => return Err(format!("invalid dispatch_wake={other:?}")),
-        };
-        let sandbox_defaults = SandboxSettings::default();
-        let sandbox = SandboxSettings {
-            allow_local_fallback: file.sandbox_allow_local_fallback.unwrap_or(false),
-            warm_pool_size: file.sandbox_warm_pool_size.unwrap_or(0),
-            container_forward_proxy: file.container_forward_proxy.clone(),
-            k8s_namespace: file
-                .k8s_namespace
-                .clone()
-                .unwrap_or_else(|| "default".to_owned()),
-            k8s_image_pull_secrets: file
-                .k8s_image_pull_secrets
-                .clone()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty())
-                .collect(),
-            container_hand_bin: file
-                .container_hand_bin
-                .clone()
-                .unwrap_or_else(|| sandbox_defaults.container_hand_bin.clone()),
-            podman_bin: file
-                .podman_bin
-                .clone()
-                .unwrap_or_else(|| sandbox_defaults.podman_bin.clone()),
-            package_image_registry: file
-                .package_image_registry
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| value.trim_end_matches('/').to_owned()),
-            package_registry_auth_file: file.package_registry_auth_file.clone(),
-            package_image_builder: file
-                .package_image_builder
-                .as_deref()
-                .map(|value| match value {
-                    "docker" => Ok(PackageImageBuilder::Docker),
-                    "podman" => Ok(PackageImageBuilder::Podman),
-                    other => Err(format!(
-                        "invalid package_image_builder={other:?}: expected docker or podman"
-                    )),
-                })
-                .transpose()?,
-            package_artifact_dir: Some(
-                file.package_artifact_dir
-                    .clone()
-                    .unwrap_or_else(|| data_dir.join("package-images")),
-            ),
-            package_build_lease_secs: file
-                .package_build_lease_secs
-                .unwrap_or(sandbox_defaults.package_build_lease_secs),
-            package_build_wait_secs: file
-                .package_build_wait_secs
-                .unwrap_or(sandbox_defaults.package_build_wait_secs),
-            package_failure_retry_secs: file
-                .package_failure_retry_secs
-                .unwrap_or(sandbox_defaults.package_failure_retry_secs),
-            package_state_ttl_secs: file
-                .package_state_ttl_secs
-                .unwrap_or(sandbox_defaults.package_state_ttl_secs),
-            package_local_cache_ttl_secs: file
-                .package_local_cache_ttl_secs
-                .unwrap_or(sandbox_defaults.package_local_cache_ttl_secs),
-            inherit_agent_stderr: file.sandbox_inherit_agent_stderr.unwrap_or(false),
-            reaper_enabled: file.sandbox_reaper_enabled.unwrap_or(true),
-            reaper_interval_secs: file
-                .sandbox_reaper_interval_secs
-                .unwrap_or(sandbox_defaults.reaper_interval_secs),
-            reaper_max_age_secs: file
-                .sandbox_reaper_max_age_secs
-                .unwrap_or(sandbox_defaults.reaper_max_age_secs),
-        };
-        if sandbox.k8s_namespace.trim().is_empty()
-            || sandbox.container_hand_bin.trim().is_empty()
-            || sandbox.podman_bin.trim().is_empty()
-        {
-            return Err(
-                "k8s_namespace, container_hand_bin and podman_bin must not be empty".to_owned(),
-            );
-        }
-        if sandbox.package_image_builder.is_some() && sandbox.package_image_registry.is_none() {
-            return Err(
-                "package_image_builder requires a non-empty package_image_registry".to_owned(),
-            );
-        }
-        if sandbox.package_registry_auth_file.is_some() && sandbox.package_image_registry.is_none()
-        {
-            return Err(
-                "package_registry_auth_file requires a non-empty package_image_registry".to_owned(),
-            );
-        }
-        if sandbox_tier == SandboxTier::K8s
-            && (sandbox.package_image_builder.is_some() ^ sandbox.package_image_registry.is_some())
-        {
-            return Err(
-                "Kubernetes package provisioning requires package_image_builder and package_image_registry together"
-                    .to_owned(),
-            );
-        }
-        if sandbox.reaper_enabled
-            && (sandbox.reaper_interval_secs == 0 || sandbox.reaper_max_age_secs == 0)
-        {
-            return Err(
-                "sandbox reaper interval and max age must be non-zero when enabled".to_owned(),
-            );
-        }
-        if sandbox.package_build_lease_secs == 0
-            || sandbox.package_build_wait_secs < sandbox.package_build_lease_secs
-            || sandbox.package_failure_retry_secs == 0
-            || sandbox.package_state_ttl_secs == 0
-            || sandbox.package_local_cache_ttl_secs == 0
-        {
-            return Err(
-                "package build lease/retry/TTL must be non-zero and wait must be at least the lease"
-                    .to_owned(),
-            );
-        }
-        let content_capture = ContentCaptureSettings {
-            level: match file.content_capture.as_deref() {
-                Some("off") => awaken_runtime_contract::ContentCapture::Off,
-                Some("structured") | None => awaken_runtime_contract::ContentCapture::Structured,
-                Some("full") => awaken_runtime_contract::ContentCapture::Full,
-                Some(other) => return Err(format!("invalid content_capture={other:?}")),
-            },
-            redaction: match file.content_redaction.as_deref() {
-                Some("none") | None => ContentRedaction::None,
-                Some("regex") => ContentRedaction::Regex,
-                Some(other) => return Err(format!("invalid content_redaction={other:?}")),
-            },
-        };
+        let runtime_settings = runtime_settings::resolve(&file, &data_dir)?;
         let postgres_max_connections = file
             .postgres_max_connections
             .map(|value| {
@@ -601,7 +453,7 @@ impl ResolvedDeployment {
                 StoreKind::Sqlite
             },
             dispatch_backend,
-            wake,
+            wake: runtime_settings.wake,
             wake_channel: file
                 .dispatch_wake_channel
                 .clone()
@@ -614,12 +466,12 @@ impl ResolvedDeployment {
                 .clone()
                 .unwrap_or_else(|| format!("host-{}", std::process::id())),
             upstream: worker_server.clone(),
-            sandbox_tier,
+            sandbox_tier: runtime_settings.sandbox_tier,
             sandbox_dir: file.sandbox_dir.clone(),
-            sandbox,
-            content_capture,
+            sandbox: runtime_settings.sandbox,
+            content_capture: runtime_settings.content_capture,
             acp_session_blob_root: file.acp_session_blob_root.clone(),
-            acp,
+            acp: runtime_settings.acp,
             container_image: file.container_image.clone(),
             disable_local_pool: !run_local_pool,
         };
@@ -677,12 +529,9 @@ impl ResolvedDeployment {
             store_url(&file.config_db),
             store_url(&file.admin_db),
             store_url(&file.data_subject_db),
+            store_url(&file.environment_db),
         );
         let coordinator = CoordinatorStoreConfig {
-            environments: awaken_control::StoreBackend::resolve(
-                store_url(&file.environment_db),
-                data_dir.join("environments.db"),
-            ),
             sessions: awaken_control::StoreBackend::resolve(
                 store_url(&file.sessions_db),
                 data_dir.join("sessions.db"),
@@ -693,9 +542,9 @@ impl ResolvedDeployment {
             ),
         };
         let resources = match store_url(&file.resource_database_url) {
-            Some(url) if is_postgres_url(&url) => ResourcePlaneStoreBackend::Postgres(url),
+            Some(url) if is_postgres_url(&url) => ResourceStoreBackend::Postgres(url),
             Some(_) => return Err("resource_database_url must be postgres://".to_owned()),
-            None => ResourcePlaneStoreBackend::Embedded(data_dir.clone()),
+            None => ResourceStoreBackend::Embedded(data_dir.clone()),
         };
         if dispatch_backend == DispatchBackend::Postgres && !resources.is_shared() {
             return Err(
@@ -1789,20 +1638,32 @@ mod tests {
     }
 
     #[test]
-    fn control_rejects_every_coordinator_database_binding() {
+    fn environment_database_belongs_only_to_control() {
         // Cause/effect decision table:
-        // R1/R2/R3: environment/session/captured-content configuration on
-        // Control is rejected before store acquisition. Control receives only
-        // authenticated Coordinator ports, never another domain's DB address.
-        for (rule, field, file) in [
-            (
-                "R1",
-                "environment_db",
-                FileConfig {
-                    environment_db: Some("postgres://shared/environments".to_owned()),
-                    ..Default::default()
-                },
+        // R1 Environment DB on Control -> accepted as static authoring authority;
+        // R2/R3 Session/captured-content DB on Control -> rejected;
+        // R4 Environment DB on Coordinator -> rejected before store acquisition.
+        let control = ResolvedDeployment::resolve_file(
+            ConfigOverrides::default(),
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            FileConfig {
+                role: Some("control".to_owned()),
+                environment_db: Some("postgres://control/environments".to_owned()),
+                control_service_token_file: Some("/run/control-service-token".into()),
+                ..Default::default()
+            },
+        )
+        .expect("R1");
+        assert!(
+            matches!(
+                control.control.environment,
+                awaken_control::StoreBackend::Postgres(_)
             ),
+            "R1"
+        );
+
+        for (rule, field, file) in [
             (
                 "R2",
                 "sessions_db",
@@ -1833,6 +1694,19 @@ mod tests {
             .unwrap_err();
             assert!(error.contains(field), "{rule}: {error}");
         }
+
+        let coordinator_error = ResolvedDeployment::resolve_file(
+            ConfigOverrides::default(),
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            FileConfig {
+                role: Some("coordinator".to_owned()),
+                environment_db: Some("postgres://control/environments".to_owned()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(coordinator_error.contains("environment_db"), "R4");
     }
 
     #[test]
@@ -1902,9 +1776,11 @@ mod tests {
     #[test]
     fn reports_only_role_owned_database_groups() {
         // Cause/effect decision table:
-        // R1 split Control -> report only Control including Data Subject;
-        // R2 split Coordinator -> report only Coordinator including Environment
-        // and captured content, plus Resources/runtime; R3 either JSON report ->
+        // R1 split Control -> report only Control including Data Subject and
+        // static Environment definitions; R2 split Coordinator -> report only
+        // Coordinator stores plus Resources/runtime (the executable Environment
+        // projection is part of the runtime migration scope); R3 either JSON
+        // report ->
         // the unowned database group is empty. Resolved compatibility defaults
         // therefore never appear as authority granted to another process.
         let control = resolve(
@@ -1923,10 +1799,10 @@ mod tests {
             "R1: {control_text}"
         );
         assert!(control_text.contains("data_subject"), "R1");
-        assert!(!control_text.contains("environments"), "R1");
+        assert!(control_text.contains("environments"), "R1");
         assert!(!control_text.contains("Coordinator databases"), "R1");
         assert!(
-            control_text.contains("resource plane       not owned"),
+            control_text.contains("Resources backend    not owned"),
             "R1"
         );
         let control_json: serde_json::Value = serde_json::from_str(&control.report(true)).unwrap();
@@ -1957,7 +1833,10 @@ mod tests {
         assert!(!coordinator_text.contains("Control databases"), "R2");
         assert!(!coordinator_text.contains("catalog"), "R2");
         assert!(coordinator_text.contains("captured_content"), "R2");
-        assert!(coordinator_text.contains("environments"), "R2");
+        assert!(
+            coordinator_text.contains("runtime dispatch     postgres"),
+            "R2"
+        );
         let coordinator_json: serde_json::Value =
             serde_json::from_str(&coordinator.report(true)).unwrap();
         assert_eq!(
@@ -1985,7 +1864,7 @@ mod tests {
             &config.control.config,
             &config.control.admin,
             &config.control.data_subject,
-            &config.coordinator.environments,
+            &config.control.environment,
             &config.coordinator.sessions,
             &config.coordinator.captured_content,
         ] {

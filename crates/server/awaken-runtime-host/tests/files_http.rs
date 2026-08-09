@@ -150,15 +150,21 @@ impl ResourceReclamationFence for TestResourceLifecycle {
 fn host() -> Arc<SharedHost> {
     let lifecycle: Arc<dyn ResourceLifecycleRepository> =
         Arc::new(TestResourceLifecycle::default());
-    Arc::new(SharedHost::new(Arc::new(NoLlm), "test").with_resource_lifecycle(lifecycle))
+    let host = SharedHost::new(Arc::new(NoLlm), "test").with_resource_lifecycle(lifecycle.clone());
+    let files = Arc::new(awaken_file_application::FileApplication::new(
+        host.file_store(),
+        host.file_catalog(),
+        lifecycle,
+    ));
+    Arc::new(host.with_file_application(files))
 }
 
 fn router() -> Router {
-    files_router(host())
-}
-
-fn router_without_lifecycle() -> Router {
-    files_router(Arc::new(SharedHost::new(Arc::new(NoLlm), "test")))
+    files_router(
+        host()
+            .file_application()
+            .expect("test composition installs File application"),
+    )
 }
 
 const BOUNDARY: &str = "X-AWAKEN-BOUNDARY";
@@ -286,16 +292,11 @@ async fn upload_download_metadata_and_delete_roundtrip() {
 
 #[tokio::test]
 async fn upload_fails_closed_without_a_composition_root_lifecycle_port() {
-    // Rule R2: valid bytes + missing lifecycle owner → no successful orphan
-    // File response (E5), even though the deduplicated blob put is retry-safe.
-    let (status, body) = upload(&router_without_lifecycle(), "orphan.txt", b"orphan").await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .is_some_and(|error| error.contains("not configured by the composition root")),
-        "{body}"
-    );
+    // Rule R2: missing lifecycle owner -> no FileApplication can be composed.
+    // The invalid state is rejected before an HTTP router or blob side effect
+    // exists, replacing the old request-time orphan-file failure path.
+    let host = SharedHost::new(Arc::new(NoLlm), "test");
+    assert!(host.file_application().is_none());
 }
 
 #[tokio::test]
@@ -402,7 +403,7 @@ async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session
         deleted: false,
     };
     host.file_catalog().create_file(record).await.unwrap();
-    let router = files_router(host);
+    let router = files_router(host.file_application().expect("File application"));
 
     let (status, body) = get(&router, "/v1/files?scope_id=deleted-session").await;
     assert_eq!(status, StatusCode::OK);
@@ -510,6 +511,8 @@ async fn workspace_capacity_is_checked_before_accepting_more_bytes() {
         .await
         .unwrap();
     let error = host
+        .file_application()
+        .expect("File application")
         .create_uploaded_file("test", "one.txt".into(), "text/plain".into(), b"1")
         .await
         .unwrap_err();

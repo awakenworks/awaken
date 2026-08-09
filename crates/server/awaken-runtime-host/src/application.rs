@@ -889,11 +889,11 @@ mod network_policy_tests {
     fn environment_packages_project_losslessly_to_the_provisioning_contract() {
         let environment = awaken_session_contract::EnvironmentSnapshot {
             environment_id: "env_packages".into(),
-            revision: awaken_session_contract::env_registry::EnvironmentRevision(3),
+            revision: awaken_session_contract::EnvironmentRevision(3),
             config_fingerprint: awaken_session_contract::EnvironmentFingerprint("fp".into()),
             sandbox: serde_json::json!({}),
             sandbox_provisioning: Default::default(),
-            packages: awaken_session_contract::env_registry::EnvironmentPackages {
+            packages: awaken_session_contract::EnvironmentPackages {
                 npm: vec!["tsx@4".into()],
                 pip: vec!["httpx==0.28".into()],
                 ..Default::default()

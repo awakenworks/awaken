@@ -1,23 +1,23 @@
-//! Durable [`EnvRegistry`] backends: the self-hosted environment registry over a
-//! store, so an environment (user-created config) survives a restart and is visible
-//! to a worker on any node. SQLite (embedded) and Postgres (distributed) share one
-//! portable bundle, mirroring the extracted `awaken-work-store` backend.
+//! Durable Control-owned [`EnvRegistry`] backends. Environment definitions and
+//! exact revision history survive restart; Coordinator and Worker see only the
+//! separately registered executable projection. SQLite and PostgreSQL share one
+//! portable migration bundle.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
-use awaken_session_contract::env_registry::{
+use awaken_environment_contract::{
     CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvItem,
-    EnvRegistry, EnvUpdate, EnvironmentConfig, EnvironmentRevision,
+    EnvRegistry, EnvUpdate, EnvironmentConfig, EnvironmentRevision, EnvironmentSandboxPolicyRef,
 };
+use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
 
-// The in-memory reference backend lives here beside the durable siblings (issue A /
-// Phase 1); the port + value objects stay inward in `awaken-session-contract`.
+// The in-memory reference backend lives here beside the durable siblings; the
+// port and value objects stay inward in `awaken-environment-contract`.
 mod inmem;
 pub use inmem::InMemoryEnvRegistry;
 
@@ -60,13 +60,44 @@ fn env_bundle() -> Result<MigrationBundle, MigrationError> {
                  fingerprint TEXT NOT NULL, \
                  env_id      TEXT NOT NULL UNIQUE REFERENCES {prefix}_env(env_id) ON DELETE CASCADE)",
             )?,
+            Migration::new(
+                5,
+                "immutable authored Environment revision history",
+                "CREATE TABLE {prefix}_revision (\
+                 env_id        TEXT NOT NULL, \
+                 revision      BIGINT NOT NULL, \
+                 name          TEXT NOT NULL, \
+                 description   TEXT NOT NULL, \
+                 metadata_json TEXT NOT NULL, \
+                 config_json   TEXT NOT NULL, \
+                 archived_at   TEXT, \
+                 scope         TEXT, \
+                 PRIMARY KEY (env_id, revision))",
+            )?,
+            Migration::new(
+                6,
+                "seed Environment revision history from the current projection",
+                "INSERT INTO {prefix}_revision \
+                 (env_id, revision, name, description, metadata_json, config_json, archived_at, scope) \
+                 SELECT env_id, revision, name, description, metadata_json, config_json, archived_at, scope \
+                 FROM {prefix}_env",
+            )?,
+            Migration::new(
+                7,
+                "exact sandbox policy binding on the current Environment projection",
+                "ALTER TABLE {prefix}_env ADD COLUMN sandbox_policy_json TEXT",
+            )?,
+            Migration::new(
+                8,
+                "exact sandbox policy binding in immutable Environment history",
+                "ALTER TABLE {prefix}_revision ADD COLUMN sandbox_policy_json TEXT",
+            )?,
         ],
     )
 }
 
 /// The columns an env row projects to an [`EnvItem`], in `SELECT` order.
-const COLS: &str =
-    "env_id, name, description, metadata_json, config_json, archived_at, revision, scope";
+const COLS: &str = "env_id, name, description, metadata_json, config_json, archived_at, revision, scope, sandbox_policy_json";
 
 fn metadata_str(m: &BTreeMap<String, String>) -> String {
     serde_json::to_string(m).expect("env metadata serializes")
@@ -74,6 +105,12 @@ fn metadata_str(m: &BTreeMap<String, String>) -> String {
 
 fn config_str(c: &EnvironmentConfig) -> String {
     serde_json::to_string(c).expect("env config serializes")
+}
+
+fn sandbox_policy_str(reference: &Option<EnvironmentSandboxPolicyRef>) -> Option<String> {
+    reference
+        .as_ref()
+        .map(|reference| serde_json::to_string(reference).expect("sandbox policy ref serializes"))
 }
 
 /// Storage-shaped row shared by the SQLite and PostgreSQL adapters. Keeping the
@@ -88,6 +125,7 @@ struct PersistedEnvRow {
     archived_at: Option<String>,
     revision: i64,
     scope: Option<String>,
+    sandbox_policy_json: Option<String>,
 }
 
 impl PersistedEnvRow {
@@ -103,6 +141,9 @@ impl PersistedEnvRow {
             scope: self.scope,
             config: serde_json::from_str(&self.config_json)
                 .expect("valid typed Environment config"),
+            sandbox_policy: self
+                .sandbox_policy_json
+                .map(|json| serde_json::from_str(&json).expect("valid sandbox policy ref")),
             archived_at: self.archived_at,
         }
     }
@@ -118,6 +159,7 @@ fn sqlite_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EnvItem> {
         archived_at: row.get(5)?,
         revision: row.get(6)?,
         scope: row.get(7)?,
+        sandbox_policy_json: row.get(8)?,
     }
     .into_item())
 }
@@ -132,6 +174,7 @@ fn pg_row(row: &PgRow) -> EnvItem {
         archived_at: row.get("archived_at"),
         revision: row.get("revision"),
         scope: row.get("scope"),
+        sandbox_policy_json: row.get("sandbox_policy_json"),
     }
     .into_item()
 }
@@ -169,6 +212,26 @@ impl SqliteEnvRegistry {
         )
         .optional()
         .expect("read env row")
+    }
+
+    fn insert_revision(tx: &Transaction<'_>, item: &EnvItem) -> Result<(), rusqlite::Error> {
+        tx.execute(
+            "INSERT INTO env_registry_revision \
+             (env_id, revision, name, description, metadata_json, config_json, archived_at, scope, sandbox_policy_json) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                item.id,
+                item.revision.0,
+                item.name,
+                item.description,
+                metadata_str(&item.metadata),
+                config_str(&item.config),
+                item.archived_at,
+                item.scope,
+                sandbox_policy_str(&item.sandbox_policy),
+            ],
+        )?;
+        Ok(())
     }
 }
 
@@ -235,8 +298,11 @@ impl EnvRegistry for SqliteEnvRegistry {
             metadata: command.metadata,
             scope: command.scope,
             config: command.config,
+            sandbox_policy: None,
             archived_at: None,
         };
+        Self::insert_revision(&tx, &item)
+            .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
         tx.commit()
             .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
         Ok(CreateEnvironmentOutcome::Created(item))
@@ -253,10 +319,36 @@ impl EnvRegistry for SqliteEnvRegistry {
         rows.map(|r| r.expect("row")).collect()
     }
 
+    async fn list_all(&self) -> Vec<EnvItem> {
+        let conn = self.conn.lock().expect("env registry mutex poisoned");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {COLS} FROM env_registry_env ORDER BY seq ASC"
+            ))
+            .expect("prepare list all");
+        stmt.query_map([], sqlite_row)
+            .expect("query list all")
+            .map(|row| row.expect("row"))
+            .collect()
+    }
+
     async fn get(&self, id: &str) -> Option<EnvItem> {
         let mut guard = self.conn.lock().expect("env registry mutex poisoned");
         let tx = guard.transaction().expect("begin");
         Self::read(&tx, id)
+    }
+
+    async fn get_revision(&self, id: &str, revision: EnvironmentRevision) -> Option<EnvItem> {
+        let conn = self.conn.lock().expect("env registry mutex poisoned");
+        conn.query_row(
+            &format!(
+                "SELECT {COLS} FROM env_registry_revision WHERE env_id = ?1 AND revision = ?2"
+            ),
+            params![id, revision.0],
+            sqlite_row,
+        )
+        .optional()
+        .expect("read Environment revision")
     }
 
     async fn exists(&self, id: &str) -> bool {
@@ -272,7 +364,7 @@ impl EnvRegistry for SqliteEnvRegistry {
         item.apply(patch);
         tx.execute(
             "UPDATE env_registry_env SET name = ?1, description = ?2, metadata_json = ?3, \
-             config_json = ?4, revision = ?5, scope = ?6 WHERE env_id = ?7",
+             config_json = ?4, revision = ?5, scope = ?6, sandbox_policy_json = ?7 WHERE env_id = ?8",
             params![
                 item.name,
                 item.description,
@@ -280,22 +372,14 @@ impl EnvRegistry for SqliteEnvRegistry {
                 config_str(&item.config),
                 item.revision.0,
                 item.scope,
+                sandbox_policy_str(&item.sandbox_policy),
                 id
             ],
         )
         .expect("update env");
+        Self::insert_revision(&tx, &item).expect("insert Environment revision");
         tx.commit().expect("commit update");
         Some(item)
-    }
-
-    async fn delete(&self, id: &str) -> bool {
-        let conn = self.conn.lock().expect("env registry mutex poisoned");
-        conn.execute(
-            "DELETE FROM env_registry_env WHERE env_id = ?1",
-            params![id],
-        )
-        .expect("delete env")
-            > 0
     }
 
     async fn archive(&self, id: &str) -> Option<EnvItem> {
@@ -314,6 +398,7 @@ impl EnvRegistry for SqliteEnvRegistry {
             params![OBJECT_AT, item.revision.0, id],
         )
         .expect("archive env");
+        Self::insert_revision(&tx, &item).expect("insert archived Environment revision");
         tx.commit().expect("commit archive");
         Some(item)
     }
@@ -439,8 +524,26 @@ impl EnvRegistry for PostgresEnvRegistry {
             metadata: command.metadata,
             scope: command.scope,
             config: command.config,
+            sandbox_policy: None,
             archived_at: None,
         };
+        sqlx::query(
+            "INSERT INTO env_registry_revision \
+             (env_id, revision, name, description, metadata_json, config_json, archived_at, scope, sandbox_policy_json) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(&item.id)
+        .bind(i64::try_from(item.revision.0).expect("Environment revision fits i64"))
+        .bind(&item.name)
+        .bind(&item.description)
+        .bind(metadata_str(&item.metadata))
+        .bind(config_str(&item.config))
+        .bind(&item.archived_at)
+        .bind(&item.scope)
+        .bind(sandbox_policy_str(&item.sandbox_policy))
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
         tx.commit()
             .await
             .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
@@ -459,8 +562,32 @@ impl EnvRegistry for PostgresEnvRegistry {
         .collect()
     }
 
+    async fn list_all(&self) -> Vec<EnvItem> {
+        sqlx::query(&format!(
+            "SELECT {COLS} FROM env_registry_env ORDER BY seq ASC"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .expect("query all Environments")
+        .iter()
+        .map(pg_row)
+        .collect()
+    }
+
     async fn get(&self, id: &str) -> Option<EnvItem> {
         self.read(id).await
+    }
+
+    async fn get_revision(&self, id: &str, revision: EnvironmentRevision) -> Option<EnvItem> {
+        sqlx::query(&format!(
+            "SELECT {COLS} FROM env_registry_revision WHERE env_id = $1 AND revision = $2"
+        ))
+        .bind(id)
+        .bind(i64::try_from(revision.0).expect("Environment revision fits i64"))
+        .fetch_optional(&self.pool)
+        .await
+        .expect("read Environment revision")
+        .map(|row| pg_row(&row))
     }
 
     async fn exists(&self, id: &str) -> bool {
@@ -480,7 +607,7 @@ impl EnvRegistry for PostgresEnvRegistry {
         item.apply(patch);
         sqlx::query(
             "UPDATE env_registry_env SET name = $1, description = $2, metadata_json = $3, \
-             config_json = $4, revision = $5, scope = $6 WHERE env_id = $7",
+             config_json = $4, revision = $5, scope = $6, sandbox_policy_json = $7 WHERE env_id = $8",
         )
         .bind(&item.name)
         .bind(&item.description)
@@ -488,22 +615,30 @@ impl EnvRegistry for PostgresEnvRegistry {
         .bind(config_str(&item.config))
         .bind(i64::try_from(item.revision.0).expect("Environment revision fits i64"))
         .bind(&item.scope)
+        .bind(sandbox_policy_str(&item.sandbox_policy))
         .bind(id)
         .execute(&mut *tx)
         .await
         .expect("update env");
+        sqlx::query(
+            "INSERT INTO env_registry_revision \
+             (env_id, revision, name, description, metadata_json, config_json, archived_at, scope, sandbox_policy_json) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(&item.id)
+        .bind(i64::try_from(item.revision.0).expect("Environment revision fits i64"))
+        .bind(&item.name)
+        .bind(&item.description)
+        .bind(metadata_str(&item.metadata))
+        .bind(config_str(&item.config))
+        .bind(&item.archived_at)
+        .bind(&item.scope)
+        .bind(sandbox_policy_str(&item.sandbox_policy))
+        .execute(&mut *tx)
+        .await
+        .expect("insert Environment revision");
         tx.commit().await.expect("commit Environment update");
         Some(item)
-    }
-
-    async fn delete(&self, id: &str) -> bool {
-        sqlx::query("DELETE FROM env_registry_env WHERE env_id = $1")
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .expect("delete env")
-            .rows_affected()
-            > 0
     }
 
     async fn archive(&self, id: &str) -> Option<EnvItem> {
@@ -533,6 +668,23 @@ impl EnvRegistry for PostgresEnvRegistry {
         .execute(&mut *tx)
         .await
         .expect("archive env");
+        sqlx::query(
+            "INSERT INTO env_registry_revision \
+             (env_id, revision, name, description, metadata_json, config_json, archived_at, scope, sandbox_policy_json) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(&item.id)
+        .bind(i64::try_from(item.revision.0).expect("Environment revision fits i64"))
+        .bind(&item.name)
+        .bind(&item.description)
+        .bind(metadata_str(&item.metadata))
+        .bind(config_str(&item.config))
+        .bind(&item.archived_at)
+        .bind(&item.scope)
+        .bind(sandbox_policy_str(&item.sandbox_policy))
+        .execute(&mut *tx)
+        .await
+        .expect("insert archived Environment revision");
         tx.commit().await.expect("commit Environment archive");
         Some(item)
     }
@@ -541,6 +693,16 @@ impl EnvRegistry for PostgresEnvRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn environment_schema_is_versioned_and_unconditional() {
+        // Cause/effect rule: every Environment schema change is a positive,
+        // checksum-tracked migration; conditional DDL or conflict-ignore SQL is
+        // rejected before any adapter can apply it.
+        let bundle = env_bundle().expect("Environment bundle");
+        awaken_scoped_migration::lint(std::slice::from_ref(&bundle))
+            .expect("deterministic Environment migrations");
+    }
 
     fn config() -> EnvironmentConfig {
         EnvironmentConfig::SelfHosted
@@ -598,18 +760,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_reports_existence() {
-        let r = r();
-        let e = r
-            .create("e".into(), String::new(), BTreeMap::new(), config())
-            .await;
-        assert!(r.exists(&e.id).await);
-        assert!(r.delete(&e.id).await);
-        assert!(!r.delete(&e.id).await, "second delete is false");
-        assert!(!r.exists(&e.id).await);
-    }
-
-    #[tokio::test]
     async fn file_open_and_pg_connect_entry_points() {
         let dir = std::env::temp_dir().join(format!("env-cov-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -627,7 +777,7 @@ mod tests {
                 .create("c".into(), String::new(), BTreeMap::new(), config())
                 .await;
             assert!(r.exists(&e.id).await);
-            r.delete(&e.id).await;
+            r.archive(&e.id).await;
         }
     }
 
@@ -690,7 +840,11 @@ mod tests {
             "archived drops from active"
         );
         assert!(r.get(&e.id).await.is_some(), "still retrievable");
-        assert!(r.delete(&e.id).await);
-        assert!(!r.delete(&e.id).await);
+        assert!(
+            r.get_revision(&e.id, EnvironmentRevision(1))
+                .await
+                .is_some(),
+            "terminal archive preserves exact history"
+        );
     }
 }

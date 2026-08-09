@@ -70,6 +70,11 @@ pub struct ControlDependencies {
     pub runtimes: Arc<dyn RuntimeCapabilitySource>,
     pub resource_inventory: Option<Arc<dyn ResourceInventory>>,
     pub environment_author: Arc<dyn EnvironmentAuthor>,
+    /// The canonical Environment application is also the Environment half of
+    /// the shared static-registration recovery supervisor.
+    pub environment_application: Arc<awaken_environment_application::EnvironmentApplication>,
+    /// Control-owned Environment definition and policy authoring surface.
+    pub environment_router: Router,
     pub data_subjects: Arc<dyn DataSubjectRepo>,
     pub erasure_jobs: Arc<dyn ErasureJobRepo>,
     pub coordinator_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
@@ -89,6 +94,7 @@ pub struct ControlComponent {
     pub router: Router,
     pub management_audit: ManagementAuditPlane,
     pub publication_reconciler: Arc<dyn PublicationBindingReconciler>,
+    pub registration_supervisor: Arc<crate::StaticRegistrationSupervisor>,
     pub admin_tools: Vec<Arc<dyn RawTool>>,
     pub vault_state: Arc<VaultState>,
     /// The same Control-owned consent source exposed locally to AllInOne. A
@@ -96,16 +102,8 @@ pub struct ControlComponent {
     pub data_subject_consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ControlBuildError {
-    #[error("executable Agent registration recovery failed: {0}")]
-    RegistrationRecovery(String),
-}
-
 /// Build the one authoritative Control application component.
-pub async fn build_control_component(
-    dependencies: ControlDependencies,
-) -> Result<ControlComponent, ControlBuildError> {
+pub async fn build_control_component(dependencies: ControlDependencies) -> ControlComponent {
     let ControlDependencies {
         execution_workspace,
         catalog,
@@ -130,6 +128,8 @@ pub async fn build_control_component(
         runtimes,
         resource_inventory,
         environment_author,
+        environment_application,
+        environment_router,
         data_subjects,
         erasure_jobs,
         coordinator_content_eraser,
@@ -163,17 +163,6 @@ pub async fn build_control_component(
         config_service = config_service.with_plugin_publication_resolver(resolver);
     }
     let config_service = Arc::new(config_service);
-    let warmed = config_service
-        .reconcile_registrations(
-            config_store.as_ref(),
-            &awaken_tenancy::ScopeId::from(execution_workspace.as_str()),
-        )
-        .await
-        .map_err(ControlBuildError::RegistrationRecovery)?;
-    if warmed > 0 {
-        eprintln!("config: reconciled {warmed} durable Agent publication(s)");
-    }
-
     let config_plane = ConfigPlane::new(config_service, config_store, tool_catalog);
     if let Some(selection) = assistant_model_selection
         && let Err(error) =
@@ -189,6 +178,10 @@ pub async fn build_control_component(
             execution_workspace.clone(),
             vec![awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID.to_string()],
         ));
+    let registration_supervisor = crate::StaticRegistrationSupervisor::start(
+        publication_reconciler.clone(),
+        environment_application,
+    );
     let capability_reader = Arc::new(CatalogCapabilityReader::new(
         catalog.clone(),
         &global_tools,
@@ -242,6 +235,7 @@ pub async fn build_control_component(
         plugins: platform_plugins,
         runtimes,
         platform_workspace: execution_workspace,
+        environment_router,
         iam,
         local_browser_auth,
         remote_iam,
@@ -252,14 +246,15 @@ pub async fn build_control_component(
     ))
     .merge(crate::erasure_router(data_subject_resolver));
 
-    Ok(ControlComponent {
+    ControlComponent {
         router,
         management_audit: config_plane.management_audit_plane(),
         publication_reconciler,
+        registration_supervisor,
         admin_tools,
         vault_state,
         data_subject_consent,
-    })
+    }
 }
 
 async fn recover_and_supervise_credentials(

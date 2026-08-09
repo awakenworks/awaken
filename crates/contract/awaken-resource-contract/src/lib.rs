@@ -1,4 +1,4 @@
-//! Contract-only vocabulary for the Resource plane (files, memory, repositories, skills).
+//! Contract-only vocabulary for the Resources context (files, memory, repositories, skills).
 //!
 //! The mountable-resource **SPIs** — [`FileStore`] + [`FileCatalog`] as the two
 //! capabilities of one File aggregate, [`MemoryRepository`], and [`SkillStore`]
@@ -150,6 +150,64 @@ pub trait FileStore: Send + Sync {
     async fn list(&self) -> Result<Vec<String>, FileStoreError>;
     /// Delete by id; returns whether it existed. GC/admin only — not a mutation.
     async fn delete(&self, id: &str) -> Result<bool, FileStoreError>;
+}
+
+/// Resources application port shared by public HTTP adapters and Runtime
+/// artifact workflows. Implementations own command ordering across FileStore,
+/// FileCatalog, and lifecycle persistence; consumers cannot reproduce it.
+#[async_trait]
+pub trait FileApplicationService: Send + Sync {
+    async fn get(
+        &self,
+        workspace_id: &str,
+        file_id: &str,
+    ) -> Result<Option<FileRecord>, ResourcePurgeError>;
+
+    async fn list(
+        &self,
+        workspace_id: &str,
+        scope_id: Option<&str>,
+    ) -> Result<Vec<FileRecord>, ResourcePurgeError>;
+
+    async fn create_uploaded_file(
+        &self,
+        workspace_id: &str,
+        filename: String,
+        mime_type: String,
+        bytes: &[u8],
+    ) -> Result<FileRecord, ResourcePurgeError>;
+
+    async fn create_generated_file(
+        &self,
+        workspace_id: &str,
+        filename: String,
+        mime_type: String,
+        bytes: &[u8],
+        idempotency_key: String,
+    ) -> Result<FileRecord, ResourcePurgeError>;
+
+    async fn create_artifact(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+        logical_path: String,
+        mime_type: String,
+        bytes: &[u8],
+        idempotency_key: String,
+    ) -> Result<FileRecord, ResourcePurgeError>;
+
+    async fn bytes(
+        &self,
+        workspace_id: &str,
+        file_id: &str,
+    ) -> Result<Option<(FileRecord, Vec<u8>)>, ResourcePurgeError>;
+
+    async fn delete(
+        &self,
+        workspace_id: &str,
+        file_id: &str,
+        requested_at_unix_ms: u64,
+    ) -> Result<Option<FileRecord>, ResourcePurgeError>;
 }
 
 // ---------------------------------------------------------------------------

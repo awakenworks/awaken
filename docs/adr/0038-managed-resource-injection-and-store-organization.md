@@ -367,7 +367,7 @@ read-only capability fails closed instead of silently projecting a writable copy
 
 ### Consequences of the amendment
 
-- The resource plane has **exactly one content-addressed blob store** as its byte
+- Resources has **exactly one content-addressed blob store** as its byte
   substrate — shared by `file` in and `skill` bundles — plus one mutable keyed
   store (`memory_store`) and the vault (`secret`). Output artifacts reuse the File
   aggregate and blob store; they do not add an Artifact Store or a parallel byte

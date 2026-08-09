@@ -3,6 +3,37 @@
 use super::*;
 
 impl ConfigPlane {
+    /// Replay every durable Agent registration in every authoring scope. This is
+    /// the recovery operation used by the Control supervisor; freshness-driven
+    /// republishing remains the separate policy-bound operation below.
+    pub async fn recover_all_registrations(
+        &self,
+        reserved_execution_workspace: &str,
+    ) -> Result<usize, String> {
+        let scopes = self
+            .store
+            .list_config_scopes()
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut recovered = 0;
+        for scope in scopes {
+            let execution_workspace = if scope.as_str() == RESERVED_ADMIN_SCOPE {
+                reserved_execution_workspace
+            } else {
+                scope.as_str()
+            };
+            recovered += self
+                .service
+                .reconcile_registrations_for_execution_workspace(
+                    self.store.as_ref(),
+                    &scope,
+                    execution_workspace,
+                )
+                .await?;
+        }
+        Ok(recovered)
+    }
+
     /// Re-resolve and re-publish a policy-bound Agent in `scope`.
     pub async fn reconcile(&self, scope: &ScopeId, id: &str) -> Result<bool, String> {
         if scope.as_str() == RESERVED_ADMIN_SCOPE {

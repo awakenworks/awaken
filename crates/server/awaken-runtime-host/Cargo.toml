@@ -94,6 +94,8 @@ container-podman = ["awaken-sandbox-container/podman"]
 container-k8s = ["awaken-sandbox-container/k8s"]
 
 [dev-dependencies]
+awaken-file-application.workspace = true
+awaken-resource-application.workspace = true
 # Test-only ZIP construction for the HTTP import compatibility suite. Production
 # decoding is owned by awaken-skill-store's canonical bundle ingestor.
 zip = { version = "8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }

@@ -20,15 +20,15 @@ async fn call(
     uri: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
-    let request = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("content-type", "application/json")
-        .body(
-            body.map(|value| Body::from(serde_json::to_vec(&value).unwrap()))
-                .unwrap_or_else(Body::empty),
-        )
-        .unwrap();
+    let mut request = Request::builder().method(method).uri(uri);
+    let body = match body {
+        Some(value) => {
+            request = request.header("content-type", "application/json");
+            Body::from(serde_json::to_vec(&value).unwrap())
+        }
+        None => Body::empty(),
+    };
+    let request = request.body(body).unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();

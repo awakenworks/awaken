@@ -32,6 +32,12 @@ impl LlmExecutor for NoLlm {
     }
 }
 
+fn purge_scheduler(host: &SharedHost) -> Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> {
+    Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(
+        host.resource_lifecycle().expect("resource lifecycle"),
+    ))
+}
+
 /// A router over a host backed by a durable skill store in a fresh temp dir, so the
 /// SDK delivery (`store_put`) actually persists.
 fn router_with_store() -> (Router, std::path::PathBuf) {
@@ -45,7 +51,10 @@ fn router_with_store() -> (Router, std::path::PathBuf) {
             .with_resource_lifecycle(support::resource_lifecycle())
             .with_skill_store(dir.join("store")),
     );
-    (skills_router(host.skill_store(), host), dir)
+    (
+        skills_router(host.skill_store(), purge_scheduler(&host)),
+        dir,
+    )
 }
 static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -524,8 +533,11 @@ async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
 async fn legacy_json_create_fails_closed_without_a_durable_store() {
     // No `with_skill_store`: the host has no durable skill catalog, so the legacy
     // `{id, content}` delivery has nowhere to land → 409 (fail closed, no silent drop).
-    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
-    let router = skills_router(host.skill_store(), host);
+    let host = Arc::new(
+        SharedHost::new(Arc::new(NoLlm), "test")
+            .with_resource_lifecycle(support::resource_lifecycle()),
+    );
+    let router = skills_router(host.skill_store(), purge_scheduler(&host));
     let (status, v) = post_json(
         &router,
         "/v1/skills",
@@ -560,8 +572,11 @@ async fn legacy_json_create_delivers_with_a_durable_store() {
 // module's "BOTH feed the durable catalog … survives a restart" contract.
 #[tokio::test]
 async fn sdk_multipart_create_fails_closed_without_a_durable_store() {
-    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
-    let router = skills_router(host.skill_store(), host);
+    let host = Arc::new(
+        SharedHost::new(Arc::new(NoLlm), "test")
+            .with_resource_lifecycle(support::resource_lifecycle()),
+    );
+    let router = skills_router(host.skill_store(), purge_scheduler(&host));
     // Multipart fails closed (409) when nothing durable backs it…
     let (status, created) = post_multipart(&router, "/v1/skills", SKILL_V1).await;
     assert_eq!(

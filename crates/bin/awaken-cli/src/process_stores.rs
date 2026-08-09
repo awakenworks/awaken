@@ -13,8 +13,6 @@ pub(super) struct ProcessStores {
     pub(super) workspace_root: Option<std::path::PathBuf>,
     pub(super) control: Option<ControlStores>,
     pub(super) coordinator: Option<CoordinatorStores>,
-    /// Coordinator-owned Environment application. `None` in split Control and Worker.
-    pub(super) environments: Option<Arc<awaken_protocol_managed::EnvironmentState>>,
 }
 
 pub(super) struct ControlStores {
@@ -32,6 +30,8 @@ pub(super) struct ControlStores {
     pub(super) data_subjects: Arc<dyn awaken_data_subject::DataSubjectRepo>,
     /// Durable Control erasure process checkpoints over the same adapter.
     pub(super) erasure_jobs: Arc<dyn awaken_data_subject::ErasureJobRepo>,
+    pub(super) environments: Arc<dyn awaken_environment_contract::EnvRegistry>,
+    pub(super) sandbox_policies: Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>,
 }
 
 pub(super) struct CoordinatorStores {
@@ -53,6 +53,7 @@ pub(super) struct CoordinatorStores {
     /// A second view of the exact same captured-content adapter for Control's
     /// authenticated erasure command.
     pub(super) captured_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
+    pub(super) environment_work: Arc<dyn awaken_session_contract::work_queue::WorkQueue>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,6 +72,7 @@ pub(super) enum MigrationComponent {
     CoordinatorCapturedContent,
     Resources,
     ExecutableAgentCatalog,
+    ExecutableEnvironmentCatalog,
 }
 
 const ALL_IN_ONE_MIGRATIONS: &[MigrationComponent] = &[
@@ -89,6 +91,7 @@ const COORDINATOR_MIGRATIONS: &[MigrationComponent] = &[
     MigrationComponent::CoordinatorCapturedContent,
     MigrationComponent::Resources,
     MigrationComponent::ExecutableAgentCatalog,
+    MigrationComponent::ExecutableEnvironmentCatalog,
 ];
 const WORKER_MIGRATIONS: &[MigrationComponent] = &[];
 
@@ -123,10 +126,10 @@ mod tests {
         // Cause/effect decision table:
         // R1 Control -> Control schemas only.
         // R2 Coordinator -> Coordinator + co-deployed Resources + its durable
-        // executable-agent projection.
+        // executable Agent and Environment projections.
         // R3 Worker -> no authority schema and therefore no database access.
         // R4 AllInOne -> canonical Control, Coordinator, and Resources groups,
-        // but no second durable executable-agent implementation.
+        // but no second durable executable projection implementation.
         assert_eq!(
             migration_manifest(config::Role::Control),
             &[
@@ -142,6 +145,7 @@ mod tests {
                 MigrationComponent::CoordinatorCapturedContent,
                 MigrationComponent::Resources,
                 MigrationComponent::ExecutableAgentCatalog,
+                MigrationComponent::ExecutableEnvironmentCatalog,
             ],
             "R2"
         );

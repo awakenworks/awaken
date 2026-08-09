@@ -7,8 +7,9 @@
 
 use std::sync::Arc;
 
-use awaken_managed_routers::{default_models, files_router, models_router};
-use awaken_managed_routers::{memory_stores_router_with_catalog, skills_router};
+use awaken_managed_routers::{
+    ResourcesRouterInput, default_models, models_router, resources_router,
+};
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult};
 use awaken_runtime_host::SharedHost;
 use awaken_tenancy::WorkspaceScope;
@@ -17,11 +18,13 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
+mod support;
+
 struct NoLlm;
 #[async_trait::async_trait]
 impl LlmExecutor for NoLlm {
     async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
-        unreachable!("the resource planes never infer")
+        unreachable!("Resources components never infer")
     }
 }
 
@@ -35,22 +38,33 @@ async fn status(app: &Router, uri: &str) -> StatusCode {
 
 #[tokio::test]
 async fn the_resource_planes_merge_over_one_host_without_route_conflicts() {
-    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
-    let purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> = host.clone();
+    let lifecycle = support::resource_lifecycle();
+    let host = SharedHost::new(Arc::new(NoLlm), "test").with_resource_lifecycle(lifecycle.clone());
+    let files = Arc::new(awaken_file_application::FileApplication::new(
+        host.file_store(),
+        host.file_catalog(),
+        lifecycle,
+    ));
+    let host = Arc::new(host.with_file_application(files));
+    let purge = Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(
+        host.resource_lifecycle().expect("resource lifecycle"),
+    ));
 
     // Merge the same way the assembly binary does: every plane's router over the one
     // shared host, plus the static model directory.
     let app = Router::new()
-        .merge(memory_stores_router_with_catalog(
-            host.memory_repository(),
-            Arc::new(
+        .merge(resources_router(ResourcesRouterInput {
+            files: host
+                .file_application()
+                .expect("test host installs File application"),
+            memories: host.memory_repository(),
+            catalog: Arc::new(
                 awaken_resource_store::SqliteResourceStore::in_memory()
                     .expect("open ephemeral Resource Catalog"),
             ),
-            purge.clone(),
-        ))
-        .merge(files_router(host.clone()))
-        .merge(skills_router(host.skill_store(), purge))
+            skills: host.skill_store(),
+            purge,
+        }))
         .merge(models_router(Arc::new(default_models())));
 
     // Each plane's list entrypoint answers on the assembled app (200, not a 404 from a

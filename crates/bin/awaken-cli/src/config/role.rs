@@ -52,7 +52,9 @@ mod tests {
             assert_eq!(Role::parse(name).unwrap(), role, "R1 {name}");
             assert_eq!(role.as_str(), name, "R3 {name}");
         }
-        for retired in ["serve", "server", "management"] {
+        // A standalone Resources role is intentionally absent until independent
+        // scaling or credential isolation justifies its transport boundary.
+        for retired in ["serve", "server", "management", "resources"] {
             assert!(Role::parse(retired).is_err(), "R2 {retired}");
         }
     }

@@ -62,7 +62,7 @@ impl awaken_session_contract::ApplicationSessionContributionApi
             awaken_session_contract::SessionBaselineInputs {
                 environment: awaken_session_contract::EnvironmentSnapshot {
                     environment_id: "env".into(),
-                    revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+                    revision: awaken_session_contract::EnvironmentRevision(1),
                     config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                         "env-fingerprint".into(),
                     ),

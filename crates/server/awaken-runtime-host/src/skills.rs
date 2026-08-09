@@ -187,11 +187,14 @@ pub(crate) async fn wire_skills(
     placement: SkillForkPlacement,
     skills_subdir: &str,
 ) -> Result<Option<SkillWiring>, String> {
-    // Offer skills when either a static set is configured or a durable catalog is
-    // wired — the workspace-authored source alone never opens the surface (a run with
-    // no delivered skills shows nothing until the agent authors one it can re-read).
-    // `delivered` is `Some` (possibly empty) exactly when a durable store is wired.
-    if configured.is_empty() && external_registries.is_empty() && delivered.is_none() {
+    // Store availability is not a capability grant. Offer the tools only when
+    // this exact Session has a static, external, or delivered Skill. A later Run
+    // reloads the canonical catalog and may surface newly selected content; an
+    // empty store never creates an ambient tool surface by itself.
+    if configured.is_empty()
+        && external_registries.is_empty()
+        && delivered.as_ref().is_none_or(Vec::is_empty)
+    {
         return Ok(None);
     }
     if let Some(skill) = configured

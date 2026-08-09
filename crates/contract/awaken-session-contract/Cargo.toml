@@ -13,6 +13,9 @@ authority = "session"
 # probe). A contract/ leaf itself — dependencies point inward.
 awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true
+# Static Environment identity/version values are published by Control and frozen
+# into the dynamic Session baseline through this narrow contract.
+awaken-environment-contract.workspace = true
 # Secret-free resources-plane identity/configuration port used once while a
 # Session freezes its effective inputs. It contains no IAM policy or principal.
 awaken-resource-contract.workspace = true

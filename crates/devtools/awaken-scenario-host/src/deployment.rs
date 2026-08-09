@@ -73,18 +73,23 @@ pub(crate) fn resource_host_with_deployment(
     model_ref: impl Into<String>,
     deployment: awaken_runtime_host::DeploymentConfig,
 ) -> SharedHost {
-    let host = if let Some(storage_dir) = deployment.storage_dir.clone() {
-        let resources = awaken_server::embedded_resource_component(&storage_dir);
+    let resources = deployment.storage_dir.clone().map_or_else(
+        awaken_server::ephemeral_resources_application,
+        |storage_dir| awaken_server::embedded_resources_application(&storage_dir),
+    );
+    let host = if deployment.storage_dir.is_some() {
         let host = SharedHost::new_with_resource_component_and_deployment(
-            llm, model_ref, resources, deployment,
-        );
+            llm,
+            model_ref,
+            resources.ports(),
+            deployment,
+        )
+        .with_file_application(resources.files());
         awaken_server::install_platform_memory_data_plane(&host);
         host
     } else {
-        SharedHost::new(llm, model_ref).with_resource_lifecycle(Arc::new(
-            awaken_resource_store::SqliteResourceStore::in_memory()
-                .expect("open scenario resource lifecycle sqlite"),
-        ))
+        SharedHost::new_with_resource_component(llm, model_ref, resources.ports())
+            .with_file_application(resources.files())
     };
     let scenario_workspace = std::env::var("AWAKEN_SCENARIO_WORKSPACE")
         .ok()

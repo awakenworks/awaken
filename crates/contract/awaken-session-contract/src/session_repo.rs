@@ -397,7 +397,7 @@ mod mutation_tests {
                 control: crate::ControlSessionCreationInputs {
                     environment: crate::EnvironmentSnapshot {
                         environment_id: "environment".into(),
-                        revision: crate::env_registry::EnvironmentRevision(1),
+                        revision: awaken_environment_contract::EnvironmentRevision(1),
                         config_fingerprint: crate::EnvironmentFingerprint("config".into()),
                         sandbox: serde_json::json!({}),
                         sandbox_provisioning: Default::default(),

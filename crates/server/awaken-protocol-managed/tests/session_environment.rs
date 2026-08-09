@@ -1,18 +1,16 @@
 //! Session ↔ environment association (Managed Agents contract): the environment is
 //! bound at session creation (defaulting to `env_local` when omitted), echoed on the
 //! Session, and immutable for the session's lifetime — `POST /v1/sessions/{id}`
-//! updates only `title`/`metadata`, so an `environment_id` sent to update is ignored
-//! and the session keeps its create-time environment.
+//! updates only `title`/`metadata`, so an `environment_id` sent to update rejects
+//! the whole mutation and the Session keeps its create-time Environment snapshot.
 //!
 //! Scope note: this locks the WIRE/record association + immutability. It does not
-//! assert sandbox realization — `environment_id` does not yet parameterize the local
-//! `SandboxSpec` (networking/packages), so two sessions in different environments get
-//! byte-identical local sandboxes today.
+//! assert Sandbox realization, which is covered by Runtime Host provisioning tests.
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_protocol_managed::{
-    ManagedState, OutcomeReport, RunError, SessionInit, SessionRuntime, StepOutcome,
-    ToolPermissionDecision, router,
+    EnvironmentState, ManagedState, OutcomeReport, RunError, SessionInit, SessionRuntime,
+    StepOutcome, ToolPermissionDecision, router,
 };
 use axum::Router;
 use axum::body::Body;
@@ -90,24 +88,45 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
     (status, value)
 }
 
-fn app() -> Router {
-    router(std::sync::Arc::new(ManagedState::new(AcceptingFake)))
+async fn app() -> (Router, String) {
+    let environments = EnvironmentState::new();
+    let environment = environments
+        .application()
+        .create(awaken_environment_contract::CreateEnvironmentCommand {
+            command_id: "session-environment-test".into(),
+            name: "Custom".into(),
+            description: String::new(),
+            metadata: Default::default(),
+            scope: None,
+            config: awaken_environment_contract::EnvironmentConfig::SelfHosted,
+        })
+        .await
+        .expect("publish Environment through the Control application");
+    (
+        router(std::sync::Arc::new(
+            ManagedState::new(AcceptingFake).with_environments(environments.execution()),
+        )),
+        environment.id,
+    )
 }
 
 #[tokio::test]
 async fn environment_is_pinned_at_creation() {
-    let app = app();
+    // Cause/effect rules: R1 a Control-published current Environment is admitted
+    // and frozen by id; R2 omission selects the immutable built-in `env_local`;
+    // an unregistered id has no ambient fallback.
+    let (app, environment_id) = app().await;
 
     // Explicit environment is echoed on the session.
     let (s, session) = call(
         &app,
         "POST",
         "/v1/sessions",
-        Some(json!({ "agent": "a", "environment_id": "env_custom" })),
+        Some(json!({ "agent": "a", "environment_id": environment_id })),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(session["environment_id"], "env_custom");
+    assert_eq!(session["environment_id"], environment_id);
 
     // Omitting it defaults to the local environment.
     let (s, defaulted) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
@@ -117,13 +136,13 @@ async fn environment_is_pinned_at_creation() {
 
 #[tokio::test]
 async fn environment_is_immutable_across_update() {
-    let app = app();
+    let (app, environment_id) = app().await;
 
     let (_, session) = call(
         &app,
         "POST",
         "/v1/sessions",
-        Some(json!({ "agent": "a", "environment_id": "env_a" })),
+        Some(json!({ "agent": "a", "environment_id": environment_id })),
     )
     .await;
     let id = session["id"].as_str().unwrap().to_string();
@@ -148,6 +167,6 @@ async fn environment_is_immutable_across_update() {
     // And a fresh GET still reports the create-time environment.
     let (s, got) = call(&app, "GET", &format!("/v1/sessions/{id}"), None).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(got["environment_id"], "env_a");
+    assert_eq!(got["environment_id"], environment_id);
     assert_eq!(got["title"], serde_json::Value::Null);
 }

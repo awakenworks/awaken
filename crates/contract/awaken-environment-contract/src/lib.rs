@@ -1,17 +1,16 @@
-//! The self-hosted **environment registry** as a port, the sibling of
-//! [`crate::work_queue::WorkQueue`]. An environment is user-created config (name,
-//! description, metadata, networking policy) — not re-derivable — so a durable
-//! backend must persist it for the work queue to stay usable across a restart or
-//! on another node. The in-memory reference backend lives outward in
-//! `awaken-env-store`, beside the durable sqlite/postgres sibling.
+//! Control-owned Environment definitions and their persistence port.
+//!
+//! An Environment is immutable-by-revision configuration: identity, metadata,
+//! packages, networking, and an exact sandbox-policy reference. Coordinator
+//! receives an executable projection through a registration port; it never opens
+//! this registry. The in-memory and durable adapters live in `awaken-env-store`.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{McpTarget, SessionNetworkPolicy};
 use async_trait::async_trait;
 
-/// Stable Coordinator command for creating one Environment. The command id is
+/// Stable Control command for creating one Environment. The command id is
 /// supplied by the ingress boundary; the fingerprint is derived from every
 /// business input so a replay can be distinguished from conflicting reuse.
 #[derive(Clone, Debug)]
@@ -27,7 +26,7 @@ pub struct CreateEnvironmentCommand {
 impl CreateEnvironmentCommand {
     #[must_use]
     pub fn fingerprint(&self) -> String {
-        crate::stable_fingerprint(&(
+        environment_facts_fingerprint(&(
             &self.name,
             &self.description,
             &self.metadata,
@@ -35,6 +34,14 @@ impl CreateEnvironmentCommand {
             &self.config,
         ))
     }
+}
+
+/// Deterministic equality evidence for facts inside the Environment context.
+/// This is intentionally the canonical serialized fact set, not a security
+/// digest; callers use it only for replay/conflict and corruption detection.
+#[must_use]
+pub fn environment_facts_fingerprint(value: &impl serde::Serialize) -> String {
+    serde_json::to_string(value).expect("Environment fingerprint facts serialize")
 }
 
 #[derive(Clone, Debug)]
@@ -81,9 +88,9 @@ pub const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 #[serde(transparent)]
 pub struct EnvironmentRevision(pub u64);
 
-/// Canonical Environment configuration owned by the Session domain. Protocol
+/// Canonical static Environment configuration owned by Control. Protocol
 /// adapters translate their wire unions into this closed vocabulary once; stores
-/// and snapshot compilation never inspect arbitrary JSON.
+/// and executable-projection compilation never inspect arbitrary JSON.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EnvironmentConfig {
@@ -110,17 +117,6 @@ impl EnvironmentConfig {
             Self::SelfHosted => EnvironmentPackages::default(),
         }
     }
-
-    /// Compile the effective, frozen Session egress policy. Environment remains
-    /// the sole network authority; MCP declarations only supply the exact hosts
-    /// selected by an Environment that opted into them.
-    #[must_use]
-    pub fn network_policy_for_session(&self, mcp_targets: &[McpTarget]) -> SessionNetworkPolicy {
-        match self {
-            Self::Cloud { networking, .. } => networking.network_policy_for_session(mcp_targets),
-            Self::SelfHosted => SessionNetworkPolicy::Unrestricted,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -138,45 +134,10 @@ pub enum EnvironmentNetworking {
     },
 }
 
-impl EnvironmentNetworking {
-    /// Resolve Anthropic's semantic limited-network switches into the one host
-    /// allowlist understood by every sandbox provider. This happens before the
-    /// Environment snapshot is fingerprinted, so Runtime never re-opens Agent
-    /// configuration or infers ambient package-manager access.
-    #[must_use]
-    pub fn network_policy_for_session(&self, mcp_targets: &[McpTarget]) -> SessionNetworkPolicy {
-        match self {
-            Self::Unrestricted => SessionNetworkPolicy::Unrestricted,
-            Self::Limited {
-                allowed_hosts,
-                allow_mcp_servers,
-                allow_package_managers,
-            } => {
-                let mut hosts = allowed_hosts.clone();
-                if *allow_mcp_servers {
-                    hosts.extend(mcp_targets.iter().filter_map(|target| {
-                        target.http_url().and_then(|url| {
-                            McpTarget::identity(url).ok().map(|identity| identity.host)
-                        })
-                    }));
-                }
-                if *allow_package_managers {
-                    hosts.extend(
-                        PUBLIC_PACKAGE_REGISTRY_HOSTS
-                            .iter()
-                            .map(ToString::to_string),
-                    );
-                }
-                SessionNetworkPolicy::Allowlist { hosts }.normalized()
-            }
-        }
-    }
-}
-
 /// Canonical public registries represented by Anthropic's
-/// `allow_package_managers` switch. Keeping this catalog at the Environment
-/// policy owner prevents protocol adapters and sandbox providers from growing
-/// competing interpretations.
+/// `allow_package_managers` switch. Keeping this catalog at the static
+/// Environment owner prevents projection compilers and sandbox providers from
+/// growing competing interpretations.
 pub const PUBLIC_PACKAGE_REGISTRY_HOSTS: &[&str] = &[
     "archive.ubuntu.com",
     "crates.io",
@@ -236,7 +197,7 @@ impl Default for EnvironmentPackages {
 /// One environment record (the neutral domain shape). The Managed wire adapter
 /// renders the `BetaEnvironment` object and derives the sandbox `NetworkPolicy` from
 /// `config` — this crate names neither the wire nor the provisioning vocabulary.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EnvItem {
     pub id: String,
     pub revision: EnvironmentRevision,
@@ -246,7 +207,21 @@ pub struct EnvItem {
     /// Anthropic visibility scope (`organization` or `account`).
     pub scope: Option<String>,
     pub config: EnvironmentConfig,
+    /// Exact Control-owned sandbox policy version selected by this immutable
+    /// Environment revision. The policy body is resolved only while publishing
+    /// the executable projection; Coordinator never opens the policy store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_policy: Option<EnvironmentSandboxPolicyRef>,
     pub archived_at: Option<String>,
+}
+
+/// Neutral identity of one immutable sandbox-policy version. This value lives
+/// in the Environment aggregate so the binding and revision advance atomically;
+/// the Worker provisioning contract owns the policy body and validation rules.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EnvironmentSandboxPolicyRef {
+    pub policy_id: String,
+    pub version: u64,
 }
 
 impl EnvItem {
@@ -271,6 +246,9 @@ impl EnvItem {
         }
         if let Some(scope) = patch.scope {
             self.scope = scope;
+        }
+        if let Some(sandbox_policy) = patch.sandbox_policy {
+            self.sandbox_policy = sandbox_policy;
         }
         if let Some(md) = patch.metadata {
             for (k, v) in md {
@@ -303,6 +281,8 @@ pub struct EnvUpdate {
     /// Outer `Some` means the field was supplied; inner `None` clears it.
     pub scope: Option<Option<String>>,
     pub metadata: Option<BTreeMap<String, Option<String>>>,
+    /// Outer `Some` means the binding was supplied; inner `None` clears it.
+    pub sandbox_policy: Option<Option<EnvironmentSandboxPolicyRef>>,
 }
 
 /// Atomic mutation vocabulary for the official Environment update semantics.
@@ -484,14 +464,19 @@ pub trait EnvRegistry: Send + Sync {
     }
     /// All non-archived environments, ascending by id.
     async fn list_active(&self) -> Vec<EnvItem>;
+    /// Every current Environment projection, including archived definitions.
+    /// Reconciliation uses this to replay withdrawals after a failed publish.
+    async fn list_all(&self) -> Vec<EnvItem>;
     /// The environment under `id` (archived or not).
     async fn get(&self, id: &str) -> Option<EnvItem>;
+    /// One immutable authored revision. Implementations append this record in
+    /// the same transaction that advances the current row; they never reconstruct
+    /// history from the mutable current projection.
+    async fn get_revision(&self, id: &str, revision: EnvironmentRevision) -> Option<EnvItem>;
     /// Whether `id` exists (archived or not).
     async fn exists(&self, id: &str) -> bool;
     /// Apply an update patch; `None` when `id` does not exist.
     async fn update(&self, id: &str, patch: EnvUpdate) -> Option<EnvItem>;
-    /// Delete `id`; returns whether it existed.
-    async fn delete(&self, id: &str) -> bool;
     /// Archive `id` (stamps `archived_at`); `None` when it does not exist.
     async fn archive(&self, id: &str) -> Option<EnvItem>;
 }
@@ -503,5 +488,22 @@ mod tests {
     #[test]
     fn environment_default_is_the_self_hosted_decision() {
         assert_eq!(EnvironmentConfig::default(), EnvironmentConfig::SelfHosted);
+    }
+
+    #[test]
+    fn environment_facts_fingerprint_is_stable_and_sensitive() {
+        // Cause/effect decision table: R1 equal ordered facts -> equal replay
+        // evidence; R2 one changed fact -> different evidence. The value is not
+        // used as a secret, authorization proof, or content-addressed identity.
+        assert_eq!(
+            environment_facts_fingerprint(&(1_u64, "same")),
+            environment_facts_fingerprint(&(1_u64, "same")),
+            "R1"
+        );
+        assert_ne!(
+            environment_facts_fingerprint(&(1_u64, "same")),
+            environment_facts_fingerprint(&(2_u64, "same")),
+            "R2"
+        );
     }
 }

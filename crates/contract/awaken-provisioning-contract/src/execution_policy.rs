@@ -1,4 +1,4 @@
-//! Versioned sandbox execution policy and exact Environment binding.
+//! Versioned sandbox execution policy.
 
 use async_trait::async_trait;
 use awaken_session_contract::SandboxProvisioning;
@@ -43,16 +43,15 @@ pub enum SandboxExecutionPolicyError {
     VersionConflict,
     #[error("sandbox_execution_policy_disabled")]
     Disabled,
-    #[error("sandbox_execution_policy_binding_unavailable")]
-    BindingUnavailable,
     #[error("sandbox_execution_policy_invalid: {0}")]
     Invalid(String),
     #[error("sandbox_execution_policy_store_failed: {0}")]
     StoreFailed(String),
 }
 
-/// Authoritative store for immutable policy versions and the Environment's exact
-/// binding. Implementations must never substitute the current policy version.
+/// Authoritative store for immutable policy versions. Environment owns its exact
+/// policy reference inside the same authored revision; implementations must never
+/// substitute the current policy version.
 #[async_trait]
 pub trait SandboxExecutionPolicyStore: Send + Sync {
     async fn create(
@@ -70,17 +69,6 @@ pub trait SandboxExecutionPolicyStore: Send + Sync {
         &self,
         reference: &SandboxExecutionPolicyRef,
     ) -> Result<SandboxExecutionPolicy, SandboxExecutionPolicyError>;
-
-    async fn bind_environment(
-        &self,
-        environment_id: &str,
-        reference: SandboxExecutionPolicyRef,
-    ) -> Result<(), SandboxExecutionPolicyError>;
-
-    async fn environment_binding(
-        &self,
-        environment_id: &str,
-    ) -> Result<Option<SandboxExecutionPolicyRef>, SandboxExecutionPolicyError>;
 }
 
 #[cfg(test)]

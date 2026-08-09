@@ -1,4 +1,4 @@
-//! Durable SandboxExecutionPolicy versions and exact Environment bindings.
+//! Durable SandboxExecutionPolicy versions.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -29,11 +29,6 @@ fn sandbox_policy_bundle() -> Result<MigrationBundle, MigrationError> {
                 "current sandbox execution policy version",
                 "CREATE TABLE {prefix}_current (policy_id TEXT PRIMARY KEY, version BIGINT NOT NULL)",
             )?,
-            Migration::new(
-                3,
-                "exact environment sandbox execution policy binding",
-                "CREATE TABLE {prefix}_environment (environment_id TEXT PRIMARY KEY, policy_id TEXT NOT NULL, version BIGINT NOT NULL)",
-            )?,
         ],
     )
 }
@@ -51,7 +46,6 @@ fn validate(policy: &SandboxExecutionPolicy) -> Result<(), SandboxExecutionPolic
 struct InMemoryState {
     policies: BTreeMap<String, BTreeMap<u64, SandboxExecutionPolicy>>,
     current: BTreeMap<String, u64>,
-    bindings: BTreeMap<String, SandboxExecutionPolicyRef>,
 }
 
 #[derive(Default)]
@@ -113,30 +107,6 @@ impl SandboxExecutionPolicyStore for InMemorySandboxExecutionPolicyStore {
             .and_then(|versions| versions.get(&reference.version.0))
             .cloned()
             .ok_or(SandboxExecutionPolicyError::NotFound)
-    }
-
-    async fn bind_environment(
-        &self,
-        environment_id: &str,
-        reference: SandboxExecutionPolicyRef,
-    ) -> Result<(), SandboxExecutionPolicyError> {
-        let policy = self.get_exact(&reference).await?;
-        if policy.disabled {
-            return Err(SandboxExecutionPolicyError::Disabled);
-        }
-        self.0
-            .lock()
-            .unwrap()
-            .bindings
-            .insert(environment_id.to_string(), reference);
-        Ok(())
-    }
-
-    async fn environment_binding(
-        &self,
-        environment_id: &str,
-    ) -> Result<Option<SandboxExecutionPolicyRef>, SandboxExecutionPolicyError> {
-        Ok(self.0.lock().unwrap().bindings.get(environment_id).cloned())
     }
 }
 
@@ -263,42 +233,6 @@ impl SandboxExecutionPolicyStore for PostgresSandboxExecutionPolicyStore {
             .ok_or(SandboxExecutionPolicyError::NotFound)?;
         serde_json::from_str(row.get::<String, _>(0).as_str()).map_err(store_failed)
     }
-
-    async fn bind_environment(
-        &self,
-        environment_id: &str,
-        reference: SandboxExecutionPolicyRef,
-    ) -> Result<(), SandboxExecutionPolicyError> {
-        if self.get_exact(&reference).await?.disabled {
-            return Err(SandboxExecutionPolicyError::Disabled);
-        }
-        sqlx::query("INSERT INTO sandbox_execution_policy_environment(environment_id,policy_id,version) VALUES($1,$2,$3) ON CONFLICT(environment_id) DO UPDATE SET policy_id=EXCLUDED.policy_id, version=EXCLUDED.version")
-            .bind(environment_id)
-            .bind(&reference.id.0)
-            .bind(as_i64(reference.version.0)?)
-            .execute(&self.pool)
-            .await
-            .map_err(store_failed)?;
-        Ok(())
-    }
-
-    async fn environment_binding(
-        &self,
-        environment_id: &str,
-    ) -> Result<Option<SandboxExecutionPolicyRef>, SandboxExecutionPolicyError> {
-        let row = sqlx::query("SELECT policy_id,version FROM sandbox_execution_policy_environment WHERE environment_id=$1")
-            .bind(environment_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(store_failed)?;
-        row.map(|row| {
-            Ok(SandboxExecutionPolicyRef {
-                id: awaken_provisioning_contract::SandboxExecutionPolicyId(row.get(0)),
-                version: SandboxExecutionPolicyVersion(as_u64(row.get(1))?),
-            })
-        })
-        .transpose()
-    }
 }
 
 fn store_failed(error: impl std::fmt::Display) -> SandboxExecutionPolicyError {
@@ -307,10 +241,6 @@ fn store_failed(error: impl std::fmt::Display) -> SandboxExecutionPolicyError {
 
 fn as_i64(value: u64) -> Result<i64, SandboxExecutionPolicyError> {
     i64::try_from(value).map_err(store_failed)
-}
-
-fn as_u64(value: i64) -> Result<u64, SandboxExecutionPolicyError> {
-    u64::try_from(value).map_err(store_failed)
 }
 
 impl SqliteSandboxExecutionPolicyStore {
@@ -408,51 +338,22 @@ impl SandboxExecutionPolicyStore for SqliteSandboxExecutionPolicyStore {
     ) -> Result<SandboxExecutionPolicy, SandboxExecutionPolicyError> {
         Self::exact(&self.conn.lock().unwrap(), reference)
     }
-
-    async fn bind_environment(
-        &self,
-        environment_id: &str,
-        reference: SandboxExecutionPolicyRef,
-    ) -> Result<(), SandboxExecutionPolicyError> {
-        let conn = self.conn.lock().unwrap();
-        let policy = Self::exact(&conn, &reference)?;
-        if policy.disabled {
-            return Err(SandboxExecutionPolicyError::Disabled);
-        }
-        conn.execute(
-            "INSERT INTO sandbox_execution_policy_environment(environment_id,policy_id,version) VALUES(?1,?2,?3) \
-             ON CONFLICT(environment_id) DO UPDATE SET policy_id=excluded.policy_id, version=excluded.version",
-            params![environment_id, reference.id.0, reference.version.0],
-        )
-        .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))?;
-        Ok(())
-    }
-
-    async fn environment_binding(
-        &self,
-        environment_id: &str,
-    ) -> Result<Option<SandboxExecutionPolicyRef>, SandboxExecutionPolicyError> {
-        self.conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT policy_id,version FROM sandbox_execution_policy_environment WHERE environment_id=?1",
-                [environment_id],
-                |row| {
-                    Ok(SandboxExecutionPolicyRef {
-                        id: awaken_provisioning_contract::SandboxExecutionPolicyId(row.get(0)?),
-                        version: SandboxExecutionPolicyVersion(row.get(1)?),
-                    })
-                },
-            )
-            .optional()
-            .map_err(|error| SandboxExecutionPolicyError::StoreFailed(error.to_string()))
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_policy_schema_is_versioned_and_unconditional() {
+        // Cause/effect rule: immutable versions and their current pointer each
+        // have one unconditional ledger version; the removed Environment-binding
+        // authority has no create/drop migration track, and conditional DDL is
+        // rejected instead of hiding drift.
+        let bundle = sandbox_policy_bundle().expect("sandbox-policy bundle");
+        awaken_scoped_migration::lint(std::slice::from_ref(&bundle))
+            .expect("deterministic sandbox-policy migrations");
+    }
     use awaken_provisioning_contract::{IsolationClass, SandboxExecutionPolicyId, SandboxOverride};
 
     fn policy(id: &str, version: u64, isolation: IsolationClass) -> SandboxExecutionPolicy {
@@ -468,18 +369,18 @@ mod tests {
         }
     }
 
-    async fn exact_binding_decision_table(store: &dyn SandboxExecutionPolicyStore) {
+    async fn exact_version_decision_table(store: &dyn SandboxExecutionPolicyStore) {
         // Causal graph:
         // create v1 -> current v1; publish with current fence -> immutable v2
-        // bind exact v1 -> Environment keeps v1 after v2 exists
-        // stale publish | missing binding target -> fail closed
+        // exact v1 remains readable after v2 exists; stale publish and missing
+        // exact reads fail closed.
         //
-        // | Rule | target exists | expected current | exact binding | effect |
-        // | P1   | v1            | -                | -             | create |
-        // | P2   | v2            | v1               | -             | publish |
-        // | P3   | v1            | -                | v1            | bind v1 |
-        // | P4   | v3            | stale v1         | -             | conflict |
-        // | P5   | missing       | -                | missing       | reject |
+        // | Rule | target exists | expected current | effect |
+        // | P1   | v1            | -                | create |
+        // | P2   | v2            | v1               | publish |
+        // | P3   | v1            | -                | exact v1 readable |
+        // | P4   | v3            | stale v1         | conflict |
+        // | P5   | missing       | -                | not found |
         let v1 = policy("strict", 1, IsolationClass::Namespace);
         store.create(v1.clone()).await.expect("P1");
         let v2 = policy("strict", 2, IsolationClass::Container);
@@ -491,14 +392,6 @@ mod tests {
             id: v1.id.clone(),
             version: v1.version,
         };
-        store
-            .bind_environment("env-a", v1_ref.clone())
-            .await
-            .expect("P3");
-        assert_eq!(
-            store.environment_binding("env-a").await.unwrap(),
-            Some(v1_ref.clone())
-        );
         assert_eq!(store.get_exact(&v1_ref).await.unwrap(), v1);
         assert!(matches!(
             store
@@ -511,45 +404,35 @@ mod tests {
         ));
         assert!(matches!(
             store
-                .bind_environment(
-                    "env-b",
-                    SandboxExecutionPolicyRef {
-                        id: SandboxExecutionPolicyId("missing".into()),
-                        version: SandboxExecutionPolicyVersion(1),
-                    }
-                )
+                .get_exact(&SandboxExecutionPolicyRef {
+                    id: SandboxExecutionPolicyId("missing".into()),
+                    version: SandboxExecutionPolicyVersion(1),
+                })
                 .await,
             Err(SandboxExecutionPolicyError::NotFound)
         ));
     }
 
     #[tokio::test]
-    async fn in_memory_exact_binding_rules() {
-        exact_binding_decision_table(&InMemorySandboxExecutionPolicyStore::default()).await;
+    async fn in_memory_exact_version_rules() {
+        exact_version_decision_table(&InMemorySandboxExecutionPolicyStore::default()).await;
     }
 
     #[tokio::test]
-    async fn sqlite_exact_binding_rules_and_restart() {
+    async fn sqlite_exact_version_rules_and_restart() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("policy.db");
         let path = path.to_str().unwrap();
         let first = SqliteSandboxExecutionPolicyStore::open(path).unwrap();
-        exact_binding_decision_table(&first).await;
+        exact_version_decision_table(&first).await;
         drop(first);
         let restarted = SqliteSandboxExecutionPolicyStore::open(path).unwrap();
-        let binding = restarted
-            .environment_binding("env-a")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(binding.version, SandboxExecutionPolicyVersion(1));
+        let v1 = SandboxExecutionPolicyRef {
+            id: SandboxExecutionPolicyId("strict".into()),
+            version: SandboxExecutionPolicyVersion(1),
+        };
         assert_eq!(
-            restarted
-                .get_exact(&binding)
-                .await
-                .unwrap()
-                .config
-                .isolation,
+            restarted.get_exact(&v1).await.unwrap().config.isolation,
             Some(IsolationClass::Namespace)
         );
     }
@@ -557,12 +440,12 @@ mod tests {
     #[test]
     fn sqlite_schema_has_one_scoped_migration_authority() {
         // Causal graph:
-        // open -> run canonical bundle -> ledger + three tables -> serve
+        // open -> run canonical bundle -> ledger + two surviving tables -> serve
         // reopen -> ledger verifies checksums -> no duplicate schema path
         //
         // Decision table:
         // | first open | ledger current | expected effect                 |
-        // | yes        | no             | apply exactly three migrations |
+        // | yes        | no             | apply exactly two migrations  |
         // | no         | yes            | apply zero pending migrations  |
         // | no         | checksum drift | fail closed                     |
         let dir = tempfile::tempdir().unwrap();
@@ -579,7 +462,19 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(applied, 3);
+        assert_eq!(applied, 2);
+        let obsolete_binding_table: Option<String> = first
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sandbox_execution_policy_environment'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(obsolete_binding_table.is_none());
         drop(first);
         let reopened = SqliteSandboxExecutionPolicyStore::open(path).unwrap();
         let applied_after_reopen: i64 = reopened
@@ -592,7 +487,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(applied_after_reopen, 3);
+        assert_eq!(applied_after_reopen, 2);
         reopened
             .conn
             .lock()

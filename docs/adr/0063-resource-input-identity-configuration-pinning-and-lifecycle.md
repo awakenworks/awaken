@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-21
+- Amended: 2026-08-01 — logical File identity and canonical Resources application
 - Builds on: [ADR-0038](0038-managed-resource-injection-and-store-organization.md)
   (resource injection and provisioning descriptors),
   [ADR-0041](0041-sandbox-execution-environment-provider.md) (sandbox lifecycle),
@@ -27,7 +28,7 @@ Files, Memory stores, and repositories are all inputs to an Agent, and all may b
 declared as Agent defaults or attached to one Session. They do not, however, have
 one content lifecycle:
 
-- a File is immutable and content-addressed;
+- a logical File has an immutable mapping to a content-addressed blob;
 - a MemoryStore is a stable, mutable aggregate containing independently changing
   entries;
 - a Repository is a stable, mutable reference to an external Git truth.
@@ -54,7 +55,7 @@ The version rule is:
 
 | Resource | Agent binding carries | Session resolution pins | Never pinned |
 |---|---|---|---|
-| File | `FileId` | the same immutable content id | a separate File version |
+| File | logical `FileId` | the same immutable logical id; Resources resolves its immutable `blob_id` mapping | a separate File version or caller-visible blob id |
 | MemoryStore | `MemoryStoreId` | `MemoryStoreConfigVersion` | entry id/version, head, content hash, checkpoint |
 | Repository | `RepositoryId` | `RepositoryConfigVersion` | Git commit, tree, branch head, internal file version |
 | Skill capability | Skill resource id | immutable Skill version + bundle SHA-256 | a later Skill version |
@@ -280,9 +281,10 @@ same fields are denied in resource SQL migrations. The check intentionally
 permits Workspace because it is the resource partition/ownership coordinate
 stamped by the PEP, not evidence that authorization was granted.
 
-`ResourcePlane` injects the four neutral SPIs atomically when the Host is
-constructed. A shared deployment therefore never opens an unused local
-File/Memory/Skill/lifecycle store before replacing it. A shared Runtime also
+`ResourceComponent` injects the Resource Catalog, File store/catalog, Memory,
+Skill, and lifecycle ports atomically when the process is constructed. A shared
+deployment therefore never opens an unused local File/Memory/Skill/lifecycle
+store before replacing it. A shared Runtime also
 requires the Resource Catalog/Agent-binding store (`AWAKEN_ADMIN_DB`) to be
 shared; startup fails closed when shared execution is combined with a local
 resource configuration catalog.

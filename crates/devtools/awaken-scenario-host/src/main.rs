@@ -277,6 +277,11 @@ mod dispatch_tests {
 
     #[tokio::test]
     async fn every_sync_env_free_mode_string_maps_to_a_mounted_factory() {
+        // Cause/effect decision table: each supported environment-free mode is
+        // one cause; every rule must build through its canonical scenario
+        // composition and expose the shared protocol route. A missing Resources
+        // application, alternate Host path, or unmounted adapter is a failed
+        // effect for that exact mode.
         // (AWAKEN_MODEL_MODE string, the router its `main()` arm builds). Kept in the
         // same order as the `match` in `main()` so drift is easy to spot.
         let dispatch: Vec<(&str, axum::Router)> = vec![

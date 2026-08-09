@@ -1,4 +1,4 @@
-//! `MemoryStores` — the memory resource plane's *content* backends (ADR-0038/0053).
+//! `MemoryStores` — the Resources context's Memory content backends (ADR-0038/0053).
 //!
 //! Owns the one path-addressed CAS [`MemoryRepository`] used by the Memory API, sandbox
 //! mounts, recall, and extraction. A configured storage dir makes it durable;
@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use awaken_memory_store::MemoryRepository;
 
-/// The memory resource plane's content backend. See the module docs for why
+/// The Resources context's Memory content backend. See the module docs for why
 /// identity/configuration is kept out.
 pub(crate) struct MemoryStores {
     /// Durable, path-addressed memory files (ADR-0053): many memories, each at a path

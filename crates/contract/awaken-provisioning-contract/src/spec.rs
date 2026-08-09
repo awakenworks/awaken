@@ -469,7 +469,7 @@ mod tests {
 /// overrides just what it sets and
 /// leaves the rest at the host default. Content mounts are deliberately NOT here:
 /// those are the ADR-0038
-/// resource plane (files/memory/repos), realized as [`MountRequirement`]s from a
+/// Resources context (files/memory/repos), realized as [`MountRequirement`]s from a
 /// content source; a bare UI mount path has no source to realize.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -588,7 +588,7 @@ mod sandbox_override_tests {
         );
         assert_eq!(spec.limits.cpu_millis, Some(2000));
         assert_eq!(spec.limits.memory_bytes, Some(4_294_967_296));
-        // Mounts are the resource plane's, never lifted from the UI blob.
+        // Mounts belong to Resources, never to the UI blob.
         assert!(spec.mounts.is_empty());
     }
 

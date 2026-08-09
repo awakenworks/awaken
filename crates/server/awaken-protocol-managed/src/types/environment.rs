@@ -253,7 +253,7 @@ pub struct Environment {
     pub metadata: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
-    pub config: awaken_session_contract::env_registry::EnvironmentConfig,
+    pub config: awaken_environment_contract::EnvironmentConfig,
 }
 
 /// `BetaEnvironmentDeleteResponse` — the `DELETE /v1/environments/:id` receipt.

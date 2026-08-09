@@ -14,8 +14,6 @@
 mod agent_config;
 mod application_contribution;
 mod baseline;
-mod defaults;
-pub mod env_registry;
 mod lifecycle;
 mod mcp_attachment;
 mod mcp_probe;
@@ -29,7 +27,7 @@ pub mod work_queue;
 
 /// Resource-plane vocabulary used by Session APIs. Runtime implementors can
 /// consume these signatures through this contract instead of adding another
-/// dependency edge to the resource plane.
+/// dependency edge to the Resources context.
 pub mod resource_plane {
     pub use awaken_resource_contract::*;
 }
@@ -45,6 +43,7 @@ pub use application_contribution::{
     FrozenSessionProjection,
 };
 pub use awaken_agent_contract::stable_fingerprint;
+pub use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};
 pub use baseline::{
     ApplicationContributionError, ApplicationContributionOutcome, ApplicationContributionReceipt,
     ApplicationContributionState, ApplicationSessionInput, CompiledSessionCreation,
@@ -53,7 +52,6 @@ pub use baseline::{
     SessionCreationFinalizeError, SessionCreationIntent, SessionMcpAuthoringContext,
     SessionNetworkPolicy,
 };
-pub use defaults::{CompiledSessionDefaults, SessionDefaultsCompiler};
 pub use lifecycle::{ManagedLifecycleFact, SessionLifecycleSink};
 pub use mcp_attachment::{
     McpAttachmentDraft, McpAttachmentError, McpAttachmentId, McpAttachmentOrigin,
