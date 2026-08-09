@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::delegation::{ChildRunCancellation, DelegationId};
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 use awaken_runtime_contract::delegation::{DelegationExecutionError, RunDelegationService};
 use awaken_runtime_contract::llm::LlmExecutor;
@@ -409,7 +409,7 @@ impl Runtime {
     pub async fn resume(
         &self,
         command: awaken_runtime_contract::resume::ResumeCommand,
-        reader: &dyn ThreadReader,
+        reader: &dyn CommittedThreadView,
         context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
     ) -> Result<
         awaken_agent_contract::agent::run::RunState,
@@ -441,7 +441,7 @@ impl Runtime {
     pub async fn reconcile_delegation_cancellations(
         &self,
         thread_id: &awaken_agent_contract::agent::thread::Id,
-        reader: &dyn ThreadReader,
+        reader: &dyn CommittedThreadView,
     ) -> Result<usize, awaken_runtime_contract::execution::Error> {
         crate::engine::reconcile_delegation_cancellations(self, thread_id, reader).await
     }
@@ -469,7 +469,7 @@ impl Runtime {
     pub async fn perform_scheduled_action(
         &self,
         run_id: &RunId,
-        reader: &dyn ThreadReader,
+        reader: &dyn CommittedThreadView,
         context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
         now_ms: u64,
     ) -> Result<

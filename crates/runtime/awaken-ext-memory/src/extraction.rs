@@ -873,7 +873,9 @@ pub trait MemoryTerminalExtraction: Send + Sync {
 
 /// Memory Extraction's committed-terminal Runtime extension.
 pub struct MemoryTerminalObserver {
-    reader: std::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>,
+    reader: std::sync::Arc<
+        dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView,
+    >,
     extraction: std::sync::Arc<dyn MemoryTerminalExtraction>,
 }
 
@@ -881,7 +883,7 @@ impl MemoryTerminalObserver {
     #[must_use]
     pub fn new(
         reader: std::sync::Arc<
-            dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader,
+            dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView,
         >,
         extraction: std::sync::Arc<dyn MemoryTerminalExtraction>,
     ) -> Self {
@@ -1822,7 +1824,9 @@ mod tests {
 
     struct TerminalReader(Vec<Message>);
 
-    impl awaken_agent_contract::thread::read::thread_reader::ThreadReader for TerminalReader {
+    impl awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView
+        for TerminalReader
+    {
         fn committed_messages(
             &self,
             _thread_id: &awaken_agent_contract::agent::thread::Id,
@@ -1834,6 +1838,20 @@ mod tests {
             &self,
             _run_id: &awaken_agent_contract::agent::run::Id,
         ) -> Option<awaken_agent_contract::agent::awaiting::ResumeTicket> {
+            None
+        }
+
+        fn run(
+            &self,
+            _run_id: &awaken_agent_contract::agent::run::Id,
+        ) -> Option<awaken_agent_contract::agent::run::Record> {
+            None
+        }
+
+        fn latest_run(
+            &self,
+            _thread_id: &awaken_agent_contract::agent::thread::Id,
+        ) -> Option<awaken_agent_contract::agent::run::Record> {
             None
         }
     }

@@ -15,9 +15,8 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::Error as CommitError;
 use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunResumeTicket};
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RecoveryProjectionError {
@@ -199,7 +198,7 @@ fn apply_to_snapshot(
     Ok(())
 }
 
-impl ThreadReader for RecoveryProjection {
+impl CommittedThreadView for RecoveryProjection {
     fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
         self.snapshot
             .read()
@@ -221,6 +220,28 @@ impl ThreadReader for RecoveryProjection {
                 .iter()
                 .find(|entry| &entry.run_id == run_id)
                 .map(|entry| entry.ticket.clone())
+        })
+    }
+
+    fn run(&self, run_id: &RunId) -> Option<RunRecord> {
+        self.snapshot.read().ok().and_then(|snapshot| {
+            snapshot
+                .as_ref()?
+                .runs
+                .iter()
+                .find(|run| &run.id == run_id)
+                .cloned()
+        })
+    }
+
+    fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
+        self.snapshot.read().ok().and_then(|snapshot| {
+            let snapshot = snapshot.as_ref()?;
+            if &snapshot.thread_id != thread_id {
+                return None;
+            }
+            let run_id = snapshot.latest_run_id.as_ref()?;
+            snapshot.runs.iter().find(|run| &run.id == run_id).cloned()
         })
     }
 
@@ -246,16 +267,5 @@ impl ThreadReader for RecoveryProjection {
                     .map(|snapshot| snapshot.state.clone())
             })
             .unwrap_or_default()
-    }
-}
-
-impl RunStore for RecoveryProjection {
-    fn get(&self, id: &RunId) -> Option<RunRecord> {
-        self.snapshot.read().ok().and_then(|snapshot| {
-            let snapshot = snapshot.as_ref()?;
-            (snapshot.latest_run_id.as_ref() == Some(id))
-                .then(|| snapshot.runs.iter().find(|run| &run.id == id).cloned())
-                .flatten()
-        })
     }
 }

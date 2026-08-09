@@ -930,7 +930,8 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
     let host = Arc::new(SharedHost::new(Arc::new(recorder), "stub"));
     let repository_claims = Arc::new(RepositoryClaimRecorder::default());
     let _managed = crate::ManagedHost::new(host.clone())
-        .with_repository_binding_verifier(repository_claims.clone());
+        .with_repository_binding_verifier(repository_claims.clone())
+        .install_dispatch_session_runtime();
     let frozen = projection("Use the bound Flow project.", true);
     host.install_frozen_session_projection("flow-thread", frozen.clone(), None, true)
         .await
@@ -4460,6 +4461,22 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
 }
 
+#[test]
+fn dispatch_session_runtime_requires_explicit_installation() {
+    // Cause/effect graph: C1 a ManagedHost is only constructed; C2 the fully
+    // configured adapter is explicitly installed. Effects: E1 SharedHost has no
+    // dispatch adapter; E2 SharedHost exposes exactly the installed adapter.
+    // Constraint: C2 follows C1. Decision table: R1 C1&&!C2 -> E1; R2 C1&&C2
+    // -> E2. This guards against constructor/builder side effects reintroducing
+    // partially configured durable-dispatch state.
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let managed = crate::ManagedHost::new(host.clone());
+
+    assert!(host.dispatch_session_runtime().is_err(), "R1/E1");
+    let _managed = managed.install_dispatch_session_runtime();
+    assert!(host.dispatch_session_runtime().is_ok(), "R2/E2");
+}
+
 /// Public-realizer selection cause graph:
 ///
 /// C1 an external realizer is installed -> every MCP lifecycle effect is sent
@@ -4526,9 +4543,9 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let external = Arc::new(RecordingRealizer::default());
-    let managed =
-        crate::ManagedHost::new(host.clone()).with_mcp_attachment_realizer(external.clone());
-    drop(managed);
+    let _managed = crate::ManagedHost::new(host.clone())
+        .with_mcp_attachment_realizer(external.clone())
+        .install_dispatch_session_runtime();
     let generation = McpGenerationRef {
         session_id: "external-mcp".into(),
         attachment_id: McpAttachmentId("docs".into()),
@@ -5215,7 +5232,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
         } else {
             managed
         };
-        drop(managed);
+        let _managed = managed.install_dispatch_session_runtime();
 
         let thread = format!("worker-dispatch-repository-{rule}");
         let manifest = awaken_session_contract::SessionResourceManifest::new(

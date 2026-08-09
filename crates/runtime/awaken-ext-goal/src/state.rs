@@ -3,11 +3,11 @@
 //! This is the Outcome extension's typed state codec, not a second persistence
 //! abstraction. Values are ordinary Thread-scoped state commands and every write
 //! crosses the existing `CommitCoordinator`; reads rebuild the same committed
-//! Thread truth through `ThreadReader`.
+//! Thread truth through `CommittedThreadView`.
 
 use awaken_runtime_contract::{
-    CommitCoordinator, EndCause, ExecutableAgentSnapshot, MergePolicy, RunDisposition, RunId,
-    Scope, StateCommand, StateKey, Store, ThreadCommit, ThreadId, ThreadReader,
+    CommitCoordinator, CommittedThreadView, EndCause, ExecutableAgentSnapshot, MergePolicy,
+    RunDisposition, RunId, Scope, StateCommand, StateKey, Store, ThreadCommit, ThreadId,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -69,7 +69,7 @@ pub struct Aggregate {
 /// no external I/O occurs while this codec evaluates or commits a transition.
 pub struct ThreadOutcomeState<'a> {
     thread_id: &'a ThreadId,
-    reader: &'a dyn ThreadReader,
+    reader: &'a dyn CommittedThreadView,
     coordinator: &'a dyn CommitCoordinator,
 }
 
@@ -77,7 +77,7 @@ impl<'a> ThreadOutcomeState<'a> {
     #[must_use]
     pub fn new(
         thread_id: &'a ThreadId,
-        reader: &'a dyn ThreadReader,
+        reader: &'a dyn CommittedThreadView,
         coordinator: &'a dyn CommitCoordinator,
     ) -> Self {
         Self {

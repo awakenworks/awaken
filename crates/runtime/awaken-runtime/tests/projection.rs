@@ -8,7 +8,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
-use awaken_agent_contract::thread::read::run_store::RunStore;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
@@ -117,10 +117,10 @@ async fn projection_derives_from_committed_events_not_the_live_stream() {
     assert!(events[0].contains("Running"));
     assert!(events[1].contains("NaturalEnd"));
 
-    // The same truth is reachable through the RunStore read port.
-    let record = commit.get(&RunId("run-1".to_string())).expect("run record");
+    // The same truth is reachable through the CommittedThreadView read port.
+    let record = commit.run(&RunId("run-1".to_string())).expect("run record");
     assert_eq!(record.state, RunState::Ended(EndCause::NaturalEnd));
-    assert!(commit.get(&RunId("missing".to_string())).is_none());
+    assert!(commit.run(&RunId("missing".to_string())).is_none());
 
     // The record is a derived cache: it equals what replay derives from the
     // committed fact log, which is the authority (ADR-0006 D1/D2).

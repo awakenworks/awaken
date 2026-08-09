@@ -13,6 +13,7 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 fn ck(thread: &str, run: &str, text: &str, state: RunState) -> ThreadCommit {

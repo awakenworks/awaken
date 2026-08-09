@@ -9,7 +9,7 @@ use std::sync::Arc;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::live_inbox::LiveInbox;
 use awaken_runtime_contract::llm::LlmExecutor;
@@ -41,7 +41,7 @@ pub type InferenceMaterializerFn = Arc<
 #[derive(Clone)]
 pub(crate) struct WorkerContext {
     commit: Arc<dyn CommitCoordinator>,
-    reader: Option<Arc<dyn ThreadReader>>,
+    reader: Option<Arc<dyn CommittedThreadView>>,
     /// Attempt-local capabilities inherited from ingress. Durable execution
     /// replaces only commit/read authority, cancellation, and pause below; tool
     /// placement, capture, observability, and retry accounting stay identical to
@@ -111,7 +111,7 @@ impl WorkerContext {
     /// Provide the committed-history read port so a fresh run continues the
     /// thread's conversation. Usually the same store as the commit.
     #[must_use]
-    pub(crate) fn with_reader(mut self, reader: Arc<dyn ThreadReader>) -> Self {
+    pub(crate) fn with_reader(mut self, reader: Arc<dyn CommittedThreadView>) -> Self {
         self.reader = Some(reader);
         self
     }

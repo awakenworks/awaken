@@ -19,7 +19,7 @@ pub(super) async fn drive_resumed(
     thread_id: &ThreadId,
     ticket: &ResumeTicket,
     result: ResumeResult,
-    reader: &dyn ThreadReader,
+    reader: &dyn CommittedThreadView,
     context: &RuntimeRunContext,
 ) -> Result<RunState> {
     let mut transcript = reader.committed_messages(thread_id);

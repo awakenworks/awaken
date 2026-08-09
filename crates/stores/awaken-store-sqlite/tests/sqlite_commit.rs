@@ -16,9 +16,8 @@ use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitOperationId, CommitPayloadHash,
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 fn message(id: &str, text: &str) -> Message {
@@ -84,11 +83,11 @@ async fn commit_persists_facts_messages_and_serves_reads() {
     assert_eq!(record.sequence, 1);
     assert_eq!(store.commit_count(), 1);
 
-    let run = RunStore::get(&store, &RunId("run-1".to_string())).expect("run record");
+    let run = CommittedThreadView::run(&store, &RunId("run-1".to_string())).expect("run record");
     assert_eq!(run.state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(run.thread_id, thread);
 
-    let messages = ThreadReader::committed_messages(&store, &thread);
+    let messages = CommittedThreadView::committed_messages(&store, &thread);
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].id.0, "m1");
     assert_eq!(messages[1].text_content(), "world");
@@ -123,14 +122,14 @@ async fn resume_ticket_awaits_then_clears() {
         ))
         .await
         .expect("await");
-    assert!(ThreadReader::resume_ticket(&store, &run).is_some());
+    assert!(CommittedThreadView::resume_ticket(&store, &run).is_some());
 
     store
         .commit(empty_commit("thread-1", ended("run-1")))
         .await
         .expect("resume to terminal");
     assert!(
-        ThreadReader::resume_ticket(&store, &run).is_none(),
+        CommittedThreadView::resume_ticket(&store, &run).is_none(),
         "a terminal run clears its ticket (fail closed)"
     );
 }
@@ -161,14 +160,14 @@ async fn projection_rehydrates_from_a_file_after_reopen() {
     let restarted = SqliteCommitCoordinator::open(&path).expect("open b");
     assert_eq!(restarted.commit_count(), 1, "the fence survives restart");
     assert_eq!(
-        ThreadReader::committed_messages(&restarted, &ThreadId("thread-1".to_string()))[0]
+        CommittedThreadView::committed_messages(&restarted, &ThreadId("thread-1".to_string()))[0]
             .id
             .0,
         "m1"
     );
-    assert!(RunStore::get(&restarted, &RunId("run-1".to_string())).is_some());
+    assert!(CommittedThreadView::run(&restarted, &RunId("run-1".to_string())).is_some());
     assert!(
-        ThreadReader::resume_ticket(&restarted, &RunId("run-1".to_string())).is_some(),
+        CommittedThreadView::resume_ticket(&restarted, &RunId("run-1".to_string())).is_some(),
         "the active ticket rehydrated"
     );
     let snapshot = restarted
@@ -194,7 +193,7 @@ async fn projection_rehydrates_from_a_file_after_reopen() {
 async fn g13_projection_absent_before_commit() {
     let store = SqliteCommitCoordinator::open_in_memory().expect("open");
     assert!(
-        RunStore::get(&store, &RunId("run-1".to_string())).is_none(),
+        CommittedThreadView::run(&store, &RunId("run-1".to_string())).is_none(),
         "projection must be empty before any commit"
     );
     assert_eq!(store.commit_count(), 0);
@@ -219,7 +218,7 @@ async fn g13_failed_commit_leaves_no_partial_state() {
     assert!(err.is_err(), "invalid plan must be rejected");
 
     assert!(
-        RunStore::get(&store, &RunId("run-1".to_string())).is_none(),
+        CommittedThreadView::run(&store, &RunId("run-1".to_string())).is_none(),
         "no partial state after failed commit"
     );
     assert_eq!(

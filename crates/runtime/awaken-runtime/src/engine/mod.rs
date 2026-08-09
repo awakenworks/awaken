@@ -26,7 +26,7 @@ use awaken_agent_contract::stream::checkpoint::{
 };
 use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
 use awaken_runtime_contract::delegation::{

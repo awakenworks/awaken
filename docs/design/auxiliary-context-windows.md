@@ -31,7 +31,7 @@ projection retain their existing owners.
 
 | Component | Owns | Depends on | Contract |
 |---|---|---|---|
-| `ThreadReader` | committed read model | Thread store | freeze a versioned `TranscriptSnapshot` |
+| `CommittedThreadView` | one internally consistent committed execution view | authoritative `CheckpointReader` or claim-fenced Worker recovery snapshot | freeze a versioned `TranscriptSnapshot` |
 | `TranscriptSliceSpec` | range selection | snapshot only | validate and materialize explicit ranges |
 | Memory Recall plugin | query and bounded injection | current `RunInput`, MemoryStore | request-only messages; never commits recalled text |
 | Memory Extraction controller | intent, retry, receipt | terminal snapshot, stable Run, MemoryStore | at-least-once observation, exactly-once effect |
