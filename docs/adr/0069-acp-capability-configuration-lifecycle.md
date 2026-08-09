@@ -348,6 +348,12 @@ optional mode, typed config-option selections and exact MCP projection. The
 executor consumes it and performs no discovery, repository lookup, backend
 selection or fallback.
 
+The capability fingerprint covers adapter identity/version and protocol-level
+transport features. It deliberately excludes the mode and config-option
+catalogues because an ACP may derive those from the provisioned provider/model
+route. Publication still freezes every requested native id/value, and launch
+fails closed unless the realized Session advertises each requested selection.
+
 The wire sequence is:
 
 ```text

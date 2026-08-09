@@ -101,6 +101,11 @@ pub trait DurableRunOperations: Send + Sync {
         now_ms: u64,
     ) -> Result<usize, ApplicationError>;
     async fn dead_letters(&self, thread: &str) -> Result<Vec<String>, ApplicationError>;
+    async fn requeue_dead_letter(
+        &self,
+        thread: &str,
+        run_id: &str,
+    ) -> Result<bool, ApplicationError>;
     async fn purge_dead_letters(&self, thread: &str) -> Result<usize, ApplicationError>;
 }
 
